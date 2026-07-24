@@ -1002,4 +1002,179 @@ fn compiled_fetch_fixture_stages_success_and_provider_failures_without_network()
         vec!["mint_fetch", "fetch_send_len", "fetch_send_len"]
     );
 }
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn compiled_secret_fixture_keeps_material_opaque_and_scripts_crypto() {
+    use witchy_testkit::{
+        ConsoleFixture, FixtureFamily, FixtureOutcome, FixturePlan, FixtureStep, FixtureValue,
+        SecretFixture, SecretStoreFixture, SecretUsage,
+    };
+
+    const MODULE: &str = r#"
+        (module
+          (import "witchy" "secretstore_lookup"
+            (func $lookup (param i32) (result externref)))
+          (import "witchy" "crypto_reveal_len"
+            (func $reveal (param externref) (result i32)))
+          (import "witchy" "crypto.sign"
+            (func $sign (param externref i32 i32)))
+          (import "witchy" "crypto.public_key"
+            (func $public_key (param externref i32)))
+          (import "witchy" "fill_pending" (func $fill_pending (param i32)))
+          (import "witchy" "print" (func $print (param i32 i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "\05\00\00\00token")
+          (data (i32.const 32) "\07\00\00\00signing")
+          (data (i32.const 64) "\07\00\00\00payload")
+          (func (export "run") (local $secret externref) (local $length i32)
+            i32.const 0
+            call $lookup
+            local.set $secret
+            local.get $secret
+            call $reveal
+            local.set $length
+            i32.const 256
+            call $fill_pending
+            i32.const 256
+            local.get $length
+            call $print
+            i32.const 32
+            call $lookup
+            local.set $secret
+            local.get $secret
+            i32.const 64
+            i32.const 512
+            call $sign
+            i32.const 512
+            i32.const 9
+            call $print
+            local.get $secret
+            i32.const 600
+            call $public_key
+            i32.const 600
+            i32.const 6
+            call $print))
+    "#;
+    let console_step = |text: &str| FixtureStep {
+        operation: "print".to_owned(),
+        target: None,
+        arguments: std::collections::BTreeMap::from([(
+            "text".to_owned(),
+            FixtureValue::String(text.to_owned()),
+        )]),
+        effective_rights: Some(vec!["Write".to_owned()]),
+        outcome: FixtureOutcome::Return {
+            value: FixtureValue::Null,
+        },
+        required: true,
+    };
+    let plan = FixturePlan {
+        version: 1,
+        console: Some(ConsoleFixture {
+            script: vec![
+                console_step("top-secret"),
+                console_step("signature"),
+                console_step("public"),
+            ],
+        }),
+        secrets: Some(SecretStoreFixture {
+            entries: std::collections::BTreeMap::from([
+                (
+                    "token".to_owned(),
+                    SecretFixture {
+                        hex: "746f702d736563726574".to_owned(),
+                        usage: SecretUsage::Revealable,
+                    },
+                ),
+                (
+                    "signing".to_owned(),
+                    SecretFixture {
+                        hex: "11".repeat(32),
+                        usage: SecretUsage::Signing,
+                    },
+                ),
+            ]),
+            script: vec![
+                FixtureStep {
+                    operation: "secretstore_lookup".to_owned(),
+                    target: Some("token".to_owned()),
+                    arguments: std::collections::BTreeMap::new(),
+                    effective_rights: None,
+                    outcome: FixtureOutcome::Return {
+                        value: FixtureValue::String("Secret".to_owned()),
+                    },
+                    required: true,
+                },
+                FixtureStep {
+                    operation: "crypto_reveal_len".to_owned(),
+                    target: None,
+                    arguments: std::collections::BTreeMap::new(),
+                    effective_rights: None,
+                    outcome: FixtureOutcome::Return {
+                        value: FixtureValue::Map(std::collections::BTreeMap::from([
+                            ("redacted".to_owned(), FixtureValue::Bool(true)),
+                            ("length".to_owned(), FixtureValue::String("10".to_owned())),
+                            (
+                                "usage".to_owned(),
+                                FixtureValue::String("revealable".to_owned()),
+                            ),
+                        ])),
+                    },
+                    required: true,
+                },
+                FixtureStep {
+                    operation: "secretstore_lookup".to_owned(),
+                    target: Some("signing".to_owned()),
+                    arguments: std::collections::BTreeMap::new(),
+                    effective_rights: None,
+                    outcome: FixtureOutcome::Return {
+                        value: FixtureValue::String("Secret".to_owned()),
+                    },
+                    required: true,
+                },
+                FixtureStep {
+                    operation: "crypto.sign".to_owned(),
+                    target: None,
+                    arguments: std::collections::BTreeMap::from([(
+                        "message".to_owned(),
+                        FixtureValue::String("payload".to_owned()),
+                    )]),
+                    effective_rights: None,
+                    outcome: FixtureOutcome::Return {
+                        value: FixtureValue::String("signature".to_owned()),
+                    },
+                    required: true,
+                },
+                FixtureStep {
+                    operation: "crypto.public_key".to_owned(),
+                    target: None,
+                    arguments: std::collections::BTreeMap::new(),
+                    effective_rights: None,
+                    outcome: FixtureOutcome::Return {
+                        value: FixtureValue::String("public".to_owned()),
+                    },
+                    required: true,
+                },
+            ],
+        }),
+        ..FixturePlan::default()
+    };
+    let mut runtime = Runtime::batch().expect("runtime");
+    let outcome = runtime
+        .run_fixtures(MODULE, plan, 2)
+        .expect("compiled fixture run");
+    assert!(matches!(outcome.result, FixtureWasmResult::Passed));
+    assert_eq!(outcome.output, vec!["top-secret", "signature", "public"]);
+    let secret_events = outcome
+        .transcript
+        .events
+        .iter()
+        .filter(|event| event.family == FixtureFamily::SecretStore)
+        .collect::<Vec<_>>();
+    let secret_evidence = format!("{secret_events:?}");
+    assert!(!secret_evidence.contains("top-secret"));
+    assert!(!secret_evidence.contains("746f702d736563726574"));
+    assert_eq!(secret_events.len(), 6);
+}
 use std::path::PathBuf;

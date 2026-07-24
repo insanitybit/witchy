@@ -112,7 +112,7 @@ fn fixture_source(caller: &mut Caller<'_, VmState>) -> Option<SourceLocation> {
     })
 }
 
-fn fixture_handle(
+pub(in crate::runtime) fn fixture_handle(
     caller: &Caller<'_, VmState>,
     value: Option<Rooted<ExternRef>>,
     family: &str,
@@ -126,7 +126,10 @@ fn fixture_handle(
         .ok_or_else(|| Error::msg(format!("{family} fixture externref has wrong host data")))
 }
 
-fn root_handle(caller: &Caller<'_, VmState>, family: &str) -> Result<HostHandle> {
+pub(in crate::runtime) fn root_handle(
+    caller: &Caller<'_, VmState>,
+    family: &str,
+) -> Result<HostHandle> {
     let roots = caller
         .data()
         .fixture_host
@@ -137,6 +140,7 @@ fn root_handle(caller: &Caller<'_, VmState>, family: &str) -> Result<HostHandle>
         "Env" => roots.env,
         "Filesystem" => roots.filesystem,
         "Fetch" => roots.fetch,
+        "SecretStore" => roots.secrets,
         _ => None,
     }
     .ok_or_else(|| Error::msg(format!("fixture plan declared no {family} provider")))

@@ -273,6 +273,26 @@ fn host_crypto_sign(
     msg_ptr: i32,
     out_ptr: i32,
 ) -> Result<()> {
+    #[cfg(feature = "test-fixtures")]
+    if caller.data().fixture_host.is_some() {
+        let secret = super::fixture::fixture_handle(&caller, key, "Secret")?;
+        let mem = memory_of(&mut caller)?;
+        let message = read_wstr(mem.data(&caller), msg_ptr)?;
+        let signature = match super::fixture::invoke(
+            &mut caller,
+            witchy_test_host::HostRequest::SecretSign { secret, message },
+        )? {
+            witchy_test_host::HostResponse::String(signature) => signature,
+            response => {
+                return Err(Error::msg(format!(
+                    "fixture crypto.sign returned unexpected response {response:?}"
+                )));
+            }
+        };
+        return mem
+            .write(&mut caller, out_ptr as usize, signature.as_bytes())
+            .map_err(|error| Error::msg(format!("writing fixture signature: {error}")));
+    }
     let bytes = secret_material_ref(&caller, key)?.bytes;
     let mem = memory_of(&mut caller)?;
     let msg = read_wstr(mem.data(&caller), msg_ptr)?;
@@ -295,6 +315,25 @@ fn host_crypto_public_key(
     key: Option<Rooted<ExternRef>>,
     out_ptr: i32,
 ) -> Result<()> {
+    #[cfg(feature = "test-fixtures")]
+    if caller.data().fixture_host.is_some() {
+        let secret = super::fixture::fixture_handle(&caller, key, "Secret")?;
+        let public_key = match super::fixture::invoke(
+            &mut caller,
+            witchy_test_host::HostRequest::SecretPublicKey { secret },
+        )? {
+            witchy_test_host::HostResponse::String(public_key) => public_key,
+            response => {
+                return Err(Error::msg(format!(
+                    "fixture crypto.public_key returned unexpected response {response:?}"
+                )));
+            }
+        };
+        let mem = memory_of(&mut caller)?;
+        return mem
+            .write(&mut caller, out_ptr as usize, public_key.as_bytes())
+            .map_err(|error| Error::msg(format!("writing fixture public key: {error}")));
+    }
     let bytes = secret_material_ref(&caller, key)?.bytes;
     let f = crate::native::lookup(intrinsics::CRYPTO_PUBLIC_KEY).ok_or_else(|| {
         Error::msg(format!(
@@ -320,6 +359,25 @@ fn host_crypto_reveal_len(
     mut caller: Caller<'_, VmState>,
     key: Option<Rooted<ExternRef>>,
 ) -> Result<i32> {
+    #[cfg(feature = "test-fixtures")]
+    if caller.data().fixture_host.is_some() {
+        let secret = super::fixture::fixture_handle(&caller, key, "Secret")?;
+        return match super::fixture::invoke(
+            &mut caller,
+            witchy_test_host::HostRequest::SecretReveal { secret },
+        )? {
+            witchy_test_host::HostResponse::String(value) => {
+                let length = i32::try_from(value.len()).map_err(|_| {
+                    Error::msg("fixture Secret reveal exceeds the guest ABI size limit")
+                })?;
+                caller.data_mut().pending = Some(value.into_bytes());
+                Ok(length)
+            }
+            response => Err(Error::msg(format!(
+                "fixture crypto.reveal returned unexpected response {response:?}"
+            ))),
+        };
+    }
     let secret = secret_material_ref(&caller, key)?;
     // (RFC-0060) A use-only secret is consumable by opaque ref but never revealable.
     if secret.use_only {

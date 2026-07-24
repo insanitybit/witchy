@@ -72,6 +72,22 @@ fn host_secretstore_lookup(
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
+    #[cfg(feature = "test-fixtures")]
+    if caller.data().fixture_host.is_some() {
+        let store = super::fixture::root_handle(&caller, "SecretStore")?;
+        return match super::fixture::invoke(
+            &mut caller,
+            witchy_test_host::HostRequest::SecretStoreLookup { store, name },
+        )? {
+            witchy_test_host::HostResponse::OptionalHandle(Some(handle)) => {
+                ExternRef::new(&mut caller, handle).map(Some)
+            }
+            witchy_test_host::HostResponse::OptionalHandle(None) => Ok(None),
+            response => Err(Error::msg(format!(
+                "fixture SecretStore.lookup returned unexpected response {response:?}"
+            ))),
+        };
+    }
     let grant = caller
         .data()
         .caps
