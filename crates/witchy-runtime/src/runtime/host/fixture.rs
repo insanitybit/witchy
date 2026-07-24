@@ -38,6 +38,15 @@ pub(in crate::runtime) fn link_filesystem(
         return Ok(());
     }
     linker.func_wrap("witchy", "mint_dir", host_mint_dir)?;
+    link_granted_filesystem(linker)
+}
+
+/// Link operations on an already-granted fixture `Dir`, without linking
+/// `mint_dir`. Isolated workers receive the exact parent handle as an externref
+/// and must not be able to mint the fixture session's broader root.
+pub(in crate::runtime) fn link_granted_filesystem(
+    linker: &mut Linker<VmState>,
+) -> Result<()> {
     linker.func_wrap("witchy", "dir_subdir", host_dir_subdir)?;
     linker.func_wrap("witchy", "dir_only", host_dir_only)?;
     linker.func_wrap("witchy", "dir_read_len", host_dir_read_len)?;

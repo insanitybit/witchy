@@ -46,8 +46,32 @@ impl<'types> Codegen<'types> {
                     lines: vec![0],
                     region: None,
                 };
-                let signature = (self.closure_param_kinds(e), self.apply_ret_kind(e));
-                let result_ty = self.closure_result_type(e);
+                // This forwarding body is synthesized after type annotation, so
+                // `e` need not have a TypeTable row. Recover the exact ABI from
+                // the declaration tables instead of silently falling back to
+                // scalar slots (which would erase an externref parameter).
+                let param_kinds = params
+                    .iter()
+                    .map(|param| {
+                        param
+                            .ty
+                            .as_ref()
+                            .map(|ty| self.kind_for_type(ty))
+                            .unwrap_or(Kind::I32)
+                    })
+                    .collect();
+                let signature = (
+                    param_kinds,
+                    self.fn_ret
+                        .get(name)
+                        .copied()
+                        .unwrap_or_else(|| self.apply_ret_kind(e)),
+                );
+                let result_ty = self
+                    .fn_ret_ty
+                    .get(name)
+                    .cloned()
+                    .or_else(|| self.closure_result_type(e));
                 return self.lower_lambda(
                     &params,
                     &body,

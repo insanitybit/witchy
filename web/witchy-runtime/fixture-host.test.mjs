@@ -114,6 +114,48 @@ ok(
   "derived File handles remain observable without exposing host handles",
 );
 
+const vmFilesystem = await run(
+  `import bytes
+import vm
+
+fn worker(dir: Dir, name: Bytes) -> Bytes:
+    let text = dir.read(bytes.to_string(name))
+    dir.write("result.txt", text + "!")
+    bytes.from_string(dir.read("result.txt"))
+
+fn main(console: Console[Write], root: Dir):
+    root.make_dir("sandbox")
+    root.write("sandbox/input.txt", "shared")
+    let sandbox = root.subtree("sandbox")
+    let result = vm.with_dir(
+        sandbox,
+        worker,
+        bytes.from_string("input.txt"),
+    )
+    console.print(bytes.to_string(result))
+    console.print(sandbox.read("result.txt"))
+`,
+  {
+    version: 1,
+    console: { script: [] },
+    filesystem: {
+      entries: {},
+      rights: ["Read", "Write"],
+      script: [],
+    },
+  },
+);
+ok(
+  vmFilesystem.ok && vmFilesystem.text === "shared!\nshared!",
+  `vm.with_dir shares only its fixture-backed Dir state: ${vmFilesystem.text}`,
+);
+ok(
+  vmFilesystem.transcript.events.filter(
+    (event) => event.family === "filesystem",
+  ).length >= 7,
+  "vm.with_dir filesystem operations remain in the parent fixture transcript",
+);
+
 const fetchUrl = "https://example.com/data";
 const fetchArguments = {
   method: { kind: "string", value: "GET" },

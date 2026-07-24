@@ -1148,7 +1148,7 @@ export function makeSecretStoreImports(
 }
 
 function makeVmImports(
-  { readI64List, readWstrListRaw, writeAt },
+  { readI64List, readWstrListRaw, writeAt, stagePending },
   spawnWorker,
 ) {
   if (typeof WebAssembly.Suspending !== "function" || typeof WebAssembly.promising !== "function") {
@@ -1262,11 +1262,25 @@ function makeVmImports(
       pendingBytes = null;
       writeBytesList(values, basePtr);
     },
-    vm_with_dir_run() {
-      throw new Error(
-        "browser vm.with_dir remains unavailable until Dir-bearing function values " +
-        "cross the typed capability-closure boundary",
+    async vm_with_dir_run(dir, codeIdx, inputPtr) {
+      const worker = await spawnWorker(dir);
+      const input = readWstrListRaw(inputPtr, true);
+      const workerInput = copyIntoWorker(worker, input);
+      const callback = worker.instance.exports.__call_dir_bytes;
+      if (typeof callback !== "function") {
+        throw new Error("witchy-runtime: VM worker exports no __call_dir_bytes");
+      }
+      const resultPtr = await WebAssembly.promising(callback)(
+        codeIdx,
+        dir,
+        workerInput,
       );
+      const result = readWorkerBytes(worker, resultPtr);
+      const staged = new Uint8Array(4 + result.length);
+      new DataView(staged.buffer).setInt32(0, result.length, true);
+      staged.set(result, 4);
+      stagePending(staged);
+      return staged.length;
     },
     async vm_serve_run(initPtr, requestsPtr, codeIdx) {
       const worker = await spawnWorker();
@@ -1291,6 +1305,7 @@ function makeVmImports(
   imports.vm_par_map_run = new WebAssembly.Suspending(imports.vm_par_map_run);
   imports.vm_par_map_bytes_run =
     new WebAssembly.Suspending(imports.vm_par_map_bytes_run);
+  imports.vm_with_dir_run = new WebAssembly.Suspending(imports.vm_with_dir_run);
   imports.vm_serve_run = new WebAssembly.Suspending(imports.vm_serve_run);
   return imports;
 }
@@ -1403,6 +1418,7 @@ function makeDirImports(grants, { readWstr, readWstrText, stagePending, stageLis
     mint_dir(ordinal) {
       const grant = grants[ordinal];
       if (!grant) throw new Error(`invalid Dir grant index ${ordinal}`);
+      if (grant.kind === "dir") return grant;
       return { kind: "dir", fs: grant.fs, root: "", policy: "", read: grant.read, write: grant.write };
     },
     // `dir_subdir(dir, name) -> externref`: open a child directory (a traversal;
@@ -1986,6 +2002,9 @@ export async function instantiate(wasmBytes, opts = {}) {
   // helper that also drift-checks against its frozen catalog, so an opt-in host
   // can never silently widen either.
   const caps = normalizeCapabilities(opts.capabilities);
+  if (Array.isArray(opts._vmGrantedDirs)) {
+    caps.dir = opts._vmGrantedDirs;
+  }
   const marshal = {
     readWstr,
     readWstrText,
@@ -2014,12 +2033,13 @@ export async function instantiate(wasmBytes, opts = {}) {
     );
   }
   if (caps.vm) {
-    const spawnWorker = async () => {
+    const spawnWorker = async (dir) => {
       const worker = await instantiate(module, {
         cryptoBackend: crypto,
         nodeCrypto,
         subtleCrypto: opts.subtleCrypto,
         capabilities: { vm: true },
+        _vmGrantedDirs: dir === undefined ? undefined : [dir],
         _trapUnknownImports: true,
       });
       if (typeof opts.onVmSpawn === "function") opts.onVmSpawn(worker.instance);

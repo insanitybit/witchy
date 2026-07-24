@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, interpreter, parser, typeck};
+use crate::{codegen, interpreter, parser};
 
     /// (RFC-0032) `vm.par_map(xs, f)` maps a capture-free function over a list. On the
     /// interpreter it is the sequential oracle; on the compiled backend it runs across
@@ -56,16 +56,39 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
-    /// (RFC-0032/RFC-0005) `vm.with_dir(dir, f, input)` is intentionally fail-closed while
-    /// `Dir` is externref-backed but higher-order function values still use the slot-based
-    /// closure ABI. The API remains declared in `std/vm`; using it with a `fn(Dir, ...)`
-    /// value is rejected until the typed cap-closure boundary lands.
+    /// (RFC-0032/RFC-0005) `vm.with_dir(dir, f, input)` transports the exact Dir
+    /// externref through a dedicated typed worker trampoline. The interpreter is
+    /// the sequential oracle and the compiled backend uses a fresh isolated VM.
     #[test]
-    fn vm_with_dir_rejects_slot_based_dir_callback() {
+    fn vm_with_dir_typed_callback_backends_agree() {
         let src = "import vm\nimport bytes\n\nfn reader(d: Dir, name: Bytes) -> Bytes:\n    bytes.from_string(d.read(bytes.to_string(name)))\n\nfn main(console: Console, dir: Dir):\n    let out = vm.with_dir(dir, reader, bytes.from_string(\"ok.txt\"))\n    console.print(bytes.to_string(out))\n";
-        let err = typeck::check(&resolve_std_src(src))
-            .expect_err("Dir-bearing function values cannot cross the current closure ABI");
-        assert!(err.message.contains("Dir") && err.message.contains("function value"), "{}", err.message);
+        let root = std::env::temp_dir().join(format!(
+            "witchy_vm_with_dir_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create vm.with_dir root");
+        std::fs::write(root.join("ok.txt"), "typed-worker").expect("seed vm.with_dir root");
+        let root_str = root.to_str().expect("utf8 root");
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked.clone(), root_str, Vec::new()).expect("interp"),
+            ["typed-worker"],
+        );
+        let bin = codegen::compile_module_binary(&linked)
+            .expect_lowered("vm.with_dir lowers through its typed trampoline");
+        let mut rt = crate::runtime::Runtime::batch().expect("runtime");
+        let caps = crate::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            ..Default::default()
+        };
+        let mut actor = rt.spawn(&bin, caps, 64).expect("spawn");
+        actor.run().expect("run vm.with_dir");
+        assert_eq!(actor.output(), ["typed-worker"]);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// RFC-0005 Stage 3: a single-field capability brand over `Dir` is transparent

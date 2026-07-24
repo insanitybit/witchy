@@ -5317,7 +5317,9 @@ impl Checker {
                     .cloned()
                     .unwrap_or_else(|| vec![Convention::Let; params.len()]);
                 let function_ty = Ty::Fn(params, Box::new(ret), conventions);
-                if let Some(cap) = self.ty_carries_externref_cap(&function_ty) {
+                if call_name != "vm.with_dir"
+                    && let Some(cap) = self.ty_carries_externref_cap(&function_ty)
+                {
                     return terr(format!(
                         "`{call_name}` cannot accept function value `{function}` carrying `{cap}` \
                          through the isolated-worker callback adapter; that adapter still uses a \
@@ -5531,8 +5533,37 @@ impl Checker {
             || call_name == "list.pop";
         let call_conventions = self.fn_conventions.get(name).cloned();
         for (index, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
+            let typed_vm_callback = call_name == "vm.with_dir" && index == 1;
             let exact_generic = exact_generic_positions.get(index).copied().unwrap_or(false);
-            let at = if exact_generic {
+            let at = if typed_vm_callback {
+                let Expr::Var(function) = arg else {
+                    unreachable!("the isolated callback contract rejects non-function values")
+                };
+                let (callback_params, callback_ret) = self
+                    .fn_sigs
+                    .get(function)
+                    .cloned()
+                    .expect("the isolated callback contract requires a known function");
+                let typarams: HashSet<u32> = self
+                    .fn_typarams
+                    .get(function)
+                    .into_iter()
+                    .flatten()
+                    .map(|(_, id)| *id)
+                    .collect();
+                let (callback_params, callback_ret) =
+                    self.instantiate(&callback_params, &callback_ret, &typarams);
+                let conventions = self
+                    .fn_conventions
+                    .get(function)
+                    .cloned()
+                    .unwrap_or_else(|| vec![Convention::Let; callback_params.len()]);
+                Ok(Ty::Fn(
+                    callback_params,
+                    Box::new(callback_ret),
+                    conventions,
+                ))
+            } else if exact_generic {
                 self.infer(arg)
             } else {
                 self.infer_expected(arg, param_ty)
@@ -5581,7 +5612,12 @@ impl Checker {
                      specialization ABI"
                 ));
             }
-            self.reject_externref_cap_aggregate_ty(&at, &format!("argument to `{display}`"))?;
+            if !typed_vm_callback {
+                self.reject_externref_cap_aggregate_ty(
+                    &at,
+                    &format!("argument to `{display}`"),
+                )?;
+            }
             let result = if exact_generic {
                 self.unify(param_ty, &at)
             } else {

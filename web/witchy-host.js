@@ -102,6 +102,9 @@ const FIXTURE_AUTHORITY_IMPORTS = new Set([
   "exec_only",
   "exec_run",
 ]);
+const FIXTURE_WORKER_DIR_IMPORTS = new Set(
+  WITCHY_DIR_IMPORTS.filter((name) => name !== "mint_dir"),
+);
 
 class FixtureProviderError extends Error {
   constructor(failure) {
@@ -803,12 +806,13 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
   };
 
   let instance = null;
+  let activeInstance = null;
   let fixtureBridge = null;
   if (hasFixturePlan) {
     try {
       fixtureBridge = createFixtureBridge(wasm, opts.fixturePlan);
       const source = () => {
-        const site = BigInt(instance?.exports.__witchy_diagnostic_site?.value || 0n);
+        const site = BigInt(activeInstance?.exports.__witchy_diagnostic_site?.value || 0n);
         if (site === 0n) return undefined;
         const functionPtr = Number((site >> 32n) & 0xffffffffn);
         const line = Number(site & 0xffffffffn);
@@ -871,6 +875,75 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
     );
   }
 
+  const hasFixtureVm = hasFixturePlan && importedWitchyNames.has("vm_with_dir_run");
+  let workerWitchy = null;
+  if (hasFixtureVm) {
+    if (
+      typeof WebAssembly.Suspending !== "function"
+      || typeof WebAssembly.promising !== "function"
+    ) {
+      return {
+        ok: false,
+        text: "runtime error: browser vm.with_dir requires WebAssembly JSPI",
+        stats: {},
+      };
+    }
+    real.vm_with_dir_run = new WebAssembly.Suspending(
+      async (dir, codeIdx, inputPtr) => {
+        const input = readWstr(inputPtr);
+        const parentMemory = innerMem;
+        const parentInstance = activeInstance;
+        let result;
+        try {
+          const worker = await WebAssembly.instantiate(compiled, {
+            witchy: workerWitchy,
+          });
+          const workerMemory = worker.exports.memory;
+          const galloc = worker.exports.__galloc;
+          const callback = worker.exports.__call_dir_bytes;
+          if (
+            !(workerMemory instanceof WebAssembly.Memory)
+            || typeof galloc !== "function"
+            || typeof callback !== "function"
+          ) {
+            throw new Error(
+              "vm.with_dir worker requires memory, __galloc, and __call_dir_bytes exports",
+            );
+          }
+          innerMem = workerMemory;
+          activeInstance = worker;
+          const workerInput = galloc(4 + input.length);
+          new DataView(workerMemory.buffer).setInt32(workerInput, input.length, true);
+          new Uint8Array(workerMemory.buffer).set(input, workerInput + 4);
+          const resultPtr = Number(await WebAssembly.promising(callback)(
+            codeIdx,
+            dir,
+            workerInput,
+          ));
+          const view = new DataView(workerMemory.buffer);
+          const length = view.getInt32(resultPtr, true);
+          if (
+            length < 0
+            || resultPtr < 0
+            || resultPtr + 4 + length > workerMemory.buffer.byteLength
+          ) {
+            throw new Error("vm.with_dir worker returned an invalid Bytes pointer");
+          }
+          result = new Uint8Array(workerMemory.buffer)
+            .slice(resultPtr + 4, resultPtr + 4 + length);
+        } finally {
+          innerMem = parentMemory;
+          activeInstance = parentInstance;
+        }
+        const staged = new Uint8Array(4 + result.length);
+        new DataView(staged.buffer).setInt32(0, result.length, true);
+        staged.set(result, 4);
+        pending = staged;
+        return staged.length;
+      },
+    );
+  }
+
   // Any authority import (now/env/dir_*/net_*/crypto.*/…) is a trapping stub —
   // the browser grants no capabilities.
   const witchy = new Proxy(real, {
@@ -886,11 +959,34 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
       };
     },
   });
+  workerWitchy = new Proxy({}, {
+    get(_target, name) {
+      const importName = String(name);
+      if (
+        FIXTURE_WORKER_DIR_IMPORTS.has(importName)
+        || importName === "vm_with_dir_run"
+      ) {
+        return witchy[importName];
+      }
+      if (
+        FIXTURE_AUTHORITY_IMPORTS.has(importName)
+        || WITCHY_VM_IMPORTS.includes(importName)
+      ) {
+        return () => {
+          throw new Error(
+            `capability '${importName}' is not granted to the vm.with_dir worker`,
+          );
+        };
+      }
+      return witchy[importName];
+    },
+  });
 
   try {
     ({ instance } = await WebAssembly.instantiate(binary, { witchy }));
     innerMem = instance.exports.memory;
-    if (hasSecretStore) {
+    activeInstance = instance;
+    if (hasSecretStore || hasFixtureVm) {
       await WebAssembly.promising(instance.exports.run)();
     } else {
       instance.exports.run();

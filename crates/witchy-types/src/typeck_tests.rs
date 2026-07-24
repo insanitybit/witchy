@@ -1212,7 +1212,7 @@ fn load(o: Outer, name: String) -> String:
     }
 
     #[test]
-    fn isolated_worker_capability_callback_diagnostic_preserves_contract() {
+    fn vm_with_dir_accepts_its_typed_bare_top_level_callback() {
         fn no_comptime(
             _name: &str,
             _module: &mut witchy_syntax::ast::Module,
@@ -1231,9 +1231,7 @@ fn load(o: Outer, name: String) -> String:
             no_comptime,
         )
         .expect("link bundled vm module");
-        let error = check(&module).expect_err("capability callback must fail closed").to_string();
-        assert!(error.contains("typed callback lowering"), "got: {error}");
-        assert!(error.contains("scalar cross-instance ABI"), "got: {error}");
+        check(&module).expect("the dedicated Dir callback adapter is type-safe");
     }
 
     #[test]

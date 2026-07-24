@@ -101,7 +101,7 @@ fn main(console: Console):
 }
 
 #[test]
-fn vm_with_dir_rejects_cap_callbacks_until_typed_callback_adapter() {
+fn vm_with_dir_accepts_only_its_typed_bare_top_level_callback() {
     let source = r#"
 import vm
 
@@ -115,15 +115,7 @@ fn main(console: Console):
     console.print("ok")
 "#;
 
-    let error = check(source)
-        .expect_err("vm.with_dir still needs a reference-aware isolated callback adapter");
-    assert!(
-        error.contains("vm.with_dir")
-            && error.contains("Dir")
-            && error.contains("function value")
-            && error.contains("typed callback lowering"),
-        "unexpected diagnostic: {error}"
-    );
+    check(source).expect("vm.with_dir has an exact Dir+Bytes callback adapter");
 }
 
 #[test]

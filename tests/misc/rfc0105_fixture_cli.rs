@@ -1,10 +1,12 @@
 //! RFC-0105 fixture CLI: parity-by-default execution and deterministic CI UX.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use witchy_testkit::{
-    canonical_plan_json, ConsoleFixture, FixturePlan, RandFixture,
+    canonical_plan_json, ConsoleFixture, FilesystemEntry, FilesystemFixture,
+    FixturePlan, RandFixture,
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
@@ -281,4 +283,57 @@ fn flagship_fixture_example_runs_with_backend_parity_and_checked_output() {
     );
     assert!(stdout.contains("release api at 1700000000000ms in staging"));
     assert!(stdout.contains("1 passed; 0 failed"));
+}
+
+#[test]
+fn vm_with_dir_preserves_fixture_state_across_both_backends() {
+    let temp = TempDir::new("vm-with-dir");
+    let suite = temp.write(
+        "suite.witchy",
+        "import bytes\nimport vm\n\n\
+         fn worker(dir: Dir, name: Bytes) -> Bytes:\n    \
+         let value = dir.read(bytes.to_string(name))\n    \
+         dir.write(\"output.txt\", value + \"!\")\n    \
+         bytes.from_string(dir.read(\"output.txt\"))\n\n\
+         fn test_vm(console: Console, root: Dir):\n    \
+         let sandbox = root.subtree(\"sandbox\")\n    \
+         let result = vm.with_dir(sandbox, worker, bytes.from_string(\"input.txt\"))\n    \
+         console.print(bytes.to_string(result))\n    \
+         console.print(sandbox.read(\"output.txt\"))\n",
+    );
+    let plan = temp.write_plan(&FixturePlan {
+        console: Some(ConsoleFixture::default()),
+        filesystem: Some(FilesystemFixture {
+            entries: BTreeMap::from([
+                ("sandbox".to_owned(), FilesystemEntry::Directory),
+                (
+                    "sandbox/input.txt".to_owned(),
+                    FilesystemEntry::File {
+                        hex: "736861726564".to_owned(),
+                    },
+                ),
+            ]),
+            rights: vec!["Read".to_owned(), "Write".to_owned()],
+            entry_policy: None,
+            script: Vec::new(),
+        }),
+        ..FixturePlan::default()
+    });
+    let output = run(&[
+        Path::new("test"),
+        Path::new("--fixtures"),
+        &plan,
+        Path::new("--backend"),
+        Path::new("both"),
+        Path::new("--show-output"),
+        &suite,
+    ]);
+    let stdout = text(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{stdout}{}",
+        text(&output.stderr)
+    );
+    assert!(stdout.contains("test suite.test_vm ... ok"));
+    assert_eq!(stdout.matches("  shared!").count(), 2, "{stdout}");
 }

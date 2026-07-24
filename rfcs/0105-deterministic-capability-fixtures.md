@@ -510,7 +510,7 @@ This RFC is implemented only when every item below has checked evidence:
   and unknown input without panic.
 - [x] Console, Clock, Rand, Env, Dir/File, Fetch, SecretStore, Exec, argv,
   and user capability records satisfy the provider contracts above.
-- [ ] The real zero-authority VM facility retains sequential interpreter,
+- [x] The real zero-authority VM facility retains sequential interpreter,
   native Wasm, and browser parity; fixture plans reject a `vm` family, and
   `vm.with_dir` can observe only its explicitly passed fixture-backed `Dir`.
 - [x] Raw Net is rejected in plain fixture plans and remains explicit
@@ -541,10 +541,8 @@ This RFC is implemented only when every item below has checked evidence:
 - [ ] No task-owned branch, worktree, compatibility shim, TODO, deferred phase,
   or queue entry remains in flight.
 
-The five unchecked rows are live closure blockers, not deferred scope:
+The four unchecked rows are live closure blockers, not deferred scope:
 
-- fixture-backed `vm.with_dir` and its browser callback adapter remain
-  unavailable;
 - the full plain/dependency/production/comptime/build/package-manager
   non-escalation matrix still needs one checked adversarial inventory;
 - the private extracted docs artifact has not yet run the flagship and every

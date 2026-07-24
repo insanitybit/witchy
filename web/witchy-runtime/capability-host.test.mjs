@@ -563,6 +563,36 @@ fn main(console: Console, secrets: SecretStore):
       defaultDenied = e instanceof WebAssembly.LinkError;
     }
     ok(defaultDenied, "the default host still denies VM imports by omission");
+
+    const WITH_DIR = `import bytes
+import vm
+
+fn worker(dir: Dir, name: Bytes) -> Bytes:
+    let value = dir.read(bytes.to_string(name))
+    dir.write("output.txt", value + "!")
+    bytes.from_string(dir.read("output.txt"))
+
+fn main(console: Console, root: Dir):
+    root.make_dir("sandbox")
+    root.write("sandbox/input.txt", "typed")
+    let sandbox = root.subtree("sandbox")
+    let result = vm.with_dir(sandbox, worker, bytes.from_string("input.txt"))
+    console.print(bytes.to_string(result))
+    console.print(sandbox.read("output.txt"))
+`;
+    const withDir = compile(WITH_DIR);
+    const withDirHost = await instantiate(withDir.bytes, {
+      capabilities: { vm: true, dir: { write: true } },
+    });
+    const withDirLines = await withDirHost.run();
+    ok(
+      eq(withDirLines, ["typed!", "typed!"]),
+      "vm.with_dir shares the exact in-memory Dir with a fresh worker",
+    );
+    ok(
+      eq(withDirLines, nativeRun(withDir.src)),
+      "vm.with_dir output matches the sequential interpreter oracle",
+    );
   }
 
   // === 9. Console Read: page fixtures, EOF, omission, and native parity =====

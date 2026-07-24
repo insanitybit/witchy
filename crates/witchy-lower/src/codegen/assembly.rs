@@ -2349,23 +2349,27 @@ fn assemble_wir_module_with_structs_mode(
             // The String/Bytes variants copy buffers in via `__galloc`; all variants
             // invoke the closure by index via `__call_idx`.
             let has_par_map_buf = pruned_funcs.iter().any(|f| f.name == "vm_par_map_bytes");
-            // (RFC-0032) `vm.with_dir` and `vm.serve` invoke a 2-arg closure via `__call2`,
-            // and copy buffers into a worker via `__galloc`.
+            // (RFC-0032) `vm.serve` uses the scalar `__call2` trampoline while
+            // `vm.with_dir` uses an exact externref+Bytes trampoline. Both copy
+            // buffers into a worker via `__galloc`.
             let has_call2 = pruned_funcs
                 .iter()
-                .any(|f| f.name == "vm_with_dir" || f.name == "vm_serve");
-            let has_with_dir = has_call2;
+                .any(|f| f.name == "vm_serve");
+            let has_with_dir = pruned_funcs.iter().any(|f| f.name == "vm_with_dir");
             let exports_call_idx =
                 has_par_map_buf || pruned_funcs.iter().any(|f| f.name == "vm_par_map");
             if exports_call_idx {
                 pruned_funcs.push(witchy_wir::wir_helpers::call_idx_helper());
             }
-            if has_with_dir {
+            if has_call2 {
                 pruned_funcs.push(witchy_wir::wir_helpers::call2_helper());
+            }
+            if has_with_dir {
+                pruned_funcs.push(witchy_wir::wir_helpers::call_dir_bytes_helper());
             }
             // The String/Bytes par_map variants and `vm.with_dir` all copy a buffer into
             // a worker via `__galloc`.
-            let needs_galloc = has_par_map_buf || has_with_dir;
+            let needs_galloc = has_par_map_buf || has_call2 || has_with_dir;
             if needs_galloc && string_exports.is_empty() {
                 pruned_funcs.push(witchy_wir::wir_helpers::galloc_helper());
             }
@@ -2404,8 +2408,14 @@ fn assemble_wir_module_with_structs_mode(
                     if exports_call_idx {
                         exports.push(("__call_idx".into(), "__call_idx".into()));
                     }
-                    if has_with_dir {
+                    if has_call2 {
                         exports.push(("__call2".into(), "__call2".into()));
+                    }
+                    if has_with_dir {
+                        exports.push((
+                            "__call_dir_bytes".into(),
+                            "__call_dir_bytes".into(),
+                        ));
                     }
                     if !string_exports.is_empty() || needs_galloc {
                         exports.push(("__galloc".into(), "__galloc".into()));

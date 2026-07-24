@@ -4,6 +4,8 @@ use wasmtime::{
     Caller, Engine, Error, ExternRef, Instance, Linker, Module, Result, Rooted, Store,
     StoreLimits, StoreLimitsBuilder,
 };
+#[cfg(feature = "test-fixtures")]
+use witchy_test_host::{FixtureHost, HostHandle};
 
 use super::super::{
     link_capability_imports, memory_of, read_wbytes, read_wbytes_list, slice,
@@ -203,18 +205,35 @@ fn host_vm_with_dir_run(
     code_idx: i32,
     input_ptr: i32,
 ) -> Result<i32> {
-    let (dir, input) = {
-        let dir = super::filesystem::dir_authority_ref(&caller, dir_ref)?;
+    let input = {
         let mem = memory_of(&mut caller)?;
         let data = mem.data(&caller);
-        let input = read_wbytes(data, input_ptr)?;
-        (dir, input)
+        read_wbytes(data, input_ptr)?
     };
     let engine = caller.data().engine.clone();
     let module = caller.data().module.clone();
     let preempt = caller.data().preempt;
-    let result =
-        run_with_dir_worker(&engine, &module, preempt, dir, code_idx, &input)?;
+    #[cfg(feature = "test-fixtures")]
+    let result = if caller.data().fixture_host.is_some() {
+        let dir = super::fixture::fixture_handle(&caller, dir_ref, "Dir")?;
+        let host = caller
+            .data_mut()
+            .fixture_host
+            .take()
+            .expect("fixture vm.with_dir checked that its host exists");
+        let (host, result) =
+            run_with_fixture_dir_worker(&engine, &module, preempt, host, dir, code_idx, &input);
+        caller.data_mut().fixture_host = Some(host);
+        result?
+    } else {
+        let dir = super::filesystem::dir_authority_ref(&caller, dir_ref)?;
+        run_with_dir_worker(&engine, &module, preempt, dir, code_idx, &input)?
+    };
+    #[cfg(not(feature = "test-fixtures"))]
+    let result = {
+        let dir = super::filesystem::dir_authority_ref(&caller, dir_ref)?;
+        run_with_dir_worker(&engine, &module, preempt, dir, code_idx, &input)?
+    };
     let mut staged = Vec::with_capacity(4 + result.len());
     staged.extend_from_slice(&(result.len() as i32).to_le_bytes());
     staged.extend_from_slice(&result);
@@ -224,8 +243,8 @@ fn host_vm_with_dir_run(
 }
 
 /// Run `f(dir, input)` on a fresh worker VM granted exactly the one `Dir`. `f` is a
-/// two-argument closure (the Dir minted from grant ordinal `0` + the input
-/// `Bytes` pointer), invoked through the `__call2` trampoline; the result
+/// two-argument closure (the exact Dir externref + the input `Bytes` pointer),
+/// invoked through the `__call_dir_bytes` trampoline; the result
 /// `Bytes` is read raw out of the worker's memory.
 #[allow(clippy::too_many_arguments)]
 fn run_with_dir_worker(
@@ -250,10 +269,14 @@ fn run_with_dir_worker(
     // Attach the exact granted Dir (including entry policy and backing) to the
     // worker's sole root grant.
     if let Some(d) = store.data_mut().dirs.get_mut(0) {
-        *d = dir;
+        *d = dir.clone();
     }
     let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
-    let call2 = instance.get_typed_func::<(i32, i64, i64), i64>(&mut store, "__call2")?;
+    let dir_ref = ExternRef::new(&mut store, dir)?;
+    let call = instance.get_typed_func::<
+        (i32, Option<Rooted<ExternRef>>, i32),
+        i32,
+    >(&mut store, "__call_dir_bytes")?;
     let mem = instance
         .get_memory(&mut store, "memory")
         .ok_or_else(|| Error::msg("vm.with_dir worker VM exports no `memory`"))?;
@@ -264,8 +287,85 @@ fn run_with_dir_worker(
     buf.extend_from_slice(input);
     mem.write(&mut store, iptr as usize, &buf)
         .map_err(|e| Error::msg(format!("writing vm.with_dir input into worker: {e}")))?;
-    let rptr = call2.call(&mut store, (code_idx, 0i64, iptr as i64))?;
-    read_wbytes(mem.data(&store), rptr as i32)
+    let rptr = call.call(&mut store, (code_idx, Some(dir_ref), iptr))?;
+    read_wbytes(mem.data(&store), rptr)
+}
+
+#[cfg(feature = "test-fixtures")]
+fn run_with_fixture_dir_worker(
+    engine: &Engine,
+    module: &Module,
+    preempt: bool,
+    fixture_host: FixtureHost,
+    dir: HostHandle,
+    code_idx: i32,
+    input: &[u8],
+) -> (FixtureHost, Result<Vec<u8>>) {
+    let caps = Capabilities::default();
+    let limits = StoreLimitsBuilder::new().build();
+    let state = match vmstate_from_caps(
+        0,
+        &caps,
+        limits,
+        None,
+        engine,
+        module,
+        preempt,
+        Arc::new(super::super::compiler::RegistryCompilerServices),
+    ) {
+        Ok(state) => state,
+        Err(error) => return (fixture_host, Err(error)),
+    };
+    let mut store = Store::new(engine, state);
+    store.limiter(|state| &mut state.limits);
+    if preempt {
+        store.set_epoch_deadline(u64::MAX);
+    }
+    store.data_mut().fixture_host = Some(fixture_host);
+    let result = (|| {
+        let mut linker: Linker<VmState> = Linker::new(engine);
+        link_capability_imports(&mut linker, &caps)?;
+        super::fixture::link_granted_filesystem(&mut linker)?;
+        linker.define_unknown_imports_as_traps(module)?;
+        let instance = linker.instantiate(&mut store, module)?;
+        let dir_ref = ExternRef::new(&mut store, dir)?;
+        run_with_dir_instance(&mut store, &instance, dir_ref, code_idx, input)
+    })();
+    let fixture_host = store
+        .data_mut()
+        .fixture_host
+        .take()
+        .expect("fixture worker retains its host");
+    (fixture_host, result)
+}
+
+fn run_with_dir_instance(
+    store: &mut Store<VmState>,
+    instance: &Instance,
+    dir_ref: Rooted<ExternRef>,
+    code_idx: i32,
+    input: &[u8],
+) -> Result<Vec<u8>> {
+    let galloc = instance.get_typed_func::<i32, i32>(&mut *store, "__galloc")?;
+    let call = instance.get_typed_func::<
+        (i32, Option<Rooted<ExternRef>>, i32),
+        i32,
+    >(&mut *store, "__call_dir_bytes")?;
+    let mem = instance
+        .get_memory(&mut *store, "memory")
+        .ok_or_else(|| Error::msg("vm.with_dir worker VM exports no `memory`"))?;
+    let total = 4 + input.len() as i32;
+    let iptr = galloc.call(&mut *store, total)?;
+    let mut buf = Vec::with_capacity(total as usize);
+    buf.extend_from_slice(&(input.len() as i32).to_le_bytes());
+    buf.extend_from_slice(input);
+    mem.write(&mut *store, iptr as usize, &buf)
+        .map_err(|error| Error::msg(format!("writing vm.with_dir input into worker: {error}")))?;
+    let rptr = call.call(
+        &mut *store,
+        (code_idx, Some(dir_ref), iptr),
+    )?;
+    read_wbytes(mem.data(&*store), rptr)
 }
 
 /// (RFC-0032) `vm_serve_run(init_ptr, requests_ptr, code_idx) -> byte_size`: a

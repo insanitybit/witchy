@@ -1,6 +1,6 @@
 //! RFC-0032 multi-core / cross-VM runtime helpers: the `vm.par_map` staging
 //! (scalar + bytes), the guest allocator `$__galloc`, the closure-call
-//! trampolines (`$__call_idx`/`$__call2`), and the `vm.serve`/`vm.with_dir`
+//! trampolines (`$__call_idx`/`$__call2`/`$__call_dir_bytes`), and the `vm.serve`/`vm.with_dir`
 //! entry helpers. Split out of `wir_helpers/mod.rs`; re-exported by the parent.
 
 use super::host::{two_phase_helper, two_phase_helper_typed};
@@ -75,11 +75,50 @@ pub fn call_idx_helper() -> WirFunc {
     call_trampoline_helper("__call_idx", 1)
 }
 
-/// `$__call2(idx, a, b) -> i64` — the two-argument closure trampoline (a capability handle or
-/// state + a `Bytes` pointer, for `vm.with_dir`'s `fn(Dir, Bytes) -> Bytes` and `vm.serve`'s
-/// `fn(State, Bytes) -> State`). See [`call_trampoline_helper`].
+/// `$__call2(idx, a, b) -> i64` — the two-scalar-argument closure trampoline used by
+/// `vm.serve`'s `fn(State, Bytes) -> State`. See [`call_trampoline_helper`].
 pub fn call2_helper() -> WirFunc {
     call_trampoline_helper("__call2", 2)
+}
+
+/// `$__call_dir_bytes(idx, dir, input) -> i32` — the exact typed trampoline for
+/// `vm.with_dir`'s `fn(Dir, Bytes) -> Bytes`. `Dir` remains an unforgeable
+/// externref and the flat `Bytes` pointer retains its direct i32 representation.
+pub fn call_dir_bytes_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    WirFunc {
+        name: "__call_dir_bytes".into(),
+        params: vec![
+            WirLocal {
+                name: "idx".into(),
+                ty: WirTy::Bool,
+            },
+            WirLocal {
+                name: "dir".into(),
+                ty: WirTy::Extern,
+            },
+            WirLocal {
+                name: "input".into(),
+                ty: WirTy::Bool,
+            },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![],
+        body: vec![N::Push(E::CallIndirect {
+            signature: ClosureSignature {
+                params: vec![Kind::GcRef(0), Kind::ExternRef, Kind::I32],
+                results: vec![Kind::I32],
+            },
+            args: vec![
+                E::RefNull(Kind::GcRef(0)),
+                E::GetLocal("dir".into()),
+                E::GetLocal("input".into()),
+            ],
+            index: Box::new(E::GetLocal("idx".into())),
+        })],
+        raw_body: None,
+    }
 }
 
 /// (RFC-0032) `$vm_serve(init, requests, handler) -> i32` — a stateful service on a
@@ -109,4 +148,25 @@ pub(super) fn vm_with_dir_helper() -> WirFunc {
         "vm_with_dir_run",
         "fill_pending",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dir_bytes_trampoline_preserves_the_externref_parameter() {
+        let trampoline = call_dir_bytes_helper();
+        let [WirNode::Push(WirExpr::CallIndirect { signature, args, .. })] =
+            trampoline.body.as_slice()
+        else {
+            panic!("typed Dir trampoline must be one indirect call")
+        };
+        assert_eq!(
+            signature.params,
+            [Kind::GcRef(0), Kind::ExternRef, Kind::I32]
+        );
+        assert_eq!(signature.results, [Kind::I32]);
+        assert!(matches!(args.get(1), Some(WirExpr::GetLocal(name)) if name == "dir"));
+    }
 }
