@@ -3003,6 +3003,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "witchy-test-host"
+version = "0.1.0"
+dependencies = [
+ "witchy-testkit",
+]
+
+[[package]]
 name = "witchy-testkit"
 version = "0.1.0"
 dependencies = [

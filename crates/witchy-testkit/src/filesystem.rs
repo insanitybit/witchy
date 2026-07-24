@@ -66,6 +66,10 @@ impl FilesystemProviderState {
         }
     }
 
+    pub(crate) const fn configured(&self) -> bool {
+        self.configured
+    }
+
     fn dir(&self, handle: &FixtureHandle) -> FilesystemProviderResult<(&str, &BTreeSet<String>, &str)> {
         match self.handles.get(&handle.id()) {
             Some(HandleState::Dir {

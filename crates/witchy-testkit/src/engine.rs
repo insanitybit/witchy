@@ -188,6 +188,28 @@ impl FixtureSession {
         self.record(call, outcome)
     }
 
+    /// Record a backend-adapter rejection, such as a forged external handle.
+    ///
+    /// This cannot mint authority or execute a provider operation.
+    pub fn reject_adapter_call(
+        &mut self,
+        call: FixtureCall,
+        code: FixtureErrorCode,
+        message: impl Into<String>,
+    ) -> FixtureFailure {
+        let error = FixtureFailure {
+            code,
+            message: message.into(),
+        };
+        self.record(
+            call,
+            FixtureOutcome::Fail {
+                error: error.clone(),
+            },
+        );
+        error
+    }
+
     pub fn capture_stdout(&mut self, value: impl Into<String>) {
         self.stdout.push(value.into());
     }
