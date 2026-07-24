@@ -125,8 +125,8 @@ impl FixtureSession {
             FixtureFamily::Argv => self.basic.argv.is_some(),
             FixtureFamily::Fetch => self.fetch.configured(),
             FixtureFamily::SecretStore => self.secrets.configured(),
+            FixtureFamily::Exec => self.exec.configured(),
             FixtureFamily::Filesystem
-            | FixtureFamily::Exec
             | FixtureFamily::Vm => false,
         }
     }

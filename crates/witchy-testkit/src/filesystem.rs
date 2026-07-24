@@ -628,6 +628,24 @@ impl FixtureSession {
             self.observe(call, fallback)
         }
     }
+
+    pub(crate) fn authorize_exec_target(
+        &self,
+        handle: &FixtureHandle,
+        relative: &str,
+    ) -> FilesystemProviderResult<Vec<String>> {
+        let (base, rights, policy) = self.checked_dir(handle)?;
+        require_right(&rights, "Read", "Dir")?;
+        self.guard_policy(&policy, relative, false)?;
+        let path = join_path(&base, relative)?;
+        if !matches!(self.filesystem.nodes.get(&path), Some(Node::File(_))) {
+            return Err(fs_failure(
+                FixtureErrorCode::NotFound,
+                format!("executable `{relative}` was not found in the fixture Dir"),
+            ));
+        }
+        Ok(rights.into_iter().collect())
+    }
 }
 
 fn fs_call(

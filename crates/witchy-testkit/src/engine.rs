@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::basic::BasicProviderState;
+use crate::exec::ExecProviderState;
 use crate::filesystem::FilesystemProviderState;
 use crate::fetch::FetchProviderState;
 use crate::secret::SecretProviderState;
@@ -45,6 +46,7 @@ pub struct FixtureSession {
     seed: Option<U64Text>,
     max_events: usize,
     pub(crate) basic: BasicProviderState,
+    pub(crate) exec: ExecProviderState,
     pub(crate) filesystem: FilesystemProviderState,
     pub(crate) fetch: FetchProviderState,
     pub(crate) secrets: SecretProviderState,
@@ -55,6 +57,7 @@ impl FixtureSession {
         let limits = crate::PlanValidationLimits::default();
         plan.validate_with(&limits)?;
         let basic = BasicProviderState::new(&plan);
+        let exec = ExecProviderState::new(&plan);
         let filesystem = FilesystemProviderState::new(&plan);
         let fetch = FetchProviderState::new(&plan);
         let secrets = SecretProviderState::new(&plan);
@@ -91,6 +94,7 @@ impl FixtureSession {
             seed,
             max_events: limits.max_script_steps,
             basic,
+            exec,
             filesystem,
             fetch,
             secrets,
