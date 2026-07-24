@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::basic::BasicProviderState;
+use crate::filesystem::FilesystemProviderState;
 use crate::{
     Expectations, FixtureErrorCode, FixtureFailure, FixtureFamily, FixtureOutcome, FixturePlan,
     FixtureStep, FixtureValue, PlanValidationError, SourceLocation, TEST_TRANSCRIPT_VERSION,
@@ -42,6 +43,7 @@ pub struct FixtureSession {
     seed: Option<U64Text>,
     max_events: usize,
     pub(crate) basic: BasicProviderState,
+    pub(crate) filesystem: FilesystemProviderState,
 }
 
 impl FixtureSession {
@@ -49,6 +51,7 @@ impl FixtureSession {
         let limits = crate::PlanValidationLimits::default();
         plan.validate_with(&limits)?;
         let basic = BasicProviderState::new(&plan);
+        let filesystem = FilesystemProviderState::new(&plan);
 
         let mut scripts = BTreeMap::new();
         macro_rules! take_script {
@@ -82,6 +85,7 @@ impl FixtureSession {
             seed,
             max_events: limits.max_script_steps,
             basic,
+            filesystem,
         })
     }
 
@@ -223,7 +227,7 @@ impl FixtureSession {
     }
 
     pub(crate) fn has_script(&self, family: FixtureFamily) -> bool {
-        self.scripts.get(&family).is_some_and(|steps| !steps.is_empty())
+        self.scripts.contains_key(&family)
     }
 
     pub(crate) fn record_failure(
@@ -446,6 +450,32 @@ mod tests {
         ));
         let transcript = session.finish(TestResult::Passed);
         assert!(matches!(transcript.result, TestResult::Failed { .. }));
+    }
+
+    #[test]
+    fn exhausted_script_never_falls_back_to_fake_behavior() {
+        let plan = FixturePlan {
+            console: Some(ConsoleFixture {
+                script: vec![console_step("read", "line")],
+            }),
+            ..Default::default()
+        };
+        let mut session = FixtureSession::new(plan).expect("valid session");
+        let mut first = FixtureCall::new(FixtureFamily::Console, "read");
+        first.effective_rights = vec!["Read".into()];
+        assert_eq!(session.scripted_call(first), returned("line"));
+
+        let mut exhausted = FixtureCall::new(FixtureFamily::Console, "read");
+        exhausted.effective_rights = vec!["Read".into()];
+        assert!(matches!(
+            session.scripted_call(exhausted),
+            FixtureOutcome::Fail {
+                error: FixtureFailure {
+                    code: FixtureErrorCode::Exhausted,
+                    ..
+                }
+            }
+        ));
     }
 
     #[test]

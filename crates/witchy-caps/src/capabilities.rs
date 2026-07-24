@@ -235,8 +235,6 @@ pub fn net_only(allow: &[String], patterns: &str) -> Result<Vec<String>, String>
 /// `only(ext(".txt")).only(ext(".md"))`) narrows to this, and [`dir_admits`] denies
 /// every entry — file OR directory — under it. A bare NUL cannot occur in any real
 /// `ext:`/`kind:` pattern, so it is unambiguous.
-const DIR_DENY_ALL: &str = "\u{0}";
-
 /// A `Dir` entry policy (RFC-0011): a `\n`-joined set of `ext:<suffix>` and
 /// `kind:file`/`kind:dir` patterns, in TWO dimensions (name-suffix, entry-kind).
 /// `""` means unrestricted. `only(refine)` **additionally requires** `refine`'s
@@ -246,53 +244,7 @@ const DIR_DENY_ALL: &str = "\u{0}";
 /// impossible, so the whole policy collapses to [`DIR_DENY_ALL`]. Shared by both
 /// backends so the narrowing is one implementation.
 pub fn dir_only(current: &str, refine: &str) -> String {
-    if refine.is_empty() {
-        return current.to_string();
-    }
-    use std::collections::{BTreeMap, BTreeSet};
-    // Group patterns by dimension (the part before `:`), e.g. "ext" / "kind".
-    fn group(s: &str) -> BTreeMap<&str, BTreeSet<&str>> {
-        let mut m: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-        for p in s.split('\n') {
-            if let Some((dim, _)) = p.split_once(':') {
-                m.entry(dim).or_default().insert(p);
-            }
-        }
-        m
-    }
-    let refi = group(refine);
-    // BUG-257: a non-empty refine that yields NO valid `dim:pattern` (a raw/garbled
-    // constraint with no `:` form) must FAIL CLOSED — an unrecognized narrowing can only
-    // deny, never silently keep the current (wider) policy or install the garbage as-is.
-    if refi.is_empty() {
-        return DIR_DENY_ALL.to_string();
-    }
-    if current.is_empty() {
-        return refine.to_string();
-    }
-    let cur = group(current);
-    let mut out: BTreeSet<&str> = BTreeSet::new();
-    // Dimensions `current` constrains that `refine` does not: carry them forward.
-    for (dim, pats) in &cur {
-        if !refi.contains_key(dim) {
-            out.extend(pats.iter().copied());
-        }
-    }
-    for (dim, rpats) in &refi {
-        match cur.get(dim) {
-            // Same dimension: intersect (refinement shrinks). Empty → impossible.
-            Some(cpats) => {
-                let common: BTreeSet<&str> = rpats.intersection(cpats).copied().collect();
-                if common.is_empty() {
-                    return DIR_DENY_ALL.to_string();
-                }
-                out.extend(common);
-            }
-            // New dimension: AND it in.
-            None => out.extend(rpats.iter().copied()),
-        }
-    }
-    out.into_iter().collect::<Vec<_>>().join("\n")
+    witchy_cap_model::dir_only(current, refine)
 }
 
 /// Whether a `Dir`'s entry policy admits touching the entry `name`, which is a
@@ -305,28 +257,7 @@ pub fn dir_only(current: &str, refine: &str) -> String {
 /// sentinel denies everything. Enforced at file access AND directory traversal on
 /// both backends, the filesystem analog of `net_allows`.
 pub fn dir_admits(policy: &str, name: &str, is_dir: bool) -> bool {
-    if policy.is_empty() {
-        return true;
-    }
-    let (mut has_ext, mut ext_ok) = (false, false);
-    let (mut has_kind, mut kind_ok) = (false, false);
-    for p in policy.split('\n') {
-        if p == DIR_DENY_ALL {
-            return false;
-        } else if let Some(ext) = p.strip_prefix("ext:") {
-            has_ext = true;
-            // A directory entry is not constrained by a file-suffix pattern.
-            if is_dir || name.ends_with(ext) {
-                ext_ok = true;
-            }
-        } else if let Some(kind) = p.strip_prefix("kind:") {
-            has_kind = true;
-            if (kind == "dir") == is_dir {
-                kind_ok = true;
-            }
-        }
-    }
-    (!has_ext || ext_ok) && (!has_kind || kind_ok)
+    witchy_cap_model::dir_admits(policy, name, is_dir)
 }
 
 /// (RFC-0060) The error both backends raise when `crypto.reveal` is called on a

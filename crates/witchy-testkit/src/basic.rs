@@ -65,7 +65,11 @@ impl BasicProviderState {
         }
     }
 
-    fn mint_handle(&mut self, family: FixtureFamily, rights: BTreeSet<String>) -> FixtureHandle {
+    pub(crate) fn mint_handle(
+        &mut self,
+        family: FixtureFamily,
+        rights: BTreeSet<String>,
+    ) -> FixtureHandle {
         let id = self.next_handle;
         self.next_handle = self.next_handle.saturating_add(1);
         if family == FixtureFamily::Env {
@@ -76,6 +80,14 @@ impl BasicProviderState {
             id,
             family,
         }
+    }
+
+    pub(crate) fn validate_handle(
+        &self,
+        handle: &FixtureHandle,
+        family: FixtureFamily,
+    ) -> bool {
+        handle.brand == self.brand && handle.family == family && handle.id < self.next_handle
     }
 
     fn validate_env_handle(&self, handle: &FixtureHandle) -> ProviderResult<&BTreeSet<String>> {
@@ -94,6 +106,12 @@ impl BasicProviderState {
                 "invalid or foreign Env fixture handle",
             )
         })
+    }
+}
+
+impl FixtureHandle {
+    pub(crate) const fn id(&self) -> u64 {
+        self.id
     }
 }
 
