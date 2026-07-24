@@ -8,12 +8,15 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use witchy_testkit::{
     FixtureCall, FixtureErrorCode, FixtureExecResponse, FixtureFailure,
     FixtureFamily, FixtureFetchRequest, FixtureFetchResponse, FixtureHandle,
     FixturePlan, FixtureSession, PlanValidationError, SourceLocation, TestResult,
-    TestTranscript,
+    TestTranscript, parse_fixture_plan, parse_unique_json,
 };
+
+pub const FIXTURE_HOST_WIRE_VERSION: u32 = 1;
 
 /// Adapter-visible handle. Arbitrary values grant nothing because every use is
 /// checked against a private registry and the expected capability family.
@@ -32,8 +35,35 @@ impl HostHandle {
     }
 }
 
+impl Serialize for HostHandle {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for HostHandle {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        if text.is_empty() || (text.len() > 1 && text.starts_with('0')) {
+            return Err(serde::de::Error::custom(
+                "expected canonical unsigned decimal fixture handle",
+            ));
+        }
+        text.parse::<u64>()
+            .map(Self)
+            .map_err(|_| serde::de::Error::custom("fixture handle is out of range"))
+    }
+}
+
 /// Root fields assembled from the declared fixture plan and nothing else.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FixtureRoots {
     pub console: bool,
     pub clock: bool,
@@ -46,7 +76,8 @@ pub struct FixtureRoots {
     pub argv: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostRequest {
     ConsoleRead,
     ConsoleWrite { text: String },
@@ -85,12 +116,13 @@ pub enum HostRequest {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum HostResponse {
     Unit,
     String(String),
     OptionalString(Option<String>),
-    U64(u64),
+    U64(#[serde(with = "decimal_u64")] u64),
     Strings(Vec<String>),
     Bytes(Vec<u8>),
     Bool(bool),
@@ -99,6 +131,136 @@ pub enum HostResponse {
     OptionalHandle(Option<HostHandle>),
     Fetch(FixtureFetchResponse),
     Exec(FixtureExecResponse),
+}
+
+mod decimal_u64 {
+    use serde::Serializer;
+
+    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireRequest {
+    version: u32,
+    request: serde_json::Value,
+    #[serde(default)]
+    source: Option<SourceLocation>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WireRoots<'a> {
+    version: u32,
+    roots: &'a FixtureRoots,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WireResponse {
+    version: u32,
+    outcome: WireOutcome,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum WireOutcome {
+    Return { value: HostResponse },
+    Fail { error: FixtureFailure },
+}
+
+fn decode_host_request(value: serde_json::Value) -> Result<HostRequest, WireProtocolError> {
+    let object = value.as_object().ok_or_else(|| WireProtocolError {
+        message: "fixture host request must be a JSON object".to_owned(),
+    })?;
+    let operation = object
+        .get("operation")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| WireProtocolError {
+            message: "fixture host request requires a string `operation`".to_owned(),
+        })?;
+    let fields: &[&str] = match operation {
+        "console_read" | "clock_now" | "rand_u64" | "argv" => &["operation"],
+        "console_write" => &["operation", "text"],
+        "env_only" => &["operation", "env", "names"],
+        "env_get" => &["operation", "env", "name"],
+        "dir_only" => &["operation", "dir", "refine"],
+        "dir_subdir" => &["operation", "dir", "name"],
+        "dir_read" | "dir_exists" | "dir_is_dir" | "dir_open" | "dir_create" => {
+            &["operation", "dir", "path"]
+        }
+        "dir_list" => &["operation", "dir"],
+        "dir_write" | "dir_append" => &["operation", "dir", "path", "bytes"],
+        "dir_make_dir" => &["operation", "dir", "path"],
+        "file_read" => &["operation", "file"],
+        "file_write" => &["operation", "file", "bytes"],
+        "fetch_only" => &["operation", "fetch", "origins"],
+        "fetch_send" => &["operation", "fetch", "request"],
+        "secret_store_lookup" | "secret_store_require" => {
+            &["operation", "store", "name"]
+        }
+        "secret_reveal" | "secret_public_key" => &["operation", "secret"],
+        "secret_sign" => &["operation", "secret", "message"],
+        "exec_only" => &["operation", "exec", "tools"],
+        "exec_run" => &[
+            "operation",
+            "exec",
+            "dir",
+            "path",
+            "arguments",
+            "stdin",
+        ],
+        _ => {
+            return Err(WireProtocolError {
+                message: format!("unknown fixture host operation `{operation}`"),
+            });
+        }
+    };
+    if let Some(field) = object.keys().find(|field| !fields.contains(&field.as_str())) {
+        return Err(WireProtocolError {
+            message: format!(
+                "unknown field `{field}` in fixture host `{operation}` request"
+            ),
+        });
+    }
+    serde_json::from_value(value).map_err(|error| WireProtocolError {
+        message: error.to_string(),
+    })
+}
+
+/// Malformed fixture plans and protocol envelopes fail before dispatch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WireProtocolError {
+    pub message: String,
+}
+
+impl fmt::Display for WireProtocolError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl Error for WireProtocolError {}
+
+impl WireProtocolError {
+    fn encode(error: serde_json::Error) -> Self {
+        Self {
+            message: format!("fixture host could not encode its response: {error}"),
+        }
+    }
+
+    fn version(actual: u32) -> Self {
+        Self {
+            message: format!(
+                "unsupported fixture host wire version {actual}; expected {FIXTURE_HOST_WIRE_VERSION}"
+            ),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -158,6 +320,54 @@ impl FixtureHost {
         host.roots.secrets = secrets;
         host.roots.exec = exec;
         Ok(host)
+    }
+
+    /// Open one isolated fixture host from the canonical plan JSON contract.
+    pub fn from_plan_json(bytes: &[u8]) -> Result<Self, WireProtocolError> {
+        let plan = parse_fixture_plan(bytes).map_err(|error| WireProtocolError {
+            message: error.to_string(),
+        })?;
+        Self::new(plan).map_err(|error| WireProtocolError {
+            message: error.to_string(),
+        })
+    }
+
+    /// Describe only the roots minted by the validated plan.
+    pub fn roots_json(&self) -> Result<String, WireProtocolError> {
+        serde_json::to_string(&WireRoots {
+            version: FIXTURE_HOST_WIRE_VERSION,
+            roots: self.roots(),
+        })
+        .map_err(WireProtocolError::encode)
+    }
+
+    /// Decode and dispatch one versioned browser-adapter request.
+    ///
+    /// A malformed envelope is a protocol error. A valid provider call that
+    /// fails is a typed `fail` outcome and remains in the shared transcript.
+    pub fn invoke_json(&mut self, bytes: &[u8]) -> Result<String, WireProtocolError> {
+        let envelope: WireRequest =
+            parse_unique_json(bytes).map_err(|error| WireProtocolError {
+                message: error.to_string(),
+            })?;
+        if envelope.version != FIXTURE_HOST_WIRE_VERSION {
+            return Err(WireProtocolError::version(envelope.version));
+        }
+        let request = decode_host_request(envelope.request)?;
+        let outcome = match self.invoke(request, envelope.source) {
+            Ok(value) => WireOutcome::Return { value },
+            Err(error) => WireOutcome::Fail { error },
+        };
+        serde_json::to_string(&WireResponse {
+            version: FIXTURE_HOST_WIRE_VERSION,
+            outcome,
+        })
+        .map_err(WireProtocolError::encode)
+    }
+
+    /// Consume the isolated host and emit the canonical transcript JSON.
+    pub fn finish_json(self, result: TestResult) -> Result<String, WireProtocolError> {
+        serde_json::to_string(&self.finish(result)).map_err(WireProtocolError::encode)
     }
 
     #[must_use]
@@ -577,5 +787,90 @@ mod tests {
             )
             .expect_err("attenuation must not widen");
         assert_eq!(denied.code, FixtureErrorCode::PermissionDenied);
+    }
+
+    #[test]
+    fn wire_protocol_rejects_ambiguous_unknown_and_wrong_version_requests() {
+        let duplicate_plan =
+            br#"{"version":1,"env":{"values":{"A":"1","A":"2"}}}"#;
+        assert!(
+            FixtureHost::from_plan_json(duplicate_plan)
+                .err()
+                .expect("duplicate plan keys must fail")
+                .message
+                .contains("duplicate")
+        );
+
+        let mut host = FixtureHost::new(plan()).expect("valid host");
+        let unknown = br#"{"version":1,"request":{"operation":"argv","extra":true}}"#;
+        assert!(
+            host.invoke_json(unknown)
+                .expect_err("unknown request fields must fail")
+                .message
+                .contains("unknown field")
+        );
+        let duplicate =
+            br#"{"version":1,"version":1,"request":{"operation":"argv"}}"#;
+        assert!(
+            host.invoke_json(duplicate)
+                .expect_err("duplicate envelope keys must fail")
+                .message
+                .contains("duplicate")
+        );
+        let wrong = br#"{"version":2,"request":{"operation":"argv"}}"#;
+        assert_eq!(
+            host.invoke_json(wrong)
+                .expect_err("wrong protocol version must fail")
+                .message,
+            "unsupported fixture host wire version 2; expected 1"
+        );
+    }
+
+    #[test]
+    fn wire_protocol_preserves_handles_u64_failures_and_transcript() {
+        let mut host = FixtureHost::new(FixturePlan {
+            version: 1,
+            clock: Some(ClockFixture {
+                start_ns: Some(witchy_testkit::U64Text::new(u64::MAX)),
+                ..ClockFixture::default()
+            }),
+            env: Some(EnvFixture {
+                values: BTreeMap::from([("PUBLIC".to_owned(), "yes".to_owned())]),
+                allow: vec!["PUBLIC".to_owned()],
+                script: Vec::new(),
+            }),
+            expectations: Expectations::default(),
+            ..FixturePlan::default()
+        })
+        .expect("valid host");
+
+        let roots: serde_json::Value =
+            serde_json::from_str(&host.roots_json().expect("roots JSON")).unwrap();
+        assert_eq!(roots["version"], 1);
+        assert_eq!(roots["roots"]["env"], "1");
+
+        let clock = host
+            .invoke_json(br#"{"version":1,"request":{"operation":"clock_now"}}"#)
+            .expect("clock response");
+        let clock: serde_json::Value = serde_json::from_str(&clock).unwrap();
+        assert_eq!(clock["outcome"]["kind"], "return");
+        assert_eq!(clock["outcome"]["value"]["kind"], "u64");
+        assert_eq!(clock["outcome"]["value"]["value"], u64::MAX.to_string());
+
+        let denied = host
+            .invoke_json(
+                br#"{"version":1,"request":{"operation":"env_get","env":"999","name":"PUBLIC"}}"#,
+            )
+            .expect("provider failure is a typed response");
+        let denied: serde_json::Value = serde_json::from_str(&denied).unwrap();
+        assert_eq!(denied["outcome"]["kind"], "fail");
+        assert_eq!(denied["outcome"]["error"]["code"], "denied");
+
+        let transcript = host
+            .finish_json(TestResult::Passed)
+            .expect("transcript JSON");
+        let transcript: TestTranscript = serde_json::from_str(&transcript).unwrap();
+        assert_eq!(transcript.events.len(), 3);
+        assert_eq!(transcript.result, TestResult::Passed);
     }
 }

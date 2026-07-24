@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::de::{DeserializeOwned, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use crate::{FixturePlan, PlanValidationError, PlanValidationLimits};
@@ -52,10 +52,19 @@ pub fn parse_fixture_plan(bytes: &[u8]) -> Result<FixturePlan, PlanDecodeError> 
             ),
         });
     }
-    let value: UniqueValue = serde_json::from_slice(bytes)?;
-    let plan: FixturePlan = serde_json::from_value(value.into_json())?;
+    let plan: FixturePlan = parse_unique_json(bytes)?;
     plan.validate_with(&limits)?;
     Ok(plan)
+}
+
+/// Decode JSON while rejecting duplicate object keys at every depth.
+///
+/// Fixture adapters use this for their small wire envelopes so ambiguous JSON
+/// cannot acquire different meanings before it reaches the canonical fixture
+/// engine. Semantic fixture-plan validation remains in [`parse_fixture_plan`].
+pub fn parse_unique_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, PlanDecodeError> {
+    let value: UniqueValue = serde_json::from_slice(bytes)?;
+    serde_json::from_value(value.into_json()).map_err(Into::into)
 }
 
 pub fn canonical_plan_json(plan: &FixturePlan) -> Result<String, PlanDecodeError> {

@@ -21,7 +21,9 @@ pub use engine::{FixtureCall, FixtureSession};
 pub use exec::ExecProviderResult;
 pub use filesystem::FilesystemProviderResult;
 pub use fetch::FetchProviderResult;
-pub use json::{PlanDecodeError, canonical_plan_json, parse_fixture_plan};
+pub use json::{
+    PlanDecodeError, canonical_plan_json, parse_fixture_plan, parse_unique_json,
+};
 pub use model::*;
 pub use secret::SecretProviderResult;
 pub use validate::{PlanValidationError, PlanValidationLimits};
