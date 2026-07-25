@@ -24,6 +24,40 @@ CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D warni
 - Do not kill Cargo, dev-server, or test processes unless you started them or
   the user explicitly asks you to.
 
+## Dirty shared master is actionable
+
+If the merge queue cannot run because the shared master checkout has tracked
+changes, do not repeatedly report or wait on that condition. Assume interrupted
+agent work may need recovery.
+
+1. Inspect the status, diff, worktree dashboard, queue journal, and any
+   ownership or handoff notes.
+2. Determine whether a live agent still owns the changes. A stale worktree,
+   stopped process, or absent recent activity is not active ownership.
+3. Preserve the exact diff before moving or changing it.
+4. Reconcile the work:
+   - If coherent and complete, move it to an appropriately named branch or
+     worktree, validate it, commit it, and submit it.
+   - If coherent but incomplete, move it to an isolated worktree and finish it.
+   - If unrelated changes are mixed together, split them into separate recovery
+     branches.
+   - If changes are generated artifacts or demonstrably obsolete, remove them
+     only after preserving enough evidence to recover them.
+5. Restore the shared master checkout to a clean state, then allow the merge
+   queue to proceed.
+6. Never discard ambiguous user work. If ownership or intent cannot be
+   established, preserve it on a recovery branch or patch before asking for
+   guidance.
+
+Unexpected changes require reconciliation, not automatic abandonment. Do not
+overwrite them in place. Inspect ownership, preserve the diff, and move the work
+to isolation before continuing. Ask the user only when the preserved changes
+have genuinely ambiguous intent that cannot be resolved from repository
+evidence.
+
+`Shared master has tracked changes` is not, by itself, a blocker. The agent owns
+driving that state to a clean, recoverable conclusion.
+
 ## Merging: use the gate coordinator
 
 Do not run the full `./scripts/check.sh` gate yourself, and do not merge to
