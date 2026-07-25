@@ -41,27 +41,7 @@ impl fmt::Display for LinkError {
 
 impl std::error::Error for LinkError {}
 
-/// A semantic diagnostic produced while the expanded source AST is intact.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceCheckError {
-    pub message: String,
-}
-
-impl SourceCheckError {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-impl fmt::Display for SourceCheckError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for SourceCheckError {}
+pub use crate::source_check::SourceCheckError;
 
 /// Failure from a checked link that validates the complete expanded source set
 /// before destructive lowering starts.
@@ -1001,12 +981,26 @@ fn expanded_view_fns(
     known
 }
 
-fn prepare_source_for_expansion(mut module: Module) -> Result<Module, String> {
-    crate::derive::expand(&mut module)?;
-    let checked = crate::source_check::check(module.clone())?;
-    let checked = crate::generators::lower(checked)?;
-    let checked = crate::async_lower::lower(checked)?;
-    let projected = crate::records::lower_lenient(checked)?.into_module();
+fn prepare_source_for_expansion(
+    module_name: &str,
+    mut module: Module,
+) -> Result<Module, LinkError> {
+    crate::derive::expand(&mut module)
+        .map_err(|message| LinkError { message, location: None })?;
+    let checked = crate::source_check::check(module.clone()).map_err(|error| {
+        let error = error.with_module(module_name);
+        LinkError {
+            location: error.link_location(),
+            message: error.message,
+        }
+    })?;
+    let checked = crate::generators::lower(checked)
+        .map_err(|message| LinkError { message, location: None })?;
+    let checked = crate::async_lower::lower(checked)
+        .map_err(|message| LinkError { message, location: None })?;
+    let projected = crate::records::lower_lenient(checked)
+        .map_err(|message| LinkError { message, location: None })?
+        .into_module();
     module.imports = projected.imports;
     module.import_lines = projected.import_lines;
     module.from_imports = projected.from_imports;
@@ -1411,8 +1405,8 @@ pub fn link_with_mode_and_origins(
         Ok(linked) => Ok(linked),
         Err(SourceLinkError::Link(error)) => Err(error),
         Err(SourceLinkError::Source(error)) => Err(LinkError {
+            location: error.link_location(),
             message: error.message,
-            location: None,
         }),
     }
 }
@@ -1503,8 +1497,8 @@ pub fn link_with_user_modules_with_mode_and_origins(
         Ok(linked) => Ok(linked),
         Err(SourceLinkError::Link(error)) => Err(error),
         Err(SourceLinkError::Source(error)) => Err(LinkError {
+            location: error.link_location(),
             message: error.message,
-            location: None,
         }),
     }
 }
@@ -1549,11 +1543,16 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
         .into_iter()
         .map(|(name, mut module)| {
             reclassify_module_members(&mut module);
-            crate::source_check::check(module.clone())?;
-            prepare_source_for_expansion(module).map(|module| (name, module))
+            crate::source_check::check(module.clone()).map_err(|error| {
+                let error = error.with_module(&name);
+                LinkError {
+                    location: error.link_location(),
+                    message: error.message,
+                }
+            })?;
+            prepare_source_for_expansion(&name, module).map(|module| (name, module))
         })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|message| LinkError { message, location: None })?;
+        .collect::<Result<Vec<_>, LinkError>>()?;
 
     // Compile-time expansion happens here, per module, BEFORE name resolution
     // and type checking see it. `expand` runs `comptime:` blocks (zero
@@ -1656,12 +1655,11 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
     // Prepare newly discovered std source exactly like the initial modules:
     // schedule derives and project implicit lowering imports while retaining
     // every source node for the final whole-link lowering.
-    for (k, (_, m)) in modules.iter_mut().enumerate().skip(pulled_std_start) {
+    for (k, (name, module)) in modules.iter_mut().enumerate().skip(pulled_std_start) {
         if cached_pull_indices.contains(&k) {
             continue;
         }
-        *m = prepare_source_for_expansion(m.clone())
-            .map_err(|message| LinkError { message, location: None })?;
+        *module = prepare_source_for_expansion(name, module.clone())?;
     }
     let mut pulled_imports_before = HashMap::new();
     for k in pulled_std_start..modules.len() {
@@ -2053,8 +2051,10 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
     // (`Bogus(x: 9, ..p)` → "not a record type") — so the merge is the single
     // point where an unknown record type is caught, whether or not a later stage
     // (typeck/backend) re-runs the idempotent lowering.
-    let checked = crate::source_check::check(module)
-        .map_err(|message| LinkError { message, location: None })?;
+    let checked = crate::source_check::check(module).map_err(|error| LinkError {
+        location: error.link_location(),
+        message: error.message,
+    })?;
     let checked = crate::generators::lower(checked)
         .map_err(|message| LinkError { message, location: None })?;
     let checked = crate::async_lower::lower(checked)

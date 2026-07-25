@@ -530,7 +530,7 @@ fn prepare_runtime_module(
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
 ) -> Result<(Module, WitnessPlan), RuntimeError> {
     let checked = witchy_syntax::source_check::check(module)
-        .map_err(|message| RuntimeError { message })?;
+        .map_err(|error| RuntimeError { message: error.message })?;
     let checked = witchy_syntax::generators::lower(checked)
         .map_err(|message| RuntimeError { message })?;
     let checked = witchy_syntax::async_lower::lower(checked)

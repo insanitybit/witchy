@@ -114,6 +114,7 @@ pub(crate) fn link_file_checked_authenticated_with_deps(
     .map_err(|error| match error {
         pipeline::PipelineError::Ownership(error) => format!("{path}: {error}"),
         pipeline::PipelineError::Link(error) => error.to_string(),
+        pipeline::PipelineError::Source(error) => format!("{path}: {error}"),
         pipeline::PipelineError::Type(error) => format!("{path}: {error}"),
     })?;
     Ok((checked, entry_stem))

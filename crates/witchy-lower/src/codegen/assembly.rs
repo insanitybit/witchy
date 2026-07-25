@@ -1515,7 +1515,7 @@ fn assemble_wir_module_with_structs_mode(
     // Front-end, identical to `compile_module_with`.
     let runtime_module = strip_compiler_syntax_items_for_runtime(module.clone());
     let checked = witchy_syntax::source_check::check(runtime_module)
-        .map_err(|message| CodegenError { message })?;
+        .map_err(|error| CodegenError { message: error.message })?;
     let checked = witchy_syntax::generators::lower(checked)
         .map_err(|message| CodegenError { message })?;
     let checked = witchy_syntax::async_lower::lower(checked)

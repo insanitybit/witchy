@@ -477,7 +477,8 @@ fn reachable_local_items(items: &[Item], root: &Block) -> Vec<Item> {
 }
 
 fn validate_and_measure_generated_module(module: Module) -> Result<Module, String> {
-    let module = witchy_syntax::source_check::check(module)?;
+    let module = witchy_syntax::source_check::check(module)
+        .map_err(|error| error.to_string())?;
     let module = witchy_syntax::generators::lower(module)?;
     let module = witchy_syntax::async_lower::lower(module)?;
     witchy_syntax::records::lower_lenient(module).map(|module| module.into_module())

@@ -169,16 +169,24 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
 
 /// Validate source-only async rules before lowering removes `async` and
 /// rewrites its tail expressions.
-pub(crate) fn validate_source(module: &Module) -> Result<(), String> {
-    for item in &module.items {
+pub(crate) fn validate_source(
+    module: &Module,
+) -> Result<(), crate::source_check::SourceValidationError> {
+    for (item_index, item) in module.items.iter().enumerate() {
         match item {
             Item::Function(function) if function.is_async => {
-                validate_async_source(function, function.name == "main")?;
+                validate_async_source(function, function.name == "main")
+                    .map_err(|message| crate::source_check::SourceValidationError::new(
+                        item_index, message,
+                    ))?;
             }
             Item::Impl(definition) => {
                 for method in &definition.methods {
                     if method.is_async {
-                        validate_async_source(method, false)?;
+                        validate_async_source(method, false)
+                            .map_err(|message| crate::source_check::SourceValidationError::new(
+                                item_index, message,
+                            ))?;
                     }
                 }
             }
@@ -1675,7 +1683,8 @@ mod tests {
     use super::*;
 
     fn lower_module(module: Module) -> Result<Module, String> {
-        let checked = crate::source_check::check(module)?;
+        let checked = crate::source_check::check(module)
+            .map_err(|error| error.to_string())?;
         let checked = crate::generators::lower(checked)?;
         lower(checked).map(AsyncLoweredModule::into_module)
     }

@@ -119,18 +119,32 @@ pub fn lower(mut checked: SourceCheckedModule) -> Result<GeneratorsLoweredModule
 }
 
 /// Validate the generator rules that lowering would otherwise erase.
-pub(crate) fn validate_source(module: &Module) -> Result<(), String> {
-    for item in &module.items {
+pub(crate) fn validate_source(
+    module: &Module,
+) -> Result<(), crate::source_check::SourceValidationError> {
+    for (item_index, item) in module.items.iter().enumerate() {
         match item {
             Item::Function(function) if function.is_gen => {
-                validate_generator_return(function)?;
-                validate_generator_block(&function.body, &function.name, false)?;
+                validate_generator_return(function)
+                    .map_err(|message| crate::source_check::SourceValidationError::new(
+                        item_index, message,
+                    ))?;
+                validate_generator_block(&function.body, &function.name, false)
+                    .map_err(|message| crate::source_check::SourceValidationError::new(
+                        item_index, message,
+                    ))?;
             }
             Item::Impl(definition) => {
                 for method in &definition.methods {
                     if method.is_gen {
-                        validate_generator_return(method)?;
-                        validate_generator_block(&method.body, &method.name, false)?;
+                        validate_generator_return(method)
+                            .map_err(|message| crate::source_check::SourceValidationError::new(
+                                item_index, message,
+                            ))?;
+                        validate_generator_block(&method.body, &method.name, false)
+                            .map_err(|message| crate::source_check::SourceValidationError::new(
+                                item_index, message,
+                            ))?;
                     }
                 }
             }

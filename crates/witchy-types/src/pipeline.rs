@@ -72,6 +72,7 @@ impl CheckedModule {
 pub enum PipelineError {
     Ownership(RuntimeTypeError),
     Link(LinkError),
+    Source(SourceCheckError),
     Type(TypeError),
 }
 
@@ -80,6 +81,7 @@ impl fmt::Display for PipelineError {
         match self {
             Self::Ownership(error) => fmt::Display::fmt(error, f),
             Self::Link(error) => fmt::Display::fmt(error, f),
+            Self::Source(error) => fmt::Display::fmt(error, f),
             Self::Type(error) => fmt::Display::fmt(error, f),
         }
     }
@@ -90,6 +92,7 @@ impl std::error::Error for PipelineError {
         match self {
             Self::Ownership(error) => Some(error),
             Self::Link(error) => Some(error),
+            Self::Source(error) => Some(error),
             Self::Type(error) => Some(error),
         }
     }
@@ -127,9 +130,7 @@ fn source_checked_link(
     match result {
         Ok(linked) => Ok(linked),
         Err(SourceLinkError::Link(error)) => Err(PipelineError::Link(error)),
-        Err(SourceLinkError::Source(error)) => {
-            Err(PipelineError::Type(TypeError { message: error.message }))
-        }
+        Err(SourceLinkError::Source(error)) => Err(PipelineError::Source(error)),
     }
 }
 
@@ -300,8 +301,8 @@ mod tests {
         )];
         let error = link_checked(modules, "main", no_expand)
             .expect_err("duplicate generator parameters must fail source checking");
-        let PipelineError::Type(error) = error else {
-            panic!("source header failure must remain a type error: {error}");
+        let PipelineError::Source(error) = error else {
+            panic!("source header failure must remain a source error: {error}");
         };
         assert!(
             error.message.contains(

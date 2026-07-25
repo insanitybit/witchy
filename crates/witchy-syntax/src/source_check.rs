@@ -6,6 +6,78 @@
 
 use crate::ast::Module;
 
+/// Source location retained while source-only syntax is still intact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCheckLocation {
+    pub module: Option<String>,
+    pub line: u32,
+}
+
+/// A semantic diagnostic produced before destructive source lowering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCheckError {
+    pub message: String,
+    pub location: Option<SourceCheckLocation>,
+}
+
+impl SourceCheckError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            location: None,
+        }
+    }
+
+    pub fn with_module(mut self, module: impl Into<String>) -> Self {
+        if let Some(location) = &mut self.location {
+            location.module = Some(module.into());
+        }
+        self
+    }
+
+    pub fn link_location(&self) -> Option<crate::linker::LinkLocation> {
+        let location = self.location.as_ref()?;
+        Some(crate::linker::LinkLocation {
+            module: location.module.clone()?,
+            line: location.line,
+        })
+    }
+
+    fn from_validation(module: &Module, error: SourceValidationError) -> Self {
+        let line = module
+            .item_lines
+            .get(error.item_index)
+            .copied()
+            .filter(|line| *line != 0);
+        Self {
+            message: error.message,
+            location: line.map(|line| SourceCheckLocation {
+                module: None,
+                line,
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for SourceCheckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SourceCheckError {}
+
+pub(crate) struct SourceValidationError {
+    item_index: usize,
+    message: String,
+}
+
+impl SourceValidationError {
+    pub(crate) fn new(item_index: usize, message: String) -> Self {
+        Self { item_index, message }
+    }
+}
+
 /// A complete expanded link set whose imports, aliases, type identities, trait
 /// identities, and method owners were resolved while all source-only nodes were
 /// still present. Its fields are private so destructive lowering can require the
@@ -120,7 +192,7 @@ impl SourceLoweredModule {
 }
 
 /// Check source-only semantics before any pass can erase their syntax.
-pub fn check(module: Module) -> Result<SourceCheckedModule, String> {
+pub fn check(module: Module) -> Result<SourceCheckedModule, SourceCheckError> {
     validate_source(&module)?;
     Ok(SourceCheckedModule { module })
 }
@@ -151,9 +223,12 @@ pub(crate) fn resolve_linked_source(
     }
     let namespace = crate::type_resolve::resolve_source_namespace(&mut modules, user_modules)?;
     for (name, module) in &modules {
-        validate_source(module).map_err(|message| crate::linker::LinkError {
-            message: format!("module `{name}`: expanded source: {message}"),
-            location: None,
+        validate_source(module).map_err(|error| {
+            let error = error.with_module(name);
+            crate::linker::LinkError {
+                message: format!("module `{name}`: expanded source: {}", error.message),
+                location: error.link_location(),
+            }
         })?;
     }
     Ok(ResolvedSource {
@@ -163,9 +238,11 @@ pub(crate) fn resolve_linked_source(
     })
 }
 
-fn validate_source(module: &Module) -> Result<(), String> {
-    crate::generators::validate_source(module)?;
+fn validate_source(module: &Module) -> Result<(), SourceCheckError> {
+    crate::generators::validate_source(module)
+        .map_err(|error| SourceCheckError::from_validation(module, error))?;
     crate::async_lower::validate_source(module)
+        .map_err(|error| SourceCheckError::from_validation(module, error))
 }
 
 #[cfg(test)]
@@ -182,7 +259,7 @@ mod tests {
             "gen fn bad() -> Iter(Int):\n  region:\n    yield 1\n    0\n",
         );
         let error = check(module).expect_err("source check must reject yield in region");
-        assert!(error.contains("cannot `yield` inside `region:`"), "{error}");
+        assert!(error.message.contains("cannot `yield` inside `region:`"), "{error}");
     }
 
     #[test]
@@ -190,7 +267,7 @@ mod tests {
         let error = check(parse("gen fn bad() -> Int:\n  yield 1\n"))
             .expect_err("source check must reject a non-Iter generator result");
         assert_eq!(
-            error,
+            error.message,
             "generator `bad` must declare exactly one element type as `-> Iter(a)`"
         );
     }
@@ -206,6 +283,13 @@ mod tests {
             error.message,
             "module `main`: expanded source: generator `emitted` must declare exactly one element type as `-> Iter(a)`"
         );
+        assert_eq!(
+            error.location,
+            Some(crate::linker::LinkLocation {
+                module: "main".into(),
+                line: 1,
+            })
+        );
     }
 
     #[test]
@@ -214,7 +298,7 @@ mod tests {
             "async fn bad() -> Int:\n  if true:\n    region:\n      1\n",
         );
         let error = check(module).expect_err("source check must reject async tail region");
-        assert!(error.contains("`region:` in an async tail"), "{error}");
+        assert!(error.message.contains("`region:` in an async tail"), "{error}");
     }
 
     #[test]
