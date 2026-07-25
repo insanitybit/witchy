@@ -85,8 +85,8 @@ fn run_benchmarks() -> wasmtime::Result<()> {
     }
 
     fn compiled_ms(src: &str, runs: u32) -> f64 {
-        let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
+        let checked = witchy::resolve_std_only_checked(src).expect("resolve and check benchmark");
+        let bytes = codegen::compile_checked_module_binary(&checked)
             .expect_lowered("the binary path lowers this benchmark");
         let mut rt = Runtime::new().expect("runtime");
         let start = Instant::now();
