@@ -38,7 +38,10 @@ pub use cap_rights::{ConsoleRights, DirRights, FileRights, NetRights};
 use cap_rights::{console_rights, dir_rights, file_rights, net_rights, validate_cap_markers};
 
 mod uniqueness;
-use uniqueness::{check_unique_declarations, check_unique_functions, check_unique_parameters};
+use uniqueness::{
+    check_unique_declarations, check_unique_functions, check_unique_parameters,
+    UniquenessError,
+};
 
 mod existential;
 use existential::{check_existential_types, existential_bare};
@@ -7907,11 +7910,32 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
 /// before the linker lowers generators, async functions, records, or impls.
 pub fn check_linked_source_headers(
     source: &witchy_syntax::source_check::ResolvedSource,
-) -> Result<(), TypeError> {
-    for (_, module) in source.modules() {
-        check_unique_functions(module)?;
-        check_unique_declarations(module)?;
-        check_unique_parameters(module)?;
+) -> Result<(), witchy_syntax::source_check::SourceCheckError> {
+    fn source_error(
+        module_name: &str,
+        module: &Module,
+        error: UniquenessError,
+    ) -> witchy_syntax::source_check::SourceCheckError {
+        let line = module
+            .item_lines
+            .get(error.item_index)
+            .copied()
+            .filter(|line| *line != 0);
+        let source_error =
+            witchy_syntax::source_check::SourceCheckError::new(error.error.message);
+        match line {
+            Some(line) => source_error.with_location(module_name, line),
+            None => source_error,
+        }
+    }
+
+    for (module_name, module) in source.modules() {
+        check_unique_functions(module)
+            .map_err(|error| source_error(module_name, module, error))?;
+        check_unique_declarations(module)
+            .map_err(|error| source_error(module_name, module, error))?;
+        check_unique_parameters(module)
+            .map_err(|error| source_error(module_name, module, error))?;
     }
     Ok(())
 }
@@ -7929,17 +7953,17 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
     // Catch duplicate top-level functions before lowering, while `impl` methods
     // are still distinct from free functions (so overloaded methods aren't
     // mistaken for duplicates) and source lines are still available.
-    check_unique_functions(module)?;
+    check_unique_functions(module).map_err(UniquenessError::into_type_error)?;
 
     // (BUG-230) Duplicate type / constructor / method declarations get the same
     // "defined more than once" error the function namespace already gets. Runs
     // pre-lowering, while `impl`/`type` items are still present and distinct.
-    check_unique_declarations(module)?;
+    check_unique_declarations(module).map_err(UniquenessError::into_type_error)?;
 
     // (BUG-444) Parameter names are binding labels, not an overloadable surface:
     // duplicates silently shadow in the checker scope and make keyword labels
     // incoherent. Validate before lowering for source-quality diagnostics.
-    check_unique_parameters(module)?;
+    check_unique_parameters(module).map_err(UniquenessError::into_type_error)?;
 
     // Lower named-field record construction (a no-op once the linker has done so,
     // but covers single-module paths like `check_str`).
@@ -7978,7 +8002,8 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
     // implement `Show`") instead of a post-lowering unknown-function error.
     match crate::traits::lower_checked(recs.clone()) {
         Ok(lowered) => {
-            check_unique_parameters(&lowered)?;
+            check_unique_parameters(&lowered)
+                .map_err(UniquenessError::into_type_error)?;
             run_check_with_trait_methods(
                 &lowered,
                 false,

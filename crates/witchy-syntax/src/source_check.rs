@@ -35,6 +35,14 @@ impl SourceCheckError {
         self
     }
 
+    pub fn with_location(mut self, module: impl Into<String>, line: u32) -> Self {
+        self.location = Some(SourceCheckLocation {
+            module: Some(module.into()),
+            line,
+        });
+        self
+    }
+
     pub fn link_location(&self) -> Option<crate::linker::LinkLocation> {
         let location = self.location.as_ref()?;
         Some(crate::linker::LinkLocation {

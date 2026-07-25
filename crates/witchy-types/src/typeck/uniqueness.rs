@@ -13,13 +13,40 @@ use witchy_syntax::ast::{self, Block, Expr, Function, Item, Module, Stmt};
 
 use super::{terr, TypeError};
 
+pub(super) struct UniquenessError {
+    pub(super) error: TypeError,
+    pub(super) item_index: usize,
+}
+
+impl UniquenessError {
+    fn new(item_index: usize, error: TypeError) -> Self {
+        Self { error, item_index }
+    }
+
+    pub(super) fn into_type_error(self) -> TypeError {
+        self.error
+    }
+}
+
+fn unique_err<T>(
+    item_index: usize,
+    message: impl Into<String>,
+) -> Result<T, UniquenessError> {
+    Err(UniquenessError {
+        error: TypeError {
+            message: message.into(),
+        },
+        item_index,
+    })
+}
+
 /// Reject two top-level functions with the same name. Witchy has no
 /// free-function overloading — a second definition silently overwrites the first
 /// (in both the linker's and the checker's name tables), so the duplicate is
 /// always a bug (a typo or a copy/paste). Methods live in `impl` blocks and are
 /// dispatched by receiver type, so they are not affected. Names may be
 /// module-qualified (`main.f`) after linking; the message shows the bare name.
-pub(super) fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
+pub(super) fn check_unique_functions(module: &Module) -> Result<(), UniquenessError> {
     let mut seen: HashMap<&str, u32> = HashMap::new();
     for (idx, item) in module.items.iter().enumerate() {
         if let Item::Function(f) = item {
@@ -31,7 +58,7 @@ pub(super) fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
                 } else {
                     String::new()
                 };
-                return terr(format!(
+                return unique_err(idx, format!(
                     "function `{bare}` is defined more than once{where_}; \
                      top-level function names must be unique"
                 ));
@@ -49,7 +76,9 @@ pub(super) fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
 /// the merged module, whose type and constructor names are already
 /// module-qualified, so a genuine cross-module name is distinct and only
 /// same-module duplicates (a typo or copy-paste) collide.
-pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
+pub(super) fn check_unique_declarations(
+    module: &Module,
+) -> Result<(), UniquenessError> {
     let bare = |n: &str| n.rsplit('.').next().unwrap_or(n).to_string();
     let impl_trait_display = |name: &str, args: &[String]| {
         let base = bare(name);
@@ -110,7 +139,7 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
         match item {
             Item::Const { name, .. } => {
                 if let Some(first) = consts.insert(name.clone(), line) {
-                    return terr(format!(
+                    return unique_err(idx, format!(
                         "constant `{}` is defined more than once{}; \
                          top-level constant names must be unique",
                         bare(name),
@@ -119,11 +148,12 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
                 }
             }
             Item::TypeAlias { name, params, ty } => {
-                check_type_params(format!("type alias `{}`", bare(name)), params)?;
+                check_type_params(format!("type alias `{}`", bare(name)), params)
+                    .map_err(|error| UniquenessError::new(idx, error))?;
                 let used_params = ast::effective_type_params(&[], std::iter::once(ty));
                 for param in used_params {
                     if !params.contains(&param) {
-                        return terr(format!(
+                        return unique_err(idx, format!(
                             "type alias `{}` uses type parameter `{param}` but does not declare it; \
                              declare it in the alias head, e.g. `type {}({param}) = ...`",
                             bare(name),
@@ -132,7 +162,7 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
                     }
                 }
                 if types.contains_key(name) {
-                    return terr(format!(
+                    return unique_err(idx, format!(
                         "type alias `{}` conflicts with type `{}`; \
                          top-level type names must be unique",
                         bare(name),
@@ -140,7 +170,7 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
                     ));
                 }
                 if let Some(first) = aliases.insert(name.clone(), line) {
-                    return terr(format!(
+                    return unique_err(idx, format!(
                         "type alias `{}` is defined more than once{}; \
                          top-level type names must be unique",
                         bare(name),
@@ -149,12 +179,14 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
                 }
             }
             Item::Type(t) => {
-                check_type_params(format!("type `{}`", bare(&t.name)), &t.params)?;
+                check_type_params(format!("type `{}`", bare(&t.name)), &t.params)
+                    .map_err(|error| UniquenessError::new(idx, error))?;
                 for v in &t.variants {
-                    check_fields(t, v)?;
+                    check_fields(t, v)
+                        .map_err(|error| UniquenessError::new(idx, error))?;
                 }
                 if aliases.contains_key(&t.name) {
-                    return terr(format!(
+                    return unique_err(idx, format!(
                         "type `{}` conflicts with type alias `{}`; \
                          top-level type names must be unique",
                         bare(&t.name),
@@ -162,7 +194,7 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
                     ));
                 }
                 if types.insert(t.name.clone(), t).is_some() {
-                    return terr(format!(
+                    return unique_err(idx, format!(
                         "type `{}` is defined more than once; top-level type names must be unique",
                         bare(&t.name)
                     ));
@@ -175,7 +207,7 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
                         } else {
                             format!("in types `{a}` and `{b}`")
                         };
-                        return terr(format!(
+                        return unique_err(idx, format!(
                             "constructor `{}` is defined more than once ({where_}); \
                              constructor names must be unique",
                             bare(&v.name)
@@ -191,7 +223,7 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
     // inherent `impl` blocks of a type.
     let mut inherent: HashSet<(String, String)> = HashSet::new();
     let mut trait_impls: HashSet<(String, Vec<String>, String, Vec<String>)> = HashSet::new();
-    for item in &module.items {
+    for (idx, item) in module.items.iter().enumerate() {
         match item {
             Item::Impl(im) => {
                 if let Some(trait_name) = &im.trait_name {
@@ -211,7 +243,7 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
                         im.type_name.clone(),
                         target_args.clone(),
                     )) {
-                        return terr(format!(
+                        return unique_err(idx, format!(
                             "impl `{}` for `{}` is defined more than once; \
                              trait impl heads must be unique",
                             impl_trait_display(trait_name, &trait_args),
@@ -223,7 +255,7 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
                 for m in &im.methods {
                     let name = bare(&m.name);
                     if !here.insert(name.clone()) {
-                        return terr(format!(
+                        return unique_err(idx, format!(
                             "method `{name}` is defined more than once in `impl {}`; \
                              method names must be unique within an impl",
                             im.trait_name.as_deref().map_or_else(
@@ -234,7 +266,7 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
                     }
                     // Inherent (trait-free) methods share one namespace per type.
                     if im.trait_name.is_none() && !inherent.insert((im.type_name.clone(), name.clone())) {
-                        return terr(format!(
+                        return unique_err(idx, format!(
                             "inherent method `{name}` is defined more than once on `{}`; \
                              method names must be unique per receiver type",
                             bare(&im.type_name)
@@ -243,11 +275,12 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
                 }
             }
             Item::Trait(tr) => {
-                check_type_params(format!("trait `{}`", bare(&tr.name)), &tr.typarams)?;
+                check_type_params(format!("trait `{}`", bare(&tr.name)), &tr.typarams)
+                    .map_err(|error| UniquenessError::new(idx, error))?;
                 let mut here: HashSet<&str> = HashSet::new();
                 for m in &tr.methods {
                     if !here.insert(m.name.as_str()) {
-                        return terr(format!(
+                        return unique_err(idx, format!(
                             "method `{}` is declared more than once in `trait {}`; \
                              trait method names must be unique",
                             m.name, tr.name
@@ -265,7 +298,9 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
 /// checker scopes parameters in a name map, so accepting duplicates would make a
 /// later parameter silently hide an earlier one and would also make keyword labels
 /// ambiguous at direct call sites.
-pub(super) fn check_unique_parameters(module: &Module) -> Result<(), TypeError> {
+pub(super) fn check_unique_parameters(
+    module: &Module,
+) -> Result<(), UniquenessError> {
     fn bare(name: &str) -> &str {
         name.rsplit('.').next().unwrap_or(name)
     }
@@ -430,26 +465,34 @@ pub(super) fn check_unique_parameters(module: &Module) -> Result<(), TypeError> 
         }
     }
 
-    for item in &module.items {
-        match item {
-            Item::Function(f) => check_function("function", f)?,
-            Item::Impl(im) => {
-                for method in &im.methods {
-                    check_function("method", method)?;
-                }
-            }
-            Item::Trait(tr) => {
-                for method in &tr.methods {
-                    check_params(format!("trait method `{}`", method.name), &method.params)?;
-                    if let Some(default) = &method.default {
-                        check_block(default)?;
+    for (idx, item) in module.items.iter().enumerate() {
+        let result = (|| -> Result<(), TypeError> {
+            match item {
+                Item::Function(f) => check_function("function", f),
+                Item::Impl(im) => {
+                    for method in &im.methods {
+                        check_function("method", method)?;
                     }
+                    Ok(())
                 }
+                Item::Trait(tr) => {
+                    for method in &tr.methods {
+                        check_params(
+                            format!("trait method `{}`", method.name),
+                            &method.params,
+                        )?;
+                        if let Some(default) = &method.default {
+                            check_block(default)?;
+                        }
+                    }
+                    Ok(())
+                }
+                Item::Const { value, .. } => check_expr(value),
+                Item::Comptime(block) => check_block(block),
+                Item::Type(_) | Item::TypeAlias { .. } => Ok(()),
             }
-            Item::Const { value, .. } => check_expr(value)?,
-            Item::Comptime(block) => check_block(block)?,
-            Item::Type(_) | Item::TypeAlias { .. } => {}
-        }
+        })();
+        result.map_err(|error| UniquenessError::new(idx, error))?;
     }
     Ok(())
 }

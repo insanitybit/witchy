@@ -125,13 +125,6 @@ impl From<SourceLinkError> for PipelineError {
     }
 }
 
-fn check_source_headers(
-    source: &witchy_syntax::source_check::ResolvedSource,
-) -> Result<(), SourceCheckError> {
-    typeck::check_linked_source_headers(source)
-        .map_err(|error| SourceCheckError::new(error.message))
-}
-
 fn link_checked_with(
     modules: Vec<(String, Module)>,
     entry: &str,
@@ -147,7 +140,7 @@ fn link_checked_with(
                 expand,
                 user_modules,
                 LinkMode::Production,
-                check_source_headers,
+                typeck::check_linked_source_headers,
             )
         }
         None => linker::link_with_mode_and_origins_and_source_check(
@@ -155,7 +148,7 @@ fn link_checked_with(
             entry,
             expand,
             LinkMode::Production,
-            check_source_headers,
+            typeck::check_linked_source_headers,
         ),
     }?;
     if let Some(module_owners) = &module_owners {
@@ -297,12 +290,18 @@ mod tests {
 
     #[test]
     fn checked_link_rejects_generator_headers_at_the_source_boundary() {
-        let modules = vec![(
-            "main".to_string(),
-            parse(
-                "gen fn bad(value: Int, value: Int) -> Iter(Int):\n  yield value\n\nfn main() -> Int:\n  0\n",
+        let modules = vec![
+            (
+                "main".to_string(),
+                parse("import helper\n\nfn main() -> Int:\n  0\n"),
             ),
-        )];
+            (
+                "helper".to_string(),
+                parse(
+                    "\ngen fn bad(value: Int, value: Int) -> Iter(Int):\n  yield value\n",
+                ),
+            ),
+        ];
         let error = link_checked(modules, "main", no_expand)
             .expect_err("duplicate generator parameters must fail source checking");
         let PipelineError::Source(error) = error else {
@@ -314,6 +313,13 @@ mod tests {
             ),
             "{}",
             error.message
+        );
+        assert_eq!(
+            error.location,
+            Some(witchy_syntax::source_check::SourceCheckLocation {
+                module: Some("helper".to_string()),
+                line: 2,
+            }),
         );
     }
 
