@@ -50,19 +50,10 @@ pub fn link_checked(
     modules: Vec<(String, Module)>,
     entry: &str,
 ) -> Result<CheckedModule, PipelineError> {
-    link_checked_with_mode(modules, entry, LinkMode::Production)
-}
-
-pub fn link_checked_with_mode(
-    modules: Vec<(String, Module)>,
-    entry: &str,
-    mode: LinkMode,
-) -> Result<CheckedModule, PipelineError> {
-    witchy_types::pipeline::link_checked_with_mode(
+    witchy_types::pipeline::link_checked(
         modules,
         entry,
         crate::comptime::expand_compile_time,
-        mode,
     )
 }
 
@@ -72,26 +63,11 @@ pub fn link_checked_authenticated(
     entry: &str,
     module_owners: AuthenticatedModuleOwners,
 ) -> Result<CheckedModule, PipelineError> {
-    link_checked_authenticated_with_mode(
-        modules,
-        entry,
-        module_owners,
-        LinkMode::Production,
-    )
-}
-
-pub fn link_checked_authenticated_with_mode(
-    modules: Vec<(String, Module)>,
-    entry: &str,
-    module_owners: AuthenticatedModuleOwners,
-    mode: LinkMode,
-) -> Result<CheckedModule, PipelineError> {
-    witchy_types::pipeline::link_checked_authenticated_with_mode(
+    witchy_types::pipeline::link_checked_authenticated(
         modules,
         entry,
         crate::comptime::expand_compile_time,
         module_owners,
-        mode,
     )
 }
 
@@ -120,31 +96,6 @@ pub fn link_with_user_modules_with_mode(
     )
 }
 
-/// Link with source provenance and the standard compile-time expander, then
-/// type-check the linked runtime module.
-pub fn link_checked_with_user_modules(
-    modules: Vec<(String, Module)>,
-    entry: &str,
-    user_modules: &std::collections::HashSet<String>,
-) -> Result<CheckedModule, PipelineError> {
-    link_checked_with_user_modules_with_mode(modules, entry, user_modules, LinkMode::Production)
-}
-
-pub fn link_checked_with_user_modules_with_mode(
-    modules: Vec<(String, Module)>,
-    entry: &str,
-    user_modules: &std::collections::HashSet<String>,
-    mode: LinkMode,
-) -> Result<CheckedModule, PipelineError> {
-    witchy_types::pipeline::link_checked_with_user_modules_with_mode(
-        modules,
-        entry,
-        crate::comptime::expand_compile_time,
-        user_modules,
-        mode,
-    )
-}
-
 /// Link with exact source provenance and retain authenticated package owners.
 pub fn link_checked_authenticated_with_user_modules(
     modules: Vec<(String, Module)>,
@@ -152,29 +103,12 @@ pub fn link_checked_authenticated_with_user_modules(
     user_modules: &std::collections::HashSet<String>,
     module_owners: AuthenticatedModuleOwners,
 ) -> Result<CheckedModule, PipelineError> {
-    link_checked_authenticated_with_user_modules_with_mode(
-        modules,
-        entry,
-        user_modules,
-        module_owners,
-        LinkMode::Production,
-    )
-}
-
-pub fn link_checked_authenticated_with_user_modules_with_mode(
-    modules: Vec<(String, Module)>,
-    entry: &str,
-    user_modules: &std::collections::HashSet<String>,
-    module_owners: AuthenticatedModuleOwners,
-    mode: LinkMode,
-) -> Result<CheckedModule, PipelineError> {
-    witchy_types::pipeline::link_checked_authenticated_with_user_modules_with_mode(
+    witchy_types::pipeline::link_checked_authenticated_with_user_modules(
         modules,
         entry,
         crate::comptime::expand_compile_time,
         user_modules,
         module_owners,
-        mode,
     )
 }
 

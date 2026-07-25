@@ -146,21 +146,11 @@ pub fn link_checked(
     entry: &str,
     expand: ComptimeExpander,
 ) -> Result<CheckedModule, PipelineError> {
-    link_checked_with_mode(modules, entry, expand, LinkMode::Production)
-}
-
-/// Link in `mode` with the injected compile-time expander, then type-check.
-pub fn link_checked_with_mode(
-    modules: Vec<(String, Module)>,
-    entry: &str,
-    expand: ComptimeExpander,
-    mode: LinkMode,
-) -> Result<CheckedModule, PipelineError> {
     let linked = source_checked_link(linker::link_with_mode_and_origins_and_source_check(
         modules,
         entry,
         expand,
-        mode,
+        LinkMode::Production,
         check_source_headers,
     ))?;
     check_linked(linked, None)
@@ -177,68 +167,15 @@ pub fn link_checked_authenticated(
     expand: ComptimeExpander,
     module_owners: AuthenticatedModuleOwners,
 ) -> Result<CheckedModule, PipelineError> {
-    link_checked_authenticated_with_mode(
-        modules,
-        entry,
-        expand,
-        module_owners,
-        LinkMode::Production,
-    )
-}
-
-pub fn link_checked_authenticated_with_mode(
-    modules: Vec<(String, Module)>,
-    entry: &str,
-    expand: ComptimeExpander,
-    module_owners: AuthenticatedModuleOwners,
-    mode: LinkMode,
-) -> Result<CheckedModule, PipelineError> {
     let linked = source_checked_link(linker::link_with_mode_and_origins_and_source_check(
         modules,
         entry,
         expand,
-        mode,
+        LinkMode::Production,
         check_source_headers,
     ))?;
     module_owners.validate_module_names(linked.module_names.iter().cloned())?;
     check_linked(linked, Some(module_owners))
-}
-
-/// Link with explicit user-module provenance, then type-check the result.
-pub fn link_checked_with_user_modules(
-    modules: Vec<(String, Module)>,
-    entry: &str,
-    expand: ComptimeExpander,
-    user_modules: &HashSet<String>,
-) -> Result<CheckedModule, PipelineError> {
-    link_checked_with_user_modules_with_mode(
-        modules,
-        entry,
-        expand,
-        user_modules,
-        LinkMode::Production,
-    )
-}
-
-/// Link with explicit provenance and mode, then type-check the result.
-pub fn link_checked_with_user_modules_with_mode(
-    modules: Vec<(String, Module)>,
-    entry: &str,
-    expand: ComptimeExpander,
-    user_modules: &HashSet<String>,
-    mode: LinkMode,
-) -> Result<CheckedModule, PipelineError> {
-    let linked = source_checked_link(
-        linker::link_with_user_modules_with_mode_and_origins_and_source_check(
-            modules,
-            entry,
-            expand,
-            user_modules,
-            mode,
-            check_source_headers,
-        ),
-    )?;
-    check_linked(linked, None)
 }
 
 /// Production-ready checked link with both exact source provenance and
@@ -250,31 +187,13 @@ pub fn link_checked_authenticated_with_user_modules(
     user_modules: &HashSet<String>,
     module_owners: AuthenticatedModuleOwners,
 ) -> Result<CheckedModule, PipelineError> {
-    link_checked_authenticated_with_user_modules_with_mode(
-        modules,
-        entry,
-        expand,
-        user_modules,
-        module_owners,
-        LinkMode::Production,
-    )
-}
-
-pub fn link_checked_authenticated_with_user_modules_with_mode(
-    modules: Vec<(String, Module)>,
-    entry: &str,
-    expand: ComptimeExpander,
-    user_modules: &HashSet<String>,
-    module_owners: AuthenticatedModuleOwners,
-    mode: LinkMode,
-) -> Result<CheckedModule, PipelineError> {
     let linked = source_checked_link(
         linker::link_with_user_modules_with_mode_and_origins_and_source_check(
             modules,
             entry,
             expand,
             user_modules,
-            mode,
+            LinkMode::Production,
             check_source_headers,
         ),
     )?;
