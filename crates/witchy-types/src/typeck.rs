@@ -4010,11 +4010,10 @@ impl Checker {
     /// name/arity isn't a File op, so the Dir forms (`dir.read(path)` etc.) fall
     /// through — `read`/`write` are disambiguated from `Dir` by arity.
     fn check_file_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
-        let arity = match name {
-            "read" => 1,
-            "write" => 2,
-            _ => return Ok(None),
+        let Some(operation) = cap_ops::operation(name, cap_ops::ReceiverKind::File) else {
+            return Ok(None);
         };
+        let arity = operation.total_arity;
         if args.len() != arity {
             return Ok(None);
         }
@@ -4054,8 +4053,11 @@ impl Checker {
         if !matches!(self.resolve(&receiver_ty), Ty::Env) {
             return Ok(None);
         }
-        if args.len() != 2 {
-            return terr(format!("`only` expects 2 argument(s) but got {}", args.len()));
+        let arity = cap_ops::operation(name, cap_ops::ReceiverKind::Env)
+            .expect("Env.only is cataloged")
+            .total_arity;
+        if args.len() != arity {
+            return terr(format!("`only` expects {arity} argument(s) but got {}", args.len()));
         }
         let names = self.infer(&args[1])?;
         self.unify(&Ty::List(Box::new(Ty::String)), &names)
@@ -4069,10 +4071,10 @@ impl Checker {
     }
 
     fn check_console_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
-        if !matches!(name, "print" | "read_line") {
+        let Some(operation) = cap_ops::operation(name, cap_ops::ReceiverKind::Console) else {
             return Ok(None);
-        }
-        let expected = if name == "print" { 2 } else { 1 };
+        };
+        let expected = operation.total_arity;
         if args.len() != expected {
             return terr(format!(
                 "`{name}` expects {expected} argument(s) but got {}",
@@ -4172,8 +4174,11 @@ impl Checker {
         // RFC-0011: `only` is polymorphic — `dir.only(DirPolicy)` narrows a Dir's
         // entry policy (handled here); a `Net` receiver defers to `check_net_op`.
         if name == "only" {
-            if args.len() != 2 {
-                return terr(format!("`only` expects 2 argument(s) but got {}", args.len()));
+            let arity = cap_ops::operation(name, cap_ops::ReceiverKind::Dir)
+                .expect("Dir.only is cataloged")
+                .total_arity;
+            if args.len() != arity {
+                return terr(format!("`only` expects {arity} argument(s) but got {}", args.len()));
             }
             let recv = self.infer(&args[0])?;
             let Ty::Dir(rights) = self.resolve(&recv) else {
@@ -4187,12 +4192,10 @@ impl Checker {
                 .map_err(|e| TypeError { message: format!("in call to `only`: {}", e.message) })?;
             return Ok(Some(Ty::Dir(rights)));
         }
-        let arity = match name {
-            "list" => 1,
-            "read" | "exists" | "is_dir" | "subtree" | "make_dir" | "read_file" | "write_file" => 2,
-            "write" | "append" => 3,
-            _ => return Ok(None),
+        let Some(operation) = cap_ops::operation(name, cap_ops::ReceiverKind::Dir) else {
+            return Ok(None);
         };
+        let arity = operation.total_arity;
         if args.len() != arity {
             return terr(format!(
                 "`{name}` expects {arity} argument(s) but got {}",
@@ -4301,8 +4304,11 @@ impl Checker {
             if !matches!(self.resolve(&receiver_ty), Ty::Exec) {
                 return Ok(None);
             }
-            if args.len() != 2 {
-                return terr(format!("`only` expects 2 argument(s) but got {}", args.len()));
+            let arity = cap_ops::operation(name, cap_ops::ReceiverKind::Exec)
+                .expect("Exec.only is cataloged")
+                .total_arity;
+            if args.len() != arity {
+                return terr(format!("`only` expects {arity} argument(s) but got {}", args.len()));
             }
             let programs = self.infer(&args[1])?;
             self.unify(&Ty::List(Box::new(Ty::String)), &programs)
@@ -4317,9 +4323,12 @@ impl Checker {
         if name != "exec" {
             return Ok(None);
         }
-        if args.len() != 5 {
+        let arity = cap_ops::operation(name, cap_ops::ReceiverKind::Exec)
+            .expect("Exec.exec is cataloged")
+            .total_arity;
+        if args.len() != arity {
             return terr(format!(
-                "`exec` expects (exec, dir, path, args, stdin) — 5 arguments but got {}",
+                "`exec` expects (exec, dir, path, args, stdin) — {arity} arguments but got {}",
                 args.len()
             ));
         }
@@ -4347,9 +4356,12 @@ impl Checker {
     /// unforgeable, origin-scoped authority.
     fn check_fetch_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
         if name == "fetch" {
-            if args.len() != 2 {
+            let arity = cap_ops::operation(name, cap_ops::ReceiverKind::Net)
+                .expect("Net.fetch is cataloged")
+                .total_arity;
+            if args.len() != arity {
                 return terr(format!(
-                    "`fetch` expects 2 argument(s) but got {}",
+                    "`fetch` expects {arity} argument(s) but got {}",
                     args.len()
                 ));
             }
@@ -4365,9 +4377,9 @@ impl Checker {
             })?;
             return Ok(Some(Ty::Fetch));
         }
-        if name != "only" && name != "send_raw" {
+        let Some(operation) = cap_ops::operation(name, cap_ops::ReceiverKind::Fetch) else {
             return Ok(None);
-        }
+        };
         let Some(receiver) = args.first() else {
             return Ok(None);
         };
@@ -4377,7 +4389,7 @@ impl Checker {
             Ty::Var(_) if name == "send_raw" => self.unify(&receiver_ty, &Ty::Fetch)?,
             _ => return Ok(None),
         }
-        let arity = if name == "only" { 2 } else { 5 };
+        let arity = operation.total_arity;
         if args.len() != arity {
             return terr(format!(
                 "`{name}` expects {arity} argument(s) but got {}",
@@ -4419,14 +4431,14 @@ impl Checker {
     /// (Narrowing is done with the `as` ascription, not per-verb builtins.)
     /// Returns `Ok(None)` when `name` is not a Net op.
     fn check_net_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
-        let arity = match name {
-            "connect" | "try_connect" | "listen" | "only" | "deny" | "resolve" => 2,
-            // (RFC-0020) pinned dial: (net, ip, host, port, secure).
-            "connect_pinned" | "try_connect_pinned" => 5,
-            // (RFC-0060) HTTPS listen: (net, addr, cert_pem, key).
-            "listen_tls" => 4,
-            _ => return Ok(None),
+        let Some(operation) = cap_ops::operation(name, cap_ops::ReceiverKind::Net) else {
+            return Ok(None);
         };
+        // `Net.fetch` has its distinct origin-scoped result contract above.
+        if name == "fetch" {
+            return Ok(None);
+        }
+        let arity = operation.total_arity;
         if args.len() != arity {
             return terr(format!(
                 "`{name}` expects {arity} argument(s) but got {}",

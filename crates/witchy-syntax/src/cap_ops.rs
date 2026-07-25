@@ -109,7 +109,7 @@ pub const OPS: &[CapOp] = &[
         "fetch.send_raw(method, url, headers, body)"
     ),
     op!("deny", Net, 2, SameReceiver, "net.deny(policy)"),
-    op!("resolve", Net, 2, String, "net.resolve(host)"),
+    op!("resolve", Net, 2, ListString, "net.resolve(host)"),
     op!("connect_pinned", Net, 5, Socket, "net.connect_pinned(ip, host, port, secure)"),
     op!(
         "try_connect_pinned",
@@ -159,9 +159,19 @@ pub fn result_shape(name: &str, total_arity: usize) -> Option<ResultShape> {
     op_info(name, total_arity).map(|op| op.result)
 }
 
-pub fn receiver_supports(name: &str, receiver: ReceiverKind) -> bool {
+/// The unique operation named `name` on `receiver`.
+///
+/// Receiver-qualified lookup is the semantic authority for capability-op
+/// membership and arity. It disambiguates shared method names such as
+/// `read`, `write`, and `only` without downstream handwritten name tables.
+pub fn operation(name: &str, receiver: ReceiverKind) -> Option<&'static CapOp> {
     let name = surface_name(name);
-    OPS.iter().any(|op| op.name == name && op.receiver == receiver)
+    OPS.iter()
+        .find(|op| op.name == name && op.receiver == receiver)
+}
+
+pub fn receiver_supports(name: &str, receiver: ReceiverKind) -> bool {
+    operation(name, receiver).is_some()
 }
 
 pub fn surface_name(name: &str) -> &str {
@@ -191,5 +201,32 @@ mod tests {
             diagnostic_suggestion("__capop.fetch_build", 3),
             Some("build_net.fetch_build(host, path)")
         );
+    }
+
+    #[test]
+    fn receiver_lookup_disambiguates_arity_and_result() {
+        let file_read = operation("read", ReceiverKind::File).expect("File.read");
+        let dir_read = operation("read", ReceiverKind::Dir).expect("Dir.read");
+        assert_eq!(file_read.total_arity, 1);
+        assert_eq!(dir_read.total_arity, 2);
+        assert_eq!(
+            operation("__capop.resolve", ReceiverKind::Net).map(|op| op.result),
+            Some(ResultShape::ListString)
+        );
+    }
+
+    #[test]
+    fn receiver_and_name_identify_one_catalog_row() {
+        for (index, operation) in OPS.iter().enumerate() {
+            assert!(
+                !OPS[index + 1..].iter().any(|candidate| {
+                    candidate.name == operation.name
+                        && candidate.receiver == operation.receiver
+                }),
+                "duplicate {:?}.{} capability operation",
+                operation.receiver,
+                operation.name
+            );
+        }
     }
 }
