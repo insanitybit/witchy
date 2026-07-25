@@ -11,6 +11,7 @@
 
 use witchy_runtime::runtime::{Capabilities, Runtime};
 use witchy_lower::codegen;
+#[cfg(test)]
 use witchy_types::typeck;
 
 /// Wasm linear-memory pages for a stats run (mirrors the CLI's run budget).
@@ -59,9 +60,8 @@ pub struct Stats {
 /// `WITCHY_OPT` setting, returning its deterministic counters. The program must
 /// need nothing beyond `Console` (the stats corpus is pure compute).
 pub fn compute(src: &str) -> Result<Stats, String> {
-    let linked = crate::resolve_std_only(src)?;
-    typeck::check(&linked).map_err(|e| format!("{e:?}"))?;
-    let bytes = match codegen::compile_module_binary(&linked) {
+    let checked = crate::resolve_std_only_checked(src)?;
+    let bytes = match codegen::compile_checked_module_binary(&checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
