@@ -1540,10 +1540,9 @@ fn assemble_wir_module_with_structs_mode(
     // lowering (so the synthesized `map_err` lambda's `+` flips to `Concat` and its
     // nodes get typed). Re-annotate so the freshly minted calls/lambda are in the
     // type table.
-    typed = typed.rewrite_and_reannotate_if(|table, module| {
-        rewrite_try_ctx_module(module, table)
+    typed = typed.rewrite_and_reannotate(|table, module| {
+        rewrite_try_ctx_module(module, table);
     });
-    typed.rewrite_preserving_nodes(|table, module| flip_string_add_module(module, table));
     let prepared = match runtime_catalog {
         Some(runtime_catalog) => witchy_types::existential::lower_explicit_packs_with_runtime_types(
             typed,
@@ -1553,7 +1552,11 @@ fn assemble_wir_module_with_structs_mode(
         None => witchy_types::existential::lower_explicit_packs(typed, &witness_catalog),
     }
     .map_err(|message| CodegenError { message })?;
-    let (module, type_table, witnesses) = prepared.into_parts();
+    let (mut module, type_table, witnesses) = prepared.into_parts();
+    // This field-only rewrite deliberately happens after the typed owner has
+    // been consumed. No public API can use unrestricted `&mut Module` access
+    // while claiming that the address-keyed type proof remains valid.
+    flip_string_add_module(&mut module, &type_table);
     let loan_facts = witchy_types::loans::facts(&module)
         .map_err(|error| CodegenError { message: error.to_string() })?;
     // Witness adapters are ordinary monomorphized impl methods, but their only

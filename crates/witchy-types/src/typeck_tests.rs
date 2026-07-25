@@ -19,14 +19,13 @@
         let typed = annotate(module);
         assert_eq!(typed.table().type_of(tail(typed.module())), Some(&Ty::Int));
 
-        let typed = typed.rewrite_and_reannotate_if(|_, module| {
+        let typed = typed.rewrite_and_reannotate(|_, module| {
             let Item::Function(main) = &mut module.items[0] else {
                 panic!("expected main function")
             };
             *main.body.stmts.last_mut().expect("tail statement") =
                 Stmt::Expr(Expr::Str("now a string".into()));
             main.ret = Some(witchy_syntax::ast::Type::Named("String".into(), Vec::new()));
-            true
         });
 
         assert_eq!(

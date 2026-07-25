@@ -8099,25 +8099,22 @@ impl TypedModule {
     /// Mutate fields that preserve every expression allocation (for example a
     /// resolved call name or binary-op tag) while consulting the existing facts.
     /// Structural rewrites must instead consume the typed module and re-annotate.
-    pub fn rewrite_preserving_nodes<R>(
+    pub(crate) fn rewrite_preserving_nodes<R>(
         &mut self,
         rewrite: impl FnOnce(&TypeTable, &mut Module) -> R,
     ) -> R {
         rewrite(&self.table, &mut self.module)
     }
 
-    /// Apply a rewrite that reports whether it replaced or inserted nodes. A
-    /// structural change immediately invalidates and rebuilds the side table;
-    /// a no-op keeps the existing facts without paying for another check.
-    pub fn rewrite_and_reannotate_if(
+    /// Apply a potentially structural rewrite, then unconditionally rebuild
+    /// the address-keyed side table. The caller cannot assert that arbitrary
+    /// `&mut Module` access preserved node identity.
+    pub fn rewrite_and_reannotate(
         mut self,
-        rewrite: impl FnOnce(&TypeTable, &mut Module) -> bool,
+        rewrite: impl FnOnce(&TypeTable, &mut Module),
     ) -> Self {
-        if rewrite(&self.table, &mut self.module) {
-            annotate(self.module)
-        } else {
-            self
-        }
+        rewrite(&self.table, &mut self.module);
+        annotate(self.module)
     }
 
     /// Perform a final, potentially structural rewrite while the old facts are
