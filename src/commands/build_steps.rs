@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 use crate::ast;
-use crate::{codegen, link_file, runtime, typeck};
+use crate::{codegen, link_file_checked, runtime};
 
 pub(crate) const BUILD_CHILD_COMMAND: &str = "@compiler:build-child";
 const BUILD_CHILD_REQUEST_VERSION: u32 = 2;
@@ -198,13 +198,12 @@ fn run_build_step_file_with_env(
     child_paths: Vec<String>,
     net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    let (linked, _) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
+    let (checked, _) = link_file_checked(path)?;
     let out = out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out"));
     #[cfg(test)]
     {
         run_build_step_compiled_with_env(
-            linked,
+            checked.module().clone(),
             out,
             read_roots,
             env,
@@ -216,7 +215,7 @@ fn run_build_step_file_with_env(
     #[cfg(not(test))]
     {
         std::fs::create_dir_all(&out).map_err(|e| format!("build: output dir: {e}"))?;
-        let wasm = match codegen::compile_build_module(&linked) {
+        let wasm = match codegen::compile_checked_build_module(&checked) {
             codegen::LoweringOutcome::Lowered(bytes) => bytes,
             codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
             codegen::LoweringOutcome::Rejected(error) => return Err(error.message),

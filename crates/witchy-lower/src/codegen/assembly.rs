@@ -3433,6 +3433,21 @@ mod lowering_outcome_tests {
 /// `build_out_write`/`build_read_len`, confined to the granted output sandbox
 /// and read roots — nothing else exists for the guest to call.
 pub fn compile_build_module(module: &Module) -> LoweringOutcome<Vec<u8>> {
+    compile_build_module_mode(module, None)
+}
+
+/// Compile a build module that crossed the canonical linked type-check boundary.
+pub fn compile_checked_build_module(
+    checked: &witchy_types::pipeline::CheckedModule,
+) -> LoweringOutcome<Vec<u8>> {
+    let runtime_catalog = checked.runtime_declaration_catalog().ok();
+    compile_build_module_mode(checked.module(), runtime_catalog.as_ref())
+}
+
+fn compile_build_module_mode(
+    module: &Module,
+    runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,
+) -> LoweringOutcome<Vec<u8>> {
     let mut m = module.clone();
     // A build module ships no `main`; promote its `build` entrypoint to `main`.
     m.items.retain(|it| !matches!(it, Item::Function(f) if f.name == "main"));
@@ -3443,5 +3458,5 @@ pub fn compile_build_module(module: &Module) -> LoweringOutcome<Vec<u8>> {
             }
         }
     }
-    compile_module_binary_mode(&m, true, None)
+    compile_module_binary_mode(&m, true, runtime_catalog)
 }
