@@ -6,6 +6,7 @@ use serde_json::Value;
 
 const STAGE_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("witchy-cap-model", &[]),
+    ("witchy-testkit", &["witchy-cap-model"]),
     ("witchy-syntax", &["witchy-cap-model"]),
     ("witchy-types", &["witchy-cap-model", "witchy-syntax"]),
     ("witchy-wir", &["witchy-syntax"]),
