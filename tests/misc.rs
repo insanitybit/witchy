@@ -20,6 +20,8 @@ mod region_copyout;
 mod release_packaging;
 #[path = "misc/rendering_protocol.rs"]
 mod rendering_protocol;
+#[path = "misc/semantic_conformance.rs"]
+mod semantic_conformance;
 #[path = "misc/sealed_task_handles.rs"]
 mod sealed_task_handles;
 #[path = "misc/spec_freshness.rs"]

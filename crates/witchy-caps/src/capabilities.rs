@@ -23,8 +23,8 @@ use witchy_cap_model::{
 };
 use witchy_syntax::ast::{Item, Module, Type};
 
-/// The rights (verbs) a single capability permits. Empty for `Console`, which
-/// has no sub-verbs.
+/// The rights (verbs) a single capability permits. Empty for capabilities such
+/// as `Clock` that have no refinable sub-verbs.
 pub type Rights = BTreeSet<&'static str>;
 
 /// A capability footprint: each present capability mapped to the union of rights
