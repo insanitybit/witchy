@@ -198,7 +198,22 @@ pub(crate) fn execute_file_exit(
     // share one runtime, so dev == deploy by construction. The interpreter is only
     // the differential oracle (`witchy parity`) and the comptime evaluator — never
     // a user-program run path.
-    run_checked_compiled(&checked, Vec::new(), Vec::new(), net_allow, fetch_origins, args, signing_key, named_secrets, Vec::new(), false)
+    run_checked_compiled(
+        &checked,
+        Vec::new(),
+        Vec::new(),
+        net_allow,
+        fetch_origins,
+        None,
+        None,
+        Vec::new(),
+        args,
+        signing_key,
+        named_secrets,
+        Vec::new(),
+        false,
+        witchy_confinement::EnforcementMode::Disabled,
+    )
         .map(|(lines, code)| (lines, code.unwrap_or(0)))
 }
 

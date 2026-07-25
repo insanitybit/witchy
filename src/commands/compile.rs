@@ -313,7 +313,7 @@ pub(crate) fn emit_wat_file(path: &str) -> Result<String, String> {
 /// Compile a linked module to a wasm BINARY through the WIR → wasm-binary
 /// pipeline (`compile_module_binary`). A program that doesn't fully lower
 /// surfaces as a hard "cannot compile" error — there is no WAT fallback.
-fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
+fn compile_synthetic_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
     let bytes = match codegen::compile_module_binary(linked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => {
@@ -445,14 +445,16 @@ pub(crate) fn embedded_wasm_cached(
 /// skipped, not just the native compile. The
 /// capability grant and every security check still run from `linked` on every run —
 /// only the wasm is cached.
-pub(crate) fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<u8>, String> {
-    compile_to_wasm_cached(linked, || compile_linked_to_wasm(linked))
+pub(crate) fn compile_synthetic_to_wasm_cached(
+    linked: &ast::Module,
+) -> Result<Vec<u8>, String> {
+    compile_to_wasm_cached(linked, || compile_synthetic_to_wasm(linked))
 }
 
-/// Checked-module twin of [`compile_linked_to_wasm_cached`]. The proof wrapper,
-/// including authenticated loader ownership, participates in the cache key so
-/// identical source loaded from different packages cannot share runtime type
-/// identities or dynamic method catalogs.
+/// Compile a checked production module with the proof wrapper, including
+/// authenticated loader ownership, in the cache key. Identical source loaded
+/// from different packages therefore cannot share runtime type identities or
+/// dynamic method catalogs.
 pub(crate) fn compile_checked_to_wasm_cached(
     checked: &pipeline::CheckedModule,
 ) -> Result<Vec<u8>, String> {

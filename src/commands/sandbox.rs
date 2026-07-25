@@ -2,10 +2,10 @@
 //! FsRights and run a file under the capability sandbox or an explicit grant
 //! document. Extracted from the composition root.
 
-use crate::commands::execution::run_linked_compiled;
+use crate::commands::execution::run_checked_compiled;
 use crate::{
-    ast, capabilities, enforce_performance_modes, grants, link_file, linked_has_main, runtime,
-    typeck,
+    ast, capabilities, enforce_performance_modes, grants, link_file_checked, linked_has_main,
+    runtime,
 };
 
 fn fs_rights_from_type_args(args: &[ast::Type]) -> runtime::FsRights {
@@ -79,16 +79,16 @@ pub(crate) fn run_file_sandboxed(
     named_secrets: Vec<runtime::SecretGrant>,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
-    let (linked, stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
-    enforce_performance_modes(&linked, &stem)?;
-    if !linked_has_main(&linked) {
+    let (checked, stem) = link_file_checked(path)?;
+    let linked = checked.module();
+    enforce_performance_modes(linked, &stem)?;
+    if !linked_has_main(linked) {
         return Err(format!("`{path}` has no `main` to run"));
     }
     // The sandbox grants EXACTLY what a run gives `main` (see `run_grant`) — not the
     // whole-program union, so a verify-only program that imports `crypto` is not
     // forced to be handed a `Secret` it never binds.
-    let grant = capabilities::run_grant(&linked);
+    let grant = capabilities::run_grant(linked);
     // (BUG-116/RFC-0005) A bare `Secret` is the root signing-key externref; a
     // named `--secret` populates a `SecretStore`, not the bare `Secret`.
     // Requiring `--signing-key` specifically stops a named value from being
@@ -102,7 +102,22 @@ pub(crate) fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&grant)
     );
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, None, None, Vec::new(), args, signing_key, named_secrets, Vec::new(), true, confinement)
+    run_checked_compiled(
+        &checked,
+        dir_roots,
+        file_grants,
+        net_allow,
+        fetch_origins,
+        None,
+        None,
+        Vec::new(),
+        args,
+        signing_key,
+        named_secrets,
+        Vec::new(),
+        true,
+        confinement,
+    )
 }
 
 /// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
@@ -124,9 +139,9 @@ pub(crate) fn run_file_grants(
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use std::io::IsTerminal;
-    let (linked, stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
-    enforce_performance_modes(&linked, &stem)?;
+    let (checked, stem) = link_file_checked(path)?;
+    let linked = checked.module();
+    enforce_performance_modes(linked, &stem)?;
     let doc_src = std::fs::read_to_string(grants_path)
         .map_err(|e| format!("cannot read `{grants_path}`: {e}"))?;
     let doc = grants::GrantDoc::parse(&doc_src)?;
@@ -137,7 +152,7 @@ pub(crate) fn run_file_grants(
     // (a dep's `pub fn fetch(net)`, std `crypto.sign`'s `Secret`) that this run never
     // reaches, so cross-checking against it can reject a launch grant that is in fact
     // exactly what `main` receives — a wrongly-refused, valid grant (BUG-016).
-    let needed = capabilities::run_grant(&linked);
+    let needed = capabilities::run_grant(linked);
     let check = grants::cross_check(&doc.cap_set(), &needed);
     if !check.over_grant.is_empty() {
         eprintln!(
@@ -346,5 +361,20 @@ pub(crate) fn run_file_grants(
     }
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
     // the bare root `Secret` (`--signing-key`) is not granted via documents here.
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, exec_child_paths, args, None, named_secrets, user_cap_fields, true, confinement)
+    run_checked_compiled(
+        &checked,
+        dir_roots,
+        file_grants,
+        net_allow,
+        fetch_origins,
+        env_allow,
+        exec_allow,
+        exec_child_paths,
+        args,
+        None,
+        named_secrets,
+        user_cap_fields,
+        true,
+        confinement,
+    )
 }

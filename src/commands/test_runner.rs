@@ -2,7 +2,7 @@
 //! validation, dependency-root resolution, and execution on the compiled
 //! backend. Extracted from the composition root.
 
-use crate::commands::execution::run_linked_compiled;
+use crate::commands::execution::run_synthetic_compiled;
 use crate::{
     ast, codegen, enforce_performance_modes, interpreter, is_entry_function,
     link_file_with_mode, linker, parser, run_wasm_test_bytes, runtime, typeck,
@@ -838,7 +838,7 @@ fn run_tests_in_module(
             }
         } else if policy.integration {
             (
-                run_linked_compiled(
+                run_synthetic_compiled(
                     &m,
                     policy.grants.dir_roots.clone(),
                     Vec::new(),
