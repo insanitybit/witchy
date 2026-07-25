@@ -10,8 +10,8 @@ filesystem, and the compiler rejects the attempt.
 
 This book teaches witchy from the ground up. For an exhaustive description of
 the syntax, see the
-[language reference](https://github.com/insanitybit/witchy/blob/master/spec/language.md)
-is its companion; this book is the narrative path.
+[language reference](https://github.com/insanitybit/witchy/blob/master/spec/language.md);
+this book is the narrative path.
 
 Every `witchy` block in this book is a complete program that the test suite
 type-checks. Blocks classified as runnable are also executed against the

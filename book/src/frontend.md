@@ -10,7 +10,7 @@ is itself a Glamour app.
 A Glamour app is three pure pieces plus a host that runs the effects:
 
 - a **model** — your application state, an ordinary witchy value;
-  - a **view** — a pure function from the model to a **`VNode`** tree. A view is
+- a **view** — a pure function from the model to a **`VNode`** tree. A view is
   *data*: you build `element`/`text`/`prop` nodes, and text is escaped by
   construction. A `<script>` in your data renders as inert text;
 - an **update** — a pure function from a message and the current model to the
