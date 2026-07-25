@@ -266,11 +266,23 @@ the same whichever backend runs it.
 
 ## Beyond your own tests
 
-Two project-level checks run alongside your tests:
+Three project-level checks run alongside your tests:
 
 - **`witchy parity`** (from the last chapter) is differential testing for the
-  *language itself* — it's how the backends are kept honest.
+  *language itself* — it catches either backend disagreeing with the other.
+- **The independent conformance corpus** pins exact language results,
+  rejections, and capability footprints without deriving its expectations from
+  either backend. This matters because two implementations can agree on the
+  same wrong answer. Its positive-control mutation deliberately preserves
+  interpreter/Wasm agreement while changing a result, then proves the
+  independently stated expectation still fails.
 - The documentation you're reading is tested. Every Witchy block is extracted
   and checked. Complete examples execute through compiled Wasm in fresh opaque
   browser frames with explicit providers and derived CSP; runnable examples are
   also checked against committed output and backend parity.
+
+Parity and conformance answer different questions: parity asks whether the two
+backends agree, while conformance asks whether an observable result matches the
+language contract. A language feature needs both when it changes runtime
+semantics; parser, type-checker, and capability-policy changes also need exact
+rejection or authority expectations at their owning boundary.

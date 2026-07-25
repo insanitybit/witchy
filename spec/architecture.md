@@ -72,10 +72,21 @@ engineering invariant, enforced by:
   missing compiled source location is a reported divergence.
 - Hundreds of differential unit tests plus property-based tests (proptest).
 - A CI sweep running `parity` over every example.
+- `tests/misc/semantic_conformance.rs`: independently stated exact values,
+  rejection diagnostics, and capability footprints. Its positive control
+  injects a shared semantic mutation that both backends agree on and proves the
+  external expectation still rejects it.
 
 The consequence for contributors: **any observable behavior you add must land
 on both backends in the same change**, or be a loud error on the one that
 lacks it. The codebase treats a "documented divergence" as a bug.
+
+Parity is not a specification oracle: the interpreter and compiled backend
+share parsing, linking, type checking, and parts of lowering policy, so a
+common-mode defect can preserve agreement. New semantics therefore need an
+independent expected result or rejection in addition to parity. The
+conformance corpus is deliberately small and reviewable; broad generated
+coverage stays in the differential and property suites.
 
 ## The WASM value model
 
