@@ -124,7 +124,7 @@ fn main(console: Console):
 0
 ```
 
-Some details matter in larger programs:
+These details affect parsing and inference:
 
 - Interpolation renders compounds directly on every backend — `"${xs}"` prints
   `[1, 2, 3]`, `"${pair}"` prints `(1, one)`, and a dict prints `{ada: 36}`.
@@ -188,5 +188,3 @@ true
 true
 false
 ```
-
-The next chapter puts these values behind functions and control flow.

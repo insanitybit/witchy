@@ -132,6 +132,3 @@ fn main(console: Console):
 ```text
 {"squares":[1,4,9,16,25]}
 ```
-
-The following chapters introduce values, functions, data types, errors, generics,
-traits, iterators, compile-time code, modules, and the capability system.

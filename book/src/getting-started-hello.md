@@ -17,14 +17,13 @@ witchy hello.witchy
 hello, witchy
 ```
 
-The two parts worth examining are the entry point and its `Console` parameter.
+The entry point and its `Console` parameter establish the capability model.
 
 ## `fn main(...)`
 
-`main` is the entry point, like in C or Rust. But look at its parameter:
-`console: Console`. In most languages `main` takes command-line arguments and
-nothing else; the ability to *print* is ambient — `print`, `console.log`,
-`std::cout` are globally available.
+`main` is the entry point, like in C or Rust. Its parameter is
+`console: Console`. Printing is an effect, so the program receives a `Console`
+value for it.
 
 In witchy, printing is an effect, and effects require authority. `Console` is a
 **capability**: a value that grants the right to write to standard output — and
@@ -35,11 +34,9 @@ when the program starts.
 
 ## `console.print("...")`
 
-Because printing needs a `Console`, `print` is a method on one.
-This is the pattern you'll see everywhere: an operation that touches the world
-is reached through the capability that authorizes it. A function that never receives a
-`Console` can never print — and you can verify that just by reading its
-signature.
+Because printing needs a `Console`, `print` is a method on one. Operations that
+touch the world are reached through the capability that authorizes them. A
+function that receives no `Console` has no printing operation in its signature.
 
 Try deleting `console` from `main`'s parameters and running it again: the
 compiler refuses, because `main`'s body references a `console` that no longer
@@ -75,7 +72,3 @@ can't fabricate one. This is not documentation or a naming convention you hope
 people follow. It is a property the type checker guarantees. Most of any real
 witchy program is functions like these; capabilities flow only to the few places
 that genuinely need them.
-
-That single idea — authority is a value, and it only goes where you pass it — is
-the whole language in miniature. The rest of this book is about living
-comfortably inside it.

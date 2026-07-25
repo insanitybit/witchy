@@ -79,5 +79,3 @@ There's a [Zed extension](https://github.com/insanitybit/witchy/tree/master/edit
 with tree-sitter highlighting and a language server (`witchy lsp`) that provides
 diagnostics, completion, and hover. Any editor that speaks LSP can use the
 server.
-
-The next chapter uses the browser or the installed binary to run a first program.

@@ -259,5 +259,3 @@ guessing. Some library APIs return matchable error enums and rely on `?` plus
 `From` to convert them at an application boundary like `Result(_, String)`.
 So you can't accidentally use an unvalidated `DateTime`; the type makes you
 unwrap the `Result` first.
-
-Next, the tools for writing code that works for *many* types at once.

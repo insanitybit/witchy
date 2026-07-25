@@ -415,5 +415,3 @@ These conventions are also witchy's **performance knobs** (what may alias
 determines what the compiler may mutate in place): see
 [Appendix: Performance — the Ownership Knobs](appendix-performance.md) for
 what each one means to the optimizer and when to reach for it.
-
-Next: defining your own types.

@@ -378,6 +378,3 @@ just opens it to your own types. The standard library uses it widely — `Set`
 guarantees distinct members, `semver.Version` non-negative components,
 `time.DateTime` a real calendar date — each an invariant its smart constructor
 enforces and its type then carries.
-
-With records and enums in hand, we can talk about the witchy way to handle
-things going wrong.

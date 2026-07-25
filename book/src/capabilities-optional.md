@@ -28,7 +28,7 @@ fn main(console: Console, dir: Dir[Write]):
 ```
 
 You construct the values with `Some(dir)` and `None` like any other option — a
-capability isn't special here, it's just a value flowing as an argument.
+The capability is an ordinary value passed as an argument.
 
 The important part: **the auditor sees through `Option`.** `witchy caps` reports
 
@@ -132,6 +132,5 @@ fn main(console: Console, dir: Dir[Write], env: Env):
 of the program decides, value by value, whether that authority is actually
 exercised. Everything below `run` that holds `None` provably cannot write.
 
-So far this is all static — the type checker keeping your code honest. The next
-chapter turns it into a runtime guarantee strong enough to run code you don't
-trust.
+The type checker establishes this condition statically; the sandbox enforces it
+at runtime.

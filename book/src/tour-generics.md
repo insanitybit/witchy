@@ -2,8 +2,8 @@
 
 ## Generic functions
 
-A lowercase, argument-less name in a type is a **type variable**. A function
-that works for any element type just uses one:
+A lowercase, argument-less name in a type is a **type variable**. Use one when a
+function accepts any element type:
 
 ```witchy
 fn pair_up(x: a, y: a) -> (a, a):
@@ -23,8 +23,8 @@ fn main(console: Console):
 alpha
 ```
 
-`pair_up` and `first` are checked once and specialized for each concrete type
-you call them with, so there's no runtime cost to being generic.
+`pair_up` and `first` are checked once and specialized for each concrete type at
+their call sites. Generic dispatch adds no runtime operation.
 
 ## Traits
 
@@ -65,9 +65,9 @@ concrete type. `Self` inside an impl refers to the implementing type.
 
 ## Bounded generics
 
-Now combine the two: a generic function that requires its type to implement a
-trait, written `where a: TraitName`. The standard library's `Ord` trait gives
-ordering. This function finds the largest element of any ordered list:
+A generic bound is written `where a: TraitName`. The standard library's `Ord`
+trait supplies ordering; this function finds the largest element of an ordered
+list:
 
 ```witchy
 import cmp
@@ -89,11 +89,9 @@ fn main(console: Console):
 pear
 ```
 
-`largest` works for `Int` and `String` here because both implement `Ord`, and it
-would work for any type of yours that does too — implement (or derive) the
-comparison hierarchy for it and the same function applies. The `>` operator
-desugars to the type's `Ord` impl, so you never call a `greater`/`compare`
-function by name. The standard `cmp` and `show` modules provide these traits
+`largest` accepts `Int` and `String` because both implement `Ord`; a user type
+can do the same by implementing or deriving the comparison traits. The `>`
+operator dispatches to the type's `Ord` impl. The standard `cmp` and `show` modules provide these traits
 (`PartialEq` → `Eq` → `PartialOrd` → `Ord`) along with scalar helpers such as
 `cmp.max_of`, `cmp.min_of`, and `cmp.clamp`; collection algorithms live in
 `list` (`list.contains`, `list.index_of`, `list.sort`, and so on).
@@ -259,5 +257,3 @@ Write an explicit `impl` only when you want behavior the mechanical version
 doesn't give you — a custom display format, a comparison that ignores a field.
 A derive and a hand-written impl of the same trait on the same type is an
 error, not an override.
-
-Next: generators and iterators.

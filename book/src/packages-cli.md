@@ -18,7 +18,7 @@ version = "0.1.0"
 "genlib"      = { path = "../genlib" }   # a local path dependency
 
 [build.grants."genlib"]
-exec = ["protoc"]                    # build-time grants — see the next chapter
+exec = ["protoc"]                    # build-time grants
 ```
 
 Three sections matter:
@@ -34,7 +34,7 @@ Three sections matter:
   `env` allow-lists. **Default deny applies to execution itself**: a dependency
   that ships a build step at all is refused until this section exists (an empty
   section accepts execution with only the confined `BuildOut` sandbox), and
-  absent kinds are denied. This is the subject of the next chapter.
+  absent kinds are denied.
 
 ## The lockfile: `witchy.lock`
 
@@ -163,5 +163,3 @@ tree, each rune's runtime and build footprints are pinned per rune in
 `witchy.lock` (the `runtime_footprint` / `build_footprint` fields above), and
 `witchy why-cap <dir> <Cap>` names which dependency introduces a given
 capability.
-
-Next: what that build axis actually is — build steps and their capabilities.

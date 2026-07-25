@@ -28,10 +28,9 @@ compiler-owned item rather than rendering and reparsing it. Only then does the
 module get type-checked and footprint-analyzed. Generated code is held to
 exactly the same rules as handwritten code.
 
-## Why it can't break the capability model
+## Capability boundaries
 
-Code generation is where macro systems usually punch holes in language
-guarantees. `comptime` is shaped so it can't:
+`comptime` keeps the capability model intact through three rules:
 
 - **No capabilities.** A `comptime:` block has no parameter list, so there is
   nothing to receive a `Console`, `Dir`, or `Net` through — and capabilities
@@ -39,9 +38,8 @@ guarantees. `comptime` is shaped so it can't:
   **deterministic by construction**. The same source always generates the
   same code, which is also what makes builds cacheable.
 - **Additive only.** Emitted source is appended. A `comptime` block cannot
-  rewrite or delete existing items, so it can't change what a signature
-  *means* — it can't launder authority out of a parameter list someone
-  already reviewed.
+  rewrite or delete existing items, so signatures retain their reviewed
+  meaning.
 - **Analyzed after expansion.** `witchy caps`, the type checker, and the
   sandbox footprint all run on the *expanded* module. If generated code
   demands authority, it shows up in the footprint like anything else.
@@ -314,5 +312,3 @@ templates, safe HTML/SQL). For generating code from *files* (a schema, a protoco
 definition), use a [build step](packages-build.md) instead: build steps run in the
 build sandbox with explicitly granted read roots, and their output becomes a
 separate generated module.
-
-Next: the heart of witchy — capabilities.

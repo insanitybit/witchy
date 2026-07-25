@@ -1,11 +1,9 @@
 # Appendix: The Ecosystem
 
-The book teaches the language and toolchain. Applications written in witchy use
-those pieces to share code, build user interfaces, and run a registry. They live
-under [`projects/`](https://github.com/insanitybit/witchy/tree/master/projects) in the
-repository ([`projects/README.md`](https://github.com/insanitybit/witchy/blob/master/projects/README.md)
-is the map); this appendix is the one-paragraph
-orientation.
+The applications under [`projects/`](https://github.com/insanitybit/witchy/tree/master/projects)
+use the language and toolchain to share code, build user interfaces, and run a
+registry. [`projects/README.md`](https://github.com/insanitybit/witchy/blob/master/projects/README.md)
+maps the repository.
 
 ## The pieces
 
@@ -32,12 +30,9 @@ orientation.
 
 - **docs** — this book, rendered as a glamour app.
 
-## Why it hangs together
+## Shared rule
 
-They share one rule: **authority is a value you can compute, diff, and gate.**
-The language makes authority explicit (the capabilities you learned about);
-coven turns that into a supply-chain gate (footprints that can only shrink); and
-glamour extends the same discipline to the browser (UI effects are data a host
-must be authorized to run). The chapter on
-[Capabilities](capabilities.md) is the concept; the ecosystem is that concept
-applied end to end.
+All of these components treat **authority as a value you can compute, diff, and
+gate**. The language records authority in capability types, coven gates package
+footprints, and glamour represents browser effects as data for an authorized
+host. See [Capabilities](capabilities.md) for the language rule.

@@ -1,7 +1,7 @@
 # The Toolbox
 
-The `witchy` binary is the whole toolchain. The commands below are ordered by
-when they first become useful.
+The `witchy` binary provides the toolchain. The commands below follow a typical
+first use.
 
 ## Running and checking
 

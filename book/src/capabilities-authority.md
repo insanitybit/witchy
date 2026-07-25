@@ -1,6 +1,6 @@
 # Authority as a Value
 
-## A capability is a token you cannot forge in code
+## Capability values
 
 A **capability** is a value whose type grants permission to do something. You've
 already met `Console`, which grants printing. There are a handful of these host
@@ -20,12 +20,10 @@ capabilities:
 
 Each is *right-typed* where that matters — `Dir[Read]` vs `Dir[Write]`,
 `Net[Connect, Tcp]` — so the type identifies the resource and the permitted
-operations. The next chapter covers that narrowing.
+operations.
 
-The defining property: **you cannot construct one.** There is no `Console()`,
-no `Dir.read_file("/")`, no global `stdin`. The type checker knows these types have
-no constructor available to your code. The *only* capabilities in a program are
-the ones the host mints and hands to `main`:
+The host mints capabilities and hands them to `main`. Capability constructors
+are unavailable to program code; the type checker enforces that boundary:
 
 ```witchy
 fn main(console: Console, clock: Clock):
@@ -72,7 +70,7 @@ its body, or its callees' bodies, to know that. Contrast a typical language,
 where `compute` could be doing anything, and the only way to find out is to
 audit the entire call graph.
 
-## What this buys you: `witchy caps`
+## Inspecting authority with `witchy caps`
 
 Because authority is visible in types, `witchy caps` can compute a program's
 footprint:
@@ -83,21 +81,14 @@ witchy caps program.witchy
 
 For a program whose `main` takes `Console` and `Dir[Read]`, it prints which
 functions demand which capabilities, and the total. This is computed
-*from the source* — it re-derives what each function actually requires. It is
-not a manifest someone wrote down and might have lied in. That distinction is
-the entire foundation of the package-manager story later: a dependency's claimed
-footprint and its real footprint are the same thing, because the real one is
-what gets checked.
+*from the source*: the tool re-derives what each function requires. The package
+manager checks that computed footprint for dependencies.
 
-## Effects you'd expect to be free aren't
+## Effects are explicit inputs
 
-Reading the clock needs a `Clock` because the current time is
-*input from outside the program* — it's nondeterminism, and a function that
-secretly depends on it isn't pure even though it looks like it returns a number.
-witchy makes that dependency show up in the type. The same goes for environment
-variables (`Env`) and randomness. If a function's result can change based on
-something other than its arguments, it needs a capability to reach that
-something, and you can see it in the signature.
+Reading the clock needs a `Clock`: current time is an input from outside the
+program. The same applies to environment variables (`Env`) and randomness. A
+function whose result depends on any of these values lists the corresponding
+capability in its signature.
 
-Authority is an unforgeable value that travels through arguments. The next
-section covers passing a narrower capability than the one held by the caller.
+Authority is an unforgeable value that travels through arguments.

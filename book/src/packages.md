@@ -4,8 +4,8 @@ A language for running untrusted code has to take its *package manager*
 seriously, because the package manager is where untrusted code comes from. The
 npm/pip/cargo lineage all share a weakness: installing a dependency, and often
 *building* it, runs with your full ambient authority. witchy's package manager,
-**coven**, is built so that depending on code can't, by itself, become a new way
-to be attacked.
+**coven**, keeps dependency installation and build authority explicit, so adding
+code enters through a reviewed capability change.
 
 ## Runes
 
@@ -76,8 +76,8 @@ any time — each rune's recorded footprint alongside it — and `witchy why-cap
 
 ## Trusted publishing, two-phase release
 
-Publishing doesn't use a long-lived API key that can leak. It uses short-lived
-**identity tokens** — the same OIDC shape CI systems like GitHub Actions provide
+Publishing uses short-lived **identity tokens** — the same OIDC shape CI systems
+like GitHub Actions provide
 — so a publish is bound to a specific repository and workflow. The first publish
 to a namespace binds it; a token from any other repository is refused, which
 shuts down namespace hijacking.
@@ -132,7 +132,3 @@ is the full design and threat model. The package manager and the registry are
 themselves written in witchy ([`projects/pm`](https://github.com/insanitybit/witchy/tree/master/projects/pm)
 and [`projects/coven`](https://github.com/insanitybit/witchy/tree/master/projects/coven)) —
 the language eats its own dog food, sandboxable footprint and all.
-
-The next two chapters get concrete: [the manifest, the lockfile, and the
-day-to-day CLI](packages-cli.md), then [build steps and build-time
-capabilities](packages-build.md) end to end.

@@ -113,6 +113,3 @@ There is no fallback to execution in the main page.
 | Portable `.wasm` in the sandbox | artifact consumer | distribution without trusting the author beyond the sandbox |
 | Trusted executable | authenticated author binding plan | installing an application whose author, runtime, and distributor are trusted |
 | Browser host | embedding page's published capability menu | interactive examples and web applications |
-
-The next chapter explains the two distributable native forms and the browser
-bundle in detail.

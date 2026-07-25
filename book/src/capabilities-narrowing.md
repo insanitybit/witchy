@@ -1,9 +1,7 @@
 # Narrowing and Attenuation
 
-Holding a capability doesn't mean you must hand out all of it. witchy lets you
-pass on a *weaker* version — fewer verbs, or a smaller slice of the world. This
-is **attenuation**, and it's how you give a function exactly the power it needs
-and no more.
+A capability can be attenuated before it is passed on: remove rights, or restrict
+the part of the world it can reach. This is **attenuation**.
 
 ## Rights: fewer verbs
 
@@ -92,11 +90,9 @@ fn main(console: Console, dir: Dir):
     console.print("stored")
 ```
 
-Combine the two — `dir.subtree("uploads") as Dir[Write]` — and you've handed a
-function write access to one folder and nothing else, in a way the type system
-guarantees and a reviewer can read at a glance. The narrowing also chains and
-stays confined: `dir.subtree("a").subtree("b")` reaches `a/b`, and `..` still
-cannot escape.
+Combine the two — `dir.subtree("uploads") as Dir[Write]` — to give a function
+write access to one folder. Narrowing chains and stays confined:
+`dir.subtree("a").subtree("b")` reaches `a/b`, and `..` cannot escape.
 
 A `Dir` also carries an **entry policy** that narrows *which entries* it may
 touch, the third axis alongside rights (verbs) and subtree (scope).
@@ -408,6 +404,5 @@ And `witchy caps-diff old.witchy new.witchy` understands them. A change from
 *listens*" — and fails the gate, even though both are "uses the network." The
 supply-chain signal is verb-precise, not just kind-precise.
 
-So far a capability is something you *have* and pass along, perhaps narrowed.
-But authority can also be *conditional* — held only sometimes, or in one of
-several shapes. That's next.
+Capabilities can also be *conditional* — held only sometimes, or in one of
+several shapes.

@@ -14,9 +14,8 @@ witchy sandbox program.witchy    # compile to wasm, granted exactly its footprin
 ```
 
 Both commands run the **compiled** backend; they differ only in the capability
-grant. The interpreter isn't a way to run your program — it's the reference
-implementation that *defines* what your program means, and the yardstick the
-compiled backend is held to.
+grant. The interpreter is the reference implementation that *defines* what a
+program means and provides the comparison target for compiled execution.
 
 The interpreter is kept direct enough to serve as the readable reference
 semantics. The WebAssembly tier is the optimized, confined implementation: the
@@ -26,8 +25,7 @@ implementation to the parity obligation, so the project maintains these two.
 
 ## Parity: the invariant that makes it safe
 
-These aren't two languages that happen to look alike. They are two
-implementations of *one* language, held to a single rule:
+The two backends implement *one* language under a single rule:
 
 > Every supported program has identical results and failures on both backends.
 > A construct that cannot meet that contract is rejected loudly.
@@ -114,10 +112,10 @@ comparison/key method, or use a closed enum when concrete recovery is required.
 
 When a backend genuinely can't express something the same way — historically,
 say, comparing certain generic types — witchy makes it a **loud compile-time
-error** rather than letting the two backends diverge. "Zero silent divergence"
-is the design's north star.
+error** rather than letting the two backends diverge. The rule is zero silent
+divergence.
 
-## Why this matters to you
+## Run path and portability
 
 **The program you run is the program you deploy**: `witchy run` and
 `witchy sandbox` are the same compiled backend, differing only in how much
@@ -165,7 +163,8 @@ current list is maintained in
 
 ## A note on memory
 
-The compiled tier has no garbage collector — and doesn't miss it. Memory is a
+The compiled tier has no garbage collector; it uses explicit ownership and
+reclamation. Memory is a
 bump arena reclaimed at *structural* lifetimes: the program's exit,
 compiler-proven escape-free loop iterations (watermark resets), and
 user-declared [`region:` blocks](appendix-performance.md) whose value escapes
@@ -180,5 +179,3 @@ all inside the sandbox ([`bench/BASELINE.md`](https://github.com/insanitybit/wit
 has the numbers). The repository's
 `spec/architecture.md` has the full
 memory-model story and the honest list of current limitations.
-
-The next chapter covers source-level conventions, followed by the test runner.

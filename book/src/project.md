@@ -7,8 +7,8 @@ the effects to the edges, keep the middle pure.*
 
 ## Start pure
 
-The actual work — filtering lines — needs no capabilities at all. So we write it
-as plain functions, and we can run and test them immediately:
+Filtering lines needs no capabilities. Write that logic as plain functions so it
+can be run and tested independently:
 
 ```witchy
 // Lines of `contents` that contain `query`.
@@ -43,7 +43,7 @@ ci:     info retry
 ```
 
 This is the heart of the program, and it's *provably effect-free* — look at the
-signatures. We could write a dozen `test_*` functions for it (next chapter) and
+signatures. We could write a dozen `test_*` functions for it and
 never need a capability. That's the goal: the logic that's worth testing
 carefully is the logic that touches nothing.
 
@@ -85,10 +85,9 @@ fn main(console: Console, dir: Dir[Read], env: Env, args: List(String)) -> Int:
 ```
 
 Read that `main` signature and you know the program's *entire* capability
-footprint: it prints, it reads one directory subtree (read-only — it can't
-modify your logs), it reads environment variables, and it takes arguments. It
-cannot write files. It cannot open a network connection. Not "it doesn't"; it
-*can't*, and the next step proves it.
+footprint: it prints, reads one directory subtree (read-only), reads environment
+variables, and takes arguments. The type contains no file-writing or network
+capability. The next step proves the footprint.
 
 ## Audit it
 
@@ -121,7 +120,7 @@ Try the confinement yourself: a path like `../../etc/passwd` is rejected by the
 `Dir`'s confinement, because `scan` was rooted at `./logs` and `..` can't escape
 it.
 
-## What we did
+## Program shape
 
 We split the program into a pure core and a capability shell, audited its exact
 authority from the source, and ran it in a VM that can do precisely that and
@@ -129,5 +128,3 @@ nothing more. That shape — pure middle, thin authorized edge, enforced boundar
 — is how witchy programs are meant to be built. The bigger the program, the more
 it pays off: the surface that can affect the world stays small and legible, and
 everything else is provably inert.
-
-Next, how to share code like this without giving up any of those guarantees.

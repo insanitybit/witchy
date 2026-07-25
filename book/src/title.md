@@ -3,15 +3,13 @@
 *A guide to a capability-secure language where a program's authority is a typed,
 auditable, enforceable artifact.*
 
-witchy is a small, statically-typed language with an unusual promise: you can
-tell exactly what a program — or any function within it — is allowed to do just
-by reading its types, and you can **enforce** that at runtime by compiling to a
-sandboxed WebAssembly VM. There is no ambient authority: a function that doesn't
-receive the means to touch the filesystem cannot touch the filesystem, and the
-compiler will not let it try.
+witchy is a small, statically typed language in which a program's authority is visible
+in its types and enforced at runtime by a sandboxed WebAssembly VM. There is no
+ambient authority: a function without a filesystem capability cannot access the
+filesystem, and the compiler rejects the attempt.
 
-This book teaches witchy from the ground up, building toward that idea. If you
-want the terse, exhaustive description of every form, the
+This book teaches witchy from the ground up. For an exhaustive description of
+the syntax, see the
 [language reference](https://github.com/insanitybit/witchy/blob/master/spec/language.md)
 is its companion; this book is the narrative path.
 

@@ -1,14 +1,10 @@
 # Capabilities: The Heart of witchy
 
-Everything so far has been ordinary, pleasant, and *pure*. The functions you
-wrote couldn't print, read a file, or touch the network — and you could tell,
-because nothing in their signatures granted that power.
+Pure functions cannot print, read a file, or touch the network because their
+signatures grant none of those capabilities. This chapter covers code that does
+need host authority and how witchy bounds and enforces it.
 
-This chapter is about the other kind of code: the parts of a program that
-genuinely need to affect the world, and how witchy makes that authority
-explicit, bounded, auditable, and enforceable.
-
-Four sections develop one rule:
+The chapters develop one rule:
 
 > **Authority enters a program in exactly one place — the parameters of `main` —
 > and flows onward only as function arguments.**
@@ -22,6 +18,6 @@ Four sections develop one rule:
 - [**The Sandbox**](capabilities-sandbox.md) — turning "the types say so" into
   "the VM enforces it."
 
-This is an object-capability system made the language default and checked by the
-type system. A function's capability-typed parameters state the authority it can
+witchy makes this object-capability model part of the language and checks it in
+the type system. Capability-typed parameters state the authority a function can
 exercise.

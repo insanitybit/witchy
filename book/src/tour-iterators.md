@@ -1,10 +1,8 @@
 # Generators and Iterators
 
-Lists are eager: building one computes every element up front and holds them all
-in memory. Often you want the opposite — a sequence computed *on demand*, so you
-can describe "the even numbers" or "the Fibonacci sequence" without deciding in
-advance how many you need. witchy gives you two cooperating tools for that: the
-`std/iter` library of lazy iterators, and `gen fn` generators that produce one.
+Lists compute every element when built. For on-demand sequences, use the
+`std/iter` library of lazy iterators and `gen fn` generators that produce one
+value at a time.
 
 ## Lazy iterators
 
@@ -141,7 +139,7 @@ One restriction: a `gen fn` may not be a *trait* method (neither declared in a
 at parse time. A trait that wants a lazy sequence declares a plain
 `fn … -> Iter(a)`, and the impl can delegate to an inherent generator method.
 
-## Why this stays simple
+## Collecting into an expected type
 
 `collect` builds **whatever the call site expects** — any type implementing
 `FromIterator`. The ascription chooses: a `List(Int)`, a
@@ -162,8 +160,8 @@ restriction is placement: `await` works in loop bodies, but not in branch
 conditions or match scrutinees.
 
 A generator with no capability parameters is also, by construction, **pure**: a
-`gen fn` that takes no `Console`/`Dir`/`Net` provably cannot do I/O — it can only
-compute the next value. That word — *provably* — is the thread we pull on next.
+`gen fn` that takes no `Console`/`Dir`/`Net` provably cannot do I/O — it computes
+the next value.
 
 Modules organize these definitions; compile-time code can generate more of them
 before type checking.

@@ -1,6 +1,6 @@
 # Appendix: The Standard Library
 
-witchy ships a broad bundled standard library. A data type's operations are
+A data type's operations are
 **methods** — `xs.map(f)`, `s.trim()`, `d.insert(k, v)` — and every public
 method also has a module-qualified alias (`list.map(xs, f)`). Bring a
 non-prelude module in with `import name`; its constructors and other

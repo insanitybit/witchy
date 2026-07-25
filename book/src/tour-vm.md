@@ -122,17 +122,14 @@ As with `vm.with_dir`, the handler must be a bare top-level function name. Closu
 and local aliases are rejected, so this API always means an isolated worker on the
 compiled backend rather than a shape-dependent parent-VM fallback.
 
-It is deliberately **lock-step** — the worker processes one request at a time, in
-order, rather than racing the caller. That is the interesting part: a *freely-racing*
-cross-VM channel would be nondeterministic (the interleaving depends on timing), and a
-single-threaded interpreter could never reproduce it bit-for-bit. So a free-racing
-channel is *incompatible* with witchy's parity guarantee. Lock-step serving is not a
-weaker compromise — it is the correct shape for a language that promises two backends,
-one meaning.
+It is deliberately **lock-step**: the worker processes one request at a time, in
+order. A freely racing cross-VM channel would make interleaving timing-dependent,
+which the single-threaded interpreter could not reproduce. Lock-step serving keeps
+the result identical across both backends.
 
 ## A multi-core HTTP server
 
-The same prefork idea gives you a parallel web server with **no extra code**.
+The same prefork model provides a parallel web server.
 `server.serve(net, addr, app)` spawns one worker VM per core, each re-running your
 program to build the same routes with the same capabilities, all accepting from one
 shared listener — the kernel load-balances connections across them.
@@ -148,17 +145,14 @@ fn main(net: Net, console: Console):
     server.serve(net, "127.0.0.1:8080", app)   # uses every core
 ```
 
-The handlers remain pure
-`fn(Request) -> Response` — they hold no `Net`, so a handler can't phone home — and
-their state lives in their captured capabilities (a store `Dir` = the filesystem), so
-the workers are interchangeable. You write the routes; the parallelism is automatic.
+The handlers remain pure `fn(Request) -> Response` values. Their state lives in
+captured capabilities (a store `Dir` represents the filesystem), so the workers
+are interchangeable. The routes determine the application; the server supplies
+the parallel workers.
 Reach for `server.serve_one` if you want a single-core loop (e.g. for per-process
 in-memory state). witchy's own package registry, `coven`, runs exactly this way.
 
-## When to reach for which
-
-- **`vm.par_map`** — you have a list and a pure function and you want it *fast*.
-- **`vm.with_dir`** — you want to run code with *less* authority than you hold.
-- **`vm.serve`** — you want a stateful worker processing a stream, isolated.
-- **`chan`/`task`** — you want cooperative concurrency (overlapped I/O, structured
-  task groups) within one VM; see [the async chapter](tour-async.md).
+Use `vm.par_map` for a list and a pure function; use `vm.with_dir` to run code
+with less authority than the caller; use `vm.serve` for an isolated stateful
+worker. Use `chan`/`task` for cooperative concurrency within one VM; see [the
+async chapter](tour-async.md).

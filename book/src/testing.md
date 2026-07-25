@@ -266,8 +266,7 @@ the same whichever backend runs it.
 
 ## Beyond your own tests
 
-Two project-level testing ideas are worth knowing about, even though they're run
-by the maintainers rather than written by you:
+Two project-level checks run alongside your tests:
 
 - **`witchy parity`** (from the last chapter) is differential testing for the
   *language itself* — it's how the backends are kept honest.
@@ -275,9 +274,3 @@ by the maintainers rather than written by you:
   and checked. Complete examples execute through compiled Wasm in fresh opaque
   browser frames with explicit providers and derived CSP; runnable examples are
   also checked against committed output and backend parity.
-
-That's the book. You can write pure logic, push effects to a thin authorized
-edge, see and gate exactly what a program can do, run untrusted code confined to
-its declared footprint, share code without inheriting its authority, and trust
-that what you tested is what runs. Go build something — and you'll know precisely
-what it's allowed to do.

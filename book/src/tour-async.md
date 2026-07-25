@@ -1,13 +1,11 @@
 # Concurrency with Async and Channels
 
-witchy's concurrency is **cooperative async tasks** that communicate over
-**channels**. A function marked `async` may `await`; calling it produces a *task*
-that does nothing until it is driven. You start a task with `chan.spawn`, and a
-channel is an ordinary value you create with `chan.channel` and hand to whichever
-tasks share it — spawning and channels are *independent* concerns. Tasks share no
-memory, so there are no locks and no data races, and the schedule is deterministic
-and single-threaded, so a program produces the same output on the interpreter and
-the compiled WebAssembly, every run.
+witchy's concurrency uses **cooperative async tasks** and **channels**. An
+`async` function may `await`; calling it produces a *task* that the executor
+drives. Start one with `chan.spawn`; create channels with `chan.channel` and pass
+them to the tasks that communicate. Tasks have separate memory, and the
+single-threaded deterministic schedule produces the same output on the
+interpreter and compiled WebAssembly backends.
 
 ## `async` and `await`
 
@@ -327,7 +325,7 @@ a synthesized scalar scheduler for qualifying scalar programs and recursive drop
 for boxed/heap payloads; both retain the same `chan` surface and deterministic
 schedule.
 
-## Why this stays deterministic
+## Deterministic scheduling
 
 The executor is ordinary witchy code (see `std/task`): it owns the channel buffers
 and polls tasks in a fixed round-robin order. `std/chan` is the ergonomic channel

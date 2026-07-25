@@ -241,9 +241,5 @@ The boundary has explicit limits:
   handle-anchored per-operation confinement, report the absent outer layer in
   best-effort mode, and fail before `main` in required mode.
 
-What you get, within those boundaries, is the thing most systems can't offer at
-all: the ability to run code whose blast radius is written in its type and
-enforced by the machine. There's one more place that boundary matters — between
-the concurrent parts of a running program.
-
-Next: concurrency with async and channels.
+Within these boundaries, a program's blast radius is written in its type and
+enforced by the machine.

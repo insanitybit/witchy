@@ -97,6 +97,4 @@ shipped modules. Other imports resolve a sibling file or a rune dependency from
 then type-checks one program; module privacy and qualified names still determine
 which source-level references are legal.
 
-The [runes and registry](packages.md) chapters cover dependency resolution. The
-next chapter covers source that generates additional items before linking and
-type checking finish.
+The [runes and registry](packages.md) chapters cover dependency resolution.

@@ -1,12 +1,9 @@
 # Getting Started
 
-This chapter gets witchy onto your machine, runs your first program, and
-introduces the handful of commands you'll use constantly. If you'd rather read
-first and run later, you can — but witchy is small enough that poking at it is
-the fastest way to learn it, and the browser playground means you don't even
-need to install anything to start.
+This chapter installs witchy, runs a first program, and lists the core commands.
+The browser playground can run the examples without a local installation.
 
-The three sections:
+Sections:
 
 - [**Installation**](getting-started-installation.md) — building the `witchy`
   binary (and the zero-install playground).

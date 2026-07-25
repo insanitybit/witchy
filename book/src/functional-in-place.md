@@ -4,11 +4,10 @@ Ordinary proper tail calls run in bounded stack space. A
 **functional-in-place** (FIP) kernel adds a stronger `mode opt` promise: recursive
 depth also adds no allocation, reuse, free, or arena-rewind operations.
 
-This is useful for state machines that read and update a small scalar record for
-many transitions. You still write an ordinary function—there is no `fip`
-keyword or attribute. The ownership signature and recursive shape state the
-contract, and the compiler rejects a near miss instead of silently making it
-slower.
+Use FIP for state machines that repeatedly update a small scalar record. FIP
+uses no `fip` keyword or attribute: an ordinary function's ownership signature
+and recursive shape state the contract. The compiler rejects a near miss instead
+of silently making it slower.
 
 ## A complete kernel
 

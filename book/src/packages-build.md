@@ -168,5 +168,4 @@ outside world re-runs every time, since its output may depend on external
 state.
 
 Runtime and build-time authority are typed, computed, granted explicitly, and
-pinned in the lock. A widening on either axis requires review. The next chapter
-explains how the two execution implementations retain one meaning.
+pinned in the lock. A widening on either axis requires review.
