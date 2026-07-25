@@ -1,6 +1,6 @@
 # RFC-0105: Deterministic capability fixtures and test transcripts
 
-Status: accepted; implementation in progress
+Status: implemented
 
 ## Summary
 
@@ -535,18 +535,24 @@ This RFC is implemented only when every item below has checked evidence:
   private extracted artifact in fresh opaque browser frames with derived CSP.
 - [x] Book, CLI help, README, architecture, status, RFC references, and examples
   manifest state the same current truth.
-- [ ] Warning-denied Clippy, formatting check, focused tests, interpreter/Wasm
+- [x] Warning-denied Clippy, formatting check, focused tests, interpreter/Wasm
   parity, browser/book, e2e, private installed-artifact smoke, and serialized
   full gate pass on the exact merged commit.
-- [ ] No task-owned branch, worktree, compatibility shim, TODO, deferred phase,
+- [x] No task-owned branch, worktree, compatibility shim, TODO, deferred phase,
   or queue entry remains in flight.
 
-The two unchecked rows are live closure blockers, not deferred scope:
+Closure evidence:
 
-- e2e, extracted-artifact smoke, and the serialized full gate must pass on the
-  exact landing commit;
-- task branches, worktrees, compatibility residue, and queue entries can be
-  removed only after that landing.
+- Exact merged master `3861892d285c8a0622fd9fd7dcb8275b7cb4bdfe`
+  passed the serialized workspace, formatter, warning-denied Clippy, Wasm, and
+  runnable-browser-book gate. The focused interpreter/Wasm, e2e, and extracted
+  private-artifact checks passed on the same landed implementation.
+- The canonical `aarch64-apple-darwin` archive built from that exact commit
+  passed the installed-artifact smoke, including fixture parity, portable Wasm,
+  trusted-executable confinement, and corruption rejection.
+- The merge queue is empty. Intermediate and merged task worktrees and branch
+  refs were swept; no compatibility tail, TODO, or deferred RFC-0105 phase
+  remains.
 
 ## RFC relationships
 

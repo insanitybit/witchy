@@ -162,7 +162,7 @@ jobs:
       - name: Build the release binary (compiles the docs app to wasm via build-docs.sh)
         run: cargo build --release
       - name: Build the browser compiler wasm (the Run buttons)
-        run: cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
+        run: cargo build --release --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown
       - name: Assemble the deployable bundle
         run: WITCHY_BROWSER_WASM=target/wasm32-unknown-unknown/release/witchy.wasm ./scripts/build-docs.sh dist
       - name: Package the exact private preview bytes
