@@ -18,6 +18,71 @@ reads `cargo metadata` and rejects new stage edges. Removing an allowed edge is
 always legal. Adding one requires changing the test and this ledger together,
 so architecture growth is explicit and reviewable.
 
+## Semantic-surface baseline
+
+Snapshot: `f0e8ffa7` on 2026-07-25, after the checked-pipeline deletion,
+proof-safe typed rewrite, capability-operation authority, and structured
+source-check provenance slices landed.
+
+These are trend sensors, not quality scores. "Implementation-tree Rust" means
+`src/**/*.rs` and `crates/*/src/**/*.rs`, excluding files named `*_tests.rs`
+and `src/bin`; inline test modules remain counted. Regex-derived counts are
+deliberately labeled as heuristics. A reduction is useful only when the
+associated responsibility or proof burden disappears.
+
+| Sensor | Baseline | Interpretation |
+|---|---:|---|
+| Implementation-tree Rust lines | 126,622 | Total reading surface under the counting rule above. |
+| Public declarations | 927 | `pub` functions, types, traits, constants, modules, and re-exports; compatibility and test-facing APIs are included. |
+| Public functions in `types::pipeline`, `interp::pipeline`, and `syntax::linker` | 34 | Checked-pipeline deletion reduced the first two owners to 3 and 7 functions; the linker still exposes 24 variants. |
+| Public function signatures crossing raw AST `Module` | 105 | Heuristic upper bound on phase-unproved boundaries; analysis queries and intentional syntax passes are included. |
+| `Result<..., String>` signatures | 300 | Heuristic upper bound on string-only failure contracts. |
+| Explicit `location: None` constructions | 29 | Known provenance-drop sites; some are legitimately module-wide. |
+| `unreachable!` sites | 114 | Phase/invariant assumptions, including tests and non-semantic stages. |
+| `unreachable!` in types, lowering, and interpreter | 96 | Priority phase-proof census. |
+| Raw `match name` dispatch sites | 31 | Heuristic for string-dispatched semantic authorities. |
+| Root/stage `pub mod` or stage re-export declarations | 68 | Compatibility and crate-surface pressure. |
+| Substring assertions | 1,196 | Heuristic; many are valid, but diagnostic contracts should migrate to identity and location assertions. |
+| Bare `is_err` assertions | 132 | Heuristic for rejection tests that may not identify the rejected contract. |
+| Bare `is_none` assertions | 37 | Heuristic for absence tests without a stronger reason assertion. |
+
+Largest implementation files at the snapshot:
+
+| File | Lines | Named-function heuristic |
+|---|---:|---:|
+| `witchy-types/src/typeck.rs` | 8,824 | 205 |
+| `witchy-lower/src/codegen/mod.rs` | 7,420 | 176 |
+| `witchy-syntax/src/linker.rs` | 4,988 | 144 |
+| `witchy-syntax/src/parser.rs` | 4,560 | 128 |
+| `witchy-syntax/src/intrinsics.rs` | 4,333 | 94 |
+| `witchy-types/src/traits.rs` | 4,330 | 117 |
+| `witchy-lower/src/analysis.rs` | 4,255 | 147 |
+| `witchy-lower/src/codegen/assembly.rs` | 3,447 | 79 |
+
+## Semantic authority map
+
+Every row names one authority. Consumers may derive representations or enforce
+stage-specific policy, but they must not independently redefine the row's
+identity, arity, ownership, or meaning.
+
+| Contract | Authority | Consumer rule |
+|---|---|---|
+| Source grammar and AST | `witchy-syntax::{lexer,parser,ast}` | Later stages consume AST nodes; they do not reparse source-shaped strings to recover semantics. |
+| Module graph, source identities, visibility | `witchy-syntax::{linker,type_resolve}` | Downstream stages consume resolved names and declaration provenance. |
+| Source-only semantic proof and provenance | `witchy-syntax::source_check` | Generator/async validation reports item identity before destructive lowering; checked linking retains module and line. |
+| Type judgment and expression facts | `witchy-types::typeck::{CheckedModule,TypedModule,TypeTable}` | Arbitrary AST mutation always reannotates; node-preserving mutation is crate-private. |
+| Capability vocabulary | `witchy-cap-model` | Compiler, analyzer, fixtures, and runtime share names/classes/rights vocabulary without depending upward. |
+| Capability operation identity, receiver, arity, and coarse result | `witchy-syntax::cap_ops::OPS` | Type checking and trait lowering use receiver-qualified catalog lookup; operation-specific rights remain checker policy. |
+| Effective nominal type parameters | `witchy-syntax::ast::effective_type_params` | Type checking, reflection, storage, traits, and codegen delegate rather than infer separate parameter order. |
+| Runtime declaration identity and closed shapes | `witchy-types::runtime_type` | Backends consume authenticated declaration catalogs; they do not reconstruct ownership from names. |
+| Trait dispatch and monomorphization | `witchy-types::traits` over `TypeTable` | Backends consume resolved calls; string-shape fallback must not become a second type system. |
+| AST-to-WIR lowering and representation | `witchy-lower::codegen` plus `witchy-wir::layout` | The interpreter defines observable semantics, but does not define compiled layout. |
+| Runtime values and host ABI | `witchy-runtime::{value,native}` with WIR representation constants | Host adapters consume the shared ABI instead of maintaining parallel layouts. |
+| Capability footprint | `witchy-caps::capabilities` | Grants are checked against recomputed source footprint, never trusted metadata. |
+| Confinement policy | `witchy-confinement` | Native providers consume normalized policy; they do not reinterpret source grants. |
+| User execution path | compiled Wasm through `src/commands/{compile,execution,wasm_exec}` | Interpreter execution remains oracle/comptime/test/build infrastructure, not a second user runtime. |
+| Differential oracle | `witchy-interp` | Parity proves backend agreement after shared frontend stages; independent conformance evidence must cover common-mode semantics. |
+
 ## Stage dependency contract
 
 The root package is the composition layer and may depend on every stage. The
