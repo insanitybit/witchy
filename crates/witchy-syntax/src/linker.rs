@@ -527,27 +527,19 @@ fn levenshtein(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
-/// Playground/experiment bundled modules (RFC-0018: distinct provenance from the
-/// standard library). `projects/glamour` is a product experiment injected into
-/// playgrounds and doc examples, NOT part of `std`, so it resolves here rather
-/// than through `std_source`.
-pub fn playground_source(name: &str) -> Option<&'static str> {
-    match name {
-        "glamour" => Some(include_str!("../../../projects/glamour/src/glamour.witchy")),
-        "markdown" => Some(include_str!("../../../projects/glamour/src/markdown.witchy")),
-        _ => None,
-    }
-}
-
 /// The general bundled-module resolver: the standard library plus the
 /// playground experiments. Import resolution uses this so a program may
 /// `import glamour`, while `std_source` stays a pure standard-library registry.
 pub fn bundled_source(name: &str) -> Option<&'static str> {
-    std_source(name).or_else(|| playground_source(name))
+    std_source(name).or(match name {
+        "glamour" => Some(include_str!("../../../projects/glamour/src/glamour.witchy")),
+        "markdown" => Some(include_str!("../../../projects/glamour/src/markdown.witchy")),
+        _ => None,
+    })
 }
 
 /// Source for a bundled STANDARD-LIBRARY module (`std/*.witchy`). Does NOT
-/// include playground experiments — see `playground_source`/`bundled_source`.
+/// include playground experiments; use [`bundled_source`] when those are legal.
 pub fn std_source(name: &str) -> Option<&'static str> {
     match name {
         "list" => Some(include_str!("../../../std/list.witchy")),
@@ -1479,7 +1471,7 @@ pub fn link_with_user_modules_with_mode(
         .map(|linked| linked.module)
 }
 
-pub fn link_with_user_modules_with_mode_and_origins(
+fn link_with_user_modules_with_mode_and_origins(
     modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
