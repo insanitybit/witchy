@@ -10,21 +10,21 @@
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 #![deny(unsafe_code)]
 
-pub use witchy::analysis;
-pub use witchy::artifact;
-pub use witchy::ast;
-pub use witchy::capabilities;
-pub use witchy::codegen;
-pub use witchy::comptime;
-pub use witchy::doc;
-pub use witchy::format;
-pub use witchy::generators;
-pub use witchy::grants;
-pub use witchy::interpreter;
-pub use witchy::linker;
-pub use witchy::{enforce_performance_modes, is_entry_function};
-pub use witchy::opt;
-pub use witchy::pipeline;
+#[cfg(test)]
+pub(crate) use witchy::{
+    analysis, comptime, doc, generators, native, net, value, wir, wir_encode, wir_helpers, wir_opt,
+};
+pub(crate) use witchy::artifact;
+pub(crate) use witchy::ast;
+pub(crate) use witchy::capabilities;
+pub(crate) use witchy::codegen;
+pub(crate) use witchy::format;
+pub(crate) use witchy::grants;
+pub(crate) use witchy::interpreter;
+pub(crate) use witchy::linker;
+pub(crate) use witchy::{enforce_performance_modes, is_entry_function};
+pub(crate) use witchy::opt;
+pub(crate) use witchy::pipeline;
 mod cli;
 mod commands;
 #[cfg(test)]
@@ -38,18 +38,11 @@ pub(crate) use commands::wasm_exec::{run_wasm_bytes, run_wasm_test_bytes, RUN_ME
 pub(crate) use commands::wasm_exec::run_wasm_file;
 mod lsp;
 mod source;
-pub use witchy::native;
-pub use witchy::net;
-pub use witchy::parser;
+pub(crate) use witchy::parser;
 mod idp;
-pub use witchy::runtime;
-pub use witchy::typeck;
-pub use witchy::trusted_exe;
-pub use witchy::value;
-pub use witchy::wir;
-pub use witchy::wir_encode;
-pub use witchy::wir_helpers;
-pub use witchy::wir_opt;
+pub(crate) use witchy::runtime;
+pub(crate) use witchy::typeck;
+pub(crate) use witchy::trusted_exe;
 
 pub(crate) use commands::capabilities::{
     report_capabilities, report_capability_diff, report_grant_check,
