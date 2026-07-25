@@ -116,21 +116,12 @@ impl From<TypeError> for PipelineError {
     }
 }
 
-fn check_linked(
-    linked: LinkedModule,
-    module_owners: Option<AuthenticatedModuleOwners>,
-) -> Result<CheckedModule, PipelineError> {
-    typeck::check(&linked.module)?;
-    Ok(CheckedModule { linked, module_owners })
-}
-
-fn source_checked_link(
-    result: Result<LinkedModule, SourceLinkError>,
-) -> Result<LinkedModule, PipelineError> {
-    match result {
-        Ok(linked) => Ok(linked),
-        Err(SourceLinkError::Link(error)) => Err(PipelineError::Link(error)),
-        Err(SourceLinkError::Source(error)) => Err(PipelineError::Source(error)),
+impl From<SourceLinkError> for PipelineError {
+    fn from(error: SourceLinkError) -> Self {
+        match error {
+            SourceLinkError::Link(error) => Self::Link(error),
+            SourceLinkError::Source(error) => Self::Source(error),
+        }
     }
 }
 
@@ -141,20 +132,46 @@ fn check_source_headers(
         .map_err(|error| SourceCheckError::new(error.message))
 }
 
+fn link_checked_with(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: Option<&HashSet<String>>,
+    module_owners: Option<AuthenticatedModuleOwners>,
+) -> Result<CheckedModule, PipelineError> {
+    let linked = match user_modules {
+        Some(user_modules) => {
+            linker::link_with_user_modules_with_mode_and_origins_and_source_check(
+                modules,
+                entry,
+                expand,
+                user_modules,
+                LinkMode::Production,
+                check_source_headers,
+            )
+        }
+        None => linker::link_with_mode_and_origins_and_source_check(
+            modules,
+            entry,
+            expand,
+            LinkMode::Production,
+            check_source_headers,
+        ),
+    }?;
+    if let Some(module_owners) = &module_owners {
+        module_owners.validate_module_names(linked.module_names.iter().cloned())?;
+    }
+    typeck::check(&linked.module)?;
+    Ok(CheckedModule { linked, module_owners })
+}
+
 /// Link with the injected compile-time expander, then type-check the result.
 pub fn link_checked(
     modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
 ) -> Result<CheckedModule, PipelineError> {
-    let linked = source_checked_link(linker::link_with_mode_and_origins_and_source_check(
-        modules,
-        entry,
-        expand,
-        LinkMode::Production,
-        check_source_headers,
-    ))?;
-    check_linked(linked, None)
+    link_checked_with(modules, entry, expand, None, None)
 }
 
 /// Production-ready checked link with loader-authenticated package ownership.
@@ -168,15 +185,7 @@ pub fn link_checked_authenticated(
     expand: ComptimeExpander,
     module_owners: AuthenticatedModuleOwners,
 ) -> Result<CheckedModule, PipelineError> {
-    let linked = source_checked_link(linker::link_with_mode_and_origins_and_source_check(
-        modules,
-        entry,
-        expand,
-        LinkMode::Production,
-        check_source_headers,
-    ))?;
-    module_owners.validate_module_names(linked.module_names.iter().cloned())?;
-    check_linked(linked, Some(module_owners))
+    link_checked_with(modules, entry, expand, None, Some(module_owners))
 }
 
 /// Production-ready checked link with both exact source provenance and
@@ -188,18 +197,13 @@ pub fn link_checked_authenticated_with_user_modules(
     user_modules: &HashSet<String>,
     module_owners: AuthenticatedModuleOwners,
 ) -> Result<CheckedModule, PipelineError> {
-    let linked = source_checked_link(
-        linker::link_with_user_modules_with_mode_and_origins_and_source_check(
-            modules,
-            entry,
-            expand,
-            user_modules,
-            LinkMode::Production,
-            check_source_headers,
-        ),
-    )?;
-    module_owners.validate_module_names(linked.module_names.iter().cloned())?;
-    check_linked(linked, Some(module_owners))
+    link_checked_with(
+        modules,
+        entry,
+        expand,
+        Some(user_modules),
+        Some(module_owners),
+    )
 }
 
 #[cfg(test)]
