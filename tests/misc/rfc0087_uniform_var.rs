@@ -5,16 +5,14 @@
 //! asserted against both the interpreter oracle and compiled WebAssembly.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter, typeck};
+use witchy::{codegen, interpreter};
 
-fn linked(source: &str) -> witchy::ast::Module {
-    let linked = witchy::resolve_std_only(source).expect("link RFC-0087 program");
-    typeck::check(&linked).expect("typecheck RFC-0087 program");
-    linked
+fn checked(source: &str) -> witchy::pipeline::CheckedModule {
+    witchy::resolve_std_only_checked(source).expect("check RFC-0087 program")
 }
 
-fn compiled_result(module: &witchy::ast::Module) -> Result<Vec<String>, String> {
-    let wasm = codegen::compile_module_binary(module)
+fn compiled_result(module: &witchy::pipeline::CheckedModule) -> Result<Vec<String>, String> {
+    let wasm = codegen::compile_checked_module_binary(module)
         .expect_lowered("compile RFC-0087 program");
     let mut runtime = Runtime::batch().expect("create runtime");
     let mut actor = runtime
@@ -35,15 +33,15 @@ fn compiled_result(module: &witchy::ast::Module) -> Result<Vec<String>, String> 
     Ok(actor.output())
 }
 
-fn compiled_output(module: &witchy::ast::Module) -> Vec<String> {
+fn compiled_output(module: &witchy::pipeline::CheckedModule) -> Vec<String> {
     compiled_result(module).expect("run compiled RFC-0087 program")
 }
 
 fn assert_both_backends(source: &str, expected: &[&str]) {
-    let module = linked(source);
+    let module = checked(source);
     let expected: Vec<String> = expected.iter().map(|line| (*line).to_string()).collect();
     assert_eq!(
-        interpreter::run_module(module.clone(), ".", Vec::new()).expect("interpret"),
+        interpreter::run_checked_module(&module, ".", Vec::new()).expect("interpret"),
         expected,
         "interpreter output",
     );
@@ -51,10 +49,13 @@ fn assert_both_backends(source: &str, expected: &[&str]) {
 }
 
 fn type_error(source: &str) -> String {
-    let linked = witchy::resolve_std_only(source).expect("link diagnostic probe");
-    typeck::check(&linked)
-        .expect_err("diagnostic probe must be rejected")
-        .message
+    match witchy::resolve_std_only_checked(source) {
+        Ok(_) => panic!("diagnostic probe must be rejected"),
+        Err(witchy::ResolveStdError::Pipeline(witchy::pipeline::PipelineError::Type(error))) => {
+            error.message
+        }
+        Err(error) => panic!("diagnostic probe failed before type checking: {error}"),
+    }
 }
 
 fn assert_source_facing(message: &str) {
@@ -73,8 +74,8 @@ fn assert_source_facing(message: &str) {
 }
 
 fn runtime_errors(source: &str) -> (String, String) {
-    let module = linked(source);
-    let interpreted = interpreter::run_module(module.clone(), ".", Vec::new())
+    let module = checked(source);
+    let interpreted = interpreter::run_checked_module(&module, ".", Vec::new())
         .expect_err("interpreter must abort")
         .message;
     let compiled = compiled_result(&module).expect_err("compiled backend must abort");
@@ -352,8 +353,8 @@ fn main(console: Console):
     values[0] = shrink(values)
     console.print("unreachable")
 "#;
-    let module = linked(source);
-    let interpreted = interpreter::run_module(module.clone(), ".", Vec::new())
+    let module = checked(source);
+    let interpreted = interpreter::run_checked_module(&module, ".", Vec::new())
         .map_err(|error| error.message);
     let compiled = compiled_result(&module);
     assert!(

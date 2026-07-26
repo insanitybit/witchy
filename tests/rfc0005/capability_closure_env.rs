@@ -491,14 +491,13 @@ fn main(console: Console):
         Some(callback) -> console.print("${callback(9)}")
         None -> console.print("empty")
 "#;
-    let linked = witchy::resolve_std_only(source).expect("link bundled list");
-    typeck::check(&linked).expect("reference-list pop typechecks");
+    let checked = witchy::resolve_std_only_checked(source).expect("link bundled list");
     let expected = vec!["9".to_string(), "0".to_string(), "empty".to_string()];
     assert_eq!(
-        interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
+        interpreter::run_checked_module(&checked, ".", Vec::new()).expect("interpret"),
         expected,
     );
-    let wasm = codegen::compile_module_binary(&linked)
+    let wasm = codegen::compile_checked_module_binary(&checked)
         .expect_lowered("reference-list pop lowers");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime

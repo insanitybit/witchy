@@ -1,8 +1,9 @@
 //! Worker callback isolation and explicit sequential-fallback proofs.
 
 fn check(source: &str) -> Result<(), String> {
-    let linked = witchy::resolve_std_only(source)?;
-    witchy::typeck::check(&linked).map_err(|error| error.to_string())
+    witchy::resolve_std_only_checked(source)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 #[test]

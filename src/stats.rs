@@ -60,7 +60,7 @@ pub struct Stats {
 /// `WITCHY_OPT` setting, returning its deterministic counters. The program must
 /// need nothing beyond `Console` (the stats corpus is pure compute).
 pub fn compute(src: &str) -> Result<Stats, String> {
-    let checked = crate::resolve_std_only_checked(src)?;
+    let checked = crate::resolve_std_only_checked(src).map_err(|error| error.to_string())?;
     let bytes = match codegen::compile_checked_module_binary(&checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),

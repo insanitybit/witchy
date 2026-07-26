@@ -8,8 +8,9 @@ use std::collections::HashSet;
 use witchy::runtime::{Capabilities, Runtime};
 
 fn check(source: &str) -> Result<(), String> {
-    let linked = witchy::resolve_std_only(source)?;
-    witchy::typeck::check(&linked).map_err(|error| error.to_string())
+    witchy::resolve_std_only_checked(source)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn link_and_check(modules: Vec<(&str, &str)>) -> Result<(), String> {
@@ -262,11 +263,10 @@ fn rfc0081_transitive_cap_payload_from_another_module_is_rejected() {
 /// preparation still rechecks compiler-owned calls and preserves any failure.
 #[test]
 fn rfc0081_public_check_accepts_valid_existential_signatures() {
-    let linked = witchy::resolve_std_only(
+    witchy::resolve_std_only_checked(
         "trait Render:\n    fn render(let self) -> String\n\n\
          fn describe(part: dyn Render) -> String:\n    \"static\"\n\n\
          fn main(console: Console):\n    console.print(\"hi\")\n",
     )
     .expect("the program links");
-    witchy::typeck::check(&linked).expect("check accepts valid dyn programs");
 }

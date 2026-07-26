@@ -1,6 +1,7 @@
 fn check(src: &str) -> Result<(), String> {
-    let linked = witchy::resolve_std_only(src)?;
-    witchy::typeck::check(&linked).map_err(|error| error.to_string())
+    witchy::resolve_std_only_checked(src)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 #[test]

@@ -62,14 +62,12 @@ fn main(console: Console):
     },
 ];
 
-fn linked(source: &str) -> witchy::ast::Module {
-    let module = witchy::resolve_std_only(source).expect("link conformance program");
-    typeck::check(&module).expect("typecheck conformance program");
-    module
+fn checked(source: &str) -> witchy::pipeline::CheckedModule {
+    witchy::resolve_std_only_checked(source).expect("check conformance program")
 }
 
-fn compiled_output(module: &witchy::ast::Module) -> Vec<String> {
-    let wasm = codegen::compile_module_binary(module)
+fn compiled_output(module: &witchy::pipeline::CheckedModule) -> Vec<String> {
+    let wasm = codegen::compile_checked_module_binary(module)
         .expect_lowered("compile conformance program");
     let mut runtime = Runtime::batch().expect("create conformance runtime");
     let mut actor = runtime
@@ -104,7 +102,7 @@ fn compare_expected(
 #[test]
 fn compiled_language_values_match_independent_expectations() {
     for case in VALUE_CASES {
-        let actual = compiled_output(&linked(case.source));
+        let actual = compiled_output(&checked(case.source));
         compare_expected(case.name, case.expected, &actual)
             .unwrap_or_else(|error| panic!("{error}"));
     }
@@ -125,7 +123,7 @@ fn invalid_program_matches_the_exact_language_rejection() {
 
 #[test]
 fn entry_authority_matches_the_exact_capability_footprint() {
-    let module = linked(
+    let module = checked(
         "fn main(console: Console, root: Dir[Read], network: Net[Connect, Tcp]):\n\
          \x20   console.print(\"ready\")\n",
     );
@@ -134,17 +132,17 @@ fn entry_authority_matches_the_exact_capability_footprint() {
         ("Dir", BTreeSet::from(["Read"])),
         ("Net", BTreeSet::from(["Connect", "Tcp"])),
     ]);
-    assert_eq!(capabilities::run_grant(&module), expected);
+    assert_eq!(capabilities::run_grant(module.module()), expected);
 }
 
 #[test]
 fn independent_expectation_rejects_a_shared_semantic_mutation() {
     let case = &VALUE_CASES[0];
     let mutated = case.source.replacen("1 + 2 * 3", "1 - 2 * 3", 1);
-    let module = linked(&mutated);
+    let module = checked(&mutated);
     let compiled = compiled_output(&module);
-    let interpreted =
-        interpreter::run_module(module, ".", Vec::new()).expect("run mutated oracle program");
+    let interpreted = interpreter::run_checked_module(&module, ".", Vec::new())
+        .expect("run mutated oracle program");
 
     assert_eq!(
         compiled, interpreted,

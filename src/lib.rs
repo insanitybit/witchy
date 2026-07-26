@@ -49,76 +49,129 @@ pub use witchy_types::typeck;
 // rest of the compiler keeps using `crate::wir::…` paths unchanged.
 pub use witchy_wir::{wir, wir_encode, wir_helpers, wir_opt};
 
+/// A failure while loading bundled sources or crossing the checked pipeline.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResolveStdError {
+    Parse {
+        module: String,
+        error: witchy_syntax::parser::ParseError,
+    },
+    UnknownModule {
+        name: String,
+        suggestion: Option<String>,
+    },
+    Pipeline(witchy_interp::pipeline::PipelineError),
+}
+
+impl std::fmt::Display for ResolveStdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse { error, .. } => std::fmt::Display::fmt(error, f),
+            Self::UnknownModule { name, suggestion } => {
+                write!(f, "unknown module `{name}`")?;
+                if let Some(suggestion) = suggestion {
+                    write!(f, " — did you mean `import {suggestion}`?")?;
+                }
+                f.write_str(" (the browser playground has only the bundled std)")
+            }
+            Self::Pipeline(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl std::error::Error for ResolveStdError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Parse { error, .. } => Some(error),
+            Self::Pipeline(error) => Some(error),
+            Self::UnknownModule { .. } => None,
+        }
+    }
+}
+
+impl From<witchy_interp::pipeline::PipelineError> for ResolveStdError {
+    fn from(error: witchy_interp::pipeline::PipelineError) -> Self {
+        Self::Pipeline(error)
+    }
+}
+
+impl From<witchy_types::runtime_type::RuntimeTypeError> for ResolveStdError {
+    fn from(error: witchy_types::runtime_type::RuntimeTypeError) -> Self {
+        Self::Pipeline(error.into())
+    }
+}
+
 /// Resolve a single-source program against the BUNDLED standard library only
 /// (no filesystem — the browser has none): parse the entry, then breadth-first
 /// load each `import`ed std module from the embedded sources and link them.
-pub fn resolve_std_only(src: &str) -> Result<witchy_syntax::ast::Module, String> {
-    resolve_std_modules(src).and_then(|modules| {
-        witchy_interp::pipeline::link(modules, "main").map_err(|e| e.to_string())
-    })
+#[cfg(test)]
+pub(crate) fn resolve_std_only(src: &str) -> Result<witchy_syntax::ast::Module, String> {
+    let modules = resolve_std_modules(src).map_err(|error| error.to_string())?;
+    witchy_interp::pipeline::link(modules, "main").map_err(|error| error.to_string())
 }
 
 /// Resolve bundled standard-library imports and retain proof that the linked
 /// program passed the canonical type checker.
-pub fn resolve_std_only_checked(src: &str) -> Result<witchy_interp::pipeline::CheckedModule, String> {
-    resolve_std_modules(src).and_then(|modules| {
-        use witchy_types::runtime_type::{
-            AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
-        };
+pub fn resolve_std_only_checked(
+    src: &str,
+) -> Result<witchy_interp::pipeline::CheckedModule, ResolveStdError> {
+    use witchy_types::runtime_type::{
+        AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
+    };
 
-        let application = PackageCoordinate::new(
-            PackageSource::Workspace,
-            "witchy/source",
-            env!("CARGO_PKG_VERSION"),
-        )
-        .map_err(|error| error.to_string())?;
-        let toolchain = PackageCoordinate::new(
-            PackageSource::Toolchain,
-            "witchy/std",
-            env!("CARGO_PKG_VERSION"),
-        )
-        .map_err(|error| error.to_string())?;
-        let mut assignments = vec![(
-            "main".to_string(),
-            ModuleLoadIdentity::new(application, ["source", "main"])
-                .map_err(|error| error.to_string())?,
-        )];
-        assignments.extend(
-            witchy_syntax::linker::STD_MODULES
-                .iter()
-                .map(|name| {
-                    ModuleLoadIdentity::new(toolchain.clone(), ["std", *name])
-                        .map(|owner| ((*name).to_string(), owner))
-                        .map_err(|error| error.to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-        let playground = PackageCoordinate::new(
-            PackageSource::Toolchain,
-            "witchy/glamour",
-            env!("CARGO_PKG_VERSION"),
-        )
-        .map_err(|error| error.to_string())?;
-        assignments.extend(
-            witchy_syntax::linker::PLAYGROUND_MODULES
-                .iter()
-                .map(|name| {
-                    ModuleLoadIdentity::new(playground.clone(), ["src", *name])
-                        .map(|owner| ((*name).to_string(), owner))
-                        .map_err(|error| error.to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
-            .map_err(|error| error.to_string())?;
-        witchy_interp::pipeline::link_checked_authenticated(modules, "main", owners)
-            .map_err(|e| e.to_string())
-    })
+    let modules = resolve_std_modules(src)?;
+    let application = PackageCoordinate::new(
+        PackageSource::Workspace,
+        "witchy/source",
+        env!("CARGO_PKG_VERSION"),
+    )?;
+    let toolchain = PackageCoordinate::new(
+        PackageSource::Toolchain,
+        "witchy/std",
+        env!("CARGO_PKG_VERSION"),
+    )?;
+    let mut assignments = vec![(
+        "main".to_string(),
+        ModuleLoadIdentity::new(application, ["source", "main"])?,
+    )];
+    assignments.extend(
+        witchy_syntax::linker::STD_MODULES
+            .iter()
+            .map(|name| {
+                ModuleLoadIdentity::new(toolchain.clone(), ["std", *name])
+                    .map(|owner| ((*name).to_string(), owner))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    let playground = PackageCoordinate::new(
+        PackageSource::Toolchain,
+        "witchy/glamour",
+        env!("CARGO_PKG_VERSION"),
+    )?;
+    assignments.extend(
+        witchy_syntax::linker::PLAYGROUND_MODULES
+            .iter()
+            .map(|name| {
+                ModuleLoadIdentity::new(playground.clone(), ["src", *name])
+                    .map(|owner| ((*name).to_string(), owner))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)?;
+    witchy_interp::pipeline::link_checked_authenticated(modules, "main", owners)
+        .map_err(Into::into)
 }
 
-fn resolve_std_modules(src: &str) -> Result<Vec<(String, witchy_syntax::ast::Module)>, String> {
+fn resolve_std_modules(
+    src: &str,
+) -> Result<Vec<(String, witchy_syntax::ast::Module)>, ResolveStdError> {
     use std::collections::{HashSet, VecDeque};
-    let entry = witchy_syntax::parser::parse_module(src).map_err(|e| e.to_string())?;
+    let entry = witchy_syntax::parser::parse_module(src).map_err(|error| {
+        ResolveStdError::Parse {
+            module: "main".to_string(),
+            error,
+        }
+    })?;
     let mut modules: Vec<(String, witchy_syntax::ast::Module)> = vec![("main".to_string(), entry.clone())];
     let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
     let mut queue: VecDeque<witchy_syntax::ast::Module> = VecDeque::from([entry]);
@@ -128,12 +181,18 @@ fn resolve_std_modules(src: &str) -> Result<Vec<(String, witchy_syntax::ast::Mod
                 continue;
             }
             let source = witchy_syntax::linker::bundled_source(&name).ok_or_else(|| {
-                let hint = witchy_syntax::linker::closest_std_module(&name)
-                    .map(|m| format!(" — did you mean `import {m}`?"))
-                    .unwrap_or_default();
-                format!("unknown module `{name}`{hint} (the browser playground has only the bundled std)")
+                ResolveStdError::UnknownModule {
+                    suggestion: witchy_syntax::linker::closest_std_module(&name)
+                        .map(str::to_string),
+                    name: name.clone(),
+                }
             })?;
-            let parsed = witchy_syntax::parser::parse_module(source).map_err(|e| e.to_string())?;
+            let parsed = witchy_syntax::parser::parse_module(source).map_err(|error| {
+                ResolveStdError::Parse {
+                    module: name.clone(),
+                    error,
+                }
+            })?;
             queue.push_back(parsed.clone());
             modules.push((name, parsed));
         }
@@ -269,7 +328,7 @@ fn ownership_relevant_type(ty: &witchy_syntax::ast::Type) -> bool {
 /// supplies them (capabilities are granted as trapping stubs — the browser has
 /// none).
 pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
-    let checked = resolve_std_only_checked(src)?;
+    let checked = resolve_std_only_checked(src).map_err(|error| error.to_string())?;
     let linked = checked.module();
     enforce_performance_modes(linked, "main")?;
     // Compile through the WIR → wasm-binary pipeline (`wasmparser`/`wasm-encoder`,
