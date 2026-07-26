@@ -1325,7 +1325,7 @@ fn main(console: Console):
 import url
 fn describe(s: String) -> String:
     match url.parse(s):
-        Ok(u) -> url.scheme(u) + " " + url.host(u) + " " + "${url.port(u)}" + " " + url.path(u)
+        Ok(u) -> url.scheme(u) + " " + url.host(u) + " " + "${url.port(u)}" + " " + url.pathname(u)
         Err(e) -> "invalid: " + url.url_error_message(e)
 fn main(console: Console):
     console.print(describe("http://example.com"))
@@ -1435,7 +1435,7 @@ fn main(console: Console):
         let src = "import url\n\
                    fn show(label: String, s: String, console: Console):\n\
                    \x20   match url.parse(s):\n\
-                   \x20       Ok(u) -> console.print(label + \": \" + url.scheme(u) + \"|\" + url.host(u) + \"|${url.port(u)}|\" + url.path(u))\n\
+                   \x20       Ok(u) -> console.print(label + \": \" + url.scheme(u) + \"|\" + url.host(u) + \"|${url.port(u)}|\" + url.request_target(u))\n\
                    \x20       Err(e) -> console.print(label + \": ERR\")\n\
                    fn main(console: Console):\n\
                    \x20   show(\"empty_scheme\", \"://host\", console)\n\
@@ -1447,7 +1447,7 @@ fn main(console: Console):
         let expected = [
             "empty_scheme: ERR",
             "empty_host: ERR",
-            "query: https|example.com|443|?x=1",
+            "query: https|example.com|443|/?x=1",
             "big_port: ERR",
             "bad_port: ERR",
             "ok: https|example.com|443|/a/b",
