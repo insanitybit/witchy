@@ -60,7 +60,7 @@ pub(crate) use source::{
     link_file_checked_with_deps, link_test_file, linked_has_main, project_entry_file,
 };
 #[cfg(test)]
-pub(crate) use source::{link_file, link_file_with_mode};
+pub(crate) use source::link_file;
 #[cfg(test)]
 pub(crate) use source::link_file_with_deps;
 

@@ -903,7 +903,7 @@ fn run_tests_in_module(
 /// dispatch to `run_tests_in_module`).
 #[cfg(test)]
 pub(crate) fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
-    let (linked, stem) = link_test_file(path)?;
+    let (linked, stem) = link_test_file(path).map_err(|error| error.to_string())?;
     let (async_tests, gen_tests) = raw_test_shapes(path);
     let grants = TestGrants::default();
     let result = run_tests_in_module(
@@ -1400,13 +1400,13 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
         // "ok. 0 passed". An explicit single file surfaces even a link error.
         let (linked, stem) = match link_test_file(file) {
             Ok(v) => v,
-            Err(e) if meta.is_dir() => {
+            Err(e) if meta.is_dir() && e.is_discovery_failure() => {
                 if options.format == TestOutputFormat::Json {
                     json_tests.push(serde_json::json!({
                         "file": file,
                         "name": serde_json::Value::Null,
                         "status": "skipped",
-                        "error": e,
+                        "error": e.to_string(),
                         "output": [],
                         "transcript": serde_json::Value::Null,
                     }));
@@ -1415,7 +1415,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
                 }
                 continue;
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.to_string()),
         };
         let (async_tests, gen_tests) = raw_test_shapes(file);
         let owns_test = ownership.owns(file)?;

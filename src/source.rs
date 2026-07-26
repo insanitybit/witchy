@@ -1,6 +1,8 @@
 //! Native source discovery, loading, linking, and expansion.
 
-use witchy_syntax::{ast, format, linker, parser};
+use witchy_syntax::{ast, format, parser};
+#[cfg(test)]
+use witchy_syntax::linker;
 use witchy_interp::{comptime, pipeline};
 use witchy_types::runtime_type::{
     AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
@@ -10,6 +12,34 @@ use witchy_types::runtime_type::{
 pub(crate) struct AuthenticatedDependency {
     pub path: std::path::PathBuf,
     pub owner: ModuleLoadIdentity,
+}
+
+#[derive(Debug)]
+pub(crate) enum TestFileError {
+    Load(String),
+    Pipeline(pipeline::PipelineError),
+}
+
+impl TestFileError {
+    pub(crate) fn is_discovery_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Load(_)
+                | Self::Pipeline(
+                    pipeline::PipelineError::Link(_)
+                        | pipeline::PipelineError::Source(_)
+                )
+        )
+    }
+}
+
+impl std::fmt::Display for TestFileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Load(error) => f.write_str(error),
+            Self::Pipeline(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
 }
 
 /// The current directory's project entry source file (`src/<module>.witchy`,
@@ -42,23 +72,25 @@ pub(crate) fn bundled_module(name: &str) -> Option<&'static str> {
 /// Returns the linked module and entry stem.
 #[cfg(test)]
 pub(crate) fn link_file(path: &str) -> Result<(ast::Module, String), String> {
-    link_file_with_mode(path, linker::LinkMode::Production)
+    link_file_with_deps_mode(
+        path,
+        &std::collections::HashMap::new(),
+        linker::LinkMode::Production,
+    )
 }
 
-#[cfg(test)]
-pub(crate) fn link_file_with_mode(path: &str, mode: linker::LinkMode) -> Result<(ast::Module, String), String> {
-    link_file_with_deps_mode(path, &std::collections::HashMap::new(), mode)
-}
-
-pub(crate) fn link_test_file(path: &str) -> Result<(pipeline::CheckedModule, String), String> {
+pub(crate) fn link_test_file(
+    path: &str,
+) -> Result<(pipeline::CheckedModule, String), TestFileError> {
     let (modules, entry_stem, user_modules) =
-        load_file_modules(path, &std::collections::HashMap::new())?;
+        load_file_modules(path, &std::collections::HashMap::new())
+            .map_err(TestFileError::Load)?;
     let checked = pipeline::link_checked_test_with_user_modules(
         modules,
         &entry_stem,
         &user_modules,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(TestFileError::Pipeline)?;
     Ok((checked, entry_stem))
 }
 
