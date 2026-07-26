@@ -26,14 +26,6 @@
 mod tail_calls;
 pub use tail_calls::lower_direct_tail_calls;
 
-#[cfg(test)]
-use std::collections::{HashMap, HashSet};
-
-#[cfg(test)]
-use tail_calls::{
-    collect_function_tail_calls, rename_expr_locals, rename_node_locals, TailCallee,
-};
-
 use crate::wir::{WirExpr, WirModule, WirNode, WirSeq};
 
 /// Counts from one [`optimize`] run.

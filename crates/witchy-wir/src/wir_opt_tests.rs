@@ -1,4 +1,9 @@
+    use std::collections::{HashMap, HashSet};
+
     use super::*;
+    use super::tail_calls::{
+        TailCallee, collect_function_tail_calls, rename_expr_locals, rename_node_locals,
+    };
     use crate::wir::{
         BinOp, ClosureSignature, DataSegment, Kind, WirExpr, WirFunc, WirImport, WirLocal,
         WirModule, WirNode, WirTable, WirTy, closure_wrapper_struct, slot_closure_signature,
