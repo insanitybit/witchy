@@ -57,8 +57,8 @@ by compiler passes; formatted source is never a node identity.
 
 ### Workspace layout ([RFC-0018](../rfcs/0018-compiler-architecture.md))
 
-The compiler is a **Cargo workspace**: seven stage-aligned library crates under
-`crates/`, plus the `witchy` binary package (the CLI, the wasm-playground
+The compiler is a **Cargo workspace**: eleven stage-aligned library crates under
+`crates/`, plus the `witchy` root package (the CLI, the wasm-playground
 `cdylib`, and the native-only LSP/PM/idp tooling). Package dependencies enforce
 the coarse stage DAG. Some stage internals and migration re-exports remain
 public within the workspace, so module-level interfaces are not yet uniformly
@@ -67,11 +67,15 @@ are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 
 | Crate | Modules | Role |
 |---|---|---|
+| `witchy-cap-model` | dependency-bottom capability catalog | Canonical capability names, classes, arities, rights, and host-operation vocabulary shared by compiler, analyzers, fixtures, and runtime without depending on syntax or policy. |
+| `witchy-testkit` | `basic`, `engine`, `filesystem`, `fetch`, `exec`, `secret`, `model`, `validate` | Backend-neutral deterministic fixture plans, provider state machines, expectations, and transcripts. It carries no compiler or runtime authority. |
+| `witchy-test-host` | opaque fixture-session dispatch | The shared fixture host used by interpreter, Wasmtime, and browser adapters; backend adapters consume it rather than reimplementing fixture semantics. |
 | `witchy-syntax` | `lexer`, `parser`, `ast`, `format`, `origin`, + the AST-level base passes (`aliases`, `consts`, `fmt`, `async_lower`, `generators`, `optimize`, `reflect`, `derive`, `records`, `doc`, `linker`, `lambda_scan`, `build_entry`) | Source → AST (off-side layout, interpolation, duration literals; Pratt-core parser + sugar lowering), the canonical formatter, and the front-end/base layer every later stage builds on. `origin` defines the typed generated-node/span side table; `linker` combines modules into one flat module with qualified names + bundles the std library (`include_str!`). |
 | `witchy-types` | `pipeline`, `typeck`, `traits`, `runtime_type` | The checked front-end proof boundary; annotation-driven checking + HM unification (occurs-checked), capability rights, exhaustiveness; trait desugaring to plain functions + monomorphization; authenticated runtime declaration identities and closed shapes. |
 | `witchy-wir` | `wir`, `wir_opt`, `wir_prelude`, `wir_encode` | The structured IR (typed expression tree, named lexical `Block`/`Loop` labels, no relooper), the peephole pass (cancels redundant slot/kind round-trips), the precompiled runtime-helper prelude (lists/strings/dicts/crypto), and the `wasm-encoder` backend. |
 | `witchy-lower` | `codegen`, `analysis` | Lowers the checked AST to WIR (universal 8-byte value slots, per-shape structural-equality helpers, capability host imports); `analysis` is the uniqueness / cap-token pass the in-place fast paths depend on. |
-| `witchy-runtime` | `value`, `native`, `net`, `confine`, `runtime` *(native-only)* | The runtime `Value` (shared by interpreter + host), the native-function registry (FFI-as-capability), address/path confinement (`..`/absolute/symlink rejection, address-set policy — shared by both backends), and the wasmtime sandbox (capability-gated host functions, memory caps, epoch preemption). The first four are wasm-safe; `runtime` sits behind the `native` feature. |
+| `witchy-confinement` | normalized policy plus platform providers | Target-neutral filesystem, network, Fetch-origin, and syscall-class confinement policy; Linux Landlock/seccomp enforcement consumes this policy without depending on compiler stages or Wasmtime. |
+| `witchy-runtime` | `value`, `native`, `net`, `confine`, `runtime` *(native-only)* | The runtime `Value` (shared by interpreter + host), native-function registry (FFI-as-capability), runtime adapters over shared confinement policy, and the Wasmtime sandbox (capability-gated host functions, memory caps, epoch preemption). The non-`runtime` modules are wasm-safe; `runtime` sits behind the `native` feature. |
 | `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking reference semantics — the parity ORACLE (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) — plus compile-time `comptime:` / `tag"…"` evaluation and the task-shaped checked-link service that injects the compile-time expander. |
 | `witchy-caps` | `capabilities`, `grants` | The footprint analyzer (`witchy caps`, `caps-diff`) — recomputed from source, never trusted metadata — and grant-document (`--grants` TOML) parsing + cross-check (`witchy grants-check`). |
 | `witchy` *(root package)* | `main`, `cli`, `source`, `lib` (the wasm-playground `cdylib`), `lsp`, `idp` | The composition package: browser entrypoints, diagnostics LSP, trusted-publishing IdP *test* simulator, and native CLI orchestration. `cli` owns help/version presentation and shared flag/secret decoding; `source` owns native project discovery, bundled lookup, dependency-aware file loading/linking, and source expansion. Dispatch and command execution remain concentrated in `main.rs` and are tracked in the architecture ledger rather than described here as already thin. |
