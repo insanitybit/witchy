@@ -1328,7 +1328,6 @@ fn encode_validated(
     Ok(bytes)
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
 fn validated_module_outcome(
     module: witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -1478,17 +1477,21 @@ pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::
 pub fn assemble_checked_optimized_wir_module(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
-    assemble_optimized_wir_module_impl(checked.module())
+    let runtime_catalog = checked.runtime_declaration_catalog().ok();
+    match assemble_optimized_wir_with_structs_mode(
+        checked.module(),
+        false,
+        runtime_catalog.as_ref(),
+    ) {
+        Ok((module, gc_structs, gc_arrays)) => {
+            validated_module_outcome(module, &gc_structs, &gc_arrays)
+        }
+        Err(failure) => public_outcome(Err(failure)),
+    }
 }
 
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn assemble_optimized_wir_module(
-    module: &Module,
-) -> LoweringOutcome<witchy_wir::wir::WirModule> {
-    assemble_optimized_wir_module_impl(module)
-}
-
-fn assemble_optimized_wir_module_impl(
     module: &Module,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
     match assemble_optimized_wir_with_structs(module) {
