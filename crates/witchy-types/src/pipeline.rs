@@ -125,6 +125,25 @@ impl From<SourceLinkError> for PipelineError {
     }
 }
 
+/// Check a post-link compiler-synthesized runtime module.
+///
+/// This is the boundary for modules whose source provenance was intentionally
+/// invalidated by compiler-owned AST construction, such as a generated test
+/// driver. It reruns the ordinary runtime checker and deliberately carries no
+/// source origins, declaration provenance, or authenticated module ownership.
+pub fn check_synthetic_module(module: Module) -> Result<CheckedModule, TypeError> {
+    typeck::check(&module)?;
+    Ok(CheckedModule {
+        linked: LinkedModule {
+            module,
+            origins: OriginTable::default(),
+            module_names: Vec::new(),
+            declarations: ResolvedDeclarations::default(),
+        },
+        module_owners: None,
+    })
+}
+
 fn link_checked_with(
     modules: Vec<(String, Module)>,
     entry: &str,

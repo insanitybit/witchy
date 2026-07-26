@@ -315,47 +315,6 @@ fn main(console: Console):
 /// is the one host-policy difference: sandbox requires an explicit `--dir` (deny by
 /// omission) while dev `run` defaults a `Dir` to the cwd.
 #[allow(clippy::too_many_arguments)]
-/// Run a compiler-synthesized module that cannot retain a source-pipeline proof.
-///
-/// Production source execution must use [`run_checked_compiled`]. This escape
-/// exists only for the test runner after it replaces `main` with a generated
-/// driver and immediately executes that synthetic module.
-pub(crate) fn run_synthetic_compiled(
-    linked: &ast::Module,
-    dir_roots: Vec<std::path::PathBuf>,
-    file_grants: Vec<std::path::PathBuf>,
-    net_allow: Vec<String>,
-    fetch_origins: Vec<String>,
-    env_allow: Option<Vec<String>>,
-    exec_allow: Option<Vec<String>>,
-    exec_child_paths: Vec<std::path::PathBuf>,
-    args: Vec<String>,
-    signing_key: Option<[u8; 32]>,
-    named_secrets: Vec<runtime::SecretGrant>,
-    user_cap_fields: Vec<Vec<String>>,
-    strict_dir: bool,
-    confinement: witchy_confinement::EnforcementMode,
-) -> Result<(Vec<String>, Option<i32>), String> {
-    run_compiled(
-        linked,
-        None,
-        dir_roots,
-        file_grants,
-        net_allow,
-        fetch_origins,
-        env_allow,
-        exec_allow,
-        exec_child_paths,
-        args,
-        signing_key,
-        named_secrets,
-        user_cap_fields,
-        strict_dir,
-        confinement,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_checked_compiled(
     checked: &witchy_types::pipeline::CheckedModule,
     dir_roots: Vec<std::path::PathBuf>,
@@ -375,7 +334,7 @@ pub(crate) fn run_checked_compiled(
     let wasm = commands::compile::compile_checked_to_wasm_cached(checked)?;
     run_compiled(
         checked.module(),
-        Some(wasm),
+        wasm,
         dir_roots,
         file_grants,
         net_allow,
@@ -395,7 +354,7 @@ pub(crate) fn run_checked_compiled(
 #[allow(clippy::too_many_arguments)]
 fn run_compiled(
     linked: &ast::Module,
-    precompiled_wasm: Option<Vec<u8>>,
+    wasm: Vec<u8>,
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
@@ -552,10 +511,6 @@ fn run_compiled(
         }
         caps.secrets.extend(named_secrets);
     }
-    let wasm = match precompiled_wasm {
-        Some(wasm) => wasm,
-        None => commands::compile::compile_synthetic_to_wasm_cached(linked)?,
-    };
     commands::confinement::arm(&caps, confinement)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt

@@ -2,7 +2,7 @@
 //! validation, dependency-root resolution, and execution on the compiled
 //! backend. Extracted from the composition root.
 
-use crate::commands::execution::run_synthetic_compiled;
+use crate::commands::execution::run_checked_compiled;
 use crate::{
     ast, codegen, enforce_performance_modes, interpreter, is_entry_function,
     link_file_with_mode, linker, parser, run_wasm_test_bytes, runtime, typeck,
@@ -586,10 +586,10 @@ struct FixtureBackendOutcome {
 }
 
 fn run_interpreter_fixtures(
-    module: &ast::Module,
+    checked: &witchy_types::pipeline::CheckedModule,
     plan: &FixturePlan,
 ) -> Result<FixtureBackendOutcome, String> {
-    let outcome = interpreter::run_module_fixtures(module.clone(), plan.clone())
+    let outcome = interpreter::run_module_fixtures(checked.module().clone(), plan.clone())
         .map_err(|error| error.to_string())?;
     let (passed, output, error) = match outcome.result {
         interpreter::FixtureProgramResult::Passed { output, .. } => (true, output, None),
@@ -606,10 +606,10 @@ fn run_interpreter_fixtures(
 }
 
 fn run_wasm_fixtures(
-    module: &ast::Module,
+    checked: &witchy_types::pipeline::CheckedModule,
     plan: &FixturePlan,
 ) -> Result<FixtureBackendOutcome, String> {
-    let bytes = match codegen::compile_module_binary(module) {
+    let bytes = match codegen::compile_checked_module_binary(checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
@@ -649,16 +649,16 @@ fn same_fixture_evidence(left: &TestTranscript, right: &TestTranscript) -> bool 
 }
 
 fn run_fixture_test(
-    module: &ast::Module,
+    checked: &witchy_types::pipeline::CheckedModule,
     plan: &FixturePlan,
     backend: TestBackend,
 ) -> Result<FixtureBackendOutcome, String> {
     match backend {
-        TestBackend::Interpreter => run_interpreter_fixtures(module, plan),
-        TestBackend::Wasm => run_wasm_fixtures(module, plan),
+        TestBackend::Interpreter => run_interpreter_fixtures(checked, plan),
+        TestBackend::Wasm => run_wasm_fixtures(checked, plan),
         TestBackend::Both => {
-            let interpreted = run_interpreter_fixtures(module, plan)?;
-            let compiled = run_wasm_fixtures(module, plan)?;
+            let interpreted = run_interpreter_fixtures(checked, plan)?;
+            let compiled = run_wasm_fixtures(checked, plan)?;
             if interpreted.passed != compiled.passed
                 || interpreted.output != compiled.output
                 || !same_fixture_evidence(&interpreted.transcript, &compiled.transcript)
@@ -804,6 +804,8 @@ fn run_tests_in_module(
             }
         }
         m.items.extend(driver.items);
+        let checked = witchy_types::pipeline::check_synthetic_module(m)
+            .map_err(|error| error.to_string())?;
         // Run the test on the COMPILED WASM tier — the tier users ship — not the
         // interpreter oracle: a `witchy test` that passes must reflect the backend
         // that actually runs in production. A `testing.assert` / `fail_with` lowers
@@ -814,7 +816,7 @@ fn run_tests_in_module(
         // effectful production functions out of the test artifact. A module that
         // does not lower is itself a failure: the test cannot run where it ships.
         let (outcome, transcript) = if let Some(plan) = policy.fixture_plan {
-            match run_fixture_test(&m, plan, policy.backend) {
+            match run_fixture_test(&checked, plan, policy.backend) {
                 Ok(fixture) => {
                     let FixtureBackendOutcome {
                         passed,
@@ -838,8 +840,8 @@ fn run_tests_in_module(
             }
         } else if policy.integration {
             (
-                run_synthetic_compiled(
-                    &m,
+                run_checked_compiled(
+                    &checked,
                     policy.grants.dir_roots.clone(),
                     Vec::new(),
                     policy.grants.net_allow.clone(),
@@ -860,7 +862,7 @@ fn run_tests_in_module(
             )
         } else {
             (
-                match codegen::compile_module_binary(&m) {
+                match codegen::compile_checked_module_binary(&checked) {
                     codegen::LoweringOutcome::Lowered(bytes) => {
                         run_wasm_test_bytes(&bytes).map_err(|error| (error, Vec::new()))
                     }

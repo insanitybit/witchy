@@ -1,7 +1,7 @@
 //! Native compilation, artifact emission, and source-cache services.
 
 use witchy::{artifact, enforce_performance_modes, trusted_exe};
-use witchy_syntax::{ast, opt};
+use witchy_syntax::opt;
 use witchy_lower::codegen;
 use witchy_interp::pipeline;
 use witchy_types::typeck;
@@ -310,22 +310,6 @@ pub(crate) fn emit_wat_file(path: &str) -> Result<String, String> {
     Ok(wir::to_wat(&wir))
 }
 
-/// Compile a linked module to a wasm BINARY through the WIR → wasm-binary
-/// pipeline (`compile_module_binary`). A program that doesn't fully lower
-/// surfaces as a hard "cannot compile" error — there is no WAT fallback.
-fn compile_synthetic_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
-    let bytes = match codegen::compile_module_binary(linked) {
-        codegen::LoweringOutcome::Lowered(bytes) => bytes,
-        codegen::LoweringOutcome::Unsupported(reason) => {
-            return Err(format!("cannot compile to WASM: {reason}"));
-        }
-        codegen::LoweringOutcome::Rejected(error) => {
-            return Err(format!("cannot compile to WASM: {error}"));
-        }
-    };
-    Ok(artifact::embed_launch_contract(bytes, linked))
-}
-
 pub(super) fn compile_checked_to_wasm(checked: &pipeline::CheckedModule) -> Result<Vec<u8>, String> {
     let bytes = match codegen::compile_checked_module_binary(checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
@@ -433,22 +417,6 @@ pub(crate) fn embedded_wasm_cached(
         }
     }
     Ok(wasm)
-}
-
-/// Compile `linked` to wasm, reusing a SOURCE-keyed cache to skip codegen on warm
-/// runs. The key hashes the full linked AST + the compiler fingerprint + the active
-/// opt set — every input that determines the emitted wasm — so it is sound by
-/// construction: a key that fails to reflect some input simply MISSES and recompiles,
-/// it can never serve wrong code. Distinct from the runtime's post-Cranelift module
-/// caches (`~/.cache/witchy/{optimized-wasm,wasm}`); this one
-/// (`~/.cache/witchy/src`) caches the wasm bytes so the front-end's codegen is
-/// skipped, not just the native compile. The
-/// capability grant and every security check still run from `linked` on every run —
-/// only the wasm is cached.
-pub(crate) fn compile_synthetic_to_wasm_cached(
-    linked: &ast::Module,
-) -> Result<Vec<u8>, String> {
-    compile_to_wasm_cached(linked, || compile_synthetic_to_wasm(linked))
 }
 
 /// Compile a checked production module with the proof wrapper, including
