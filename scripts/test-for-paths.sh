@@ -104,7 +104,7 @@ for p in "${paths[@]}"; do
             add "cargo nextest run --test misc -E 'test(/^wasm_abi_catalog::/)'" ;;
         web/witchy-runtime/witchy-runtime.mjs)
             add "cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'" ;;
-        tests/merge_queue.rs | tests/test_for_paths.rs)
+        tests/merge_queue.rs | tests/merge_queue/*.rs | tests/test_for_paths.rs)
             any_rust=1
             add "./scripts/check.sh --queue-infra" ;;
         tests/worktree/*.rs)

@@ -137,6 +137,10 @@ fn queue_fixture_keeps_fast_product_checks_and_the_hermetic_shard() {
         selected(&["tests/merge_queue.rs"]),
         ["./scripts/check.sh --fast", "./scripts/check.sh --queue-infra"]
     );
+    assert_eq!(
+        selected(&["tests/merge_queue/gate_behavior/prewarm.rs"]),
+        ["./scripts/check.sh --fast", "./scripts/check.sh --queue-infra"]
+    );
 }
 
 #[test]
