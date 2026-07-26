@@ -1,5 +1,15 @@
 use crate::{interpreter, parser, typeck};
 
+    fn ok(src: &str) {
+        let result = typeck::check_str(src);
+        assert!(result.is_ok(), "expected ok, got: {result:?}");
+    }
+
+    fn err(src: &str, needle: &str) {
+        let error = typeck::check_str(src).expect_err("expected a type error");
+        assert!(error.contains(needle), "error `{error}` should mention `{needle}`");
+    }
+
     #[test]
     fn dir_write_is_confined_to_the_subtree() {
         let tmp = std::env::temp_dir().join(format!("witchy_dir_write_test_{}", std::process::id()));
@@ -81,18 +91,6 @@ use crate::{interpreter, parser, typeck};
     /// checker enforces (you can only keep a right you already hold).
     #[test]
     fn dir_rights_are_statically_enforced() {
-        let ok = |src: &str| {
-            assert!(
-                crate::typeck::check_str(src).is_ok(),
-                "expected ok, got: {:?}",
-                crate::typeck::check_str(src)
-            );
-        };
-        let err = |src: &str, needle: &str| {
-            let e = crate::typeck::check_str(src).expect_err("expected a type error");
-            assert!(e.contains(needle), "error `{e}` should mention `{needle}`");
-        };
-
         // Bare `Dir` carries the full right-set: reads and writes both type-check.
         ok("fn use_both(d: Dir):\n    d.write(\"o\", d.read(\"i\"))\nfn main(c: Console, root: Dir):\n    use_both(root)\n");
         // `Dir[Read]` cannot write — a compile-time error.
@@ -139,18 +137,6 @@ use crate::{interpreter, parser, typeck};
     /// builtins). It can only *drop* rights — never widen or cross capabilities.
     #[test]
     fn as_ascription_narrows_to_subsets_only() {
-        let ok = |src: &str| {
-            assert!(
-                crate::typeck::check_str(src).is_ok(),
-                "expected ok, got: {:?}",
-                crate::typeck::check_str(src)
-            );
-        };
-        let err = |src: &str, needle: &str| {
-            let e = crate::typeck::check_str(src).expect_err("expected a type error");
-            assert!(e.contains(needle), "error `{e}` should mention `{needle}`");
-        };
-
         // Narrowing along each axis, and an idempotent re-ascription, type-check.
         ok("fn main(c: Console, net: Net, root: Dir):\n    let a = net as Net[Connect]\n    let b = net as Net[Listen, Tcp]\n    let d = root as Dir[Read]\n    let e = (net as Net[Connect]) as Net[Connect]\n");
         // Re-widening (`Net[Connect]` back to full `Net`) is rejected.
@@ -177,18 +163,6 @@ use crate::{interpreter, parser, typeck};
     /// type-bounded to its declared rights, so widening is rejected everywhere.
     #[test]
     fn implicit_narrowing_at_call_boundaries() {
-        let ok = |src: &str| {
-            assert!(
-                crate::typeck::check_str(src).is_ok(),
-                "expected ok, got: {:?}",
-                crate::typeck::check_str(src)
-            );
-        };
-        let err = |src: &str, needle: &str| {
-            let e = crate::typeck::check_str(src).expect_err("expected a type error");
-            assert!(e.contains(needle), "error `{e}` should mention `{needle}`");
-        };
-
         // A full `Net`/`Dir` coerces into a narrowed parameter — no `as` needed.
         ok("fn fetch(n: Net[Connect]) -> Socket:\n    n.connect(\"a:1\")\nfn main(c: Console, net: Net):\n    let s = fetch(net)\n");
         ok("fn dial(n: Net[Connect, Tcp]) -> Socket:\n    n.connect(\"a:1\")\nfn main(c: Console, net: Net):\n    let s = dial(net)\n");
@@ -228,18 +202,6 @@ use crate::{interpreter, parser, typeck};
     /// the `as` ascription, which can only drop rights.
     #[test]
     fn net_verbs_are_statically_enforced() {
-        let ok = |src: &str| {
-            assert!(
-                crate::typeck::check_str(src).is_ok(),
-                "expected ok, got: {:?}",
-                crate::typeck::check_str(src)
-            );
-        };
-        let err = |src: &str, needle: &str| {
-            let e = crate::typeck::check_str(src).expect_err("expected a type error");
-            assert!(e.contains(needle), "error `{e}` should mention `{needle}`");
-        };
-
         // Bare `Net` grants both verbs.
         ok("fn f(n: Net):\n    let s = n.connect(\"a:1\")\n    let l = n.listen(\"b:2\")\nfn main(c: Console, net: Net):\n    f(net)\n");
         // `Net[Connect]` is a client — it cannot listen.
@@ -273,18 +235,6 @@ use crate::{interpreter, parser, typeck};
     /// all transports). Narrowing the transport axis is done with `as`.
     #[test]
     fn net_transport_is_statically_enforced() {
-        let ok = |src: &str| {
-            assert!(
-                crate::typeck::check_str(src).is_ok(),
-                "expected ok, got: {:?}",
-                crate::typeck::check_str(src)
-            );
-        };
-        let err = |src: &str, needle: &str| {
-            let e = crate::typeck::check_str(src).expect_err("expected a type error");
-            assert!(e.contains(needle), "error `{e}` should mention `{needle}`");
-        };
-
         // `Net[Connect]` keeps all transports (incl. Tcp), so connect works.
         ok("fn f(n: Net[Connect]):\n    let s = n.connect(\"a:1\")\nfn main(c: Console, net: Net):\n    f(net as Net[Connect])\n");
         // A transport narrowed away from Tcp cannot drive a (TCP-only) connect.
