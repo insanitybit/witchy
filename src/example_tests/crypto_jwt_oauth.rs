@@ -1,6 +1,50 @@
 use super::*;
 use crate::{codegen, interpreter, parser, typeck};
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn b64url(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let value = ((chunk[0] as u32) << 16)
+                | ((*chunk.get(1).unwrap_or(&0) as u32) << 8)
+                | (*chunk.get(2).unwrap_or(&0) as u32);
+            out.push(ALPHABET[(value >> 18 & 63) as usize] as char);
+            out.push(ALPHABET[(value >> 12 & 63) as usize] as char);
+            if chunk.len() > 1 {
+                out.push(ALPHABET[(value >> 6 & 63) as usize] as char);
+            }
+            if chunk.len() > 2 {
+                out.push(ALPHABET[(value & 63) as usize] as char);
+            }
+        }
+        out
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tls_server_fixture() -> (std::sync::Arc<rustls::ServerConfig>, String) {
+        let certificate =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+        let cert_der = certificate.cert.der().clone();
+        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(
+            certificate.key_pair.serialize_der(),
+        );
+        let config = rustls::ServerConfig::builder_with_provider(
+            rustls::crypto::aws_lc_rs::default_provider().into(),
+        )
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert_der],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(key_der),
+        )
+        .unwrap();
+        (std::sync::Arc::new(config), certificate.cert.pem())
+    }
+
+
     /// RFC-0011: `net.deny(policy)` subtracts an address pattern from a `Net` — the
     /// monotone allow/deny algebra `effective = allows \ denies`, recorded as a
     /// `!`-prefixed allowlist entry honoured by the shared `net_allows`. A non-denied
@@ -108,24 +152,6 @@ use crate::{codegen, interpreter, parser, typeck};
     fn jwt_verify_rs256_backends_agree() {
         use aws_lc_rs::signature::KeyPair;
         // base64url, no padding — the JWT segment encoding.
-        fn b64url(bytes: &[u8]) -> String {
-            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-            let mut out = String::new();
-            for c in bytes.chunks(3) {
-                let n = ((c[0] as u32) << 16)
-                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
-                    | (*c.get(2).unwrap_or(&0) as u32);
-                out.push(A[(n >> 18 & 63) as usize] as char);
-                out.push(A[(n >> 12 & 63) as usize] as char);
-                if c.len() > 1 {
-                    out.push(A[(n >> 6 & 63) as usize] as char);
-                }
-                if c.len() > 2 {
-                    out.push(A[(n & 63) as usize] as char);
-                }
-            }
-            out
-        }
         let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
         let pk_hex = hexs(kp.public_key().as_ref());
@@ -184,24 +210,6 @@ use crate::{codegen, interpreter, parser, typeck};
     #[test]
     fn jwt_rsa_key_from_jwk_matches_aws_lc_der() {
         use aws_lc_rs::signature::KeyPair;
-        fn b64url(bytes: &[u8]) -> String {
-            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-            let mut out = String::new();
-            for c in bytes.chunks(3) {
-                let n = ((c[0] as u32) << 16)
-                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
-                    | (*c.get(2).unwrap_or(&0) as u32);
-                out.push(A[(n >> 18 & 63) as usize] as char);
-                out.push(A[(n >> 12 & 63) as usize] as char);
-                if c.len() > 1 {
-                    out.push(A[(n >> 6 & 63) as usize] as char);
-                }
-                if c.len() > 2 {
-                    out.push(A[(n & 63) as usize] as char);
-                }
-            }
-            out
-        }
         // Read the two INTEGER contents of a DER `SEQUENCE { INTEGER, INTEGER }`.
         fn two_ints(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
             fn len_at(b: &[u8], i: &mut usize) -> usize {
@@ -256,24 +264,6 @@ use crate::{codegen, interpreter, parser, typeck};
     #[test]
     fn jwt_verify_oidc_binds_issuer_backends_agree() {
         use aws_lc_rs::signature::KeyPair;
-        fn b64url(bytes: &[u8]) -> String {
-            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-            let mut out = String::new();
-            for c in bytes.chunks(3) {
-                let n = ((c[0] as u32) << 16)
-                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
-                    | (*c.get(2).unwrap_or(&0) as u32);
-                out.push(A[(n >> 18 & 63) as usize] as char);
-                out.push(A[(n >> 12 & 63) as usize] as char);
-                if c.len() > 1 {
-                    out.push(A[(n >> 6 & 63) as usize] as char);
-                }
-                if c.len() > 2 {
-                    out.push(A[(n & 63) as usize] as char);
-                }
-            }
-            out
-        }
         let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
         let pk_hex = hexs(kp.public_key().as_ref());
@@ -369,24 +359,6 @@ fn main(console: Console):
     #[test]
     fn jwt_verify_oidc_enforces_azp_for_multi_audience_backends_agree() {
         use aws_lc_rs::signature::KeyPair;
-        fn b64url(bytes: &[u8]) -> String {
-            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-            let mut out = String::new();
-            for c in bytes.chunks(3) {
-                let n = ((c[0] as u32) << 16)
-                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
-                    | (*c.get(2).unwrap_or(&0) as u32);
-                out.push(A[(n >> 18 & 63) as usize] as char);
-                out.push(A[(n >> 12 & 63) as usize] as char);
-                if c.len() > 1 {
-                    out.push(A[(n >> 6 & 63) as usize] as char);
-                }
-                if c.len() > 2 {
-                    out.push(A[(n & 63) as usize] as char);
-                }
-            }
-            out
-        }
         let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
         let pk_hex = hexs(kp.public_key().as_ref());
@@ -439,24 +411,6 @@ fn main(console: Console):
     #[test]
     fn jwt_verify_oidc_via_jwks_backends_agree() {
         use aws_lc_rs::signature::KeyPair;
-        fn b64url(bytes: &[u8]) -> String {
-            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-            let mut out = String::new();
-            for c in bytes.chunks(3) {
-                let n = ((c[0] as u32) << 16)
-                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
-                    | (*c.get(2).unwrap_or(&0) as u32);
-                out.push(A[(n >> 18 & 63) as usize] as char);
-                out.push(A[(n >> 12 & 63) as usize] as char);
-                if c.len() > 1 {
-                    out.push(A[(n >> 6 & 63) as usize] as char);
-                }
-                if c.len() > 2 {
-                    out.push(A[(n & 63) as usize] as char);
-                }
-            }
-            out
-        }
         fn two_ints(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
             fn len_at(b: &[u8], i: &mut usize) -> usize {
                 let mut len = b[*i] as usize;
@@ -619,24 +573,11 @@ fn main(console: Console):
     #[test]
     fn tls_scheme_connects_through_a_local_server_backends_agree() {
         use std::io::{Read, Write};
-        use std::sync::Arc;
-        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
-        let cert_der = ck.cert.der().clone();
-        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
-        let server_config = Arc::new(
-            rustls::ServerConfig::builder_with_provider(
-                rustls::crypto::aws_lc_rs::default_provider().into(),
-            )
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
-            .unwrap(),
-        );
+        let (server_config, cert_pem) = tls_server_fixture();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-tls-test-{port}.pem"));
-        std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+        std::fs::write(&cert_path, cert_pem.as_bytes()).unwrap();
         let _tls_root = witchy_runtime::net::register_test_tls_root(cert_path.clone());
 
         // Echo server: two connections (one per backend run), each echoing one line.
@@ -810,24 +751,11 @@ fn main(console: Console):
     #[test]
     fn https_get_url_through_a_local_server_backends_agree() {
         use std::io::{Read, Write};
-        use std::sync::Arc;
-        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
-        let cert_der = ck.cert.der().clone();
-        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
-        let server_config = Arc::new(
-            rustls::ServerConfig::builder_with_provider(
-                rustls::crypto::aws_lc_rs::default_provider().into(),
-            )
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
-            .unwrap(),
-        );
+        let (server_config, cert_pem) = tls_server_fixture();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-https-test-{port}.pem"));
-        std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+        std::fs::write(&cert_path, cert_pem.as_bytes()).unwrap();
         let _tls_root = witchy_runtime::net::register_test_tls_root(cert_path.clone());
 
         let sc = server_config.clone();
@@ -893,24 +821,11 @@ fn main(console: Console):
     #[test]
     fn oauth_exchange_code_against_a_local_token_server_backends_agree() {
         use std::io::{Read, Write};
-        use std::sync::Arc;
-        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
-        let cert_der = ck.cert.der().clone();
-        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
-        let server_config = Arc::new(
-            rustls::ServerConfig::builder_with_provider(
-                rustls::crypto::aws_lc_rs::default_provider().into(),
-            )
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
-            .unwrap(),
-        );
+        let (server_config, cert_pem) = tls_server_fixture();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-oauth-test-{port}.pem"));
-        std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+        std::fs::write(&cert_path, cert_pem.as_bytes()).unwrap();
         let _tls_root = witchy_runtime::net::register_test_tls_root(cert_path.clone());
 
         let sc = server_config.clone();
@@ -962,24 +877,11 @@ fn main(console: Console):
     #[test]
     fn oauth_bearer_get_json_against_a_local_api_backends_agree() {
         use std::io::{Read, Write};
-        use std::sync::Arc;
-        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
-        let cert_der = ck.cert.der().clone();
-        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
-        let server_config = Arc::new(
-            rustls::ServerConfig::builder_with_provider(
-                rustls::crypto::aws_lc_rs::default_provider().into(),
-            )
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
-            .unwrap(),
-        );
+        let (server_config, cert_pem) = tls_server_fixture();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-bearer-test-{port}.pem"));
-        std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+        std::fs::write(&cert_path, cert_pem.as_bytes()).unwrap();
         let _tls_root = witchy_runtime::net::register_test_tls_root(cert_path.clone());
 
         let sc = server_config.clone();
