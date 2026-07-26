@@ -11,6 +11,29 @@ use witchy_syntax::linker::{LinkError, LinkMode};
 pub use witchy_types::pipeline::{CheckedModule, PipelineError};
 pub use witchy_types::runtime_type::AuthenticatedModuleOwners;
 
+/// A linked, potentially type-incomplete module retained for diagnostics and
+/// source navigation.
+///
+/// This phase is intentionally read-only and is not accepted by runtime or
+/// lowering sinks. Tooling can inspect the expanded AST and generated-node
+/// origins without receiving a consuming raw-`Module` accessor.
+#[derive(Debug)]
+pub struct ToolingLinkedModule {
+    linked: witchy_syntax::linker::LinkedModule,
+}
+
+impl ToolingLinkedModule {
+    /// Borrow the expanded AST for source-oriented inspection.
+    pub fn module(&self) -> &Module {
+        &self.linked.module
+    }
+
+    /// Borrow generated-node origin metadata.
+    pub fn origins(&self) -> &witchy_syntax::origin::OriginTable {
+        &self.linked.origins
+    }
+}
+
 /// Link `modules` with the standard compile-time expander wired in (the common
 /// case). Equivalent to the old two-argument `linker::link`.
 #[cfg(any(test, feature = "raw-module-test-api"))]
@@ -30,12 +53,13 @@ pub(crate) fn link_internal(
 pub fn link_with_origins(
     modules: Vec<(String, Module)>,
     entry: &str,
-) -> Result<witchy_syntax::linker::LinkedModule, LinkError> {
+) -> Result<ToolingLinkedModule, LinkError> {
     witchy_syntax::linker::link_with_origins(
         modules,
         entry,
         crate::comptime::expand_compile_time,
     )
+    .map(|linked| ToolingLinkedModule { linked })
 }
 
 pub(crate) fn link_with_mode(

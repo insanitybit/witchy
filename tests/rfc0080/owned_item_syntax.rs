@@ -117,21 +117,21 @@ fn main(console: Console):
     let parsed = parser::parse_module(source).expect("parse dynamic item producer");
     let linked = pipeline::link_with_origins(vec![("main".into(), parsed)], "main")
         .expect("dynamic item parses once and preserves its import fragment");
-    typeck::check(&linked.module).expect("typecheck dynamic owned item");
+    typeck::check(linked.module()).expect("typecheck dynamic owned item");
     let generated = linked
-        .module
+        .module()
         .items
         .iter()
         .position(|item| matches!(item, ast::Item::Function(function) if function.name.ends_with("dynamic_owned")))
         .expect("dynamic generated function");
-    assert!(linked.origins.origin_for_item(generated).is_some());
+    assert!(linked.origins().origin_for_item(generated).is_some());
 
     let expected = vec!["7".to_string()];
     assert_eq!(
-        interpreter::run_module(linked.module.clone(), ".", Vec::new()).expect("interpret"),
+        interpreter::run_module(linked.module().clone(), ".", Vec::new()).expect("interpret"),
         expected
     );
-    let wasm = codegen::compile_module_binary(&linked.module).expect_lowered("compile");
+    let wasm = codegen::compile_module_binary(linked.module()).expect_lowered("compile");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
         .spawn(

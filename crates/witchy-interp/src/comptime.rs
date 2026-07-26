@@ -783,7 +783,7 @@ mod tests {
         let linked = crate::pipeline::link_with_origins(vec![("main".into(), module)], "main")
             .expect("derived program links with origins");
         let derived = linked
-            .origins
+            .origins()
             .nodes()
             .iter()
             .find(|entry| entry.origin.invocation.start.line == 1)
@@ -813,17 +813,17 @@ fn main(console: Console):
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link_with_origins(vec![("main".into(), module)], "main")
             .expect("link with generated origins");
-        let (index, _) = linked.module.items.iter().enumerate().find(|(_, item)| {
+        let (index, _) = linked.module().items.iter().enumerate().find(|(_, item)| {
             matches!(item, witchy_syntax::ast::Item::Function(function)
                 if function.name.ends_with("generated"))
         }).expect("generated function");
-        let generated = linked.origins.origin_for_item(index).expect("persistent item origin");
+        let generated = linked.origins().origin_for_item(index).expect("persistent item origin");
 
         assert_eq!(generated.id.module, "main");
         assert_eq!(generated.origin.definition.start.line, 5);
         assert_eq!(generated.origin.invocation.start.line, 9);
         assert!(generated.origin.hole_ancestry.is_empty());
-        let generated_expr = linked.origins.nodes().iter().find(|entry| {
+        let generated_expr = linked.origins().nodes().iter().find(|entry| {
             entry.node.item as usize == index
                 && entry.node.category == witchy_syntax::origin::SyntaxCategory::Expr
                 && !entry.node.path.is_empty()
@@ -831,10 +831,10 @@ fn main(console: Console):
         assert_eq!(generated_expr.origin.definition.start.line, 5);
         assert_eq!(generated_expr.origin.invocation.start.line, 9);
         assert_eq!(
-            linked.origins.origin_for_node(&generated_expr.node).expect("origin lookup by structural path").id,
+            linked.origins().origin_for_node(&generated_expr.node).expect("origin lookup by structural path").id,
             generated_expr.id,
         );
-        assert!(linked.module.compiler_item_syntax.is_empty());
+        assert!(linked.module().compiler_item_syntax.is_empty());
         let ordinary = crate::pipeline::link(
             vec![(
                 "main".into(),
@@ -842,8 +842,8 @@ fn main(console: Console):
             )],
             "main",
         ).expect("ordinary runtime link");
-        assert_eq!(linked.module, ordinary, "origin collection must not alter backend AST");
-        witchy_types::typeck::check(&linked.module).expect("typecheck unchanged runtime AST");
+        assert_eq!(linked.module(), &ordinary, "origin collection must not alter backend AST");
+        witchy_types::typeck::check(linked.module()).expect("typecheck unchanged runtime AST");
     }
 
     #[test]
@@ -870,11 +870,11 @@ fn main(console: Console):
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link_with_origins(vec![("main".into(), module)], "main")
             .expect("link with structural hole origins");
-        let (index, _) = linked.module.items.iter().enumerate().find(|(_, item)| {
+        let (index, _) = linked.module().items.iter().enumerate().find(|(_, item)| {
             matches!(item, witchy_syntax::ast::Item::Function(function)
                 if function.name.ends_with("generated_with_hole"))
         }).expect("generated function");
-        let generated = linked.origins.origin_for_item(index).expect("persistent item origin");
+        let generated = linked.origins().origin_for_item(index).expect("persistent item origin");
 
         assert_eq!(generated.origin.hole_ancestry.len(), 2);
         assert_eq!(
@@ -911,8 +911,8 @@ fn main(console: Console):
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link_with_origins(vec![("main".into(), module)], "main")
             .expect("link with distinct structural hole origins");
-        let generated = linked.origins.nodes().iter().find(|entry| {
-            linked.module.items.get(entry.node.item as usize).is_some_and(|item| {
+        let generated = linked.origins().nodes().iter().find(|entry| {
+            linked.module().items.get(entry.node.item as usize).is_some_and(|item| {
                 matches!(item, witchy_syntax::ast::Item::Function(function)
                     if function.name.ends_with("generated_from_twins"))
             })
@@ -1335,7 +1335,7 @@ comptime:
         let linked = crate::pipeline::link_with_origins(vec![("main".into(), module)], "main")
             .expect("link generated fanout with origins");
         let generated_items: Vec<_> = linked
-            .module
+            .module()
             .items
             .iter()
             .enumerate()
@@ -1358,7 +1358,7 @@ comptime:
         assert!(generated_items.len() >= 4, "both lowerings must fan out items");
         for (index, _) in generated_items {
             let origin = linked
-                .origins
+                .origins()
                 .origin_for_item(index)
                 .expect("every lowered output inherits the emitted item trace");
             assert_eq!(origin.origin.invocation.start.line, 2);

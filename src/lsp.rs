@@ -98,14 +98,14 @@ fn document_symbol_response(docs: &HashMap<String, String>, params: &Value) -> V
         return json!(symbols);
     };
 
-    for generated in linked.origins.nodes() {
+    for generated in linked.origins().nodes() {
         if generated.origin.invocation.module != entry
             || !generated.node.path.is_empty()
             || generated.node.category != witchy_syntax::origin::SyntaxCategory::Item
         {
             continue;
         }
-        let Some(item) = linked.module.items.get(generated.node.item as usize) else { continue };
+        let Some(item) = linked.module().items.get(generated.node.item as usize) else { continue };
         let Some((name, kind)) = item_symbol(item) else { continue };
         let prefix = format!("{entry}.");
         let name = name.strip_prefix(&prefix).unwrap_or(name);
@@ -205,7 +205,7 @@ fn definition_response(docs: &HashMap<String, String>, params: &Value) -> Value 
 
     let mut seen = HashSet::new();
     let mut locations = Vec::new();
-    for generated in linked.origins.nodes() {
+    for generated in linked.origins().nodes() {
         if generated.node.category != witchy_syntax::origin::SyntaxCategory::Item
             || !generated.node.path.is_empty()
             || generated.origin.invocation.module != entry
@@ -262,7 +262,7 @@ fn link_document_with_origins(
     uri: &str,
     text: &str,
     docs: &HashMap<String, String>,
-) -> Option<(String, ast::Module, witchy_syntax::linker::LinkedModule)> {
+) -> Option<(String, ast::Module, witchy_interp::pipeline::ToolingLinkedModule)> {
     let path = uri_to_path(uri);
     let dir = path.as_ref()?.parent().map(PathBuf::from)?;
     let entry = path.as_ref()?.file_stem()?.to_str()?.to_string();
