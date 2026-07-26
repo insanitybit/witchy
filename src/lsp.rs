@@ -11,7 +11,6 @@ use lsp_server::{Connection, Message, Notification};
 use serde_json::{Value, json};
 
 use witchy_syntax::{ast, parser};
-use witchy_types::typeck;
 
 type LspResult = Result<(), Box<dyn Error + Sync + Send>>;
 
@@ -904,7 +903,7 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
             // `mode` file the cliff is a hard error. Only the buffer's OWN functions
             // (the entry module's `main` / `{entry}.fn`) are judged; linked-in modules
             // keep their own policy.
-            for (func, c) in witchy_lower::analysis::module_cliffs(&linked) {
+            for (func, c) in witchy_lower::analysis::module_cliffs(linked) {
                 if !witchy::is_entry_function(&func, &entry) {
                     continue;
                 }
@@ -936,7 +935,7 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
             }
 
             if enforce {
-                for miss in witchy_lower::analysis::module_no_copy_misses(&linked) {
+                for miss in witchy_lower::analysis::module_no_copy_misses(linked) {
                     if !witchy::is_entry_function(&miss.function, &entry) {
                         continue;
                     }
@@ -955,7 +954,7 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                         ),
                     ));
                 }
-                for miss in witchy_lower::analysis::module_fip_misses(&linked) {
+                for miss in witchy_lower::analysis::module_fip_misses(linked) {
                     if !witchy::is_entry_function(&miss.function, &entry) {
                         continue;
                     }
