@@ -1015,7 +1015,8 @@ impl RuntimeTypePlan {
     /// types. Every nominal and existential head must already be authenticated
     /// by `catalog`; unresolved names and capabilities fail before a backend can
     /// observe a partial plan.
-    pub fn from_resolved_types<'a>(
+    #[cfg(test)]
+    fn from_resolved_types<'a>(
         types: impl IntoIterator<Item = &'a Type>,
         catalog: &RuntimeDeclarationCatalog,
     ) -> Result<Self, RuntimeTypeError> {
@@ -1044,7 +1045,7 @@ impl RuntimeTypePlan {
         self.shapes.get(usize::try_from(id.0).ok()?)
     }
 
-    pub fn set_methods(&mut self, mut methods: Vec<RuntimeMethodDescriptor>) {
+    pub(crate) fn set_methods(&mut self, mut methods: Vec<RuntimeMethodDescriptor>) {
         methods.sort_by(|left, right| {
             (left.receiver.index(), left.name.as_str(), left.function.as_str()).cmp(&(
                 right.receiver.index(),
@@ -1059,7 +1060,7 @@ impl RuntimeTypePlan {
         &self.methods
     }
 
-    pub fn set_trait_relations(
+    pub(crate) fn set_trait_relations(
         &mut self,
         mut relations: Vec<(RuntimeTypeId, RuntimeTypeId)>,
     ) {
