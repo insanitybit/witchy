@@ -4245,10 +4245,6 @@ Parse a URL with String errors for application-style boundaries.
 
 #### `fn port(u: Url) -> Int`
 
-#### `fn path(u: Url) -> String`
-
-The historical complete post-authority suffix (path, query, and fragment). Kept for compatibility; use `pathname`, `query`, and `fragment` when component boundaries matter, or `request_target` for HTTP.
-
 #### `fn pathname(u: Url) -> String`
 
 The path component only, normalized to `/` when the URL omits a path.

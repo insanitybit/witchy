@@ -213,15 +213,6 @@ pub fn port(u: Url) -> Int:
     match u:
         Url(_scheme, _host, p, _path, _query, _fragment) -> p
 
-// The historical complete post-authority suffix (path, query, and fragment).
-// Kept for compatibility; use `pathname`, `query`, and `fragment` when component
-// boundaries matter, or `request_target` for HTTP.
-pub fn path(u: Url) -> String:
-    match u:
-        Url(_scheme, _host, _port, p, q, f) ->
-            let base = if p.is_empty() && suffix_absent(q, f): "/" else: p
-            base + query_suffix(q) + fragment_suffix(f)
-
 // The path component only, normalized to `/` when the URL omits a path.
 pub fn pathname(u: Url) -> String:
     match u:
