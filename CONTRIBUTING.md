@@ -2,22 +2,26 @@
 
 ## Build and test
 
-`./scripts/check.sh` is the green gate — **run it before every commit.** It runs
-the whole workspace test suite and the witchy-fmt check in the foreground while
-clippy (deny-warnings) and the wasm playground build run concurrently in the
-background (both are collected — and can fail the gate — before it goes green),
-and is the single source of truth for "the project is healthy". `--full` adds
-the from-scratch e2e acceptance test.
+The merge coordinator owns the serialized full green gate. Before submitting a
+branch, run the focused shard selected from its changed paths; do not overlap a
+second full gate with the coordinator.
 
 ```sh
-./scripts/check.sh          # tests + fmt, with clippy + wasm build overlapped
-./scripts/check.sh --full   # the above, plus ./scripts/e2e-full.sh
+./scripts/test-for-paths.sh         # print the required focused checks
+./scripts/test-for-paths.sh --run   # run them
+./scripts/merge-queue.sh submit <branch>
 
 # Or run one piece while iterating on it:
 cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 ```
+
+The coordinator rebases, runs the full workspace/parity/browser gate once, and
+lands only the exact green commit. See `AGENTS.md` for shared-worktree target
+isolation, queue monitoring, and recovery commands. External contributors who
+do not use the coordinator may run `./scripts/check.sh`, but its result is local
+evidence rather than permission to bypass the repository landing gate.
 
 The end-to-end package-manager tests (`tests/e2e.rs`) drive the real binary
 through scaffold/publish/add/build/run against hermetic per-test registries.
@@ -144,7 +148,12 @@ value (`Console`, `Dir`); a **right** is a permission within one
 ## Adding a semantic
 
 For a new value type, binary operator, builtin, host import, or runtime trap,
-make the change across the whole pipeline in one commit series:
+start with the [semantic authority map](spec/architecture-ledger.md#semantic-authority-map).
+Change the named authority first, then make downstream stages derive from or
+exhaustively delegate to it. A new independent name/arity/shape catalog is an
+architecture defect, even when parity is green.
+
+Carry the authority change across the whole pipeline in one commit series:
 
 1. syntax/AST and formatter if the surface changes;
 2. type checking, including capability rights and trait/protocol obligations;

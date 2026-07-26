@@ -70,7 +70,8 @@ identity, arity, ownership, or meaning.
 | Source grammar and AST | `witchy-syntax::{lexer,parser,ast}` | Later stages consume AST nodes; they do not reparse source-shaped strings to recover semantics. |
 | Module graph, source identities, visibility | `witchy-syntax::{linker,type_resolve}` | Downstream stages consume resolved names and declaration provenance. |
 | Source-only semantic proof and provenance | `witchy-syntax::source_check` | Generator/async validation reports item identity before destructive lowering; checked linking retains module and line. |
-| Type judgment and expression facts | `witchy-types::typeck::{CheckedModule,TypedModule,TypeTable}` | Arbitrary AST mutation always reannotates; node-preserving mutation is crate-private. |
+| Checked front-end pipeline | `witchy-types::pipeline::CheckedModule`; `witchy-interp::pipeline` supplies expansion | Production sinks accept the proof object. Tooling may stop at a named `LinkedModule`; bare `Module` is not an execution credential. |
+| Type judgment and expression facts | `witchy-types::typeck::{TypedModule,TypeTable}` | Arbitrary AST mutation always reannotates; node-preserving mutation is crate-private. |
 | Capability vocabulary | `witchy-cap-model` | Compiler, analyzer, fixtures, and runtime share names/classes/rights vocabulary without depending upward. |
 | Capability operation identity, receiver, arity, and coarse result | `witchy-syntax::cap_ops::OPS` | Type checking and trait lowering use receiver-qualified catalog lookup; operation-specific rights remain checker policy. |
 | Effective nominal type parameters | `witchy-syntax::ast::effective_type_params` | Type checking, reflection, storage, traits, and codegen delegate rather than infer separate parameter order. |
@@ -82,6 +83,8 @@ identity, arity, ownership, or meaning.
 | Confinement policy | `witchy-confinement` | Native providers consume normalized policy; they do not reinterpret source grants. |
 | User execution path | compiled Wasm through `src/commands/{compile,execution,wasm_exec}` | Interpreter execution remains oracle/comptime/test/build infrastructure, not a second user runtime. |
 | Differential oracle | `witchy-interp` | Parity proves backend agreement after shared frontend stages; independent conformance evidence must cover common-mode semantics. |
+| Runtime diagnostic wording and ABI IDs | `witchy-syntax::diag::DiagTemplate` | Interpreter, native Wasm host, and browser mirror share stable identities and exact rendering; existing IDs are never renumbered. |
+| Compiler diagnostic stage identity and provenance | owning structured errors wrapped by `witchy-types::pipeline::PipelineError`, plus `OriginTable` | Preserve the typed stage variant, source location, and generated-node ancestry. A unified cross-stage diagnostic value remains open; do not flatten errors to `String` at new boundaries. |
 
 ## Stage dependency contract
 
@@ -129,6 +132,7 @@ program; it does not make compiler correctness untrusted or optional.
 | Binary `src/main.rs` façade | Re-exports the root façade again so the monolithic binary can use old crate-relative paths. | DELETE | Command extraction imports its actual dependencies; tests move beside owners. |
 | Browser library API | `resolve_std_only_checked`, compile/run playground functions, formatting and documentation entrypoints | KEEP | Treat these task-shaped functions as intentional. Browser build and runnable-book checks guard them. |
 | CLI/compiler pipeline API | Linking, checking, compilation, caching, execution, and parity are private functions mixed into `main.rs`. | EXTRACT | Give each workflow one native module and test its output, exit status, diagnostics, and artifacts. |
+| Raw AST execution and compilation APIs | Production codegen and interpreter sinks require `CheckedModule`; raw-module helpers are test-feature-only. The AST remains cloneable through the documented read-only view, and low-level linker/tooling APIs still expose earlier phase artifacts. | NARROW | Continue migrating production linker/load callers to checked task APIs. Keep raw rejection fixtures absent from ordinary dependency builds; do not misrepresent the cloneable AST view as a closed capability boundary. |
 
 Compatibility exports are migration aids, not permanent stage APIs. Removal is
 incremental: every slice includes a resolved call-site census and deletes the
@@ -240,6 +244,7 @@ validated on the serialized gate.
 | Root and binary stage-module re-export chains | DELETE | Direct/task-shaped callers migrated; browser API named explicitly. |
 | Repeated `link_file*` and module-loading variants | CONSOLIDATE | One provider-driven loader preserves filesystem, dependency, and bundled diagnostics. |
 | Checked versus unchecked compilation helpers | CONSOLIDATE | Public execution paths require checked input; unchecked helpers remain only where tests deliberately exercise rejection. |
+| Checked versus raw interpreter runners | DONE | Production and CLI fixture execution borrow `CheckedModule`; raw runners exist only under the explicit raw-module test feature. |
 | Multiple Wasm execution wrappers | CONSOLIDATE | One executor owns instantiation, imports, results, and diagnostic observation. |
 | `std_source` used as a general bundled lookup concept | DONE | `std_source` = stdlib only; `playground_source` = experiments; `bundled_source` = the general resolver. Standard and playground provenance are represented separately. |
 | WIR helper implementation and dependency metadata | NARROW | Responsibility extraction and compatibility narrowing are complete: one typed registry owns dependency metadata, domain modules own constructors, and the helper surface is reduced to nine `pub` items via a resolved-call-site census (`scratch/wir-helper-census.md`) — no catalog duplication. New helpers default to `pub(super)`/`pub(crate)`; add `pub` only with an out-of-crate call site. |

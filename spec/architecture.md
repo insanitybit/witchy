@@ -7,20 +7,38 @@ for the security model see [capabilities.md](capabilities.md).
 ## The pipeline
 
 ```
-source ──lexer──> tokens ──parser──> AST ──linker──> one flat module
-                                                  │
-                                          consts/aliases inlined,
-                                          records/traits/async/gen lowered,
-                                          sugar lowered (ranges, UFCS, ...)
-                                                  │
-                                              typeck.rs
-                                                  │
-                  ┌───────────────────────────────┴───────────────┐
-             codegen/ ───> WIR ──> wasm-encoder            interpreter.rs
-             (the run path: lowered to a structured         (tree-walking;
-              IR then encoded to a wasm binary,              the parity ORACLE,
-              run on wasmtime)                               not a user run path)
+source ──lexer/parser──> per-module AST
+                              │
+                 checked link + expansion
+                 (source checks, name resolution,
+                  destructive source lowering)
+                              │
+                         CheckedModule
+                    (AST + origins + declarations
+                     + authenticated owners, when loaded)
+                              │
+                   ┌──────────┴──────────┐
+             checked lowering       checked interpreter
+                    │                (parity/comptime/
+                   WIR                tests/build only)
+                    │
+               wasm-encoder
+                    │
+             wasmtime execution
 ```
+
+`witchy-types::pipeline::CheckedModule` is the production proof boundary. The
+checked-link service in `witchy-interp::pipeline` supplies the compile-time
+expander to `witchy-types::pipeline`, which owns the link/source-check/type-check
+sequence. Production lowering, compilation, and interpreter runners accept that
+proof rather than a bare AST. Raw-module sinks used by compiler rejection tests
+are absent from normal builds and exist only behind explicit test features.
+
+`CheckedModule::module()` is a read-only compiler-stage view, not a capability
+boundary: the AST remains cloneable. The invariant is therefore enforced at
+production sinks, which require the proof object. Synthetic compiler-owned
+modules must re-enter through the explicit synthetic checker rather than assert
+that a transformed AST remains checked.
 
 There is **one user-program run path: the compiled WASM backend.** `witchy
 <file>`, `witchy run`, and `witchy sandbox` all compile to a wasm binary and
@@ -29,13 +47,13 @@ interpreter is *not* a run path — it is the differential oracle (`witchy
 parity`), the `comptime:` evaluator, the in-language test runner, and the
 effectful build-step executor.
 
-Compile-time generation has a parallel, compiler-only provenance result. The
-ordinary `link` API returns only the expanded `Module`, so type checking and
-both execution backends continue to consume one identical AST. Tooling may use
-`link_with_origins` to retain typed generated-node IDs, structural AST paths,
-definition and invocation spans, and ordered syntax-hole ancestry. This table
-is allocated and remapped by compiler passes; formatted source is never a node
-identity.
+Compile-time generation retains a compiler-only provenance result inside the
+checked artifact. Tooling that must operate on an incomplete, type-invalid
+buffer may stop earlier at `link_with_origins`; that API returns a named
+`LinkedModule` phase artifact rather than authorizing execution. It retains
+typed generated-node IDs, structural AST paths, definition and invocation
+spans, and ordered syntax-hole ancestry. This table is allocated and remapped
+by compiler passes; formatted source is never a node identity.
 
 ### Workspace layout ([RFC-0018](../rfcs/0018-compiler-architecture.md))
 
@@ -50,11 +68,11 @@ are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 | Crate | Modules | Role |
 |---|---|---|
 | `witchy-syntax` | `lexer`, `parser`, `ast`, `format`, `origin`, + the AST-level base passes (`aliases`, `consts`, `fmt`, `async_lower`, `generators`, `optimize`, `reflect`, `derive`, `records`, `doc`, `linker`, `lambda_scan`, `build_entry`) | Source → AST (off-side layout, interpolation, duration literals; Pratt-core parser + sugar lowering), the canonical formatter, and the front-end/base layer every later stage builds on. `origin` defines the typed generated-node/span side table; `linker` combines modules into one flat module with qualified names + bundles the std library (`include_str!`). |
-| `witchy-types` | `typeck`, `traits` | Annotation-driven checking + HM unification (occurs-checked), capability rights, exhaustiveness; trait desugaring to plain functions + monomorphization of bounded AND unbounded generics. Mutually recursive — one crate. |
+| `witchy-types` | `pipeline`, `typeck`, `traits`, `runtime_type` | The checked front-end proof boundary; annotation-driven checking + HM unification (occurs-checked), capability rights, exhaustiveness; trait desugaring to plain functions + monomorphization; authenticated runtime declaration identities and closed shapes. |
 | `witchy-wir` | `wir`, `wir_opt`, `wir_prelude`, `wir_encode` | The structured IR (typed expression tree, named lexical `Block`/`Loop` labels, no relooper), the peephole pass (cancels redundant slot/kind round-trips), the precompiled runtime-helper prelude (lists/strings/dicts/crypto), and the `wasm-encoder` backend. |
 | `witchy-lower` | `codegen`, `analysis` | Lowers the checked AST to WIR (universal 8-byte value slots, per-shape structural-equality helpers, capability host imports); `analysis` is the uniqueness / cap-token pass the in-place fast paths depend on. |
 | `witchy-runtime` | `value`, `native`, `net`, `confine`, `runtime` *(native-only)* | The runtime `Value` (shared by interpreter + host), the native-function registry (FFI-as-capability), address/path confinement (`..`/absolute/symlink rejection, address-set policy — shared by both backends), and the wasmtime sandbox (capability-gated host functions, memory caps, epoch preemption). The first four are wasm-safe; `runtime` sits behind the `native` feature. |
-| `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking reference semantics — the parity ORACLE (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) — plus compile-time `comptime:` / `tag"…"` evaluation and the linker's injected compile-time expander. |
+| `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking reference semantics — the parity ORACLE (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) — plus compile-time `comptime:` / `tag"…"` evaluation and the task-shaped checked-link service that injects the compile-time expander. |
 | `witchy-caps` | `capabilities`, `grants` | The footprint analyzer (`witchy caps`, `caps-diff`) — recomputed from source, never trusted metadata — and grant-document (`--grants` TOML) parsing + cross-check (`witchy grants-check`). |
 | `witchy` *(root package)* | `main`, `cli`, `source`, `lib` (the wasm-playground `cdylib`), `lsp`, `idp` | The composition package: browser entrypoints, diagnostics LSP, trusted-publishing IdP *test* simulator, and native CLI orchestration. `cli` owns help/version presentation and shared flag/secret decoding; `source` owns native project discovery, bundled lookup, dependency-aware file loading/linking, and source expansion. Dispatch and command execution remain concentrated in `main.rs` and are tracked in the architecture ledger rather than described here as already thin. |
 
