@@ -2793,26 +2793,7 @@ fn type_variable_name(ty: &Type) -> Option<&str> {
 }
 
 fn cap_receiver_kind_ast(ty: &Type) -> Option<cap_ops::ReceiverKind> {
-    let name = nominal_type_name(ty)?;
-    match name {
-        "Console" => Some(cap_ops::ReceiverKind::Console),
-        "Clock" => Some(cap_ops::ReceiverKind::Clock),
-        "Rand" => Some(cap_ops::ReceiverKind::Rand),
-        "Env" => Some(cap_ops::ReceiverKind::Env),
-        "Exec" => Some(cap_ops::ReceiverKind::Exec),
-        "BuildOut" => Some(cap_ops::ReceiverKind::BuildOut),
-        "BuildRead" => Some(cap_ops::ReceiverKind::BuildRead),
-        "BuildEnv" => Some(cap_ops::ReceiverKind::BuildEnv),
-        "BuildNet" => Some(cap_ops::ReceiverKind::BuildNet),
-        "BuildExec" => Some(cap_ops::ReceiverKind::BuildExec),
-        "File" => Some(cap_ops::ReceiverKind::File),
-        "Dir" => Some(cap_ops::ReceiverKind::Dir),
-        "Net" => Some(cap_ops::ReceiverKind::Net),
-        "Fetch" => Some(cap_ops::ReceiverKind::Fetch),
-        "Socket" => Some(cap_ops::ReceiverKind::Socket),
-        "Listener" => Some(cap_ops::ReceiverKind::Listener),
-        _ => None,
-    }
+    nominal_type_name(ty).and_then(cap_ops::ReceiverKind::from_type_name)
 }
 
 fn type_owner_module_name(name: &str) -> Option<&str> {

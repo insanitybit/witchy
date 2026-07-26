@@ -27,6 +27,34 @@ pub enum ReceiverKind {
     Listener,
 }
 
+const RECEIVER_TYPES: &[(ReceiverKind, &str)] = &[
+    (ReceiverKind::Console, "Console"),
+    (ReceiverKind::Clock, "Clock"),
+    (ReceiverKind::Rand, "Rand"),
+    (ReceiverKind::Env, "Env"),
+    (ReceiverKind::Exec, "Exec"),
+    (ReceiverKind::BuildOut, "BuildOut"),
+    (ReceiverKind::BuildRead, "BuildRead"),
+    (ReceiverKind::BuildEnv, "BuildEnv"),
+    (ReceiverKind::BuildNet, "BuildNet"),
+    (ReceiverKind::BuildExec, "BuildExec"),
+    (ReceiverKind::File, "File"),
+    (ReceiverKind::Dir, "Dir"),
+    (ReceiverKind::Net, "Net"),
+    (ReceiverKind::Fetch, "Fetch"),
+    (ReceiverKind::Socket, "Socket"),
+    (ReceiverKind::Listener, "Listener"),
+];
+
+impl ReceiverKind {
+    /// Resolve the nominal Witchy capability type to its operation receiver.
+    pub fn from_type_name(name: &str) -> Option<Self> {
+        RECEIVER_TYPES
+            .iter()
+            .find_map(|(receiver, type_name)| (*type_name == name).then_some(*receiver))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultShape {
     SameReceiver,
@@ -226,6 +254,26 @@ mod tests {
                 "duplicate {:?}.{} capability operation",
                 operation.receiver,
                 operation.name
+            );
+        }
+    }
+
+    #[test]
+    fn every_catalog_receiver_has_one_nominal_type_identity() {
+        for operation in OPS {
+            let matches: Vec<_> = RECEIVER_TYPES
+                .iter()
+                .filter(|(receiver, _)| receiver == &operation.receiver)
+                .collect();
+            assert_eq!(
+                matches.len(),
+                1,
+                "{:?} must have exactly one receiver type identity",
+                operation.receiver
+            );
+            assert_eq!(
+                ReceiverKind::from_type_name(matches[0].1),
+                Some(operation.receiver)
             );
         }
     }
