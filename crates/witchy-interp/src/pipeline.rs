@@ -71,6 +71,20 @@ pub fn link_checked_authenticated(
     )
 }
 
+/// Link a test source graph under test syntax policy, then type-check it.
+pub fn link_checked_test_with_user_modules(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    user_modules: &std::collections::HashSet<String>,
+) -> Result<CheckedModule, PipelineError> {
+    witchy_types::pipeline::link_checked_test_with_user_modules(
+        modules,
+        entry,
+        crate::comptime::expand_compile_time,
+        user_modules,
+    )
+}
+
 /// Link with origin hints for modules loaded from user files. This keeps the
 /// common in-memory path simple while enforcing reserved std module ownership.
 pub fn link_with_user_modules(

@@ -5,7 +5,7 @@
 use crate::commands::execution::run_checked_compiled;
 use crate::{
     ast, codegen, enforce_performance_modes, interpreter, is_entry_function,
-    link_file_with_mode, linker, parser, run_wasm_test_bytes, runtime, typeck,
+    link_test_file, parser, run_wasm_test_bytes, runtime, typeck,
 };
 use witchy_testkit::{FixturePlan, TestResult, TestTranscript};
 
@@ -693,13 +693,13 @@ struct TestModuleResult {
 /// (from `raw_test_shapes`, since lowering erased the AST flags). Returns
 /// `(passed, failures)` where each failure is `(name, message)`.
 fn run_tests_in_module(
-    linked: &ast::Module,
+    checked: &witchy_types::pipeline::CheckedModule,
     stem: &str,
     async_tests: &std::collections::HashSet<String>,
     gen_tests: &std::collections::HashSet<String>,
     policy: TestRunPolicy<'_>,
 ) -> Result<TestModuleResult, String> {
-    typeck::check(linked).map_err(|e| e.to_string())?;
+    let linked = checked.module();
     // BUG-177: a test run honors `mode opt` like `check`/`run` — a copy-cliff or a
     // missing ownership convention fails the run, it is not silently ignored.
     enforce_performance_modes(linked, stem)?;
@@ -903,7 +903,7 @@ fn run_tests_in_module(
 /// dispatch to `run_tests_in_module`).
 #[cfg(test)]
 pub(crate) fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
-    let (linked, stem) = link_file_with_mode(path, linker::LinkMode::Test)?;
+    let (linked, stem) = link_test_file(path)?;
     let (async_tests, gen_tests) = raw_test_shapes(path);
     let grants = TestGrants::default();
     let result = run_tests_in_module(
@@ -1056,8 +1056,7 @@ mod test_mode_link_tests {
         )
         .unwrap();
         let path = suite.to_str().unwrap();
-        let (linked, stem) =
-            crate::link_file_with_mode(path, crate::linker::LinkMode::Test).expect("test link");
+        let (linked, stem) = crate::link_test_file(path).expect("test link");
         let (async_tests, gen_tests) = raw_test_shapes(path);
         let grants = TestGrants::default();
         let plan = FixturePlan {
@@ -1107,8 +1106,7 @@ mod test_mode_link_tests {
         )
         .unwrap();
         let path = suite.to_str().unwrap();
-        let (linked, stem) =
-            crate::link_file_with_mode(path, crate::linker::LinkMode::Test).expect("test link");
+        let (linked, stem) = crate::link_test_file(path).expect("test link");
         let (async_tests, gen_tests) = raw_test_shapes(path);
         let grants = TestGrants::default();
         let plan = FixturePlan {
@@ -1400,7 +1398,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
         // that links yet fails to TYPE-CHECK (or violates `mode opt`) is a genuinely
         // BROKEN test file: it must FAIL the run, never be silently skipped as
         // "ok. 0 passed". An explicit single file surfaces even a link error.
-        let (linked, stem) = match link_file_with_mode(file, linker::LinkMode::Test) {
+        let (linked, stem) = match link_test_file(file) {
             Ok(v) => v,
             Err(e) if meta.is_dir() => {
                 if options.format == TestOutputFormat::Json {

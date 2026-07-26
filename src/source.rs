@@ -45,8 +45,21 @@ pub(crate) fn link_file(path: &str) -> Result<(ast::Module, String), String> {
     link_file_with_mode(path, linker::LinkMode::Production)
 }
 
+#[cfg(test)]
 pub(crate) fn link_file_with_mode(path: &str, mode: linker::LinkMode) -> Result<(ast::Module, String), String> {
     link_file_with_deps_mode(path, &std::collections::HashMap::new(), mode)
+}
+
+pub(crate) fn link_test_file(path: &str) -> Result<(pipeline::CheckedModule, String), String> {
+    let (modules, entry_stem, user_modules) =
+        load_file_modules(path, &std::collections::HashMap::new())?;
+    let checked = pipeline::link_checked_test_with_user_modules(
+        modules,
+        &entry_stem,
+        &user_modules,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok((checked, entry_stem))
 }
 
 /// Like `link_file`, but resolves named imports from an explicit dependency map
@@ -121,6 +134,7 @@ pub(crate) fn link_file_checked_authenticated_with_deps(
     Ok((checked, entry_stem))
 }
 
+#[cfg(test)]
 fn link_file_with_deps_mode(
     path: &str,
     deps: &std::collections::HashMap<String, std::path::PathBuf>,

@@ -57,10 +57,10 @@ pub(crate) use commands::frontend::check_file;
 use runtime::Runtime;
 pub(crate) use source::{
     bundled_module, link_file_checked,
-    link_file_checked_with_deps, link_file_with_mode, linked_has_main, project_entry_file,
+    link_file_checked_with_deps, link_test_file, linked_has_main, project_entry_file,
 };
 #[cfg(test)]
-pub(crate) use source::link_file;
+pub(crate) use source::{link_file, link_file_with_mode};
 #[cfg(test)]
 pub(crate) use source::link_file_with_deps;
 

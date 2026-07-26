@@ -148,6 +148,7 @@ fn link_checked_with(
     modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
+    mode: LinkMode,
     user_modules: Option<&HashSet<String>>,
     module_owners: Option<AuthenticatedModuleOwners>,
 ) -> Result<CheckedModule, PipelineError> {
@@ -158,7 +159,7 @@ fn link_checked_with(
                 entry,
                 expand,
                 user_modules,
-                LinkMode::Production,
+                mode,
                 typeck::check_linked_source_headers,
             )
         }
@@ -166,7 +167,7 @@ fn link_checked_with(
             modules,
             entry,
             expand,
-            LinkMode::Production,
+            mode,
             typeck::check_linked_source_headers,
         ),
     }?;
@@ -183,7 +184,7 @@ pub fn link_checked(
     entry: &str,
     expand: ComptimeExpander,
 ) -> Result<CheckedModule, PipelineError> {
-    link_checked_with(modules, entry, expand, None, None)
+    link_checked_with(modules, entry, expand, LinkMode::Production, None, None)
 }
 
 /// Production-ready checked link with loader-authenticated package ownership.
@@ -197,7 +198,35 @@ pub fn link_checked_authenticated(
     expand: ComptimeExpander,
     module_owners: AuthenticatedModuleOwners,
 ) -> Result<CheckedModule, PipelineError> {
-    link_checked_with(modules, entry, expand, None, Some(module_owners))
+    link_checked_with(
+        modules,
+        entry,
+        expand,
+        LinkMode::Production,
+        None,
+        Some(module_owners),
+    )
+}
+
+/// Link a test source graph under test syntax policy, then type-check it.
+///
+/// This is intentionally task-shaped rather than exposing `LinkMode` through
+/// production front ends. Test-driver synthesis must recheck its transformed
+/// clone through [`check_synthetic_module`].
+pub fn link_checked_test_with_user_modules(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &HashSet<String>,
+) -> Result<CheckedModule, PipelineError> {
+    link_checked_with(
+        modules,
+        entry,
+        expand,
+        LinkMode::Test,
+        Some(user_modules),
+        None,
+    )
 }
 
 /// Production-ready checked link with both exact source provenance and
@@ -213,6 +242,7 @@ pub fn link_checked_authenticated_with_user_modules(
         modules,
         entry,
         expand,
+        LinkMode::Production,
         Some(user_modules),
         Some(module_owners),
     )
