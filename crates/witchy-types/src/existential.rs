@@ -61,9 +61,6 @@ impl PreparedExistentials {
         (self.module, self.table, self.witnesses)
     }
 
-    pub fn into_runtime_parts(self) -> (Module, TypeTable, WitnessPlan, RuntimeTypePlan) {
-        (self.module, self.table, self.witnesses, self.runtime_types)
-    }
 }
 
 /// Lower every concrete-to-existential construction in one final typed module.
