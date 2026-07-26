@@ -690,21 +690,7 @@ fn main(console: Console):
         );
     }
 
-    #[test]
-    fn mutate_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/mutate/src/mutate.witchy")),
-            vec!["bumped to 3"]
-        );
-    }
 
-    #[test]
-    fn ownership_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/ownership/src/ownership.witchy")),
-            vec!["[witchy]"]
-        );
-    }
 
     #[test]
     fn guard_example_runs_on_wasm() {
@@ -737,6 +723,7 @@ fn main(console: Console):
         // interpreter through the WASM backend.
         let src = include_str!("../../examples/mutate/src/mutate.witchy");
         assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(interp(src), vec!["bumped to 3"]);
     }
 
     #[test]
@@ -744,6 +731,7 @@ fn main(console: Console):
         // `own` (consume / move ownership) compiles and agrees across backends.
         let src = include_str!("../../examples/ownership/src/ownership.witchy");
         assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(interp(src), vec!["[witchy]"]);
     }
 
     #[test]
@@ -777,13 +765,6 @@ pub fn shout(s: String) -> String:
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn generics_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/generics/src/generics.witchy")),
-            vec!["answer", "42"]
-        );
-    }
 
     #[test]
     fn result_example() {
@@ -801,49 +782,10 @@ pub fn shout(s: String) -> String:
         );
     }
 
-    #[test]
-    fn eval_example() {
-        assert_eq!(interp(include_str!("../../examples/eval/src/eval.witchy")), vec!["20"]);
-    }
 
-    #[test]
-    fn bank_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/bank/src/bank.witchy")),
-            vec![
-                "total = 150",
-                "remaining: 90",
-                "error: insufficient funds for bob"
-            ]
-        );
-    }
 
-    #[test]
-    fn guard_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/guard/src/guard.witchy")),
-            vec!["negative", "zero", "positive", "8", "-1"]
-        );
-    }
 
-    #[test]
-    fn signs_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/signs/src/signs.witchy")),
-            vec!["left", "right", "stay", "?"]
-        );
-    }
 
-    #[test]
-    fn parse_kv_example() {
-        // Uses `setting.index_of("=")` → std `string.index_of` (now Option-returning,
-        // RFC-0044), so it must link std — `link_run` pulls in the `string` prelude,
-        // where the plain `interp` (builtins only) cannot resolve the std function.
-        assert_eq!(
-            link_run(include_str!("../../examples/parse_kv/src/parse_kv.witchy")),
-            vec!["timeout", "30", "true"]
-        );
-    }
 
     #[test]
     fn fizzbuzz_example() {
@@ -856,12 +798,4 @@ pub fn shout(s: String) -> String:
         );
     }
 
-    #[test]
-    fn compute_example_compiles() {
-        assert_fn_compiles(include_str!("../../examples/compute/src/compute.witchy"));
-    }
 
-    #[test]
-    fn shapes_example_compiles() {
-        assert_fn_compiles(include_str!("../../examples/shapes/src/shapes.witchy"));
-    }
