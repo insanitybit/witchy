@@ -33,7 +33,7 @@ fn run() -> Result<(), String> {
 
     println!("path\tline\tcategory\tcallee\tparameter\troot");
     for path in &files {
-        let (report, stem) = link_file(path, &source_index)?;
+        let report = link_file(path, &source_index)?;
         record_report(
             display_from(root, path),
             report,
@@ -221,7 +221,7 @@ fn source_index(files: &[PathBuf]) -> BTreeMap<String, Vec<PathBuf>> {
 fn link_file(
     path: &Path,
     source_index: &BTreeMap<String, Vec<PathBuf>>,
-) -> Result<(Census, String), String> {
+) -> Result<Census, String> {
     let stem = path
         .file_stem()
         .and_then(|name| name.to_str())
@@ -277,7 +277,7 @@ fn link_file(
 
     let report = pipeline::migration_census(modules, &stem, &user_modules)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((report, stem))
+    Ok(report)
 }
 
 fn dependency_source(source: &Path, name: &str) -> Result<Option<PathBuf>, String> {
