@@ -3917,47 +3917,70 @@ impl Checker {
         signature
     }
 
+    fn cap_op_call_sig(operation: &cap_ops::CapOp) -> (Vec<Ty>, Ty) {
+        use cap_ops::{ArgumentShape as A, ReceiverKind as R, ResultShape as O};
+
+        let receiver = match operation.receiver {
+            R::Console => Ty::Console(ConsoleRights::full()),
+            R::Clock => Ty::Clock,
+            R::Rand => Ty::Rand,
+            R::Env => Ty::Env,
+            R::Exec => Ty::Exec,
+            R::BuildOut => Ty::BuildOut,
+            R::BuildRead => Ty::BuildRead,
+            R::BuildEnv => Ty::BuildEnv,
+            R::BuildNet => Ty::BuildNet,
+            R::BuildExec => Ty::BuildExec,
+            R::File => Ty::File(FileRights::full()),
+            R::Dir => Ty::Dir(DirRights::full()),
+            R::Net => Ty::Net(NetRights::full()),
+            R::Fetch => Ty::Fetch,
+            R::Socket => Ty::Socket,
+            R::Listener => Ty::Listener,
+        };
+        let mut parameters = Vec::with_capacity(operation.total_arity());
+        parameters.push(receiver.clone());
+        parameters.extend(operation.arguments.iter().map(|argument| match argument {
+            A::String => Ty::String,
+            A::Int => Ty::Int,
+            A::Bool => Ty::Bool,
+            A::Secret => Ty::Secret,
+            A::ListString => Ty::List(Box::new(Ty::String)),
+            A::Dir => Ty::Dir(DirRights::full()),
+            A::DirPolicy => Ty::Named("DirPolicy".into(), Vec::new()),
+            A::NetPolicy => Ty::Named("NetPolicy".into(), Vec::new()),
+        }));
+        let result = match operation.result {
+            O::SameReceiver => receiver,
+            O::Nil => Ty::Unit,
+            O::Int => Ty::Int,
+            O::String => Ty::String,
+            O::Bool => Ty::Bool,
+            O::ListString => Ty::List(Box::new(Ty::String)),
+            O::OptionString => Ty::Named("Option".into(), vec![Ty::String]),
+            O::Dir => Ty::Dir(DirRights::full()),
+            O::File => Ty::File(FileRights::full()),
+            O::Fetch => Ty::Fetch,
+            O::Socket => Ty::Socket,
+            O::OptionSocket => Ty::Named("Option".into(), vec![Ty::Socket]),
+            O::Listener => Ty::Listener,
+        };
+        (parameters, result)
+    }
+
     fn call_sig(&mut self, name: &str) -> Option<(Vec<Ty>, Ty)> {
         if let Some(signature) = self.intrinsic_call_sig(name) {
             return Some(signature);
         }
+        if let Some(operation) = cap_ops::unique_operation(name) {
+            return Some(Self::cap_op_call_sig(operation));
+        }
         match name {
-            "print" => Some((vec![Ty::Console(ConsoleRights::full()), Ty::String], Ty::Unit)),
-            "read_line" => Some((vec![Ty::Console(ConsoleRights::full())], Ty::String)),
-            "now" => Some((vec![Ty::Clock], Ty::Int)),
-            // Monotonic elapsed nanoseconds (a steady clock, immune to wall-clock
-            // jumps) — for measuring durations. Like `now`, the Clock arg is the
-            // authority; reading it is ambient nondeterminism.
-            "now_monotonic" => Some((vec![Ty::Clock], Ty::Int)),
-            "rand_u64" => Some((vec![Ty::Rand], Ty::Int)),
-            "get_env" => Some((vec![Ty::Env, Ty::String], Ty::Named("Option".into(), vec![Ty::String]))),
-            // Build-time host operations (the build sandbox provides these). Each
-            // consumes a build capability; the specific tool/dir/host/var is the
-            // consumer's grant, not part of the type.
-            "write_out" => Some((vec![Ty::BuildOut, Ty::String, Ty::String], Ty::Unit)),
-            "read_build" => Some((vec![Ty::BuildRead, Ty::String], Ty::String)),
-            "get_build_env" => {
-                Some((vec![Ty::BuildEnv, Ty::String], Ty::Named("Option".into(), vec![Ty::String])))
-            }
-            "fetch_build" => Some((vec![Ty::BuildNet, Ty::String, Ty::String], Ty::String)),
-            "run_tool" => Some((vec![Ty::BuildExec, Ty::String, Ty::String], Ty::String)),
             // Abort with a message (the primitive behind std/testing).
             "fail" => Some((vec![Ty::String], Ty::Unit)),
             // Duration <-> Int(milliseconds) bridge for the std `duration` module.
             "int_to_duration" => Some((vec![Ty::Int], Ty::Duration)),
             "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
-            // `read`/`write`/`exists`/`subdir`/`read_only`/`write_only` are handled
-            // by `check_dir_op`; `connect`/`listen`/`restrict`/`connect_only`/
-            // `listen_only` by `check_net_op` (their rights are enforced per-op).
-            "send_line" => Some((vec![Ty::Socket, Ty::String], Ty::Unit)),
-            "send_bytes" => Some((vec![Ty::Socket, Ty::String], Ty::Unit)),
-            "recv_line" => Some((vec![Ty::Socket], Ty::String)),
-            "recv_all" => Some((vec![Ty::Socket], Ty::String)),
-            "recv_bytes" => Some((vec![Ty::Socket, Ty::Int], Ty::String)),
-            "accept" => Some((vec![Ty::Listener], Ty::Socket)),
-            // (RFC-0032) Spin up the `server.serve` worker pool over a bound listener.
-            "serve_pool" => Some((vec![Ty::Listener], Ty::Unit)),
-            "close" => Some((vec![Ty::Socket], Ty::Unit)),
             // User functions: instantiate generic type parameters fresh per call.
             _ => match self.fn_sigs.get(name).cloned() {
                 Some((params, ret)) => {
@@ -4016,7 +4039,7 @@ impl Checker {
         let Some(operation) = cap_ops::operation(name, cap_ops::ReceiverKind::File) else {
             return Ok(None);
         };
-        let arity = operation.total_arity;
+        let arity = operation.total_arity();
         if args.len() != arity {
             return Ok(None);
         }
@@ -4058,7 +4081,7 @@ impl Checker {
         }
         let arity = cap_ops::operation(name, cap_ops::ReceiverKind::Env)
             .expect("Env.only is cataloged")
-            .total_arity;
+            .total_arity();
         if args.len() != arity {
             return terr(format!("`only` expects {arity} argument(s) but got {}", args.len()));
         }
@@ -4077,7 +4100,7 @@ impl Checker {
         let Some(operation) = cap_ops::operation(name, cap_ops::ReceiverKind::Console) else {
             return Ok(None);
         };
-        let expected = operation.total_arity;
+        let expected = operation.total_arity();
         if args.len() != expected {
             return terr(format!(
                 "`{name}` expects {expected} argument(s) but got {}",
@@ -4179,7 +4202,7 @@ impl Checker {
         if name == "only" {
             let arity = cap_ops::operation(name, cap_ops::ReceiverKind::Dir)
                 .expect("Dir.only is cataloged")
-                .total_arity;
+                .total_arity();
             if args.len() != arity {
                 return terr(format!("`only` expects {arity} argument(s) but got {}", args.len()));
             }
@@ -4198,7 +4221,7 @@ impl Checker {
         let Some(operation) = cap_ops::operation(name, cap_ops::ReceiverKind::Dir) else {
             return Ok(None);
         };
-        let arity = operation.total_arity;
+        let arity = operation.total_arity();
         if args.len() != arity {
             return terr(format!(
                 "`{name}` expects {arity} argument(s) but got {}",
@@ -4309,7 +4332,7 @@ impl Checker {
             }
             let arity = cap_ops::operation(name, cap_ops::ReceiverKind::Exec)
                 .expect("Exec.only is cataloged")
-                .total_arity;
+                .total_arity();
             if args.len() != arity {
                 return terr(format!("`only` expects {arity} argument(s) but got {}", args.len()));
             }
@@ -4328,7 +4351,7 @@ impl Checker {
         }
         let arity = cap_ops::operation(name, cap_ops::ReceiverKind::Exec)
             .expect("Exec.exec is cataloged")
-            .total_arity;
+            .total_arity();
         if args.len() != arity {
             return terr(format!(
                 "`exec` expects (exec, dir, path, args, stdin) — {arity} arguments but got {}",
@@ -4361,7 +4384,7 @@ impl Checker {
         if name == "fetch" {
             let arity = cap_ops::operation(name, cap_ops::ReceiverKind::Net)
                 .expect("Net.fetch is cataloged")
-                .total_arity;
+                .total_arity();
             if args.len() != arity {
                 return terr(format!(
                     "`fetch` expects {arity} argument(s) but got {}",
@@ -4392,7 +4415,7 @@ impl Checker {
             Ty::Var(_) if name == "send_raw" => self.unify(&receiver_ty, &Ty::Fetch)?,
             _ => return Ok(None),
         }
-        let arity = operation.total_arity;
+        let arity = operation.total_arity();
         if args.len() != arity {
             return terr(format!(
                 "`{name}` expects {arity} argument(s) but got {}",
@@ -4441,7 +4464,7 @@ impl Checker {
         if name == "fetch" {
             return Ok(None);
         }
-        let arity = operation.total_arity;
+        let arity = operation.total_arity();
         if args.len() != arity {
             return terr(format!(
                 "`{name}` expects {arity} argument(s) but got {}",

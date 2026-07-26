@@ -56,6 +56,18 @@ impl ReceiverKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgumentShape {
+    String,
+    Int,
+    Bool,
+    Secret,
+    ListString,
+    Dir,
+    DirPolicy,
+    NetPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultShape {
     SameReceiver,
     Nil,
@@ -76,18 +88,30 @@ pub enum ResultShape {
 pub struct CapOp {
     pub name: &'static str,
     pub receiver: ReceiverKind,
-    /// Total lowered arity, including the receiver argument.
-    pub total_arity: usize,
+    /// Lowered operands after the receiver argument.
+    pub arguments: &'static [ArgumentShape],
     pub result: ResultShape,
     pub suggestion: &'static str,
 }
 
+impl CapOp {
+    pub fn total_arity(self) -> usize {
+        self.arguments.len() + 1
+    }
+}
+
 macro_rules! op {
-    ($name:literal, $receiver:ident, $arity:literal, $result:ident, $suggestion:literal) => {
+    (
+        $name:literal,
+        $receiver:ident,
+        [$($argument:ident),* $(,)?],
+        $result:ident,
+        $suggestion:literal
+    ) => {
         CapOp {
             name: $name,
             receiver: ReceiverKind::$receiver,
-            total_arity: $arity,
+            arguments: &[$(ArgumentShape::$argument),*],
             result: ResultShape::$result,
             suggestion: $suggestion,
         }
@@ -95,65 +119,107 @@ macro_rules! op {
 }
 
 pub const OPS: &[CapOp] = &[
-    op!("print", Console, 2, Nil, "console.print(message)"),
-    op!("read_line", Console, 1, String, "console.read_line()"),
-    op!("now", Clock, 1, Int, "clock.now()"),
-    op!("now_monotonic", Clock, 1, Int, "clock.now_monotonic()"),
-    op!("rand_u64", Rand, 1, Int, "rand.rand_u64()"),
-    op!("get_env", Env, 2, OptionString, "env.get_env(name)"),
-    op!("only", Env, 2, SameReceiver, "env.only(names)"),
-    op!("exec", Exec, 5, String, "exec.exec(dir, path, args, stdin)"),
-    op!("only", Exec, 2, SameReceiver, "exec.only(programs)"),
-    op!("write_out", BuildOut, 3, Nil, "out.write_out(path, contents)"),
-    op!("read_build", BuildRead, 2, String, "build_read.read_build(path)"),
-    op!("get_build_env", BuildEnv, 2, OptionString, "build_env.get_build_env(name)"),
-    op!("fetch_build", BuildNet, 3, String, "build_net.fetch_build(host, path)"),
-    op!("run_tool", BuildExec, 3, String, "build_exec.run_tool(tool, input)"),
-    op!("read", File, 1, String, "file.read()"),
-    op!("write", File, 2, Nil, "file.write(data)"),
-    op!("only", Dir, 2, SameReceiver, "cap.only(policy)"),
-    op!("list", Dir, 1, ListString, "dir.list()"),
-    op!("read", Dir, 2, String, "dir.read(path)"),
-    op!("exists", Dir, 2, Bool, "dir.exists(path)"),
-    op!("is_dir", Dir, 2, Bool, "dir.is_dir(path)"),
-    op!("subtree", Dir, 2, Dir, "dir.subtree(path)"),
-    op!("make_dir", Dir, 2, Nil, "dir.make_dir(path)"),
-    op!("read_file", Dir, 2, File, "dir.read_file(path)"),
-    op!("write_file", Dir, 2, File, "dir.write_file(path)"),
-    op!("write", Dir, 3, Nil, "dir.write(path, data)"),
-    op!("append", Dir, 3, Nil, "dir.append(path, data)"),
-    op!("connect", Net, 2, Socket, "net.connect(addr)"),
-    op!("try_connect", Net, 2, OptionSocket, "net.try_connect(addr)"),
-    op!("listen", Net, 2, Listener, "net.listen(addr)"),
-    op!("listen_tls", Net, 4, Listener, "net.listen_tls(addr, cert_pem, key)"),
-    op!("only", Net, 2, SameReceiver, "cap.only(policy)"),
-    op!("fetch", Net, 2, Fetch, "net.fetch(origins)"),
-    op!("only", Fetch, 2, SameReceiver, "fetch.only(origins)"),
+    op!("print", Console, [String], Nil, "console.print(message)"),
+    op!("read_line", Console, [], String, "console.read_line()"),
+    op!("now", Clock, [], Int, "clock.now()"),
+    op!("now_monotonic", Clock, [], Int, "clock.now_monotonic()"),
+    op!("rand_u64", Rand, [], Int, "rand.rand_u64()"),
+    op!("get_env", Env, [String], OptionString, "env.get_env(name)"),
+    op!("only", Env, [ListString], SameReceiver, "env.only(names)"),
+    op!(
+        "exec",
+        Exec,
+        [Dir, String, String, String],
+        String,
+        "exec.exec(dir, path, args, stdin)"
+    ),
+    op!("only", Exec, [ListString], SameReceiver, "exec.only(programs)"),
+    op!(
+        "write_out",
+        BuildOut,
+        [String, String],
+        Nil,
+        "out.write_out(path, contents)"
+    ),
+    op!("read_build", BuildRead, [String], String, "build_read.read_build(path)"),
+    op!(
+        "get_build_env",
+        BuildEnv,
+        [String],
+        OptionString,
+        "build_env.get_build_env(name)"
+    ),
+    op!(
+        "fetch_build",
+        BuildNet,
+        [String, String],
+        String,
+        "build_net.fetch_build(host, path)"
+    ),
+    op!(
+        "run_tool",
+        BuildExec,
+        [String, String],
+        String,
+        "build_exec.run_tool(tool, input)"
+    ),
+    op!("read", File, [], String, "file.read()"),
+    op!("write", File, [String], Nil, "file.write(data)"),
+    op!("only", Dir, [DirPolicy], SameReceiver, "cap.only(policy)"),
+    op!("list", Dir, [], ListString, "dir.list()"),
+    op!("read", Dir, [String], String, "dir.read(path)"),
+    op!("exists", Dir, [String], Bool, "dir.exists(path)"),
+    op!("is_dir", Dir, [String], Bool, "dir.is_dir(path)"),
+    op!("subtree", Dir, [String], Dir, "dir.subtree(path)"),
+    op!("make_dir", Dir, [String], Nil, "dir.make_dir(path)"),
+    op!("read_file", Dir, [String], File, "dir.read_file(path)"),
+    op!("write_file", Dir, [String], File, "dir.write_file(path)"),
+    op!("write", Dir, [String, String], Nil, "dir.write(path, data)"),
+    op!("append", Dir, [String, String], Nil, "dir.append(path, data)"),
+    op!("connect", Net, [String], Socket, "net.connect(addr)"),
+    op!("try_connect", Net, [String], OptionSocket, "net.try_connect(addr)"),
+    op!("listen", Net, [String], Listener, "net.listen(addr)"),
+    op!(
+        "listen_tls",
+        Net,
+        [String, String, Secret],
+        Listener,
+        "net.listen_tls(addr, cert_pem, key)"
+    ),
+    op!("only", Net, [NetPolicy], SameReceiver, "cap.only(policy)"),
+    op!("fetch", Net, [String], Fetch, "net.fetch(origins)"),
+    op!("only", Fetch, [String], SameReceiver, "fetch.only(origins)"),
     op!(
         "send_raw",
         Fetch,
-        5,
+        [String, String, String, String],
         String,
         "fetch.send_raw(method, url, headers, body)"
     ),
-    op!("deny", Net, 2, SameReceiver, "net.deny(policy)"),
-    op!("resolve", Net, 2, ListString, "net.resolve(host)"),
-    op!("connect_pinned", Net, 5, Socket, "net.connect_pinned(ip, host, port, secure)"),
+    op!("deny", Net, [NetPolicy], SameReceiver, "net.deny(policy)"),
+    op!("resolve", Net, [String], ListString, "net.resolve(host)"),
+    op!(
+        "connect_pinned",
+        Net,
+        [String, String, Int, Bool],
+        Socket,
+        "net.connect_pinned(ip, host, port, secure)"
+    ),
     op!(
         "try_connect_pinned",
         Net,
-        5,
+        [String, String, Int, Bool],
         OptionSocket,
         "net.try_connect_pinned(ip, host, port, secure)"
     ),
-    op!("accept", Listener, 1, Socket, "listener.accept()"),
-    op!("serve_pool", Listener, 1, Nil, "listener.serve_pool()"),
-    op!("send_line", Socket, 2, Nil, "socket.send_line(line)"),
-    op!("send_bytes", Socket, 2, Nil, "socket.send_bytes(bytes)"),
-    op!("recv_line", Socket, 1, String, "socket.recv_line()"),
-    op!("recv_all", Socket, 1, String, "socket.recv_all()"),
-    op!("recv_bytes", Socket, 2, String, "socket.recv_bytes(n)"),
-    op!("close", Socket, 1, Nil, "socket.close()"),
+    op!("accept", Listener, [], Socket, "listener.accept()"),
+    op!("serve_pool", Listener, [], Nil, "listener.serve_pool()"),
+    op!("send_line", Socket, [String], Nil, "socket.send_line(line)"),
+    op!("send_bytes", Socket, [String], Nil, "socket.send_bytes(bytes)"),
+    op!("recv_line", Socket, [], String, "socket.recv_line()"),
+    op!("recv_all", Socket, [], String, "socket.recv_all()"),
+    op!("recv_bytes", Socket, [Int], String, "socket.recv_bytes(n)"),
+    op!("close", Socket, [], Nil, "socket.close()"),
 ];
 
 pub fn call_name(method: &str) -> String {
@@ -171,7 +237,7 @@ pub fn is_op_name(name: &str) -> bool {
 
 pub(crate) fn op_info(name: &str, total_arity: usize) -> Option<&'static CapOp> {
     let name = surface_name(name);
-    OPS.iter().find(|op| op.name == name && op.total_arity == total_arity)
+    OPS.iter().find(|op| op.name == name && op.total_arity() == total_arity)
 }
 
 pub fn diagnostic_suggestion(name: &str, total_arity: usize) -> Option<&'static str> {
@@ -196,6 +262,17 @@ pub fn operation(name: &str, receiver: ReceiverKind) -> Option<&'static CapOp> {
     let name = surface_name(name);
     OPS.iter()
         .find(|op| op.name == name && op.receiver == receiver)
+}
+
+/// Resolve a surface name only when it identifies one catalog row.
+///
+/// Overloaded names such as `read`, `write`, and `only` require receiver-aware
+/// lookup through [`operation`].
+pub fn unique_operation(name: &str) -> Option<&'static CapOp> {
+    let name = surface_name(name);
+    let mut matches = OPS.iter().filter(|operation| operation.name == name);
+    let operation = matches.next()?;
+    matches.next().is_none().then_some(operation)
 }
 
 pub fn receiver_supports(name: &str, receiver: ReceiverKind) -> bool {
@@ -235,8 +312,8 @@ mod tests {
     fn receiver_lookup_disambiguates_arity_and_result() {
         let file_read = operation("read", ReceiverKind::File).expect("File.read");
         let dir_read = operation("read", ReceiverKind::Dir).expect("Dir.read");
-        assert_eq!(file_read.total_arity, 1);
-        assert_eq!(dir_read.total_arity, 2);
+        assert_eq!(file_read.total_arity(), 1);
+        assert_eq!(dir_read.total_arity(), 2);
         assert_eq!(
             operation("__capop.resolve", ReceiverKind::Net).map(|op| op.result),
             Some(ResultShape::ListString)
@@ -276,5 +353,17 @@ mod tests {
                 Some(operation.receiver)
             );
         }
+    }
+
+    #[test]
+    fn unique_name_lookup_rejects_overloaded_operations() {
+        assert_eq!(
+            unique_operation("now").map(|operation| operation.receiver),
+            Some(ReceiverKind::Clock)
+        );
+        assert_eq!(unique_operation("__capop.recv_line").map(|operation| operation.result), Some(ResultShape::String));
+        assert_eq!(unique_operation("read"), None);
+        assert_eq!(unique_operation("write"), None);
+        assert_eq!(unique_operation("only"), None);
     }
 }
