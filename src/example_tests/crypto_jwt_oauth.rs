@@ -88,7 +88,8 @@ use crate::{codegen, interpreter, parser, typeck};
         let sig_hex = hexs(&sig);
         // Reach the private intrinsic through the native registry; std/crypto maps
         // this status into the public Result API.
-        let f = crate::native::lookup("crypto.__rsa_pkcs1_sha256_verify_status").expect("registered");
+        let f = witchy_runtime::native::lookup("crypto.__rsa_pkcs1_sha256_verify_status")
+            .expect("registered");
         let verify = |pk: &str, m: &str, s: &str| {
             f(&[NV::Str(pk.into()), NV::Str(m.into()), NV::Str(s.into())]).unwrap()
         };
@@ -565,8 +566,14 @@ fn main(console: Console):
     /// capability governs the bare `host:port`, the scheme is a connect-time choice.
     #[test]
     fn tls_scheme_is_stripped_for_the_allowlist() {
-        assert_eq!(crate::net::parse_scheme("tls:github.com:443"), (true, "github.com:443"));
-        assert_eq!(crate::net::parse_scheme("github.com:443"), (false, "github.com:443"));
+        assert_eq!(
+            witchy_runtime::net::parse_scheme("tls:github.com:443"),
+            (true, "github.com:443"),
+        );
+        assert_eq!(
+            witchy_runtime::net::parse_scheme("github.com:443"),
+            (false, "github.com:443"),
+        );
     }
 
     /// RFC-0011 carried-state: a SEALED record capability (`capability X:` with named
@@ -630,7 +637,7 @@ fn main(console: Console):
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-tls-test-{port}.pem"));
         std::fs::write(&cert_path, ck.cert.pem()).unwrap();
-        let _tls_root = crate::net::register_test_tls_root(cert_path.clone());
+        let _tls_root = witchy_runtime::net::register_test_tls_root(cert_path.clone());
 
         // Echo server: two connections (one per backend run), each echoing one line.
         let sc = server_config.clone();
@@ -821,7 +828,7 @@ fn main(console: Console):
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-https-test-{port}.pem"));
         std::fs::write(&cert_path, ck.cert.pem()).unwrap();
-        let _tls_root = crate::net::register_test_tls_root(cert_path.clone());
+        let _tls_root = witchy_runtime::net::register_test_tls_root(cert_path.clone());
 
         let sc = server_config.clone();
         let server = std::thread::spawn(move || {
@@ -904,7 +911,7 @@ fn main(console: Console):
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-oauth-test-{port}.pem"));
         std::fs::write(&cert_path, ck.cert.pem()).unwrap();
-        let _tls_root = crate::net::register_test_tls_root(cert_path.clone());
+        let _tls_root = witchy_runtime::net::register_test_tls_root(cert_path.clone());
 
         let sc = server_config.clone();
         let server = std::thread::spawn(move || {
@@ -973,7 +980,7 @@ fn main(console: Console):
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-bearer-test-{port}.pem"));
         std::fs::write(&cert_path, ck.cert.pem()).unwrap();
-        let _tls_root = crate::net::register_test_tls_root(cert_path.clone());
+        let _tls_root = witchy_runtime::net::register_test_tls_root(cert_path.clone());
 
         let sc = server_config.clone();
         let server = std::thread::spawn(move || {

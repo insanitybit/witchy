@@ -14,7 +14,10 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         // summaries resolve exactly as in real compilation (a per-module scan would
         // false-positive on calls like `list.join` whose summary lives elsewhere).
         let imports: String =
-            crate::linker::STD_MODULES.iter().map(|m| format!("import {m}\n")).collect();
+            witchy_syntax::linker::STD_MODULES
+                .iter()
+                .map(|m| format!("import {m}\n"))
+                .collect();
         let entry_src = format!("{imports}\npub fn perfcheck() -> Int:\n    0\n");
         let entry = parser::parse_module(&entry_src).expect("parse synthetic std-import entry");
         let linked = crate::pipeline::link(vec![("perfcheck".into(), entry)], "perfcheck")

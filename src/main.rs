@@ -11,7 +11,7 @@
 #![deny(unsafe_code)]
 
 #[cfg(test)]
-pub(crate) use witchy::{comptime, native, net, wir_encode};
+pub(crate) use witchy::comptime;
 pub(crate) use witchy::artifact;
 pub(crate) use witchy::ast;
 pub(crate) use witchy::capabilities;
@@ -19,7 +19,6 @@ pub(crate) use witchy::codegen;
 pub(crate) use witchy::format;
 pub(crate) use witchy_caps::grants;
 pub(crate) use witchy::interpreter;
-pub(crate) use witchy::linker;
 pub(crate) use witchy::{enforce_performance_modes, is_entry_function};
 pub(crate) use witchy::opt;
 pub(crate) use witchy::pipeline;

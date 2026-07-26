@@ -1155,7 +1155,7 @@ fn yes(b: Bool) -> String:
             table: None,
             exports: vec![("run".into(), "run".into())],
         };
-        let wasm = crate::wir_encode::encode(&module, &[]);
+        let wasm = witchy_wir::wir_encode::encode(&module, &[]);
         assert!(validates_wasm_gc(&wasm), "encoded module must validate");
 
         // Run with ONLY `print` granted — nothing else. Success proves the module

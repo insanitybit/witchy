@@ -24,7 +24,7 @@ fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
         "main".to_string(),
         ModuleLoadIdentity::new(workspace, ["main"]).expect("main module owner"),
     )];
-    assignments.extend(witchy::linker::STD_MODULES.iter().map(|std_module| {
+    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|std_module| {
         (
             (*std_module).to_string(),
             ModuleLoadIdentity::new(toolchain.clone(), ["std", *std_module])

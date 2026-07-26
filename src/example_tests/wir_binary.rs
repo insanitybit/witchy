@@ -77,8 +77,16 @@ use crate::{codegen, parser, typeck};
         );
         // Oracle-validated: both the unoptimized and optimized binaries match the
         // interpreter (a behavior-preserving win, not a behavior change).
-        assert_eq!(run_bytes_print_only(&crate::wir_encode::encode(&m, &[])), want, "unoptimized");
-        assert_eq!(run_bytes_print_only(&crate::wir_encode::encode(&opt_m, &[])), want, "optimized");
+        assert_eq!(
+            run_bytes_print_only(&witchy_wir::wir_encode::encode(&m, &[])),
+            want,
+            "unoptimized",
+        );
+        assert_eq!(
+            run_bytes_print_only(&witchy_wir::wir_encode::encode(&opt_m, &[])),
+            want,
+            "optimized",
+        );
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
@@ -105,13 +113,13 @@ use crate::{codegen, parser, typeck};
                 .expect_lowered(&format!("expected the WIR binary path to handle:\n{src}"));
             let oracle = link_run(src);
             // Unoptimized encoding runs like the oracle...
-            let unopt = crate::wir_encode::encode(&m, &[]);
+            let unopt = witchy_wir::wir_encode::encode(&m, &[]);
             assert_eq!(run_bytes_all_caps(&unopt), oracle, "unoptimized:\n{src}");
             // ...and the optimized encoding runs identically (sound rewrite).
             let mut opt_m = m.clone();
             let stats = witchy_wir::wir_opt::optimize(&mut opt_m);
             assert!(stats.nodes_after <= stats.nodes_before, "the pass never grows the tree");
-            let opt = crate::wir_encode::encode(&opt_m, &[]);
+            let opt = witchy_wir::wir_encode::encode(&opt_m, &[]);
             assert_eq!(run_bytes_all_caps(&opt), oracle, "optimized:\n{src}");
         }
     }

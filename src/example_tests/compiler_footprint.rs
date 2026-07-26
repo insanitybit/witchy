@@ -38,7 +38,8 @@ use crate::{ast, interpreter, parser, typeck};
         use witchy_runtime::value::NativeValue;
 
         let invalid = "fn main(console: Console):\n    missing(console)\n";
-        let footprint = crate::native::lookup("compiler.footprint").expect("compiler.footprint native");
+        let footprint = witchy_runtime::native::lookup("compiler.footprint")
+            .expect("compiler.footprint native");
         let NativeValue::Str(json) = footprint(&[NativeValue::Str(invalid.into())]).expect("native call") else {
             panic!("compiler.footprint must return a JSON string");
         };
@@ -52,7 +53,8 @@ use crate::{ast, interpreter, parser, typeck};
         assert!(json.contains("\"error\""), "comptime source must fail closed: {json}");
         assert!(json.contains("does not support comptime"), "error must name the boundary: {json}");
 
-        let diff = crate::native::lookup("compiler.diff").expect("compiler.diff native");
+        let diff =
+            witchy_runtime::native::lookup("compiler.diff").expect("compiler.diff native");
         let NativeValue::Str(json) = diff(&[
             NativeValue::Str("pub fn direct() -> Int:\n    0\n".into()),
             NativeValue::Str(invalid.into()),
@@ -73,7 +75,7 @@ use crate::{ast, interpreter, parser, typeck};
         assert!(json.contains("\"error\""), "comptime diff must fail closed: {json}");
         assert!(json.contains("does not support comptime"), "diff error must name the boundary: {json}");
 
-        let doc = crate::native::lookup("compiler.doc").expect("compiler.doc native");
+        let doc = witchy_runtime::native::lookup("compiler.doc").expect("compiler.doc native");
         let NativeValue::Str(md) =
             doc(&[NativeValue::Str("generated".into()), NativeValue::Str(src.into())]).expect("native doc")
         else {

@@ -8,10 +8,11 @@ use crate::cli::{
 };
 use crate::{
     ast, bundled_module, commands, enforce_performance_modes, execute_file_exit,
-    format, idp, link_file_checked, linker, load_signing_seed, lsp, opt, parser, pipeline,
+    format, idp, link_file_checked, load_signing_seed, lsp, opt, parser, pipeline,
     project_entry_file, report_capabilities, report_capability_diff, report_grant_check,
     run_benchmarks, runtime, trusted_exe, RUN_MEMORY_PAGES,
 };
+use witchy_syntax::linker;
 
 pub(crate) fn run() -> wasmtime::Result<()> {
     // Install the compiler-service natives (footprint/diff/doc), which live
