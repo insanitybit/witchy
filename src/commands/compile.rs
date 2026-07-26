@@ -4,9 +4,8 @@ use witchy::{artifact, enforce_performance_modes, trusted_exe};
 use witchy_syntax::opt;
 use witchy_lower::codegen;
 use witchy_interp::pipeline;
-use witchy_types::typeck;
 use witchy_wir::wir;
-use crate::{link_file, link_file_checked, link_file_checked_with_deps};
+use crate::{link_file_checked, link_file_checked_with_deps};
 use crate::source::{
     link_file_checked_authenticated_with_deps, AuthenticatedDependency,
 };
@@ -289,16 +288,16 @@ pub(crate) fn run_emit() -> bool {
 /// Compile a program to WebAssembly text (WAT) and return it — the same module
 /// `sandbox` would run. For inspecting and optimizing the generated code.
 pub(crate) fn emit_wat_file(path: &str) -> Result<String, String> {
-    let (linked, stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
+    let (checked, stem) = link_file_checked(path)?;
+    let linked = checked.module();
     // Honor `mode opt` (BUG-163): `emit-wat` renders the SAME module `sandbox` runs,
     // so a copy-cliff / missing-convention that `check`, `emit-wasm`, and `sandbox`
     // reject must not be quietly rendered here (exit 0 with a copy-cliff file).
-    enforce_performance_modes(&linked, &stem)?;
+    enforce_performance_modes(linked, &stem)?;
     // The WIR-as-WAT: the actual module the backend encodes and runs
     // (optimization passes included), rendered back to text for inspection —
     // a display of the real WIR, not a separately generated WAT string.
-    let wir = match codegen::assemble_optimized_wir_module(&linked) {
+    let wir = match codegen::assemble_checked_optimized_wir_module(&checked) {
         codegen::LoweringOutcome::Lowered(wir) => wir,
         codegen::LoweringOutcome::Unsupported(reason) => {
             return Err(format!("cannot compile to WASM: {reason}"));

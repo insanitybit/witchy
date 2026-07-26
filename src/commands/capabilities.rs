@@ -3,8 +3,7 @@
 use witchy_caps::{capabilities as capability_model, grants};
 use witchy_interp::comptime;
 use witchy_syntax::parser;
-use witchy_types::typeck;
-use crate::link_file;
+use crate::link_file_checked;
 
 /// Read, parse, and compute the host-capability footprint of a source file.
 pub(crate) fn analyze_file(path: &str) -> Result<capability_model::Footprint, String> {
@@ -12,8 +11,7 @@ pub(crate) fn analyze_file(path: &str) -> Result<capability_model::Footprint, St
     // (an undefined-function call, a type error). Link + type-check the whole program
     // first, so `caps`/`caps-diff` refuse a source that `check` would reject rather
     // than reporting a footprint for it.
-    let (linked, _stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
+    let (_checked, _stem) = link_file_checked(path)?;
     // Report the footprint of the ENTRY file's own items (unprefixed names, matching
     // the existing per-function output) — but with its `comptime:` blocks EXPANDED
     // (BUG-178). A `comptime:` block that `emit`s `pub fn generated(net: Net)` adds a

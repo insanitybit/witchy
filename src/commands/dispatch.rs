@@ -8,7 +8,7 @@ use crate::cli::{
 };
 use crate::{
     ast, bundled_module, commands, enforce_performance_modes, execute_file_exit,
-    format, idp, link_file, linker, load_signing_seed, lsp, opt, parser, pipeline,
+    format, idp, link_file_checked, linker, load_signing_seed, lsp, opt, parser, pipeline,
     project_entry_file, report_capabilities, report_capability_diff, report_grant_check,
     run_benchmarks, runtime, trusted_exe, RUN_MEMORY_PAGES,
 };
@@ -136,9 +136,9 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         };
         // BUG-177: honor `mode opt` like `check`/`run`/`emit` — a copy-cliff or a
         // missing ownership convention is an error, not a silently-measured stat.
-        match link_file(&path) {
-            Ok((linked, stem)) => {
-                if let Err(e) = enforce_performance_modes(&linked, &stem) {
+        match link_file_checked(&path) {
+            Ok((checked, stem)) => {
+                if let Err(e) = enforce_performance_modes(checked.module(), &stem) {
                     eprintln!("witchy stats: {e}");
                     std::process::exit(1);
                 }

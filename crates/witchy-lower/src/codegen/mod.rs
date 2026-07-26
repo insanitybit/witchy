@@ -42,7 +42,10 @@ mod type_vars;
 mod expr_lower;
 mod match_lower;
 mod block_lower;
-pub use assembly::{compile_checked_build_module, compile_checked_module_binary};
+pub use assembly::{
+    assemble_checked_optimized_wir_module, compile_checked_build_module,
+    compile_checked_module_binary,
+};
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub use assembly::{
     assemble_optimized_wir_module, assemble_wir_module, compile_build_module,

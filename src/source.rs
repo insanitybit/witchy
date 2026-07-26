@@ -40,6 +40,7 @@ pub(crate) fn bundled_module(name: &str) -> Option<&'static str> {
 /// Parse and link a source file. Non-std imports resolve from sibling
 /// `<name>.witchy` files; reserved std names resolve from the bundled source.
 /// Returns the linked module and entry stem.
+#[cfg(test)]
 pub(crate) fn link_file(path: &str) -> Result<(ast::Module, String), String> {
     link_file_with_mode(path, linker::LinkMode::Production)
 }

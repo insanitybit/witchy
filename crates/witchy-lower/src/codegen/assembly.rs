@@ -1475,8 +1475,20 @@ pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::
 /// Assemble and optimize the exact WIR module used by the binary backend, then
 /// validate the transformed result before exposing it to diagnostic consumers
 /// such as `emit-wat`.
+pub fn assemble_checked_optimized_wir_module(
+    checked: &witchy_types::pipeline::CheckedModule,
+) -> LoweringOutcome<witchy_wir::wir::WirModule> {
+    assemble_optimized_wir_module_impl(checked.module())
+}
+
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn assemble_optimized_wir_module(
+    module: &Module,
+) -> LoweringOutcome<witchy_wir::wir::WirModule> {
+    assemble_optimized_wir_module_impl(module)
+}
+
+fn assemble_optimized_wir_module_impl(
     module: &Module,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
     match assemble_optimized_wir_with_structs(module) {
