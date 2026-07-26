@@ -2,8 +2,8 @@
 //!
 //! Lowers the type-checked AST to WIR — the structured IR in `witchy_wir::wir` — which
 //! `witchy_wir::wir_encode` then encodes to a wasm binary. The entry points are
-//! `compile_module_binary` (AST → wasm bytes) and `assemble_wir_module`
-//! (AST → `WirModule`).
+//! `compile_checked_module_binary` (checked AST → wasm bytes). Raw AST entry
+//! points exist only for lowerer and synthetic-module tests.
 //!
 //! Value model: a universal 8-byte (`i64`) slot. Integers are `i64`; floats are
 //! bit-reinterpreted into the slot; pointers and Bools are `i32` widened to it
@@ -42,7 +42,12 @@ mod type_vars;
 mod expr_lower;
 mod match_lower;
 mod block_lower;
-pub use assembly::*;
+pub use assembly::{compile_checked_build_module, compile_checked_module_binary};
+#[cfg(any(test, feature = "raw-module-test-api"))]
+pub use assembly::{
+    assemble_optimized_wir_module, assemble_wir_module, compile_build_module,
+    compile_module_binary,
+};
 use passes::{alpha_rename_module, flip_string_add_module, rewrite_try_ctx_module};
 use loans::{collect_loan_event_keys, collect_loan_roots};
 use type_vars::*;

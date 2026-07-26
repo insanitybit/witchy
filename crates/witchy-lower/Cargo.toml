@@ -6,6 +6,11 @@ publish = false            # internal workspace crate — not published standalo
 license = "MIT OR Apache-2.0"
 description = "witchy compiler — AST→WIR lowering (the compiled backend's front half)"
 
+[features]
+# Synthetic AST and lowerer tests intentionally exercise stages below the
+# checked pipeline. Production dependents receive only proof-carrying entries.
+raw-module-test-api = []
+
 # Non-test code is pure (it builds WIR via witchy-wir), so this crate is
 # wasm-clean. The tests run the emitted module under wasmtime — a dev-dependency,
 # so it never enters a non-test or wasm build.

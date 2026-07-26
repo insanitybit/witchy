@@ -118,6 +118,8 @@ rustls-pemfile = "2"
 
 [dev-dependencies]
 proptest = "1.11.0"
+# Raw AST lowering is deliberate compiler-test machinery, not a production API.
+witchy-lower = { path = "crates/witchy-lower", features = ["raw-module-test-api"] }
 # Enables only the concurrency-safe TLS fixture hook for root-package tests.
 # The ordinary runtime dependency does not expose it in production builds.
 witchy-runtime = { path = "crates/witchy-runtime", features = ["test-support"] }

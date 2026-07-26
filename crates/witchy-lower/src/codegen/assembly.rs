@@ -1328,6 +1328,7 @@ fn encode_validated(
     Ok(bytes)
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn validated_module_outcome(
     module: witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -1350,6 +1351,7 @@ fn encoded_binary_outcome(
     }
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn assemble_optimized_wir_with_structs(
     module: &Module,
 ) -> Result<
@@ -1385,6 +1387,7 @@ fn assemble_optimized_wir_with_structs_mode(
 /// Compile a module straight to a wasm **binary** via WIR + `wir_encode::encode`.
 /// The result distinguishes a valid source construct that lacks a compiled
 /// lowering from rejected input or malformed compiler output.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
     compile_module_binary_mode(module, false, None)
 }
@@ -1459,6 +1462,7 @@ fn compile_module_binary_mode(
 /// prelude raw-body helpers + the lowered user functions + the `run` export +
 /// imports/globals/data/table. Split out from `compile_module_binary` so tests
 /// can compare optimized and unoptimized encoding.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::WirModule> {
     match assemble_wir_module_with_structs(module) {
         Ok((module, gc_structs, gc_arrays)) => {
@@ -1471,6 +1475,7 @@ pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::
 /// Assemble and optimize the exact WIR module used by the binary backend, then
 /// validate the transformed result before exposing it to diagnostic consumers
 /// such as `emit-wat`.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn assemble_optimized_wir_module(
     module: &Module,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
@@ -1482,6 +1487,7 @@ pub fn assemble_optimized_wir_module(
     }
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn assemble_wir_module_with_structs(
     module: &Module,
 ) -> Result<
@@ -3432,6 +3438,7 @@ mod lowering_outcome_tests {
 /// appear in an ordinary program (so parity is untouched). The host links only
 /// `build_out_write`/`build_read_len`, confined to the granted output sandbox
 /// and read roots — nothing else exists for the guest to call.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn compile_build_module(module: &Module) -> LoweringOutcome<Vec<u8>> {
     compile_build_module_mode(module, None)
 }
