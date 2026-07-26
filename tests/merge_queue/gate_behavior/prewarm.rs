@@ -1,7 +1,6 @@
 use super::*;
 
-#[test]
-fn idle_prewarm_wraps_every_workload_in_one_cancellable_utility_group() {
+fn fixture_with_gate_worktree() -> QueueFixture {
     let fixture = QueueFixture::stack(&["a.txt"]);
     run_git(
         &fixture.root,
@@ -13,6 +12,53 @@ fn idle_prewarm_wraps_every_workload_in_one_cancellable_utility_group() {
             "master",
         ],
     );
+    fixture
+}
+
+fn wait_for_branch_to_land(fixture: &QueueFixture, context: &str) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !git_output(&fixture.root, &["show", "master:a.txt"])
+        .status
+        .success()
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        git_output(&fixture.root, &["show", "master:a.txt"])
+            .status
+            .success(),
+        "{context}",
+    );
+}
+
+fn stop_coordinator(
+    mut coordinator: std::process::Child,
+    guard: ProcessGroupGuard,
+    context: &str,
+) {
+    drop(guard);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while coordinator
+        .try_wait()
+        .expect("poll terminated coordinator")
+        .is_none()
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        coordinator
+            .try_wait()
+            .expect("reap terminated coordinator")
+            .is_some(),
+        "{context}",
+    );
+}
+
+#[test]
+fn idle_prewarm_wraps_every_workload_in_one_cancellable_utility_group() {
+    let fixture = fixture_with_gate_worktree();
 
     let bin = fixture._temp.path().join("priority-prewarm-bin");
     fs::create_dir(&bin).expect("create fake priority bin");
@@ -103,7 +149,7 @@ while :; do /bin/sleep 1; done
         gate_ran.display(),
         gate_release.display(),
     );
-    let mut coordinator = Command::new("bash")
+    let coordinator = Command::new("bash")
         .arg(&queue_script)
         .arg("run")
         .env("PATH", path)
@@ -198,36 +244,14 @@ while :; do /bin/sleep 1; done
     std::mem::forget(prewarm_guard);
 
     fs::write(&gate_release, "go\n").expect("release priority fixture gate");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !git_output(&fixture.root, &["show", "master:a.txt"])
-        .status
-        .success()
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        git_output(&fixture.root, &["show", "master:a.txt"])
-            .status
-            .success(),
+    wait_for_branch_to_land(
+        &fixture,
         "queued branch did not land after priority prewarm cancellation",
     );
 
-    drop(coordinator_guard);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while coordinator
-        .try_wait()
-        .expect("poll terminated priority fixture coordinator")
-        .is_none()
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        coordinator
-            .try_wait()
-            .expect("reap terminated priority fixture coordinator")
-            .is_some(),
+    stop_coordinator(
+        coordinator,
+        coordinator_guard,
         "priority fixture coordinator ignored process-group termination",
     );
 }
@@ -236,17 +260,7 @@ while :; do /bin/sleep 1; done
 fn queued_work_preempts_an_idle_prewarm_process_group() {
     // Keep rustup blocked before Cargo: the production stall occurred when
     // this setup ran synchronously before the cancellable prewarm PGID existed.
-    let fixture = QueueFixture::stack(&["a.txt"]);
-    run_git(
-        &fixture.root,
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            fixture.gate_worktree.to_str().unwrap(),
-            "master",
-        ],
-    );
+    let fixture = fixture_with_gate_worktree();
     let bin = fixture._temp.path().join("prewarm-bin");
     fs::create_dir(&bin).expect("create fake prewarm bin");
     let started = fixture._temp.path().join("prewarm-started");
@@ -293,7 +307,7 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
         gate_ran.display(),
         gate_proceed.display(),
     );
-    let mut coordinator = Command::new("bash")
+    let coordinator = Command::new("bash")
         .arg(&queue_script)
         .arg("run")
         .env("PATH", path)
@@ -344,20 +358,7 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
         "cancelled prewarm was recorded as complete"
     );
     fs::write(&gate_proceed, "go\n").expect("release fake gate");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !git_output(&fixture.root, &["show", "master:a.txt"])
-        .status
-        .success()
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        git_output(&fixture.root, &["show", "master:a.txt"])
-            .status
-            .success(),
-        "queued branch did not land"
-    );
+    wait_for_branch_to_land(&fixture, "queued branch did not land");
     let deadline = Instant::now() + Duration::from_secs(20);
     while !cargo_env.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(25));
@@ -368,38 +369,16 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
         "idle prewarm did not match the full gate Cargo profile",
     );
 
-    drop(guard);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while coordinator
-        .try_wait()
-        .expect("poll terminated coordinator")
-        .is_none()
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        coordinator
-            .try_wait()
-            .expect("reap terminated coordinator")
-            .is_some(),
+    stop_coordinator(
+        coordinator,
+        guard,
         "coordinator ignored process-group termination"
     );
 }
 
 #[test]
 fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
-    let fixture = QueueFixture::stack(&["a.txt"]);
-    run_git(
-        &fixture.root,
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            fixture.gate_worktree.to_str().unwrap(),
-            "master",
-        ],
-    );
+    let fixture = fixture_with_gate_worktree();
     fs::create_dir_all(&fixture.state).expect("create generation state");
     fs::create_dir_all(fixture.gate_worktree.join("target"))
         .expect("create active gate target");
@@ -461,7 +440,7 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
         gate_ran.display(),
         gate_release.display(),
     );
-    let mut coordinator = Command::new("bash")
+    let coordinator = Command::new("bash")
         .arg(&queue_script)
         .arg("run")
         .env("PATH", path)
@@ -567,18 +546,8 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
     );
 
     fs::write(&gate_release, "go\n").expect("release fake gate");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !git_output(&fixture.root, &["show", "master:a.txt"])
-        .status
-        .success()
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        git_output(&fixture.root, &["show", "master:a.txt"])
-            .status
-            .success(),
+    wait_for_branch_to_land(
+        &fixture,
         "queued branch did not land after inactive prewarm cancellation",
     );
     if cargo_pgid != coordinator_pgid {
@@ -589,38 +558,16 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
         assert!(!process_group_is_alive(cargo_pgid), "cancelled Cargo group survived");
         std::mem::forget(cargo_guard);
     }
-    drop(coordinator_guard);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while coordinator
-        .try_wait()
-        .expect("poll terminated coordinator")
-        .is_none()
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        coordinator
-            .try_wait()
-            .expect("reap terminated coordinator")
-            .is_some(),
+    stop_coordinator(
+        coordinator,
+        coordinator_guard,
         "coordinator ignored process-group termination",
     );
 }
 
 #[test]
 fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
-    let fixture = QueueFixture::stack(&["a.txt"]);
-    run_git(
-        &fixture.root,
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            fixture.gate_worktree.to_str().unwrap(),
-            "master",
-        ],
-    );
+    let fixture = fixture_with_gate_worktree();
     fs::create_dir_all(&fixture.state).expect("create generation state");
     fs::create_dir_all(fixture.gate_worktree.join("target"))
         .expect("create active gate target");
@@ -688,7 +635,7 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
         gate_ran.display(),
         gate_release.display(),
     );
-    let mut coordinator = Command::new("bash")
+    let coordinator = Command::new("bash")
         .arg(&queue_script)
         .arg("run")
         .env("PATH", path)
@@ -786,35 +733,13 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
     );
 
     fs::write(&gate_release, "go\n").expect("release promoted gate");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !git_output(&fixture.root, &["show", "master:a.txt"])
-        .status
-        .success()
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        git_output(&fixture.root, &["show", "master:a.txt"])
-            .status
-            .success(),
+    wait_for_branch_to_land(
+        &fixture,
         "queued branch did not land through the promoted generation",
     );
-    drop(coordinator_guard);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while coordinator
-        .try_wait()
-        .expect("poll terminated coordinator")
-        .is_none()
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        coordinator
-            .try_wait()
-            .expect("reap terminated coordinator")
-            .is_some(),
+    stop_coordinator(
+        coordinator,
+        coordinator_guard,
         "coordinator ignored process-group termination",
     );
 }
@@ -870,4 +795,3 @@ fn doctor_treats_denied_process_inspection_as_advisory() {
         "doctor exposed internal queue sidecars: {stdout}",
     );
 }
-
