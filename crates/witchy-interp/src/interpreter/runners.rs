@@ -71,7 +71,10 @@ pub struct FixtureInterpreterOutcome {
 /// Run one module under a deterministic fixture plan. This is the only
 /// interpreter entry point that installs a fixture host; all ordinary,
 /// compile-time, and build runners retain their production boundaries.
-#[cfg(feature = "test-fixtures")]
+#[cfg(all(
+    feature = "test-fixtures",
+    any(test, feature = "raw-module-test-api")
+))]
 pub fn run_module_fixtures(
     module: Module,
     plan: FixturePlan,
@@ -79,15 +82,33 @@ pub fn run_module_fixtures(
     let host = FixtureHost::new(plan).map_err(|error| RuntimeError {
         message: format!("invalid fixture plan: {error}"),
     })?;
-    run_on_deep_stack(move || run_module_fixtures_inner(module, host))
+    run_on_deep_stack(move || run_module_fixtures_inner(module, host, None))
+}
+
+/// Run a checked module under a deterministic fixture plan while preserving
+/// authenticated declaration identities for dynamic runtime preparation.
+#[cfg(feature = "test-fixtures")]
+pub fn run_checked_module_fixtures(
+    checked: &witchy_types::pipeline::CheckedModule,
+    plan: FixturePlan,
+) -> Result<FixtureInterpreterOutcome, RuntimeError> {
+    let runtime_catalog = checked.runtime_declaration_catalog().ok();
+    let module = checked.module().clone();
+    let host = FixtureHost::new(plan).map_err(|error| RuntimeError {
+        message: format!("invalid fixture plan: {error}"),
+    })?;
+    run_on_deep_stack(move || {
+        run_module_fixtures_inner(module, host, runtime_catalog)
+    })
 }
 
 #[cfg(feature = "test-fixtures")]
 fn run_module_fixtures_inner(
     module: Module,
     host: FixtureHost,
+    runtime_catalog: Option<RuntimeDeclarationCatalog>,
 ) -> Result<FixtureInterpreterOutcome, RuntimeError> {
-    let (module, witnesses) = prepare_runtime_module(module, None)?;
+    let (module, witnesses) = prepare_runtime_module(module, runtime_catalog.as_ref())?;
     let mut interp = Interpreter::new_with_witnesses(module, witnesses);
     interp.fixture_host = Some(host);
     if let Some(env) = interp
@@ -168,6 +189,7 @@ fn run_module_fixtures_inner(
 }
 
 /// Run with deterministic Console input rather than process stdin.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module_console_input(
     module: Module,
     root: impl AsRef<Path>,
@@ -233,6 +255,7 @@ pub fn run_checked_module(
 
 /// Like [`run_module`], but with an evaluation step ceiling — the `comptime:`
 /// path, where termination is part of the contract.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module_budgeted(
     module: Module,
     root: impl AsRef<Path>,
@@ -241,6 +264,7 @@ pub fn run_module_budgeted(
     run_module_budgeted_in_scope(module, root, step_limit, None)
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub(crate) fn run_module_budgeted_in_scope(
     module: Module,
     root: impl AsRef<Path>,
@@ -306,6 +330,7 @@ pub(crate) fn run_comptime_module_outputs_budgeted_in_scope_with_qualifiers(
 
 /// Run with direct `File` grants (RFC-0012): the i-th `File` parameter of `main`
 /// maps to `file_grants[i]`. The differential-test oracle for `--file`.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module_files(
     module: Module,
     root: impl AsRef<Path>,
@@ -365,6 +390,7 @@ pub fn run_module_exit(
 /// is consumable by handle (`crypto.sign`, `server.serve_tls`) but `crypto.reveal`
 /// on it errors. This is the interpreter twin of the compiled runtime's
 /// `Capabilities.secrets`, for differential tests of secret-consuming servers.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module_exit_secrets(
     module: Module,
     root: impl AsRef<Path>,
@@ -466,6 +492,7 @@ fn is_args_param(ty: &Option<Type>) -> bool {
 /// Run a `main` that binds bare grantable capabilities (RFC-0038): each grantable
 /// parameter mints a sealed record from `user_caps` (parameter name → field
 /// values). The oracle for `witchy sandbox --grants` with a `[user_caps]` section.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module_user_caps(
     module: Module,
     root: impl AsRef<Path>,
@@ -495,6 +522,7 @@ fn run_module_inner(
 /// Run a module with an origin-scoped root `Fetch` grant. Existing runners
 /// intentionally pass an empty grant so adding Fetch does not create ambient
 /// network authority.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module_fetch(
     module: Module,
     root: impl AsRef<Path>,
@@ -713,6 +741,7 @@ fn run_module_inner_limited_with_catalog(
 /// default — anything not granted here cannot be minted, so a build step
 /// demanding it fails before running.
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub struct BuildGrants {
     pub out_dir: PathBuf,
     pub read_roots: Vec<PathBuf>,
@@ -730,6 +759,7 @@ pub struct BuildGrants {
 /// a runtime capability (the type checker forbids a build step from taking one),
 /// so even without the WASM sandbox it can only touch what these confined grants
 /// permit. A module with no `build` entrypoint generates nothing.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>, RuntimeError> {
     std::fs::create_dir_all(&grants.out_dir)
         .map_err(|e| RuntimeError { message: format!("build: cannot create output dir: {e}") })?;
@@ -760,6 +790,7 @@ pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>
 /// Parse and link a multi-module program, then run it. `entry` is the module
 /// holding `main`. Importing a module grants no authority — only `main`'s root
 /// capabilities (and what it passes on) flow in.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_program(sources: &[(&str, &str)], entry: &str) -> Result<Vec<String>, RuntimeError> {
     let mut modules = Vec::new();
     for (name, src) in sources {

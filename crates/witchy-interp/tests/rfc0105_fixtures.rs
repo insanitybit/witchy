@@ -1,4 +1,4 @@
-#![cfg(feature = "test-fixtures")]
+#![cfg(all(feature = "test-fixtures", feature = "raw-module-test-api"))]
 
 use std::collections::BTreeMap;
 

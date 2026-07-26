@@ -589,7 +589,7 @@ fn run_interpreter_fixtures(
     checked: &witchy_types::pipeline::CheckedModule,
     plan: &FixturePlan,
 ) -> Result<FixtureBackendOutcome, String> {
-    let outcome = interpreter::run_module_fixtures(checked.module().clone(), plan.clone())
+    let outcome = interpreter::run_checked_module_fixtures(checked, plan.clone())
         .map_err(|error| error.to_string())?;
     let (passed, output, error) = match outcome.result {
         interpreter::FixtureProgramResult::Passed { output, .. } => (true, output, None),

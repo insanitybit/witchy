@@ -8,6 +8,9 @@ description = "witchy compiler — the reference interpreter (parity oracle) + c
 
 [features]
 test-fixtures = ["dep:witchy-test-host", "dep:witchy-testkit"]
+# Synthetic AST and oracle tests intentionally exercise execution below the
+# checked pipeline. Production dependents receive only proof-carrying entries.
+raw-module-test-api = []
 
 # Wasm-safe: the tree-walker is the playground's run path. No external crates
 # beyond no_std-clean foldhash (the call path's lookup tables; also used by the

@@ -59,7 +59,27 @@ use tail_analysis::{direct_tail_envelope_is_forwarded, recursive_tail_edges};
 mod value_ops;
 use value_ops::{eval_binary, match_pattern, native_to_value, value_to_native};
 mod runners;
-pub use runners::*;
+pub(crate) use runners::{
+    run_comptime_module_budgeted_in_scope,
+    run_comptime_module_outputs_budgeted_in_scope_with_qualifiers,
+};
+pub use runners::{run, run_checked_module, run_in, run_in_dirs, run_with};
+#[cfg(feature = "test-fixtures")]
+pub use runners::{
+    FixtureInterpreterOutcome, FixtureProgramResult, run_checked_module_fixtures,
+};
+#[cfg(all(
+    feature = "test-fixtures",
+    any(test, feature = "raw-module-test-api")
+))]
+pub use runners::run_module_fixtures;
+#[cfg(any(test, feature = "raw-module-test-api"))]
+pub use runners::{
+    BuildGrants, run_build_step, run_module, run_module_args, run_module_budgeted,
+    run_module_console_input, run_module_exit, run_module_exit_dirs,
+    run_module_exit_secrets, run_module_fetch, run_module_files, run_module_signed,
+    run_module_user_caps, run_program,
+};
 mod builtins;
 mod calls;
 mod places;
@@ -1108,6 +1128,7 @@ impl Interpreter {
     /// grants the build driver was handed. This is where build-time authority
     /// enters — never `main`. A demanded cap with no matching grant is an error
     /// (safe by default: only `BuildOut` is supplied unconditionally).
+    #[cfg(any(test, feature = "raw-module-test-api"))]
     fn mint_build_cap(&self, ty: &Option<Type>, grants: &BuildGrants) -> Result<Value, RuntimeError> {
         match ty {
             Some(Type::Named(n, _)) if n == "BuildOut" => {
