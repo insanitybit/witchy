@@ -6,7 +6,7 @@ use std::{
 };
 
 use witchy::{ast, linker, parser, pipeline};
-use witchy_types::migration::{self, Category, Census};
+use witchy_types::migration::{Category, Census};
 
 fn main() {
     if let Err(error) = run() {
@@ -33,8 +33,7 @@ fn run() -> Result<(), String> {
 
     println!("path\tline\tcategory\tcallee\tparameter\troot");
     for path in &files {
-        let (linked, stem) = link_file(path, &source_index)?;
-        let report = migration::census_linked(&linked, &stem);
+        let (report, stem) = link_file(path, &source_index)?;
         record_report(
             display_from(root, path),
             report,
@@ -48,6 +47,7 @@ fn run() -> Result<(), String> {
 
     let markdown = markdown_files(root)?;
     let mut markdown_blocks = 0usize;
+    let no_user_modules = HashSet::new();
     for path in &markdown {
         let source = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
@@ -55,11 +55,15 @@ fn run() -> Result<(), String> {
             markdown_blocks += 1;
             let label = format!("{}#block-{}", display_from(root, path), index + 1);
             let module = parser::parse_module(&snippet).map_err(|e| format!("{label}: {e}"))?;
-            let linked = pipeline::link(vec![("main".to_string(), module)], "main")
+            let report = pipeline::migration_census(
+                vec![("main".to_string(), module)],
+                "main",
+                &no_user_modules,
+            )
                 .map_err(|e| format!("{label}: {e}"))?;
             record_report(
                 label,
-                migration::census_linked(&linked, "main"),
+                report,
                 &mut declarations,
                 &mut calls,
                 &mut checked,
@@ -217,7 +221,7 @@ fn source_index(files: &[PathBuf]) -> BTreeMap<String, Vec<PathBuf>> {
 fn link_file(
     path: &Path,
     source_index: &BTreeMap<String, Vec<PathBuf>>,
-) -> Result<(ast::Module, String), String> {
+) -> Result<(Census, String), String> {
     let stem = path
         .file_stem()
         .and_then(|name| name.to_str())
@@ -271,9 +275,9 @@ fn link_file(
         modules.push((name, module));
     }
 
-    let linked = pipeline::link_with_user_modules(modules, &stem, &user_modules)
+    let report = pipeline::migration_census(modules, &stem, &user_modules)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((linked, stem))
+    Ok((report, stem))
 }
 
 fn dependency_source(source: &Path, name: &str) -> Result<Option<PathBuf>, String> {

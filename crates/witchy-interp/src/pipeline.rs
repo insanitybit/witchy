@@ -1,9 +1,9 @@
 //! Wiring that the stage crates deliberately don't do themselves.
 //!
 //! The linker takes a compile-time-expansion callback rather than calling
-//! `comptime`/`tagged` directly (RFC-0018 dependency inversion), so the default
-//! `link` — the one almost every caller wants — lives here, where naming both
-//! the linker and the comptime evaluator is fine.
+//! `comptime`/`tagged` directly (RFC-0018 dependency inversion), so the checked
+//! production entries and deliberately feature-gated raw test entries live
+//! here, where naming both the linker and the comptime evaluator is fine.
 
 use witchy_syntax::ast::Module;
 use witchy_syntax::linker::{LinkError, LinkMode};
@@ -13,12 +13,13 @@ pub use witchy_types::runtime_type::AuthenticatedModuleOwners;
 
 /// Link `modules` with the standard compile-time expander wired in (the common
 /// case). Equivalent to the old two-argument `linker::link`.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn link(modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkError> {
     link_with_mode(modules, entry, LinkMode::Production)
 }
 
 /// Link once and retain RFC-0080 generated-node origins for tooling. Runtime
-/// callers continue to use [`link`] and receive the identical expanded AST.
+/// callers use the checked entries below.
 pub fn link_with_origins(
     modules: Vec<(String, Module)>,
     entry: &str,
@@ -30,6 +31,7 @@ pub fn link_with_origins(
     )
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub(crate) fn link_with_mode(
     modules: Vec<(String, Module)>,
     entry: &str,
@@ -44,7 +46,7 @@ pub(crate) fn link_with_mode(
 }
 
 /// Link with the standard compile-time expander, then type-check the linked
-/// runtime module. This runs the same phases as [`link`] followed by
+/// runtime module. This runs the standard link followed by
 /// `witchy_types::typeck::check`.
 pub fn link_checked(
     modules: Vec<(String, Module)>,
@@ -87,6 +89,7 @@ pub fn link_checked_test_with_user_modules(
 
 /// Link with origin hints for modules loaded from user files. This keeps the
 /// common in-memory path simple while enforcing reserved std module ownership.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn link_with_user_modules(
     modules: Vec<(String, Module)>,
     entry: &str,
@@ -95,6 +98,7 @@ pub fn link_with_user_modules(
     link_with_user_modules_with_mode(modules, entry, user_modules, LinkMode::Production)
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn link_with_user_modules_with_mode(
     modules: Vec<(String, Module)>,
     entry: &str,
@@ -108,6 +112,26 @@ pub fn link_with_user_modules_with_mode(
         user_modules,
         mode,
     )
+}
+
+/// Link a repository corpus entry and return its RFC-0087 migration report.
+///
+/// The census intentionally records type-check failures instead of rejecting
+/// the whole corpus, so it cannot use [`CheckedModule`]. Keeping the unchecked
+/// AST inside this task-shaped boundary avoids exposing a production raw-link
+/// escape solely for the historical migration verifier.
+pub fn migration_census(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    user_modules: &std::collections::HashSet<String>,
+) -> Result<witchy_types::migration::Census, LinkError> {
+    let linked = witchy_syntax::linker::link_with_user_modules(
+        modules,
+        entry,
+        crate::comptime::expand_compile_time,
+        user_modules,
+    )?;
+    Ok(witchy_types::migration::census_linked(&linked, entry))
 }
 
 /// Link with exact source provenance and retain authenticated package owners.
