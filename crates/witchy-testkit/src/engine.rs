@@ -209,10 +209,6 @@ impl FixtureSession {
         self.stdout.push(value.into());
     }
 
-    pub fn capture_stderr(&mut self, value: impl Into<String>) {
-        self.stderr.push(value.into());
-    }
-
     pub fn finish(self, result: TestResult) -> TestTranscript {
         let assertion_failure = self.completion_failure();
         let result = assertion_failure.map_or(result, |message| TestResult::Failed { message });

@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use witchy_cap_model::CapabilityKind;
-
 pub const FIXTURE_PLAN_VERSION: u32 = 1;
 pub const TEST_TRANSCRIPT_VERSION: u32 = 1;
 
@@ -293,21 +291,6 @@ pub enum FixtureFamily {
     Argv,
 }
 
-impl FixtureFamily {
-    pub const fn capability_kind(self) -> Option<CapabilityKind> {
-        match self {
-            Self::Console => Some(CapabilityKind::Console),
-            Self::Clock => Some(CapabilityKind::Clock),
-            Self::Rand => Some(CapabilityKind::Rand),
-            Self::Env => Some(CapabilityKind::Env),
-            Self::Filesystem => Some(CapabilityKind::Dir),
-            Self::Fetch => Some(CapabilityKind::Fetch),
-            Self::SecretStore => Some(CapabilityKind::SecretStore),
-            Self::Exec => Some(CapabilityKind::Exec),
-            Self::Argv => None,
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct U64Text(u64);
