@@ -35,7 +35,7 @@ use crate::{ast, interpreter, parser, typeck};
         // The compiler-service natives live above the runtime kernel in
         // `witchy-interp`; install their vtable before resolving them here.
         witchy_interp::compiler_natives::install();
-        use crate::value::NativeValue;
+        use witchy_runtime::value::NativeValue;
 
         let invalid = "fn main(console: Console):\n    missing(console)\n";
         let footprint = crate::native::lookup("compiler.footprint").expect("compiler.footprint native");

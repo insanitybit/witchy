@@ -13,7 +13,7 @@
 //! them; the CLI/browser message formatting is covered by src/lib.rs and
 //! src/lsp_tests.rs.
 
-use witchy::analysis;
+use witchy_lower::analysis;
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter, parser, pipeline, typeck};
 

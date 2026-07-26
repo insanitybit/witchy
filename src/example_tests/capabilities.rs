@@ -1113,10 +1113,10 @@ fn yes(b: Bool) -> String:
     /// incremental WIR-helper path that unblocks the M3 flip.
     #[test]
     fn wir_native_helper_yields_capability_minimal_module() {
-        use crate::wir::{
+        use witchy_wir::wir::{
             DataSegment, Kind, WirExpr, WirFunc, WirImport, WirModule, WirNode,
         };
-        use crate::wir_helpers::print_str_helper;
+        use witchy_wir::wir_helpers::print_str_helper;
         // Intern "hello" at offset 1024: [i32 len=5]["hello"].
         let off = 1024u32;
         let text = "hello";

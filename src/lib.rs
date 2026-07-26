@@ -15,11 +15,11 @@
 
 // RFC-0018: AST→WIR lowering (codegen) + its uniqueness analysis live in the
 // `witchy-lower` crate.
-pub use witchy_lower::{analysis, codegen};
+pub use witchy_lower::codegen;
 // RFC-0018: the front-end + AST-level base layer lives in the `witchy-syntax`
 // crate; re-export so the rest of the compiler keeps using
 // `crate::{ast,parser,…}::…` paths unchanged.
-pub use witchy_syntax::{ast, doc, format, generators, linker, opt, parser};
+pub use witchy_syntax::{ast, format, linker, opt, parser};
 // RFC-0030: deterministic optimization counters (`witchy stats`) — native-only
 // (needs the wasmtime sandbox to run a program and read its counters).
 #[cfg(feature = "native")]
@@ -33,13 +33,9 @@ pub mod trusted_exe;
 mod capabilities_tests;
 // RFC-0018: runtime values + the capability host live in `witchy-runtime`
 // (wasm-safe); the wasmtime sandbox `runtime` is native-only.
-pub use witchy_runtime::{native, net, value};
+pub use witchy_runtime::{native, net};
 #[cfg(feature = "native")]
 pub use witchy_runtime::runtime;
-/// RFC-0013 capability grant documents (TOML); native-only — re-exported from
-/// the `witchy-caps` crate.
-#[cfg(feature = "native")]
-pub use witchy_caps::grants;
 // RFC-0018: the reference interpreter (parity oracle) + compile-time evaluation
 // live in the `witchy-interp` crate.
 pub use witchy_interp::{comptime, interpreter, pipeline};
@@ -47,7 +43,7 @@ pub use witchy_interp::{comptime, interpreter, pipeline};
 pub use witchy_types::typeck;
 // RFC-0018: the WIR group lives in the `witchy-wir` crate; re-export it so the
 // rest of the compiler keeps using `crate::wir::…` paths unchanged.
-pub use witchy_wir::{wir, wir_encode, wir_helpers, wir_opt};
+pub use witchy_wir::wir_encode;
 
 /// A failure while loading bundled sources or crossing the checked pipeline.
 #[derive(Debug, Clone, PartialEq)]

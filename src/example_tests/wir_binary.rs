@@ -69,7 +69,7 @@ use crate::{codegen, parser, typeck};
             .expect_lowered("program takes the WIR binary path");
         // Measurable: the pass removes redundant slot conversions.
         let mut opt_m = m.clone();
-        let stats = crate::wir_opt::optimize(&mut opt_m);
+        let stats = witchy_wir::wir_opt::optimize(&mut opt_m);
         assert!(
             stats.eliminated > 0,
             "expected the slot-elimination pass to remove nodes, eliminated={}",
@@ -109,7 +109,7 @@ use crate::{codegen, parser, typeck};
             assert_eq!(run_bytes_all_caps(&unopt), oracle, "unoptimized:\n{src}");
             // ...and the optimized encoding runs identically (sound rewrite).
             let mut opt_m = m.clone();
-            let stats = crate::wir_opt::optimize(&mut opt_m);
+            let stats = witchy_wir::wir_opt::optimize(&mut opt_m);
             assert!(stats.nodes_after <= stats.nodes_before, "the pass never grows the tree");
             let opt = crate::wir_encode::encode(&opt_m, &[]);
             assert_eq!(run_bytes_all_caps(&opt), oracle, "optimized:\n{src}");

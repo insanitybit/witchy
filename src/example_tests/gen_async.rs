@@ -145,7 +145,7 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["0a 1b 2c", "3", "39", "12", "100", "101", "102"]);
     }
 
-    /// `gen fn` / `yield` (lowered by `crate::generators` to `std/iter`): an
+    /// `gen fn` / `yield` (lowered by `witchy_syntax::generators` to `std/iter`): an
     /// imperative generator that yields a sequence becomes a lazy iterator. The
     /// `generators` example (Fibonacci + Collatz, incl. an infinite generator and
     /// a branch inside a loop) must agree on both backends.
@@ -194,7 +194,7 @@ fn main(console: Console):
         let m = parser::parse_module("gen fn nums() -> Iter(Int):\n    yield 1\n    yield 2\n")
             .expect("parse");
         let checked = witchy_syntax::source_check::check(m).expect("source check");
-        let lowered = crate::generators::lower(checked).expect("lower");
+        let lowered = witchy_syntax::generators::lower(checked).expect("lower");
         let lowered = witchy_syntax::async_lower::lower(lowered).expect("lower async");
         let lowered = witchy_syntax::records::lower_lenient(lowered)
             .expect("finish source lowering")

@@ -23,7 +23,7 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         // result list" shape (`out = push(out, move cur); cur = []`) transfers ownership with
         // `move`, so the sub-list's per-element pushes stay in place (the `move`-resets-cap fix
         // makes that sound). No allowlist — a new cliff is a hard failure.
-        let offenders: Vec<String> = crate::analysis::module_cliffs(&linked)
+        let offenders: Vec<String> = witchy_lower::analysis::module_cliffs(&linked)
             .into_iter()
             .map(|(func, c)| {
                 format!("{func} (line {}): `{}` is rebuilt by copy each iteration — {}", c.line, c.var, c.reason)
@@ -51,7 +51,7 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         for f in &files {
             let stem = f.file_stem().and_then(|s| s.to_str()).unwrap();
             let src = std::fs::read_to_string(f).unwrap();
-            generated.push_str(&crate::doc::render(stem, &src).expect("render"));
+            generated.push_str(&witchy_syntax::doc::render(stem, &src).expect("render"));
         }
         let committed = std::fs::read_to_string("spec/stdlib.md").expect("read spec/stdlib.md");
         for (i, (g, c)) in generated.lines().zip(committed.lines()).enumerate() {

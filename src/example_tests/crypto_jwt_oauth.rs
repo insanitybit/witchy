@@ -71,7 +71,7 @@ use crate::{codegen, interpreter, parser, typeck};
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn rs256_native_roundtrip_verifies() {
-        use crate::value::NativeValue as NV;
+        use witchy_runtime::value::NativeValue as NV;
         use aws_lc_rs::signature::KeyPair; // brings `public_key()` into scope
         let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
