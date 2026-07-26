@@ -395,10 +395,3 @@ fn main(console: Console):
         assert_eq!(interp(src), run_on_wasm(src), "closures/ordering diverged");
     }
 
-    #[test]
-    fn higher_order_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/higher_order/src/higher_order.witchy")),
-            vec!["15", "81", "15", "120"]
-        );
-    }

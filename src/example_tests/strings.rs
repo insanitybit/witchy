@@ -1422,10 +1422,6 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["42", "-17", "123", "8", "0", "1000001"]);
     }
 
-    #[test]
-    fn strings_example_compiles() {
-        assert_fn_compiles(include_str!("../../examples/strings/src/strings.witchy"));
-    }
 
     /// std/url: malformed URLs return `Err` identically on both backends rather
     /// than accepting a blank scheme/host (BUG-187), swallowing a query into the

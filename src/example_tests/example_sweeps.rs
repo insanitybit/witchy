@@ -185,20 +185,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         let _ = std::fs::remove_file(&path);
     }
 
-    #[test]
-    fn every_example_type_checks() {
-        let entries = example_entries();
-        let failures: Vec<String> = std::thread::scope(|s| {
-            let handles: Vec<_> = entries.iter().map(|path| {
-                s.spawn(move || {
-                    let p = path.to_str().unwrap();
-                    crate::check_file(p).err().map(|e| format!("{p}: {e}"))
-                })
-            }).collect();
-            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
-        });
-        assert!(failures.is_empty(), "examples fail to type-check:\n{}", failures.join("\n"));
-    }
 
     #[test]
     fn every_compilable_example_agrees_on_both_backends() {

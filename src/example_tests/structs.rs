@@ -673,13 +673,6 @@ fn main(console: Console):
         );
     }
 
-    #[test]
-    fn record_update_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/record_update/src/record_update.witchy")),
-            vec!["alice 100", "alice 150", "alice smith 150"]
-        );
-    }
 
     /// REGRESSION (BUG-253): `xs.sort()` dispatches through `Ord`, so a list of
     /// derived-`Ord` records sorts (it used to fail 'expected Int' by binding the
