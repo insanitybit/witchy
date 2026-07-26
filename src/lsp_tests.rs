@@ -4,11 +4,45 @@
         compute_diagnostics("file:///tmp/main.witchy", text, &HashMap::new())
     }
 
+    fn docs(uri: &str, text: &str) -> HashMap<String, String> {
+        HashMap::from([(uri.to_string(), text.to_string())])
+    }
+
+    fn hover_at(
+        docs: &HashMap<String, String>,
+        uri: &str,
+        text: &str,
+        line: usize,
+        name: &str,
+    ) -> Value {
+        let character = text.lines().nth(line).unwrap().find(name).unwrap() as u64;
+        hover_response(
+            docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character },
+            }),
+        )
+    }
+
+    const GENERATED_ITEM_SOURCE: &str = r#"import meta
+
+comptime fn build() -> ItemSyntax:
+    quote item:
+        pub fn generated() -> Int:
+            7
+
+comptime:
+    emit_item(build())
+
+fn main(console: Console):
+    console.print("${generated()}")
+"#;
+
     #[test]
     fn completion_includes_keywords_builtins_and_module_fns() {
-        let mut docs = HashMap::new();
         let src = "\nfn helper(n: Int) -> Int:\n    n\n\nfn main(console: Console):\n    console.print(\"x\")\n";
-        docs.insert("file:///t.witchy".to_string(), src.to_string());
+        let docs = docs("file:///t.witchy", src);
         let items = completion_response(
             &docs,
             &json!({ "textDocument": { "uri": "file:///t.witchy" } }),
@@ -32,22 +66,8 @@
 
     #[test]
     fn document_symbols_include_generated_items_with_typed_origins() {
-        let src = r#"import meta
-
-comptime fn build() -> ItemSyntax:
-    quote item:
-        pub fn generated() -> Int:
-            7
-
-comptime:
-    emit_item(build())
-
-fn main(console: Console):
-    console.print("${generated()}")
-"#;
         let uri = "file:///tmp/main.witchy";
-        let mut docs = HashMap::new();
-        docs.insert(uri.to_string(), src.to_string());
+        let docs = docs(uri, GENERATED_ITEM_SOURCE);
         let response = document_symbol_response(
             &docs,
             &json!({ "textDocument": { "uri": uri } }),
@@ -67,22 +87,8 @@ fn main(console: Console):
 
     #[test]
     fn generated_definition_returns_invocation_and_macro_definition() {
-        let src = r#"import meta
-
-comptime fn build() -> ItemSyntax:
-    quote item:
-        pub fn generated() -> Int:
-            7
-
-comptime:
-    emit_item(build())
-
-fn main(console: Console):
-    console.print("${generated()}")
-"#;
         let uri = "file:///tmp/main.witchy";
-        let mut docs = HashMap::new();
-        docs.insert(uri.to_string(), src.to_string());
+        let docs = docs(uri, GENERATED_ITEM_SOURCE);
         let response = definition_response(
             &docs,
             &json!({
@@ -181,18 +187,10 @@ fn main(console: Console):
 
     #[test]
     fn hover_shows_signature_and_doc() {
-        let mut docs = HashMap::new();
         let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    console.print(\"${double(3)}\")\n";
-        docs.insert("file:///t.witchy".to_string(), src.to_string());
-        // Hover over `double` in the call on line 6 (0-based), col 35.
-        let col = src.lines().nth(6).unwrap().find("double").unwrap() as u64;
-        let resp = hover_response(
-            &docs,
-            &json!({
-                "textDocument": { "uri": "file:///t.witchy" },
-                "position": { "line": 6, "character": col },
-            }),
-        );
+        let uri = "file:///t.witchy";
+        let docs = docs(uri, src);
+        let resp = hover_at(&docs, uri, src, 6, "double");
         let contents = resp["contents"]["value"].as_str().expect("hover text");
         assert!(contents.contains("fn double(n: Int) -> Int"), "{contents}");
         assert!(contents.contains("Doubles a number."), "{contents}");
@@ -200,24 +198,15 @@ fn main(console: Console):
 
     #[test]
     fn rfc0081_lsp_accepts_and_displays_existential_signatures() {
-        let mut docs = HashMap::new();
         let src = "trait Render:\n    fn render(let self) -> String\n\nfn render_one(value: dyn Render) -> String:\n    value.render()\n\nfn main(console: Console):\n    console.print(\"ready\")\n";
         let uri = "file:///rfc0081-hover.witchy";
-        docs.insert(uri.to_string(), src.to_string());
+        let docs = docs(uri, src);
         assert!(
             compute_diagnostics(uri, src, &HashMap::new()).is_empty(),
             "valid existential signatures must not retain the old feature-stage diagnostic"
         );
 
-        let line = 3u64;
-        let col = src.lines().nth(3).unwrap().find("render_one").unwrap() as u64;
-        let response = hover_response(
-            &docs,
-            &json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": col },
-            }),
-        );
+        let response = hover_at(&docs, uri, src, 3, "render_one");
         let contents = response["contents"]["value"].as_str().expect("hover text");
         assert!(
             contents.contains("fn render_one(value: dyn Render) -> String"),
@@ -227,7 +216,6 @@ fn main(console: Console):
 
     #[test]
     fn rfc0082_dynamic_dispatch_is_visible_in_hover_and_symbols() {
-        let mut docs = HashMap::new();
         let src = r#"type Counter derive(Reflect):
     value: Int
 
@@ -239,17 +227,8 @@ fn main():
     bump(Counter(1), 2)
 "#;
         let uri = "file:///rfc0082-dynamic-lsp.witchy";
-        docs.insert(uri.to_string(), src.to_string());
-
-        let line = 8u64;
-        let col = src.lines().nth(8).unwrap().find("bump").unwrap() as u64;
-        let hover = hover_response(
-            &docs,
-            &json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": col },
-            }),
-        );
+        let docs = docs(uri, src);
+        let hover = hover_at(&docs, uri, src, 8, "bump");
         let hover_text = hover["contents"]["value"].as_str().expect("hover text");
         assert!(hover_text.contains("@dynamic"), "{hover_text}");
         assert!(hover_text.contains("Dynamic dispatch"), "{hover_text}");
@@ -289,19 +268,10 @@ fn main():
 
     #[test]
     fn rfc0098_hover_displays_structural_record_composition() {
-        let mut docs = HashMap::new();
         let src = "type Summary = .{id: Int, label: String}\n// Stored rows add a revision.\ntype Detailed = .{..Summary, revision: Int}\n\nfn keep(row: Detailed) -> Detailed:\n    row\n";
         let uri = "file:///rfc0098-hover.witchy";
-        docs.insert(uri.to_string(), src.to_string());
-        let line = 4u64;
-        let col = src.lines().nth(4).unwrap().find("Detailed").unwrap() as u64;
-        let response = hover_response(
-            &docs,
-            &json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": col },
-            }),
-        );
+        let docs = docs(uri, src);
+        let response = hover_at(&docs, uri, src, 4, "Detailed");
         let contents = response["contents"]["value"].as_str().expect("alias hover text");
         assert!(
             contents.contains("type Detailed = .{..Summary, revision: Int}"),
@@ -322,18 +292,10 @@ fn main():
 
     #[test]
     fn hover_resolves_imported_module_functions() {
-        let mut docs = HashMap::new();
         let src = "\nfn main(console: Console):\n    console.print(\"ab\".repeat(2))\n";
-        docs.insert("file:///t.witchy".to_string(), src.to_string());
-        let line = 2u64;
-        let col = src.lines().nth(2).unwrap().find("repeat").unwrap() as u64;
-        let resp = hover_response(
-            &docs,
-            &json!({
-                "textDocument": { "uri": "file:///t.witchy" },
-                "position": { "line": line, "character": col },
-            }),
-        );
+        let uri = "file:///t.witchy";
+        let docs = docs(uri, src);
+        let resp = hover_at(&docs, uri, src, 2, "repeat");
         let contents = resp["contents"]["value"].as_str().expect("hover text");
         assert!(contents.contains("repeat"), "{contents}");
         // Impl methods are reported under their Type qualifier.
@@ -349,19 +311,12 @@ fn main():
     /// name; an explicit module qualifier must keep meaning the module function.
     #[test]
     fn hover_bare_and_module_qualified_names_are_not_shadowed_by_methods() {
-        let mut docs = HashMap::new();
         // `count` collides with String.count; the bare call must hover the
         // local free function.
         let src = "// How many widgets.\nfn count(n: Int) -> Int:\n    n\n\nfn main(console: Console):\n    console.print(\"${count(3)}\")\n";
-        docs.insert("file:///t.witchy".to_string(), src.to_string());
-        let col = src.lines().nth(5).unwrap().find("count").unwrap() as u64;
-        let resp = hover_response(
-            &docs,
-            &json!({
-                "textDocument": { "uri": "file:///t.witchy" },
-                "position": { "line": 5, "character": col },
-            }),
-        );
+        let uri = "file:///t.witchy";
+        let mut docs = docs(uri, src);
+        let resp = hover_at(&docs, uri, src, 5, "count");
         let contents = resp["contents"]["value"].as_str().expect("hover text");
         assert!(
             contents.contains("fn count(n: Int) -> Int"),
@@ -372,15 +327,9 @@ fn main():
         // `list.repeat` is module-qualified: the module free function, not
         // String.repeat.
         let src2 = "\nfn main(console: Console):\n    console.print(\"${list.repeat(0, 2)}\")\n";
-        docs.insert("file:///t2.witchy".to_string(), src2.to_string());
-        let col2 = src2.lines().nth(2).unwrap().find("repeat").unwrap() as u64;
-        let resp2 = hover_response(
-            &docs,
-            &json!({
-                "textDocument": { "uri": "file:///t2.witchy" },
-                "position": { "line": 2, "character": col2 },
-            }),
-        );
+        let uri2 = "file:///t2.witchy";
+        docs.insert(uri2.to_string(), src2.to_string());
+        let resp2 = hover_at(&docs, uri2, src2, 2, "repeat");
         let contents2 = resp2["contents"]["value"].as_str().expect("hover text");
         assert!(
             contents2.contains("fn list.repeat("),
@@ -391,23 +340,11 @@ fn main():
 
     #[test]
     fn associated_std_function_hover_uses_type_owner() {
-        let mut docs = HashMap::new();
         let src = "\nfn main(console: Console):\n    let net_policy = Net.tcp(\"127.0.0.1\", 8080)\n    let dir_policy = Dir.ext(\".log\")\n    console.print(\"x\".repeat(2))\n";
         let uri = "file:///policy-hover.witchy";
-        docs.insert(uri.to_string(), src.to_string());
+        let docs = docs(uri, src);
 
-        let hover = |line: usize, name: &str| {
-            let col = src.lines().nth(line).unwrap().find(name).unwrap() as u64;
-            hover_response(
-                &docs,
-                &json!({
-                    "textDocument": { "uri": uri },
-                    "position": { "line": line, "character": col },
-                }),
-            )
-        };
-
-        let net = hover(2, "tcp");
+        let net = hover_at(&docs, uri, src, 2, "tcp");
         let net_contents = net["contents"]["value"].as_str().expect("Net.tcp hover");
         assert!(
             net_contents.contains("Net.tcp(host: String, port: Int) -> NetPolicy"),
@@ -415,7 +352,7 @@ fn main():
         );
         assert!(!net_contents.contains("policy.tcp"), "{net_contents}");
 
-        let dir = hover(3, "ext");
+        let dir = hover_at(&docs, uri, src, 3, "ext");
         let dir_contents = dir["contents"]["value"].as_str().expect("Dir.ext hover");
         assert!(
             dir_contents.contains("Dir.ext(suffix: String) -> DirPolicy"),
@@ -518,12 +455,12 @@ fn main():
     fn from_import_offers_bare_names_and_hovers() {
         // BUG-388: `from X import Y` binds `Y` unqualified. Completion must offer
         // the bare name, and hover on a bare use must resolve it in module X.
-        let mut docs = HashMap::new();
         let src = "from string import from_code\n\nfn main(console: Console):\n    console.print(from_code(65))\n";
-        docs.insert("file:///t.witchy".to_string(), src.to_string());
+        let uri = "file:///t.witchy";
+        let docs = docs(uri, src);
         let items = completion_response(
             &docs,
-            &json!({ "textDocument": { "uri": "file:///t.witchy" } }),
+            &json!({ "textDocument": { "uri": uri } }),
         );
         let labels: Vec<String> = items
             .as_array()
@@ -537,14 +474,7 @@ fn main():
         );
 
         // Hover on the bare `from_code` on line 3.
-        let col = src.lines().nth(3).unwrap().find("from_code").unwrap() as u64;
-        let resp = hover_response(
-            &docs,
-            &json!({
-                "textDocument": { "uri": "file:///t.witchy" },
-                "position": { "line": 3, "character": col },
-            }),
-        );
+        let resp = hover_at(&docs, uri, src, 3, "from_code");
         assert!(
             resp["contents"]["value"]
                 .as_str()
@@ -558,31 +488,18 @@ fn main():
         // BUG-174: `xs.push(1)` — word_at reads `xs.push`; treating `xs` as a
         // module used to return null. The method must resolve against the prelude
         // data modules (`list.push`).
-        let mut docs = HashMap::new();
         let src = "fn main(console: Console):\n    var xs = [1]\n    xs.push(2)\n";
-        docs.insert("file:///t.witchy".to_string(), src.to_string());
-        let col = src.lines().nth(2).unwrap().find("push").unwrap() as u64;
-        let resp = hover_response(
-            &docs,
-            &json!({
-                "textDocument": { "uri": "file:///t.witchy" },
-                "position": { "line": 2, "character": col },
-            }),
-        );
+        let uri = "file:///t.witchy";
+        let mut docs = docs(uri, src);
+        let resp = hover_at(&docs, uri, src, 2, "push");
         let contents = resp["contents"]["value"].as_str().expect("hover text");
         assert!(contents.contains("List.push("), "{contents}");
 
         // `xs.length` (no call) must resolve too.
         let src2 = "fn main(console: Console):\n    let xs = [1]\n    let n = xs.length\n";
-        docs.insert("file:///t2.witchy".to_string(), src2.to_string());
-        let col2 = src2.lines().nth(2).unwrap().find("length").unwrap() as u64;
-        let resp2 = hover_response(
-            &docs,
-            &json!({
-                "textDocument": { "uri": "file:///t2.witchy" },
-                "position": { "line": 2, "character": col2 },
-            }),
-        );
+        let uri2 = "file:///t2.witchy";
+        docs.insert(uri2.to_string(), src2.to_string());
+        let resp2 = hover_at(&docs, uri2, src2, 2, "length");
         assert!(
             resp2["contents"]["value"]
                 .as_str()
