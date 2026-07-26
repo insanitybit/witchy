@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use witchy::{ast, linker, parser, pipeline};
+use witchy::{linker, parser, pipeline};
 use witchy_types::migration::{Category, Census};
 
 fn main() {
