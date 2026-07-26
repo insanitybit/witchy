@@ -15,6 +15,13 @@ pub use witchy_types::runtime_type::AuthenticatedModuleOwners;
 /// case). Equivalent to the old two-argument `linker::link`.
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn link(modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkError> {
+    link_internal(modules, entry)
+}
+
+pub(crate) fn link_internal(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+) -> Result<Module, LinkError> {
     link_with_mode(modules, entry, LinkMode::Production)
 }
 
@@ -31,7 +38,6 @@ pub fn link_with_origins(
     )
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
 pub(crate) fn link_with_mode(
     modules: Vec<(String, Module)>,
     entry: &str,

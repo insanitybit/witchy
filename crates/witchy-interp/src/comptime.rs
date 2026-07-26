@@ -234,7 +234,7 @@ fn expand_with_item_limit_and_origins(
             compiler_block_syntax: module.compiler_block_syntax.clone(),
             linked_entry: None,
         };
-        let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
+        let linked = crate::pipeline::link_internal(vec![("comptime".into(), prog)], "comptime")
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         witchy_types::typeck::check_comptime(&linked)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
