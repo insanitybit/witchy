@@ -550,13 +550,14 @@ them; relative branch depths + indices arrive with the binary encoder in M3.)
 
 Convert `compile_expr`'s expression arms (literals, `Var`, `Binary`, `Index`,
 `FieldGet`, `Call`, `ToSlot`/`FromSlot`, `MakeList`/`MakeTuple`/`MakeRecord`) to
-build `WirExpr` instead of `String`. The control spine (`compile_block`,
-`compile_match`, `if`/`while`/`for`) stays string-based and splices in printed-WIR
-fragments via `wir::expr_to_wat`.
+build `WirExpr` instead of `String`. At this milestone the control spine
+(`compile_block`, `compile_match`, `if`/`while`/`for`) stayed string-based and
+spliced in printed-WIR fragments. That temporary bridge was removed after
+codegen stopped round-tripping through WAT.
 
 **Done so far** (green, full suite + 6 `wir` round-trips passing):
-- the bridge `wir::expr_to_wat` (a flat 4-space fragment printer matching
-  codegen's style);
+- a flat 4-space expression-fragment printer matching codegen's style, later
+  removed with the temporary WAT bridge;
 - a `lower_expr(&Expr) -> Option<WirExpr>` helper in `codegen.rs` that
   `compile_expr` tries first, falling back to the legacy arms on `None` — the
   mechanism that grows WIR coverage while the tree stays green;
@@ -664,8 +665,8 @@ lowering is the M2 work, so these wait for it).
 `Binary` arm, `As`, `&&`/`||`, `Field`, `Try` (non-`var`), the `List`/`Tuple`/
 `Ctor` constructors, `RecordUpdate` (bare-var base), the **plain user-function
 `Call`**, and ~60 builtin `Call` arms (see the `lower_call` bullet above). Infra in
-place: the `Control`, `Seq`, `Convert`, `ToSlot`/`FromSlot`/`Load`/`Call`/`CallHost`
-nodes, the flat control printer, and `seq_to_wat`.)
+place at the time: the `Control`, `Seq`, `Convert`, `ToSlot`/`FromSlot`/`Load`/
+`Call`/`CallHost` nodes and the temporary flat control printer.)
 
 > **`Binary` cases that stay in legacy** (each returns `None`; documents *why* the
 > numeric WIR path can't claim them):
@@ -696,9 +697,10 @@ collapses into `WirTy`-on-nodes here — the big contributor-facing simplificati
 
 **Done so far** (all byte-identical across the corpus incl. `pm`/`coven`, full
 suite green):
-- `lower_block` lowers a block whose statements are `Let`/`Expr`/`Return`/
-  `LetTuple`/`Break`/`Continue`/`Assign` (in a function with no `inplace_push` var /
-  `var` param / own-ABI param) to a `WirSeq` rendered by `seq_to_wat`.
+- At this milestone, `lower_block` lowered a block whose statements were
+  `Let`/`Expr`/`Return`/`LetTuple`/`Break`/`Continue`/`Assign` (in a function with
+  no `inplace_push` var / `var` param / own-ABI param) to a `WirSeq` rendered by
+  the temporary fragment printer. Direct WIR encoding later retired that printer.
   `Break`/`Continue` → `Br` to the enclosing `loop_labels` (so loops *with* early
   exit now lower); `LetTuple` → store-once + per-name `FromSlot(Load(tmp+4+8*i))`;
   `Assign` → `SetLocal{name, Convert(value, vk, target)}` for the simplest case only

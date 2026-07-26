@@ -713,25 +713,6 @@ pub fn to_wat(module: &WirModule) -> String {
     s
 }
 
-/// Print a single expression as a flat instruction fragment (4-space indent,
-/// matching `codegen.rs`'s emission style). A leftover from the now-retired
-/// string-bridge era when WIR fragments were spliced into a WAT text stream;
-/// codegen no longer round-trips through WAT.
-pub fn expr_to_wat(e: &WirExpr) -> String {
-    let mut s = String::new();
-    print_expr(&mut s, e, 2); // depth 2 == 4 spaces, codegen's flat indent
-    s
-}
-
-/// Print a sequence of statement nodes as a flat instruction fragment (the
-/// statement-level analogue of `expr_to_wat`). Like `expr_to_wat`, a leftover
-/// from the retired string-bridge era; codegen no longer round-trips through WAT.
-pub fn seq_to_wat(seq: &WirSeq) -> String {
-    let mut s = String::new();
-    print_seq(&mut s, seq, 2);
-    s
-}
-
 /// Print a global field: `(global $name [(export "e")] (mut? <kind>) (<init>))`.
 fn print_global(s: &mut String, g: &WirGlobal) {
     let _ = write!(s, "  (global ${}", g.name);
