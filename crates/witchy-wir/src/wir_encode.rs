@@ -437,30 +437,19 @@ fn load_align(kind: Kind) -> u32 {
 /// cap-carrying GC struct definitions (RFC-0005); they are laid after the
 /// reserved scalar closure-signature band and before other function signatures.
 /// Pass `&[]` when the module lowers no cap-carrying aggregates.
+#[cfg(any(test, feature = "raw-encoder-test-api"))]
 pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     encode_with_gc(module, structs, &[])
 }
 
-/// Fallible production boundary around the invariant-heavy encoder.
+/// Fallible production boundary for modules that declare both GC structs and
+/// GC arrays.
 ///
 /// WIR builders use named locals, functions, globals, and labels. A compiler
 /// defect can leave one of those references unresolved or attempt an illegal
-/// reference/slot crossing. The historical `encode` API treats those as
-/// internal invariant panics. The structural preflight mirrors every such
+/// reference/slot crossing. The structural preflight mirrors every encoder
 /// panic precondition so it also works on aborting wasm targets; `catch_unwind`
 /// is a final native containment net for an unforeseen encoder defect.
-pub fn try_encode(
-    module: &WirModule,
-    structs: &[WirStructDef],
-) -> Result<Vec<u8>, EncodeError> {
-    try_encode_with_gc(module, structs, &[])
-}
-
-/// Fallible production boundary for modules that declare both GC structs and
-/// GC arrays. This is the checked counterpart to [`encode_with_gc`]; keeping
-/// [`try_encode`] as the struct-only compatibility entrypoint lets existing
-/// callers remain source-neutral while reference-bearing collection lowering
-/// is wired into production.
 pub fn try_encode_with_gc(
     module: &WirModule,
     structs: &[WirStructDef],
@@ -476,7 +465,7 @@ pub fn try_encode_with_gc(
 /// the struct-only compatibility entrypoint leaves the production lowering
 /// source-neutral until reference-bearing collections are ready to consume the
 /// array substrate.
-pub fn encode_with_gc(
+pub(crate) fn encode_with_gc(
     module: &WirModule,
     structs: &[WirStructDef],
     arrays: &[WirArrayDef],

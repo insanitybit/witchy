@@ -122,6 +122,8 @@ proptest = "1.11.0"
 witchy-lower = { path = "crates/witchy-lower", features = ["raw-module-test-api"] }
 # Raw AST execution is deliberate oracle/test machinery, not a production API.
 witchy-interp = { path = "crates/witchy-interp", features = ["raw-module-test-api", "test-fixtures"] }
+# Raw WIR encoding is deliberate optimizer/oracle test machinery.
+witchy-wir = { path = "crates/witchy-wir", features = ["raw-encoder-test-api"] }
 # Enables only the concurrency-safe TLS fixture hook for root-package tests.
 # The ordinary runtime dependency does not expose it in production builds.
 witchy-runtime = { path = "crates/witchy-runtime", features = ["test-support"] }
