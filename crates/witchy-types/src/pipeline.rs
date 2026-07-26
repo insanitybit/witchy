@@ -76,6 +76,53 @@ pub enum PipelineError {
     Type(TypeError),
 }
 
+/// Stable identity for the semantic stage that produced a pipeline failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineStage {
+    Ownership,
+    Link,
+    Source,
+    Type,
+}
+
+/// Source location retained by a semantic pipeline failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineLocation {
+    pub module: Option<String>,
+    pub line: u32,
+}
+
+impl PipelineError {
+    pub const fn stage(&self) -> PipelineStage {
+        match self {
+            Self::Ownership(_) => PipelineStage::Ownership,
+            Self::Link(_) => PipelineStage::Link,
+            Self::Source(_) => PipelineStage::Source,
+            Self::Type(_) => PipelineStage::Type,
+        }
+    }
+
+    /// Return structured source provenance when the producing stage retained it.
+    ///
+    /// Type checking currently embeds its function/line context in the rendered
+    /// message; migrating that final string-only location is tracked separately.
+    pub fn location(&self) -> Option<PipelineLocation> {
+        match self {
+            Self::Link(error) => error.location.as_ref().map(|location| PipelineLocation {
+                module: Some(location.module.clone()),
+                line: location.line,
+            }),
+            Self::Source(error) => {
+                error.location.as_ref().map(|location| PipelineLocation {
+                    module: location.module.clone(),
+                    line: location.line,
+                })
+            }
+            Self::Ownership(_) | Self::Type(_) => None,
+        }
+    }
+}
+
 impl fmt::Display for PipelineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -335,6 +382,8 @@ mod tests {
 
         assert_eq!(new, PipelineError::Type(old.clone()));
         assert_eq!(new.to_string(), old.to_string());
+        assert_eq!(new.stage(), PipelineStage::Type);
+        assert_eq!(new.location(), None);
     }
 
     #[test]
@@ -370,6 +419,39 @@ mod tests {
                 line: 2,
             }),
         );
+        let pipeline_error = PipelineError::Source(error);
+        assert_eq!(pipeline_error.stage(), PipelineStage::Source);
+        assert_eq!(
+            pipeline_error.location(),
+            Some(PipelineLocation {
+                module: Some("helper".to_string()),
+                line: 2,
+            }),
+        );
+    }
+
+    #[test]
+    fn structured_metadata_preserves_link_and_ownership_stage() {
+        let link = PipelineError::Link(LinkError {
+            message: "bad import".into(),
+            location: Some(witchy_syntax::linker::LinkLocation {
+                module: "main".into(),
+                line: 7,
+            }),
+        });
+        assert_eq!(link.stage(), PipelineStage::Link);
+        assert_eq!(
+            link.location(),
+            Some(PipelineLocation {
+                module: Some("main".into()),
+                line: 7,
+            }),
+        );
+
+        let ownership =
+            PipelineError::Ownership(RuntimeTypeError::MissingAuthenticatedModuleOwners);
+        assert_eq!(ownership.stage(), PipelineStage::Ownership);
+        assert_eq!(ownership.location(), None);
     }
 
     #[test]

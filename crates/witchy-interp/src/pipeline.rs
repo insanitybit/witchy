@@ -8,7 +8,9 @@
 use witchy_syntax::ast::Module;
 use witchy_syntax::linker::{LinkError, LinkMode};
 
-pub use witchy_types::pipeline::{CheckedModule, PipelineError};
+pub use witchy_types::pipeline::{
+    CheckedModule, PipelineError, PipelineLocation, PipelineStage,
+};
 pub use witchy_types::runtime_type::AuthenticatedModuleOwners;
 
 /// A linked, potentially type-incomplete module retained for diagnostics and
