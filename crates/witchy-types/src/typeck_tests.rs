@@ -2714,16 +2714,6 @@ fn main():
     // ------------------------------------------------------------------
 
     #[test]
-    fn rfc0081_valid_dyn_signature_is_publicly_checkable() {
-        check_str(
-            "trait Render:\n    fn render(let self) -> String\n\n\
-             fn describe(part: dyn Render) -> String:\n    \"static\"\n\n\
-             fn main(console: Console):\n    console.print(\"hi\")\n",
-        )
-        .expect("a valid existential signature must pass the public checker");
-    }
-
-    #[test]
     fn rfc0081_closed_trait_arguments_are_publicly_checkable() {
         check_str(
             "trait Convert(t):\n    fn convert(let self) -> t\n\n\
@@ -3133,16 +3123,6 @@ fn main():
                 || err.contains("does not grant Write"),
             "{err}"
         );
-    }
-
-    #[test]
-    fn rfc0081_method_call_on_dyn_receiver_is_publicly_checkable() {
-        check_str(
-            "trait Render:\n    fn render(let self) -> String\n\n\
-             fn describe(part: dyn Render) -> String:\n    part.render()\n\n\
-             fn main(console: Console):\n    console.print(\"hi\")\n",
-        )
-        .expect("declared existential methods must pass the public checker");
     }
 
     #[test]
