@@ -1,6 +1,12 @@
 use super::*;
 use crate::{ast, codegen, interpreter, typeck};
 
+fn assert_json_backends(src: &str, expected: &[&str], label: &str) {
+    let expected: Vec<String> = expected.iter().map(|s| (*s).to_string()).collect();
+    assert_eq!(link_run(src), expected, "{label}: interpreter");
+    assert_eq!(wasm_run(src), expected, "{label}: compiled WASM");
+}
+
     /// (BUG-545) A decoded/built `JsonObject` reflects as the JSON object shape,
     /// not as the `JsonObject(...)` constructor. Its debug rendering should
     /// therefore look like an object, not like an accidental nameless record with
@@ -335,13 +341,10 @@ from json import Json
 fn main(console: Console):
     let doc = JsonObject([("name", JsonString("witchy")), ("tags", JsonArray([JsonInt(1), JsonInt(2)])), ("empty", JsonArray([]))])
     console.print(json.encode_pretty(doc))"#;
-        let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "encode_pretty diverged");
-        assert_eq!(
-            compiled,
-            vec!["{\n  \"name\": \"witchy\",\n  \"tags\": [\n    1,\n    2\n  ],\n  \"empty\": []\n}"]
+        assert_json_backends(
+            client,
+            &["{\n  \"name\": \"witchy\",\n  \"tags\": [\n    1,\n    2\n  ],\n  \"empty\": []\n}"],
+            "encode_pretty",
         );
     }
 
@@ -364,15 +367,7 @@ fn main(console: Console):
                 None -> console.print("not object")
         Err(_e) -> console.print("err")
     console.print(if option.is_none(json.as_object(JsonInt(5))): "none" else: "some")"#;
-        let sources = [
-            ("json", crate::bundled_module("json").unwrap()),
-            ("option", crate::bundled_module("option").unwrap()),
-            ("main", client),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "as_object diverged");
-        assert_eq!(compiled, vec!["a", "b", "none"]);
+        assert_json_backends(client, &["a", "b", "none"], "as_object");
     }
 
     #[test]
@@ -390,13 +385,10 @@ fn main(console: Console):
     console.print(if json.contains_key(a, "x"): "T" else: "F")
     console.print(if json.contains_key(a, "z"): "T" else: "F")
     console.print(if json.contains_key(JsonInt(5), "x"): "T" else: "F")"#;
-        let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "json.merge/has_key diverged");
-        assert_eq!(
-            compiled,
-            vec!["{\"name\":\"a\",\"x\":2,\"y\":3}", "9", "T", "F", "F"]
+        assert_json_backends(
+            client,
+            &["{\"name\":\"a\",\"x\":2,\"y\":3}", "9", "T", "F", "F"],
+            "json.merge/has_key",
         );
     }
 
@@ -477,11 +469,7 @@ fn main(console: Console):
             console.print("${int_at(j, "user.age")}")
             console.print(str_at(j, "user.missing"))
         Err(e) -> console.print(json.decode_error_message(e))"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "std json get_path diverged");
-        assert_eq!(compiled, vec!["witchy", "1", "none"]);
+        assert_json_backends(client, &["witchy", "1", "none"], "std json get_path");
     }
 
     #[test]
@@ -507,11 +495,7 @@ fn main(console: Console):
             console.print("${option.unwrap_or(json.as_int(field(j, "version")), 0)}")
             console.print("${elem_int(j, "items", 1)}")
         Err(e) -> console.print(json.decode_error_message(e))"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "std json accessors diverged");
-        assert_eq!(compiled, vec!["witchy", "3", "20"]);
+        assert_json_backends(client, &["witchy", "3", "20"], "std json accessors");
     }
 
     /// std/json: `decode` rejects an overflowing exponent (BUG-241), an invalid
