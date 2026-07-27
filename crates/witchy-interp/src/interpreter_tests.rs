@@ -14,6 +14,35 @@
         }
     }
 
+    fn loopback_addr() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        format!("127.0.0.1:{}", listener.local_addr().expect("local address").port())
+    }
+
+    fn spawn_loopback_program(
+        source: String,
+        root: &str,
+        addr: &str,
+    ) -> std::thread::JoinHandle<()> {
+        let parsed = witchy_syntax::parser::parse_module(&source).expect("parse");
+        let linked =
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let root = root.to_string();
+        let allow = vec![addr.to_string()];
+        std::thread::spawn(move || {
+            run_module(linked, &root, allow).expect("run server");
+        })
+    }
+
+    fn http_request(addr: &str, raw: &str) -> String {
+        use std::io::{Read, Write};
+        let mut stream = connect_loopback(addr);
+        stream.write_all(raw.as_bytes()).expect("write request");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read response");
+        response
+    }
+
     fn minimal_interpreter() -> Interpreter {
         let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
             .expect("parse minimal module");
@@ -873,10 +902,7 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn serve_loopback_roundtrip() {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+        let addr = loopback_addr();
         let src = format!(
             r#"
 import http
@@ -890,29 +916,17 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 3)
 "#
         );
-        // Link in the bundled std (http + its deps), then run on a thread.
-        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
-        let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, ".", allow));
-
-        let request = |raw: &str| -> String {
-            let mut s = connect_loopback(&addr);
-            s.write_all(raw.as_bytes()).unwrap();
-            let mut resp = String::new();
-            s.read_to_string(&mut resp).unwrap();
-            resp
-        };
-
-        let r1 = request("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        let server = spawn_loopback_program(src, ".", &addr);
+        let r1 = http_request(&addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r1.contains("200 OK") && r1.ends_with("home"), "r1: {r1}");
-        let r2 = request("GET /users/42 HTTP/1.1\r\nHost: x\r\n\r\n");
+        let r2 = http_request(&addr, "GET /users/42 HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r2.ends_with("user 42"), "r2: {r2}");
-        let r3 = request("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello");
+        let r3 = http_request(
+            &addr,
+            "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello",
+        );
         assert!(r3.contains("201 ") && r3.ends_with("hello"), "r3: {r3}");
-
-        server.join().unwrap().unwrap();
+        server.join().unwrap();
     }
 
     #[test]
@@ -973,10 +987,7 @@ fn main(console: Console, net: Net):
     fn serve_status_constructors_roundtrip() {
         // The status-named response constructors (created/bad_request/
         // unauthorized/no_content) render the right status line and reason.
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+        let addr = loopback_addr();
         let src = format!(
             r#"
 import http
@@ -987,39 +998,23 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 4)
 "#
         );
-        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
-        let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, ".", allow));
-
-        let request = |raw: &str| -> String {
-            let mut s = connect_loopback(&addr);
-            s.write_all(raw.as_bytes()).unwrap();
-            let mut resp = String::new();
-            s.read_to_string(&mut resp).unwrap();
-            resp
-        };
-
-        let r1 = request("POST /make HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+        let server = spawn_loopback_program(src, ".", &addr);
+        let r1 = http_request(&addr, "POST /make HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
         assert!(r1.contains("201 Created") && r1.ends_with("made"), "r1: {r1}");
-        let r2 = request("GET /bad HTTP/1.1\r\nHost: x\r\n\r\n");
+        let r2 = http_request(&addr, "GET /bad HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r2.contains("400 Bad Request") && r2.ends_with("nope"), "r2: {r2}");
-        let r3 = request("GET /secret HTTP/1.1\r\nHost: x\r\n\r\n");
+        let r3 = http_request(&addr, "GET /secret HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r3.contains("401 Unauthorized") && r3.ends_with("auth"), "r3: {r3}");
-        let r4 = request("DELETE /item HTTP/1.1\r\nHost: x\r\n\r\n");
+        let r4 = http_request(&addr, "DELETE /item HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r4.contains("204 No Content"), "r4: {r4}");
 
-        server.join().unwrap().unwrap();
+        server.join().unwrap();
     }
 
     #[test]
     fn serve_method_not_allowed_vs_not_found() {
         // A known path with the wrong method is a 405; an unknown path is a 404.
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+        let addr = loopback_addr();
         let src = format!(
             r#"
 import http
@@ -1030,28 +1025,15 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 3)
 "#
         );
-        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
-        let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, ".", allow));
-
-        let request = |raw: &str| -> String {
-            let mut s = connect_loopback(&addr);
-            s.write_all(raw.as_bytes()).unwrap();
-            let mut resp = String::new();
-            s.read_to_string(&mut resp).unwrap();
-            resp
-        };
-
-        let ok = request("POST /items HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+        let server = spawn_loopback_program(src, ".", &addr);
+        let ok = http_request(&addr, "POST /items HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
         assert!(ok.contains("201 Created"), "ok: {ok}");
-        let wrong = request("GET /items HTTP/1.1\r\nHost: x\r\n\r\n");
+        let wrong = http_request(&addr, "GET /items HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(wrong.contains("405 Method Not Allowed"), "wrong: {wrong}");
-        let missing = request("GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");
+        let missing = http_request(&addr, "GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(missing.contains("404 Not Found"), "missing: {missing}");
 
-        server.join().unwrap().unwrap();
+        server.join().unwrap();
     }
 
     #[test]
@@ -1059,10 +1041,7 @@ fn main(console: Console, net: Net):
         // Method calls on a variable receiver (`var app = router(); app = app.get(...)`)
         // resolve the overloaded `get`/`post` by the tracked variable type (Router),
         // even though http/server/json all export `get`.
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+        let addr = loopback_addr();
         let src = format!(
             r#"
 import http
@@ -1076,35 +1055,19 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 2)
 "#
         );
-        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
-        let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, ".", allow));
-
-        let request = |raw: &str| -> String {
-            let mut s = connect_loopback(&addr);
-            s.write_all(raw.as_bytes()).unwrap();
-            let mut resp = String::new();
-            s.read_to_string(&mut resp).unwrap();
-            resp
-        };
-
-        let g = request("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        let server = spawn_loopback_program(src, ".", &addr);
+        let g = http_request(&addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(g.contains("200 OK") && g.ends_with("home"), "g: {g}");
-        let p = request("POST /items HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+        let p = http_request(&addr, "POST /items HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
         assert!(p.contains("201 Created") && p.ends_with("made"), "p: {p}");
 
-        server.join().unwrap().unwrap();
+        server.join().unwrap();
     }
 
     #[test]
     fn serve_any_method_route_roundtrip() {
         // An `any` route answers every verb (the `*` wildcard method).
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+        let addr = loopback_addr();
         let src = format!(
             r#"
 import http
@@ -1115,34 +1078,18 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 2)
 "#
         );
-        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
-        let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, ".", allow));
-
-        let request = |raw: &str| -> String {
-            let mut s = connect_loopback(&addr);
-            s.write_all(raw.as_bytes()).unwrap();
-            let mut resp = String::new();
-            s.read_to_string(&mut resp).unwrap();
-            resp
-        };
-
-        let g = request("GET /ping HTTP/1.1\r\nHost: x\r\n\r\n");
+        let server = spawn_loopback_program(src, ".", &addr);
+        let g = http_request(&addr, "GET /ping HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(g.contains("200 OK") && g.ends_with("GET"), "g: {g}");
-        let d = request("DELETE /ping HTTP/1.1\r\nHost: x\r\n\r\n");
+        let d = http_request(&addr, "DELETE /ping HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(d.contains("200 OK") && d.ends_with("DELETE"), "d: {d}");
 
-        server.join().unwrap().unwrap();
+        server.join().unwrap();
     }
 
     #[test]
     fn serve_middleware_nest_and_notfound_roundtrip() {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+        let addr = loopback_addr();
         let src = format!(
             r#"
 import http
@@ -1162,31 +1109,18 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 3)
 "#
         );
-        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
-        let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, ".", allow));
-
-        let request = |raw: &str| -> String {
-            let mut s = connect_loopback(&addr);
-            s.write_all(raw.as_bytes()).unwrap();
-            let mut resp = String::new();
-            s.read_to_string(&mut resp).unwrap();
-            resp
-        };
-
+        let server = spawn_loopback_program(src, ".", &addr);
         // Middleware tagged the response; root handler ran.
-        let r1 = request("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        let r1 = http_request(&addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r1.contains("x-by: witchy") && r1.ends_with("root"), "r1: {r1}");
         // Nested route under /api.
-        let r2 = request("GET /api/ping HTTP/1.1\r\nHost: x\r\n\r\n");
+        let r2 = http_request(&addr, "GET /api/ping HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r2.ends_with("pong"), "r2: {r2}");
         // Unknown path -> 404 (still tagged by the layer).
-        let r3 = request("GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");
+        let r3 = http_request(&addr, "GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r3.contains("404 ") && r3.contains("x-by: witchy"), "r3: {r3}");
 
-        server.join().unwrap().unwrap();
+        server.join().unwrap();
     }
 
     #[test]
