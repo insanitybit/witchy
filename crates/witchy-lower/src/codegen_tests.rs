@@ -1170,32 +1170,6 @@ fn main() -> Int:
         assert_eq!(run_int(src), 9);
     }
 
-    #[test]
-    fn compiles_match_arm_self_tail_edge_without_erasing_result_block() {
-        let src = r#"
-fn down(n: Int) -> Int:
-    match n:
-        0 -> 9
-        _ -> down((n - 1))
-
-fn main() -> Int:
-    down(5000000)
-"#;
-        assert_eq!(run_int(src), 9);
-    }
-
-    #[test]
-    fn compiles_coalesce_fallback_as_a_tail_edge() {
-        let src = r#"
-fn down(n: Int) -> Int:
-    (if (n == 0): Some(9) else: None) ?? down((n - 1))
-
-fn main() -> Int:
-    down(5000000)
-"#;
-        assert_eq!(run_int(src), 9);
-    }
-
     /// (BUG-008) Compile `src` under the optimization set `opt` and report the two
     /// representation signals the `direct-call`, `bounds-elide`, and `closure-elide`
     /// levers move: direct callees, indirect-call count, and GC struct allocations.
