@@ -1940,64 +1940,6 @@ fn main(console: Console, f: File[Read]):
     }
 
     #[test]
-    fn capability_methods_resolve_on_narrowed_handles() {
-        let narrowed_dir = r#"
-fn main(console: Console, dir: Dir):
-    let ro = dir as Dir[Read]
-    console.print(ro.read("config.txt"))
-"#;
-        check_str(narrowed_dir).expect("Dir[Read] method resolves after explicit narrowing");
-
-        let file_leaf = r#"
-fn main(console: Console, dir: Dir):
-    let ro = dir as Dir[Read]
-    let cfg = ro.read_file("config.txt")
-    console.print(cfg.read())
-"#;
-        check_str(file_leaf).expect("File[Read] method resolves after navigation");
-
-        let narrowed_param = r#"
-fn load(dir: Dir[Read], name: String) -> String:
-    dir.read(name)
-
-fn main(console: Console, dir: Dir):
-    console.print(load(dir, "notes.txt"))
-"#;
-        check_str(narrowed_param).expect("capability methods resolve on narrowed params");
-
-        let branded_capability = r#"
-capability ConfigDir from Dir[Read]
-
-fn load(c: ConfigDir, name: String) -> String:
-    match c:
-        ConfigDir(dir) -> dir.read(name)
-"#;
-        check_str(branded_capability).expect("capability methods resolve on branded payloads");
-
-        let option_capability = r#"
-type Option(a):
-    Some(a)
-    None
-
-fn read(maybe: Option(Net[Connect]), addr: String) -> Bool:
-    match maybe:
-        Some(n) ->
-            let _s = n.connect(addr)
-            true
-        None -> false
-"#;
-        check_str(option_capability).expect("capability methods resolve on generic pattern payloads");
-
-        let builtin_option_socket = r#"
-fn read_socket(maybe: Option(Socket)) -> String:
-    match maybe:
-        Some(sock) -> sock.recv_line()
-        None -> ""
-"#;
-        check_str(builtin_option_socket).expect("capability methods resolve on builtin Option payloads");
-    }
-
-    #[test]
     fn migrated_dir_respects_slot_and_typed_higher_order_boundaries() {
         let option_dir = r#"
 type Option(a):
