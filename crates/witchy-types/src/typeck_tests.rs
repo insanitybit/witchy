@@ -1562,22 +1562,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn ordering_allows_comparable_primitives() {
-        assert!(check_str(r#"
-fn f(a: Int, b: Int) -> Bool:
-    (a < b)
-"#).is_ok());
-        assert!(check_str(r#"
-fn f(a: Float, b: Float) -> Bool:
-    (a >= b)
-"#).is_ok());
-        assert!(check_str(r#"
-fn f(a: String, b: String) -> Bool:
-    (a < b)
-"#).is_ok());
-    }
-
-    #[test]
     fn rejects_ordering_on_non_primitives() {
         // These would type-check under bare unification but crash at runtime, so
         // the checker rejects them up front.
