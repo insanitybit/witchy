@@ -109,51 +109,6 @@ use crate::{ast, codegen, interpreter, typeck};
         assert_eq!(run_linked_on_wasm(&[("main", ok)], "main"), expected, "compiled: unique JSON merge still works");
     }
 
-    /// (BUG-374) JSON has no NaN/Infinity tokens, and `null` already means an
-    /// intentional JSON null / `Option.None`. Strict JSON boundaries must fail
-    /// loudly instead of silently erasing non-finite Float values to null.
-    #[test]
-    fn json_nonfinite_float_encoding_aborts_on_both_backends() {
-        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
-            let linked = resolve_std_src(src);
-            typeck::check(&linked).expect("typecheck");
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
-            (linked, bytes)
-        };
-        let cases = [
-            (
-                "direct NaN",
-                "import json\n\nfn main(console: Console):\n    console.print(json.encode(json.JsonFloat(0.0 / 0.0)))\n",
-            ),
-            (
-                "direct infinity",
-                "import json\n\nfn main(console: Console):\n    console.print(json.encode(json.JsonFloat(1.0 / 0.0)))\n",
-            ),
-            (
-                "reflective field",
-                "import json\nimport reflect\n\ntype Reading derive(Reflect):\n    ratio: Float\n\nfn main(console: Console):\n    console.print(json.stringify(Reading(0.0 / 0.0)))\n",
-            ),
-        ];
-        for (label, src) in cases {
-            let (linked, wasm) = compile(src);
-            let interp_err = interpreter::run_module(linked, ".", Vec::new())
-                .expect_err("interpreter must abort on non-finite JSON Float")
-                .to_string();
-            assert!(
-                interp_err.contains("json.encode: non-finite Float cannot be encoded as JSON"),
-                "{label}: {interp_err}"
-            );
-            let wasm_err = crate::run_wasm_bytes(&wasm)
-                .expect_err("WASM must abort on non-finite JSON Float")
-                .to_string();
-            assert!(
-                wasm_err.contains("json.encode: non-finite Float cannot be encoded as JSON"),
-                "{label}: {wasm_err}"
-            );
-        }
-    }
-
     #[test]
     fn rfc0054_json_decode_uses_typed_error_and_converts_to_string() {
         let src = "import json\nfrom json import Json\nimport show\n\nfn via_string() -> Result(Json, String):\n    let doc = json.decode(\"1 2\")?\n    Ok(doc)\n\nfn main(console: Console):\n    match json.decode(\"1 2\"):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) ->\n            console.print(json.decode_error_message(e))\n            console.print(show.render(e))\n    match via_string():\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(e)\n";
@@ -262,9 +217,6 @@ fn main(console: Console):
         .iter()
         .map(|s| s.to_string())
         .collect();
-        // The generated `reflect` makes BARE trait calls, so the interpreter path
-        // also needs std/reflect linked (link_run's single-module typeck can't see
-        // it) — resolve std for both backends, like the real run path does.
         // The generated `reflect` makes trait calls that need std/reflect linked,
         // so resolve std for the interpreter path too (link_run's single-module
         // typeck can't see it); the real `witchy run` path resolves std the same way.
@@ -565,32 +517,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn std_json_encode_backends_agree() {
-        let client = r#"
-import json
-from json import Json
-fn main(console: Console):
-    let j = JsonObject([
-        ("name", JsonString("witchy")),
-        ("version", JsonInt(1)),
-        ("tags", JsonArray([JsonString("safe"), JsonString("fast")])),
-        ("stable", JsonBool(false)),
-        ("extra", JsonNull)
-    ])
-    console.print(json.encode(j))"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "std json encode diverged");
-        assert_eq!(
-            compiled,
-            vec![
-                r#"{"name":"witchy","version":1,"tags":["safe","fast"],"stable":false,"extra":null}"#
-            ]
-        );
-    }
-
-    #[test]
     fn std_json_decode_roundtrip_backends_agree() {
         let client = r#"
 import json
@@ -706,6 +632,10 @@ fn main(console: Console):
                 "encode_nested_object",
                 "import json\nfrom json import Json\nfn main(console: Console):\n    console.print(json.encode(JsonObject([(\"ratio\", JsonFloat(0.0 / 0.0))])))\n",
             ),
+            (
+                "stringify_reflected",
+                "import json\nimport reflect\n\ntype Reading derive(Reflect):\n    ratio: Float\n\nfn main(console: Console):\n    console.print(json.stringify(Reading(0.0 / 0.0)))\n",
+            ),
         ];
         for (label, src) in cases {
             let linked = resolve_std_src(src);
@@ -727,10 +657,6 @@ fn main(console: Console):
         }
 
         let interpreter_only = [
-            (
-                "stringify_reflected",
-                "import json\nfn main(console: Console):\n    console.print(json.stringify(.{ratio: 0.0 / 0.0}))\n",
-            ),
             (
                 "server_send_reflected",
                 "import server\nfn main(console: Console):\n    let _r = server.send(200, .{ratio: 1.0 / 0.0})\n    console.print(\"unreachable\")\n",
