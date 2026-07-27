@@ -23,7 +23,7 @@ pub struct FixtureCall {
 }
 
 impl FixtureCall {
-    pub fn new(family: FixtureFamily, operation: impl Into<String>) -> Self {
+    pub(crate) fn new(family: FixtureFamily, operation: impl Into<String>) -> Self {
         Self {
             family,
             operation: operation.into(),
