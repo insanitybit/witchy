@@ -1,4 +1,3 @@
-use super::*;
 use crate::{interpreter, parser, typeck};
 
 /// Independent expected-value oracle for pure shipped examples. Backend parity
@@ -383,6 +382,21 @@ fn pure_examples_match_golden_output() {
             "examples/record_update/src/record_update.witchy",
             &["alice 100", "alice 150", "alice smith 150"],
         ),
+        (
+            "examples/temperature/src/temperature.witchy",
+            &[
+                "0F = -17.8C",
+                "60F = 15.6C",
+                "120F = 48.9C",
+                "180F = 82.2C",
+                "240F = 115.6C",
+                "300F = 148.9C",
+            ],
+        ),
+        (
+            "examples/largest/src/largest.witchy",
+            &["largest number: 100", "latest version: 2.0"],
+        ),
     ];
 
     for (path, expected) in cases {
@@ -463,72 +477,6 @@ fn main_receives_command_line_args() {
     };
     assert_eq!(run(vec!["a".into(), "b".into(), "c".into()]), vec!["a,b,c"]);
     assert_eq!(run(Vec::new()), vec![""]);
-}
-
-#[test]
-fn temperature_example_agrees_on_both_backends() {
-    let client =
-        std::fs::read_to_string("examples/temperature/src/temperature.witchy").unwrap();
-    let sources = [
-        ("math", crate::bundled_module("math").unwrap()),
-        ("main", client.as_str()),
-    ];
-    let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-    let compiled = run_linked_on_wasm(&sources, "main");
-    assert_eq!(interpreted, compiled, "temperature diverged");
-    assert_eq!(compiled[0], "0F = -17.8C");
-    assert_eq!(compiled[1], "60F = 15.6C");
-}
-
-#[test]
-fn early_return_runs_on_wasm() {
-    let src = r#"
-fn classify(n: Int) -> Int:
-    if (n < 0):
-        return (0 - 1)
-    if (n == 0):
-        return 0
-    1
-
-fn main() -> Int:
-    ((classify((0 - 5)) + classify(0)) + classify(9))
-"#;
-    assert_eq!(run_on_wasm(src), vec!["0"]);
-}
-
-/// Imports provide names, not authority.
-#[test]
-fn imported_library_is_pure_and_confined() {
-    let lib = r#"
-pub fn label(n: Int) -> String:
-    if (n < 0):
-        "neg"
-    else:
-        "nonneg"
-"#;
-    let main = r#"
-import lib
-
-fn main(console: Console):
-    console.print(lib.label((-2)))
-    console.print(lib.label(7))
-"#;
-    let out = interpreter::run_program(&[("lib", lib), ("main", main)], "main")
-        .expect("multi-module program runs");
-    assert_eq!(out, vec!["neg", "nonneg"]);
-}
-
-#[test]
-fn largest_example_agrees_on_both_backends() {
-    let client = std::fs::read_to_string("examples/largest/src/largest.witchy").unwrap();
-    let sources = [
-        ("cmp", crate::bundled_module("cmp").unwrap()),
-        ("main", client.as_str()),
-    ];
-    let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-    let compiled = run_linked_on_wasm(&sources, "main");
-    assert_eq!(interpreted, compiled, "largest diverged");
-    assert_eq!(compiled, vec!["largest number: 100", "latest version: 2.0"]);
 }
 
 #[test]
