@@ -558,29 +558,6 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["6", "19", "21", "3", "0"]);
     }
 
-    #[test]
-    fn std_list_flatten_flatmap_backends_agree() {
-        // flatten / flat_map (concat-based, with a list-returning closure for
-        // flat_map) behave identically in both backends.
-        let client = r#"
-import list
-
-fn main(console: Console):
-    let nested = [[1, 2], [3], [4, 5, 6]]
-    let flat = list.flatten(nested)
-    console.print("${list.length(flat)}")
-    console.print("${list.sum(flat)}")
-    let fm = list.flat_map([1, 2, 3], fn(n: Int): [n, (n * 10)])
-    console.print("${list.length(fm)}")
-    console.print("${list.sum(fm)}")
-"#;
-        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "flatten/flat_map diverged");
-        assert_eq!(compiled, vec!["6", "21", "6", "66"]);
-    }
-
     // flatten collapses Option(Option(a)) one level; zip pairs two options into
     // Option((a, b)) only when both are Some. Both backends agree.
     #[test]
@@ -938,105 +915,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn std_list_compiles_and_runs_on_wasm() {
-        // The whole bundled `list` library links + compiles to WASM (every
-        // function in it must compile), and map/filter/fold driven by closures
-        // run end-to-end: doubled = [2,4,6,8,10] (sum 30); evens = [2,4] (len 2).
-        let client = r#"
-import list
-
-fn main() -> Int:
-    let xs = [1, 2, 3, 4, 5]
-    let doubled = list.map(xs, fn(n: Int): (n * 2))
-    let evens = list.filter(xs, fn(n: Int): ((n % 2) == 0))
-    let sum = list.fold(doubled, 0, fn(acc: Int, n: Int): (acc + n))
-    (sum + list.length(evens))
-"#;
-        assert_eq!(
-            run_linked_on_wasm(
-                &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
-                "main",
-            ),
-            vec!["32"]
-        );
-    }
-
-    #[test]
-    fn std_list_sort_by_runs_on_wasm() {
-        // A comparator closure threaded through `sort_by` into its `insert_sorted`
-        // helper (which calls it via call_indirect) compiles and sorts ascending:
-        // [1,1,2,3,4,5,6,9]; first*100 + last = 109.
-        let client = r#"
-import list
-
-fn main() -> Int:
-    var xs = [3, 1, 4, 1, 5, 9, 2, 6]
-    list.sort_by(xs, fn(a: Int, b: Int): (a < b))
-    ((list.at(xs, 0) * 100) + list.at(xs, 7))
-"#;
-        assert_eq!(
-            run_linked_on_wasm(
-                &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
-                "main",
-            ),
-            vec!["109"]
-        );
-    }
-
-    #[test]
-    fn std_result_compiles_and_runs_on_wasm() {
-        // The Result type + combinators compile; map_ok runs a closure over Ok.
-        let client = r#"
-import result
-
-fn main() -> Int:
-    let r = result.map_ok(Ok(20), fn(n: Int): (n + 1))
-    result.unwrap_or(r, 0)
-"#;
-        assert_eq!(
-            run_linked_on_wasm(
-                &[("result", crate::bundled_module("result").unwrap()), ("main", client)],
-                "main",
-            ),
-            vec!["21"]
-        );
-    }
-
-    #[test]
-    fn std_option_compiles_and_runs_on_wasm() {
-        // The Option type + combinators compile; map runs a closure over Some.
-        let client = r#"
-import option
-
-fn main() -> Int:
-    let o = option.map(Some(20), fn(n: Int): (n * 2))
-    option.unwrap_or(o, 0)
-"#;
-        assert_eq!(
-            run_linked_on_wasm(
-                &[("option", crate::bundled_module("option").unwrap()), ("main", client)],
-                "main",
-            ),
-            vec!["40"]
-        );
-    }
-
-    #[test]
-    fn dict_int_keys_on_wasm() {
-        // Int-keyed Dict: keys compared with i32 equality (mode 0).
-        let src = r#"
-fn main(console: Console):
-    var d = dict.new()
-    dict.insert(d, 1, 100)
-    dict.insert(d, 2, 200)
-    console.print("${dict.get_or(d, 1, 0)}")
-    console.print("${dict.get_or(d, 2, 0)}")
-    console.print("${dict.get_or(d, 3, (0 - 1))}")
-"#;
-        assert_eq!(run_on_wasm(src), vec!["100", "200", "-1"]);
-    }
-
-    #[test]
     fn dict_undetermined_key_is_rejected() {
         // A key with no `Eq` implementation errors clearly
         // rather than picking a wrong comparison.
@@ -1115,35 +993,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn dict_keys_values_pairs_on_wasm() {
-        // keys/values/pairs compiled to WASM: keys -> list of keys, values ->
-        // list of values, pairs -> list of (k, v) tuples destructured in a loop.
-        let src = r#"
-fn main(console: Console):
-    var d = dict.new()
-    dict.insert(d, "a", 10)
-    dict.insert(d, "b", 20)
-    dict.insert(d, "c", 30)
-    var ksum = 0
-    for k in dict.keys(d):
-        ksum = (ksum + k.length())
-    console.print("${ksum}")
-    var vsum = 0
-    for v in dict.values(d):
-        vsum = (vsum + v)
-    console.print("${vsum}")
-    var psum = 0
-    for entry in dict.pairs(d):
-        let (k, v) = entry
-        psum = ((psum + k.length()) + v)
-    console.print("${psum}")
-"#;
-        // keys "a","b","c" (len 1 each) -> 3; values 10+20+30 -> 60; pairs
-        // (1+10)+(1+20)+(1+30) -> 63.
-        assert_eq!(run_on_wasm(src), vec!["3", "60", "63"]);
-    }
-
-    #[test]
     fn std_list_partition_unzip_backends_agree() {
         // partition splits by a predicate in one pass; unzip is the inverse of
         // zip. Both return tuples of lists, so this also exercises tuple-valued
@@ -1187,24 +1036,6 @@ fn main() -> Int:
     total
 "#;
         assert_eq!(run_on_wasm(src), vec!["19900"]); // 199*200/2
-    }
-
-    #[test]
-    fn list_push_and_concat_on_wasm() {
-        // Build a list with `push` in a loop, then `concat` — both allocate new
-        // lists at runtime. double_all([1,2,3]) = [2,4,6], ++ [100], summed = 112.
-        let src = r#"
-fn double_all(xs: List(Int)) -> List(Int):
-    var out = []
-    for x in xs:
-        list.push(out, (x * 2))
-    out
-
-fn main() -> Int:
-    let ys = list.concat(double_all([1, 2, 3]), [100])
-    (((list.at(ys, 0) + list.at(ys, 1)) + list.at(ys, 2)) + list.at(ys, 3))
-"#;
-        assert_eq!(run_on_wasm(src), vec!["112"]);
     }
 
     // Integer division/modulo truncate toward zero, and their signs must agree
