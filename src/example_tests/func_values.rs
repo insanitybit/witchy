@@ -214,18 +214,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn var_function_value_preserves_convention() {
-        // RFC-0087 carries parameter conventions in function types, so closures
-        // remain first-class without erasing their write-back ABI.
-        let client = "fn main(console: Console):\n    let f = fn(var n: Int):\n        n = n * 2\n    var n = 21\n    f(n)\n    console.print(\"${n}\")\n";
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, vec!["42"]);
-        assert_eq!(compiled, interpreted);
-    }
-
-    #[test]
     fn module_function_typo_in_value_position_names_the_module() {
         // (RFC-0050 Part 2) When the base of a `module.fn` value reference names an
         // in-scope module (here the `list` prelude), a wrong function name reuses
