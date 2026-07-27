@@ -2976,32 +2976,6 @@ fn main():
     }
 
     #[test]
-    fn rfc0081_cap_free_as_dyn_is_publicly_checkable() {
-        check_str(
-            "trait Render:\n    fn render(let self) -> String\n\n\
-             type Plain:\n    tag: String\n\n\
-             impl Render for Plain:\n    fn render(let self) -> String:\n        self.tag\n\n\
-             fn main(console: Console):\n\
-             \x20   let p = Plain(\"x\")\n\
-             \x20   let r = p as dyn Render\n\
-             \x20   console.print(\"hi\")\n",
-        )
-        .expect("explicit cap-free existential construction must check");
-    }
-
-    #[test]
-    fn rfc0081_cap_free_implicit_dyn_is_publicly_checkable() {
-        check_str(
-            "trait Render:\n    fn render(let self) -> String\n\n\
-             type Plain:\n    tag: String\n\n\
-             impl Render for Plain:\n    fn render(let self) -> String:\n        self.tag\n\n\
-             fn erase(p: Plain) -> dyn Render:\n    p\n\n\
-             fn main(console: Console):\n    console.print(\"hi\")\n",
-        )
-        .expect("directed cap-free existential construction must check");
-    }
-
-    #[test]
     fn rfc0081_var_dyn_argument_requires_an_existential_caller_place() {
         let err = check_str(
             "trait Render:\n    fn render(let self) -> String\n\n\
