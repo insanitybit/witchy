@@ -1,42 +1,12 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-struct TempRepo(PathBuf);
+use super::support::{TempRepo, git, write};
 
-impl TempRepo {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock before epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("witchy-worktree-warm-{}-{nonce}", std::process::id()));
-        fs::create_dir(&path).expect("create temp repo");
-        let status = Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&path)
-            .status()
-            .expect("run git init");
-        assert!(status.success(), "git init failed");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempRepo {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().expect("fixture parent")).expect("create fixture parent");
-    fs::write(path, contents).expect("write fixture");
+fn temp_repo() -> TempRepo {
+    TempRepo::new("worktree-warm", |path| {
+        git(path, &["init", "--quiet"]);
+    })
 }
 
 fn run_warm(repo: &Path, args: &[&str], mode: Option<&str>) -> Output {
@@ -80,7 +50,7 @@ fn assert_seed(repo: &Path, destination: &str) {
 
 #[test]
 fn worktree_warm_help_and_usage_errors_are_stable() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     let root = repo.path();
 
     let help = run_warm(root, &["--help"], Some("invalid-but-help-must-not-probe-it"));
@@ -104,7 +74,7 @@ fn worktree_warm_help_and_usage_errors_are_stable() {
 
 #[test]
 fn worktree_warm_uses_portable_copy_modes_and_filters_dead_artifacts() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     let root = repo.path();
     write(root, "target/CACHEDIR.TAG", "cache\n");
     write(root, "target/debug/.fingerprint/demo/marker", "fingerprint\n");

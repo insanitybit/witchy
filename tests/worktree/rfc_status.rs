@@ -1,36 +1,23 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-struct TempRepo(PathBuf);
+use super::support::{TempRepo, git};
 
-impl TempRepo {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock before epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("witchy-rfc-status-{}-{nonce}", std::process::id()));
+fn temp_repo() -> TempRepo {
+    TempRepo::new("rfc-status", |path| {
         fs::create_dir_all(path.join("rfcs")).expect("create RFC fixture");
         fs::create_dir_all(path.join("scripts")).expect("create scripts fixture");
-        copy_script("scripts/rfc-status.sh", &path);
-        copy_script("scripts/state-paths.sh", &path);
-        git(&path, &["init", "--quiet"]);
-        git(&path, &["symbolic-ref", "HEAD", "refs/heads/master"]);
-        git(&path, &["config", "user.email", "rfc-status-test@witchy.invalid"]);
-        git(&path, &["config", "user.name", "Witchy RFC Status Test"]);
-        write_rfc(&path, "0001", "implemented", "shipped");
-        git(&path, &["add", "."]);
-        git(&path, &["commit", "--quiet", "-m", "initial"]);
-        Self(path)
-    }
-}
-
-impl Drop for TempRepo {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+        copy_script("scripts/rfc-status.sh", path);
+        copy_script("scripts/state-paths.sh", path);
+        git(path, &["init", "--quiet"]);
+        git(path, &["symbolic-ref", "HEAD", "refs/heads/master"]);
+        git(path, &["config", "user.email", "rfc-status-test@witchy.invalid"]);
+        git(path, &["config", "user.name", "Witchy RFC Status Test"]);
+        write_rfc(path, "0001", "implemented", "shipped");
+        git(path, &["add", "."]);
+        git(path, &["commit", "--quiet", "-m", "initial"]);
+    })
 }
 
 fn copy_script(relative: &str, repo: &Path) {
@@ -46,20 +33,6 @@ fn write_rfc(repo: &Path, id: &str, status: &str, tracking: &str) {
     .expect("write RFC fixture");
 }
 
-fn git(repo: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .expect("run git");
-    assert!(
-        output.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("git output is utf8").trim().to_string()
-}
-
 fn run(repo: &Path, args: &[&str]) -> Output {
     Command::new("bash")
         .arg(repo.join("scripts/rfc-status.sh"))
@@ -71,7 +44,7 @@ fn run(repo: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn check_rejects_unowned_proposals_and_vague_statuses() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     write_rfc(&repo.0, "0002", "proposed", "");
     write_rfc(&repo.0, "0003", "in-progress", "agent working");
     let output = run(&repo.0, &["--check"]);
@@ -83,7 +56,7 @@ fn check_rejects_unowned_proposals_and_vague_statuses() {
 
 #[test]
 fn clean_ahead_branch_is_a_pickup_until_queued() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     write_rfc(&repo.0, "0002", "proposed", "foundation");
     git(&repo.0, &["add", "rfcs/0002-fixture.md"]);
     git(&repo.0, &["commit", "--quiet", "-m", "add proposal"]);
@@ -107,7 +80,7 @@ fn clean_ahead_branch_is_a_pickup_until_queued() {
 
 #[test]
 fn accepted_policy_with_tracking_and_terminal_rfcs_are_valid() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     write_rfc(&repo.0, "0002", "accepted", "ongoing ordering contract");
     let output = run(&repo.0, &["--check", "--all"]);
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));

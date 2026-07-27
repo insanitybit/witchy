@@ -3,50 +3,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 #[cfg(unix)]
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-struct TempRepo(PathBuf);
+use super::support::{TempRepo, git};
 
-impl TempRepo {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock before epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("witchy-worktree-create-{}-{nonce}", std::process::id()));
-        fs::create_dir(&path).expect("create temp repo");
-        git(&path, &["init", "--quiet"]);
-        git(&path, &["config", "user.email", "worktree-test@witchy.invalid"]);
-        git(&path, &["config", "user.name", "Witchy Worktree Test"]);
+fn temp_repo() -> TempRepo {
+    TempRepo::new("worktree-create", |path| {
+        git(path, &["init", "--quiet"]);
+        git(path, &["config", "user.email", "worktree-test@witchy.invalid"]);
+        git(path, &["config", "user.name", "Witchy Worktree Test"]);
         fs::write(path.join("README.md"), "fixture\n").expect("write fixture");
-        git(&path, &["add", "README.md"]);
-        git(&path, &["commit", "--quiet", "-m", "fixture"]);
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempRepo {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn git(repo: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .expect("run git");
-    assert!(
-        output.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("git output is utf8").trim().to_string()
+        git(path, &["add", "README.md"]);
+        git(path, &["commit", "--quiet", "-m", "fixture"]);
+    })
 }
 
 fn create(repo: &Path, name: &str) -> Output {
@@ -84,7 +53,7 @@ fn created_path(output: &Output) -> PathBuf {
 
 #[test]
 fn worktree_create_never_reuses_a_merged_branch_name() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     let root = repo.path();
     let journal = root.join("state/merge-queue/journal.jsonl");
     fs::create_dir_all(journal.parent().expect("journal parent")).expect("create journal parent");
@@ -116,7 +85,7 @@ fn worktree_create_never_reuses_a_merged_branch_name() {
 #[cfg(unix)]
 #[test]
 fn worktree_create_runs_background_prebuild_at_utility_priority() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     let root = repo.path();
     let bin = root.join("fake-bin");
     let trace = root.join("prebuild-trace");

@@ -4,6 +4,8 @@
 //! Files live in `tests/worktree/` (a subdir is not auto-compiled as its own
 //! binary) and are attached here via `#[path]` since a test crate root
 //! resolves bare `mod` names against `tests/`, not the subdir.
+#[path = "worktree/support.rs"]
+mod support;
 #[path = "worktree/create.rs"]
 mod create;
 #[path = "worktree/status.rs"]

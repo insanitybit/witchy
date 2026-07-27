@@ -1,57 +1,19 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-struct TempRepo(PathBuf);
+use super::support::{TempRepo, git, write};
 
-impl TempRepo {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock before epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("witchy-worktree-status-{}-{nonce}", std::process::id()));
-        fs::create_dir(&path).expect("create temp repo");
-        git(&path, &["init", "--quiet"]);
-        git(&path, &["symbolic-ref", "HEAD", "refs/heads/master"]);
-        git(&path, &["config", "user.email", "worktree-test@witchy.invalid"]);
-        git(&path, &["config", "user.name", "Witchy Worktree Test"]);
-        write(&path, "README.md", "fixture\n");
-        git(&path, &["add", "README.md"]);
-        git(&path, &["commit", "--quiet", "-m", "initial"]);
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempRepo {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn write(repo: &Path, relative: &str, contents: &str) {
-    let path = repo.join(relative);
-    fs::create_dir_all(path.parent().expect("fixture parent")).expect("create fixture parent");
-    fs::write(path, contents).expect("write fixture");
-}
-
-fn git(repo: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .expect("run git");
-    assert!(
-        output.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("git output is utf8").trim().to_string()
+fn temp_repo() -> TempRepo {
+    TempRepo::new("worktree-status", |path| {
+        git(path, &["init", "--quiet"]);
+        git(path, &["symbolic-ref", "HEAD", "refs/heads/master"]);
+        git(path, &["config", "user.email", "worktree-test@witchy.invalid"]);
+        git(path, &["config", "user.name", "Witchy Worktree Test"]);
+        write(path, "README.md", "fixture\n");
+        git(path, &["add", "README.md"]);
+        git(path, &["commit", "--quiet", "-m", "initial"]);
+    })
 }
 
 fn ref_exists(repo: &Path, name: &str) -> bool {
@@ -83,7 +45,7 @@ fn run_status(repo: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn help_lists_every_dashboard_mode() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     let output = run_status(repo.path(), &["--help"]);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -97,7 +59,7 @@ fn help_lists_every_dashboard_mode() {
 
 #[test]
 fn disk_usage_is_opt_in() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     let target = repo.path().join("target");
     fs::create_dir(&target).expect("create target fixture");
     fs::write(target.join("artifact"), vec![0u8; 1024]).expect("write target fixture");
@@ -113,7 +75,7 @@ fn disk_usage_is_opt_in() {
 
 #[test]
 fn prunable_worktree_metadata_is_reported_without_aborting_the_dashboard() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     let root = repo.path();
     let stale = root.join(".worktrees/stale");
     git(
@@ -144,7 +106,7 @@ fn prunable_worktree_metadata_is_reported_without_aborting_the_dashboard() {
 
 #[test]
 fn branch_pruning_is_relative_to_master_and_never_deletes_master() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     let root = repo.path();
     let initial = git(root, &["rev-parse", "HEAD"]);
     git(root, &["branch", "feature"]);
@@ -199,7 +161,7 @@ fn branch_pruning_is_relative_to_master_and_never_deletes_master() {
 
 #[test]
 fn worktree_pruning_requires_a_merge_journal_record() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     let root = repo.path();
     let fresh = root.join(".worktrees/fresh");
     let merged = root.join(".worktrees/merged");
@@ -244,7 +206,7 @@ fn worktree_pruning_requires_a_merge_journal_record() {
 
 #[test]
 fn journaled_patch_equivalent_worktree_can_be_pruned_without_deleting_its_branch() {
-    let repo = TempRepo::new();
+    let repo = temp_repo();
     let root = repo.path();
     let initial = git(root, &["rev-parse", "HEAD"]);
 
