@@ -26,6 +26,63 @@ evidence rather than permission to bypass the repository landing gate.
 The end-to-end package-manager tests (`tests/e2e.rs`) drive the real binary
 through scaffold/publish/add/build/run against hermetic per-test registries.
 
+### Test layers and footprint
+
+Measure dedicated Rust test and support code with:
+
+```sh
+./scripts/test-footprint.sh
+./scripts/test-footprint.sh --files  # file-level audit
+```
+
+The script reports disjoint categories and two totals. `explicit_total` is the
+release metric: integration tests under `tests/`, the differential example
+matrix under `src/example_tests/`, and extracted crate modules named
+`*_tests.rs` or held in `*_tests/`. `support` separately counts
+`tests/support/`, `src/example_tests.rs`, `witchy-testkit`, and
+`witchy-test-host`. Do not count an entire production file merely because it
+contains an inline `#[cfg(test)]` block; review inline tests at the block level.
+
+Each substantial test group should have at least one concrete reason to exist:
+
+- **unique contract**: no other layer proves the behavior;
+- **security**: capability denial, provenance, confinement, authentication, or
+  another fail-closed boundary;
+- **regression**: a demonstrated historical defect;
+- **independent oracle**: expected behavior is derived independently of the
+  implementation under test;
+- **parity**: interpreter and compiled Wasm are compared; or
+- **fixture support**: a small shared helper deletes more setup than it adds.
+
+Delete obsolete representation/compatibility tests and weaker duplicates.
+Prefer one semantic oracle plus parity over backend-specific copies, but never
+let parity replace an independent expected value: both backends can share the
+same bug. Keep expected diagnostics, capability traces, ABI shapes, and source
+locations explicit.
+
+The intended layers are:
+
+- parser, formatter, type checker, WIR, interpreter, and runtime unit tests for
+  local contracts and fault localization;
+- `src/example_tests/` for independently expected language semantics and
+  interpreter/Wasm differential behavior;
+- `tests/e2e.rs` for real-process package, publishing, confinement, and
+  lifecycle boundaries;
+- `tests/browser.rs` and `book/examples.json` for the browser host and runnable
+  documentation; and
+- mutation/fault-injection tests for evidence that the retained oracles reject
+  deliberately wrong behavior.
+
+Fixtures belong at the narrowest shared boundary. Use `tests/support/` for
+integration-process fixtures, `witchy-testkit` for cross-crate semantic
+fixtures, and `witchy-test-host` for deterministic host plans. Do not add a
+macro DSL or test framework to save superficial lines.
+
+`scripts/test-for-paths.sh` is the authority mapping changed paths to focused
+shards. When moving or extracting tests, update that mapping in the same change
+and confirm `--run` selects every required shard. The merge coordinator remains
+the authority for the serialized full workspace, e2e, parity, and browser gate.
+
 `scripts/e2e-full.sh` is the whole-system acceptance run: it builds from
 scratch, then asserts one program produces identical output on all three
 backends, exercises the formatter, the in-language test framework, capability
