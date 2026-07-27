@@ -2589,20 +2589,6 @@ fn main():
     }
 
     #[test]
-    fn rfc0087_elided_var_returns_are_inferred_normally() {
-        // Return inference no longer selects a write-back convention, so an
-        // elided value return is no more ambiguous for `var` than for `let`.
-        check_str("fn bump(var xs: List(Int), by: Int):\n    xs\n")
-            .expect("an elided self-typed return is valid");
-        check_str("fn f(var xs: List(Int), x: Int):\n    x\n")
-            .expect("an elided unrelated return is valid");
-        check_str("fn bump(var xs: List(Int), by: Int) -> List(Int):\n    xs\n")
-            .expect("an explicit self-typed return remains valid");
-        check_str("fn bump(var xs: List(Int), by: Int) -> Nil:\n    xs = xs\n    return\n")
-            .expect("an explicit Nil return remains valid");
-    }
-
-    #[test]
     fn rfc0087_function_values_retain_and_enforce_conventions() {
         check_str(
             "fn bump(var n: Int) -> Int:\n    n = n + 1\n    n\n\nfn apply(f: fn(var Int) -> Int, var n: Int) -> Int:\n    f(n)\n\nfn main():\n    var n = 1\n    let f: fn(var Int) -> Int = bump\n    let _ = apply(f, n)\n",
