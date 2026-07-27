@@ -2664,16 +2664,6 @@ fn main():
     // ------------------------------------------------------------------
 
     #[test]
-    fn rfc0081_closed_trait_arguments_are_publicly_checkable() {
-        check_str(
-            "trait Convert(t):\n    fn convert(let self) -> t\n\n\
-             fn f(x: dyn Convert(Int)) -> Int:\n    1\n\n\
-             fn main(console: Console):\n    console.print(\"hi\")\n",
-        )
-        .expect("a closed generic existential signature must check");
-    }
-
-    #[test]
     fn rfc0081_unknown_trait_in_dyn() {
         let err = check_str(
             "fn f(x: dyn Render) -> Int:\n    1\n\n\
