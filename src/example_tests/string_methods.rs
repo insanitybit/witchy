@@ -53,8 +53,8 @@ use crate::{interpreter, parser, typeck};
     /// the existing `list.join`/`parts.join` spellings remain valid.
     #[test]
     fn string_join_alias_backends_agree() {
-        let src = "\nfn main(console: Console):\n    let parts = \"a,b,c\".split(\",\")\n    console.print(parts.join(\"-\"))\n    console.print(parts.join(\"|\"))\n    console.print([].join(\",\"))\n";
-        let expected = ["a-b-c", "a|b|c", ""];
+        let src = "import list\n\nfn main(console: Console):\n    let parts = \"a,b,c\".split(\",\")\n    console.print(parts.join(\"-\"))\n    console.print(parts.join(\"|\"))\n    console.print([].join(\",\"))\n    let p = \"a,bb,ccc\".split(\",\")\n    console.print(\"${list.length(p)}\")\n    console.print(list.at(p, 0))\n    console.print(list.at(p, 2))\n    console.print(\"${list.length(\"a,,b\".split(\",\"))}\")\n    console.print(list.at(\"a,,b\".split(\",\"), 1))\n    console.print(\"${list.length(\"\".split(\",\"))}\")\n    console.print(\"${list.length(\"abc\".split(\"\"))}\")\n    console.print(list.at(\"xXXyXXz\".split(\"XX\"), 2))\n";
+        let expected = ["a-b-c", "a|b|c", "", "3", "a", "ccc", "3", "", "1", "1", "z"];
         assert_eq!(link_run(src), expected, "interp: string.join");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),

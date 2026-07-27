@@ -677,29 +677,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn split_runs_on_wasm() {
-        // `split` compiled to WASM, matching Rust's str::split: pieces between
-        // separators, empty pieces kept, multi-char separators, and an empty
-        // separator yielding the whole string.
-        let src = r#"
-fn main(console: Console):
-    let p = "a,bb,ccc".split(",")
-    console.print("${list.length(p)}")
-    console.print(list.at(p, 0))
-    console.print(list.at(p, 2))
-    console.print("${list.length("a,,b".split(","))}")
-    console.print(list.at("a,,b".split(","), 1))
-    console.print("${list.length("".split(","))}")
-    console.print("${list.length("abc".split(""))}")
-    console.print(list.at("xXXyXXz".split("XX"), 2))
-"#;
-        assert_eq!(
-            run_on_wasm(src),
-            vec!["3", "a", "ccc", "3", "", "1", "1", "z"]
-        );
-    }
-
-    #[test]
     fn to_string_on_compound_renders_on_wasm() {
         // A compound (list/tuple/record/ADT/dict, any nesting) renders byte-
         // identically to the interpreter via a generated per-shape helper — so
@@ -749,29 +726,6 @@ fn main(console: Console):
 "#;
         assert_eq!(link_run(src), vec!["(1, 2)"], "interpreter");
         assert_eq!(wasm_run(src), vec!["(1, 2)"], "wasm");
-    }
-
-    #[test]
-    fn replace_on_wasm() {
-        // `replace` compiled to WASM, matching Rust's str::replace: simple and
-        // multi-char patterns, greedy non-overlapping, deletion (empty `to`),
-        // growth (`to` longer than `from`), no match, an empty `from` (inserted
-        // at every char boundary), and UTF-8 (`é` is a 2-byte match).
-        let src = r#"
-fn main(console: Console):
-    console.print("a,b,c".replace(",", ";"))
-    console.print("aXXbXXc".replace("XX", "-"))
-    console.print("aaa".replace("aa", "x"))
-    console.print("a,b,c".replace(",", ""))
-    console.print("abc".replace("b", "XYZ"))
-    console.print("abc".replace("z", "Q"))
-    console.print("ab".replace("", "-"))
-    console.print("café".replace("é", "e"))
-"#;
-        assert_eq!(
-            run_on_wasm(src),
-            vec!["a;b;c", "a-b-c", "xa", "abc", "aXYZc", "abc", "-a-b-", "cafe"]
-        );
     }
 
     #[test]
@@ -899,8 +853,8 @@ fn main(console: Console):
     // `replace` with an empty `from` is a notorious edge (the interpreter's
     // Rust `str::replace` inserts the replacement around every character);
     // Int-keyed dicts exercise the by-value key-comparison path. Both must
-    // match the compiled backend exactly. Agreement-only, so a future divergence
-    // is caught without baking in a hand-computed expectation.
+    // match the compiled backend exactly, with explicit expected values for both
+    // the replacement and integer-key dictionary contracts.
     #[test]
     fn replace_and_int_keyed_dict_backends_agree() {
         let src = r#"
@@ -909,6 +863,13 @@ fn main(console: Console):
     console.print("abc".replace("x", "y"))
     console.print("aaa".replace("a", "bb"))
     console.print("hello world".replace("o", "0"))
+    console.print("a,b,c".replace(",", ";"))
+    console.print("aXXbXXc".replace("XX", "-"))
+    console.print("aaa".replace("aa", "x"))
+    console.print("a,b,c".replace(",", ""))
+    console.print("abc".replace("b", "XYZ"))
+    console.print("abc".replace("z", "Q"))
+    console.print("café".replace("é", "e"))
     var d = dict.new()
     dict.insert(d, 1, 100)
     dict.insert(d, 2, 200)
@@ -917,7 +878,12 @@ fn main(console: Console):
     console.print("${dict.get_or(d, 2, 0)}")
     console.print("${dict.length(d)}")
 "#;
-        assert_eq!(interp(src), run_on_wasm(src), "replace/int-key dict diverged");
+        let expected = [
+            "[-a-b-c-]", "abc", "bbbbbb", "hell0 w0rld", "a;b;c", "a-b-c", "xa", "abc",
+            "aXYZc", "abc", "cafe", "111", "200", "2",
+        ];
+        assert_eq!(interp(src), expected, "interpreter replace/int-key dict");
+        assert_eq!(run_on_wasm(src), expected, "compiled replace/int-key dict");
     }
 
     // char_count returns Unicode scalars; string_length returns bytes. They
