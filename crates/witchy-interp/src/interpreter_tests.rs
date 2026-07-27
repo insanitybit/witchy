@@ -1125,10 +1125,7 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn serve_json_handler_roundtrip() {
-        use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+        let addr = loopback_addr();
         let src = format!(
             r#"
 import http
@@ -1143,38 +1140,17 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 1)
 "#
         );
-        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
-        let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, ".", allow));
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut stream = None;
-        while std::time::Instant::now() < deadline {
-            if let Ok(s) = TcpStream::connect(&addr) {
-                stream = Some(s);
-                break;
-            }
-            assert!(!server.is_finished(), "server exited before accepting a request");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let mut stream = stream.expect("server did not accept a request within 10 seconds");
-        stream.write_all(b"GET /hello/witchy HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
-        let mut resp = String::new();
-        stream.read_to_string(&mut resp).unwrap();
+        let server = spawn_loopback_program(src, ".", &addr);
+        let resp = http_request(&addr, "GET /hello/witchy HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(resp.contains("application/json"), "resp: {resp}");
         assert!(resp.contains("\"hello\"") && resp.contains("\"witchy\""), "resp: {resp}");
 
-        server.join().unwrap().unwrap();
+        server.join().unwrap();
     }
 
     #[test]
     fn serve_json_body_decode_roundtrip() {
-        use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+        let addr = loopback_addr();
         let src = format!(
             r#"
 import http
@@ -1196,43 +1172,22 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 1)
 "#
         );
-        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
-        let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, ".", allow));
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut stream = None;
-        while std::time::Instant::now() < deadline {
-            if let Ok(s) = TcpStream::connect(&addr) {
-                stream = Some(s);
-                break;
-            }
-            assert!(!server.is_finished(), "server exited before accepting a request");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let mut stream = stream.expect("server did not accept a request within 10 seconds");
+        let server = spawn_loopback_program(src, ".", &addr);
         let body = "{\"name\":\"witchy\"}";
         let req = format!(
             "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
             body
         );
-        stream.write_all(req.as_bytes()).unwrap();
-        let mut resp = String::new();
-        stream.read_to_string(&mut resp).unwrap();
+        let resp = http_request(&addr, &req);
         assert!(resp.contains("200 OK") && resp.ends_with("witchy"), "resp: {resp}");
 
-        server.join().unwrap().unwrap();
+        server.join().unwrap();
     }
 
     #[test]
     fn serve_form_field_roundtrip() {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+        let addr = loopback_addr();
         let src = format!(
             r#"
 import http
@@ -1243,33 +1198,22 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 1)
 "#
         );
-        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
-        let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, ".", allow));
-
-        let mut stream = connect_loopback(&addr);
+        let server = spawn_loopback_program(src, ".", &addr);
         let body = "name=witchy&lang=rust";
         let req = format!(
             "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
             body
         );
-        stream.write_all(req.as_bytes()).unwrap();
-        let mut resp = String::new();
-        stream.read_to_string(&mut resp).unwrap();
+        let resp = http_request(&addr, &req);
         assert!(resp.contains("200 OK") && resp.ends_with("witchy"), "resp: {resp}");
 
-        server.join().unwrap().unwrap();
+        server.join().unwrap();
     }
 
     #[test]
     fn serve_static_files_roundtrip() {
-        use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+        let addr = loopback_addr();
         // The handler captures a Dir rooted at examples/data and serves from it.
         let src = format!(
             r#"
@@ -1290,36 +1234,17 @@ fn main(console: Console, net: Net, root: Dir):
     server.serve_n(net, "{addr}", app, 2)
 "#
         );
-        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
-        let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, concat!(env!("CARGO_MANIFEST_DIR"), "/../.."), allow));
-
-        let request = |raw: &str| -> String {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            loop {
-                if let Ok(mut s) = TcpStream::connect(&addr) {
-                    s.write_all(raw.as_bytes()).unwrap();
-                    let mut resp = String::new();
-                    s.read_to_string(&mut resp).unwrap();
-                    return resp;
-                }
-                assert!(!server.is_finished(), "server exited before accepting a request");
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "server did not accept a request within 10 seconds",
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        };
-
-        let r1 = request("GET /files/greeting.txt HTTP/1.1\r\nHost: x\r\n\r\n");
+        let server = spawn_loopback_program(
+            src,
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
+            &addr,
+        );
+        let r1 = http_request(&addr, "GET /files/greeting.txt HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r1.contains("200 OK") && r1.contains("sandboxed Dir"), "r1: {r1}");
-        let r2 = request("GET /files/nope.txt HTTP/1.1\r\nHost: x\r\n\r\n");
+        let r2 = http_request(&addr, "GET /files/nope.txt HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r2.contains("404 "), "r2: {r2}");
 
-        server.join().unwrap().unwrap();
+        server.join().unwrap();
     }
 
     #[test]
