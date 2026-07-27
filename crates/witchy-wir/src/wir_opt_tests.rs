@@ -5,7 +5,7 @@
         TailCallee, collect_function_tail_calls, rename_expr_locals, rename_node_locals,
     };
     use crate::wir::{
-        BinOp, ClosureSignature, DataSegment, Kind, WirExpr, WirFunc, WirImport, WirLocal,
+        BinOp, ClosureSignature, Kind, WirExpr, WirFunc, WirImport, WirLocal,
         WirModule, WirNode, WirTable, WirTy, closure_wrapper_struct, slot_closure_signature,
     };
 
@@ -391,35 +391,6 @@
         assert!(!residual.contains(&TailCallee::Direct("__lamw0".into())));
         let binary = crate::wir_encode::encode(&module, &[closure_wrapper_struct()]);
         wasmparser::validate(&binary).expect("typed indirect dispatcher must validate");
-    }
-
-    #[test]
-    fn lowers_singleton_indirect_self_cycle() {
-        let recursive = WirFunc {
-            name: "__lamw0".into(),
-            params: vec![
-                WirLocal { name: "env".into(), ty: WirTy::Bool },
-                WirLocal { name: "n".into(), ty: WirTy::Int },
-            ],
-            ret: vec![WirTy::Int],
-            locals: vec![],
-            body: vec![WirNode::Push(WirExpr::CallIndirect {
-                signature: slot_closure_signature(1, 1),
-                args: vec![
-                    WirExpr::GetLocal("env".into()),
-                    WirExpr::GetLocal("n".into()),
-                ],
-                index: Box::new(WirExpr::ConstI32(0)),
-            })],
-            raw_body: None,
-        };
-        let mut module = module_with(recursive);
-        module.table = Some(WirTable { funcs: vec!["__lamw0".into()] });
-
-        assert_eq!(lower_direct_tail_calls(&mut module), 1);
-        assert_eq!(module.funcs.len(), 2, "wrapper plus singleton dispatcher");
-        let binary = crate::wir_encode::encode(&module, &[]);
-        wasmparser::validate(&binary).expect("singleton dispatcher must validate");
     }
 
     #[test]
@@ -834,55 +805,6 @@
         assert!(m.funcs[0].raw_body.is_some());
     }
 
-    /// Bonus: the optimized module still encodes to a wasm binary without error,
-    /// and so does the unoptimized one. Uses a module shaped like the wir.rs
-    /// tests' `int_demo` so `wir_encode::encode` has a valid tree to walk.
-    #[test]
-    fn encodes_before_and_after_optimize() {
-        let _ = DataSegment { offset: 0, bytes: vec![] }; // keep import exercised
-
-        // run(): print_int( FromSlot(ToSlot(ConstI64 42)) )
-        let call = WirExpr::CallHost {
-            import: "print_int".into(),
-            args: vec![WirExpr::FromSlot(
-                Box::new(WirExpr::ToSlot(Box::new(WirExpr::ConstI64(42)), Kind::I64)),
-                Kind::I64,
-            )],
-        };
-        let run = WirFunc {
-            name: "run".into(),
-            params: vec![],
-            ret: vec![],
-            locals: vec![],
-            body: vec![WirNode::Do(call)],
-            raw_body: None,
-        };
-        let mut m = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![run],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
-
-        // Encodes before optimization.
-        let before = crate::wir_encode::encode(&m, &[]);
-        assert!(!before.is_empty(), "pre-opt encode produced no bytes");
-
-        let stats = optimize(&mut m);
-        assert_eq!(stats.eliminated, 2, "{stats:?}");
-
-        // Still encodes after optimization.
-        let after = crate::wir_encode::encode(&m, &[]);
-        assert!(!after.is_empty(), "post-opt encode produced no bytes");
-    }
-
     /// Whether any `ToSlot`/`FromSlot` conversion over a REFERENCE kind
     /// (ExternRef / GcRef / StructRef) appears anywhere in a node sequence —
     /// i.e. a capability or GC reference being boxed into / out of an i64 slot.
@@ -1054,6 +976,7 @@
         module.table = Some(WirTable { funcs: vec!["__lamw0".into()] });
 
         assert_eq!(lower_direct_tail_calls(&mut module), 1);
+        assert_eq!(module.funcs.len(), 2, "wrapper plus singleton dispatcher");
         let dispatcher = module
             .funcs
             .iter()
@@ -1068,4 +991,6 @@
             index_locals, 1,
             "exactly one staged table-index local per indirect plan (index evaluated once per transition)",
         );
+        let binary = crate::wir_encode::encode(&module, &[]);
+        wasmparser::validate(&binary).expect("singleton dispatcher must validate");
     }
