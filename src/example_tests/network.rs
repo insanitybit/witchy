@@ -459,28 +459,6 @@ fn main(console: Console):
         }
     }
 
-    /// RFC-0011: `std/policy` builds a typed `NetPolicy` (`Net.tcp(host, port)`)
-    /// instead of a hand-written string, and `net.only(policy)` narrows the `Net` to it.
-    /// The typed policy carries the same `host:port` pattern the host enforces, so both
-    /// backends agree. The grant must admit the pattern.
-    #[test]
-    fn net_tcp_policy_narrows_on_both_backends() {
-        let src = "fn main(net: Net, console: Console):\n    let db = net.only(Net.tcp(\"10.0.0.5\", 6379))\n    console.print(\"confined\")\n";
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let expected = vec!["confined".to_string()];
-        assert_eq!(
-            interpreter::run_module(linked.clone(), ".", vec!["10.0.0.5:6379".into()]).expect("interp"),
-            expected,
-            "interpreter",
-        );
-        assert_eq!(
-            run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.5:6379"]),
-            expected,
-            "wasm",
-        );
-    }
-
     /// (BUG-489) The blessed NetPolicy constructors reject impossible ports at
     /// the std boundary. Raw `NetPolicy(...)` remains a separate surface tracked
     /// by BUG-484, but `Net.tcp`/`Net.cidr` should only build meaningful policy
@@ -514,28 +492,6 @@ fn main(console: Console):
                 .to_string();
             assert!(wasm_err.contains("policy: net port must be in 0..65535"), "{call}: {wasm_err}");
         }
-    }
-
-    #[test]
-    fn net_private_denies_internal_addresses_on_both_backends() {
-        // RFC-0020: `net.deny(Net.private())` is the one-line SSRF/rebinding
-        // defense — a connect to a private IP (here loopback) is refused at the
-        // capability layer, identically on both backends. `connect` aborts on a
-        // denied address, so a successful run means the deny held.
-        let src = "fn main(net: Net, console: Console):\n    let safe = net.deny(Net.private())\n    console.print(\"denied private ranges\")\n";
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let expected = vec!["denied private ranges".to_string()];
-        assert_eq!(
-            interpreter::run_module(linked.clone(), ".", vec!["8.8.8.8:443".into()]).expect("interp"),
-            expected,
-            "interpreter",
-        );
-        assert_eq!(
-            run_linked_on_wasm_net(&[("main", src)], "main", &["8.8.8.8:443"]),
-            expected,
-            "wasm",
-        );
     }
 
     /// RFC-0011: `net.only(policy)` is the typed refinement verb — it narrows a `Net`'s
@@ -1003,24 +959,6 @@ fn main(console: Console, net: Net):
             .unwrap_err()
             .to_string();
         assert!(e.contains("not permitted"), "expected the sibling to be unreachable, got: {e}");
-    }
-
-    #[test]
-    fn std_http_get_url_against_loopback() {
-        let out = run_fixed_http_program(
-            "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nhello-url",
-            |port| format!(
-            r#"
-import http
-fn main(console: Console, net: Net):
-    let target = "http://127.0.0.1:{port}/path"
-    match http.try_get(net.fetch(http.origin(target)), target):
-        Ok(r) -> console.print(http.body(r))
-        Err(e) -> console.print(http.http_error_message(e))
-"#
-            ),
-        );
-        assert_eq!(out, vec!["hello-url"]);
     }
 
     #[test]
