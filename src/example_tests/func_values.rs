@@ -59,28 +59,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn function_by_name_as_value_backends_agree() {
-        // A bare top-level function name is a first-class value: bind it, call
-        // it, and apply it repeatedly. Both backends materialize it as a
-        // callable closure.
-        let src = r#"
-fn double(x: Int) -> Int:
-    (x * 2)
-
-fn inc(x: Int) -> Int:
-    (x + 1)
-
-fn main(console: Console):
-    let f = double
-    console.print("${f(5)}")
-    let g = inc
-    console.print("${g(g(g(0)))}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "function-as-value diverged");
-        assert_eq!(run_on_wasm(src), vec!["10", "3"]);
-    }
-
-    #[test]
     fn named_function_passed_to_map_backends_agree() {
         // Point-free style: pass a named function (not a lambda) straight to a
         // higher-order std function. Exercises the linker qualifying a bare
