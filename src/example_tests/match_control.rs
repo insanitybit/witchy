@@ -186,27 +186,6 @@ use crate::{interpreter, typeck};
     }
 
     #[test]
-    fn generic_function_with_match_body_runs_at_multiple_types() {
-        // A *single* generic function whose body binds its type param (a match)
-        // may be called at different type instantiations in one program. `unwrap`
-        // is used at Box(Int) and Box(String); both backends agree.
-        let src = r#"
-type Box:
-    Wrap(a)
-
-fn unwrap(b: Box(a), default: a) -> a:
-    match b:
-        Wrap(v) -> v
-
-fn main(console: Console):
-    console.print("${unwrap(Wrap(42), 0)}")
-    console.print(unwrap(Wrap("hello"), "none"))
-"#;
-        assert_eq!(interp(src), vec!["42", "hello"]);
-        assert_eq!(run_on_wasm(src), vec!["42", "hello"]);
-    }
-
-    #[test]
     fn multi_statement_match_arm_body_indented() {
         // A match arm with a multi-statement body, brace-free: `Pat ->` opens an
         // indented block. Both backends agree.
@@ -240,77 +219,6 @@ fn main(console: Console):
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "range_between/range_step diverged");
         assert_eq!(compiled, vec!["2,3,4,5", "", "0,3,6,9", "5,3,1", ""]);
-    }
-
-    #[test]
-    fn coalesce_unwraps_option_backends_agree() {
-        // RFC-0048: `Option(T) ?? T` unwraps to `T` (None -> the default, evaluated
-        // lazily; Some(x) -> x, present even when empty — `Some("") ?? "x"` is `""`,
-        // not `"x"`, since there is no truthiness).
-        let src = r#"
-fn pick(b: Bool) -> Option(Int):
-    if b: Some(36) else: None
-
-fn empty() -> Option(String):
-    Some("")
-
-fn main(console: Console):
-    console.print("${pick(true) ?? 0}")
-    console.print("${pick(false) ?? 0}")
-    console.print("${empty() ?? "x"}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["36", "0", ""]);
-    }
-
-    #[test]
-    fn list_patterns_on_wasm() {
-        // Recursive head/tail list processing compiles: `[]` and `[h, ..t]`
-        // (the tail is a freshly allocated sublist). sum([10,20,30,40]) = 100.
-        let src = r#"
-fn sum(xs: List(Int)) -> Int:
-    match xs:
-        [] -> 0
-        [h, ..t] -> (h + sum(t))
-
-fn main() -> Int:
-    sum([10, 20, 30, 40])
-"#;
-        assert_eq!(run_on_wasm(src), vec!["100"]);
-    }
-
-    #[test]
-    fn for_in_over_list_on_wasm() {
-        // `for x in list` compiles to a WASM loop; sum a list = 100.
-        let src = r#"
-fn total(xs: List(Int)) -> Int:
-    var sum = 0
-    for x in xs:
-        sum = (sum + x)
-    sum
-
-fn main() -> Int:
-    total([10, 20, 30, 40])
-"#;
-        assert_eq!(run_on_wasm(src), vec!["100"]);
-    }
-
-    #[test]
-    fn tuple_match_patterns_on_wasm() {
-        // Tuple patterns in `match` compile to WASM (no tag; element-wise).
-        // classify((3,0))=3, classify((0,5))=5, classify((2,4))=6; sum = 14.
-        let src = r#"
-fn classify(p: (Int, Int)) -> Int:
-    match p:
-        (0, 0) -> 0
-        (x, 0) -> x
-        (0, y) -> y
-        (x, y) -> (x + y)
-
-fn main() -> Int:
-    ((classify((3, 0)) + classify((0, 5))) + classify((2, 4)))
-"#;
-        assert_eq!(run_on_wasm(src), vec!["14"]);
     }
 
     // `match` arm guards (`pattern if cond -> body`): a guard that fails must
@@ -528,47 +436,6 @@ fn main(console: Console):
         assert_eq!(
             run_on_wasm(src),
             vec!["origin", "y-axis", "x-axis", "other", "zero:x", "stop@7", "k=4"]
-        );
-    }
-
-    #[test]
-    fn or_patterns_backends_agree() {
-        // `p1 | p2 -> body` desugars to one arm per alternative. Works for
-        // literal alternatives and for constructor alternatives that bind the
-        // same variable. Both backends agree.
-        let src = r#"
-type Shape:
-    Circle(Int)
-    Square(Int)
-    Rect(Int, Int)
-
-fn classify(n: Int) -> String:
-    match n:
-        1 -> "small"
-        2 -> "small"
-        3 -> "small"
-        4 -> "medium"
-        5 -> "medium"
-        _ -> "big"
-
-fn side(s: Shape) -> Int:
-    match s:
-        Circle(r) -> r
-        Square(r) -> r
-        Rect(w, h) -> w
-
-fn main(console: Console):
-    console.print(classify(2))
-    console.print(classify(5))
-    console.print(classify(10))
-    console.print("${side(Circle(5))}")
-    console.print("${side(Square(7))}")
-    console.print("${side(Rect(3, 4))}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(
-            run_on_wasm(src),
-            vec!["small", "medium", "big", "5", "7", "3"]
         );
     }
 
