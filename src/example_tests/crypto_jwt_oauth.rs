@@ -23,6 +23,56 @@ use crate::{codegen, interpreter, parser, typeck};
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn hex_string(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sign_rs256(key: &aws_lc_rs::rsa::KeyPair, payload: &str) -> String {
+        let signed = format!(
+            "{}.{}",
+            b64url(br#"{"alg":"RS256","typ":"JWT"}"#),
+            b64url(payload.as_bytes())
+        );
+        let mut signature = vec![0u8; key.public_modulus_len()];
+        key.sign(
+            &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+            &aws_lc_rs::rand::SystemRandom::new(),
+            signed.as_bytes(),
+            &mut signature,
+        )
+        .expect("sign");
+        format!("{signed}.{}", b64url(&signature))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn der_two_ints(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        fn length(bytes: &[u8], index: &mut usize) -> usize {
+            let mut len = bytes[*index] as usize;
+            *index += 1;
+            if len & 0x80 != 0 {
+                let count = len & 0x7f;
+                len = 0;
+                for _ in 0..count {
+                    len = (len << 8) | bytes[*index] as usize;
+                    *index += 1;
+                }
+            }
+            len
+        }
+        fn integer(bytes: &[u8], index: &mut usize) -> Vec<u8> {
+            *index += 1;
+            let len = length(bytes, index);
+            let value = bytes[*index..*index + len].to_vec();
+            *index += len;
+            value
+        }
+        let mut index = 1;
+        let _ = length(der, &mut index);
+        (integer(der, &mut index), integer(der, &mut index))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn tls_server_fixture() -> (std::sync::Arc<rustls::ServerConfig>, String) {
         let certificate =
             rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
@@ -117,9 +167,8 @@ use crate::{codegen, interpreter, parser, typeck};
     fn rs256_native_roundtrip_verifies() {
         use witchy_runtime::value::NativeValue as NV;
         use aws_lc_rs::signature::KeyPair; // brings `public_key()` into scope
-        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
-        let pk_hex = hexs(kp.public_key().as_ref());
+        let pk_hex = hex_string(kp.public_key().as_ref());
         let msg = "hello rs256";
         let mut sig = vec![0u8; kp.public_modulus_len()];
         kp.sign(
@@ -129,7 +178,7 @@ use crate::{codegen, interpreter, parser, typeck};
             &mut sig,
         )
         .expect("sign");
-        let sig_hex = hexs(&sig);
+        let sig_hex = hex_string(&sig);
         // Reach the private intrinsic through the native registry; std/crypto maps
         // this status into the public Result API.
         let f = witchy_runtime::native::lookup("crypto.__rsa_pkcs1_sha256_verify_status")
@@ -152,24 +201,11 @@ use crate::{codegen, interpreter, parser, typeck};
     fn jwt_verify_rs256_backends_agree() {
         use aws_lc_rs::signature::KeyPair;
         // base64url, no padding — the JWT segment encoding.
-        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
-        let pk_hex = hexs(kp.public_key().as_ref());
-        let sign_jwt = |payload: &str| -> String {
-            let signed = format!("{}.{}", b64url(br#"{"alg":"RS256","typ":"JWT"}"#), b64url(payload.as_bytes()));
-            let mut sig = vec![0u8; kp.public_modulus_len()];
-            kp.sign(
-                &aws_lc_rs::signature::RSA_PKCS1_SHA256,
-                &aws_lc_rs::rand::SystemRandom::new(),
-                signed.as_bytes(),
-                &mut sig,
-            )
-            .expect("sign");
-            format!("{signed}.{}", b64url(&sig))
-        };
-        let good = sign_jwt(r#"{"aud":"coven","exp":9999,"sub":"octocat"}"#);
-        let expired = sign_jwt(r#"{"aud":"coven","exp":5,"sub":"octocat"}"#);
-        let wrong_aud = sign_jwt(r#"{"aud":"evil","exp":9999,"sub":"octocat"}"#);
+        let pk_hex = hex_string(kp.public_key().as_ref());
+        let good = sign_rs256(&kp, r#"{"aud":"coven","exp":9999,"sub":"octocat"}"#);
+        let expired = sign_rs256(&kp, r#"{"aud":"coven","exp":5,"sub":"octocat"}"#);
+        let wrong_aud = sign_rs256(&kp, r#"{"aud":"evil","exp":9999,"sub":"octocat"}"#);
         let tampered = {
             // Flip the FIRST char of the signature segment. base64url's last char of a
             // 256-byte RSA signature carries only 2 significant bits (4 are padding), so
@@ -210,39 +246,9 @@ use crate::{codegen, interpreter, parser, typeck};
     #[test]
     fn jwt_rsa_key_from_jwk_matches_aws_lc_der() {
         use aws_lc_rs::signature::KeyPair;
-        // Read the two INTEGER contents of a DER `SEQUENCE { INTEGER, INTEGER }`.
-        fn two_ints(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
-            fn len_at(b: &[u8], i: &mut usize) -> usize {
-                let mut len = b[*i] as usize;
-                *i += 1;
-                if len & 0x80 != 0 {
-                    let nbytes = len & 0x7f;
-                    len = 0;
-                    for _ in 0..nbytes {
-                        len = (len << 8) | b[*i] as usize;
-                        *i += 1;
-                    }
-                }
-                len
-            }
-            fn tlv(b: &[u8], i: &mut usize) -> Vec<u8> {
-                *i += 1; // tag
-                let len = len_at(b, i);
-                let v = b[*i..*i + len].to_vec();
-                *i += len;
-                v
-            }
-            let mut i = 0;
-            i += 1; // SEQUENCE tag
-            let _ = len_at(der, &mut i); // SEQUENCE length (then parse contents)
-            let n = tlv(der, &mut i);
-            let e = tlv(der, &mut i);
-            (n, e)
-        }
-        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
         let der = kp.public_key().as_ref();
-        let (n_int, e_int) = two_ints(der);
+        let (n_int, e_int) = der_two_ints(der);
         // The JWK carries the unsigned magnitude — drop the DER sign byte if present.
         let strip = |v: &[u8]| if v.first() == Some(&0) { v[1..].to_vec() } else { v.to_vec() };
         let n_b64 = b64url(&strip(&n_int));
@@ -250,7 +256,7 @@ use crate::{codegen, interpreter, parser, typeck};
         let src = format!(
             "import jwt\nfn main(console: Console):\n    console.print(jwt.rsa_key_from_jwk(\"{n_b64}\", \"{e_b64}\").unwrap_or(\"?\"))\n"
         );
-        let expected = vec![hexs(der)];
+        let expected = vec![hex_string(der)];
         assert_eq!(link_run(&src), expected, "interp: JWK->DER byte-exact vs aws-lc");
         assert_eq!(run_linked_on_wasm(&[("main", src.as_str())], "main"), expected, "wasm");
     }
@@ -264,38 +270,31 @@ use crate::{codegen, interpreter, parser, typeck};
     #[test]
     fn jwt_verify_oidc_binds_issuer_backends_agree() {
         use aws_lc_rs::signature::KeyPair;
-        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
-        let pk_hex = hexs(kp.public_key().as_ref());
-        let sign_jwt = |payload: &str| -> String {
-            let signed = format!("{}.{}", b64url(br#"{"alg":"RS256","typ":"JWT"}"#), b64url(payload.as_bytes()));
-            let mut sig = vec![0u8; kp.public_modulus_len()];
-            kp.sign(
-                &aws_lc_rs::signature::RSA_PKCS1_SHA256,
-                &aws_lc_rs::rand::SystemRandom::new(),
-                signed.as_bytes(),
-                &mut sig,
-            )
-            .expect("sign");
-            format!("{signed}.{}", b64url(&sig))
-        };
+        let pk_hex = hex_string(kp.public_key().as_ref());
         let gh = "https://token.actions.githubusercontent.com";
-        let token = sign_jwt(
+        let token = sign_rs256(
+            &kp,
             r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","sub":"repo:octo/witchy:ref:refs/heads/main","repository":"octo/witchy","nbf":0,"iat":900,"exp":1200}"#,
         );
-        let future = sign_jwt(
+        let future = sign_rs256(
+            &kp,
             r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","nbf":5000,"iat":900,"exp":5200}"#,
         );
-        let long_lived = sign_jwt(
+        let long_lived = sign_rs256(
+            &kp,
             r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","iat":1000,"exp":1601}"#,
         );
-        let missing_iat = sign_jwt(
+        let missing_iat = sign_rs256(
+            &kp,
             r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","exp":1200}"#,
         );
-        let future_iat = sign_jwt(
+        let future_iat = sign_rs256(
+            &kp,
             r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","iat":1061,"exp":1200}"#,
         );
-        let skew_boundary = sign_jwt(
+        let skew_boundary = sign_rs256(
+            &kp,
             r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","iat":1060,"exp":1200}"#,
         );
         // (token, issuer-to-trust) -> printed line. now = 1000, audience "coven".
@@ -359,30 +358,17 @@ fn main(console: Console):
     #[test]
     fn jwt_verify_oidc_enforces_azp_for_multi_audience_backends_agree() {
         use aws_lc_rs::signature::KeyPair;
-        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
-        let pk_hex = hexs(kp.public_key().as_ref());
-        let sign_jwt = |payload: &str| -> String {
-            let signed = format!("{}.{}", b64url(br#"{"alg":"RS256","typ":"JWT"}"#), b64url(payload.as_bytes()));
-            let mut sig = vec![0u8; kp.public_modulus_len()];
-            kp.sign(
-                &aws_lc_rs::signature::RSA_PKCS1_SHA256,
-                &aws_lc_rs::rand::SystemRandom::new(),
-                signed.as_bytes(),
-                &mut sig,
-            )
-            .expect("sign");
-            format!("{signed}.{}", b64url(&sig))
-        };
+        let pk_hex = hex_string(kp.public_key().as_ref());
         let iss = "https://accounts.google.com";
         // Single audience "myclient" — no azp required.
-        let single = sign_jwt(r#"{"iss":"https://accounts.google.com","aud":"myclient","sub":"u1","nbf":0,"exp":9999}"#);
+        let single = sign_rs256(&kp, r#"{"iss":"https://accounts.google.com","aud":"myclient","sub":"u1","nbf":0,"exp":9999}"#);
         // Multi-audience including us, azp == us: admitted.
-        let multi_ok = sign_jwt(r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"azp":"myclient","sub":"u2","nbf":0,"exp":9999}"#);
+        let multi_ok = sign_rs256(&kp, r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"azp":"myclient","sub":"u2","nbf":0,"exp":9999}"#);
         // Multi-audience including us, but azp names a CO-AUDIENCE: rejected.
-        let multi_wrong = sign_jwt(r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"azp":"other","sub":"u3","nbf":0,"exp":9999}"#);
+        let multi_wrong = sign_rs256(&kp, r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"azp":"other","sub":"u3","nbf":0,"exp":9999}"#);
         // Multi-audience including us, azp ABSENT: rejected.
-        let multi_missing = sign_jwt(r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"sub":"u4","nbf":0,"exp":9999}"#);
+        let multi_missing = sign_rs256(&kp, r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"sub":"u4","nbf":0,"exp":9999}"#);
         // audience = "myclient", now = 1000.
         let run = |tok: &str| -> Vec<String> {
             let src = format!(
@@ -411,34 +397,8 @@ fn main(console: Console):
     #[test]
     fn jwt_verify_oidc_via_jwks_backends_agree() {
         use aws_lc_rs::signature::KeyPair;
-        fn two_ints(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
-            fn len_at(b: &[u8], i: &mut usize) -> usize {
-                let mut len = b[*i] as usize;
-                *i += 1;
-                if len & 0x80 != 0 {
-                    let nbytes = len & 0x7f;
-                    len = 0;
-                    for _ in 0..nbytes {
-                        len = (len << 8) | b[*i] as usize;
-                        *i += 1;
-                    }
-                }
-                len
-            }
-            fn tlv(b: &[u8], i: &mut usize) -> Vec<u8> {
-                *i += 1;
-                let len = len_at(b, i);
-                let v = b[*i..*i + len].to_vec();
-                *i += len;
-                v
-            }
-            let mut i = 0;
-            i += 1;
-            let _ = len_at(der, &mut i);
-            (tlv(der, &mut i), tlv(der, &mut i))
-        }
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
-        let (n_int, e_int) = two_ints(kp.public_key().as_ref());
+        let (n_int, e_int) = der_two_ints(kp.public_key().as_ref());
         let strip = |v: &[u8]| if v.first() == Some(&0) { v[1..].to_vec() } else { v.to_vec() };
         let jwks = format!(
             r#"{{"keys":[{{"kty":"RSA","kid":"google-key-1","n":"{}","e":"{}"}}]}}"#,
