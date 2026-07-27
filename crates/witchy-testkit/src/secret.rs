@@ -6,6 +6,7 @@ use crate::{
     FixtureCall, FixtureErrorCode, FixtureFailure, FixtureFamily, FixtureHandle, FixtureOutcome,
     FixturePlan, FixtureSession, FixtureValue, SecretUsage, SourceLocation,
 };
+use crate::hex::decode as decode_hex;
 
 pub type SecretProviderResult<T> = Result<T, FixtureFailure>;
 
@@ -318,23 +319,6 @@ fn marker(
             FixtureErrorCode::InvalidData,
             format!("{operation} returned an invalid {expected} marker"),
         )),
-    }
-}
-
-fn decode_hex(value: &str) -> Vec<u8> {
-    value
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|pair| (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]))
-        .collect()
-}
-
-const fn hex_nibble(value: u8) -> u8 {
-    match value {
-        b'0'..=b'9' => value - b'0',
-        b'a'..=b'f' => value - b'a' + 10,
-        b'A'..=b'F' => value - b'A' + 10,
-        _ => 0,
     }
 }
 

@@ -6,6 +6,7 @@ use crate::{
     FilesystemEntry, FixtureCall, FixtureErrorCode, FixtureFailure, FixtureFamily, FixtureHandle,
     FixtureOutcome, FixturePlan, FixtureSession, FixtureValue, SourceLocation,
 };
+use crate::hex::{decode as decode_hex, encode as encode_hex};
 
 pub type FilesystemProviderResult<T> = Result<T, FixtureFailure>;
 
@@ -727,33 +728,6 @@ fn add_parent_directories(nodes: &mut BTreeMap<String, Node>, path: &str) {
             .or_insert(Node::Directory);
         offset += 1;
     }
-}
-
-fn decode_hex(value: &str) -> Vec<u8> {
-    value
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|pair| (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]))
-        .collect()
-}
-
-const fn hex_nibble(value: u8) -> u8 {
-    match value {
-        b'0'..=b'9' => value - b'0',
-        b'a'..=b'f' => value - b'a' + 10,
-        b'A'..=b'F' => value - b'A' + 10,
-        _ => 0,
-    }
-}
-
-fn encode_hex(value: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(value.len().saturating_mul(2));
-    for byte in value {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
 }
 
 fn outcome_marker(

@@ -11,6 +11,7 @@ mod engine;
 mod exec;
 mod filesystem;
 mod fetch;
+mod hex;
 mod json;
 mod model;
 mod secret;
