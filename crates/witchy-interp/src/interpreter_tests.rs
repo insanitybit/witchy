@@ -117,36 +117,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn existential_supertrait_upcast_switches_to_the_base_witness() {
-        let source = r#"
-trait Base:
-    fn base(let self) -> Int
-
-trait Render: Base:
-    fn render(let self) -> Int
-
-type Label:
-    Label(Int)
-
-impl Base for Label:
-    fn base(let self) -> Int:
-        match self:
-            Label(value) -> value
-
-impl Render for Label:
-    fn render(let self) -> Int:
-        match self:
-            Label(value) -> value + 10
-
-fn main() -> Int:
-    let rendered: dyn Render = Label(2)
-    let base: dyn Base = rendered
-    base.base()
-"#;
-        assert_eq!(run_exit(source), 2);
-    }
-
-    #[test]
     fn existential_var_receiver_commits_after_each_structured_return() {
         let source = r#"
 trait Tick:

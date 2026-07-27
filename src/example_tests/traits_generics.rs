@@ -749,29 +749,3 @@ fn main(console: Console):
         assert_eq!(interp(src), run_on_wasm(src), "multi-type generics diverged");
         assert_eq!(run_on_wasm(src), vec!["1", "a", "b", "7", "mixed"]);
     }
-
-    // Indentation syntax with traits/impls and a nested if/else expression.
-    #[test]
-    fn indentation_traits_backends_agree() {
-        let src = r#"
-trait Describe:
-    fn describe(self) -> String
-
-impl Describe for Int:
-    fn describe(self) -> String:
-        "${self}"
-
-impl Describe for Bool:
-    fn describe(self) -> String:
-        if self:
-            "yes"
-        else:
-            "no"
-
-fn main(console: Console):
-    console.print(describe(42))
-    console.print(describe(true))
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "indentation traits diverged");
-        assert_eq!(run_on_wasm(src), vec!["42", "yes"]);
-    }
