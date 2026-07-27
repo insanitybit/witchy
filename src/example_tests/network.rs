@@ -580,15 +580,20 @@ fn main(console: Console):
     #[test]
     fn std_http_client_runs_in_the_wasm_backend() {
         use crate::runtime::{Capabilities, Runtime};
-        use std::io::{BufRead, Write};
+        use std::io::{BufRead, Read, Write};
         let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = server.local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
-        // One request per backend run: consume the request head, reply 200.
+        // Each backend run makes one GET and one POST. Keep both endpoint
+        // contracts in this cross-backend authority so request-body handling
+        // cannot drift into an interpreter-only smoke.
         let handle = std::thread::spawn(move || {
-            for _ in 0..2 {
+            for _ in 0..4 {
                 let (stream, _) = server.accept().expect("accept");
                 let mut reader = std::io::BufReader::new(stream);
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).expect("read request line");
+                let mut content_length = 0;
                 let mut line = String::new();
                 loop {
                     line.clear();
@@ -596,18 +601,34 @@ fn main(console: Console):
                     if line == "\r\n" || line == "\n" || line.is_empty() {
                         break;
                     }
+                    if let Some(value) = line.strip_prefix("Content-Length:") {
+                        content_length = value.trim().parse().expect("content length");
+                    }
                 }
+                let mut body = vec![0; content_length];
+                if content_length > 0 {
+                    reader.read_exact(&mut body).expect("read request body");
+                }
+                let response_body = if request_line.starts_with("POST ") {
+                    String::from_utf8(body).expect("POST body is utf8")
+                } else {
+                    "hello".to_owned()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{}",
+                    response_body.len(), response_body
+                );
                 reader
                     .get_mut()
-                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello")
+                    .write_all(response.as_bytes())
                     .expect("write");
             }
         });
 
         let src = format!(
-            "import http\nfn main(console: Console, net: Net):\n    let target = \"http://127.0.0.1:{port}/greet\"\n    let res = http.get(net.fetch(http.origin(target)), target)\n    console.print(f\"{{http.status(res)}} {{http.body(res)}}\")\n"
+            "import http\nfn main(console: Console, net: Net):\n    let target = \"http://127.0.0.1:{port}/greet\"\n    let res = http.get(net.fetch(http.origin(target)), target)\n    console.print(f\"{{http.status(res)}} {{http.body(res)}}\")\n    let echoed = http.post(net.fetch(http.origin(target)), target, \"hello body\")\n    console.print(f\"{{http.status(echoed)}} {{http.body(echoed)}}\")\n"
         );
-        let want = vec!["200 hello".to_string()];
+        let want = vec!["200 hello".to_string(), "200 hello body".to_string()];
         let module = parser::parse_module(&src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -979,68 +1000,6 @@ fn main(console: Console, net: Net):
             ),
         );
         assert_eq!(out, vec!["rejected".to_string()]);
-    }
-
-    #[test]
-    fn std_http_post_against_loopback() {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = match listener.accept() {
-                Ok(x) => x,
-                Err(_) => return,
-            };
-            // Read the full request: headers, then Content-Length body bytes.
-            let mut data: Vec<u8> = Vec::new();
-            let mut tmp = [0u8; 1024];
-            loop {
-                let text = String::from_utf8_lossy(&data).into_owned();
-                if let Some(hdr_end) = text.find("\r\n\r\n") {
-                    let clen: usize = text[..hdr_end]
-                        .lines()
-                        .find_map(|l| l.strip_prefix("Content-Length: "))
-                        .and_then(|v| v.trim().parse().ok())
-                        .unwrap_or(0);
-                    if data.len() >= hdr_end + 4 + clen {
-                        break;
-                    }
-                }
-                match stream.read(&mut tmp) {
-                    Ok(0) => break,
-                    Ok(k) => data.extend_from_slice(&tmp[..k]),
-                    Err(_) => break,
-                }
-            }
-            let text = String::from_utf8_lossy(&data);
-            let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(resp.as_bytes());
-        });
-        let program = format!(
-            r#"
-import http
-fn main(console: Console, net: Net):
-    let target = "http://127.0.0.1:{port}/echo"
-    let r = http.post(net.fetch(http.origin(target)), target, "hello body")
-    console.print("${{http.status(r)}}")
-    console.print(http.body(r))
-"#
-        );
-        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
-        let linked = crate::pipeline::link(mods, "main").expect("link");
-        let out = interpreter::run_module(
-            linked,
-            std::path::Path::new("."),
-            vec![format!("127.0.0.1:{port}")],
-        )
-        .expect("run");
-        server.join().ok();
-        assert_eq!(out, vec!["200".to_string(), "hello body".to_string()]);
     }
 
     #[test]
