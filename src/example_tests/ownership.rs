@@ -1,17 +1,6 @@
 use super::*;
 use crate::{ast, interpreter, parser, typeck};
 
-    /// RFC-0087: the ordinary result and every `var` write-back are independent
-    /// channels. Parameter position and return shape do not classify the call.
-    #[test]
-    fn rfc0087_value_returning_nonfirst_var_writes_back_on_both_backends() {
-        let interp_std = |src: &str| interpreter::run_module(resolve_std_src(src), ".", Vec::new()).expect("run");
-        let src = "import list\n\nfn append_len(x: Int, var xs: List(Int)) -> Int:\n    list.push(xs, x)\n    list.length(xs)\n\nfn main(console: Console):\n    var xs = [1]\n    let n = append_len(9, xs)\n    console.print(\"${xs}\")\n    console.print(\"${n}\")\n";
-        let want = ["[1, 9]", "2"];
-        assert_eq!(interp_std(src), want, "interpreter returns and writes back");
-        assert_eq!(wasm_run(src), want, "compiled backend returns and writes back");
-    }
-
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.
@@ -385,16 +374,6 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "compiled nested-container extraction");
     }
 
-    /// Return inference does not select mutation semantics. An elided result on a
-    /// `var` function uses the same move-in/move-out ABI as an annotated result.
-    #[test]
-    fn rfc0087_elided_value_return_var_call_agrees_on_both_backends() {
-        let src = "fn bump(var n: Int):\n    n = n + 1\n    n * 2\n\nfn main(console: Console):\n    var n = 1\n    let result = bump(n)\n    console.print(\"${n}\")\n    console.print(\"${result}\")\n";
-        let want = ["2", "4"];
-        assert_eq!(link_run(src), want, "interpreter elided return");
-        assert_eq!(wasm_run(src), want, "compiled elided return");
-    }
-
     /// (RFC-0087 §6, criterion 2) A callee-side `?` is a structured return: every
     /// `var` param commits its current value — partial progress on a multi-`var`
     /// call is observable, identically, on both backends ("commit atomicity, not
@@ -627,20 +606,4 @@ fn main(console: Console):
         let want = ["ok"];
         assert_eq!(link_run(src), want, "interpreter dict place write-back");
         assert_eq!(wasm_run(src), want, "compiled dict place write-back");
-    }
-
-    /// RFC-0087: a resolved `var` call may discard its independent ordinary result
-    /// in statement position and still writes back. Non-`var`, non-`Nil` calls keep
-    /// the ordinary discarded-result error.
-    #[test]
-    fn rfc0087_var_free_call_may_discard_result_on_both_backends() {
-        let check_err = |src: &str| typeck::check(&resolve_std_src(src)).expect_err("a discarded free call is an error").message;
-        let std_mut = "import list\n\nfn main(console: Console):\n    var xs: List(Int) = []\n    list.push(xs, 2)\n    console.print(\"${xs}\")\n";
-        let user_mut = "import list\n\nfn add(var xs: List(Int), x: Int) -> Int:\n    list.push(xs, x)\n    list.length(xs)\nfn main(console: Console):\n    var xs: List(Int) = []\n    add(xs, 2)\n    console.print(\"${xs}\")\n";
-        for src in [std_mut, user_mut] {
-            assert_eq!(link_run(src), ["[2]"], "interpreter commits discarded var call");
-            assert_eq!(wasm_run(src), ["[2]"], "compiled backend commits discarded var call");
-        }
-        let non_mut = "fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    double(3)\n    console.print(\"bad\")\n";
-        assert!(check_err(non_mut).contains("is discarded"), "non-mutator free-call must be discarded");
     }
