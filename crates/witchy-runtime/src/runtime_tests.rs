@@ -618,19 +618,7 @@ fn compiled_basic_fixtures_use_one_shared_host_and_transcript() {
         version: 1,
         console: Some(ConsoleFixture {
             script: vec![
-                FixtureStep {
-                    operation: "print".to_owned(),
-                    target: None,
-                    arguments: std::collections::BTreeMap::from([(
-                        "text".to_owned(),
-                        FixtureValue::String("hello".to_owned()),
-                    )]),
-                    effective_rights: Some(vec!["Write".to_owned()]),
-                    outcome: FixtureOutcome::Return {
-                        value: FixtureValue::Null,
-                    },
-                    required: true,
-                },
+                console_output_step("hello"),
                 FixtureStep {
                     operation: "console_read_len".to_owned(),
                     target: None,
@@ -831,32 +819,8 @@ fn compiled_fetch_fixture_stages_success_and_provider_failures_without_network()
         version: 1,
         console: Some(ConsoleFixture {
             script: vec![
-                FixtureStep {
-                    operation: "print".to_owned(),
-                    target: None,
-                    arguments: std::collections::BTreeMap::from([(
-                        "text".to_owned(),
-                        FixtureValue::String(RESPONSE.to_owned()),
-                    )]),
-                    effective_rights: Some(vec!["Write".to_owned()]),
-                    outcome: FixtureOutcome::Return {
-                        value: FixtureValue::Null,
-                    },
-                    required: true,
-                },
-                FixtureStep {
-                    operation: "print".to_owned(),
-                    target: None,
-                    arguments: std::collections::BTreeMap::from([(
-                        "text".to_owned(),
-                        FixtureValue::String(TIMEOUT.to_owned()),
-                    )]),
-                    effective_rights: Some(vec!["Write".to_owned()]),
-                    outcome: FixtureOutcome::Return {
-                        value: FixtureValue::Null,
-                    },
-                    required: true,
-                },
+                console_output_step(RESPONSE),
+                console_output_step(TIMEOUT),
             ],
         }),
         fetch: Some(FetchFixture {
@@ -978,26 +942,13 @@ fn compiled_secret_fixture_keeps_material_opaque_and_scripts_crypto() {
             i32.const 6
             call $print))
     "#;
-    let console_step = |text: &str| FixtureStep {
-        operation: "print".to_owned(),
-        target: None,
-        arguments: std::collections::BTreeMap::from([(
-            "text".to_owned(),
-            FixtureValue::String(text.to_owned()),
-        )]),
-        effective_rights: Some(vec!["Write".to_owned()]),
-        outcome: FixtureOutcome::Return {
-            value: FixtureValue::Null,
-        },
-        required: true,
-    };
     let plan = FixturePlan {
         version: 1,
         console: Some(ConsoleFixture {
             script: vec![
-                console_step("top-secret"),
-                console_step("signature"),
-                console_step("public"),
+                console_output_step("top-secret"),
+                console_output_step("signature"),
+                console_output_step("public"),
             ],
         }),
         secrets: Some(SecretStoreFixture {
@@ -1146,19 +1097,7 @@ fn compiled_exec_fixture_uses_allowlisted_script_without_spawning() {
     let plan = FixturePlan {
         version: 1,
         console: Some(ConsoleFixture {
-            script: vec![FixtureStep {
-                operation: "print".to_owned(),
-                target: None,
-                arguments: std::collections::BTreeMap::from([(
-                    "text".to_owned(),
-                    FixtureValue::String(PAYLOAD.to_owned()),
-                )]),
-                effective_rights: Some(vec!["Write".to_owned()]),
-                outcome: FixtureOutcome::Return {
-                    value: FixtureValue::Null,
-                },
-                required: true,
-            }],
+            script: vec![console_output_step(PAYLOAD)],
         }),
         filesystem: Some(FilesystemFixture {
             entries: std::collections::BTreeMap::from([(
@@ -1222,5 +1161,24 @@ fn compiled_exec_fixture_uses_allowlisted_script_without_spawning() {
             (FixtureFamily::Console, "print"),
         ]
     );
+}
+
+#[cfg(feature = "test-fixtures")]
+fn console_output_step(text: &str) -> witchy_testkit::FixtureStep {
+    use witchy_testkit::{FixtureOutcome, FixtureStep, FixtureValue};
+
+    FixtureStep {
+        operation: "print".to_owned(),
+        target: None,
+        arguments: std::collections::BTreeMap::from([(
+            "text".to_owned(),
+            FixtureValue::String(text.to_owned()),
+        )]),
+        effective_rights: Some(vec!["Write".to_owned()]),
+        outcome: FixtureOutcome::Return {
+            value: FixtureValue::Null,
+        },
+        required: true,
+    }
 }
 use std::path::PathBuf;
