@@ -70,21 +70,26 @@ fn resolver_rejects_whitespace_padded_registry_versions() {
 /// registry root key without contacting the registry.
 #[test]
 fn vendored_rune_reverifies_offline_against_the_root_key() {
-    let server = RegistryServer::start();
-    let fe = FrontEnd::new(&server, "pin");
-    let app = fe.new_app();
-    fe.published_lib("acme/yankee", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
-    let out = fe.pm(&app, &["add", "acme/yankee"], None);
-    assert!(out.status.success(), "add failed: {}", stderr(&out));
+    let (app, rootpub) = {
+        let server = RegistryServer::start();
+        let fe = FrontEnd::new(&server, "pin");
+        let app = fe.new_app();
+        fe.published_lib("acme/yankee", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+        let out = fe.pm(&app, &["add", "acme/yankee"], None);
+        assert!(out.status.success(), "add failed: {}", stderr(&out));
+        std::fs::write(
+            app.join("src/app.witchy"),
+            "import yankee\n\nfn main(console: Console):\n    console.print(yankee.f(\"vend\"))\n",
+        )
+        .unwrap();
+        let rootpub = server.rootpub();
+        // Keep the vendored fixture after the front-end and registry are dropped.
+        std::mem::forget(fe);
+        (app, rootpub)
+    };
 
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
     assert!(lock.contains("hash = \"sha256:"), "lock must pin the content hash: {lock}");
-
-    // Offline re-verification against the registry root key (signature + content).
-    let rootpub = server.rootpub();
-    let out = fe.pm(&app, &["verify-rune", "vendor/yankee", &rootpub], None);
-    assert!(out.status.success(), "verify-rune failed: {}\n{}", stderr(&out), stdout(&out));
-    assert!(stdout(&out).contains("verified"), "verify-rune: {}", stdout(&out));
 
     let offline = |args: &[&str]| {
         let mut full = vec!["pm"];
@@ -96,30 +101,36 @@ fn vendored_rune_reverifies_offline_against_the_root_key() {
             .output()
             .expect("run offline pm command")
     };
-    let out = offline(&["verify"]);
-    assert!(out.status.success(), "offline verify failed: {}\n{}", stderr(&out), stdout(&out));
-    assert!(stdout(&out).contains("every locked hash matches"), "verify: {}", stdout(&out));
-    let out = offline(&["build", "."]);
-    assert!(out.status.success(), "offline build failed: {}\n{}", stderr(&out), stdout(&out));
-    let out = offline(&["run", "."]);
-    assert!(out.status.success(), "offline run failed: {}\n{}", stderr(&out), stdout(&out));
+
+    // The registry is gone: all consumption uses only the vendored source,
+    // signed record, lock coordinate, and copied root key.
+    let out = offline(&["verify-rune", "vendor/yankee", &rootpub]);
+    assert!(out.status.success(), "verify-rune failed: {}\n{}", stderr(&out), stdout(&out));
+    assert!(stdout(&out).contains("verified"), "verify-rune: {}", stdout(&out));
+    for (args, expected) in [
+        (&["verify"][..], Some("every locked hash matches")),
+        (&["build", "."][..], None),
+        (&["run", "."][..], Some("vend")),
+    ] {
+        let out = offline(args);
+        assert!(out.status.success(), "offline {args:?} failed: {}\n{}", stderr(&out), stdout(&out));
+        if let Some(expected) = expected {
+            assert!(stdout(&out).contains(expected), "{args:?}: {}", stdout(&out));
+        }
+    }
 
     // Tampering the vendored source breaks the content check.
     let source_path = app.join("vendor/yankee/src/yankee.witchy");
     let original_source = std::fs::read_to_string(&source_path).unwrap();
     std::fs::write(&source_path, "pub fn f(s: String) -> String:\n    \"evil\"\n").unwrap();
-    let out = fe.pm(&app, &["verify-rune", "vendor/yankee", &rootpub], None);
+    let out = offline(&["verify-rune", "vendor/yankee", &rootpub]);
     assert!(!out.status.success(), "tampered source must fail re-verification");
     assert!(stdout(&out).contains("BLOCK"), "verify-rune: {}", stdout(&out));
-    let out = offline(&["verify"]);
-    assert!(!out.status.success(), "tampered source must fail offline verify");
-    assert!(stdout(&out).contains("source no longer matches"), "verify: {}", stdout(&out));
-    let out = offline(&["build", "."]);
-    assert!(!out.status.success(), "tampered source must fail before build");
-    assert!(stdout(&out).contains("source no longer matches"), "build: {}", stdout(&out));
-    let out = offline(&["run", "."]);
-    assert!(!out.status.success(), "tampered source must fail before run");
-    assert!(stdout(&out).contains("source no longer matches"), "run: {}", stdout(&out));
+    for args in [&["verify"][..], &["build", "."][..], &["run", "."][..]] {
+        let out = offline(args);
+        assert!(!out.status.success(), "tampered source must fail {args:?}");
+        assert!(stdout(&out).contains("source no longer matches"), "{args:?}: {}", stdout(&out));
+    }
 
     // A source-preserving signature edit must also fail before the compiler runs.
     std::fs::write(&source_path, original_source).unwrap();
@@ -177,6 +188,7 @@ fn vendored_rune_reverifies_offline_against_the_root_key() {
     let out = offline(&["verify"]);
     assert!(!out.status.success(), "missing locked vendor must fail verify");
     assert!(stdout(&out).contains("locked registry dependency vendor/yankee is missing"), "verify: {}", stdout(&out));
+    let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 
 /// A dependency whose module shadows the standard library (a rune named
@@ -232,43 +244,6 @@ fn module_name_collision_between_deps_is_caught() {
     );
     // Only the first rune's source is vendored; the colliding one was refused.
     assert!(app.join("vendor/util/src/util.witchy").exists(), "first dep must vendor");
-}
-
-/// `pm add` vendors the dependency source INTO the project, so build/run are
-/// offline by construction: once a rune is vendored under `vendor/` and pinned in
-/// `witchy.lock`, the registry is no longer consulted. We prove it by dropping the
-/// whole server after the add and running the consumer — it builds straight from
-/// the committed vendor tree (the front-end's offline store IS the vendor dir).
-#[test]
-fn vendored_sources_build_with_no_registry() {
-    let app = {
-        let server = RegistryServer::start();
-        let fe = FrontEnd::new(&server, "offline");
-        let app = fe.new_app();
-        fe.published_lib("acme/lib", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
-        let out = fe.pm(&app, &["add", "acme/lib"], None);
-        assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
-        std::fs::write(
-            app.join("src/app.witchy"),
-            "import lib\n\nfn main(console: Console):\n    console.print(lib.f(\"vend\"))\n",
-        )
-        .unwrap();
-        assert!(app.join("vendor/lib/src/lib.witchy").exists(), "the dep source must be vendored");
-        // Leak the FrontEnd's base so the vendored tree survives the server drop.
-        std::mem::forget(fe);
-        app
-        // `server` (and its child process) is dropped here — the registry is gone.
-    };
-
-    // With NO registry running, the run is offline, served from the vendor tree.
-    let out = Command::new(BIN)
-        .current_dir(&app)
-        .args(["pm", "run", "."])
-        .output()
-        .expect("spawn witchy pm run");
-    assert!(out.status.success(), "offline run failed: {}\n{}", stderr(&out), stdout(&out));
-    assert!(stdout(&out).contains("vend"), "got: {}", stdout(&out));
-    let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 
 /// `pm outdated <dir> <host:port>` reports, for each registry dependency the
