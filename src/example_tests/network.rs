@@ -1,13 +1,19 @@
 use super::*;
 use crate::{codegen, interpreter, parser, typeck};
 
-    fn fixed_http_server(response: &'static str) -> (u16, std::thread::JoinHandle<()>) {
+    fn fixed_http_server(
+        response: &'static str,
+        requests: usize,
+    ) -> (u16, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("local address").port();
         let server = std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
+            for _ in 0..requests {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
                 let mut request = Vec::new();
                 let mut chunk = [0u8; 256];
                 while let Ok(read) = stream.read(&mut chunk) {
@@ -29,7 +35,7 @@ use crate::{codegen, interpreter, parser, typeck};
         response: &'static str,
         build: impl FnOnce(u16) -> String,
     ) -> Vec<String> {
-        let (port, server) = fixed_http_server(response);
+        let (port, server) = fixed_http_server(response, 1);
         let program = build(port);
         let module = parser::parse_module(&program).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -645,29 +651,12 @@ fn main(console: Console):
     #[test]
     fn fetch_capability_raw_abi_agrees_across_backends() {
         use crate::runtime::{Capabilities, Runtime};
-        use std::io::{Read, Write};
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let origin = format!("http://{}", listener.local_addr().expect("address"));
-        let server = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().expect("accept");
-                let mut request = Vec::new();
-                let mut buf = [0u8; 512];
-                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    let read = stream.read(&mut buf).expect("read request");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buf[..read]);
-                }
-                stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\nconnection: close\r\n\r\nfetch works",
-                    )
-                    .expect("write response");
-            }
-        });
+        let (port, server) = fixed_http_server(
+            "HTTP/1.1 200 OK\r\ncontent-length: 11\r\nconnection: close\r\n\r\nfetch works",
+            2,
+        );
+        let origin = format!("http://127.0.0.1:{port}");
 
         let src = format!(
             "fn main(console: Console, fetch: Fetch):\n    let narrowed = fetch.only(\"{origin}\")\n    let response = narrowed.send_raw(\"GET\", \"{origin}/hello\", \"\", \"\")\n    console.print(response)\n"
@@ -708,30 +697,13 @@ fn main(console: Console):
     #[test]
     fn fetch_derived_from_net_compiles_without_a_fetch_root_grant() {
         use crate::runtime::{Capabilities, Runtime};
-        use std::io::{Read, Write};
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let address = listener.local_addr().expect("address");
+        let (port, server) = fixed_http_server(
+            "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nderived",
+            2,
+        );
+        let address = format!("127.0.0.1:{port}");
         let origin = format!("http://{address}");
-        let server = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().expect("accept");
-                let mut request = Vec::new();
-                let mut chunk = [0_u8; 1024];
-                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    let read = stream.read(&mut chunk).expect("read");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&chunk[..read]);
-                }
-                stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nderived",
-                    )
-                    .expect("write");
-            }
-        });
         let source = format!(
             "fn main(console: Console, net: Net[Connect, Tcp]):\n    \
              let fetch = net.fetch(\"{origin}\")\n    \
