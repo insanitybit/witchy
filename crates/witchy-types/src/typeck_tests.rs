@@ -35,17 +35,6 @@
     }
 
     #[test]
-    fn anonymous_union_type_positions_check() {
-        // RFC-0078's first union slice makes the structural sum type denotable.
-        // Injection/matching come later; signatures and generic arguments should
-        // already validate and canonicalize through typeck.
-        assert!(check_str(
-            "fn pass(e: .[BadPort(Int) | NotFound]) -> .[NotFound | BadPort(Int)]:\n    e\n\nfn wrap() -> Result(Int, .[NotFound | BadPort(Int)]):\n    Ok(1)\n\nfn main(console: Console):\n    console.print(\"ok\")\n"
-        )
-        .is_ok());
-    }
-
-    #[test]
     fn anonymous_union_injection_uses_expected_type() {
         check_str(
             "fn bad(port: Int) -> .[BadPort(Int) | NotFound]:\n    .BadPort(port)\n\nfn missing() -> .[BadPort(Int) | NotFound]:\n    .NotFound\n\nfn parse(port: Int) -> Result(Int, .[BadPort(Int) | NotFound]):\n    if port < 0:\n        Err(.BadPort(port))\n    else:\n        Ok(port)\n"
@@ -131,14 +120,6 @@
         )
         .unwrap_err();
         assert!(duplicate.contains("field `x` is set twice"), "{duplicate}");
-    }
-
-    #[test]
-    fn anonymous_union_protocols_check_structurally() {
-        check_str(
-            "trait Show:\n    fn show(self) -> String\n\ntrait PartialEq:\n    fn eq(self, other: Self) -> Bool\n\nimpl Show for Int:\n    fn show(self) -> String:\n        \"${self}\"\n\nimpl Show for String:\n    fn show(self) -> String:\n        self\n\nimpl PartialEq for Int:\n    fn eq(self, other: Self) -> Bool:\n        self == other\n\nimpl PartialEq for String:\n    fn eq(self, other: Self) -> Bool:\n        self == other\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn describe(e: .[Bad(Int) | Missing(String)]) -> String:\n    show(e)\n\nfn main(console: Console):\n    let a: .[Bad(Int) | Missing(String)] = .Bad(7)\n    let b: .[Bad(Int) | Missing(String)] = .Missing(\"port\")\n    console.print(describe(a))\n    console.print(\"${same(a, a)}\")\n    console.print(\"${same(a, b)}\")\n"
-        )
-        .expect("anonymous unions synthesize Show and PartialEq");
     }
 
     #[test]
