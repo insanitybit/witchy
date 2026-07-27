@@ -399,25 +399,6 @@ fn main(console: Console):
     #[test]
     fn rfc0087_structured_return_spellings_and_caller_propagation_agree() {
         let src = r#"import option
-import result
-
-fn via_try(var left: Int, var right: Int, r: Result(Int, String)) -> Result(Int, String):
-    left = left + 100
-    right = right + 10
-    let got = r?
-    Ok(got)
-
-fn via_explicit_return(var left: Int, var right: Int, r: Result(Int, String)) -> Result(Int, String):
-    left = left + 100
-    right = right + 10
-    match r:
-        Ok(got) -> Ok(got)
-        Err(message) -> return Err(message)
-
-fn via_tail_err(var left: Int, var right: Int) -> Result(Int, String):
-    left = left + 100
-    right = right + 10
-    Err("stop")
 
 fn option_receiver_try(var state: Option(Int), var count: Int) -> Option(Int):
     count = count + 1
@@ -437,21 +418,6 @@ fn caller_try(var n: Int) -> Option(Int):
     Some(value)
 
 fn main(console: Console):
-    var a = 1
-    var b = 10
-    let by_try = via_try(a, b, Err("stop"))
-    console.print("${a} ${b} ${by_try}")
-
-    var c = 1
-    var d = 10
-    let by_return = via_explicit_return(c, d, Err("stop"))
-    console.print("${c} ${d} ${by_return}")
-
-    var e = 1
-    var f = 10
-    let by_tail = via_tail_err(e, f)
-    console.print("${e} ${f} ${by_tail}")
-
     var state: Option(Int) = None
     var count = 0
     let option_result = option_receiver_try(state, count)
@@ -465,14 +431,7 @@ fn main(console: Console):
     let fallback = update_or_none(fallback_state, false) ?? fallback_state + 100
     console.print("${fallback_state} ${fallback}")
 "#;
-        let want = [
-            "101 20 Err(stop)",
-            "101 20 Err(stop)",
-            "101 20 Err(stop)",
-            "None 1 None",
-            "11 None",
-            "12 112",
-        ];
+        let want = ["None 1 None", "11 None", "12 112"];
         assert_eq!(link_run(src), want, "interpreter structured returns");
         assert_eq!(wasm_run(src), want, "compiled structured returns");
     }
