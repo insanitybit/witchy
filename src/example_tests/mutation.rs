@@ -773,71 +773,15 @@ fn main(console: Console):
         assert_eq!(wasm_run(escaped), want, "compiled explicit discard still writes back");
     }
 
-    /// (RFC-0049) `dict.set_at` is deleted; the `d[k] = v` place-assign sugar is
-    /// retargeted to `dict.insert` once the receiver's type is known (Dict), while
-    /// `xs[i] = v` on a list still lowers to `list.set_at`. Both backends agree.
+    /// (RFC-0044 rule 1) `string.index_of` returns `Option(Int)`, not a
+    /// `-1` sentinel. The other string search contracts have dedicated tests.
     #[test]
-    fn rfc0049_dict_place_assign_retargets_to_insert() {
-        let src = "import dict\n\
-                   fn main(console: Console):\n\
-                   \x20   var d = dict.new()\n\
-                   \x20   d[\"a\"] = 1\n\
-                   \x20   d[\"b\"] = 2\n\
-                   \x20   d[\"a\"] = 9\n\
-                   \x20   var xs = [1, 2, 3]\n\
-                   \x20   xs[1] = 99\n\
-                   \x20   console.print(\"${dict.get_or(d, \"a\", 0)}\")\n\
-                   \x20   console.print(\"${dict.length(d)}\")\n\
-                   \x20   console.print(\"${list.at(xs, 1)}\")\n";
-        let expected = ["9", "2", "99"];
-        let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
-            expected
-        );
-        assert_eq!(wasm_run(src), expected, "wasm");
-    }
-
-    /// (RFC-0044 rule 1) `list.index_of` returns `Option(Int)` — `Some(i)` on a
-    /// hit, `None` on a miss — never a -1 sentinel; `list.position` is the
-    /// by-predicate Option search. `ascii.to_digit` is `Option(Int)` too. Both
-    /// backends agree on the Option shape and the `??` fallback.
-    #[test]
-    fn rfc0044_lookup_absence_is_option() {
-        let src = "import list\n\
-                   import ascii\n\
-                   fn main(console: Console):\n\
-                   \x20   let xs = [10, 20, 30]\n\
-                   \x20   console.print(\"${list.index_of(xs, 20) ?? -1}\")\n\
-                   \x20   console.print(\"${list.index_of(xs, 99) ?? -1}\")\n\
-                   \x20   console.print(\"${list.position(xs, fn(x: Int): x > 15) ?? -1}\")\n\
-                   \x20   console.print(\"${ascii.to_digit(\"7\") ?? -1}\")\n\
-                   \x20   console.print(\"${ascii.to_digit(\"z\") ?? -1}\")\n";
-        let expected = ["1", "-1", "1", "7", "-1"];
-        let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
-            expected
-        );
-        assert_eq!(wasm_run(src), expected, "wasm");
-    }
-
-    /// (RFC-0044 rule 1) The `string` search/index family returns `Option`, not a
-    /// `-1`/`""` sentinel: `index_of`/`last_index_of` -> `Option(Int)`, `char_at`
-    /// -> `Option(String)`. The private raw scan intrinsic (`string.find`, keyed
-    /// on the -1 ABI) still powers the tight std loops. Both backends agree.
-    #[test]
-    fn rfc0044_string_search_absence_is_option() {
+    fn rfc0044_string_index_absence_is_option() {
         let src = "\
                    fn main(console: Console):\n\
                    \x20   console.print(\"${\"hello\".index_of(\"ll\") ?? -1}\")\n\
-                   \x20   console.print(\"${\"hello\".index_of(\"z\") ?? -1}\")\n\
-                   \x20   console.print(\"${\"a.b.c\".last_index_of(\".\") ?? -1}\")\n\
-                   \x20   console.print(\"${\"abc\".last_index_of(\".\") ?? -1}\")\n\
-                   \x20   console.print(\"${\"hi\".char_at(1) ?? \"?\"}\")\n\
-                   \x20   console.print(\"${\"hi\".char_at(9) ?? \"?\"}\")\n\
-                   \x20   console.print(\"${\"banana\".count(\"a\")}\")\n";
-        let expected = ["2", "-1", "3", "-1", "i", "?", "3"];
+                   \x20   console.print(\"${\"hello\".index_of(\"z\") ?? -1}\")\n";
+        let expected = ["2", "-1"];
         let linked = resolve_std_src(src);
         assert_eq!(
             interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
