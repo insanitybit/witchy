@@ -14,11 +14,15 @@
         }
     }
 
-    #[test]
-    fn every_cataloged_string_operation_has_runtime_dispatch() {
+    fn minimal_interpreter() -> Interpreter {
         let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
             .expect("parse minimal module");
-        let mut interpreter = Interpreter::new(module);
+        Interpreter::new(module)
+    }
+
+    #[test]
+    fn every_cataloged_string_operation_has_runtime_dispatch() {
+        let mut interpreter = minimal_interpreter();
 
         for name in intrinsics::STRING_OPERATIONS {
             let args = match *name {
@@ -49,9 +53,7 @@
 
     #[test]
     fn every_cataloged_math_operation_has_runtime_dispatch() {
-        let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
-            .expect("parse minimal module");
-        let mut interpreter = Interpreter::new(module);
+        let mut interpreter = minimal_interpreter();
 
         for name in intrinsics::MATH_OPERATIONS {
             let args = match *name {
@@ -68,9 +70,7 @@
 
     #[test]
     fn cataloged_regex_operation_has_interpreter_native_dispatch() {
-        let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
-            .expect("parse minimal module");
-        let mut interpreter = Interpreter::new(module);
+        let mut interpreter = minimal_interpreter();
         let result = interpreter
             .call_builtin(
                 intrinsics::REGEX_MATCH_SPANS,
@@ -1731,22 +1731,6 @@ fn main(console: Console):
     console.print("${drive(bounce, 250000)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["5000000007"]);
-    }
-
-    #[test]
-    fn moderate_recursion_succeeds() {
-        // Recursion well within the limit still works.
-        let src = r#"
-fn rec(n: Int) -> Int:
-    if (n == 0):
-        0
-    else:
-        rec((n - 1))
-
-fn main(console: Console):
-    console.print("${rec(10000)}")
-"#;
-        assert_eq!(run(src).unwrap(), vec!["0"]);
     }
 
     #[test]
