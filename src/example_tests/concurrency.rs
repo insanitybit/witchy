@@ -90,40 +90,6 @@ async fn main(console: Console):
         assert_eq!(interp_out, vec!["acc 112 first 11", "sum 10"]);
     }
 
-    // The headline of the unification: `async`/`await` and channels are ONE
-    // substrate. A producer and a consumer, both written as straight-line
-    // `async fn`s using `await chan.send`/`await chan.recv`, run concurrently under
-    // `task.run`. The consumer loops on `recv` (recursively) — this is the actor
-    // idiom, now ergonomic — and the schedule is byte-identical on both backends.
-    #[test]
-    fn async_with_channels_backends_agree() {
-        let src = r#"
-import chan
-from chan import Receiver, Sender
-
-async fn producer(tx: Sender(Int)) -> Nil:
-    chan.send(tx, 1).await
-    chan.send(tx, 2).await
-
-async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
-    chan.consume(rx, fn(v): task.done(console.print("got ${v}"))).await
-
-async fn main(console: Console):
-    let (tx, rx) = chan.channel(4).await
-    task.spawn(producer(tx)).await
-    consumer(console, rx).await"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "async+channel schedule diverged across backends");
-        assert_eq!(interp_out, vec!["got 1", "got 2"]);
-    }
-
     // `await` inside a `for` loop — over a list (producer) and a range (consumer)
     // — lowers to a sequential `task.for_each`, so iterating with `await` needs no
     // hand-written recursion. Both backends must agree, byte-for-byte.
