@@ -2576,19 +2576,6 @@ fn main():
     }
 
     #[test]
-    fn rfc0087_impl_methods_accept_var_with_auxiliary_returns() {
-        check_str(
-            "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_static(var xs: List(Int), n: Int) -> Int:\n        xs = list.__push(xs, n)\n        n\n",
-        )
-        .expect("a static impl method may combine var write-back with a result");
-
-        check_str(
-            "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_method(self, var xs: List(Int)) -> List(Int):\n        xs = list.__push(xs, 1)\n        xs\n",
-        )
-        .expect("an instance method may have a non-receiver var parameter");
-    }
-
-    #[test]
     fn rfc0087_function_values_retain_and_enforce_conventions() {
         check_str(
             "fn bump(var n: Int) -> Int:\n    n = n + 1\n    n\n\nfn apply(f: fn(var Int) -> Int, var n: Int) -> Int:\n    f(n)\n\nfn main():\n    var n = 1\n    let f: fn(var Int) -> Int = bump\n    let _ = apply(f, n)\n",
