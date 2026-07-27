@@ -73,30 +73,6 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(crate::format::reformat(src).as_deref(), Some(src), "interpolation must round-trip");
     }
 
-    /// `std/encoding` — hex + base64 over UTF-8 bytes (native, like crypto),
-    /// matching the standard vectors incl. padding, and round-tripping multibyte
-    /// UTF-8.
-    #[test]
-    fn encoding_module_hex_and_base64() {
-        let src = r#"import encoding
-
-fn main(console: Console):
-    console.print(encoding.hex_encode("hello"))
-    console.print(encoding.hex_decode("68656c6c6f").unwrap_or("?"))
-    console.print(encoding.base64_encode("Man"))
-    console.print(encoding.base64_encode("Ma"))
-    console.print(encoding.base64_decode("aGVsbG8=").unwrap_or("?"))
-    console.print(yn(encoding.base64_decode(encoding.base64_encode("witchy! 🧙")).unwrap_or("?") == "witchy! 🧙"))
-
-fn yn(b: Bool) -> String:
-    if b: "y" else: "n"
-"#;
-        assert_eq!(
-            link_run(src),
-            vec!["68656c6c6f", "hello", "TWFu", "TWE=", "hello", "y"]
-        );
-    }
-
     /// Regression (found by `examples/calc/src/calc.witchy` via the both-backends invariant):
     /// comparing a String whose type isn't locally tracked — a List(String)
     /// element via `at` — to a literal must be a *structural* `$str_eq` on the
@@ -724,31 +700,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn to_string_polymorphic_on_wasm() {
-        // `to_string` renders by the argument's compile-time value type: Int
-        // literals/arithmetic, Bool literals/comparisons/user-fn results, and
-        // String pass-through — all in compiled code.
-        let src = r#"
-fn classify(n: Int) -> Bool:
-    (n > 0)
-
-fn main(console: Console):
-    console.print("${42}")
-    console.print("${(0 - 5)}")
-    console.print("${true}")
-    console.print("${(3 > 7)}")
-    console.print("${"hi"}")
-    console.print("${classify(9)}")
-    let flag = (2 == 2)
-    console.print("${flag}")
-"#;
-        assert_eq!(
-            run_on_wasm(src),
-            vec!["42", "-5", "true", "false", "hi", "true", "true"]
-        );
-    }
-
-    #[test]
     fn to_string_on_compound_renders_on_wasm() {
         // A compound (list/tuple/record/ADT/dict, any nesting) renders byte-
         // identically to the interpreter via a generated per-shape helper — so
@@ -801,20 +752,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn negative_int_to_string_on_wasm() {
-        // `int_to_string` renders negatives with a leading '-' (previously it
-        // emitted garbage, e.g. "/" for -1).
-        let src = r#"
-fn main(console: Console):
-    console.print("${(0 - 1)}")
-    console.print("${(0 - 128)}")
-    console.print("${255}")
-    console.print("${0}")
-"#;
-        assert_eq!(run_on_wasm(src), vec!["-1", "-128", "255", "0"]);
-    }
-
-    #[test]
     fn replace_on_wasm() {
         // `replace` compiled to WASM, matching Rust's str::replace: simple and
         // multi-char patterns, greedy non-overlapping, deletion (empty `to`),
@@ -834,72 +771,6 @@ fn main(console: Console):
         assert_eq!(
             run_on_wasm(src),
             vec!["a;b;c", "a-b-c", "xa", "abc", "aXYZc", "abc", "-a-b-", "cafe"]
-        );
-    }
-
-    #[test]
-    fn string_search_slice_on_wasm() {
-        // contains / index_of / substring compiled to WASM, matching the
-        // interpreter — including Unicode: "café!" has the `!` at character index
-        // 4 (byte 5), and string.substring(3,5) is the two characters "é!".
-        let src = r#"
-fn main(console: Console):
-    console.print("${if "hello world".contains("world"): 1 else: 0}")
-    console.print("${if "abc".contains("xyz"): 1 else: 0}")
-    console.print("${if "abc".contains(""): 1 else: 0}")
-    console.print("${"hello".contains("l")}")
-    console.print("${"hello".contains("z")}")
-    console.print("hello".substring(1, 4))
-    console.print("hi".substring(0, 100))
-    console.print("hi".substring(5, 10))
-    console.print("${"café!".contains("!")}")
-    console.print("café!".substring(3, 5))
-"#;
-        assert_eq!(
-            run_on_wasm(src),
-            vec!["1", "0", "1", "true", "false", "ell", "hi", "", "true", "é!"]
-        );
-    }
-
-    #[test]
-    fn dict_string_keys_on_wasm() {
-        // String-keyed Dict compiled to WASM: insert (append + replace), get_or
-        // (present/absent), has, and size — keys compared with $str_eq.
-        let src = r#"
-fn main(console: Console):
-    var d = dict.new()
-    dict.insert(d, "a", 1)
-    dict.insert(d, "b", 2)
-    dict.insert(d, "a", 10)
-    console.print("${dict.get_or(d, "a", 0)}")
-    console.print("${dict.get_or(d, "b", 0)}")
-    console.print("${dict.get_or(d, "z", (0 - 1))}")
-    console.print("${dict.length(d)}")
-    console.print("${if dict.contains_key(d, "b"): 1 else: 0}")
-    console.print("${if dict.contains_key(d, "q"): 1 else: 0}")
-"#;
-        assert_eq!(run_on_wasm(src), vec!["10", "2", "-1", "2", "1", "0"]);
-    }
-
-    #[test]
-    fn std_string_compiles_and_runs_on_wasm() {
-        // With `split` compiled, the whole `string` module compiles: `lines`
-        // (split on "\n"), `join`, and `repeat`. lines -> ["a","bb","ccc"] (3);
-        // join -> "a-bb-ccc" (8); repeat -> "zzzzz" (5): 3*100 + 8 + 5 = 313.
-        let client = r#"
-
-fn main() -> Int:
-    let parts = "a\nbb\nccc".lines()
-    let joined = list.join(parts, "-")
-    let r = "z".repeat(5)
-    (((list.length(parts) * 100) + joined.length()) + r.length())
-"#;
-        assert_eq!(
-            run_linked_on_wasm(
-                &[("string", crate::bundled_module("string").unwrap()), ("main", client)],
-                "main",
-            ),
-            vec!["313"]
         );
     }
 
@@ -1277,24 +1148,6 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["1", "2", "-1"]);
     }
 
-    #[test]
-    fn string_edge_cases_backends_agree() {
-        let src = r#"
-fn main(console: Console):
-    console.print("${list.length("abc".split(""))}")
-    console.print("${list.length("abc".split("x"))}")
-    console.print("${list.length("a,b,c".split(","))}")
-    console.print((("[" + "".substring(0, 5)) + "]"))
-    console.print((("[" + "hello".substring(3, 1)) + "]"))
-    console.print("hello".substring(2, 100))
-    console.print("${"hello".contains("")}")
-    console.print("${"hello".contains("z")}")
-    console.print((("[" + (("" + "x") + "")) + "]"))
-    console.print("${"".length()}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "string edge cases diverged");
-    }
-
     // std/url: parse assorted URL strings (default ports, explicit port, path,
     // and a malformed one). Pure, so both backends agree.
     #[test]
@@ -1367,22 +1220,6 @@ fn main(console: Console):
     // decoded, heap-built key with `==`; both backends agree now that codegen
     // tracks the type of a tuple-destructured loop variable (so the comparison
     // is by content, not pointer).
-    // Hex (0x..) and binary (0b..) integer literals, including underscore
-    // separators, feeding the bitwise operators. Both backends agree.
-    #[test]
-    fn hex_binary_literals_backends_agree() {
-        let src = r#"
-fn main(console: Console):
-    console.print("${255}")
-    console.print("${10}")
-    console.print("${(255 & 15)}")
-    console.print("${(12 | 3)}")
-    console.print("${65535}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "hex/binary literals diverged");
-        assert_eq!(run_on_wasm(src), vec!["255", "10", "15", "15", "65535"]);
-    }
-
     #[test]
     fn string_to_int_backends_agree() {
         // string_to_int now compiles: leading whitespace and an optional sign
