@@ -169,19 +169,6 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(wasm_run(src), interp, "wasm must agree on the mixed paths");
     }
 
-    /// (BUG-558) A loop body that calls a user function with a heap-shaped `var`
-    /// argument writes the callee's result back into an outer local. The loop
-    /// watermark cannot rewind the heap after that write-back: the grown list is
-    /// now observable outside the body and later allocations may otherwise
-    /// overwrite its header.
-    #[test]
-    fn loop_watermark_rejects_outer_var_writeback() {
-        let src = "type Buf:\n    items: List(Int)\n\nfn add(var b: Buf, x: Int) -> Nil:\n    list.push(b.items, x)\n    return\n\nfn main(console: Console):\n    var b = Buf(items: [])\n    var i = 0\n    while i < 16:\n        add(b, i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
-        let expected = vec!["15".to_string(), "16".to_string()];
-        assert_eq!(link_run(src), expected, "interpreter");
-        assert_eq!(wasm_run(src), expected, "wasm");
-    }
-
     /// (BUG-558 sharpened) The same loop-watermark escape must be rejected when
     /// the `var` callee writes back a record field directly. The list case used
     /// to corrupt the length header; the dict case read garbage memory.

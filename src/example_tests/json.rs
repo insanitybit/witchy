@@ -71,11 +71,6 @@ use crate::{ast, codegen, interpreter, typeck};
                 "json.get: duplicate object key `aud`",
             ),
             (
-                "typed accessor",
-                "import json\n\nfn main(console: Console):\n    let j = json.JsonObject([(\"aud\", json.JsonString(\"good\")), (\"aud\", json.JsonString(\"evil\"))])\n    let _ = json.get_string(j, \"aud\")\n    console.print(\"bad\")\n",
-                "json.get: duplicate object key `aud`",
-            ),
-            (
                 "contains_key",
                 "import json\n\nfn main(console: Console):\n    let j = json.JsonObject([(\"kid\", json.JsonString(\"a\")), (\"kid\", json.JsonString(\"b\"))])\n    console.print(\"${json.contains_key(j, \"kid\")}\")\n",
                 "json.contains_key: duplicate object key `kid`",

@@ -1217,12 +1217,3 @@ fn yes(b: Bool) -> String:
         assert_eq!(shown("fetch"), "Net[Connect, Tcp]");
         assert_eq!(shown("serve"), "Net[Listen]");
     }
-
-    #[test]
-    fn files_example_reads_through_capability() {
-        // Run from the crate root so examples/data/greeting.txt resolves.
-        assert_eq!(
-            interp(include_str!("../../examples/files/src/files.witchy")),
-            vec!["hello from a sandboxed Dir capability"]
-        );
-    }

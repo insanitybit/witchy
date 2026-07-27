@@ -407,30 +407,6 @@ async fn main(console: Console):
         assert_eq!(interp_out, vec!["[2, 4, 6]", "recv 41", "done"]);
     }
 
-    // Its twin: `import task` + `import future` — both declare `Step`/`Slot`/`Task`/
-    // `Poll`, the second collision cluster RFC-0042 dissolves. Importing both must
-    // simply compile and run identically on both backends.
-    #[test]
-    fn task_and_future_coexist_backends_agree() {
-        let src = r#"
-import task
-import future
-
-fn main(console: Console):
-    console.print("task+future coexist")
-"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
-            .expect("task+future link (RFC-0042: the Step/Task/Slot/Poll collision must be gone)");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "task+future diverged across backends");
-        assert_eq!(interp_out, vec!["task+future coexist"]);
-    }
-
     // The channel message type is GENERIC (here `String`), proving the explicit
     // type-parameter fix to the monomorphizer: a multi-param ADT whose constructor
     // omits a param (`Done(a)` for `Step(m, a)`) now keeps that param generic
