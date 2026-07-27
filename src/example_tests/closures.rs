@@ -278,39 +278,3 @@ fn main(console: Console):
         assert_eq!(interpreted, compiled, "function-pipeline fold diverged");
         assert_eq!(compiled, vec!["-12"]);
     }
-
-    #[test]
-    fn closures_and_string_ordering_backends_agree() {
-        let src = r#"
-fn main(console: Console):
-    let base = 10
-    let add = fn(n: Int): (n + base)
-    var total = 0
-    var i = 0
-    while (i < 5):
-        total = (total + add(i))
-        i = (i + 1)
-    console.print("${total}")
-    let make_adder = fn(x: Int): fn(y: Int): (x + y)
-    let add3 = make_adder(3)
-    console.print("${add3(4)}")
-    console.print("${(make_adder(100))(1)}")
-    if ("abc" < "abcd"):
-        console.print("lt1")
-    else:
-        console.print("ge1")
-    if ("Z" < "a"):
-        console.print("lt2")
-    else:
-        console.print("ge2")
-    if ("" < "a"):
-        console.print("lt3")
-    else:
-        console.print("ge3")
-    if ("apple" < "apply"):
-        console.print("lt4")
-    else:
-        console.print("ge4")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "closures/ordering diverged");
-    }

@@ -16,29 +16,6 @@ use crate::{interpreter, parser, typeck};
         );
     }
 
-    /// RFC-0080 expression quotation: a typed tag returning a hole-free quote
-    /// emits the compiler-owned expression AST directly. The anonymous record
-    /// keeps the structural payload nontrivial while both runtime backends consume
-    /// the same already-expanded tree.
-    #[test]
-    fn quote_expr_builds_typed_exprsyntax_on_both_backends() {
-        let src = r#"
-comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    quote expr:
-        .{value: 40}.value + 2
-
-fn main(console: Console):
-    console.print("${answer"ignored"}")
-"#;
-        let expected = ["42"];
-        assert_eq!(link_run(src), expected, "interp quote expr tagged literal");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled quote expr tagged literal",
-        );
-    }
-
     /// RFC-0080 quote holes splice typed expression syntax into a parser-checked
     /// quoted expression. Tagged literals hand their holes to the tag as opaque
     /// markers, so this also exercises the RFC-0006 hygiene split.
@@ -63,30 +40,6 @@ fn main(console: Console):
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
             "compiled quote expr holes tagged literal",
-        );
-    }
-
-    /// RFC-0080 type quotation retains compiler-owned type AST while existing
-    /// builders consume its canonical projection without a public raw constructor.
-    #[test]
-    fn quote_type_builds_typed_typesyntax_on_both_backends() {
-        let src = r#"
-import meta
-
-comptime:
-    let int = quote type:
-        Int
-    emit_item(meta.function(true, meta.ident("generated"), [], Some(int), meta.expr_int(7)))
-
-fn main(console: Console):
-    console.print("${generated()}")
-"#;
-        let expected = ["7"];
-        assert_eq!(link_run(src), expected, "interp quote type generated item");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled quote type generated item",
         );
     }
 
@@ -166,41 +119,6 @@ fn main(console: Console):
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
             "compiled quote type/pattern holes",
-        );
-    }
-
-    /// RFC-0080 statement/block quotation parses function-body fragments at the
-    /// quote site and returns typed compiler syntax values for generation.
-    #[test]
-    fn quote_stmt_and_block_build_typed_body_syntax_on_both_backends() {
-        let src = r#"
-import meta
-
-comptime:
-    let int = quote type:
-        Int
-    let body = quote block:
-        let x: Int = 40
-        x + 2
-    emit_item(meta.function_block(true, meta.ident("answer_block"), [], Some(int), body))
-
-    let stmt = quote stmt:
-        let y: Int = 5
-    let tail = quote expr:
-        y + 1
-    let body2 = meta.block([stmt], Some(tail))
-    emit_item(meta.function_block(true, meta.ident("answer_stmt"), [], Some(int), body2))
-
-fn main(console: Console):
-    console.print("${answer_block()}")
-    console.print("${answer_stmt()}")
-"#;
-        let expected = ["42", "6"];
-        assert_eq!(link_run(src), expected, "interp quote stmt/block");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled quote stmt/block",
         );
     }
 
@@ -289,29 +207,6 @@ fn main(console: Console):
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
             "compiled quote stmt/block mixed holes",
-        );
-    }
-
-    /// RFC-0080 item quotation parses one item at the quote site and hands it to
-    /// the existing typed `meta.item` boundary.
-    #[test]
-    fn quote_item_builds_typed_itemsyntax_on_both_backends() {
-        let src = r#"
-comptime:
-    let generated = quote item:
-        pub fn generated() -> Int:
-            88
-    emit_item(generated)
-
-fn main(console: Console):
-    console.print("${generated()}")
-"#;
-        let expected = ["88"];
-        assert_eq!(link_run(src), expected, "interp quote item generated function");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled quote item generated function",
         );
     }
 

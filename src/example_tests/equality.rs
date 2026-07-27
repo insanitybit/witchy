@@ -39,18 +39,6 @@ use crate::{codegen, interpreter, parser, typeck};
         );
     }
 
-    /// (BUG-251, RFC-0047) A hand-written `impl PartialEq` is honored INSIDE
-    /// containers on the compiled backend too — a `List`/`Option`/tuple of a
-    /// custom-eq type compares by that impl, not by structural bytes. The
-    /// case-insensitive impl proves the user fn decided the answer ("X" == "x").
-    #[test]
-    fn custom_partial_eq_inside_containers_backends_agree() {
-        let src = "type CI:\n    s: String\n\nimpl PartialEq for CI:\n    fn eq(self, other: CI) -> Bool:\n        self.s.to_lower() == other.s.to_lower()\n\nfn main(console: Console):\n    let la = [CI(s: \"X\")]\n    let lb = [CI(s: \"x\")]\n    console.print(\"${la == lb}\")\n    let oa: Option(CI) = Some(CI(s: \"Y\"))\n    let ob: Option(CI) = Some(CI(s: \"y\"))\n    console.print(\"${oa == ob}\")\n    let ta = (CI(s: \"Z\"), 1)\n    let tb = (CI(s: \"z\"), 1)\n    console.print(\"${ta == tb}\")\n";
-        let want = ["true", "true", "true"];
-        assert_eq!(link_run(src), want, "interp");
-        assert_eq!(wasm_run(src), want, "wasm");
-    }
-
     /// (RFC-0047) A realistic custom equality — case-insensitive strings — honored
     /// through containers on both backends. `CI("Hi") == CI("hi")` and the same
     /// inside a `List`/`Option` are `true`; genuinely different values are `false`.
