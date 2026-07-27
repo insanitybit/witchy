@@ -1481,24 +1481,186 @@ fn hold(vault: Vault):
     }
 
     #[test]
-    fn accepts_a_well_typed_program() {
-        let src = r#"
+    fn basic_well_typed_programs() {
+        let cases = [
+            (
+                "function call",
+                r#"
 fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
     console.print("${double(21)}")
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+"#,
+            ),
+            (
+                "tuple destructure",
+                r#"
+fn main():
+    let (a, b) = (1, 2)
+"#,
+            ),
+            (
+                "generic function at multiple types",
+                r#"
+fn id(x: a) -> a:
+    x
+
+fn main(console: Console):
+    console.print(id("hi"))
+    console.print("${id(5)}")
+"#,
+            ),
+            (
+                "generic ADT at multiple types",
+                r#"
+type Box:
+    Wrap(a)
+
+fn unwrap_int(b: Box(Int)) -> Int:
+    match b:
+        Wrap(n) -> n
+
+fn unwrap_str(b: Box(String)) -> String:
+    match b:
+        Wrap(s) -> s
+
+fn main(console: Console):
+    console.print("${unwrap_int(Wrap(5))}")
+    console.print(unwrap_str(Wrap("hi")))
+"#,
+            ),
+            (
+                "generic binding body at multiple types",
+                r#"
+type Box:
+    Wrap(a)
+
+fn unwrap(b: Box(a), default: a) -> a:
+    match b:
+        Wrap(v) -> v
+
+fn main(console: Console):
+    console.print("${unwrap(Wrap(5), 0)}")
+    console.print(unwrap(Wrap("hi"), "none"))
+"#,
+            ),
+            (
+                "early return and divergence",
+                r#"
+fn classify(n: Int) -> String:
+    if (n < 0):
+        return "neg"
+    "nonneg"
+
+fn only_return() -> Int:
+    return 5
+"#,
+            ),
+            (
+                "structural equality",
+                r#"
+fn f(a: (Int, Int), b: (Int, Int)) -> Bool:
+    (a == b)
+"#,
+            ),
+            (
+                "generic dictionary builtins",
+                r#"
+fn tally(words: List(String)) -> Int:
+    var d = dict.new()
+    for w in words:
+        d = dict.__insert(d, w, (dict.get_or(d, w, 0) + 1))
+    dict.length(d)
+"#,
+            ),
+            (
+                "string builtins",
+                r#"
+fn first_field(row: String) -> String:
+    list.at(row.split(","), 0)
+
+fn has(s: String, sub: String) -> Bool:
+    s.contains(sub)
+
+fn fix(s: String) -> String:
+    s.replace("a", "b")
+"#,
+            ),
+            (
+                "generic list push and concat",
+                r#"
+fn ints() -> List(Int):
+    list.__push([1, 2], 3)
+
+fn strs() -> List(String):
+    list.concat(["a"], ["b", "c"])
+"#,
+            ),
+            (
+                "higher-order lambda",
+                r#"
+fn apply(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+
+fn main(console: Console):
+    console.print("${apply(fn(n: Int): (n + 1), 10)}")
+"#,
+            ),
+            (
+                "generic higher-order function",
+                r#"
+fn apply(f: fn(a) -> a, x: a) -> a:
+    f(x)
+
+fn main(console: Console):
+    console.print(apply(fn(s: String): s, "hi"))
+    console.print("${apply(fn(n: Int): n, 5)}")
+"#,
+            ),
+        ];
+        for (case, src) in cases {
+            let result = check_str(src);
+            assert!(result.is_ok(), "{case}: {result:?}");
+        }
     }
 
     #[test]
-    fn rejects_string_plus_int() {
-        let src = r#"
+    fn basic_type_errors_are_rejected() {
+        let cases = [
+            (
+                "string plus int",
+                r#"
 fn f() -> String:
     ("a" + 1)
-"#;
-        assert!(check_str(src).is_err());
+"#,
+            ),
+            (
+                "tuple arity mismatch",
+                r#"
+fn main():
+    let (a, b, c) = (1, 2)
+"#,
+            ),
+            ("over-constrained type parameter", "fn bad(x: a) -> a { x + 1 }"),
+            ("wrong return type", "fn f() -> Int { return \"x\" }"),
+            (
+                "dictionary key mismatch",
+                r#"
+fn f() -> Int:
+    let d = dict.insert(dict.new(), "a", 1)
+    dict.get_or(d, 2, 0)
+"#,
+            ),
+            ("split on non-string", "fn f() -> List(String) { 5.split(\",\") }"),
+            (
+                "list push element mismatch",
+                "fn f() -> List(Int) { list.__push([1, 2], \"x\") }",
+            ),
+        ];
+        for (case, src) in cases {
+            assert!(check_str(src).is_err(), "{case} unexpectedly typechecked");
+        }
     }
 
     #[test]
@@ -1541,41 +1703,6 @@ fn main():
     }
 
     #[test]
-    fn rejects_tuple_arity_mismatch() {
-        assert!(check_str(r#"
-fn main():
-    let (a, b, c) = (1, 2)
-"#).is_err());
-    }
-
-    #[test]
-    fn accepts_tuple_destructure() {
-        assert!(check_str(r#"
-fn main():
-    let (a, b) = (1, 2)
-"#).is_ok());
-    }
-
-    #[test]
-    fn generic_function_used_at_multiple_types() {
-        let src = r#"
-fn id(x: a) -> a:
-    x
-
-fn main(console: Console):
-    console.print(id("hi"))
-    console.print("${id(5)}")
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
-    fn rejects_over_constrained_type_param() {
-        // `a` can't be generic if the body forces it to Int.
-        assert!(check_str("fn bad(x: a) -> a { x + 1 }").is_err());
-    }
-
-    #[test]
     fn uncalled_bounded_generic_bodies_are_checked() {
         let err = check_str(
             r#"
@@ -1603,70 +1730,6 @@ fn main(console: Console):
         assert!(check_str("fn f() -> Duration:\n    30s + 5\n").is_err());
         assert!(check_str("fn f() -> Int:\n    30s\n").is_err());
         assert!(check_str("fn f() -> Duration:\n    30s + true\n").is_err());
-    }
-
-    #[test]
-    fn generic_adt_used_at_multiple_types() {
-        // A generic `Box(a)` can be unwrapped at both Int and String.
-        let src = r#"
-type Box:
-    Wrap(a)
-
-fn unwrap_int(b: Box(Int)) -> Int:
-    match b:
-        Wrap(n) -> n
-
-fn unwrap_str(b: Box(String)) -> String:
-    match b:
-        Wrap(s) -> s
-
-fn main(console: Console):
-    console.print("${unwrap_int(Wrap(5))}")
-    console.print(unwrap_str(Wrap("hi")))
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
-    fn generic_function_with_binding_body_at_multiple_types() {
-        // The same generic function — whose body *binds* its type parameter (here
-        // by matching on it) — called at two different types in one program. This
-        // regressed previously: checking the body bound the type-param var, and
-        // instantiation then reused that binding instead of a fresh one per call.
-        let src = r#"
-type Box:
-    Wrap(a)
-
-fn unwrap(b: Box(a), default: a) -> a:
-    match b:
-        Wrap(v) -> v
-
-fn main(console: Console):
-    console.print("${unwrap(Wrap(5), 0)}")
-    console.print(unwrap(Wrap("hi"), "none"))
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
-    fn early_return_type_checks_including_divergence() {
-        // A guard `return` in an if-branch (no else) must not force the branch to
-        // the function's return type — divergence is handled.
-        let src = r#"
-fn classify(n: Int) -> String:
-    if (n < 0):
-        return "neg"
-    "nonneg"
-
-fn only_return() -> Int:
-    return 5
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
-    fn rejects_return_of_wrong_type() {
-        assert!(check_str("fn f() -> Int { return \"x\" }").is_err());
     }
 
     #[test]
@@ -1713,104 +1776,6 @@ fn f(a: List(Int), b: List(Int)) -> Bool:
 fn f(a: (Int, Int), b: (Int, Int)) -> Bool:
     (a < b)
 "#).is_err());
-    }
-
-    #[test]
-    fn equality_still_works_on_any_matching_type() {
-        // `==` is unaffected — structural equality is defined for every value.
-        assert!(check_str(r#"
-fn f(a: (Int, Int), b: (Int, Int)) -> Bool:
-    (a == b)
-"#).is_ok());
-    }
-
-    #[test]
-    fn dict_builtins_are_generic() {
-        let src = r#"
-fn tally(words: List(String)) -> Int:
-    var d = dict.new()
-    for w in words:
-        d = dict.__insert(d, w, (dict.get_or(d, w, 0) + 1))
-    dict.length(d)
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
-    fn rejects_dict_key_type_mismatch() {
-        // The dict's key type is fixed by the first insert (String here), so
-        // looking it up with an Int key must fail.
-        let src = r#"
-fn f() -> Int:
-    let d = dict.insert(dict.new(), "a", 1)
-    dict.get_or(d, 2, 0)
-"#;
-        assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn string_builtins_type() {
-        let src = r#"
-fn first_field(row: String) -> String:
-    list.at(row.split(","), 0)
-
-fn has(s: String, sub: String) -> Bool:
-    s.contains(sub)
-
-fn fix(s: String) -> String:
-    s.replace("a", "b")
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
-    fn rejects_split_on_non_string() {
-        assert!(check_str("fn f() -> List(String) { 5.split(\",\") }").is_err());
-    }
-
-    #[test]
-    fn push_and_concat_are_generic() {
-        let src = r#"
-fn ints() -> List(Int):
-    list.__push([1, 2], 3)
-
-fn strs() -> List(String):
-    list.concat(["a"], ["b", "c"])
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
-    fn rejects_push_element_type_mismatch() {
-        // Pushing a String onto a List(Int) must fail.
-        assert!(check_str("fn f() -> List(Int) { list.__push([1, 2], \"x\") }").is_err());
-    }
-
-    #[test]
-    fn higher_order_and_lambda_type() {
-        let src = r#"
-fn apply(f: fn(Int) -> Int, x: Int) -> Int:
-    f(x)
-
-fn main(console: Console):
-    console.print("${apply(fn(n: Int): (n + 1), 10)}")
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
-    fn generic_higher_order_function() {
-        // `apply` is generic over the value type `a`; the explicit fn-type
-        // parameter keeps the type parameters free.
-        let src = r#"
-fn apply(f: fn(a) -> a, x: a) -> a:
-    f(x)
-
-fn main(console: Console):
-    console.print(apply(fn(s: String): s, "hi"))
-    console.print("${apply(fn(n: Int): n, 5)}")
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
