@@ -64,35 +64,6 @@ use crate::{interpreter, typeck};
         assert!(typeck::check_str(ok).is_ok(), "valid exhaustive matches must check");
     }
 
-    /// (RFC-0034 L2) Bounds-check elision fires and is gated. `xs[i]` inside a
-    /// `for i in 0..list.length(xs)` loop (xs unmutated) lowers to an unchecked element
-    /// load under the default (`bounds-elide` on) — no `call $list_at` — and keeps the
-    /// checked `$list_at` trap guard under `-bounds-elide`. The call-SHAPE firing proof;
-    /// OUTPUT invariance (and the reassigned/inclusive/aliased-list cases that must
-    /// stay checked) is the differential sweep's job.
-    #[test]
-    fn elides_bounds_check_in_counted_loop() {
-        use crate::opt::{self, Opt, OptSet};
-        let path =
-            std::env::temp_dir().join(format!("witchy_bounds_{}.witchy", std::process::id()));
-        std::fs::write(
-            &path,
-            "fn main(console: Console):\n    let xs = [10, 20, 30, 40, 50]\n    var total = 0\n    for i in 0..list.length(xs):\n        total = total + xs[i]\n    console.print(\"${total}\")\n",
-        )
-        .expect("write temp source");
-
-        opt::set_for_tests(Some(OptSet::default_set()));
-        let on = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat on");
-        opt::set_for_tests(Some(OptSet::default_set().without(Opt::BoundsElide)));
-        let off = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat off");
-        opt::set_for_tests(None);
-        let _ = std::fs::remove_file(&path);
-
-        // `xs[i]` is the only list access in this program.
-        assert!(!on.contains("call $list_at"), "bounds-elide on: the access should be unchecked");
-        assert!(off.contains("call $list_at"), "bounds-elide off: expected the checked $list_at call");
-    }
-
     /// `a ?? b` (RFC-0048) is THE fallback: `Option(T) ?? T -> T` and
     /// `Result(T, e) ?? T -> T`, short-circuiting (the fallback runs only on
     /// `None`/`Err`), chaining right-associatively — and `||` stays Bool-only

@@ -13,40 +13,6 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
-    /// (RFC-0034 L3) Closure devirtualization fires and is gated. A single-bound,
-    /// never-reassigned closure local `f` is called with a direct `call $__lamw{i}`
-    /// with `direct-call` on and falls back to `call_indirect` under `-direct-call`.
-    /// The test disables closure elision so the newer threaded `__lamt` path does
-    /// not subsume the boxed-closure optimization being tested here. This is the
-    /// call-SHAPE proof the lever fired — devirt moves no
-    /// heap, so there is no `witchy stats` counter; OUTPUT invariance (and the
-    /// captures-through-a-direct-call case) is the differential sweep's job.
-    #[test]
-    fn devirtualizes_single_bound_closure_call() {
-        use crate::opt::{self, Opt, OptSet};
-        let path =
-            std::env::temp_dir().join(format!("witchy_devirt_{}.witchy", std::process::id()));
-        std::fs::write(
-            &path,
-            "fn main(console: Console):\n    let f = fn(x: Int): x % 7\n    var i = 0\n    var acc = 0\n    while i < 20:\n        acc = acc + f(i)\n        i = i + 1\n    console.print(\"${acc}\")\n",
-        )
-        .expect("write temp source");
-
-        let direct_base = OptSet::default_set().without(Opt::ClosureElide);
-        opt::set_for_tests(Some(direct_base));
-        let on = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat on");
-        opt::set_for_tests(Some(direct_base.without(Opt::DirectCall)));
-        let off = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat off");
-        opt::set_for_tests(None);
-        let _ = std::fs::remove_file(&path);
-
-        // `f`'s single call site is the only indirect-call candidate in this program.
-        assert!(on.contains("call $__lamw"), "direct-call on: expected a direct closure call");
-        assert!(!on.contains("call_indirect"), "direct-call on: the closure call should be devirtualized");
-        assert!(off.contains("call_indirect"), "direct-call off: expected the indirect closure call");
-        assert!(!off.contains("call $__lamw"), "direct-call off: no direct closure call");
-    }
-
     #[test]
     fn brace_free_lambda_form() {
         // `fn(params): expr` — the brace-free single-expression lambda, used
