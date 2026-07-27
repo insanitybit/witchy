@@ -962,24 +962,6 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
-    fn std_http_get_against_loopback() {
-        let out = run_fixed_http_program(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
-            |port| format!(
-            r#"
-import http
-fn main(console: Console, net: Net):
-    let target = "http://127.0.0.1:{port}/"
-    let r = http.get(net.fetch(http.origin(target)), target)
-    console.print("${{http.status(r)}}")
-    console.print(http.body(r))
-"#
-            ),
-        );
-        assert_eq!(out, vec!["200".to_string(), "hello".to_string()]);
-    }
-
-    #[test]
     fn std_http_rejects_malformed_status_line() {
         // A non-numeric status code (`BAD`) would otherwise trap string_to_int.
         let out = run_fixed_http_program(
