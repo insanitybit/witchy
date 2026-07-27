@@ -1,6 +1,4 @@
     use crate::{ast, codegen, interpreter, parser, typeck};
-    use wasmtime::{Engine, Module};
-
     fn validates_wasm_gc(bytes: &[u8]) -> bool {
         let features = wasmparser::WasmFeatures::default()
             | wasmparser::WasmFeatures::GC
@@ -9,14 +7,6 @@
         wasmparser::Validator::new_with_features(features)
             .validate_all(bytes)
             .is_ok()
-    }
-
-    fn wasm_gc_engine() -> Engine {
-        let mut config = wasmtime::Config::new();
-        config.wasm_reference_types(true);
-        config.wasm_function_references(true);
-        config.wasm_gc(true);
-        Engine::new(&config).expect("Wasm GC engine")
     }
 
     fn interp(src: &str) -> Vec<String> {
@@ -492,14 +482,6 @@
             "examples diverge under WITCHY_OPT={lever} (a codegen bug the default sweep misses):\n{}",
             diverged.join("\n")
         );
-    }
-
-    fn assert_fn_compiles(src: &str) {
-        assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
-        let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
-        Module::new(&wasm_gc_engine(), &bytes).expect("valid wasm");
     }
 
     /// End-to-end through the *compiled* path: type-check, compile to WASM, run
