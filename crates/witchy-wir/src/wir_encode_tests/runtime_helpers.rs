@@ -450,16 +450,11 @@
     #[test]
     fn find_byte_finds_substrings() {
         use crate::wir_helpers::find_byte_helper;
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
         let data = vec![
-            DataSegment { offset: 100, bytes: mk_str("hello") },
-            DataSegment { offset: 120, bytes: mk_str("ell") },
-            DataSegment { offset: 140, bytes: mk_str("xyz") },
-            DataSegment { offset: 160, bytes: mk_str("") },
+            DataSegment { offset: 100, bytes: encoded_string("hello") },
+            DataSegment { offset: 120, bytes: encoded_string("ell") },
+            DataSegment { offset: 140, bytes: encoded_string("xyz") },
+            DataSegment { offset: 160, bytes: encoded_string("") },
         ];
         let fb = |s: i32, sub: i32| WirExpr::Call {
             func: "find_byte".into(),
@@ -479,19 +474,7 @@
             body: vec![pi(fb(100, 120)), pi(fb(100, 140)), pi(fb(100, 160))],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![find_byte_helper(), run],
-            memory_pages: 1,
-            data,
-            globals: vec![],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        let module = print_int_data_module(vec![find_byte_helper(), run], data, vec![]);
         // "ell" is at index 1 of "hello"; "xyz" absent (-1); "" → 0.
         assert_agrees(&module, &["1", "-1", "0"]);
     }
@@ -499,16 +482,11 @@
     #[test]
     fn starts_with_matches_prefixes() {
         use crate::wir_helpers::starts_with_helper;
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
         let data = vec![
-            DataSegment { offset: 100, bytes: mk_str("hello") },
-            DataSegment { offset: 120, bytes: mk_str("hel") },
-            DataSegment { offset: 140, bytes: mk_str("lo") },
-            DataSegment { offset: 160, bytes: mk_str("") },
+            DataSegment { offset: 100, bytes: encoded_string("hello") },
+            DataSegment { offset: 120, bytes: encoded_string("hel") },
+            DataSegment { offset: 140, bytes: encoded_string("lo") },
+            DataSegment { offset: 160, bytes: encoded_string("") },
         ];
         let sw = |s: i32, p: i32| WirExpr::Call {
             func: "starts_with".into(),
@@ -528,19 +506,7 @@
             body: vec![pi(sw(100, 120)), pi(sw(100, 140)), pi(sw(100, 160))],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![starts_with_helper(), run],
-            memory_pages: 1,
-            data,
-            globals: vec![],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        let module = print_int_data_module(vec![starts_with_helper(), run], data, vec![]);
         // "hello" starts with "hel" → 1; with "lo" → 0; with "" → 1.
         assert_agrees(&module, &["1", "0", "1"]);
     }
@@ -548,16 +514,11 @@
     #[test]
     fn ends_with_matches_suffixes() {
         use crate::wir_helpers::ends_with_helper;
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
         let data = vec![
-            DataSegment { offset: 100, bytes: mk_str("hello") },
-            DataSegment { offset: 120, bytes: mk_str("llo") },
-            DataSegment { offset: 140, bytes: mk_str("hel") },
-            DataSegment { offset: 160, bytes: mk_str("") },
+            DataSegment { offset: 100, bytes: encoded_string("hello") },
+            DataSegment { offset: 120, bytes: encoded_string("llo") },
+            DataSegment { offset: 140, bytes: encoded_string("hel") },
+            DataSegment { offset: 160, bytes: encoded_string("") },
         ];
         let ew = |s: i32, p: i32| WirExpr::Call {
             func: "ends_with".into(),
@@ -577,19 +538,7 @@
             body: vec![pi(ew(100, 120)), pi(ew(100, 140)), pi(ew(100, 160))],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![ends_with_helper(), run],
-            memory_pages: 1,
-            data,
-            globals: vec![],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        let module = print_int_data_module(vec![ends_with_helper(), run], data, vec![]);
         // "hello" ends with "llo" → 1; with "hel" → 0; with "" → 1.
         assert_agrees(&module, &["1", "0", "1"]);
     }
@@ -597,19 +546,14 @@
     #[test]
     fn str_index_of_returns_char_index() {
         use crate::wir_helpers::{byte_to_char_helper, find_byte_helper, str_index_of_helper};
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
         let data = vec![
-            DataSegment { offset: 100, bytes: mk_str("hello") },
-            DataSegment { offset: 120, bytes: mk_str("ll") },
-            DataSegment { offset: 140, bytes: mk_str("xyz") },
+            DataSegment { offset: 100, bytes: encoded_string("hello") },
+            DataSegment { offset: 120, bytes: encoded_string("ll") },
+            DataSegment { offset: 140, bytes: encoded_string("xyz") },
             // "héllo": the 'é' is two UTF-8 bytes, so "llo" sits at *byte* 3 but
             // *char* index 2 — exercising byte_to_char's continuation-byte skip.
-            DataSegment { offset: 160, bytes: mk_str("héllo") },
-            DataSegment { offset: 180, bytes: mk_str("llo") },
+            DataSegment { offset: 160, bytes: encoded_string("héllo") },
+            DataSegment { offset: 180, bytes: encoded_string("llo") },
         ];
         let ix = |s: i32, sub: i32| WirExpr::Call {
             func: "str_index_of".into(),
@@ -629,19 +573,11 @@
             body: vec![pi(ix(100, 120)), pi(ix(100, 140)), pi(ix(160, 180))],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![find_byte_helper(), byte_to_char_helper(), str_index_of_helper(), run],
-            memory_pages: 1,
+        let module = print_int_data_module(
+            vec![find_byte_helper(), byte_to_char_helper(), str_index_of_helper(), run],
             data,
-            globals: vec![],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+            vec![],
+        );
         // "ll" is char 2 of "hello"; "xyz" absent (-1); "llo" is char 2 of "héllo".
         assert_agrees(&module, &["2", "-1", "2"]);
     }
@@ -649,12 +585,7 @@
     #[test]
     fn substr_copies_a_byte_slice() {
         use crate::wir_helpers::{ensure_helper, substr_helper};
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
-        let data = vec![DataSegment { offset: 200, bytes: mk_str("hello") }];
+        let data = vec![DataSegment { offset: 200, bytes: encoded_string("hello") }];
         let sub = |src: i32, start: i32, len: i32| WirExpr::Call {
             func: "substr".into(),
             args: vec![WirExpr::ConstI32(src), WirExpr::ConstI32(start), WirExpr::ConstI32(len)],
@@ -684,39 +615,20 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![ensure_helper(false), substr_helper(), run],
-            memory_pages: 1,
+        let module = print_int_data_module(
+            vec![ensure_helper(false), substr_helper(), run],
             data,
-            globals: vec![WirGlobal {
-                name: "heap".into(),
-                kind: Kind::I32,
-                mutable: true,
-                init: GlobalInit::I32(1024),
-                export: None,
-            }],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+            vec![heap_global(1024)],
+        );
         assert_agrees(&module, &["3", "101", "2", "104"]);
     }
 
     #[test]
     fn str_substring_slices_by_char_index() {
         use crate::wir_helpers::{char_to_byte_helper, ensure_helper, str_substring_helper, substr_helper};
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
         let data = vec![
-            DataSegment { offset: 200, bytes: mk_str("hello world") },
-            DataSegment { offset: 220, bytes: mk_str("héllo") },
+            DataSegment { offset: 200, bytes: encoded_string("hello world") },
+            DataSegment { offset: 220, bytes: encoded_string("héllo") },
         ];
         // `start`/`end` ride the full-width i64 index path (BUG-011); `s` is the i32 ptr.
         let ss = |s: i32, a: i64, b: i64| WirExpr::Call {
@@ -749,31 +661,17 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![
+        let module = print_int_data_module(
+            vec![
                 ensure_helper(false),
                 substr_helper(),
                 char_to_byte_helper(),
                 str_substring_helper(),
                 run,
             ],
-            memory_pages: 1,
             data,
-            globals: vec![WirGlobal {
-                name: "heap".into(),
-                kind: Kind::I32,
-                mutable: true,
-                init: GlobalInit::I32(1024),
-                export: None,
-            }],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+            vec![heap_global(1024)],
+        );
         assert_agrees(&module, &["5", "104", "3", "195"]);
     }
 
@@ -874,39 +772,20 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![ensure_helper(false), list_push_helper(), run],
-            memory_pages: 1,
+        let module = print_int_data_module(
+            vec![ensure_helper(false), list_push_helper(), run],
             data,
-            globals: vec![WirGlobal {
-                name: "heap".into(),
-                kind: Kind::I32,
-                mutable: true,
-                init: GlobalInit::I32(1024),
-                export: None,
-            }],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+            vec![heap_global(1024)],
+        );
         assert_agrees(&module, &["2", "42", "99"]);
     }
 
     #[test]
     fn split_breaks_on_separator() {
         use crate::wir_helpers::{ensure_helper, list_push_helper, split_helper, substr_helper};
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
         let data = vec![
-            DataSegment { offset: 200, bytes: mk_str("a,b,c") },
-            DataSegment { offset: 220, bytes: mk_str(",") },
+            DataSegment { offset: 200, bytes: encoded_string("a,b,c") },
+            DataSegment { offset: 220, bytes: encoded_string(",") },
         ];
         let gl = |n: &str| WirExpr::GetLocal(n.into());
         let to_i64 = |e: WirExpr| WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
@@ -938,25 +817,11 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![ensure_helper(false), substr_helper(), list_push_helper(), split_helper(), run],
-            memory_pages: 1,
+        let module = print_int_data_module(
+            vec![ensure_helper(false), substr_helper(), list_push_helper(), split_helper(), run],
             data,
-            globals: vec![WirGlobal {
-                name: "heap".into(),
-                kind: Kind::I32,
-                mutable: true,
-                init: GlobalInit::I32(1024),
-                export: None,
-            }],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+            vec![heap_global(1024)],
+        );
         // "a,b,c".split(",") → ["a","b","c"]: 3 pieces; piece0="a", piece2="c".
         assert_agrees(&module, &["3", "1", "97", "99"]);
     }
@@ -967,13 +832,8 @@
             byte_to_char_helper, char_to_byte_helper, ensure_helper, list_push_helper,
             str_chars_helper, str_substring_helper, substr_helper,
         };
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
         // "héllo": 5 characters but 6 bytes (é is two bytes).
-        let data = vec![DataSegment { offset: 200, bytes: mk_str("héllo") }];
+        let data = vec![DataSegment { offset: 200, bytes: encoded_string("héllo") }];
         let gl = |n: &str| WirExpr::GetLocal(n.into());
         let to_i64 = |e: WirExpr| WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
         let wrap = |e: WirExpr| WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(e) };
@@ -1001,13 +861,8 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![
+        let module = print_int_data_module(
+            vec![
                 ensure_helper(false),
                 substr_helper(),
                 char_to_byte_helper(),
@@ -1017,18 +872,9 @@
                 str_chars_helper(),
                 run,
             ],
-            memory_pages: 1,
             data,
-            globals: vec![WirGlobal {
-                name: "heap".into(),
-                kind: Kind::I32,
-                mutable: true,
-                init: GlobalInit::I32(1024),
-                export: None,
-            }],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+            vec![heap_global(1024)],
+        );
         assert_agrees(&module, &["5", "1", "104", "2", "195"]);
     }
 
@@ -1073,25 +919,11 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![ensure_helper(false), list_concat_helper(), run],
-            memory_pages: 1,
+        let module = print_int_data_module(
+            vec![ensure_helper(false), list_concat_helper(), run],
             data,
-            globals: vec![WirGlobal {
-                name: "heap".into(),
-                kind: Kind::I32,
-                mutable: true,
-                init: GlobalInit::I32(1024),
-                export: None,
-            }],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+            vec![heap_global(1024)],
+        );
         // [10,20] ++ [30] = [10,20,30].
         assert_agrees(&module, &["3", "10", "20", "30"]);
     }
@@ -1099,12 +931,7 @@
     #[test]
     fn ascii_case_changes_letter_case() {
         use crate::wir_helpers::{ascii_case_helper, ensure_helper};
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
-        let data = vec![DataSegment { offset: 200, bytes: mk_str("aB1") }];
+        let data = vec![DataSegment { offset: 200, bytes: encoded_string("aB1") }];
         let gl = |n: &str| WirExpr::GetLocal(n.into());
         let cased = |up: i32| WirExpr::Call {
             func: "ascii_case".into(),
@@ -1133,41 +960,22 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![ensure_helper(false), ascii_case_helper(), run],
-            memory_pages: 1,
+        let module = print_int_data_module(
+            vec![ensure_helper(false), ascii_case_helper(), run],
             data,
-            globals: vec![WirGlobal {
-                name: "heap".into(),
-                kind: Kind::I32,
-                mutable: true,
-                init: GlobalInit::I32(1024),
-                export: None,
-            }],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+            vec![heap_global(1024)],
+        );
         assert_agrees(&module, &["65", "66", "97", "98"]);
     }
 
     #[test]
     fn str_to_int_parses_signed_decimals() {
         use crate::wir_helpers::{is_ws_helper, str_to_int_helper};
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
         let data = vec![
-            DataSegment { offset: 200, bytes: mk_str("123") },
-            DataSegment { offset: 220, bytes: mk_str("-45") },
-            DataSegment { offset: 240, bytes: mk_str("  7  ") },
-            DataSegment { offset: 260, bytes: mk_str("+9") },
+            DataSegment { offset: 200, bytes: encoded_string("123") },
+            DataSegment { offset: 220, bytes: encoded_string("-45") },
+            DataSegment { offset: 240, bytes: encoded_string("  7  ") },
+            DataSegment { offset: 260, bytes: encoded_string("+9") },
         ];
         let parse = |off: i32| WirExpr::Call { func: "str_to_int".into(), args: vec![WirExpr::ConstI32(off)] };
         let pi = |e: WirExpr| {
@@ -1530,21 +1338,16 @@
     #[test]
     fn replace_rewrites_matches() {
         use crate::wir_helpers::{ensure_helper, match_at_helper, replace_helper};
-        let mk_str = |s: &str| {
-            let mut b = (s.len() as u32).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b
-        };
         let data = vec![
-            DataSegment { offset: 200, bytes: mk_str("hello") },
-            DataSegment { offset: 220, bytes: mk_str("l") },
-            DataSegment { offset: 240, bytes: mk_str("L") },
-            DataSegment { offset: 260, bytes: mk_str("aaa") },
-            DataSegment { offset: 280, bytes: mk_str("a") },
-            DataSegment { offset: 300, bytes: mk_str("bb") },
-            DataSegment { offset: 320, bytes: mk_str("ab") },
-            DataSegment { offset: 340, bytes: mk_str("") },
-            DataSegment { offset: 360, bytes: mk_str("-") },
+            DataSegment { offset: 200, bytes: encoded_string("hello") },
+            DataSegment { offset: 220, bytes: encoded_string("l") },
+            DataSegment { offset: 240, bytes: encoded_string("L") },
+            DataSegment { offset: 260, bytes: encoded_string("aaa") },
+            DataSegment { offset: 280, bytes: encoded_string("a") },
+            DataSegment { offset: 300, bytes: encoded_string("bb") },
+            DataSegment { offset: 320, bytes: encoded_string("ab") },
+            DataSegment { offset: 340, bytes: encoded_string("") },
+            DataSegment { offset: 360, bytes: encoded_string("-") },
         ];
         let gl = |n: &str| WirExpr::GetLocal(n.into());
         let rep = |s: i32, f: i32, t: i32| WirExpr::Call {
@@ -1575,17 +1378,39 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
-            funcs: vec![ensure_helper(false), match_at_helper(), replace_helper(), run],
-            memory_pages: 1,
+        let module = print_int_data_module(
+            vec![ensure_helper(false), match_at_helper(), replace_helper(), run],
             data,
-            globals: vec![WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(1024), export: None }],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+            vec![heap_global(1024)],
+        );
         assert_agrees(&module, &["5", "76", "76", "6", "98", "5", "45", "97"]);
     }
+    fn encoded_string(s: &str) -> Vec<u8> {
+        let mut bytes = (s.len() as u32).to_le_bytes().to_vec();
+        bytes.extend_from_slice(s.as_bytes());
+        bytes
+    }
+
+    fn heap_global(initial: i32) -> WirGlobal {
+        WirGlobal {
+            name: "heap".into(),
+            kind: Kind::I32,
+            mutable: true,
+            init: GlobalInit::I32(initial),
+            export: None,
+        }
+    }
+
+    fn print_int_data_module(
+        funcs: Vec<WirFunc>,
+        data: Vec<DataSegment>,
+        globals: Vec<WirGlobal>,
+    ) -> WirModule {
+        let mut module = print_int_module(funcs, globals);
+        module.data = data;
+        module
+    }
+
     fn print_int_module(funcs: Vec<WirFunc>, globals: Vec<WirGlobal>) -> WirModule {
         WirModule {
             imports: vec![WirImport {
