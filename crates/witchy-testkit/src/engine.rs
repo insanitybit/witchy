@@ -10,6 +10,7 @@ use crate::{
     FixtureStep, FixtureValue, PlanValidationError, SourceLocation, TEST_TRANSCRIPT_VERSION,
     TestEvent, TestResult, TestTranscript, U64Text,
 };
+use crate::validate::PlanValidationLimits;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FixtureCall {
@@ -54,7 +55,7 @@ pub struct FixtureSession {
 
 impl FixtureSession {
     pub fn new(mut plan: FixturePlan) -> Result<Self, PlanValidationError> {
-        let limits = crate::PlanValidationLimits::default();
+        let limits = PlanValidationLimits::default();
         plan.validate_with(&limits)?;
         let basic = BasicProviderState::new(&plan);
         let exec = ExecProviderState::new(&plan);
@@ -100,7 +101,7 @@ impl FixtureSession {
         })
     }
 
-    pub fn scripted_call(&mut self, call: FixtureCall) -> FixtureOutcome {
+    pub(crate) fn scripted_call(&mut self, call: FixtureCall) -> FixtureOutcome {
         if let Some(message) = self.call_contract_mismatch(&call) {
             return self.record_failure(call, FixtureErrorCode::UnexpectedCall, message);
         }
@@ -176,7 +177,7 @@ impl FixtureSession {
         self.record(call, step.outcome)
     }
 
-    pub fn observe(&mut self, call: FixtureCall, outcome: FixtureOutcome) -> FixtureOutcome {
+    pub(crate) fn observe(&mut self, call: FixtureCall, outcome: FixtureOutcome) -> FixtureOutcome {
         if let Some(message) = self.call_contract_mismatch(&call) {
             return self.record_failure(call, FixtureErrorCode::UnexpectedCall, message);
         }
@@ -205,7 +206,7 @@ impl FixtureSession {
         error
     }
 
-    pub fn capture_stdout(&mut self, value: impl Into<String>) {
+    pub(crate) fn capture_stdout(&mut self, value: impl Into<String>) {
         self.stdout.push(value.into());
     }
 

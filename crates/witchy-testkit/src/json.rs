@@ -4,7 +4,8 @@ use std::fmt;
 use serde::de::{DeserializeOwned, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
-use crate::{FixturePlan, PlanValidationError, PlanValidationLimits};
+use crate::{FixturePlan, PlanValidationError};
+use crate::validate::PlanValidationLimits;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanDecodeError {

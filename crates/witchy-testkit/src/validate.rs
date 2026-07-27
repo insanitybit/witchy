@@ -9,7 +9,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PlanValidationLimits {
+pub(crate) struct PlanValidationLimits {
     pub max_json_bytes: usize,
     pub max_collection_items: usize,
     pub max_script_steps: usize,
@@ -67,7 +67,7 @@ impl FixturePlan {
         self.validate_with(&PlanValidationLimits::default())
     }
 
-    pub fn validate_with(
+    pub(crate) fn validate_with(
         &self,
         limits: &PlanValidationLimits,
     ) -> Result<(), PlanValidationError> {

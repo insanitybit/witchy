@@ -17,14 +17,10 @@ mod model;
 mod secret;
 mod validate;
 
-pub use basic::{FixtureHandle, ProviderResult};
+pub use basic::FixtureHandle;
 pub use engine::{FixtureCall, FixtureSession};
-pub use exec::ExecProviderResult;
-pub use filesystem::FilesystemProviderResult;
-pub use fetch::FetchProviderResult;
 pub use json::{
     PlanDecodeError, canonical_plan_json, parse_fixture_plan, parse_unique_json,
 };
 pub use model::*;
-pub use secret::SecretProviderResult;
-pub use validate::{PlanValidationError, PlanValidationLimits};
+pub use validate::PlanValidationError;
