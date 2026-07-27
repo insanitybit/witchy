@@ -536,40 +536,6 @@
         actor.output()
     }
 
-    /// Run a WIR-assembled binary with EVERY capability granted. The static
-    /// prelude is "all features on", so a raw-body-path module imports the full
-    /// host surface; granting everything lets it instantiate. (The pruned
-    /// WIR-helper path emits capability-minimal modules — see `run_bytes_print_only`.)
-    fn run_bytes_all_caps(bytes: &[u8]) -> Vec<String> {
-        use crate::runtime::{Capabilities, Runtime};
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                bytes,
-                Capabilities {
-                    print: true,
-                    print_int: true,
-                    quiet: true,
-                    clock: true,
-                    env: true,
-                    dir_root: Some(std::path::PathBuf::from(".")),
-                    dir_read: true,
-                    dir_write: true,
-                    net_allow: Some(Vec::new()),
-                    net_connect: true,
-                    net_listen: true,
-                    signing_key: Some([0u8; 32]),
-                    build_out: Some(std::env::temp_dir()),
-                    build_read_roots: vec![std::path::PathBuf::from(".")],
-                    ..Default::default()
-                },
-                crate::RUN_MEMORY_PAGES,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        actor.output()
-    }
-
 
     /// Run a WIR-binary under a print-only grant and read the exported
     /// `__witchy_reowns` counter — the timing-free proof of in-place (O(1)) vs

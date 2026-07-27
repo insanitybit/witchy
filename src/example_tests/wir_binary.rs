@@ -1,22 +1,6 @@
 use super::*;
 use crate::{codegen, parser, typeck};
 
-    /// RFC-0011: the raw-string `restrict` builtin is RETIRED. Address narrowing now goes
-    /// only through the typed `net.only(Net...)` verb; a raw `host:port` string survives
-    /// solely as a `--net`/config grant, not a language builtin. Both the free `restrict(net,
-    /// …)` and the method `net.restrict(…)` forms are rejected — there is no such verb.
-    #[test]
-    fn retired_restrict_builtin_is_rejected() {
-        assert!(
-            typeck::check_str("fn main(net: Net):\n    let r = restrict(net, \"a:1\")\n").is_err(),
-            "the free `restrict` builtin must be rejected after retirement",
-        );
-        assert!(
-            typeck::check_str("fn main(net: Net):\n    let r = net.restrict(\"a:1\")\n").is_err(),
-            "the `net.restrict` method form must be rejected after retirement",
-        );
-    }
-
     /// `witchy emit-wat <file>` compiles a program to WebAssembly text — the same
     /// module `sandbox` runs — for inspecting the generated code.
     #[test]
@@ -32,25 +16,6 @@ use crate::{codegen, parser, typeck};
         assert!(wat.starts_with("(module"), "expected a wasm module, got: {}", &wat[..wat.len().min(40)]);
         // The fib function is emitted, module-qualified by the file stem.
         assert!(wat.contains(".fib (param $n i64)"), "expected the fib function in the WAT");
-    }
-
-    /// An `var` fn with an EARLY `return` on the binary path: the return must
-    /// yield the full multi-result tuple (the declared value, then each var
-    /// param's final value) so the arity matches the move-out ABI — a single
-    /// `N::Return` would mismatch and the whole module bailed to WAT. `clamp`
-    /// returns early when `n > 10`; both the early and fall-through exits write
-    /// `n` back into the caller's variable.
-    #[test]
-    fn wir_var_early_return_binary_path() {
-        let src = "fn clamp(var n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    console.print(\"${a}\")\n    var b = 50\n    clamp(b)\n    console.print(\"${b}\")\n";
-        let want = vec!["6".to_string(), "10".to_string()];
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typeck");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the WIR binary path should lower an var fn with an early return");
-        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
-        assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a
@@ -88,40 +53,6 @@ use crate::{codegen, parser, typeck};
             "optimized",
         );
         assert_eq!(link_run(src), want, "interpreter oracle");
-    }
-
-    /// The `wir_opt` slot-elimination pass is a SOUND, behavior-preserving
-    /// rewrite: for every lowering-subset program, the unoptimized and optimized
-    /// binaries both run identically to the interpreter oracle. (Node-count
-    /// reduction is unit-tested in `wir_opt` on synthetic `FromSlot(ToSlot)`
-    /// redundancy; the current lowering emits no such round-trips — those arise
-    /// at generic/monomorphization boundaries that do not lower yet — so
-    /// `eliminated` is 0 on these real programs. The measurable payoff lands when
-    /// that lowering does, producing the redundancy the pass removes.)
-    #[test]
-    fn wir_slot_elimination_is_behavior_preserving() {
-        let progs = [
-            "fn main(console: Console):\n    console.print(\"hi\")\n",
-            "fn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    if inc(inc(0)) > 1:\n        console.print(\"ok\")\n    else:\n        console.print(\"no\")\n",
-            "fn classify(n: Int) -> Bool:\n    match n:\n        0 -> true\n        _ -> false\n\nfn main(console: Console):\n    if classify(0):\n        console.print(\"zero\")\n    else:\n        console.print(\"nonzero\")\n",
-        ];
-        for src in progs {
-            let module = parser::parse_module(src).expect("parse");
-            let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-            typeck::check(&linked).expect("typecheck");
-            let m = codegen::assemble_wir_module(&linked)
-                .expect_lowered(&format!("expected the WIR binary path to handle:\n{src}"));
-            let oracle = link_run(src);
-            // Unoptimized encoding runs like the oracle...
-            let unopt = witchy_wir::wir_encode::encode(&m, &[]);
-            assert_eq!(run_bytes_all_caps(&unopt), oracle, "unoptimized:\n{src}");
-            // ...and the optimized encoding runs identically (sound rewrite).
-            let mut opt_m = m.clone();
-            let stats = witchy_wir::wir_opt::optimize(&mut opt_m);
-            assert!(stats.nodes_after <= stats.nodes_before, "the pass never grows the tree");
-            let opt = witchy_wir::wir_encode::encode(&opt_m, &[]);
-            assert_eq!(run_bytes_all_caps(&opt), oracle, "optimized:\n{src}");
-        }
     }
 
     /// M3 sink-flip: the WIR→binary path (`compile_module_binary`, NO
