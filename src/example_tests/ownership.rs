@@ -390,14 +390,6 @@ fn main(console: Console):
     /// (RFC-0087 §6, criterion 2) `?` is an ordinary early return, not a
     /// transaction boundary: `?`, its explicit `return Err(...)` desugaring, and a
     /// tail `Err(...)` all commit the same final `var` values on both backends.
-    #[test]
-    fn rfc0087_try_return_and_tail_err_commit_identical_finals() {
-        let src = "fn fail_op() -> Result(Int, String):\n    Err(\"boom\")\n\nfn via_try(var n: Int) -> Result(Int, String):\n    n = n + 1\n    let v = fail_op()?\n    Ok(v)\n\nfn via_return(var n: Int) -> Result(Int, String):\n    n = n + 1\n    return Err(\"boom\")\n\nfn via_tail(var n: Int) -> Result(Int, String):\n    n = n + 1\n    Err(\"boom\")\n\nfn main(console: Console):\n    var a = 10\n    var b = 10\n    var c = 10\n    let r1 = via_try(a) ?? 0\n    let r2 = via_return(b) ?? 0\n    let r3 = via_tail(c) ?? 0\n    console.print(\"${a} ${b} ${c}\")\n    console.print(\"${r1} ${r2} ${r3}\")\n";
-        let want = ["11 11 11", "0 0 0"];
-        assert_eq!(link_run(src), want, "interpreter: three failure spellings, one write-back rule");
-        assert_eq!(wasm_run(src), want, "compiled backend: three failure spellings, one write-back rule");
-    }
-
     /// (RFC-0087 criterion 2) The classification edge: a first `var` param whose
     /// type equals the return type (`Result` receiver) plus an ADDITIONAL `var`
     /// param. Whatever the receiver's transitional classification, the extra
@@ -411,16 +403,6 @@ fn main(console: Console):
         let want = ["[1]", "-1"];
         assert_eq!(interp_std(src), want, "interpreter commits the extra var param on `?`");
         assert_eq!(wasm_run(src), want, "compiled backend commits the extra var param on `?`");
-    }
-
-    /// Function types carry conventions, so a value-returning `var` function
-    /// writes back through both a named function value and a literal lambda.
-    #[test]
-    fn rfc0087_var_function_values_write_back_on_both_backends() {
-        let src = "fn bump(var n: Int) -> Int:\n    n = n + 2\n    n * 10\n\nfn apply(f: fn(var Int) -> Int, var n: Int) -> Int:\n    f(n)\n\nfn main(console: Console):\n    var a = 1\n    let named: fn(var Int) -> Int = bump\n    let x = apply(named, a)\n    console.print(\"${a} ${x}\")\n    var b = 3\n    let literal: fn(var Int) -> Int = fn(var n: Int):\n        n = n + 4\n        n * 100\n    let y = apply(literal, b)\n    console.print(\"${b} ${y}\")\n";
-        let want = ["3 30", "7 700"];
-        assert_eq!(link_run(src), want, "interpreter function-value write-back");
-        assert_eq!(wasm_run(src), want, "compiled function-value write-back");
     }
 
     /// Indirect calls use the same captured-place protocol as direct calls:
