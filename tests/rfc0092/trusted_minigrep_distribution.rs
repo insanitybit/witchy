@@ -2,57 +2,17 @@
 //! copy the one-file artifact away from its source tree, and run it without a
 //! Witchy installation or launch-time grant flags.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
+use std::process::Command;
 
-const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 const REPO: &str = env!("CARGO_MANIFEST_DIR");
-static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
 
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new() -> Self {
-        let sequence = NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "witchy-rfc0092-minigrep-{}-{sequence}",
-            std::process::id()
-        ));
-        if path.exists() {
-            std::fs::remove_dir_all(&path).unwrap();
-        }
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn join(&self, path: impl AsRef<Path>) -> PathBuf {
-        self.0.join(path)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn run(command: &mut Command) -> Output {
-    command.output().expect("spawn command")
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
+use super::support::{run, stderr, stdout, Scratch, BIN};
 
 #[test]
 #[cfg(unix)]
 fn committed_minigrep_builds_and_runs_as_an_installed_trusted_app() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("witchy-rfc0092-minigrep");
     let project = scratch.join("project");
     std::fs::create_dir_all(project.join("src")).unwrap();
     for file in ["witchy.toml", "src/minigrep.witchy", "src/minigrep_test.witchy"] {
@@ -61,7 +21,7 @@ fn committed_minigrep_builds_and_runs_as_an_installed_trusted_app() {
 
     let built = run(
         Command::new(BIN)
-            .current_dir(&scratch.0)
+            .current_dir(scratch.path())
             .args(["--release", "build", "--target", "trusted-exe", "project"]),
     );
     assert!(

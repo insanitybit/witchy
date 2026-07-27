@@ -1,55 +1,14 @@
 //! RFC-0092 trusted application distribution: real native artifact, checked
 //! bindings, normal command behavior, and portable-WASM trust separation.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::Command;
 
-const BIN: &str = env!("CARGO_BIN_EXE_witchy");
-static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
-
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new() -> Self {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let sequence = NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "witchy-rfc0092-{}-{nonce}-{sequence}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn join(&self, path: impl AsRef<Path>) -> PathBuf {
-        self.0.join(path)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn run(command: &mut Command) -> Output {
-    command.output().expect("spawn command")
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
+use super::support::{run, stderr, stdout, Scratch, BIN};
 
 #[test]
 #[cfg(unix)]
 fn trusted_executable_end_to_end() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("witchy-rfc0092");
     std::fs::create_dir_all(scratch.join("src")).unwrap();
     std::fs::write(scratch.join("inside.txt"), "cwd-data").unwrap();
     std::fs::write(
@@ -85,7 +44,7 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     // produces one executable artifact.
     let built = run(
         Command::new(BIN)
-            .current_dir(&scratch.0)
+            .current_dir(scratch.path())
             .args(["--release", "build", "--target", "trusted-exe"]),
     );
     assert!(
@@ -104,7 +63,7 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     std::fs::copy(&executable, &installed).unwrap();
     let relative = run(
         Command::new(&installed)
-            .current_dir(&scratch.0)
+            .current_dir(scratch.path())
             .env("PATH", "")
             .env("RFC0092_TEST_LABEL", "inherited")
             .args(["inside.txt", "--dir", "belongs-to-app"]),
@@ -126,7 +85,7 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     std::fs::write(&absolute_file, "root-data").unwrap();
     let absolute = run(
         Command::new(&installed)
-            .current_dir(&scratch.0)
+            .current_dir(scratch.path())
             .arg(absolute_file.to_str().unwrap()),
     );
     assert_eq!(absolute.status.code(), Some(23), "stderr: {}", stderr(&absolute));
@@ -135,7 +94,7 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     let absolute_guest = format!("/{}", absolute_file.display());
     let rejected_absolute = run(
         Command::new(&installed)
-            .current_dir(&scratch.0)
+            .current_dir(scratch.path())
             .arg(absolute_guest),
     );
     assert!(!rejected_absolute.status.success());
@@ -145,7 +104,7 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
         stderr(&rejected_absolute)
     );
 
-    let escaped = run(Command::new(&installed).current_dir(&scratch.0).arg("../outside.txt"));
+    let escaped = run(Command::new(&installed).current_dir(scratch.path()).arg("../outside.txt"));
     assert!(!escaped.status.success());
     assert!(stderr(&escaped).contains("`..` escapes the Dir capability"), "{}", stderr(&escaped));
 
@@ -157,7 +116,7 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     std::fs::write(&corrupt, bytes).unwrap();
     let permissions = std::fs::metadata(&installed).unwrap().permissions();
     std::fs::set_permissions(&corrupt, permissions).unwrap();
-    let rejected = run(Command::new(&corrupt).current_dir(&scratch.0).arg("inside.txt"));
+    let rejected = run(Command::new(&corrupt).current_dir(scratch.path()).arg("inside.txt"));
     assert!(!rejected.status.success());
     assert!(stdout(&rejected).is_empty(), "main ran before validation: {}", stdout(&rejected));
     assert!(stderr(&rejected).contains("digest mismatch"), "{}", stderr(&rejected));
@@ -175,7 +134,7 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     let denied = run(Command::new(BIN).args(["sandbox", portable.to_str().unwrap(), "inside.txt"]));
     assert!(!denied.status.success());
     assert!(stderr(&denied).contains("no subtree was granted"), "{}", stderr(&denied));
-    let granted = run(Command::new(BIN).current_dir(&scratch.0).args([
+    let granted = run(Command::new(BIN).current_dir(scratch.path()).args([
         "sandbox",
         "--dir",
         ".",
@@ -190,7 +149,7 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
 #[test]
 #[cfg(all(unix, not(target_os = "linux")))]
 fn trusted_executable_required_confinement_fails_before_main() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("witchy-rfc0092");
     let manifest = scratch.join("witchy.toml");
     std::fs::write(
         &manifest,
@@ -229,7 +188,7 @@ fn trusted_executable_required_confinement_fails_before_main() {
 
 #[test]
 fn dependency_footprint_does_not_widen_the_trusted_root() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("witchy-rfc0092");
     let manifest = scratch.join("witchy.toml");
     std::fs::write(&manifest, "[rune]\nname = \"root\"\nversion = \"0.1.0\"\n[targets.trusted-exe]\n").unwrap();
     let dependency = scratch.join("dependency.witchy");
@@ -265,7 +224,7 @@ fn dependency_footprint_does_not_widen_the_trusted_root() {
 
 #[test]
 fn fixed_file_and_named_secret_providers_resolve_only_at_startup() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("witchy-rfc0092");
     std::fs::write(scratch.join("config.txt"), "fixed-config").unwrap();
     let entry = scratch.join("providers.witchy");
     std::fs::write(
@@ -297,7 +256,7 @@ fn fixed_file_and_named_secret_providers_resolve_only_at_startup() {
     assert!(built.status.success(), "{}", stderr(&built));
     let resolved = run(
         Command::new(&executable)
-            .current_dir(&scratch.0)
+            .current_dir(scratch.path())
             .env("RFC0092_SECRET", "runtime-only"),
     );
     assert!(resolved.status.success(), "{}", stderr(&resolved));
@@ -305,7 +264,7 @@ fn fixed_file_and_named_secret_providers_resolve_only_at_startup() {
 
     let missing = run(
         Command::new(&executable)
-            .current_dir(&scratch.0)
+            .current_dir(scratch.path())
             .env_remove("RFC0092_SECRET"),
     );
     assert!(!missing.status.success());
@@ -335,7 +294,7 @@ fn fixed_file_and_named_secret_providers_resolve_only_at_startup() {
 #[test]
 #[cfg(unix)]
 fn explicit_exec_policy_uses_a_separately_bound_readable_dir() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("witchy-rfc0092");
     let entry = scratch.join("exec_app.witchy");
     std::fs::write(
         &entry,

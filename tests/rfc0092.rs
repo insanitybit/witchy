@@ -4,6 +4,8 @@
 //! Files live in `tests/rfc0092/` (a subdir is not auto-compiled as its own
 //! binary) and are attached here via `#[path]` since a test crate root
 //! resolves bare `mod` names against `tests/`, not the subdir.
+#[path = "rfc0092/support.rs"]
+mod support;
 #[path = "rfc0092/trusted_application_executables.rs"]
 mod trusted_application_executables;
 #[path = "rfc0092/trusted_minigrep_distribution.rs"]
