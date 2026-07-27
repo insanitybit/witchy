@@ -180,42 +180,22 @@
         );
     }
 
-    #[test]
-    fn null_file_externref_is_rejected() {
-        let path = std::env::temp_dir().join(format!(
-            "witchy-null-file-externref-{}-{}.txt",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::write(&path, "host-owned").unwrap();
-
+    fn assert_null_externref_rejected(module: &str, capabilities: Capabilities, kind: &str) {
         let mut rt = Runtime::new().unwrap();
-        let mut vm = rt
-            .spawn(
-                NULL_FILE_READ,
-                Capabilities {
-                    file_grants: vec![path.clone()],
-                    ..Default::default()
-                },
-                4,
-            )
-            .unwrap();
+        let mut vm = rt.spawn(module, capabilities, 4).unwrap();
         let err = vm.run().unwrap_err();
-        let _ = std::fs::remove_file(path);
         let detail = format!("{err:?}");
+        let expected = format!("{kind} externref is null");
         assert!(
-            detail.contains("File externref is null"),
-            "expected null File externref rejection, got: {detail}"
+            detail.contains(&expected),
+            "expected null {kind} externref rejection, got: {detail}"
         );
     }
 
     #[test]
-    fn null_dir_externref_is_rejected() {
+    fn null_externrefs_are_rejected_by_every_capability_family() {
         let root = std::env::temp_dir().join(format!(
-            "witchy-null-dir-externref-{}-{}",
+            "witchy-null-externrefs-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -223,128 +203,70 @@
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("file.txt");
+        std::fs::write(&file, "host-owned").unwrap();
 
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt
-            .spawn(
+        let cases = [
+            (
+                NULL_FILE_READ,
+                Capabilities {
+                    file_grants: vec![file],
+                    ..Default::default()
+                },
+                "File",
+            ),
+            (
                 NULL_DIR_READ,
                 Capabilities {
                     dir_root: Some(root.clone()),
                     dir_read: true,
                     ..Default::default()
                 },
-                4,
-            )
-            .unwrap();
-        let err = vm.run().unwrap_err();
-        let _ = std::fs::remove_dir_all(root);
-        let detail = format!("{err:?}");
-        assert!(
-            detail.contains("Dir externref is null"),
-            "expected null Dir externref rejection, got: {detail}"
-        );
-    }
-
-    #[test]
-    fn null_net_externref_is_rejected() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt
-            .spawn(
+                "Dir",
+            ),
+            (
                 NULL_NET_CONNECT,
                 Capabilities {
                     net_allow: Some(vec!["127.0.0.1:1".to_string()]),
                     net_connect: true,
                     ..Default::default()
                 },
-                4,
-            )
-            .unwrap();
-        let err = vm.run().unwrap_err();
-        let detail = format!("{err:?}");
-        assert!(
-            detail.contains("Net externref is null"),
-            "expected null Net externref rejection, got: {detail}"
-        );
-    }
-
-    #[test]
-    fn null_socket_externref_is_rejected() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt
-            .spawn(
+                "Net",
+            ),
+            (
                 NULL_SOCKET_CLOSE,
                 Capabilities {
                     net_allow: Some(vec!["127.0.0.1:1".to_string()]),
                     net_connect: true,
                     ..Default::default()
                 },
-                4,
-            )
-            .unwrap();
-        let err = vm.run().unwrap_err();
-        let detail = format!("{err:?}");
-        assert!(
-            detail.contains("Socket externref is null"),
-            "expected null Socket externref rejection, got: {detail}"
-        );
-    }
-
-    #[test]
-    fn null_listener_externref_is_rejected() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt
-            .spawn(
+                "Socket",
+            ),
+            (
                 NULL_LISTENER_ACCEPT,
                 Capabilities {
                     net_allow: Some(vec!["127.0.0.1:0".to_string()]),
                     net_listen: true,
                     ..Default::default()
                 },
-                4,
-            )
-            .unwrap();
-        let err = vm.run().unwrap_err();
-        let detail = format!("{err:?}");
-        assert!(
-            detail.contains("Listener externref is null"),
-            "expected null Listener externref rejection, got: {detail}"
-        );
-    }
-
-    #[test]
-    fn null_secret_externref_is_rejected_by_reveal() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt
-            .spawn(NULL_SECRET_REVEAL, Capabilities::default(), 4)
-            .unwrap();
-        let err = vm.run().unwrap_err();
-        let detail = format!("{err:?}");
-        assert!(
-            detail.contains("Secret externref is null"),
-            "expected null Secret externref rejection, got: {detail}"
-        );
-    }
-
-    #[test]
-    fn null_secret_externref_is_rejected_by_sign() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt
-            .spawn(
+                "Listener",
+            ),
+            (NULL_SECRET_REVEAL, Capabilities::default(), "Secret"),
+            (
                 NULL_SECRET_SIGN,
                 Capabilities {
                     signing_key: Some([0x41; 32]),
                     secrets: vec![SecretGrant::new("signing", vec![0x41; 32])],
                     ..Default::default()
                 },
-                4,
-            )
-            .unwrap();
-        let err = vm.run().unwrap_err();
-        let detail = format!("{err:?}");
-        assert!(
-            detail.contains("Secret externref is null"),
-            "expected null Secret externref rejection, got: {detail}"
-        );
+                "Secret",
+            ),
+        ];
+        for (module, capabilities, kind) in cases {
+            assert_null_externref_rejected(module, capabilities, kind);
+        }
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
