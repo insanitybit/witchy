@@ -25,6 +25,24 @@ use crate::{codegen, interpreter, parser, typeck};
         (port, server)
     }
 
+    fn run_fixed_http_program(
+        response: &'static str,
+        build: impl FnOnce(u16) -> String,
+    ) -> Vec<String> {
+        let (port, server) = fixed_http_server(response);
+        let program = build(port);
+        let module = parser::parse_module(&program).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        let output = interpreter::run_module(
+            linked,
+            std::path::Path::new("."),
+            vec![format!("127.0.0.1:{port}")],
+        )
+        .expect("run");
+        server.join().expect("server");
+        output
+    }
+
     #[test]
     fn rfc0054_server_parse_request_uses_typed_error_and_response_bridge() {
         let src = r#"import http
@@ -989,10 +1007,9 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn std_http_get_url_against_loopback() {
-        let (port, server) = fixed_http_server(
+        let out = run_fixed_http_program(
             "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nhello-url",
-        );
-        let program = format!(
+            |port| format!(
             r#"
 import http
 fn main(console: Console, net: Net):
@@ -1001,25 +1018,16 @@ fn main(console: Console, net: Net):
         Ok(r) -> console.print(http.body(r))
         Err(e) -> console.print(http.http_error_message(e))
 "#
+            ),
         );
-        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
-        let linked = crate::pipeline::link(mods, "main").expect("link");
-        let out = interpreter::run_module(
-            linked,
-            std::path::Path::new("."),
-            vec![format!("127.0.0.1:{port}")],
-        )
-        .expect("run");
-        server.join().ok();
         assert_eq!(out, vec!["hello-url"]);
     }
 
     #[test]
     fn std_http_get_against_loopback() {
-        let (port, server) = fixed_http_server(
+        let out = run_fixed_http_program(
             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
-        );
-        let program = format!(
+            |port| format!(
             r#"
 import http
 fn main(console: Console, net: Net):
@@ -1028,26 +1036,17 @@ fn main(console: Console, net: Net):
     console.print("${{http.status(r)}}")
     console.print(http.body(r))
 "#
+            ),
         );
-        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
-        let linked = crate::pipeline::link(mods, "main").expect("link");
-        let out = interpreter::run_module(
-            linked,
-            std::path::Path::new("."),
-            vec![format!("127.0.0.1:{port}")],
-        )
-        .expect("run");
-        server.join().ok();
         assert_eq!(out, vec!["200".to_string(), "hello".to_string()]);
     }
 
     #[test]
     fn std_http_rejects_malformed_status_line() {
         // A non-numeric status code (`BAD`) would otherwise trap string_to_int.
-        let (port, server) = fixed_http_server(
+        let out = run_fixed_http_program(
             "HTTP/1.1 BAD Weird\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
-        );
-        let program = format!(
+            |port| format!(
             r#"
 import http
 fn main(console: Console, net: Net):
@@ -1057,16 +1056,8 @@ fn main(console: Console, net: Net):
         Err(http.ProviderMalformedResponse(_message)) -> console.print("rejected")
         Err(error) -> console.print(http.http_error_message(error))
 "#
+            ),
         );
-        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
-        let linked = crate::pipeline::link(mods, "main").expect("link");
-        let out = interpreter::run_module(
-            linked,
-            std::path::Path::new("."),
-            vec![format!("127.0.0.1:{port}")],
-        )
-        .expect("run");
-        server.join().ok();
         assert_eq!(out, vec!["rejected".to_string()]);
     }
 
@@ -1134,10 +1125,9 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn std_http_headers_against_loopback() {
-        let (port, server) = fixed_http_server(
+        let out = run_fixed_http_program(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Custom: abc\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
-        );
-        let program = format!(
+            |port| format!(
             r#"
 import http
 import option
@@ -1148,15 +1138,7 @@ fn main(console: Console, net: Net):
     console.print(option.unwrap_or(http.header(r, "x-custom"), "none"))
     console.print(option.unwrap_or(http.header(r, "Missing"), "none"))
 "#
+            ),
         );
-        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
-        let linked = crate::pipeline::link(mods, "main").expect("link");
-        let out = interpreter::run_module(
-            linked,
-            std::path::Path::new("."),
-            vec![format!("127.0.0.1:{port}")],
-        )
-        .expect("run");
-        server.join().ok();
         assert_eq!(out, vec!["application/json", "abc", "none"]);
     }
