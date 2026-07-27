@@ -35,7 +35,7 @@ with real-book/browser coverage in [`tests/glamour/dom.rs`](../tests/glamour/dom
 > `docs-deploy`) publishes it to GitHub Pages. Proven by `glamour_docs_app_renders_book_pages`,
 > `glamour_docs_bundle_renders_the_real_book` (runs the real bundle over the real book),
 > the host-Slot tests, the repaired playground, and the drift gate
-> `book_examples_manifest_is_current` (browser == manifest == interpreter). mdBook is
+> `documentation_examples_are_valid` (browser == manifest == interpreter/Wasm). mdBook is
 > removed. RFC-0019 is superseded.
 >
 > **Deploy trade-off (maintainer decision):** the target is GitHub Pages, which does not

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ast, codegen, interpreter, parser, typeck};
+use crate::{codegen, interpreter, parser};
 
     /// The bundled stdlib must stay on the in-place fast path: a performance cliff
     /// (an accumulator that reverts to copy-per-iteration, i.e. O(n²)) anywhere in
@@ -72,92 +72,32 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         );
     }
 
-    /// Every ```witchy code block in the documentation must be a real program:
-    /// it parses, links, and type-checks; and when it defines a `main` whose
-    /// footprint needs nothing beyond Console, it RUNS on both backends and the
-    /// outputs must agree. Docs that drift from the language break the build.
-    #[test]
-    fn documentation_examples_are_valid() {
-        let files = doc_markdown_files();
-
-        let results: Vec<(usize, usize)> = std::thread::scope(|s| {
-            let handles: Vec<_> = files.iter().map(|file| {
-                s.spawn(move || {
-                    let mut checked = 0usize;
-                    let mut ran = 0usize;
-                    let Ok(text) = std::fs::read_to_string(file) else { return (0, 0) };
-                    for (idx, snippet) in extract_witchy_blocks(&text).into_iter().enumerate() {
-                        let context = format!("{}: ```witchy block #{}", file.display(), idx + 1);
-                        let proof = witchy::resolve_std_only_checked(&snippet)
-                            .unwrap_or_else(|e| {
-                                panic!("{context} fails to parse, link, or type-check: {e}\n---\n{snippet}")
-                            });
-                        let linked = proof.module();
-                        checked += 1;
-
-                        let has_main = linked
-                            .items
-                            .iter()
-                            .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-                        let has_actor = false;
-                        let reads_argv = linked.items.iter().any(|it| {
-                            matches!(it, ast::Item::Function(f) if f.name == "main"
-                                && f.params.iter().any(|p| matches!(&p.ty,
-                                    Some(ast::Type::Named(n, args)) if n == "List"
-                                        && matches!(args.first(),
-                                            Some(ast::Type::Named(s, _)) if s == "String"))))
-                        });
-                        let footprint = crate::capabilities::analyze(linked);
-                        let console_only = footprint.total.keys().all(|k| *k == "Console");
-                        if has_main
-                            && console_only
-                            && !main_declares_console_read(linked)
-                            && !has_actor
-                            && !reads_argv
-                        {
-                            let bytes = codegen::compile_checked_module_binary(&proof)
-                                .expect_lowered(&format!("{context} compiles to WASM"));
-                            let interp = interpreter::run_checked_module(
-                                &proof,
-                                std::path::Path::new("."),
-                                Vec::new(),
-                            )
-                            .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"));
-                            let compiled = crate::run_wasm_bytes(&bytes)
-                                .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}"));
-                            assert_eq!(interp, compiled, "{context}: the backends DIVERGE");
-                            ran += 1;
-                        }
-                    }
-                    (checked, ran)
-                })
-            }).collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
-        let checked: usize = results.iter().map(|(c, _)| c).sum();
-        let ran: usize = results.iter().map(|(_, r)| r).sum();
-        assert!(checked >= 20, "expected the docs to carry many checked examples, found {checked}");
-        assert!(ran >= 5, "expected several runnable doc examples, found {ran}");
-    }
-
     /// (RFC-0041 Phase 3) `book/examples.json` — the committed classification manifest — must
     /// match what the classifier produces, so the runnable book can never show a reader an
     /// output the toolchain would not. Freshness-gated exactly like `stdlib_docs_are_current`.
-    /// Regenerate with: `BLESS_EXAMPLES=1 cargo test -p witchy book_examples_manifest_is_current`.
+    /// Regenerate with: `BLESS_EXAMPLES=1 cargo test -p witchy documentation_examples_are_valid`.
     #[test]
-    fn book_examples_manifest_is_current() {
+    fn documentation_examples_are_valid() {
         let fresh = generate_examples_manifest();
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(&fresh).expect("generated examples manifest is valid JSON");
+        assert!(entries.len() >= 20, "expected many checked documentation examples");
+        let runnable = entries
+            .iter()
+            .filter(|entry| entry["runnable"] == serde_json::Value::Bool(true))
+            .count();
+        assert!(runnable >= 5, "expected several runnable documentation examples");
         let path = std::path::Path::new("book/examples.json");
         if std::env::var("BLESS_EXAMPLES").is_ok() {
             std::fs::write(path, &fresh).expect("write book/examples.json");
             return;
         }
         let committed = std::fs::read_to_string(path).unwrap_or_else(|_| {
-            panic!("book/examples.json missing — regenerate: BLESS_EXAMPLES=1 cargo test book_examples_manifest_is_current")
+            panic!("book/examples.json missing — regenerate: BLESS_EXAMPLES=1 cargo test documentation_examples_are_valid")
         });
         assert_eq!(
             committed, fresh,
-            "book/examples.json is stale — regenerate: BLESS_EXAMPLES=1 cargo test book_examples_manifest_is_current"
+            "book/examples.json is stale — regenerate: BLESS_EXAMPLES=1 cargo test documentation_examples_are_valid"
         );
     }
 
@@ -217,71 +157,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
 
     #[test]
     fn examples_agree_under_rc_floor() {
-        // Metamorphic, NO-ORACLE guard for the RC-floor lever: `WITCHY_OPT=rc-floor` adds the
-        // dup/drop refcount discipline + free-at-overwrite/last-use reclamation, which must be
-        // OUTPUT-TRANSPARENT — compiling with it on produces byte-identical output to the default.
-        // A premature or wrong free (a use-after-free) shows up as a divergence here. This is the
-        // check that would have caught the free-at-overwrite alias-init UAF (it corrupted
-        // `toml.get_array`); before it, NO test ran the examples under this lever — exactly how a
-        // gated-lever memory bug hides. Restricted to console-only, `main`-bearing programs so the
-        // run needs no capability grants and the output is deterministic.
-        use crate::opt::{self, Opt, OptSet};
-        let entries = example_entries();
-        let diverged: Vec<String> = std::thread::scope(|s| {
-            let handles: Vec<_> = entries.iter().map(|path| {
-                s.spawn(|| {
-                    let p = path.to_str().unwrap();
-                    let Ok((linked, _)) = crate::link_file(p) else {
-                        return None;
-                    };
-                    if typeck::check(&linked).is_err() {
-                        return None;
-                    }
-                    let has_main = linked
-                        .items
-                        .iter()
-                        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-                    let console_only = crate::capabilities::analyze(&linked)
-                        .total
-                        .keys()
-                        .all(|k| *k == "Console");
-                    if !has_main || !console_only || main_declares_console_read(&linked) {
-                        return None;
-                    }
-                    let compile_with_rc = |on: bool| {
-                        opt::set_for_tests(if on {
-                            Some(OptSet::default_set().with(Opt::RcFloor))
-                        } else {
-                            None
-                        });
-                        let bytes = codegen::compile_module_binary(&linked);
-                        opt::set_for_tests(None);
-                        bytes
-                    };
-                    if let (
-                        codegen::LoweringOutcome::Lowered(def),
-                        codegen::LoweringOutcome::Lowered(rc),
-                    ) = (compile_with_rc(false), compile_with_rc(true)) {
-                        let a = crate::run_wasm_bytes(&def);
-                        let b = crate::run_wasm_bytes(&rc);
-                        if a != b {
-                            return Some(format!("{p}: default {a:?} vs rc-floor {b:?}"));
-                        }
-                    }
-                    None
-                })
-            }).collect();
-            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
-        });
-        assert!(
-            diverged.is_empty(),
-            "rc-floor diverges from the default codegen on examples (a reclamation use-after-free):\n{}",
-            diverged.join("\n")
-        );
-    }
-
-    #[test]
-    fn every_example_agrees_under_rc_floor() {
         use crate::opt::{Opt, OptSet};
         assert_examples_agree_under(OptSet::default_set().with(Opt::RcFloor), "rc-floor");
     }
@@ -311,92 +186,28 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         let _ = std::fs::remove_file(&tmp);
     }
 
-    /// WIR migration progress meter (not an assertion): reports how many example
-    /// programs take the AST→WIR→wasm-binary path vs. still fall back to WAT.
-    /// Run with `cargo test --features native binary_path_coverage_report --
-    /// --ignored --nocapture`; add `WIRDIAG=1` to also print, per bailing program,
-    /// which function(s) didn't lower (the `assemble_wir_module` diagnostic).
-    /// Library files (no `main`) can't be a standalone binary, so they're skipped
-    /// rather than counted as fallbacks.
+    /// Every example must validate through its usable CLI path. Finite examples
+    /// execute to completion; server demos type-check because running them would
+    /// require a network grant and never terminate.
     #[test]
-    #[ignore]
-    fn binary_path_coverage_report() {
-        let mut dirs = vec![std::path::PathBuf::from("examples")];
-        let mut srcs: Vec<std::path::PathBuf> = vec![];
-        while let Some(d) = dirs.pop() {
-            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    dirs.push(p);
-                } else if p.extension().and_then(|s| s.to_str()) == Some("witchy") {
-                    srcs.push(p);
-                }
-            }
-        }
-        srcs.sort();
-        let (mut ok, mut total) = (0, 0);
-        let mut bailed: Vec<String> = vec![];
-        for p in srcs {
-            let ps = p.to_str().unwrap().to_string();
-            if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("serve_")) {
-                continue;
-            }
-            let linked = match crate::link_file(&ps) {
-                Ok((m, _)) => m,
-                Err(_) => continue,
-            };
-            if typeck::check(&linked).is_err() {
-                continue;
-            }
-            // Skip library modules (no `main`): they're linked INTO a main program,
-            // never compiled standalone, so they aren't real binary-path fallbacks.
-            let has_main = linked
-                .items
-                .iter()
-                .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-            if !has_main {
-                continue;
-            }
-            total += 1;
-            if matches!(
-                codegen::compile_module_binary(&linked),
-                codegen::LoweringOutcome::Lowered(_)
-            ) {
-                ok += 1;
-            } else {
-                bailed.push(ps);
-            }
-        }
-        eprintln!("\n=== WIR binary-path coverage: {ok}/{total} ===");
-        for b in &bailed {
-            eprintln!("  fallback: {b}");
-        }
-    }
-
-    /// Every example must at least compile (parse + link + type-check) and run
-    /// to completion through the CLI without an error — whether it prints, just
-    /// returns a value, or is a library/actor file with no `main`. Server demos
-    /// (`serve_*`) are excluded: they need a `--net` grant and run forever, so
-    /// they're covered by the loopback tests instead, not run-to-completion here.
-    #[test]
-    fn all_examples_run_via_cli() {
-        let mut files: Vec<std::path::PathBuf> = example_entries()
-            .into_iter()
-            .filter(|p| {
-                !p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("serve_"))
-            })
-            .collect();
+    fn all_examples_validate_via_cli() {
+        let mut files = example_entries();
         files.sort();
         assert!(!files.is_empty(), "no examples found");
         let failures: Vec<String> = std::thread::scope(|s| {
             let handles: Vec<_> = files.iter().map(|path| {
                 s.spawn(|| {
                     let p = path.to_str().unwrap();
-                    match crate::execute_file(p, Vec::new()) {
-                        Ok(_) => None,
-                        Err(e) => Some(format!("{p}: {e:?}")),
+                    let server = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("serve_"));
+                    if server {
+                        crate::check_file(p).err().map(|error| format!("{p}: {error:?}"))
+                    } else {
+                        crate::execute_file(p, Vec::new())
+                            .err()
+                            .map(|error| format!("{p}: {error:?}"))
                     }
                 })
             }).collect();
@@ -405,32 +216,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         assert!(
             failures.is_empty(),
             "examples failed:\n{}",
-            failures.join("\n")
-        );
-    }
-
-    /// EVERY example — including the server demos that run forever (and so are
-    /// excluded from the run-to-completion test above) — must parse, link, and
-    /// type-check. Catches type errors the run test can't reach.
-    #[test]
-    fn all_examples_type_check() {
-        let entries = example_entries();
-        assert!(!entries.is_empty(), "no examples found");
-        let failures: Vec<String> = std::thread::scope(|s| {
-            let handles: Vec<_> = entries.iter().map(|path| {
-                s.spawn(|| {
-                    let p = path.to_str().unwrap();
-                    match crate::check_file(p) {
-                        Ok(_) => None,
-                        Err(e) => Some(format!("{p}: {e:?}")),
-                    }
-                })
-            }).collect();
-            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
-        });
-        assert!(
-            failures.is_empty(),
-            "type-check failed:\n{}",
             failures.join("\n")
         );
     }

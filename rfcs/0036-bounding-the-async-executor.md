@@ -163,7 +163,7 @@ the decision the maintainer owns.
 - The gate holds under the change — **the whole gate, not a subset** (HARD RULE, inherited
   from RFC-0035): the force-copy metamorphic sweep over every example (catches an in-place
   aliasing UAF with NO oracle), the full oracle sweep under `WITCHY_OPT=rc-floor`
-  (`every_example_agrees_under_rc_floor`), the `WITCHY_HEAP_CHECK` differential fuzzer under
+  (`examples_agree_under_rc_floor`), the `WITCHY_HEAP_CHECK` differential fuzzer under
   `all` (redzone net), and the heap-type-matrix corpus.
 - `check.sh --fast` green. (rc-floor is default-on since 974ccee — see the correction
   header — so the DoD gate is the full sweep *under* rc-floor, not a toggle back to off.)

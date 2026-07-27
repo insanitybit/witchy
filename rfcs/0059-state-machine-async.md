@@ -426,7 +426,7 @@ relayouts the live elements FIFO into a doubled buffer). FIFO order and the read
 ones, so the **deterministic round-robin schedule and every interleaving are unchanged** —
 verified green: `future_executor_interleaves_backends_agree`, all `chan_*`/`async_*`/
 `for_await_*`/`vm_par_map`/`vm_serve` parity tests, `every_compilable_example_agrees_on_both_backends`,
-`every_example_agrees_under_rc_floor`/`unbox`, the full `rc_corpus` + `rc_floor` heap-safety
+`examples_agree_under_rc_floor`/`every_example_agrees_under_unbox`, the full `rc_corpus` + `rc_floor` heap-safety
 corpus, `clippy -D warnings`, `witchy fmt`, `stdlib_docs_are_current`.
 
 ### The corrected finding (measurement-first, RFC-0058) — the ring gives ZERO leak reduction here

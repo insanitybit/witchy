@@ -179,7 +179,7 @@ COUNT_FILE="$dead_count" NEXTEST_RUN_ID=dead-reclaim TMPDIR="$tmp" \
 # audited ignored names from the cached ordinary output without a second exec.
 marker="$tmp/normal-finished"
 MARKER="$marker" NEXTEST_RUN_ID=pair TMPDIR="$tmp" WITCHY_NEXTEST_LIST_JOBS=2 \
-    "$wrapper" /bin/bash -c 'sleep 0.2; : >"$MARKER"; printf "%s\n" "normal_test: test" "example_tests::binary_path_coverage_report: test"' \
+    "$wrapper" /bin/bash -c 'sleep 0.2; : >"$MARKER"; printf "%s\n" "normal_test: test" "stats::tests::chan_throughput_bounded_by_rc_floor: test"' \
     >"$tmp/normal.out" &
 normal_pid=$!
 MARKER="$marker" NEXTEST_RUN_ID=pair TMPDIR="$tmp" WITCHY_NEXTEST_LIST_JOBS=2 \
@@ -189,8 +189,8 @@ ignored_pid=$!
 wait "$normal_pid"
 wait "$ignored_pid"
 [ "$(sed -n '1p' "$tmp/normal.out")" = "normal_test: test" ]
-[ "$(sed -n '2p' "$tmp/normal.out")" = "example_tests::binary_path_coverage_report: test" ]
-[ "$(cat "$tmp/ignored.out")" = "example_tests::binary_path_coverage_report: test" ]
+[ "$(sed -n '2p' "$tmp/normal.out")" = "stats::tests::chan_throughput_bounded_by_rc_floor: test" ]
+[ "$(cat "$tmp/ignored.out")" = "stats::tests::chan_throughput_bounded_by_rc_floor: test" ]
 
 # Completion can race the ignored peer's owner liveness probe. Override the
 # shell builtin only for this child so the probe publishes the done marker and
@@ -200,7 +200,7 @@ owner_race_root="$tmp/witchy-nextest-list-owner-race"
 mkdir -p "$owner_race_root"
 owner_race_done="$owner_race_root/normal-done-true"
 owner_race_output="$owner_race_root/normal-output-true"
-printf '%s\n' 'example_tests::binary_path_coverage_report: test' >"$owner_race_output"
+printf '%s\n' 'stats::tests::chan_throughput_bounded_by_rc_floor: test' >"$owner_race_output"
 ln -s 999999 "$owner_race_root/normal-owner-true"
 owner_race_env="$tmp/owner-race.bash-env"
 printf '%s\n' \
@@ -214,7 +214,7 @@ printf '%s\n' \
 BASH_ENV="$owner_race_env" OWNER_RACE_DONE="$owner_race_done" \
     NEXTEST_RUN_ID=owner-race TMPDIR="$tmp" \
     "$wrapper" /bin/true --ignored >"$tmp/owner-race.out"
-[ "$(cat "$tmp/owner-race.out")" = "example_tests::binary_path_coverage_report: test" ]
+[ "$(cat "$tmp/owner-race.out")" = "stats::tests::chan_throughput_bounded_by_rc_floor: test" ]
 
 # A failing ordinary invocation still publishes its cached output and completion
 # from its EXIT trap, so the ignored peer cannot deadlock or execute the binary.

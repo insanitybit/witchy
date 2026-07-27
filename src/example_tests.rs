@@ -305,8 +305,7 @@
     }
 
     /// The Markdown docs whose ```` ```witchy ```` blocks are validated + classified: the
-    /// root docs, `spec/`, and `book/src/` (sorted for a stable manifest). Shared by
-    /// `documentation_examples_are_valid` and the manifest generator so both walk one list.
+    /// root docs, `spec/`, and `book/src/` (sorted for a stable manifest).
     fn doc_markdown_files() -> Vec<std::path::PathBuf> {
         let mut files: Vec<std::path::PathBuf> = vec![
             "README.md".into(),
@@ -339,12 +338,11 @@
         })
     }
 
-    /// (RFC-0041 Phase 3) Generate the runnable-example classification manifest as pretty
-    /// JSON. Reuses the SAME classifier as `documentation_examples_are_valid`: per doc
-    /// `witchy` block, whether it is `runnable` (a `Console`-only `main`, no actor/argv) and
-    /// `console_only`, its capability `footprint`, and — for runnable blocks — the interpreter
-    /// `output`. This is the single source of truth the runnable book reads, so the browser
-    /// never re-derives classification (which could disagree with the authoritative Rust one).
+    /// (RFC-0041 Phase 3) Validate every documentation example and generate the
+    /// runnable-example classification manifest as pretty JSON. Runnable examples
+    /// execute on both backends; the manifest records the interpreter output. This
+    /// is the single source of truth the runnable book reads, so the browser never
+    /// re-derives classification.
     fn generate_examples_manifest() -> String {
         let files = doc_markdown_files();
         let browser_menu =
@@ -385,6 +383,12 @@
                             || linked.imports.iter().any(|m| m == "vm");
                         let runnable =
                             has_main && console_only && !reads_console && !reads_argv && !uses_workers;
+                        let linked_console_only = crate::capabilities::analyze(linked)
+                            .total
+                            .keys()
+                            .all(|cap| *cap == "Console");
+                        let parity_runnable =
+                            has_main && linked_console_only && !reads_console && !reads_argv;
                         // (RFC-0102) `browser_runnable` is the program's typed host
                         // requirements checked against the published browser menu. Capability
                         // families/rights and non-capability facilities (argv/VM workers) all
@@ -421,16 +425,32 @@
                                 }
                             })
                             .collect();
-                        let output: Vec<String> = if runnable {
-                            interpreter::run_checked_module(
-                                &checked,
-                                std::path::Path::new("."),
-                                Vec::new(),
+                        let interpreted = if runnable || parity_runnable {
+                            Some(
+                                interpreter::run_checked_module(
+                                    &checked,
+                                    std::path::Path::new("."),
+                                    Vec::new(),
+                                )
+                                .unwrap_or_else(|e| {
+                                    panic!("{context} fails on the interpreter: {e}")
+                                }),
                             )
-                                .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"))
                         } else {
-                            Vec::new()
+                            None
                         };
+                        if parity_runnable {
+                            let bytes = codegen::compile_checked_module_binary(&checked)
+                                .expect_lowered(&format!("{context} compiles to WASM"));
+                            let compiled = crate::run_wasm_bytes(&bytes)
+                                .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}"));
+                            assert_eq!(
+                                interpreted.as_ref().expect("parity examples run"),
+                                &compiled,
+                                "{context}: the backends DIVERGE"
+                            );
+                        }
+                        let output = if runnable { interpreted.unwrap() } else { Vec::new() };
                         file_entries.push(serde_json::json!({
                             "file": file.display().to_string(),
                             "block": idx + 1,

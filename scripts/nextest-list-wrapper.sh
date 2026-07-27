@@ -11,9 +11,8 @@ set -euo pipefail
         -exec grep -nH -E '^[[:space:]]*#\[ignore([^]]*)?\]' {} + || true)"
     ignore_count="$(printf '%s\n' "$ignore_lines" | awk 'NF { n += 1 } END { print n + 0 }')"
     ignore_paths="$(printf '%s\n' "$ignore_lines" | awk -F: 'NF { print $1 }' | sort -u)"
-    expected_paths="$(printf '%s\n' src/example_tests/example_sweeps.rs src/stats.rs | sort)"
-    if [ "$ignore_count" -ne 2 ] || [ "$ignore_paths" != "$expected_paths" ] \
-        || ! awk '/^[[:space:]]*#\[ignore([^]]*)?\]/{ armed=1; next } armed { if ($0 ~ /^[[:space:]]*fn binary_path_coverage_report\(/) found=1; armed=0 } END { exit !found }' src/example_tests/example_sweeps.rs \
+    expected_paths="src/stats.rs"
+    if [ "$ignore_count" -ne 1 ] || [ "$ignore_paths" != "$expected_paths" ] \
         || ! awk '/^[[:space:]]*#\[ignore([^]]*)?\]/{ armed=1; next } armed { if ($0 ~ /^[[:space:]]*fn chan_throughput_bounded_by_rc_floor\(/) found=1; armed=0 } END { exit !found }' src/stats.rs; then
         echo "nextest-list-wrapper: ignored-test policy changed; update the audited names before discovery can skip the second cold exec" >&2
         printf '%s\n' "$ignore_lines" >&2
@@ -161,7 +160,6 @@ if [ "$ignored" -eq 1 ]; then
         sleep 0.05
     done
     awk '
-        $0 == "example_tests::example_sweeps::binary_path_coverage_report: test" ||
         $0 == "stats::tests::chan_throughput_bounded_by_rc_floor: test"
     ' "$normal_output"
     rm -f "$normal_done" "$normal_output" 2>/dev/null || true
@@ -245,7 +243,7 @@ if [ "$cache_enabled" -eq 1 ] && [ "$cacheable" -eq 1 ]; then
         cache_key="$({
             printf '%s\0%s\0%s\0%s\0%s\0' \
                 "$cache_schema" "$binary_digest" "$binary_name" "$wrapper_digest" \
-                'example_tests::example_sweeps::binary_path_coverage_report,stats::tests::chan_throughput_bounded_by_rc_floor'
+                'stats::tests::chan_throughput_bounded_by_rc_floor'
             shift
             for arg in "$@"; do printf '%s\0' "$arg"; done
         } | sha256_stream 2>/dev/null || true)"
