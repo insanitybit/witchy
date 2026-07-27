@@ -1,44 +1,9 @@
-use witchy_types::runtime_type::{
-    AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
-};
+#[path = "../../../tests/support/authenticated.rs"]
+mod authenticated;
+use authenticated::checked_result;
 
 fn checked(source: &str) -> witchy_interp::pipeline::CheckedModule {
     checked_result(source).expect("authenticated checked link")
-}
-
-fn checked_result(
-    source: &str,
-) -> Result<witchy_interp::pipeline::CheckedModule, witchy_interp::pipeline::PipelineError> {
-    let module = witchy_syntax::parser::parse_module(source).expect("parse Dynamic fixture");
-    let workspace = PackageCoordinate::new(
-        PackageSource::Workspace,
-        "example/dynamic-interpreter-test",
-        "0.1.0",
-    )
-    .expect("workspace coordinate");
-    let toolchain = PackageCoordinate::new(
-        PackageSource::Toolchain,
-        "witchy/stdlib",
-        "0.1.0",
-    )
-    .expect("toolchain coordinate");
-    let mut assignments = vec![(
-        "main".to_string(),
-        ModuleLoadIdentity::new(workspace, ["main"]).expect("main owner"),
-    )];
-    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|module| {
-        (
-            (*module).to_string(),
-            ModuleLoadIdentity::new(toolchain.clone(), ["std", *module]).expect("std owner"),
-        )
-    }));
-    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
-        .expect("authenticated owners");
-    witchy_interp::pipeline::link_checked_authenticated(
-        vec![("main".into(), module)],
-        "main",
-        owners,
-    )
 }
 
 #[test]

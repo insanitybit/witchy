@@ -1,40 +1,14 @@
 //! RFC-0082 owned Dynamic boundary parity for borrowed, unique, and shared data.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter, parser, pipeline};
-use witchy_types::runtime_type::{
-    AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
-};
+use witchy::{codegen, interpreter};
+
+#[path = "support/authenticated.rs"]
+mod authenticated;
+use authenticated::checked_result;
 
 fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
-    let module = parser::parse_module(source).expect("parse Dynamic ownership fixture");
-    let workspace = PackageCoordinate::new(
-        PackageSource::Workspace,
-        "example/dynamic-ownership-parity",
-        "0.1.0",
-    )
-    .expect("workspace package coordinate");
-    let toolchain = PackageCoordinate::new(
-        PackageSource::Toolchain,
-        "witchy/stdlib",
-        "0.1.0",
-    )
-    .expect("toolchain package coordinate");
-    let mut assignments = vec![(
-        "main".to_string(),
-        ModuleLoadIdentity::new(workspace, ["main"]).expect("main module owner"),
-    )];
-    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|std_module| {
-        (
-            (*std_module).to_string(),
-            ModuleLoadIdentity::new(toolchain.clone(), ["std", *std_module])
-                .expect("std module owner"),
-        )
-    }));
-    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
-        .expect("authenticated module owners");
-    pipeline::link_checked_authenticated(vec![("main".to_string(), module)], "main", owners)
-        .expect("authenticated checked link")
+    checked_result(source).expect("authenticated checked link")
 }
 
 #[test]

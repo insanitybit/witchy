@@ -1,46 +1,11 @@
 //! RFC-0082 closed-world dynamic method discovery and invocation.
 
-use witchy_types::runtime_type::{
-    AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
-};
-
-fn authenticated(source: &str) -> Result<witchy_types::pipeline::CheckedModule, String> {
-    let module = witchy_syntax::parser::parse_module(source).map_err(|error| error.to_string())?;
-    let workspace = PackageCoordinate::new(
-        PackageSource::Workspace,
-        "example/dynamic-method-test",
-        "0.1.0",
-    )
-    .map_err(|error| error.to_string())?;
-    let toolchain = PackageCoordinate::new(
-        PackageSource::Toolchain,
-        "witchy/stdlib",
-        "0.1.0",
-    )
-    .map_err(|error| error.to_string())?;
-    let mut assignments = vec![(
-        "main".to_string(),
-        ModuleLoadIdentity::new(workspace, ["main"]).map_err(|error| error.to_string())?,
-    )];
-    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|std_module| {
-        (
-            (*std_module).to_string(),
-            ModuleLoadIdentity::new(toolchain.clone(), ["std", *std_module])
-                .expect("valid std module owner"),
-        )
-    }));
-    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
-        .map_err(|error| error.to_string())?;
-    witchy_interp::pipeline::link_checked_authenticated(
-        vec![("main".to_string(), module)],
-        "main",
-        owners,
-    )
-    .map_err(|error| error.to_string())
-}
+#[path = "../../../tests/support/authenticated.rs"]
+mod authenticated;
+use authenticated::checked_result;
 
 fn run(source: &str) -> Result<Vec<String>, String> {
-    let checked = authenticated(source)?;
+    let checked = checked_result(source).map_err(|error| error.to_string())?;
     witchy_interp::interpreter::run_checked_module(&checked, ".", Vec::new())
         .map_err(|error| error.to_string())
 }
@@ -140,7 +105,7 @@ fn invalid_dynamic_declarations_fail_closed() {
     ];
 
     for (name, source, expected) in cases {
-        let error = authenticated(source).expect_err(name);
+        let error = checked_result(source).expect_err(name).to_string();
         assert!(error.contains(expected), "{name}: {error}");
     }
 }

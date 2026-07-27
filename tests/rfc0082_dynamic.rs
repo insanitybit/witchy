@@ -1,37 +1,12 @@
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, parser, pipeline};
-use witchy_types::runtime_type::{
-    AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
-};
+use witchy::codegen;
 
-fn checked(source: &str) -> pipeline::CheckedModule {
-    let module = parser::parse_module(source).expect("parse Dynamic Wasm fixture");
-    let workspace = PackageCoordinate::new(
-        PackageSource::Workspace,
-        "example/dynamic-wasm-integration-test",
-        "0.1.0",
-    )
-    .expect("workspace coordinate");
-    let toolchain = PackageCoordinate::new(
-        PackageSource::Toolchain,
-        "witchy/stdlib",
-        "0.1.0",
-    )
-    .expect("toolchain coordinate");
-    let mut assignments = vec![(
-        "main".to_string(),
-        ModuleLoadIdentity::new(workspace, ["main"]).expect("main owner"),
-    )];
-    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|module| {
-        (
-            (*module).to_string(),
-            ModuleLoadIdentity::new(toolchain.clone(), ["std", *module]).expect("std owner"),
-        )
-    }));
-    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
-        .expect("authenticated owners");
-    pipeline::link_checked_authenticated(vec![("main".into(), module)], "main", owners)
-        .expect("authenticated checked link")
+#[path = "support/authenticated.rs"]
+mod authenticated;
+use authenticated::checked_result;
+
+fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
+    checked_result(source).expect("authenticated checked link")
 }
 
 #[test]
