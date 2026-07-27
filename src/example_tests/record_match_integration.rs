@@ -1,20 +1,8 @@
 use super::*;
 use crate::{interpreter};
 
-    // max_by/min_by generalize min/max to any type via a comparator, returning
-    // Option. The second comparator (`(0-a) < (0-b)`, i.e. larger magnitude is
-    // "less") shows the result tracks the supplied ordering, not the natural one.
-    // A variable bound to a record-typed constructor field in a match pattern
-    // (`Circle(c)`) now resolves field access in the arm body (`c.x`). Codegen
-    // previously rejected this; it's fixed for concrete (non-generic) field
-    // types. Both backends agree.
-    // Matching the Some of a function-returned Option(Record) binds the payload
-    // to its record type, so `a.balance` resolves. Codegen learns the payload
-    // record from the function's declared `-> Option(Account)` return.
-    // Let-bound intermediates inherit derived types: `let o = lookup()` carries
-    // the Option(Account) payload (so a later `match o { Some(a) -> a.balance }`
-    // resolves), and `let xs = mk()` carries the List(P) element type (so
-    // `for p in xs { p.x }` resolves). Both backends agree.
+    // Let-bound function results retain their derived Option and List element
+    // types through later matching and iteration on both backends.
     #[test]
     fn let_bound_derived_types_backends_agree() {
         let client = r#"

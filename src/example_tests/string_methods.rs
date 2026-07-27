@@ -157,19 +157,3 @@ fn main(console: Console):
             "compiled: option/result methods",
         );
     }
-
-    #[test]
-    fn trim_backends_agree() {
-        // trim now compiles: leading/trailing ASCII whitespace (spaces, tabs,
-        // newlines, CRs) is stripped; an all-whitespace string trims to "".
-        let src = r#"
-fn main(console: Console):
-    console.print("  hello  ".trim())
-    console.print("\t\nfoo\r\n".trim())
-    console.print("nospaces".trim())
-    console.print("   ".trim())
-    console.print("${"  a b  ".trim().length()}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
-    }

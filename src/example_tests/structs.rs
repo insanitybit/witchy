@@ -292,16 +292,6 @@ fn main(console: Console):
         assert_eq!(wasm_run(ok), vec!["7 2"], "wasm");
     }
 
-    // Dict operations factored into helper functions: codegen picks the
-    // string-vs-i32 key comparison from the static key type, so a `k: String`
-    // parameter must compile to by-value comparison just like an inline String
-    // key. Looking up with a freshly built string (`"ap" + "ple"`) proves the
-    // match is structural, not by pointer — and both backends must agree.
-    // An integration stress test for first-class functions: a list of closures
-    // folded with a higher-order lambda that applies each function-typed
-    // element to the accumulator (`f(acc)`). Exercises closures stored in a
-    // list, a function-typed fold element, and calling a function-valued lambda
-    // parameter — all of which must agree across backends.
     // Nested records: `l.from.x` requires codegen to resolve the record type of
     // the intermediate field (`l.from` is a Point) to index the next one. Record
     // update rebuilds the outer record with one field replaced, leaving the rest
@@ -330,13 +320,6 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["1", "4", "10", "4", "1"]);
     }
 
-    // Tuple patterns in `match`: literals and wildcards in each position
-    // (quadrant), plus binding tuple elements alongside a literal in another
-    // position (describe). Destructuring a matched tuple must agree across
-    // backends.
-    // List comprehensions desugar to a block that builds the list with a for
-    // loop and push: `[elem for x in xs (if cond)?]`. Mapping, filtering, and an
-    // empty source all agree across backends.
     // Comprehensions compose with records: the element expression and the `if`
     // filter both access fields of the loop variable (resolved because the
     // source is a List(Record)). Both backends agree.

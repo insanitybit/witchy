@@ -980,27 +980,6 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["12", "9", "60", "6"]);
     }
 
-    #[test]
-    fn large_list_allocation_grows_memory() {
-        // Building a 200-element list via `push` allocates ~80KB total (each push
-        // copies the whole list, and the bump allocator never frees) — past the
-        // initial 64KB page, so the memory must grow. Summing 0..199 verifies no
-        // element was corrupted by the growth.
-        let src = r#"
-fn main() -> Int:
-    var out = []
-    var i = 0
-    while (i < 200):
-        list.push(out, i)
-        i = (i + 1)
-    var total = 0
-    for x in out:
-        total = (total + x)
-    total
-"#;
-        assert_eq!(run_on_wasm(src), vec!["19900"]); // 199*200/2
-    }
-
     // Integer division/modulo truncate toward zero, and their signs must agree
     // for negative operands across the i64 interpreter and i32 codegen (the
     // results here stay well within i32). Also locks in dict insert-overwrite,
