@@ -11,10 +11,8 @@ fn assert_backends_agree(src: &str, expected: &[&str], context: &str) {
     assert_eq!(interp_out, expected.iter().map(|line| (*line).to_string()).collect::<Vec<_>>());
 }
 
-    // Phase 2 of the concurrency redesign: an `async fn` lowers (CPS over closures,
-    // `crate::async_lower`) to a cooperative `chan` task, and `await` chains
-    // continuations. An async `main` is the executor entry (lowers to `task.run`).
-    // The lowering is ordinary closures + calls, so both backends agree.
+    // Async functions lower to cooperative channel tasks; async `main` is the
+    // executor entry. Both backends must agree.
     #[test]
     fn async_await_lowers_and_runs_backends_agree() {
         let src = r#"
@@ -36,11 +34,8 @@ async fn main(console: Console):
         assert_backends_agree(src, &["18", "20"], "async lowering diverged across backends");
     }
 
-    // (RFC-0059 Stage-1 step 1) The state-machine lowering's expressiveness: a
-    // mutable `var` local crosses an `await` (mutated on both sides), an `await`
-    // appears inside a `while` loop, and a `for await` body FOLDS into an outer
-    // accumulator (not just drains). All three the old CPS lowering rejected; here
-    // both backends agree AND the folded result is correct.
+    // (RFC-0059 Stage-1 step 1) A mutable `var` crosses `await`, `await` appears
+    // inside `while`, and `for await` folds into an outer accumulator.
     #[test]
     fn async_state_machine_expressiveness_backends_agree() {
         let src = r#"
@@ -78,8 +73,6 @@ async fn main(console: Console):
     chan.spawn(counter(tx, 5)).await
     total(console, rx).await
 "#;
-        // The synchronous value-returning `var` calls update a local threaded
-        // through the shipped async segment functions on both sides of `await`.
         assert_backends_agree(
             src,
             &["acc 112 first 11", "sum 10"],
@@ -87,9 +80,8 @@ async fn main(console: Console):
         );
     }
 
-    // `await` inside a `for` loop — over a list (producer) and a range (consumer)
-    // — lowers to a sequential `task.for_each`, so iterating with `await` needs no
-    // hand-written recursion. Both backends must agree, byte-for-byte.
+    // `await` in a list-producing and range-consuming loop lowers to sequential
+    // `task.for_each` work on both backends.
     #[test]
     fn for_await_loop_backends_agree() {
         let src = r#"
@@ -114,9 +106,8 @@ async fn main(console: Console):
         assert_backends_agree(src, &["got 1", "got 2", "got 3"], "for-await schedule diverged across backends");
     }
 
-    // `for await x in rx:` — a receive loop over a channel whose body may itself
-    // `await` (here it forwards a squared value). Lowers to chan.consume; both
-    // backends agree byte-for-byte.
+    // `for await` over a channel may itself await in the body; this lowers to
+    // `chan.consume` on both backends.
     #[test]
     fn for_await_over_receiver_backends_agree() {
         let src = r#"
@@ -140,12 +131,9 @@ async fn main(console: Console):
         assert_backends_agree(src, &["got 1", "got 4", "got 9"], "for-await-over-receiver diverged across backends");
     }
 
-    // The multi-actor case: each task has its OWN inbox, so several actors with
-    // separate mailboxes run together (what a single shared channel cannot do).
-    // A logger (#0), a forwarder (#1) that relays to the logger, and a driver (#2)
-    // that messages both — `send(target, msg)` routes by actor index. This is the
-    // shape `examples/actors/src/actors.witchy` (Logger + Forwarder) needs, now in async/chan,
-    // byte-identical on both backends.
+    // Each actor has its own inbox; separate mailboxes run together.
+    // A logger, forwarder, and driver route messages by actor index, matching
+    // the shipped actors example.
     #[test]
     fn chan_multi_actor_separate_inboxes_backends_agree() {
         let src = r#"
@@ -173,14 +161,8 @@ async fn main(console: Console):
         assert_backends_agree(src, &["log 100", "log 200"], "multi-actor schedule diverged across backends");
     }
 
-    // (RFC-0055 acceptance #1) Two INDEPENDENT modules, each with a PRIVATE channel
-    // of a DIFFERENT message type — one `Int`, one record `Note` — linked into one
-    // program. This is the case that was IMPOSSIBLE before erasure: the executor
-    // was monomorphic over one program-wide message type, so a second channel of a
-    // different type failed with "expected Int, found String"-style unification.
-    // Now the executor is erased and each `Sender(m)`/`Receiver(m)` carries its own
-    // `m`; a library can pipeline work through a channel privately. Byte-identical
-    // on both backends.
+    // (RFC-0055 acceptance #1) Independent modules use private channels with
+    // different message types in one linked program.
     #[test]
     fn rfc0055_two_modules_private_channels_of_different_types() {
         // Module A: a private Int channel behind a public `run` entry.
@@ -255,10 +237,8 @@ async fn main(console: Console):
         assert_eq!(wasm_out, want, "compiled WASM");
     }
 
-    // (RFC-0055 acceptance) A single TASK that pulls `Job`s and pushes `Answer`s —
-    // two DIFFERENT message types touched by one task. Design (a) (per-type
-    // executor islands) structurally could not express this (a `Task` belonged to
-    // one instantiation); erasure makes it ordinary. Both backends agree.
+    // (RFC-0055 acceptance) One task pulls `Job`s and pushes `Answer`s, proving
+    // erased channels support two message types in one task.
     #[test]
     fn rfc0055_one_task_two_message_types_job_answer() {
         let src = r#"
@@ -293,13 +273,8 @@ async fn main(console: Console):
         assert_backends_agree(src, &["answer 9", "answer 25"], "job/answer schedule diverged across backends");
     }
 
-    // (RFC-0042) THE headline acceptance test: `import iter` + `import chan` in ONE
-    // program. Both std modules declare a `type Step`; under the old flat type
-    // namespace their variant sets merged and the program failed to compile inside
-    // std internals — the two flagship modules were mutually exclusive. Module-
-    // scoped types make them `iter.Step` and `chan.Step`, so the two coexist and
-    // the program runs byte-identically on both backends. The iter side computes a
-    // value; the chan side drives a channel round-trip — exercising both `Step`s.
+    // (RFC-0042) `iter` and `chan` both declare `Step`; module-scoped types keep
+    // them distinct in one program while both backends exercise each module.
     #[test]
     fn iter_and_chan_coexist_backends_agree() {
         let src = r#"
@@ -323,10 +298,8 @@ async fn main(console: Console):
         assert_backends_agree(src, &["[2, 4, 6]", "recv 41", "done"], "iter+chan diverged across backends");
     }
 
-    // The channel message type is GENERIC (here `String`), proving the explicit
-    // type-parameter fix to the monomorphizer: a multi-param ADT whose constructor
-    // omits a param (`Done(a)` for `Step(m, a)`) now keeps that param generic
-    // because `type Step(m, a)` fixes the order. Byte-identical on both backends.
+    // The channel message type is generic (`String`), exercising the explicit
+    // type-parameter fix for the multi-parameter `Step` ADT.
     #[test]
     fn chan_generic_message_type_backends_agree() {
         let src = r#"
@@ -347,9 +320,8 @@ async fn main(console: Console):
         assert_backends_agree(src, &["hello alice", "hello bob"], "generic-message channel diverged across backends");
     }
 
-    // `chan.select` races two receivers, taking from whichever is ready (a tie
-    // favours the first) and yielding `Closed` once neither can deliver. Both
-    // backends must agree on the merged order.
+    // `chan.select` chooses the first ready receiver on ties and yields `Closed`
+    // once neither can deliver.
     #[test]
     fn chan_select_backends_agree() {
         let src = r#"
@@ -383,9 +355,8 @@ async fn main(console: Console):
         assert_backends_agree(src, &["a 1", "a 2", "b 9", "done"], "select schedule diverged across backends");
     }
 
-    // Phase 5 (racing): `future.select` drives tasks concurrently and returns the
-    // first to finish, dropping the losers. Among tasks of length 5/2/8, the
-    // index-1 task (length 2) wins first — deterministically on both backends.
+    // `future.select` returns the first task to finish and drops the losers;
+    // among lengths 5/2/8, the length-2 task wins deterministically.
     #[test]
     fn future_select_first_wins_backends_agree() {
         let src = r#"
@@ -404,7 +375,7 @@ fn main(console: Console):
         assert_backends_agree(src, &["winner 1 20"], "select diverged across backends");
     }
 
-    // The coloring rule: `await` is a parse error outside an `async fn`.
+    // `await` is a parse error outside an `async fn`.
     #[test]
     fn await_outside_async_is_a_parse_error() {
         // `.await` is postfix and legal only inside an `async fn`.
@@ -418,12 +389,8 @@ fn main(console: Console):
         assert!(parser::parse_module("async fn main():\n    await f()\n").is_err());
     }
 
-    // Phase 3 of the concurrency redesign: the deterministic round-robin executor
-    // `future.join_all`, written in pure witchy over the `std/future` substrate.
-    // Two cooperative tasks (each yielding via `future.pending`) interleave at
-    // their yield points in a fixed schedule, so the interleaved output is
-    // byte-identical on both backends — concurrency with parity, no scheduler
-    // state in the runtime and no WASM feature.
+    // `future.join_all` uses the pure-language future substrate to interleave
+    // cooperative tasks at deterministic yield points.
     #[test]
     fn future_executor_interleaves_backends_agree() {
         let src = r#"
