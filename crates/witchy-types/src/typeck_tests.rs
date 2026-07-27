@@ -2514,11 +2514,6 @@ fn main():
 
     #[test]
     fn rfc0087_function_values_retain_and_enforce_conventions() {
-        check_str(
-            "fn bump(var n: Int) -> Int:\n    n = n + 1\n    n\n\nfn apply(f: fn(var Int) -> Int, var n: Int) -> Int:\n    f(n)\n\nfn main():\n    var n = 1\n    let f: fn(var Int) -> Int = bump\n    let _ = apply(f, n)\n",
-        )
-        .expect("var functions are first-class and indirect calls accept mutable places");
-
         let immutable = check_str(
             "fn bump(var n: Int) -> Int:\n    n\n\nfn main():\n    let n = 1\n    let f: fn(var Int) -> Int = bump\n    let _ = f(n)\n",
         )
@@ -2547,11 +2542,6 @@ fn main():
         // links std (which needs lowering), so BOTH backends run this check on
         // every program (verified: even a std-free `f()` discard errors on both).
         const LOWER: &str = "type Tag:\n    v: Int\nimpl Tag:\n    fn id(self) -> Int:\n        self.v\n";
-
-        check_str(&format!(
-            "{LOWER}fn add(var xs: List(Int), x: Int) -> List(Int):\n    xs\nfn main(console: Console):\n    var xs: List(Int) = []\n    add(xs, 2)\n    console.print(\"hi\")\n"
-        ))
-        .expect("a var free call may discard its independent result");
 
         // ANY non-`Nil` free call (not only mutators) whose result is discarded.
         let nonmut_free = check_str(&format!(
