@@ -33,6 +33,33 @@ fn node_available() -> bool {
         .unwrap_or(false)
 }
 
+fn run_node_driver(relative_path: &str, success_marker: &str, label: &str) {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join(relative_path);
+    assert!(driver.exists(), "the committed {label} driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .unwrap_or_else(|error| panic!("spawn {label} driver: {error}"));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the {label} test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stdout.contains(success_marker),
+        "{label} driver did not report {success_marker:?}:\n{stdout}"
+    );
+}
+
 /// (RFC-0039) The capability gate, made structural: a component WITHOUT a `UiFetch`
 /// cannot construct `Cmd.Http`. `glamour.http_get` REQUIRES the token as its leading
 /// argument, so a fetch attempt without one FAILS TO COMPILE — the unauthorized
@@ -165,58 +192,12 @@ fn glamour_password_is_unreadable_by_a_sibling_component() {
 /// go host -> port and never enter the WASM.
 #[test]
 fn glamour_secret_input_keeps_the_password_host_side() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-secret.test.mjs");
-    assert!(driver.exists(), "the committed secret test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-secret driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour secret-custody test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-SECRET OK"), "secret driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-secret.test.mjs", "GLAMOUR-SECRET OK", "glamour secret-custody");
 }
 
 #[test]
 fn glamour_dom_run_loop_renders_and_updates_on_events() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-dom.test.mjs");
-    assert!(driver.exists(), "the committed DOM test driver must exist at {}", driver.display());
-
-    // Run from the repo root so the driver's relative imports resolve; pass the
-    // just-built binary (debug or release) so it compiles the counter with this
-    // toolchain.
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-dom driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour-dom run-loop test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    // Defensive: the driver prints GLAMOUR-DOM OK only when every check passed.
-    assert!(stdout.contains("GLAMOUR-DOM OK"), "driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-dom.test.mjs", "GLAMOUR-DOM OK", "glamour DOM run-loop");
 }
 
 /// RFC-0008 EFFECTS-AS-DATA capstone: prove the rune -> `Cmd` -> shell-performs ->
@@ -232,31 +213,7 @@ fn glamour_dom_run_loop_renders_and_updates_on_events() {
 /// observable: the effect runs, but only the shell could run it.
 #[test]
 fn glamour_dom_timer_effect_dispatches_msg_via_fake_clock() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-dom-timer.test.mjs");
-    assert!(driver.exists(), "the committed timer test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-dom timer driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour-dom timer-effect test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("GLAMOUR-DOM TIMER OK"),
-        "timer driver did not report success:\n{stdout}"
-    );
+    run_node_driver("web/witchy-runtime/glamour-dom-timer.test.mjs", "GLAMOUR-DOM TIMER OK", "glamour timer");
 }
 
 /// (RFC-0040) The committed Node driver (`user-cap-export.test.mjs`) compiles a
@@ -267,28 +224,7 @@ fn glamour_dom_timer_effect_dispatches_msg_via_fake_clock() {
 /// proving the minted VALUE, not just that the wrapper is well-formed.
 #[test]
 fn user_cap_export_mints_uiroot_in_the_browser_host() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/user-cap-export.test.mjs");
-    assert!(driver.exists(), "the committed user-cap export driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node user-cap-export driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the RFC-0040 user-cap export test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("RFC-0040"), "the user-cap export driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/user-cap-export.test.mjs", "RFC-0040", "RFC-0040 user-cap export");
 }
 
 /// The headline RFC-0008 property, asserted directly: the effects-using demo rune
@@ -339,28 +275,7 @@ fn glamour_autocounter_footprint_is_empty() {
 /// `applyAttr` choke point both the create and update render paths route through.
 #[test]
 fn glamour_dom_attribute_layer_neutralizes_xss() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-dom-xss.test.mjs");
-    assert!(driver.exists(), "the committed XSS test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-dom xss driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour-dom XSS test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-DOM XSS OK"), "xss driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-dom-xss.test.mjs", "GLAMOUR-DOM XSS OK", "glamour DOM XSS");
 }
 
 /// RFC-0015 Phase C: the async HTTP effect. The committed Node driver
@@ -373,28 +288,7 @@ fn glamour_dom_attribute_layer_neutralizes_xss() {
 /// shell needs, with authority kept entirely at the host edge.
 #[test]
 fn glamour_http_effect_fetches_with_host_attached_auth() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-http.test.mjs");
-    assert!(driver.exists(), "the committed HTTP test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-http driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour HTTP-effect test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-HTTP OK"), "http driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-http.test.mjs", "GLAMOUR-HTTP OK", "glamour HTTP effect");
 }
 
 /// RFC-0015 Phase C: client-side routing. The committed Node driver
@@ -405,28 +299,7 @@ fn glamour_http_effect_fetches_with_host_attached_auth() {
 /// pushes history AND re-renders, and a popstate (Back) re-delivers the route.
 #[test]
 fn glamour_routing_navigates_and_handles_back() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-routing.test.mjs");
-    assert!(driver.exists(), "the committed routing test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-routing driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour routing test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-ROUTING OK"), "routing driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-routing.test.mjs", "GLAMOUR-ROUTING OK", "glamour routing");
 }
 
 /// RFC-0015 Phase C: keyed list reconciliation. The committed Node driver
@@ -437,28 +310,7 @@ fn glamour_routing_navigates_and_handles_back() {
 /// fail this; key-based reconciliation passes it.
 #[test]
 fn glamour_keyed_list_reuses_nodes_on_reorder() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-keyed.test.mjs");
-    assert!(driver.exists(), "the committed keyed-list test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-keyed driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour keyed-list test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-KEYED OK"), "keyed driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-keyed.test.mjs", "GLAMOUR-KEYED OK", "glamour keyed list");
 }
 
 /// RFC-0015 Phase D: the coven package-DETAIL page, built on glamour. The committed Node
@@ -470,28 +322,7 @@ fn glamour_keyed_list_reuses_nodes_on_reorder() {
 /// shell's package view is built on; it composes the Phase A–C pieces end to end.
 #[test]
 fn glamour_package_page_renders_identity_footprint_and_docs() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-package-page.test.mjs");
-    assert!(driver.exists(), "the committed package-page test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-package-page driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour package-page test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-PACKAGE-PAGE OK"), "package-page driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-package-page.test.mjs", "GLAMOUR-PACKAGE-PAGE OK", "glamour package page");
 }
 
 /// RFC-0015 Phase D: the d3-runes-chart COMPARTMENT renderer's chart logic. The committed
@@ -503,27 +334,7 @@ fn glamour_package_page_renders_identity_footprint_and_docs() {
 /// are browser-verified; this gates the renderer's logic.
 #[test]
 fn d3_compartment_renderer_chart_logic_is_correct() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("projects/coven-web/web/dist/compartments/d3-runes-chart/chart.test.mjs");
-    assert!(driver.exists(), "the committed chart test must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node runes-chart test");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the d3-runes-chart renderer test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("RUNES-CHART OK"), "chart test did not report success:\n{stdout}");
+    run_node_driver("projects/coven-web/web/dist/compartments/d3-runes-chart/chart.test.mjs", "RUNES-CHART OK", "D3 runes chart");
 }
 
 /// RFC-0015 Phase D: the coven catalog/index view on glamour. The committed Node driver
@@ -534,28 +345,7 @@ fn d3_compartment_renderer_chart_logic_is_correct() {
 /// `on_input` forms handler added for it.
 #[test]
 fn glamour_catalog_view_filters_by_name_and_capability() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-catalog.test.mjs");
-    assert!(driver.exists(), "the committed catalog test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-catalog driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour catalog-view test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-CATALOG OK"), "catalog driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-catalog.test.mjs", "GLAMOUR-CATALOG OK", "glamour catalog");
 }
 
 /// RFC-0015 Phase D: the version (record-detail) and trust (TUF) view templates render
@@ -611,28 +401,7 @@ fn glamour_version_and_trust_views_render_security_fields() {
 /// authority entirely at the edge (the production shell, minus the browser-only WebAuthn).
 #[test]
 fn glamour_coven_app_shell_routes_and_fetches() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-coven-app.test.mjs");
-    assert!(driver.exists(), "the committed coven-app test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-coven-app driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour coven-app shell test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-COVEN-APP OK"), "coven-app driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-coven-app.test.mjs", "GLAMOUR-COVEN-APP OK", "glamour Coven app");
 }
 
 /// RFC-0041 Phase 1: The witchy Book itself as a glamour app — the dogfood. The committed
@@ -644,28 +413,7 @@ fn glamour_coven_app_shell_routes_and_fetches() {
 /// every fetch — so the docs SITE is a capability-pure witchy program.
 #[test]
 fn glamour_docs_app_renders_book_pages() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-docs.test.mjs");
-    assert!(driver.exists(), "the committed docs test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-docs driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour docs-app test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-DOCS OK"), "docs driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-docs.test.mjs", "GLAMOUR-DOCS OK", "glamour docs app");
 }
 
 /// RFC-0041: the host `Slot` — a subtree the host mounts and glamour NEVER diffs into. The
@@ -677,28 +425,7 @@ fn glamour_docs_app_renders_book_pages() {
 /// code cell mounted in a slot is not clobbered when glamour re-renders the page.
 #[test]
 fn glamour_slot_is_a_non_diffed_host_subtree() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-slot.test.mjs");
-    assert!(driver.exists(), "the committed slot test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-slot driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour slot test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-SLOT OK"), "slot driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-slot.test.mjs", "GLAMOUR-SLOT OK", "glamour slot");
 }
 
 /// RFC-0041: the DEPLOYABLE bundle, validated against the REAL book. The committed Node driver
@@ -709,28 +436,7 @@ fn glamour_slot_is_a_non_diffed_host_subtree() {
 /// `SUMMARY.md`, real pages, and a real page's `witchy` fence becoming an editable runnable cell.
 #[test]
 fn glamour_docs_bundle_renders_the_real_book() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-docs-bundle.test.mjs");
-    assert!(driver.exists(), "the committed docs-bundle test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-docs-bundle driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the docs-bundle test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-DOCS-BUNDLE OK"), "docs-bundle driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-docs-bundle.test.mjs", "GLAMOUR-DOCS-BUNDLE OK", "glamour docs bundle");
 }
 
 /// RFC-0015 Phase D: the host-shell PORT effect — the mechanism behind session login and
@@ -743,28 +449,7 @@ fn glamour_docs_bundle_renders_the_real_book() {
 /// wiring suite-testable; only the real `navigator.credentials` port impl is browser-bound.
 #[test]
 fn glamour_port_effect_runs_session_login_at_the_host() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-port.test.mjs");
-    assert!(driver.exists(), "the committed port test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-port driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour port-effect test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-PORT OK"), "port driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-port.test.mjs", "GLAMOUR-PORT OK", "glamour port effect");
 }
 
 /// RFC-0015 Phase D: the COMPLETE coven-web frontend as one glamour app — the suite-tested
@@ -778,28 +463,7 @@ fn glamour_port_effect_runs_session_login_at_the_host() {
 /// browser-verified cutover.)
 #[test]
 fn glamour_coven_web_app_full_shell_works() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-coven-web-app.test.mjs");
-    assert!(driver.exists(), "the committed coven-web-app test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-coven-web-app driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the complete coven-web app shell test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-COVEN-WEB-APP OK"), "coven-web-app driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-coven-web-app.test.mjs", "GLAMOUR-COVEN-WEB-APP OK", "glamour Coven web app");
 }
 
 /// Regression: the `String -> String` WASM export ABI must not leak. The bump allocator
@@ -812,28 +476,7 @@ fn glamour_coven_web_app_full_shell_works() {
 /// returns to base each time.
 #[test]
 fn wasm_string_export_does_not_leak_across_calls() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/heap-reset.test.mjs");
-    assert!(driver.exists(), "the committed heap-reset driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node heap-reset driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the WASM heap-reset regression test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("HEAP-RESET OK"), "heap-reset driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/heap-reset.test.mjs", "HEAP-RESET OK", "Wasm heap reset");
 }
 
 /// RFC-0015 Phase B: the `compartment` primitive isolates foreign code. The committed
@@ -847,28 +490,7 @@ fn wasm_string_export_does_not_leak_across_calls() {
 /// the configuration behind "even a compromised d3 stays contained".
 #[test]
 fn glamour_compartment_isolates_foreign_code() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-compartment.test.mjs");
-    assert!(driver.exists(), "the committed compartment test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-compartment driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour compartment isolation test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-COMPARTMENT OK"), "compartment driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-compartment.test.mjs", "GLAMOUR-COMPARTMENT OK", "glamour compartment");
 }
 
 /// RFC-0015 Phase A3 PARITY: the Markdown renderer produces byte-identical VNode JSON on
@@ -916,28 +538,7 @@ console.print(glamour.to_json(markdown.to_vnode(\"# Title\\n\\nA **bold** word, 
 /// elements. This is the safe-by-construction README/doc rendering RFC-0015 relies on.
 #[test]
 fn glamour_markdown_renderer_is_xss_safe() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/glamour-markdown.test.mjs");
-    assert!(driver.exists(), "the committed markdown test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node glamour-markdown driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour markdown XSS test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("GLAMOUR-MARKDOWN OK"), "markdown driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/glamour-markdown.test.mjs", "GLAMOUR-MARKDOWN OK", "glamour Markdown");
 }
 
 /// RFC-0008 DOGFOODING capstone: drive the glamour SYNTAX HIGHLIGHTER rune
@@ -956,28 +557,7 @@ fn glamour_markdown_renderer_is_xss_safe() {
 /// `node web/witchy-runtime/highlighter.test.mjs <witchy-binary>`.
 #[test]
 fn glamour_highlighter_renders_classed_spans_and_escapes_xss() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let driver = manifest.join("web/witchy-runtime/highlighter.test.mjs");
-    assert!(driver.exists(), "the committed highlighter test driver must exist at {}", driver.display());
-
-    let out = Command::new("node")
-        .arg(&driver)
-        .arg(BIN)
-        .current_dir(manifest)
-        .output()
-        .expect("spawn node highlighter driver");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the glamour highlighter test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(stdout.contains("HIGHLIGHTER OK"), "highlighter driver did not report success:\n{stdout}");
+    run_node_driver("web/witchy-runtime/highlighter.test.mjs", "HIGHLIGHTER OK", "glamour highlighter");
 }
 
 /// The headline RFC-0008 property for the highlighter: its render export is
