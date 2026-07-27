@@ -5,16 +5,7 @@ use std::process::{Command, Output};
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
-fn workdir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir =
-        std::env::temp_dir().join(format!("witchy-rendering-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use super::temp_dir::TempDir;
 
 fn write(dir: &Path, name: &str, source: &str) -> PathBuf {
     let path = dir.join(name);
@@ -28,7 +19,7 @@ fn run(args: &[&str]) -> Output {
 
 #[test]
 fn interpolation_is_show_driven_with_or_without_import() {
-    let dir = workdir();
+    let dir = TempDir::new("rendering");
     let body = r#"
 import set
 

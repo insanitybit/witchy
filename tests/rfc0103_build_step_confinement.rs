@@ -1,24 +1,14 @@
-use std::path::PathBuf;
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
-fn workdir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "witchy-rfc0103-build-child-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+#[path = "support/temp_dir.rs"]
+mod temp_dir;
+use temp_dir::TempDir;
 
 #[test]
 fn production_build_step_runs_in_a_confined_child() {
-    let dir = workdir();
+    let dir = TempDir::new("rfc0103-build-child");
     let source = dir.join("build.witchy");
     let out_dir = dir.join("out");
     std::fs::write(
@@ -52,5 +42,4 @@ fn production_build_step_runs_in_a_confined_child() {
         std::fs::read_to_string(out_dir.join("generated.witchy")).unwrap(),
         "fn value() -> Int:\n    42\n"
     );
-    let _ = std::fs::remove_dir_all(dir);
 }

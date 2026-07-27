@@ -4,6 +4,9 @@
 //! Files live in `tests/glamour/` (a subdir is not auto-compiled as its own
 //! binary) and are attached here via `#[path]` since a test crate root
 //! resolves bare `mod` names against `tests/`, not the subdir.
+#[path = "support/temp_dir.rs"]
+mod temp_dir;
+
 #[path = "glamour/dom.rs"]
 mod dom;
 #[path = "glamour/html_nul.rs"]

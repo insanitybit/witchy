@@ -1,52 +1,13 @@
 //! RFC-0077 real-capability test tier: CLI grants stay explicit and package-owned.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{capabilities, codegen, interpreter, parser, pipeline, typeck};
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "witchy-rfc0077-{tag}-{}-{sequence}",
-            std::process::id(),
-        ));
-        std::fs::create_dir_all(&path).expect("create temp directory");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn mkdir(&self, relative: &str) -> PathBuf {
-        let path = self.0.join(relative);
-        std::fs::create_dir_all(&path).expect("create nested directory");
-        path
-    }
-
-    fn write(&self, relative: &str, source: &str) -> PathBuf {
-        let path = self.0.join(relative);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create file parent");
-        }
-        std::fs::write(&path, source).expect("write fixture");
-        path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use super::temp_dir::TempDir;
 
 fn run(args: impl IntoIterator<Item = OsString>) -> Output {
     Command::new(BIN).args(args).output().expect("spawn witchy")

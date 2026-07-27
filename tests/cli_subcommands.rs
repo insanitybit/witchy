@@ -4,7 +4,6 @@
 //! real `witchy` binary (`CARGO_BIN_EXE_witchy`) and is hermetic (its own temp
 //! dir), so they can run in parallel. Bug numbers reference `bugs/`.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 use wasm_encoder::{
@@ -14,16 +13,13 @@ use wasm_encoder::{
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
+#[path = "support/temp_dir.rs"]
+mod temp_dir;
+use temp_dir::TempDir;
+
 /// A fresh, unique temp directory for one test.
-fn workdir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("witchy-cli-{tag}-{}-{nanos}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn workdir(tag: &str) -> TempDir {
+    TempDir::new(&format!("cli-{tag}"))
 }
 
 fn write(dir: &std::path::Path, name: &str, body: &str) -> String {

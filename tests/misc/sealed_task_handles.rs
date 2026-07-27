@@ -1,19 +1,11 @@
 //! Task handles are executor-minted authority, not user-spellable slot ids.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
-fn workdir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("witchy-sealed-handle-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use super::temp_dir::TempDir;
 
 fn assert_rejected(dir: &Path, label: &str, source: &str, expected: &[&str]) {
     let path = dir.join(format!("{label}.witchy"));
@@ -28,7 +20,7 @@ fn assert_rejected(dir: &Path, label: &str, source: &str, expected: &[&str]) {
 
 #[test]
 fn task_handles_cannot_be_forged_for_join_or_cancel() {
-    let dir = workdir();
+    let dir = TempDir::new("sealed-handle");
     for operation in ["join", "cancel"] {
         let source = format!(
             "import task\nfrom task import Handle\n\nfn main(console: Console):\n    task.run(task.{operation}(Handle(999)))\n"
@@ -40,7 +32,7 @@ fn task_handles_cannot_be_forged_for_join_or_cancel() {
 
 #[test]
 fn raw_scheduler_protocol_is_not_user_constructible() {
-    let dir = workdir();
+    let dir = TempDir::new("sealed-handle");
     assert_rejected(
         &dir,
         "raw-cancel",

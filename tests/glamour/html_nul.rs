@@ -1,21 +1,15 @@
 //! Compile-time HTML marker collision coverage (BUG-439).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 const ERROR: &str = "glamour html: NUL is not allowed in static template text";
 
-fn workdir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "witchy-glamour-html-nul-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("create workdir");
+use super::temp_dir::TempDir;
+
+fn workdir() -> TempDir {
+    let dir = TempDir::new("glamour-html-nul");
     std::fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("projects/glamour/src/glamour.witchy"),
         dir.join("glamour.witchy"),

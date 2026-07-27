@@ -11,41 +11,18 @@ use witchy_testkit::{
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
-struct TempDir(PathBuf);
+use super::temp_dir::TempDir;
 
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
-        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "witchy-rfc0105-{tag}-{}-{sequence}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&path).expect("create fixture CLI temp directory");
-        Self(path)
-    }
+trait FixturePlanFile {
+    fn write_plan(&self, plan: &FixturePlan) -> PathBuf;
+}
 
-    fn write(&self, relative: &str, contents: &str) -> PathBuf {
-        let path = self.0.join(relative);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create fixture CLI parent");
-        }
-        std::fs::write(&path, contents).expect("write fixture CLI input");
-        path
-    }
-
+impl FixturePlanFile for TempDir {
     fn write_plan(&self, plan: &FixturePlan) -> PathBuf {
         self.write(
             "fixtures.json",
-            &canonical_plan_json(plan).expect("canonical fixture plan"),
+            canonical_plan_json(plan).expect("canonical fixture plan"),
         )
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -405,7 +382,7 @@ fn test_only_sealed_construction_does_not_escape_to_production_commands() {
     assert_sealed_rejected(&run(&[&suite]), "run");
     assert_sealed_rejected(&run(&[Path::new("check"), &suite]), "check");
 
-    let artifact = temp.0.join("escaped.wasm");
+    let artifact = temp.join("escaped.wasm");
     assert_sealed_rejected(
         &run(&[
             Path::new("compile"),
@@ -417,7 +394,7 @@ fn test_only_sealed_construction_does_not_escape_to_production_commands() {
     );
     assert!(!artifact.exists(), "rejected compile left a production artifact");
 
-    let build_out = temp.0.join("build-out");
+    let build_out = temp.join("build-out");
     assert_sealed_rejected(
         &run(&[
             Path::new("build-step"),
