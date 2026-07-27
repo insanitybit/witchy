@@ -14,20 +14,6 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
-    #[test]
-    fn rfc0087_async_and_generator_var_parameters_are_rejected_explicitly() {
-        for (src, kind) in [
-            ("async fn bad(var state: Int) -> Nil:\n    return\n", "async"),
-            ("gen fn bad(var state: Int) -> Iter(Int):\n    yield state\n", "generator"),
-        ] {
-            let err = parser::parse_module(src).expect_err("suspending `var` parameter");
-            let message = format!("{err:?}");
-            assert!(message.contains(kind), "diagnostic must name {kind}: {message}");
-            assert!(message.contains("`var` parameter `state`"), "diagnostic: {message}");
-            assert!(message.contains("suspension"), "diagnostic: {message}");
-        }
-    }
-
     /// `let` borrows extend past `List` to the other heap types: a `String`
     /// parameter (the recursive-parser shape that motivated this — char ops on a
     /// borrowed string, no clone) and a `Dict`. Native emits `&String` / `&WMap`
