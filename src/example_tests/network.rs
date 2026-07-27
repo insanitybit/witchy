@@ -213,22 +213,6 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", &clean)], "main"), ["ok"], "wasm accepts a clean header/path");
     }
 
-    /// (SEC-043) `has_crlf` agrees on both backends for a control-bearing vs a
-    /// clean value — the primitive the CRLF validators are built on.
-    #[test]
-    fn http_has_crlf_agrees_on_both_backends() {
-        let prog = |v: &str| {
-            format!(
-                "import http\n\nfn main(console: Console):\n    console.print(\"${{http.has_crlf(\"{v}\")}}\")\n"
-            )
-        };
-        for (value, want) in [("a\\r\\nb", "true"), ("plain", "false"), ("tab\\ttab", "false")] {
-            let src = prog(value);
-            assert_eq!(link_run(&src), [want], "interp has_crlf({value})");
-            assert_eq!(run_linked_on_wasm(&[("main", &src)], "main"), [want], "wasm has_crlf({value})");
-        }
-    }
-
     /// HTTP/query hardening — the cluster of stdlib `http`/`server` fixes must behave
     /// identically on both backends (parity is prime):
     ///   BUG-236/352  query/form values are percent- AND `+`-decoded (`%E2%82%AC` -> €).

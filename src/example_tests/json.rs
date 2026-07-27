@@ -429,33 +429,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn json_floats_decode_and_round_trip_on_both_backends() {
-        // JSON numbers with fractions/exponents decode to JsonFloat and
-        // re-encode through the shared float formatter — identical on both
-        // backends (the learning log's F12).
-        let client = r#"
-import json
-fn round_trip(s: String) -> String:
-    match json.decode(s):
-        Ok(j) -> json.encode(j)
-        Err(e) -> "err:" + json.decode_error_message(e)
-fn main(console: Console):
-    console.print(round_trip("10"))
-    console.print(round_trip("-3"))
-    console.print(round_trip("3.25"))
-    console.print(round_trip("-0.5"))
-    console.print(round_trip("1.5e3"))
-    console.print(round_trip("{\"pi\": 3.25}"))
-"#;
-        let want: Vec<String> = ["10", "-3", "3.25", "-0.5", "1500.0", "{\"pi\":3.25}"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(link_run(client), want, "interpreter");
-        assert_eq!(wasm_run(client), want, "wasm");
-    }
-
-    #[test]
     fn json_long_fraction_does_not_wrap_backends_agree() {
         // BUG-241: the fractional tail used to fold digits into an i64
         // (`frac * 10 + digit`), so a long input-controlled fraction wrapped to a
@@ -583,8 +556,12 @@ fn main(console: Console):
                    \x20   dec(\"leading_zero\", \"01\", console)\n\
                    \x20   dec(\"neg_leading_zero\", \"-01\", console)\n\
                    \x20   dec(\"zero_ok\", \"0\", console)\n\
+                   \x20   dec(\"negative\", \"-3\", console)\n\
+                   \x20   dec(\"fraction\", \"3.25\", console)\n\
+                   \x20   dec(\"negative_fraction\", \"-0.5\", console)\n\
                    \x20   dec(\"dup_key\", \"{\\\"a\\\":1,\\\"a\\\":2}\", console)\n\
                    \x20   dec(\"exp_ok\", \"1.5e3\", console)\n\
+                   \x20   dec(\"object_fraction\", \"{\\\"pi\\\": 3.25}\", console)\n\
                    \x20   match json.float_of(JsonInt(1)):\n\
                    \x20       Ok(f) -> console.print(\"float_of_int: ${f}\")\n\
                    \x20       Err(e) -> console.print(\"float_of_int: ERR\")\n\
@@ -596,8 +573,12 @@ fn main(console: Console):
             "leading_zero: ERR",
             "neg_leading_zero: ERR",
             "zero_ok: 0",
+            "negative: -3",
+            "fraction: 3.25",
+            "negative_fraction: -0.5",
             "dup_key: ERR",
             "exp_ok: 1500.0",
+            "object_fraction: {\"pi\":3.25}",
             "float_of_int: 1.0",
             "encode_finite: 1.5",
         ];
