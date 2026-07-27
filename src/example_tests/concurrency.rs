@@ -1,5 +1,16 @@
 use crate::{codegen, interpreter, parser, typeck};
 
+fn assert_backends_agree(src: &str, expected: &[&str], context: &str) {
+    let module = parser::parse_module(src).expect("parse");
+    let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+    typeck::check(&linked).expect("typecheck");
+    let interp_out = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+    let bytes = codegen::compile_module_binary(&linked).expect_lowered(context);
+    let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
+    assert_eq!(interp_out, wasm_out, "{context}");
+    assert_eq!(interp_out, expected.iter().map(|line| (*line).to_string()).collect::<Vec<_>>());
+}
+
     // Phase 2 of the concurrency redesign: an `async fn` lowers (CPS over closures,
     // `crate::async_lower`) to a cooperative `chan` task, and `await` chains
     // continuations. An async `main` is the executor entry (lowers to `task.run`).
@@ -21,17 +32,8 @@ async fn main(console: Console):
     let d = double(10).await
     console.print("${d}")
 "#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "async lowering diverged across backends");
         // pipeline(3): a=6, b=12, a+b=18.  double(10)=20.
-        assert_eq!(interp_out, vec!["18", "20"]);
+        assert_backends_agree(src, &["18", "20"], "async lowering diverged across backends");
     }
 
     // (RFC-0059 Stage-1 step 1) The state-machine lowering's expressiveness: a
@@ -76,18 +78,13 @@ async fn main(console: Console):
     chan.spawn(counter(tx, 5)).await
     total(console, rx).await
 "#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "state-machine async lowering diverged across backends");
         // The synchronous value-returning `var` calls update a local threaded
         // through the shipped async segment functions on both sides of `await`.
-        assert_eq!(interp_out, vec!["acc 112 first 11", "sum 10"]);
+        assert_backends_agree(
+            src,
+            &["acc 112 first 11", "sum 10"],
+            "state-machine async lowering diverged across backends",
+        );
     }
 
     // `await` inside a `for` loop — over a list (producer) and a range (consumer)
@@ -114,16 +111,7 @@ async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     task.spawn(producer(tx)).await
     consumer(console, rx).await"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "for-await schedule diverged across backends");
-        assert_eq!(interp_out, vec!["got 1", "got 2", "got 3"]);
+        assert_backends_agree(src, &["got 1", "got 2", "got 3"], "for-await schedule diverged across backends");
     }
 
     // `for await x in rx:` — a receive loop over a channel whose body may itself
@@ -149,16 +137,7 @@ async fn main(console: Console):
     task.spawn(producer(tx)).await
     task.spawn(relay(rx, otx)).await
     chan.consume(orx, fn(v): task.done(console.print("got ${v}"))).await"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "for-await-over-receiver diverged across backends");
-        assert_eq!(interp_out, vec!["got 1", "got 4", "got 9"]);
+        assert_backends_agree(src, &["got 1", "got 4", "got 9"], "for-await-over-receiver diverged across backends");
     }
 
     // The multi-actor case: each task has its OWN inbox, so several actors with
@@ -191,16 +170,7 @@ async fn main(console: Console):
     driver(log_tx, fwd_tx).await
     task.join(fh).await
     task.join(lh).await"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "multi-actor schedule diverged across backends");
-        assert_eq!(interp_out, vec!["log 100", "log 200"]);
+        assert_backends_agree(src, &["log 100", "log 200"], "multi-actor schedule diverged across backends");
     }
 
     // (RFC-0055 acceptance #1) Two INDEPENDENT modules, each with a PRIVATE channel
@@ -320,16 +290,7 @@ async fn main(console: Console):
     match a2:
         Some(Answer(v)) -> console.print("answer ${v}")
         None -> console.print("none")"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "job/answer schedule diverged across backends");
-        assert_eq!(interp_out, vec!["answer 9", "answer 25"]);
+        assert_backends_agree(src, &["answer 9", "answer 25"], "job/answer schedule diverged across backends");
     }
 
     // (RFC-0042) THE headline acceptance test: `import iter` + `import chan` in ONE
@@ -359,16 +320,7 @@ async fn main(console: Console):
     chan.consume(rx, fn(v): task.done(console.print("recv ${v}"))).await
     console.print("done")
 "#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
-            .expect("iter+chan link (RFC-0042: the Step collision must be gone)");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "iter+chan diverged across backends");
-        assert_eq!(interp_out, vec!["[2, 4, 6]", "recv 41", "done"]);
+        assert_backends_agree(src, &["[2, 4, 6]", "recv 41", "done"], "iter+chan diverged across backends");
     }
 
     // The channel message type is GENERIC (here `String`), proving the explicit
@@ -392,16 +344,7 @@ async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     task.spawn(producer(tx)).await
     consumer(console, rx).await"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "generic-message channel diverged across backends");
-        assert_eq!(interp_out, vec!["hello alice", "hello bob"]);
+        assert_backends_agree(src, &["hello alice", "hello bob"], "generic-message channel diverged across backends");
     }
 
     // `chan.select` races two receivers, taking from whichever is ready (a tie
@@ -437,16 +380,7 @@ async fn main(console: Console):
     task.spawn(pa(atx)).await
     task.spawn(pb(btx)).await
     collector(console, arx, brx).await"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "select schedule diverged across backends");
-        assert_eq!(interp_out, vec!["a 1", "a 2", "b 9", "done"]);
+        assert_backends_agree(src, &["a 1", "a 2", "b 9", "done"], "select schedule diverged across backends");
     }
 
     // Phase 5 (racing): `future.select` drives tasks concurrently and returns the
@@ -467,16 +401,7 @@ fn counter(label: Int, steps: Int) -> Future(Int):
 fn main(console: Console):
     let (idx, val) = future.select([counter(10, 5), counter(20, 2), counter(30, 8)])
     console.print("winner ${idx} ${val}")"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "select diverged across backends");
-        assert_eq!(interp_out, vec!["winner 1 20"]);
+        assert_backends_agree(src, &["winner 1 20"], "select diverged across backends");
     }
 
     // The coloring rule: `await` is a parse error outside an `async fn`.
@@ -516,14 +441,9 @@ fn ticker(console: Console, name: String, n: Int) -> Future(Int):
 fn main(console: Console):
     let results = future.join_all([ticker(console, "A", 2), ticker(console, "B", 2)])
     console.print("done ${results}")"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "executor schedule diverged across backends");
-        assert_eq!(interp_out, vec!["A 2", "B 2", "A 1", "B 1", "done [0, 0]"]);
+        assert_backends_agree(
+            src,
+            &["A 2", "B 2", "A 1", "B 1", "done [0, 0]"],
+            "executor schedule diverged across backends",
+        );
     }
