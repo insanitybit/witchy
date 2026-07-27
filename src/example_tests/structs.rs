@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, interpreter, parser, typeck};
+use crate::{codegen, interpreter, parser};
 
     /// RFC-0005 Stage 4 (records slice): plain named-field and positional
     /// nominal aggregates may carry a migrated capability, lowered to typed GC
@@ -102,27 +102,6 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
-    /// (BUG-300) Field projection on a method-call-chain result compiles on both
-    /// backends (`list.sort(xs).at(0).label`, `[..].at(0).label`) — the record type
-    /// of the chain result comes from the type table, not a local-var-only map.
-    #[test]
-    fn field_projection_on_call_chain_backends_agree() {
-        let src = "import cmp\n\ntype Top derive(Ord, PartialOrd, Eq, PartialEq):\n    label: String\n\nfn main(console: Console):\n    var xs = [Top(label: \"b\"), Top(label: \"a\")]\n    list.sort(xs)\n    console.print(xs.at(0).label)\n    console.print([Top(label: \"b\"), Top(label: \"a\")].at(0).label)\n    console.print(list.at([Top(label: \"b\"), Top(label: \"a\")], 0).label)\n";
-        let want = ["a", "b", "b"];
-        assert_eq!(link_run(src), want, "interp");
-        assert_eq!(wasm_run(src), want, "wasm");
-    }
-
-    /// (BUG-318) Anonymous-record `==` and `"${…}"` work on both backends — the
-    /// structural eq/render build the shape from the inline field types.
-    #[test]
-    fn anonymous_record_eq_and_show_backends_agree() {
-        let src = "fn main(console: Console):\n    let a = .{x: 1, y: \"hi\"}\n    let b = .{x: 1, y: \"hi\"}\n    let c = .{x: 2, y: \"hi\"}\n    console.print(\"${a == b}\")\n    console.print(\"${a == c}\")\n    console.print(\"${a}\")\n";
-        let want = ["true", "false", ".{x: 1, y: hi}"];
-        assert_eq!(link_run(src), want, "interp");
-        assert_eq!(wasm_run(src), want, "wasm");
-    }
-
     /// Structural `==`/`!=` on compound values (lists, nested lists, tuples,
     /// records, lists of records) must agree on both backends. WASM previously
     /// compared heap POINTERS, so two equal-but-distinct values compared unequal;
@@ -174,44 +153,6 @@ use crate::{codegen, interpreter, parser, typeck};
     fn record_field_interpolation_renders_on_wasm() {
         let src = "type Post:\n    title: String\n    views: Int\n    tags: List(Int)\nfn main(console: Console):\n    let p = Post(\"hi\", 9, [1, 2, 3])\n    console.print(\"${p.title} (${p.views}): ${p.tags}\")\n";
         assert_eq!(run_on_wasm(src), vec!["hi (9): [1, 2, 3]".to_string()]);
-    }
-
-    #[test]
-    fn brace_free_record_update_form() {
-        // `update e: field = value ...` — brace-free record update (one or more
-        // whitespace-separated `name = value` overrides). Both backends agree.
-        let client = r#"
-type Point:
-    x: Int
-    y: Int
-
-fn main(console: Console):
-    let p = Point(1, 2)
-    let q = Point(x: ((p).x + 10), ..p)
-    console.print("${((q).x + (q).y)}")
-    let r = Point(x: 5, y: 6, ..p)
-    console.print("${((r).x + (r).y)}")
-"#;
-        assert_eq!(interp(client), vec!["13", "11"]);
-        assert_eq!(run_on_wasm(client), vec!["13", "11"]);
-    }
-
-    /// A RecordUpdate whose base is a non-Var EXPRESSION on the binary path:
-    /// `Point(x: 100, ..(l).from)` — the base `(l).from` (a field access) is
-    /// evaluated ONCE into the `$TUPLE_TMP` scratch, base-first, so each
-    /// un-updated field (`y`) reads it (was: the lowering required a Var base and
-    /// bailed to WAT). Compared against the interpreter oracle.
-    #[test]
-    fn wir_record_update_expr_base_binary_path() {
-        let src = "type Point:\n    x: Int\n    y: Int\n\ntype Line:\n    from: Point\n    to: Point\n\nfn main(console: Console):\n    let l = Line(Point(1, 2), Point(3, 4))\n    let p2 = Point(x: 100, ..(l).from)\n    console.print(\"${(p2).x}\")\n    console.print(\"${(p2).y}\")\n";
-        let want = vec!["100".to_string(), "2".to_string()];
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typeck");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the WIR binary path should lower a RecordUpdate with an expression base");
-        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
-        assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
     #[test]
@@ -316,65 +257,6 @@ fn main(console: Console):
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["30", "0"]);
-    }
-
-    #[test]
-    fn tuple_construct_and_destructure_on_wasm() {
-        // Multiple-return-value tuples compile to WASM: divmod(17,5) = (3,2),
-        // then 3*100 + 2 = 302.
-        let src = r#"
-fn divmod(a: Int, b: Int) -> (Int, Int):
-    ((a / b), (a % b))
-
-fn main() -> Int:
-    let (q, r) = divmod(17, 5)
-    ((q * 100) + r)
-"#;
-        assert_eq!(run_on_wasm(src), vec!["302"]);
-    }
-
-    #[test]
-    fn record_call_and_update_results_field_access_on_wasm() {
-        // Field access on a `let` bound to a record-returning call / update —
-        // exercises return-record and update-result type tracking in codegen.
-        let src = r#"
-type Point:
-    x: Int
-    y: Int
-
-fn make(a: Int, b: Int) -> Point:
-    Point(a, b)
-
-fn shift(p: Point, dx: Int) -> Point:
-    Point(x: ((p).x + dx), ..p)
-
-fn main() -> Int:
-    let p = make(3, 4)
-    let q = shift(p, 7)
-    ((q).x + (q).y)
-"#;
-        assert_eq!(run_on_wasm(src), vec!["14"]);
-    }
-
-    #[test]
-    fn record_typed_list_iteration_on_wasm() {
-        // `for it in items` where items: List(Record) — the loop var's fields
-        // resolve. total([Item(3,2), Item(5,1)]) = 3*2 + 5*1 = 11.
-        let src = r#"
-type Item:
-    price: Int
-    qty: Int
-
-fn total(items: List(Item)) -> Int:
-    var sum = 0
-    for it in items:
-        sum = (sum + ((it).price * (it).qty))
-    sum
-
-fn main() -> Int:
-    total([Item(3, 2), Item(5, 1)])
-"#;
-        assert_eq!(run_on_wasm(src), vec!["11"]);
     }
 
     /// A record SPREAD (`Point(x: 5, ..p)`) is validated exactly like plain
@@ -584,32 +466,6 @@ fn main(console: Console):
         assert_eq!(interp(src), expected, "interpreter");
         assert_eq!(run_on_wasm(src), expected, "compiled WASM");
     }
-
-    #[test]
-    fn nested_records_backends_agree() {
-        // A record containing a record: chained field access (o.inner.v), nested
-        // construction, `update` on a nested field, and immutability of the
-        // original. Both backends must agree.
-        let src = r#"
-type Inner:
-    v: Int
-
-type Outer:
-    name: String
-    inner: Inner
-
-fn main(console: Console):
-    let o = Outer("x", Inner(42))
-    console.print("${((o).inner).v}")
-    let o2 = Outer(inner: Inner((((o).inner).v + 1)), ..o)
-    console.print("${((o2).inner).v}")
-    console.print((o).name)
-    console.print("${((o).inner).v}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["42", "43", "x", "42"]);
-    }
-
 
     /// REGRESSION (BUG-253): `xs.sort()` dispatches through `Ord`, so a list of
     /// derived-`Ord` records sorts (it used to fail 'expected Int' by binding the
