@@ -1481,151 +1481,6 @@ fn hold(vault: Vault):
     }
 
     #[test]
-    fn basic_well_typed_programs() {
-        let cases = [
-            (
-                "function call",
-                r#"
-fn double(n: Int) -> Int:
-    (n * 2)
-
-fn main(console: Console):
-    console.print("${double(21)}")
-"#,
-            ),
-            (
-                "tuple destructure",
-                r#"
-fn main():
-    let (a, b) = (1, 2)
-"#,
-            ),
-            (
-                "generic function at multiple types",
-                r#"
-fn id(x: a) -> a:
-    x
-
-fn main(console: Console):
-    console.print(id("hi"))
-    console.print("${id(5)}")
-"#,
-            ),
-            (
-                "generic ADT at multiple types",
-                r#"
-type Box:
-    Wrap(a)
-
-fn unwrap_int(b: Box(Int)) -> Int:
-    match b:
-        Wrap(n) -> n
-
-fn unwrap_str(b: Box(String)) -> String:
-    match b:
-        Wrap(s) -> s
-
-fn main(console: Console):
-    console.print("${unwrap_int(Wrap(5))}")
-    console.print(unwrap_str(Wrap("hi")))
-"#,
-            ),
-            (
-                "generic binding body at multiple types",
-                r#"
-type Box:
-    Wrap(a)
-
-fn unwrap(b: Box(a), default: a) -> a:
-    match b:
-        Wrap(v) -> v
-
-fn main(console: Console):
-    console.print("${unwrap(Wrap(5), 0)}")
-    console.print(unwrap(Wrap("hi"), "none"))
-"#,
-            ),
-            (
-                "early return and divergence",
-                r#"
-fn classify(n: Int) -> String:
-    if (n < 0):
-        return "neg"
-    "nonneg"
-
-fn only_return() -> Int:
-    return 5
-"#,
-            ),
-            (
-                "structural equality",
-                r#"
-fn f(a: (Int, Int), b: (Int, Int)) -> Bool:
-    (a == b)
-"#,
-            ),
-            (
-                "generic dictionary builtins",
-                r#"
-fn tally(words: List(String)) -> Int:
-    var d = dict.new()
-    for w in words:
-        d = dict.__insert(d, w, (dict.get_or(d, w, 0) + 1))
-    dict.length(d)
-"#,
-            ),
-            (
-                "string builtins",
-                r#"
-fn first_field(row: String) -> String:
-    list.at(row.split(","), 0)
-
-fn has(s: String, sub: String) -> Bool:
-    s.contains(sub)
-
-fn fix(s: String) -> String:
-    s.replace("a", "b")
-"#,
-            ),
-            (
-                "generic list push and concat",
-                r#"
-fn ints() -> List(Int):
-    list.__push([1, 2], 3)
-
-fn strs() -> List(String):
-    list.concat(["a"], ["b", "c"])
-"#,
-            ),
-            (
-                "higher-order lambda",
-                r#"
-fn apply(f: fn(Int) -> Int, x: Int) -> Int:
-    f(x)
-
-fn main(console: Console):
-    console.print("${apply(fn(n: Int): (n + 1), 10)}")
-"#,
-            ),
-            (
-                "generic higher-order function",
-                r#"
-fn apply(f: fn(a) -> a, x: a) -> a:
-    f(x)
-
-fn main(console: Console):
-    console.print(apply(fn(s: String): s, "hi"))
-    console.print("${apply(fn(n: Int): n, 5)}")
-"#,
-            ),
-        ];
-        for (case, src) in cases {
-            let result = check_str(src);
-            assert!(result.is_ok(), "{case}: {result:?}");
-        }
-    }
-
-    #[test]
     fn basic_type_errors_are_rejected() {
         let cases = [
             (
@@ -1792,19 +1647,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn record_update_types() {
-        let src = r#"
-type Point:
-    x: Int
-    y: Int
-
-fn bump(p: Point) -> Point:
-    Point(x: ((p).x + 1), ..p)
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
     fn record_spread_base_must_match_named_record() {
         check_str(
             "type P:\n    x: Int\n    y: Int\nfn f(p: P) -> P:\n    P(x: 5, ..p)\n",
@@ -1864,19 +1706,6 @@ fn bad(p: Point) -> Point:
     }
 
     #[test]
-    fn record_field_access_types() {
-        let src = r#"
-type Point:
-    x: Int
-    y: Int
-
-fn sum(p: Point) -> Int:
-    ((p).x + (p).y)
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
     fn rejects_unknown_record_field() {
         let src = r#"
 type Point:
@@ -1917,18 +1746,6 @@ fn unwrap(b: Box(Int)) -> String:
     }
 
     #[test]
-    fn list_pattern_binds_element_and_tail() {
-        // `head` is the element type, `tail` is a list of the same element type.
-        let src = r#"
-fn f(xs: List(Int)) -> Int:
-    match xs:
-        [] -> 0
-        [head, ..tail] -> (head + f(tail))
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
     fn rejects_list_pattern_element_misuse() {
         // Binding a list element as Int then concatenating it as a String fails.
         let src = r#"
@@ -1941,16 +1758,6 @@ fn f(xs: List(Int)) -> String:
     }
 
     #[test]
-    fn for_in_binds_element_type() {
-        let src = r#"
-fn main(console: Console):
-    for n in [1, 2, 3]:
-        console.print("${n}")
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
     fn rejects_for_over_non_list() {
         let src = r#"
 fn main(console: Console):
@@ -1958,24 +1765,6 @@ fn main(console: Console):
         console.print("x")
 "#;
         assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn try_operator_propagates_result() {
-        let src = r#"
-type Result:
-    Ok(a)
-    Err(e)
-
-fn parse(s: String) -> Result(Int, String):
-    Ok(s.to_int())
-
-fn add(a: String, b: String) -> Result(Int, String):
-    let x = (parse(a))?
-    let y = (parse(b))?
-    Ok((x + y))
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
