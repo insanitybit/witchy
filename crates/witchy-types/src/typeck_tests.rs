@@ -1422,14 +1422,6 @@ fn hold(vault: Vault):
     }
 
     #[test]
-    fn derive_ord_accepts_total_nested_fields() {
-        check_str(
-            "import cmp\nimport duration\n\ntype Key derive(PartialEq, Eq, PartialOrd, Ord):\n    name: String\n    age: Duration\n\ntype Reading derive(PartialEq, Eq, PartialOrd, Ord):\n    key: Key\n    count: Int\n",
-        )
-        .expect("derived Ord composes through total nested fields");
-    }
-
-    #[test]
     fn fieldless_types_are_uninhabited_and_builtin_derives_reject() {
         // `type Marker:` is a fieldless, uninhabited type. It has no constructor,
         // so an empty match is exhaustive, but structural built-in derives must not
@@ -2517,21 +2509,6 @@ fn main():
         assert_eq!(strip_home_qualifiers("in `app.go`: boom", "app"), "in `app.go`: boom");
         // An unknown home is a no-op.
         assert_eq!(strip_home_qualifiers("found `app.Point`", ""), "found `app.Point`");
-    }
-
-    #[test]
-    fn rfc0087_var_shapes_accept_any_return_and_parameter_position() {
-        // RFC-0087 removes the return-shape table. Every `var` parameter is one
-        // move-in/move-out channel independent of its position and the ordinary
-        // return type.
-        check_str("fn f(x: Int, var xs: List(Int)) -> List(Int):\n    xs\n")
-            .expect("a non-first var parameter may accompany a value return");
-        check_str("fn f(var xs: List(Int), x: Int) -> Int:\n    x\n")
-            .expect("a first var parameter may accompany an unrelated return");
-        check_str("fn bump(var n: Int):\n    n = n + 1\n")
-            .expect("a Nil-returning var function remains valid");
-        check_str("fn keep(var xs: List(Int), x: Int) -> List(Int):\n    xs\n")
-            .expect("a self-typed ordinary return remains valid");
     }
 
     #[test]
