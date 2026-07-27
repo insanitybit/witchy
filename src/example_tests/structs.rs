@@ -378,14 +378,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn records_example_runs_on_wasm() {
-        assert_eq!(
-            run_on_wasm(include_str!("../../examples/records/src/records.witchy")),
-            vec!["origin.x = 2", "moved = (12, 3)", "manhattan(moved) = 15"]
-        );
-    }
-
-    #[test]
     fn record_typed_list_iteration_on_wasm() {
         // `for it in items` where items: List(Record) — the loop var's fields
         // resolve. total([Item(3,2), Item(5,1)]) = 3*2 + 5*1 = 11.
@@ -404,16 +396,6 @@ fn main() -> Int:
     total([Item(3, 2), Item(5, 1)])
 "#;
         assert_eq!(run_on_wasm(src), vec!["11"]);
-    }
-
-    #[test]
-    fn record_field_access_and_update_run_on_wasm() {
-        // Records — field access *and* update — compile and run on the WASM
-        // runtime. shift_x(Point(3,4), 1) = Point(4,4); 4*4 + 4*4 = 32.
-        assert_eq!(
-            run_on_wasm(include_str!("../../examples/record_compiled/src/record_compiled.witchy")),
-            vec!["32"]
-        );
     }
 
     /// A record SPREAD (`Point(x: 5, ..p)`) is validated exactly like plain
@@ -447,18 +429,6 @@ fn main() -> Int:
         let ok = "type Point:\n    x: Int\n    y: Int\nfn main(console: Console):\n    let p = Point(x: 1, y: 2)\n    let q = Point(x: 7, ..p)\n    console.print(\"${q.x}\" + \" \" + \"${q.y}\")\n";
         assert_eq!(link_run(ok), vec!["7 2"], "interpreter");
         assert_eq!(wasm_run(ok), vec!["7 2"], "wasm");
-    }
-
-    #[test]
-    fn record_update_example_runs_on_wasm() {
-        // `update` referencing the original record, plus a String-field update;
-        // the original is unchanged.
-        let src = include_str!("../../examples/record_update/src/record_update.witchy");
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(
-            run_on_wasm(src),
-            vec!["alice 100", "alice 150", "alice smith 150"]
-        );
     }
 
     // Dict operations factored into helper functions: codegen picks the
@@ -659,18 +629,6 @@ fn main(console: Console):
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["42", "43", "x", "42"]);
-    }
-
-    #[test]
-    fn records_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/records/src/records.witchy")),
-            vec![
-                "origin.x = 2",
-                "moved = (12, 3)",
-                "manhattan(moved) = 15"
-            ]
-        );
     }
 
 

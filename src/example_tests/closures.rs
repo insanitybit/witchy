@@ -136,38 +136,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn closures_example_runs_on_wasm() {
-        // Higher-order functions + closures, compiled to WASM: apply(square, 9) =
-        // 81; twice(+3, 10) = ((10+3)+3) = 16; apply(adder(100), 5) = 105 (the
-        // returned closure captures `by = 100`).
-        assert_eq!(
-            run_on_wasm(include_str!("../../examples/closures/src/closures.witchy")),
-            vec!["81", "16", "105"]
-        );
-    }
-
-    /// `higher_order_sum` reproduces Rust by Example's "sum of squared odd numbers
-    /// under 1000" — an imperative range loop and a functional `std/list` pipeline
-    /// (map / take_while / filter / sum) that must agree, on both backends.
-    #[test]
-    fn higher_order_sum_example_agrees_on_both_backends() {
-        let client = std::fs::read_to_string("examples/higher_order_sum/src/higher_order_sum.witchy").unwrap();
-        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client.as_str())];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "higher_order_sum diverged");
-        assert_eq!(compiled, vec!["imperative: 5456".to_string(), "functional: 5456".to_string()]);
-    }
-
-    #[test]
-    fn higher_order_example_runs_on_wasm() {
-        // Closure returned from a function (make_adder) + higher-order reduce.
-        let src = include_str!("../../examples/higher_order/src/higher_order.witchy");
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["15", "81", "15", "120"]);
-    }
-
-    #[test]
     fn closures_capturing_loop_var_backends_agree() {
         // Closures created in a loop each capture that iteration's value of the
         // loop variable (by value), are stored in a list, and called back. Both
@@ -360,4 +328,3 @@ fn main(console: Console):
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "closures/ordering diverged");
     }
-

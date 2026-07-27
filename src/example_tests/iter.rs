@@ -220,27 +220,3 @@ fn main(console: Console):
         assert_eq!(interpreted, compiled, "std/iter diverged");
         assert_eq!(compiled, vec!["165", "56", "5", "0", "10", "20"]);
     }
-
-    /// `lazy_fib` builds an *infinite* Fibonacci iterator with `iter.unfold` and
-    /// bounds it with take / take_while / find — the canonical lazy-generator
-    /// demo, agreeing on both backends.
-    #[test]
-    fn lazy_fib_example_agrees_on_both_backends() {
-        let client = std::fs::read_to_string("examples/lazy_fib/src/lazy_fib.witchy").unwrap();
-        let sources = [
-            ("iter", crate::bundled_module("iter").unwrap()),
-            ("string", crate::bundled_module("string").unwrap()),
-            ("main", client.as_str()),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "lazy_fib diverged");
-        assert_eq!(
-            compiled,
-            vec![
-                "first 10: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34".to_string(),
-                "even fib sum < 1000: 798".to_string(),
-                "first fib > 1000: 1597".to_string(),
-            ]
-        );
-    }

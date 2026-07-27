@@ -243,33 +243,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn let_patterns_example_runs_on_wasm() {
-        // `if let` / `while let` desugar to `match`, so the pattern-binding control
-        // flow (including draining a list via head/tail in a `while let`) produces
-        // identical output on both backends.
-        let sources = [
-            ("string", crate::bundled_module("string").unwrap()),
-            ("option", crate::bundled_module("option").unwrap()),
-            ("main", include_str!("../../examples/let_patterns/src/let_patterns.witchy")),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "let_patterns diverged");
-        assert_eq!(
-            compiled,
-            vec![
-                "found: 42",
-                "head is 7",
-                "pop 1",
-                "pop 2",
-                "pop 3",
-                "pop 4",
-                "drained",
-            ]
-        );
-    }
-
-    #[test]
     fn coalesce_unwraps_option_backends_agree() {
         // RFC-0048: `Option(T) ?? T` unwraps to `T` (None -> the default, evaluated
         // lazily; Some(x) -> x, present even when empty — `Some("") ?? "x"` is `""`,
@@ -645,28 +618,4 @@ fn main(console: Console):
         assert_eq!(interp(src), run_on_wasm(src));
         // And the concrete values, to be sure both compute the right thing.
         assert_eq!(run_on_wasm(src), vec!["8", "3", "10"]);
-    }
-
-    #[test]
-    fn tuples_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/tuples/src/tuples.witchy")),
-            vec!["3 remainder 2", "7 spells seven", "just the remainder: 2", "2 3"]
-        );
-    }
-
-    #[test]
-    fn loops_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/loops/src/loops.witchy")),
-            vec!["sum = 108", "witchy loops work"]
-        );
-    }
-
-    #[test]
-    fn listmatch_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/listmatch/src/listmatch.witchy")),
-            vec!["sum = 21", "starts with 3", "one: 42", "empty"]
-        );
     }

@@ -28,19 +28,6 @@ use crate::{codegen, interpreter, parser, typeck};
         }
     }
 
-    /// The full conventions showcase (examples/conventions/src/conventions.witchy) — `var`/`let`/
-    /// `own`/`move` across a function, a method (`let self`), an actor (`var`
-    /// state, `own` payload), and local bindings — runs identically on the
-    /// interpreter and WASM backends.
-    #[test]
-    fn conventions_showcase_runs() {
-        let expected = "count: 2\nsum: 10\ndoubled first: 2\nnums still here, length: 4\nbag total: 60\ndrained length: 3\nrunning sum: 300\nrunning sum: 306\n";
-        let (linked, _) = crate::link_file("examples/conventions/src/conventions.witchy").expect("link");
-        let interp =
-            interpreter::run_module(linked, ".", Vec::new()).expect("interp run").join("\n");
-        assert_eq!(format!("{interp}\n"), expected, "interp showcase");
-    }
-
     /// `let` borrows extend past `List` to the other heap types: a `String`
     /// parameter (the recursive-parser shape that motivated this — char ops on a
     /// borrowed string, no clone) and a `Dict`. Native emits `&String` / `&WMap`

@@ -56,43 +56,6 @@ use crate::{interpreter, parser};
         }
     }
 
-    /// `pascal` is an infinite generator whose state is a `List(Int)` row — each
-    /// `yield` emits a row, the next built from it. Demonstrates `gen fn` carrying
-    /// non-scalar state; agrees on both backends.
-    #[test]
-    fn pascal_generator_example_agrees_on_both_backends() {
-        let client = std::fs::read_to_string("examples/pascal/src/pascal.witchy").unwrap();
-        let sources = [
-            ("iter", crate::bundled_module("iter").unwrap()),
-            ("string", crate::bundled_module("string").unwrap()),
-            ("main", client.as_str()),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "pascal diverged");
-        assert_eq!(
-            compiled,
-            vec!["1", "1 1", "1 2 1", "1 3 3 1", "1 4 6 4 1", "1 5 10 10 5 1"]
-        );
-    }
-
-    /// `split_first` + `drop_while` let a user write their own iterator
-    /// transforms — here `dedup` (drop consecutive duplicates), composed with
-    /// `unfold`. Must agree on both backends.
-    #[test]
-    fn std_iter_split_first_dedup_backends_agree() {
-        let client = std::fs::read_to_string("examples/dedup/src/dedup.witchy").unwrap();
-        let sources = [
-            ("iter", crate::bundled_module("iter").unwrap()),
-            ("string", crate::bundled_module("string").unwrap()),
-            ("main", client.as_str()),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "dedup diverged");
-        assert_eq!(compiled, vec!["1 2 3 2 4".to_string()]);
-    }
-
     /// `iter.next` is the documented low-level pull primitive. It must be a real
     /// public API, not just an internal helper reachable only because privacy was
     /// previously unenforced.
@@ -143,31 +106,6 @@ fn main(console: Console):
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "iter adapters diverged");
         assert_eq!(compiled, vec!["0a 1b 2c", "3", "39", "12", "100", "101", "102"]);
-    }
-
-    /// `gen fn` / `yield` (lowered by `witchy_syntax::generators` to `std/iter`): an
-    /// imperative generator that yields a sequence becomes a lazy iterator. The
-    /// `generators` example (Fibonacci + Collatz, incl. an infinite generator and
-    /// a branch inside a loop) must agree on both backends.
-    #[test]
-    fn gen_yield_generators_example_agrees_on_both_backends() {
-        let client = std::fs::read_to_string("examples/generators/src/generators.witchy").unwrap();
-        let sources = [
-            ("iter", crate::bundled_module("iter").unwrap()),
-            ("string", crate::bundled_module("string").unwrap()),
-            ("main", client.as_str()),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "generators diverged");
-        assert_eq!(
-            compiled,
-            vec![
-                "fib[0..10): 0, 1, 1, 2, 3, 5, 8, 13, 21, 34".to_string(),
-                "collatz(6): 6, 3, 10, 5, 16, 8, 4, 2, 1".to_string(),
-                "collatz(27) length: 112".to_string(),
-            ]
-        );
     }
 
     /// A bare `yield` outside a `gen fn` is a parse error. It used to pass `check`,

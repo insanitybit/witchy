@@ -321,6 +321,68 @@ fn pure_examples_match_golden_output() {
                 "decoded: witchy 🧙",
             ],
         ),
+        ("examples/closures/src/closures.witchy", &["81", "16", "105"]),
+        (
+            "examples/higher_order_sum/src/higher_order_sum.witchy",
+            &["imperative: 5456", "functional: 5456"],
+        ),
+        ("examples/higher_order/src/higher_order.witchy", &["15", "81", "15", "120"]),
+        (
+            "examples/pascal/src/pascal.witchy",
+            &["1", "1 1", "1 2 1", "1 3 3 1", "1 4 6 4 1", "1 5 10 10 5 1"],
+        ),
+        ("examples/dedup/src/dedup.witchy", &["1 2 3 2 4"]),
+        (
+            "examples/generators/src/generators.witchy",
+            &[
+                "fib[0..10): 0, 1, 1, 2, 3, 5, 8, 13, 21, 34",
+                "collatz(6): 6, 3, 10, 5, 16, 8, 4, 2, 1",
+                "collatz(27) length: 112",
+            ],
+        ),
+        (
+            "examples/lazy_fib/src/lazy_fib.witchy",
+            &[
+                "first 10: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34",
+                "even fib sum < 1000: 798",
+                "first fib > 1000: 1597",
+            ],
+        ),
+        (
+            "examples/let_patterns/src/let_patterns.witchy",
+            &["found: 42", "head is 7", "pop 1", "pop 2", "pop 3", "pop 4", "drained"],
+        ),
+        (
+            "examples/tuples/src/tuples.witchy",
+            &["3 remainder 2", "7 spells seven", "just the remainder: 2", "2 3"],
+        ),
+        ("examples/loops/src/loops.witchy", &["sum = 108", "witchy loops work"]),
+        (
+            "examples/listmatch/src/listmatch.witchy",
+            &["sum = 21", "starts with 3", "one: 42", "empty"],
+        ),
+        (
+            "examples/conventions/src/conventions.witchy",
+            &[
+                "count: 2",
+                "sum: 10",
+                "doubled first: 2",
+                "nums still here, length: 4",
+                "bag total: 60",
+                "drained length: 3",
+                "running sum: 300",
+                "running sum: 306",
+            ],
+        ),
+        (
+            "examples/records/src/records.witchy",
+            &["origin.x = 2", "moved = (12, 3)", "manhattan(moved) = 15"],
+        ),
+        ("examples/record_compiled/src/record_compiled.witchy", &["32"]),
+        (
+            "examples/record_update/src/record_update.witchy",
+            &["alice 100", "alice 150", "alice smith 150"],
+        ),
     ];
 
     for (path, expected) in cases {
