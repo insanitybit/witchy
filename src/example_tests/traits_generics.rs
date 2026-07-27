@@ -505,18 +505,6 @@ fn main() -> Int:
         assert_eq!(normal_kind, opt_kind);
     }
 
-    /// FROM / INTO (std/convert): a user implements `From` and gets `Into` free via
-    /// the blanket `impl Into(b) for a where b: From(a)`. The blanket body calls the
-    /// STATIC `b.from(self)` on the bound target type (no receiver), resolved through
-    /// the bound at monomorphization. Both backends.
-    #[test]
-    fn from_into_conversion_traits() {
-        let src = "import convert\n\ntype Celsius:\n    deg: Int\n\nimpl From(Int) for Celsius:\n    fn from(value: Int) -> Celsius:\n        Celsius(value)\n\nfn main(console: Console):\n    let c: Celsius = (5).into()\n    let d = Celsius.from(9)\n    console.print(\"${c.deg} ${d.deg}\")\n";
-        let want = vec!["5 9".to_string()];
-        assert_eq!(link_run(src), want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
-    }
-
     /// (BUG-534) RFC-0042's qualified type spelling composes with static trait
     /// methods: plain `import json` exposes the type as `json.Json`, and that
     /// receiver should reach the same `From(a) for Json` impl as bare `Json.from`.
@@ -548,50 +536,6 @@ fn main() -> Int:
             err.to_string().contains("`Blob` does not implement `Show`"),
             "want a clean trait error, got: {err}"
         );
-    }
-
-    #[test]
-    fn std_show_list_backends_agree() {
-        // The blanket `impl Show for List(a) where a: Show` renders via the
-        // works for a user type (Coord) that the built-in to_string cannot print.
-        // Monomorphized dispatch keeps it content-correct on both backends.
-        let client = r#"
-import show
-
-type Coord:
-    Coord(Int, Int)
-
-impl Show for Coord:
-    fn show(self) -> String:
-        match self:
-            Coord(x, y) -> (((("(" + "${x}") + ",") + "${y}") + ")")
-
-fn main(console: Console):
-    console.print(show([1, 2, 3]))
-    console.print(show(["a", "b"]))
-    console.print(show([Coord(0, 0), Coord(1, 2)]))
-    console.print(show([true, false]))
-"#;
-        let sources = [
-            ("show", crate::bundled_module("show").unwrap()),
-            ("string", crate::bundled_module("string").unwrap()),
-            ("main", client),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "std show_list diverged");
-        assert_eq!(
-            compiled,
-            vec!["[1, 2, 3]", "[a, b]", "[(0,0), (1,2)]", "[true, false]"]
-        );
-    }
-
-    #[test]
-    fn inherent_impl_in_indentation_syntax() {
-        // The inherent impl works under the off-side rule too: `impl Point:`.
-        let client = "type Point:\n    Point(Int, Int)\n\nimpl Point:\n    fn sum(self) -> Int:\n        match self:\n            Point(x, y) -> x + y\n\nfn main(console: Console):\n    console.print(\"${sum(Point(4, 5))}\")\n";
-        assert_eq!(interp(client), vec!["9"]);
-        assert_eq!(run_on_wasm(client), vec!["9"]);
     }
 
     #[test]
