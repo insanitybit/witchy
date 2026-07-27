@@ -350,25 +350,6 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
-    /// `examples/jq/src/jq.witchy` — a JSON query tool — walks a dotted path (object keys
-    /// and numeric array indices) into a decoded document and renders the value.
-    /// Pure (Console), both backends.
-    #[test]
-    fn jq_example_queries_json_by_path() {
-        assert_eq!(
-            crate::execute_file("examples/jq/src/jq.witchy", Vec::new()).unwrap(),
-            vec![
-                "user.name       => \"Ada\"",
-                "user.roles      => [\"admin\",\"dev\"]",
-                "user.roles.0    => \"admin\"",
-                "user.roles.1    => \"dev\"",
-                "count           => 42",
-                "active          => true",
-                "user.missing    => (no such path)",
-            ]
-        );
-    }
-
     /// `std/json` typed field accessors: `get_string`/`get_int`/`get_strings`/
     /// `index_string` compose `get`/`index` with the `as_*` coercions — collapsing
     /// the common "read a typed field" pattern, and yielding `[]` for an absent

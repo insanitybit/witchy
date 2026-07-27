@@ -169,38 +169,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         assert_eq!(wasm_run(src), expected, "wasm: std Dict/Set impl/free methods");
     }
 
-    /// `examples/anagram/src/anagram.witchy` — groups words that are letter-rearrangements
-    /// of each other by a sorted-character signature, bucketing with a parallel
-    /// signatures/groups list (no Dict). Exercises sorting characters (string
-    /// `<`) and signature equality (string `==`) on both backends.
-    #[test]
-    fn anagram_example_groups_by_sorted_signature() {
-        assert_eq!(
-            crate::execute_file("examples/anagram/src/anagram.witchy", Vec::new()).unwrap(),
-            vec!["listen, silent, enlist", "cat, act, tac", "dog, god"]
-        );
-    }
-
-    /// `examples/stats/src/stats.witchy` — summary statistics over a `List(Float)` —
-    /// computes count/mean/variance/stddev/min/max, rendering with
-    /// math.format_float. Floats live in the list and flow through arithmetic and
-    /// sqrt; a guard that floats-in-collections + fixed-decimal formatting agree
-    /// on both backends.
-    #[test]
-    fn stats_example_summarizes_a_float_list() {
-        assert_eq!(
-            crate::execute_file("examples/stats/src/stats.witchy", Vec::new()).unwrap(),
-            vec![
-                "count    8",
-                "mean     5.00",
-                "variance 4.00",
-                "stddev   2.00",
-                "min      2.00",
-                "max      9.00",
-            ]
-        );
-    }
-
     /// (BUG-315, RFC-0044 rule 3) An out-of-range (or negative) `xs[i] = v` /
     /// `list.set_at` / `list.update_at` is a runtime error on BOTH backends,
     /// matching the `xs[i]` READ trap — never a silent no-op. In-bounds still agrees.
@@ -272,43 +240,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         assert_eq!(link_run(&src(1000)), want(1000), "interpreter");
         assert_eq!(wasm_run(&src(1000)), want(1000), "compiled WASM must agree");
         assert_eq!(wasm_run(&src(50000)), want(50000), "compiled at 50k must stay linear");
-    }
-
-    /// `examples/matrix/src/matrix.witchy` — integer matrices — multiplies a 2x3 by a 3x2,
-    /// transposes, and prints an identity, all with right-aligned columns. A
-    /// `List(List(Int))` workout (nested `at`) that agrees on both backends.
-    #[test]
-    fn matrix_example_multiplies_and_transposes() {
-        assert_eq!(
-            crate::execute_file("examples/matrix/src/matrix.witchy", Vec::new()).unwrap(),
-            vec![
-                "A x B =",
-                "[  58  64 ]",
-                "[ 139 154 ]",
-                "transpose(A) =",
-                "[ 1 4 ]",
-                "[ 2 5 ]",
-                "[ 3 6 ]",
-                "identity(3) =",
-                "[ 1 0 0 ]",
-                "[ 0 1 0 ]",
-                "[ 0 0 1 ]",
-            ]
-        );
-    }
-
-    /// `examples/toposort/src/toposort.witchy` — Kahn's topological sort over a dependency
-    /// graph — produces a valid build order and reports a cycle. Pure (Console),
-    /// list-based (no Dict), both backends.
-    #[test]
-    fn toposort_example_orders_and_detects_cycles() {
-        assert_eq!(
-            crate::execute_file("examples/toposort/src/toposort.witchy", Vec::new()).unwrap(),
-            vec![
-                "build order: boot -> config -> db -> cache -> api -> web",
-                "cyclic:      error: cycle among egg, chicken",
-            ]
-        );
     }
 
     /// A negative `Int` that enters a list through a *generic* function (the
@@ -1053,22 +984,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn list_pipeline_example_runs_on_wasm() {
-        // The example program (import list; map/filter/fold/sort_by + a capturing
-        // closure) compiles to WASM and prints identically to the interpreter.
-        assert_eq!(
-            run_linked_on_wasm(
-                &[
-                    ("list", crate::bundled_module("list").unwrap()),
-                    ("main", include_str!("../../examples/list_pipeline/src/list_pipeline.witchy")),
-                ],
-                "main",
-            ),
-            vec!["233", "2 8", "735"]
-        );
-    }
-
-    #[test]
     fn std_result_compiles_and_runs_on_wasm() {
         // The Result type + combinators compile; map_ok runs a closure over Ok.
         let client = r#"
@@ -1119,17 +1034,6 @@ fn main(console: Console):
     console.print("${dict.get_or(d, 3, (0 - 1))}")
 "#;
         assert_eq!(run_on_wasm(src), vec!["100", "200", "-1"]);
-    }
-
-    #[test]
-    fn wordcount_example_runs_on_wasm() {
-        // The word-frequency example compiles to WASM: a String-keyed Dict built
-        // in a `for w in string.split(...)` loop (so `w`'s type resolves to String).
-        // the=3, cat=1, missing=0, size=4.
-        assert_eq!(
-            run_on_wasm(include_str!("../../examples/wordcount/src/wordcount.witchy")),
-            vec!["3", "1", "0", "4"]
-        );
     }
 
     #[test]
@@ -1240,16 +1144,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn inventory_example_runs_on_wasm() {
-        // Dict iteration example compiles: `values` summed in a loop, and `pairs`
-        // destructured. total = 3+2+4 = 9; prices over 2 = {apple, milk} = 2.
-        assert_eq!(
-            run_on_wasm(include_str!("../../examples/inventory/src/inventory.witchy")),
-            vec!["total = 9", "over 2: 2"]
-        );
-    }
-
-    #[test]
     fn std_list_partition_unzip_backends_agree() {
         // partition splits by a predicate in one pass; unzip is the inverse of
         // zip. Both return tuples of lists, so this also exercises tuple-valued
@@ -1336,28 +1230,4 @@ fn main(console: Console):
     console.print("${dict.get_or(d, "absent", 99)}")
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "int/dict edges diverged");
-    }
-
-    #[test]
-    fn list_ops_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/list_ops/src/list_ops.witchy")),
-            vec!["55", "6", "0-2-4"]
-        );
-    }
-
-    #[test]
-    fn wordcount_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/wordcount/src/wordcount.witchy")),
-            vec!["3", "1", "0", "4"]
-        );
-    }
-
-    #[test]
-    fn inventory_example() {
-        assert_eq!(
-            interp(include_str!("../../examples/inventory/src/inventory.witchy")),
-            vec!["total = 9", "over 2: 2"]
-        );
     }

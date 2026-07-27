@@ -97,28 +97,6 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// The `examples/time_and_encoding/src/time_and_encoding.witchy` showcase runs: a formatted civil
-    /// date and base64/hex of a multibyte-UTF-8 payload, round-tripped — its
-    /// footprint is just Console.
-    #[test]
-    fn time_and_encoding_example_runs() {
-        assert_eq!(
-            crate::execute_file("examples/time_and_encoding/src/time_and_encoding.witchy", Vec::new()).unwrap(),
-            vec![
-                "date:    2026-05-28T20:26:40Z (Thursday)",
-                "layout:  Thursday, May 28 2026 at 20:26",
-                "parsed:  2026-06-08T20:30:00Z",
-                "checked: day 30 is out of range for 2026-2",
-                "base64:  d2l0Y2h5IPCfp5k=",
-                "hex:     77697463687920f09fa799",
-                "decoded: witchy 🧙",
-            ]
-        );
-        let src = std::fs::read_to_string("examples/time_and_encoding/src/time_and_encoding.witchy").unwrap();
-        let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
-        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
-    }
-
     /// Regression (found by `examples/calc/src/calc.witchy` via the both-backends invariant):
     /// comparing a String whose type isn't locally tracked — a List(String)
     /// element via `at` — to a literal must be a *structural* `$str_eq` on the

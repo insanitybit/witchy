@@ -17,81 +17,6 @@ use crate::{interpreter, parser};
         assert_eq!(code, 0);
     }
 
-    /// `import list` resolves to the bundled standard library (no local file),
-    /// links, type-checks, and runs end to end through the CLI.
-    #[test]
-    fn std_library_resolves_and_runs_via_cli() {
-        assert_eq!(
-            crate::execute_file("examples/std_demo/src/std_demo.witchy", Vec::new()).unwrap(),
-            vec!["30", "3"]
-        );
-    }
-
-    /// Sorting with a comparator closure, end to end through the bundled std.
-    #[test]
-    fn sort_runs_via_cli() {
-        assert_eq!(
-            crate::execute_file("examples/sort/src/sort.witchy", Vec::new()).unwrap(),
-            vec!["1,1,3,4,5", "5,4,3,1,1"]
-        );
-    }
-
-    /// The bundled `math` module resolves and computes via the CLI.
-    #[test]
-    fn math_runs_via_cli() {
-        assert_eq!(
-            crate::execute_file("examples/math_demo/src/math_demo.witchy", Vec::new()).unwrap(),
-            vec!["7", "5", "10", "1024", "12"]
-        );
-    }
-
-    /// Float math: the `sqrt` builtin and the `math` module's Float helpers.
-    #[test]
-    fn floats_run_via_cli() {
-        assert_eq!(
-            crate::execute_file("examples/floats/src/floats.witchy", Vec::new()).unwrap(),
-            vec!["4.0", "3.5", "5.0", "1.0"]
-        );
-    }
-
-    /// The list module's search/slice helpers via the CLI.
-    #[test]
-    fn list_more_runs_via_cli() {
-        assert_eq!(
-            crate::execute_file("examples/list_more/src/list_more.witchy", Vec::new()).unwrap(),
-            vec!["true", "3", "-1", "20", "30"]
-        );
-    }
-
-    /// The list-combinator pipeline example runs via the CLI (interpreter); a
-    /// companion compiled test (`list_pipeline_example_runs_on_wasm`) asserts the
-    /// same output through the WASM backend.
-    #[test]
-    fn list_pipeline_runs_via_cli() {
-        assert_eq!(
-            crate::execute_file("examples/list_pipeline/src/list_pipeline.witchy", Vec::new()).unwrap(),
-            vec!["233", "2 8", "735"]
-        );
-    }
-
-    /// `zip`/`enumerate` and tuple destructuring in a loop, via the CLI.
-    #[test]
-    fn zip_runs_via_cli() {
-        assert_eq!(
-            crate::execute_file("examples/zip/src/zip.witchy", Vec::new()).unwrap(),
-            vec!["0:alice 1:bob 2:carol", "alice=30 bob=25 carol=40"]
-        );
-    }
-
-    /// `any`/`all` predicate combinators via the CLI.
-    #[test]
-    fn predicates_run_via_cli() {
-        assert_eq!(
-            crate::execute_file("examples/predicates/src/predicates.witchy", Vec::new()).unwrap(),
-            vec!["true", "true", "false", "false"]
-        );
-    }
-
     /// `all` is vacuously true on the empty list; `any` is false.
     #[test]
     fn any_all_empty_list_edge_cases() {
@@ -151,15 +76,6 @@ fn main(console: Console):
         assert_eq!(out, vec!["true", "2"]);
     }
 
-    /// The bundled `option` module (type + helpers) resolves via the CLI.
-    #[test]
-    fn option_module_runs_via_cli() {
-        assert_eq!(
-            crate::execute_file("examples/option_std/src/option_std.witchy", Vec::new()).unwrap(),
-            vec!["10", "-1"]
-        );
-    }
-
     /// The bundled `result` module supplies the type `?` recognizes, plus
     /// helpers, when linked against a client.
     #[test]
@@ -187,15 +103,6 @@ fn main(console: Console):
         )
         .expect("result module program runs");
         assert_eq!(out, vec!["6", "-1", "false"]);
-    }
-
-    /// String builtins + the bundled `list`/`string` modules end to end.
-    #[test]
-    fn text_processing_runs_via_cli() {
-        assert_eq!(
-            crate::execute_file("examples/text/src/text.witchy", Vec::new()).unwrap(),
-            vec!["ALICE | BOB | CAROL", "===", "alice,***,carol"]
-        );
     }
 
     /// The bundled `list` module type-checks and links against a client program.

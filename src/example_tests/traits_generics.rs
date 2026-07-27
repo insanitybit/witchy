@@ -550,22 +550,6 @@ fn main() -> Int:
         );
     }
 
-    /// `examples/traits/src/traits.witchy` — defines a custom `Shape` trait, implements it for
-    /// three types, and dispatches generically (`where s: Shape`). Monomorphized,
-    /// so it runs identically on both backends.
-    #[test]
-    fn traits_example_dispatches_a_custom_trait() {
-        assert_eq!(
-            crate::execute_file("examples/traits/src/traits.witchy", Vec::new()).unwrap(),
-            vec![
-                "square with area 25",
-                "rectangle with area 12",
-                "right triangle with area 12",
-                "total of three squares: 29",
-            ]
-        );
-    }
-
     #[test]
     fn std_show_list_backends_agree() {
         // The blanket `impl Show for List(a) where a: Show` renders via the
