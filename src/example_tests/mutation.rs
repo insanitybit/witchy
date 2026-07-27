@@ -1,6 +1,12 @@
 use super::*;
 use crate::{codegen, interpreter, parser, typeck};
 
+fn assert_mutation_backends(src: &str, expected: &[&str], label: &str) {
+    let expected: Vec<String> = expected.iter().map(|s| (*s).to_string()).collect();
+    assert_eq!(interp(src), expected, "{label}: interpreter");
+    assert_eq!(run_on_wasm(src), expected, "{label}: compiled WASM");
+}
+
     /// The parameter conventions (`var`/`let`/`own` + `move`) behave identically
     /// on both the interpreter and WASM backends — value semantics are
     /// preserved regardless of which knob the author reaches for. `var` writes
@@ -223,9 +229,7 @@ fn main(console: Console):
     let bounce = Bounce(step)
     console.print("${drive(bounce, 250001)}")
 "#;
-        let want = vec!["5000000007".to_string()];
-        assert_eq!(interp(src), want.clone(), "interpreter callable trampoline");
-        assert_eq!(run_on_wasm(src), want, "compiled typed table dispatcher");
+        assert_mutation_backends(src, &["5000000007"], "callable trampoline");
     }
 
     #[test]
@@ -245,9 +249,7 @@ fn main(console: Console):
     match bounce:
         Bounce(f) -> console.print("${f(bounce, 30001)}")
 "#;
-        let want = vec!["9".to_string()];
-        assert_eq!(interp(src), want.clone(), "interpreter singleton trampoline");
-        assert_eq!(run_on_wasm(src), want, "compiled singleton dispatcher");
+        assert_mutation_backends(src, &["9"], "singleton trampoline");
     }
 
     #[test]
@@ -273,9 +275,7 @@ fn main(console: Console):
     let bounce = Bounce(step)
     console.print("${first(bounce, 30001)}")
 "#;
-        let want = vec!["5000000007".to_string()];
-        assert_eq!(interp(src), want.clone(), "interpreter dynamic chain");
-        assert_eq!(run_on_wasm(src), want, "compiled three-member dispatcher");
+        assert_mutation_backends(src, &["5000000007"], "dynamic chain");
     }
 
     #[test]
@@ -326,9 +326,7 @@ fn main(console: Console):
     console.print("${drive_bool(bools, 30001)}")
     console.print("${drive_float(floats, 30001)}")
 "#;
-        let want = vec!["done".to_string(), "true".to_string(), "1.5".to_string()];
-        assert_eq!(interp(src), want.clone(), "interpreter scalar envelopes");
-        assert_eq!(run_on_wasm(src), want, "compiled scalar slot adaptation");
+        assert_mutation_backends(src, &["done", "true", "1.5"], "scalar envelopes");
     }
 
     #[test]
@@ -354,9 +352,7 @@ fn main(console: Console):
     let bounce = Bounce(step)
     console.print("${drive(bounce, 30001)}")
 "#;
-        let want = vec!["99".to_string()];
-        assert_eq!(interp(src), want.clone(), "interpreter outside target");
-        assert_eq!(run_on_wasm(src), want, "compiled indirect fallback");
+        assert_mutation_backends(src, &["99"], "outside target fallback");
     }
 
     /// RFC-0087 structured returns commit every final `var` value together. A
