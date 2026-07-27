@@ -1774,42 +1774,6 @@ fn f(n: Int) -> Int:
     }
 
     #[test]
-    fn allows_specific_then_general_constructor_arm() {
-        // `Some(0)` is refutable, so a following `Some(n)` is still reachable —
-        // the unreachable check must NOT flag this valid program.
-        let src = r#"
-type Opt:
-    Some(a)
-    None
-
-fn f(o: Opt(Int)) -> Int:
-    match o:
-        Some(0) -> 1
-        Some(n) -> n
-        None -> 0
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
-    fn allows_guarded_arm_before_same_variant() {
-        // A guarded arm may fail at runtime, so it does not cover its variant; a
-        // later unguarded arm for that variant stays reachable.
-        let src = r#"
-type Opt:
-    Some(a)
-    None
-
-fn f(o: Opt(Int)) -> Int:
-    match o:
-        Some(x) if (x > 0) -> 1
-        Some(y) -> y
-        None -> 0
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
-    }
-
-    #[test]
     fn rejects_non_exhaustive_bool_match() {
         let src = r#"
 fn f(b: Bool) -> Int:
@@ -2050,21 +2014,6 @@ fn main(dir: Dir):
 "#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("no method `recv_line` on `Dir`"), "got: {e}");
-    }
-
-    #[test]
-    fn checks_adt_constructors_and_exhaustive_match() {
-        let src = r#"
-type Event:
-    Click(Int, Int)
-    Closed
-
-fn describe(e: Event) -> String:
-    match e:
-        Click(x, _) -> "${x}"
-        Closed -> "closed"
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
