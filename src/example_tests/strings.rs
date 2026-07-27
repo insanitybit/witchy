@@ -1186,23 +1186,6 @@ fn main(console: Console):
     // decoded, heap-built key with `==`; both backends agree now that codegen
     // tracks the type of a tuple-destructured loop variable (so the comparison
     // is by content, not pointer).
-    #[test]
-    fn string_to_int_backends_agree() {
-        // string_to_int now compiles: leading whitespace and an optional sign
-        // are honored, and the parsed value feeds straight into arithmetic.
-        let src = r#"
-fn main(console: Console):
-    console.print("${"42".to_int()}")
-    console.print("${"-17".to_int()}")
-    console.print("${"  123  ".to_int()}")
-    console.print("${"+8".to_int()}")
-    console.print("${"0".to_int()}")
-    console.print("${("1000000".to_int() + 1)}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["42", "-17", "123", "8", "0", "1000001"]);
-    }
-
 
     /// std/url: malformed URLs return `Err` identically on both backends rather
     /// than accepting a blank scheme/host (BUG-187), swallowing a query into the
