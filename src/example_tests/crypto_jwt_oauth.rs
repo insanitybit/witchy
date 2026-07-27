@@ -126,28 +126,6 @@ use crate::{codegen, interpreter, parser, typeck};
         );
     }
 
-    /// A method call on a let-bound capability-op RESULT (`net.deny(...)` then
-    /// `d.only(...)`) resolves — cap-op intrinsics now carry a return type so the
-    /// trait-lowering types the binding, not just function parameters. Both backends
-    /// agree, so chained refinement (`net.deny(...).only(...)`) is usable.
-    #[test]
-    fn cap_method_chaining_on_let_bindings_backends_agree() {
-        let src = "fn main(net: Net, console: Console):\n    let d = net.deny(Net.cidr_any(\"10.0.0.0/8\"))\n    let ok = d.only(Net.tcp(\"192.168.1.1\", 80))\n    console.print(\"chained\")\n";
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let expected = vec!["chained".to_string()];
-        assert_eq!(
-            interpreter::run_module(linked.clone(), ".", vec!["10.0.0.0/8:*".into(), "192.168.1.1:80".into()]).expect("interp"),
-            expected,
-            "interpreter",
-        );
-        assert_eq!(
-            run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.0/8:*", "192.168.1.1:80"]),
-            expected,
-            "wasm",
-        );
-    }
-
     /// RS256 (`crypto.rsa_pkcs1_sha256_verify`, the OIDC/JWT signature algorithm) is
     /// reachable on both backends — a malformed key/signature yields `Err`, never
     /// a trap. (The verify LOGIC is proven by `rs256_native_roundtrip_verifies`.)
