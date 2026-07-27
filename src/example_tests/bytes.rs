@@ -1,37 +1,6 @@
 use super::*;
 use crate::{ast, codegen, interpreter, typeck};
 
-    /// (Bytes) The first-class `Bytes` type: a UTF-8-free flat byte buffer. Exercises
-    /// the round-trip with `String`, checked `from_list`, length/at/get/concat/slice/to_list/search, on
-    /// both backends (linked interp + compiled WASM), which must agree — `Bytes` shares `String`'s
-    /// `[len][bytes]` layout, so the compiled ops are identity/String-reuse.
-    #[test]
-    fn bytes_type_backends_agree() {
-        let src = "import bytes\nimport list\nimport option\nimport result\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    console.print(\"${bytes.length(b)}\")\n    console.print(\"${bytes.at(b, 0)}\")\n    console.print(\"${bytes.get(b, 1).unwrap_or(0)}\")\n    console.print(\"${bytes.get(b, 99).unwrap_or(0 - 1)}\")\n    console.print(bytes.to_string(b))\n    let c = bytes.concat(b, bytes.from_string(\"?\"))\n    console.print(bytes.to_string_lossy(c))\n    console.print(bytes.to_string(bytes.slice(c, 1, 3)))\n    console.print(\"${bytes.to_list(b)}\")\n    let raw = result.unwrap_or(bytes.from_list([0, 255, 65]), bytes.from_string(\"\"))\n    console.print(\"${bytes.to_list(raw)}\")\n    match bytes.decode_utf8(raw):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(bytes.bytes_error_message(e))\n    match bytes.from_list([0 - 1]):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(bytes.bytes_error_message(e))\n    match bytes.from_list([256]):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(bytes.bytes_error_message(e))\n    console.print(\"${bytes.is_empty(b)}\")\n    console.print(\"${bytes.index_of(c, bytes.from_string(\"i!\"))}\")\n    console.print(\"${bytes.index_of(c, bytes.from_string(\"zz\"))}\")\n    console.print(\"${bytes.contains(c, bytes.from_string(\"!?\"))}\")\n    console.print(\"${bytes.starts_with(c, b)}\")\n    console.print(\"${bytes.ends_with(c, bytes.from_string(\"!?\"))}\")\n";
-        let expected = [
-            "3",
-            "104",
-            "105",
-            "-1",
-            "hi!",
-            "hi!?",
-            "i!",
-            "[104, 105, 33]",
-            "[0, 255, 65]",
-            "bytes.decode_utf8: invalid UTF-8",
-            "bytes.from_list: value -1 is outside 0..=255",
-            "bytes.from_list: value 256 is outside 0..=255",
-            "false",
-            "Some(1)",
-            "None",
-            "true",
-            "true",
-            "true",
-        ];
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
-    }
-
     /// (RFC-0050) Bytes has a real inherent-method surface like the other
     /// standard value types; module functions remain callable for explicit
     /// module use and as first-class values.

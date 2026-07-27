@@ -81,6 +81,12 @@ fn main(console: Console):
             console.print(classify(e))
             console.print(bytes.bytes_error_message(e))
             console.print(show.render(e))
+    match bytes.from_list([0 - 1]):
+        Ok(_) -> console.print("bad")
+        Err(e) ->
+            console.print(classify(e))
+            console.print(bytes.bytes_error_message(e))
+            console.print(show.render(e))
     match bytes.decode_utf8(bytes.slice(bytes.from_string("é"), 0, 1)):
         Ok(_) -> console.print("bad")
         Err(e) ->
@@ -99,6 +105,9 @@ fn main(console: Console):
             "range:256",
             "bytes.from_list: value 256 is outside 0..=255",
             "bytes.from_list: value 256 is outside 0..=255",
+            "range:-1",
+            "bytes.from_list: value -1 is outside 0..=255",
+            "bytes.from_list: value -1 is outside 0..=255",
             "utf8",
             "bytes.decode_utf8: invalid UTF-8",
             "bytes.decode_utf8: invalid UTF-8",
