@@ -1,6 +1,30 @@
 use super::*;
 use crate::{codegen, interpreter, parser, typeck};
 
+    fn fixed_http_server(response: &'static str) -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("local address").port();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 256];
+                while let Ok(read) = stream.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (port, server)
+    }
+
     #[test]
     fn rfc0054_server_parse_request_uses_typed_error_and_response_bridge() {
         let src = r#"import http
@@ -965,26 +989,9 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn std_http_get_url_against_loopback() {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut req = Vec::new();
-                let mut tmp = [0u8; 256];
-                while let Ok(n) = stream.read(&mut tmp) {
-                    if n == 0 {
-                        break;
-                    }
-                    req.extend_from_slice(&tmp[..n]);
-                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let resp = "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nhello-url";
-                let _ = stream.write_all(resp.as_bytes());
-            }
-        });
+        let (port, server) = fixed_http_server(
+            "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nhello-url",
+        );
         let program = format!(
             r#"
 import http
@@ -1009,28 +1016,9 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn std_http_get_against_loopback() {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                // Drain the whole request (up to the blank header line) before
-                // replying — closing with unread data would RST the client.
-                let mut req = Vec::new();
-                let mut tmp = [0u8; 256];
-                while let Ok(n) = stream.read(&mut tmp) {
-                    if n == 0 {
-                        break;
-                    }
-                    req.extend_from_slice(&tmp[..n]);
-                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
-                let _ = stream.write_all(resp.as_bytes());
-            }
-        });
+        let (port, server) = fixed_http_server(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+        );
         let program = format!(
             r#"
 import http
@@ -1055,27 +1043,10 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn std_http_rejects_malformed_status_line() {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut tmp = [0u8; 256];
-                let mut req = Vec::new();
-                while let Ok(n) = stream.read(&mut tmp) {
-                    if n == 0 {
-                        break;
-                    }
-                    req.extend_from_slice(&tmp[..n]);
-                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                // A non-numeric status code (`BAD`) — would trap string_to_int.
-                let resp = "HTTP/1.1 BAD Weird\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi";
-                let _ = stream.write_all(resp.as_bytes());
-            }
-        });
+        // A non-numeric status code (`BAD`) would otherwise trap string_to_int.
+        let (port, server) = fixed_http_server(
+            "HTTP/1.1 BAD Weird\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+        );
         let program = format!(
             r#"
 import http
@@ -1163,26 +1134,9 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn std_http_headers_against_loopback() {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut req = Vec::new();
-                let mut tmp = [0u8; 256];
-                while let Ok(n) = stream.read(&mut tmp) {
-                    if n == 0 {
-                        break;
-                    }
-                    req.extend_from_slice(&tmp[..n]);
-                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Custom: abc\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi";
-                let _ = stream.write_all(resp.as_bytes());
-            }
-        });
+        let (port, server) = fixed_http_server(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Custom: abc\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+        );
         let program = format!(
             r#"
 import http
