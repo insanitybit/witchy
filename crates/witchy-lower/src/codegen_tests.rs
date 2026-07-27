@@ -27,12 +27,9 @@
         Engine::new(&config).expect("Wasm GC engine")
     }
 
-    #[test]
-    fn string_operation_catalog_names_live_wir_helpers() {
-        use witchy_syntax::intrinsics;
-
-        for name in intrinsics::STRING_OPERATIONS {
-            let spec = intrinsics::lookup(name).expect("cataloged string operation");
+    fn assert_catalog_names_live_wir_helpers(names: &[&str]) {
+        for &name in names {
+            let spec = witchy_syntax::intrinsics::lookup(name).expect("cataloged operation");
             assert!(
                 witchy_types::typeck::intrinsic(name),
                 "{} must not compile its self-recursive std placeholder",
@@ -47,6 +44,29 @@
                 );
             }
         }
+    }
+
+    #[test]
+    fn operation_catalog_names_live_wir_helpers() {
+        use witchy_syntax::intrinsics;
+
+        for operations in [
+            intrinsics::STRING_OPERATIONS,
+            intrinsics::MATH_OPERATIONS,
+            intrinsics::LIST_OPERATIONS,
+            intrinsics::DICT_OPERATIONS,
+            intrinsics::CRYPTO_OPERATIONS,
+            intrinsics::SECRETSTORE_OPERATIONS,
+            &[intrinsics::REGEX_MATCH_SPANS],
+        ] {
+            assert_catalog_names_live_wir_helpers(operations);
+        }
+    }
+
+    #[test]
+    fn operation_catalog_special_helper_routes_are_explicit() {
+        use witchy_syntax::intrinsics;
+
         assert_eq!(
             intrinsics::declared_wir_helper(intrinsics::LIST_PUSH, "list_push_cap"),
             Some("list_push_cap")
@@ -55,72 +75,6 @@
             intrinsics::declared_wir_helper(intrinsics::GENERATED_LIST_PUSH, "list_push_cap"),
             Some("list_push_cap")
         );
-    }
-
-    #[test]
-    fn math_operation_catalog_names_live_wir_helpers() {
-        use witchy_syntax::intrinsics;
-
-        for name in intrinsics::MATH_OPERATIONS {
-            let spec = intrinsics::lookup(name).expect("cataloged math operation");
-            assert!(
-                witchy_types::typeck::intrinsic(name),
-                "{} must not compile its self-recursive std placeholder",
-                spec.name
-            );
-            for helper in spec.wir_helpers {
-                assert!(
-                    witchy_wir::wir_helpers::wir_helper(helper).is_some(),
-                    "{} names missing WIR helper {}",
-                    spec.name,
-                    helper
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn list_operation_catalog_names_live_wir_helpers() {
-        use witchy_syntax::intrinsics;
-
-        for name in intrinsics::LIST_OPERATIONS {
-            let spec = intrinsics::lookup(name).expect("cataloged list operation");
-            assert!(
-                witchy_types::typeck::intrinsic(name),
-                "{} must not compile its self-recursive std placeholder",
-                spec.name
-            );
-            for helper in spec.wir_helpers {
-                assert!(
-                    witchy_wir::wir_helpers::wir_helper(helper).is_some(),
-                    "{} names missing WIR helper {}",
-                    spec.name,
-                    helper
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn dict_operation_catalog_names_live_wir_helpers() {
-        use witchy_syntax::intrinsics;
-
-        for name in intrinsics::DICT_OPERATIONS {
-            let spec = intrinsics::lookup(name).expect("cataloged dict operation");
-            assert!(
-                witchy_types::typeck::intrinsic(name),
-                "{} must not compile its self-recursive std placeholder",
-                spec.name
-            );
-            for helper in spec.wir_helpers {
-                assert!(
-                    witchy_wir::wir_helpers::wir_helper(helper).is_some(),
-                    "{} names missing WIR helper {}",
-                    spec.name,
-                    helper
-                );
-            }
-        }
         assert_eq!(
             intrinsics::declared_wir_helper(intrinsics::DICT_INSERT, "dict_insert_cap"),
             Some("dict_insert_cap")
@@ -129,58 +83,22 @@
             intrinsics::declared_wir_helper(intrinsics::DICT_UPDATE, "dict_update_cap"),
             Some("dict_update_cap")
         );
-    }
-
-    #[test]
-    fn crypto_operation_catalog_names_live_wir_helpers() {
-        use witchy_syntax::intrinsics;
 
         for name in intrinsics::CRYPTO_OPERATIONS {
-            let spec = intrinsics::lookup(name).expect("cataloged crypto operation");
             assert!(
-                witchy_types::typeck::intrinsic(name),
-                "{} must not compile its native std placeholder",
-                spec.name
-            );
-            let helper = intrinsics::sole_wir_helper(name)
-                .expect("every crypto operation has one WIR helper");
-            assert!(
-                witchy_wir::wir_helpers::wir_helper(helper).is_some(),
-                "{} names missing WIR helper {}",
-                spec.name,
-                helper
+                intrinsics::sole_wir_helper(name).is_some(),
+                "{name} must have exactly one WIR helper"
             );
         }
-    }
 
-    #[test]
-    fn regex_operation_catalog_names_its_native_wir_helper() {
-        use witchy_syntax::intrinsics;
-
-        let spec = intrinsics::lookup(intrinsics::REGEX_MATCH_SPANS)
-            .expect("cataloged regex operation");
-        assert!(witchy_types::typeck::intrinsic(spec.name));
-        let helper = intrinsics::sole_wir_helper(spec.name)
+        let helper = intrinsics::sole_wir_helper(intrinsics::REGEX_MATCH_SPANS)
             .expect("regex operation has one WIR helper");
         assert_eq!(helper, "regex_match_spans");
-        assert!(witchy_wir::wir_helpers::wir_helper(helper).is_some());
-    }
-
-    #[test]
-    fn secretstore_operation_catalog_names_the_lookup_helper() {
-        use witchy_syntax::intrinsics;
 
         for name in intrinsics::SECRETSTORE_OPERATIONS {
-            let spec = intrinsics::lookup(name).expect("cataloged SecretStore operation");
-            assert!(
-                witchy_types::typeck::intrinsic(name),
-                "{} must not compile its intercepted std placeholder",
-                spec.name
-            );
             let helper = intrinsics::sole_wir_helper(name)
                 .expect("SecretStore operation has one WIR helper");
             assert_eq!(helper, "secretstore_lookup");
-            assert!(witchy_wir::wir_helpers::wir_helper(helper).is_some());
         }
     }
 
