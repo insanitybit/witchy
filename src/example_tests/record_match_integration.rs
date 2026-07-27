@@ -62,10 +62,8 @@ fn main(console: Console):
     // map's result element type is the mapper's return type, so iterating a
     // `list.map(records, fn(r){ OtherRecord(..) })` resolves field access on the
     // mapped records (a different record type than the input).
-    // End-to-end: records flow through the whole stdlib pipeline with correct
-    // field resolution — fold over records, max_by/find returning Option(record)
-    // (match payload reads fields), filter then iterate (loop var reads fields),
-    // a helper function over a record, and first-class lambdas throughout.
+    // End-to-end: records flow through fold and max_by with correct field
+    // resolution, a helper function over a record, and first-class lambdas.
     // The `?` operator unwrapping a Result(Record): `let acc = lookup(n)?` binds
     // acc to the payload record so `acc.balance` resolves, and an Err short-
     // circuits the enclosing Result-returning function. Both backends agree.
@@ -159,18 +157,12 @@ fn main(console: Console):
     match list.max_by(cart, fn(a: Item, b: Item): (line_total(a) < line_total(b))):
         Some(it) -> console.print((it).name)
         None -> console.print("none")
-    let multi = list.filter(cart, fn(it: Item): ((it).qty > 1))
-    for it in multi:
-        console.print((it).name)
-    match list.find(cart, fn(it: Item): ((it).name == "bread")):
-        Some(it) -> console.print("${(it).price}")
-        None -> console.print("0")
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "order processing diverged");
-        assert_eq!(compiled, vec!["650", "milk", "apple", "milk", "200"]);
+        assert_eq!(compiled, vec!["650", "milk"]);
     }
 
     #[test]

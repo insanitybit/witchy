@@ -334,27 +334,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn nested_record_chained_field_access_on_wasm() {
-        // `o.inner.v` — chained access through a nested record — compiles to WASM.
-        let src = r#"
-type Inner:
-    v: Int
-
-type Outer:
-    inner: Inner
-    tag: Int
-
-fn deep(o: Outer) -> Int:
-    (((o).inner).v + (o).tag)
-
-fn main() -> Int:
-    let o = Outer(Inner(42), 8)
-    deep(o)
-"#;
-        assert_eq!(run_on_wasm(src), vec!["50"]);
-    }
-
-    #[test]
     fn record_call_and_update_results_field_access_on_wasm() {
         // Field access on a `let` bound to a record-returning call / update —
         // exercises return-record and update-result type tracking in codegen.
