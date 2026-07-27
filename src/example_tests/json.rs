@@ -485,28 +485,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn std_json_decode_roundtrip_backends_agree() {
-        let client = r#"
-import json
-fn main(console: Console):
-    let input = "{\"name\":\"witchy\",\"nums\":[1,2,3],\"ok\":true,\"nil\":null,\"neg\":-5,\"nested\":{\"a\":[true,false]}}"
-    match json.decode(input):
-        Ok(j) -> console.print(json.encode(j))
-        Err(e) -> console.print("error: " + json.decode_error_message(e))
-"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "std json decode diverged");
-        assert_eq!(
-            compiled,
-            vec![
-                r#"{"name":"witchy","nums":[1,2,3],"ok":true,"nil":null,"neg":-5,"nested":{"a":[true,false]}}"#
-            ]
-        );
-    }
-
-    #[test]
     fn std_json_accessors_backends_agree() {
         let client = r#"
 import json
@@ -562,6 +540,7 @@ fn main(console: Console):
                    \x20   dec(\"dup_key\", \"{\\\"a\\\":1,\\\"a\\\":2}\", console)\n\
                    \x20   dec(\"exp_ok\", \"1.5e3\", console)\n\
                    \x20   dec(\"object_fraction\", \"{\\\"pi\\\": 3.25}\", console)\n\
+                   \x20   dec(\"nested_roundtrip\", \"{\\\"name\\\":\\\"witchy\\\",\\\"nums\\\":[1,2,3],\\\"ok\\\":true,\\\"nil\\\":null,\\\"neg\\\":-5,\\\"nested\\\":{\\\"a\\\":[true,false]}}\", console)\n\
                    \x20   match json.float_of(JsonInt(1)):\n\
                    \x20       Ok(f) -> console.print(\"float_of_int: ${f}\")\n\
                    \x20       Err(e) -> console.print(\"float_of_int: ERR\")\n\
@@ -579,6 +558,7 @@ fn main(console: Console):
             "dup_key: ERR",
             "exp_ok: 1500.0",
             "object_fraction: {\"pi\":3.25}",
+            "nested_roundtrip: {\"name\":\"witchy\",\"nums\":[1,2,3],\"ok\":true,\"nil\":null,\"neg\":-5,\"nested\":{\"a\":[true,false]}}",
             "float_of_int: 1.0",
             "encode_finite: 1.5",
         ];
