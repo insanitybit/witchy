@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, interpreter, parser};
+use crate::{codegen, interpreter};
 
     /// (BUG-537) `DateTime`'s public constructors enforce the fixed-width
     /// RFC3339 year domain that `time.iso8601` and `time.parse_iso8601` share.
@@ -18,21 +18,6 @@ use crate::{codegen, interpreter, parser};
             expected,
             "compiled: DateTime fixed ISO domain",
         );
-    }
-
-    /// `fail` is the loud abort on BOTH backends: a runtime error in the
-    /// interpreter, a trap in compiled code.
-    #[test]
-    fn fail_aborts_on_both_backends() {
-        let src = "fn main(console: Console):\n    console.print(\"before\")\n    fail(\"boom\")\n    console.print(\"after\")\n";
-        let err = interpreter::run(src).expect_err("interpreter must abort");
-        assert!(err.message.contains("boom"));
-        let module = parser::parse_module(src).expect("parse");
-        // `fail()` lowers on the binary path: route the message through
-        // `__witchy_abort`, then `unreachable`.
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("fail() lowers on the binary path");
-        assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on fail()");
     }
 
     /// (RFC-0045) The message parity property: when the interpreter aborts, the

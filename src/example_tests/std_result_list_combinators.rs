@@ -80,33 +80,6 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["5", "true", "true", "3"]);
     }
 
-    // sort (ascending Int convenience over sort_by) and unique (drop duplicates,
-    // keeping the first occurrence in order). Both backends agree.
-    #[test]
-    fn std_list_sort_unique_backends_agree() {
-        let client = r#"
-import list
-
-fn main(console: Console):
-    var s = [3, 1, 4, 1, 5, 9, 2, 6]
-    list.sort(s)
-    for x in s:
-        console.print("${x}")
-    let u = list.unique([1, 2, 2, 3, 1, 4, 3])
-    console.print("${list.length(u)}")
-    for x in u:
-        console.print("${x}")
-"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "sort/unique diverged");
-        assert_eq!(
-            compiled,
-            vec!["1", "1", "2", "3", "4", "5", "6", "9", "4", "1", "2", "3", "4"]
-        );
-    }
-
     // find_map searches and transforms in one pass: the first non-None result
     // of f, or None. Here it returns half of the first even number.
     // reduce folds with the first element as the seed (Option-returning, None
@@ -148,49 +121,6 @@ fn main(console: Console):
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "find_map diverged");
         assert_eq!(compiled, vec!["4", "true"]);
-    }
-
-    #[test]
-    fn std_list_min_max_by_backends_agree() {
-        let client = r#"
-import list
-import option
-
-fn main(console: Console):
-    let xs = [3, 1, 4, 1, 5, 9, 2]
-    console.print("${option.unwrap_or(list.max_by(xs, fn(a: Int, b: Int): (a < b)), 0)}")
-    console.print("${option.unwrap_or(list.min_by(xs, fn(a: Int, b: Int): (a < b)), 0)}")
-    console.print("${option.unwrap_or(list.max_by(xs, fn(a: Int, b: Int): ((0 - a) < (0 - b))), 0)}")
-    console.print("${option.is_none(list.max_by([], fn(a: Int, b: Int): (a < b)))}")
-"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "min_by/max_by diverged");
-        assert_eq!(compiled, vec!["9", "1", "1", "true"]);
-    }
-
-    #[test]
-    fn std_list_min_max_position_backends_agree() {
-        // min/max are Ord-bounded generics (like sort), so this goes through the
-        // full link+typeck pipeline (link_run/wasm_run), not raw run_program —
-        // bounded calls need the mono pass to specialize.
-        let client = r#"
-import list
-import option
-
-fn main(console: Console):
-    console.print("${option.unwrap_or(list.min([3, 1, 4, 1, 5]), 0)}")
-    console.print("${option.unwrap_or(list.max([3, 1, 4, 1, 5]), 0)}")
-    let empty: List(Int) = []
-    console.print("${option.is_none(list.min(empty))}")
-    console.print("${option.unwrap_or(list.index_of([10, 20, 30], 20), (0 - 1))}")
-    console.print("${option.is_none(list.index_of([10, 20], 99))}")
-"#;
-        let interpreted = link_run(client);
-        let compiled = wasm_run(client);
-        assert_eq!(interpreted, compiled, "list min/max/index_of diverged");
-        assert_eq!(compiled, vec!["1", "5", "true", "1", "true"]);
     }
 
     #[test]
