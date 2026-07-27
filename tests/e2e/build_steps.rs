@@ -1,8 +1,41 @@
 //! e2e: build steps tests (extracted from tests/e2e.rs).
 
 use std::process::Command;
+use std::path::PathBuf;
 
 use super::support::coven::*;
+
+struct BuildWorkspace {
+    work: PathBuf,
+    app: PathBuf,
+    lib: PathBuf,
+}
+
+impl BuildWorkspace {
+    fn new(tag: &str, lib_manifest: &str, app_manifest: &str) -> Self {
+        let work = unique(tag);
+        let lib = work.join("genlib");
+        let app = work.join("app");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::write(lib.join("witchy.toml"), lib_manifest).unwrap();
+        std::fs::write(app.join("witchy.toml"), app_manifest).unwrap();
+        Self { work, app, lib }
+    }
+
+    fn write_lib(&self, source: &str, build: &str) {
+        std::fs::write(self.lib.join("src/genlib.witchy"), source).unwrap();
+        std::fs::write(self.lib.join("src/build.witchy"), build).unwrap();
+    }
+
+    fn write_app(&self, source: &str) {
+        std::fs::write(self.app.join("src/app.witchy"), source).unwrap();
+    }
+
+    fn finish(self) {
+        let _ = std::fs::remove_dir_all(self.work);
+    }
+}
 
 /// Build-time execution is **default-deny** in the front-end — even for a "safe"
 /// build step that demands only the confined `BuildOut` sandbox. A `build`/`run`
@@ -14,38 +47,22 @@ use super::support::coven::*;
 /// `pm add` step), and the front-end prints its decisions to stdout.
 #[test]
 fn build_steps_are_default_deny_even_when_safe() {
-    let work = unique("builddeny");
-    let lib = work.join("safegen");
-    std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"safegen\"\nversion = \"0.1.0\"\n").unwrap();
-    std::fs::write(
-        lib.join("src/safegen.witchy"),
+    let fixture = BuildWorkspace::new(
+        "builddeny",
+        "[rune]\nname = \"safegen\"\nversion = \"0.1.0\"\n",
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n\"safegen\" = { path = \"../genlib\" }\n",
+    );
+    fixture.write_lib(
         "pub fn shout(s: String) -> String:\n    \"HEY \" + s\n",
-    )
-    .unwrap();
-    // A BuildOut-only build step: writes into its confined sandbox, nothing else.
-    std::fs::write(
-        lib.join("src/build.witchy"),
         "fn build(out: BuildOut):\n    out.write_out(\"gen.witchy\", \"// generated\")\n",
-    )
-    .unwrap();
-
-    let app = work.join("app");
-    std::fs::create_dir_all(app.join("src")).unwrap();
-    std::fs::write(
-        app.join("witchy.toml"),
-        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n\"safegen\" = { path = \"../safegen\" }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        app.join("src/app.witchy"),
-        "fn main(console: Console):\n    console.print(\"ok\")\n",
-    )
-    .unwrap();
+    );
+    fixture.write_app("fn main(console: Console):\n    console.print(\"ok\")\n");
+    let work = &fixture.work;
+    let app = &fixture.app;
 
     // Default-deny: the build refuses while no [build.grants."safegen"] section
     // exists at all — you consent to ANY build-time code execution first.
-    let out = pm_fe(&work, &["build", "app"]);
+    let out = pm_fe(work, &["build", "app"]);
     assert!(!out.status.success(), "a build step must be denied without a grants section");
     assert!(
         stdout(&out).contains("build-time code execution is denied by default"),
@@ -60,7 +77,7 @@ fn build_steps_are_default_deny_even_when_safe() {
         format!("{manifest}\n[build.grants.\"safegen\"]\n"),
     )
     .unwrap();
-    let out = pm_fe(&work, &["build", "app"]);
+    let out = pm_fe(work, &["build", "app"]);
     assert!(
         out.status.success(),
         "an empty grants section accepts a BuildOut-only step: {}\n{}",
@@ -68,7 +85,7 @@ fn build_steps_are_default_deny_even_when_safe() {
         stdout(&out)
     );
 
-    let _ = std::fs::remove_dir_all(&work);
+    fixture.finish();
 }
 
 /// Build steps auto-run during `witchy build`/`run`: a path dependency's
@@ -80,35 +97,19 @@ fn build_steps_are_default_deny_even_when_safe() {
 /// the front-end (`witchy pm run`) from the workspace root.
 #[test]
 fn build_steps_auto_run_and_generated_source_is_gated() {
-    let work = unique("autorun");
-    let lib = work.join("genlib");
-    std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n").unwrap();
-    std::fs::write(
-        lib.join("src/genlib.witchy"),
-        "pub fn id(s: String) -> String:\n    s\n",
-    )
-    .unwrap();
-    std::fs::write(
-        lib.join("src/build.witchy"),
-        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    out.write_out(\"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"hi from generated code\\\"\" + nl)\n",
-    )
-    .unwrap();
-
-    let app = work.join("app");
-    std::fs::create_dir_all(app.join("src")).unwrap();
-    // The path dep + an empty grants section (the consent to its BuildOut-only step).
-    std::fs::write(
-        app.join("witchy.toml"),
+    let fixture = BuildWorkspace::new(
+        "autorun",
+        "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n",
         "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n\"genlib\" = { path = \"../genlib\" }\n\n[build.grants.\"genlib\"]\n",
-    )
-    .unwrap();
-    std::fs::write(
-        app.join("src/app.witchy"),
-        "import greet\n\nfn main(console: Console):\n    console.print(greet.greeting())\n",
-    )
-    .unwrap();
-    let out = pm_fe(&work, &["run", "app"]);
+    );
+    fixture.write_lib(
+        "pub fn id(s: String) -> String:\n    s\n",
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    out.write_out(\"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"hi from generated code\\\"\" + nl)\n",
+    );
+    fixture.write_app("import greet\n\nfn main(console: Console):\n    console.print(greet.greeting())\n");
+    let work = &fixture.work;
+    let lib = &fixture.lib;
+    let out = pm_fe(work, &["run", "app"]);
     assert!(out.status.success(), "auto-run build step + import failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("hi from generated code"), "got: {}", stdout(&out));
 
@@ -124,9 +125,9 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
     // This is an intentional path-dependency edit, so refresh its content lock.
     // The refreshed shipped footprint still contains only BuildOut; the dynamic
     // generated Net demand is what the post-generation gate must catch.
-    let relock = pm_fe(&work, &["lock", "app"]);
+    let relock = pm_fe(work, &["lock", "app"]);
     assert!(relock.status.success(), "relock malicious build-step fixture: {}", stdout(&relock));
-    let out = pm_fe(&work, &["run", "app"]);
+    let out = pm_fe(work, &["run", "app"]);
     assert!(!out.status.success(), "generated widening must be refused");
     assert!(
         stdout(&out).contains("WIDENS its footprint"),
@@ -134,7 +135,7 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
         stdout(&out)
     );
 
-    let _ = std::fs::remove_dir_all(&work);
+    fixture.finish();
 }
 
 /// A deterministic build step (no BuildExec/BuildNet) is cached by its inputs
@@ -144,31 +145,20 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
 /// regenerate the original. Driven through the front-end (`witchy pm run`).
 #[test]
 fn deterministic_build_output_is_cached() {
-    let work = unique("buildcache");
-    let lib = work.join("genlib");
-    std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n").unwrap();
-    std::fs::write(lib.join("src/genlib.witchy"), "pub fn id(s: String) -> String:\n    s\n").unwrap();
-    std::fs::write(
-        lib.join("src/build.witchy"),
-        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    out.write_out(\"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"V1\\\"\" + nl)\n",
-    )
-    .unwrap();
-
-    let app = work.join("app");
-    std::fs::create_dir_all(app.join("src")).unwrap();
-    std::fs::write(
-        app.join("witchy.toml"),
+    let fixture = BuildWorkspace::new(
+        "buildcache",
+        "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n",
         "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n\"genlib\" = { path = \"../genlib\" }\n\n[build.grants.\"genlib\"]\n",
-    )
-    .unwrap();
-    std::fs::write(
-        app.join("src/app.witchy"),
-        "import greet\n\nfn main(console: Console):\n    console.print(greet.greeting())\n",
-    )
-    .unwrap();
+    );
+    fixture.write_lib(
+        "pub fn id(s: String) -> String:\n    s\n",
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    out.write_out(\"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"V1\\\"\" + nl)\n",
+    );
+    fixture.write_app("import greet\n\nfn main(console: Console):\n    console.print(greet.greeting())\n");
+    let work = &fixture.work;
+    let app = &fixture.app;
 
-    let out = pm_fe(&work, &["run", "app"]);
+    let out = pm_fe(work, &["run", "app"]);
     assert!(out.status.success(), "first run failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("V1"), "got: {}", stdout(&out));
 
@@ -177,7 +167,7 @@ fn deterministic_build_output_is_cached() {
     let body = std::fs::read_to_string(&gen_file).unwrap().replace("V1", "CACHED");
     std::fs::write(&gen_file, body).unwrap();
 
-    let out = pm_fe(&work, &["run", "app"]);
+    let out = pm_fe(work, &["run", "app"]);
     assert!(out.status.success(), "cached run failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(
         stdout(&out).contains("CACHED"),
@@ -185,7 +175,7 @@ fn deterministic_build_output_is_cached() {
         stdout(&out)
     );
 
-    let _ = std::fs::remove_dir_all(&work);
+    fixture.finish();
 }
 
 /// (BUG-100) A dependency's build step generates source that the consumer imports;
@@ -196,26 +186,23 @@ fn deterministic_build_output_is_cached() {
 /// exercises the build-step → audit → compile path end to end.
 #[test]
 fn build_step_generated_deps_link_and_run() {
-    let work = unique("build-step-deps");
-    let app = work.join("app");
-    let lib = work.join("genlib");
-    std::fs::create_dir_all(app.join("src")).unwrap();
-    std::fs::create_dir_all(lib.join("src")).unwrap();
+    let fixture = BuildWorkspace::new(
+        "build-step-deps",
+        "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n",
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"genlib\" = { path = \"../genlib\" }\n\n[build.grants.\"genlib\"]\n",
+    );
+    let work = &fixture.work;
+    let app = &fixture.app;
+    let lib = &fixture.lib;
 
     // The app depends on `genlib` and accepts its build step (empty grants section
     // permits only the confined BuildOut sandbox).
-    std::fs::write(
-        app.join("witchy.toml"),
-        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"genlib\" = { path = \"../genlib\" }\n\n[build.grants.\"genlib\"]\n",
-    )
-    .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
         "import genmod\nimport genmod2\n\nfn main(console: Console):\n    console.print(\"${genmod.value() + genmod2.value()}\")\n",
     )
     .unwrap();
 
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n").unwrap();
     std::fs::write(lib.join("src/genlib.witchy"), "pub fn placeholder() -> Int:\n    0\n").unwrap();
     // The build step emits TWO modules; audit_then_flags must produce one --dep per
     // module (deduped by name), not duplicates.
@@ -226,7 +213,7 @@ fn build_step_generated_deps_link_and_run() {
     .unwrap();
 
     let out = Command::new(BIN)
-        .current_dir(&work)
+        .current_dir(work)
         .args(["run", "app"])
         .output()
         .expect("spawn witchy run");
@@ -237,6 +224,7 @@ fn build_step_generated_deps_link_and_run() {
         stdout(&out),
         stderr(&out),
     );
+    fixture.finish();
 }
 
 /// RFC-0103: the package-manager grant accepts the richer BuildExec form,
@@ -244,11 +232,14 @@ fn build_step_generated_deps_link_and_run() {
 /// them into BuildRead authority for the Witchy build program.
 #[test]
 fn build_exec_child_paths_flow_through_the_package_manager() {
-    let work = unique("build-exec-child-paths");
-    let app = work.join("app");
-    let lib = work.join("genlib");
-    std::fs::create_dir_all(app.join("src")).unwrap();
-    std::fs::create_dir_all(lib.join("src")).unwrap();
+    let fixture = BuildWorkspace::new(
+        "build-exec-child-paths",
+        "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n",
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    );
+    let work = &fixture.work;
+    let app = &fixture.app;
+    let lib = &fixture.lib;
     std::fs::create_dir_all(work.join("child-config")).unwrap();
     std::fs::write(work.join("child-config/tool.conf"), "tool-only").unwrap();
 
@@ -283,7 +274,7 @@ fn build_exec_child_paths_flow_through_the_package_manager() {
     .unwrap();
 
     let out = Command::new(BIN)
-        .current_dir(&work)
+        .current_dir(work)
         .args(["run", "app"])
         .output()
         .expect("spawn witchy run");
@@ -294,4 +285,5 @@ fn build_exec_child_paths_flow_through_the_package_manager() {
         stdout(&out),
         stderr(&out),
     );
+    fixture.finish();
 }
