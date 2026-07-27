@@ -392,33 +392,23 @@ fn display_optional(value: &Option<String>) -> String {
 mod tests {
     use super::*;
     use crate::{
-        CallExpectation, ConsoleFixture, FixtureFailure, OrderedCallExpectation, SourceLocation,
+        test_support, CallExpectation, FixtureFailure, OrderedCallExpectation, SourceLocation,
     };
 
-    fn returned(value: &str) -> FixtureOutcome {
-        FixtureOutcome::Return {
-            value: FixtureValue::String(value.into()),
-        }
-    }
-
     fn console_step(operation: &str, value: &str) -> FixtureStep {
-        FixtureStep {
-            operation: operation.into(),
-            target: None,
-            arguments: BTreeMap::new(),
-            effective_rights: Some(vec!["Read".into()]),
-            outcome: returned(value),
-            required: true,
-        }
+        test_support::step(
+            operation,
+            None,
+            BTreeMap::new(),
+            Some(vec!["Read".into()]),
+            test_support::returned(value),
+        )
     }
 
     #[test]
     fn ordered_calls_record_exact_provenance_and_outcome() {
-        let plan = FixturePlan {
-            console: Some(ConsoleFixture {
-                script: vec![console_step("read", "line")],
-            }),
-            expectations: Expectations {
+        let mut plan = test_support::console_plan(vec![console_step("read", "line")]);
+        plan.expectations = Expectations {
                 require_complete_scripts: true,
                 ordered_calls: vec![OrderedCallExpectation {
                     family: FixtureFamily::Console,
@@ -433,8 +423,6 @@ mod tests {
                     maximum: Some(U64Text::new(1)),
                 }],
                 absent_families: Vec::new(),
-            },
-            ..Default::default()
         };
         let mut session = FixtureSession::new(plan).expect("valid session");
         let mut call = FixtureCall::new(FixtureFamily::Console, "read");
@@ -444,7 +432,7 @@ mod tests {
             line: U64Text::new(4),
             column: U64Text::new(8),
         });
-        assert_eq!(session.scripted_call(call), returned("line"));
+        assert_eq!(session.scripted_call(call), test_support::returned("line"));
 
         let transcript = session.finish(TestResult::Passed);
         assert_eq!(transcript.result, TestResult::Passed);
@@ -457,15 +445,10 @@ mod tests {
 
     #[test]
     fn mismatch_does_not_consume_the_expected_step() {
-        let plan = FixturePlan {
-            console: Some(ConsoleFixture {
-                script: vec![console_step("read", "line")],
-            }),
-            expectations: Expectations {
+        let mut plan = test_support::console_plan(vec![console_step("read", "line")]);
+        plan.expectations = Expectations {
                 require_complete_scripts: true,
                 ..Default::default()
-            },
-            ..Default::default()
         };
         let mut session = FixtureSession::new(plan).expect("valid session");
         let outcome =
@@ -485,16 +468,11 @@ mod tests {
 
     #[test]
     fn exhausted_script_never_falls_back_to_fake_behavior() {
-        let plan = FixturePlan {
-            console: Some(ConsoleFixture {
-                script: vec![console_step("read", "line")],
-            }),
-            ..Default::default()
-        };
+        let plan = test_support::console_plan(vec![console_step("read", "line")]);
         let mut session = FixtureSession::new(plan).expect("valid session");
         let mut first = FixtureCall::new(FixtureFamily::Console, "read");
         first.effective_rights = vec!["Read".into()];
-        assert_eq!(session.scripted_call(first), returned("line"));
+        assert_eq!(session.scripted_call(first), test_support::returned("line"));
 
         let mut exhausted = FixtureCall::new(FixtureFamily::Console, "read");
         exhausted.effective_rights = vec!["Read".into()];
@@ -521,7 +499,7 @@ mod tests {
         let mut session = FixtureSession::new(plan).expect("valid session");
         let outcome = session.observe(
             FixtureCall::new(FixtureFamily::Exec, "run"),
-            returned("should not escape"),
+            test_support::returned("should not escape"),
         );
         assert!(matches!(
             outcome,

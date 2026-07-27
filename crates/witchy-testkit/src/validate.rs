@@ -571,23 +571,16 @@ fn check_unique_families(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClockFixture, RandFixture, U64Text};
+    use crate::{test_support, ClockFixture, RandFixture, U64Text};
 
     #[test]
     fn mutually_exclusive_generators_are_rejected() {
         let plan = FixturePlan {
             clock: Some(ClockFixture {
                 start_ns: Some(U64Text::new(1)),
-                script: vec![FixtureStep {
-                    operation: "now".into(),
-                    target: None,
-                    arguments: Default::default(),
-                    effective_rights: None,
-                    outcome: crate::FixtureOutcome::Return {
-                        value: FixtureValue::String("2".into()),
-                    },
-                    required: true,
-                }],
+                script: vec![test_support::step(
+                    "now", None, Default::default(), None, test_support::returned("2"),
+                )],
                 ..Default::default()
             }),
             ..Default::default()
@@ -600,16 +593,9 @@ mod tests {
         let plan = FixturePlan {
             rand: Some(RandFixture {
                 seed: Some(U64Text::new(7)),
-                script: vec![FixtureStep {
-                    operation: "rand_u64".into(),
-                    target: None,
-                    arguments: Default::default(),
-                    effective_rights: None,
-                    outcome: crate::FixtureOutcome::Return {
-                        value: FixtureValue::String("8".into()),
-                    },
-                    required: true,
-                }],
+                script: vec![test_support::step(
+                    "rand_u64", None, Default::default(), None, test_support::returned("8"),
+                )],
             }),
             ..Default::default()
         };

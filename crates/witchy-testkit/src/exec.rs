@@ -253,6 +253,7 @@ mod tests {
     use crate::{
         ExecFixture, FilesystemEntry, FilesystemFixture, FixtureStep, TestResult,
     };
+    use crate::test_support;
 
     fn response(code: &str, stdout: &str, stderr: &str) -> FixtureOutcome {
         FixtureOutcome::Return {
@@ -286,20 +287,13 @@ mod tests {
     }
 
     fn run_step(outcome: FixtureOutcome) -> FixtureStep {
-        FixtureStep {
-            operation: "exec_run".into(),
-            target: Some("tool".into()),
-            arguments: BTreeMap::from([
+        test_support::step("exec_run", Some("tool"), BTreeMap::from([
                 (
                     "args".into(),
                     FixtureValue::List(vec![FixtureValue::String("--check".into())]),
                 ),
                 ("stdin".into(), FixtureValue::String("input".into())),
-            ]),
-            effective_rights: Some(vec!["exec:tool".into(), "dir:Read".into()]),
-            outcome,
-            required: true,
-        }
+            ]), Some(vec!["exec:tool".into(), "dir:Read".into()]), outcome)
     }
 
     #[test]

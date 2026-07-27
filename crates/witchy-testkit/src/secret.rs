@@ -332,9 +332,7 @@ fn secret_failure(code: FixtureErrorCode, message: impl Into<String>) -> Fixture
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        FixtureStep, SecretFixture, SecretStoreFixture, TestResult,
-    };
+    use crate::{test_support, FixtureStep, SecretFixture, SecretStoreFixture, TestResult};
 
     fn fixture(script: Vec<FixtureStep>) -> FixturePlan {
         FixturePlan {
@@ -412,29 +410,16 @@ mod tests {
     #[test]
     fn signing_uses_strict_script_without_exposing_key_material() {
         let script = vec![
-            FixtureStep {
-                operation: "secretstore_lookup".into(),
-                target: Some("signing".into()),
-                arguments: BTreeMap::new(),
-                effective_rights: None,
-                outcome: FixtureOutcome::Return {
-                    value: FixtureValue::String("Secret".into()),
-                },
-                required: true,
-            },
-            FixtureStep {
-                operation: "crypto.sign".into(),
-                target: None,
-                arguments: BTreeMap::from([(
+            test_support::step(
+                "secretstore_lookup", Some("signing"), BTreeMap::new(), None,
+                test_support::returned("Secret"),
+            ),
+            test_support::step(
+                "crypto.sign", None, BTreeMap::from([(
                     "message".into(),
                     FixtureValue::String("payload".into()),
-                )]),
-                effective_rights: None,
-                outcome: FixtureOutcome::Return {
-                    value: FixtureValue::String("signature".into()),
-                },
-                required: true,
-            },
+                )]), None, test_support::returned("signature"),
+            ),
         ];
         let mut session = FixtureSession::new(fixture(script)).expect("session");
         let store = session.mint_fixture_secret_store(None).expect("store");

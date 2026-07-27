@@ -24,3 +24,40 @@ pub use json::{
 };
 pub use model::*;
 pub use validate::PlanValidationError;
+
+#[cfg(test)]
+mod test_support {
+    use std::collections::BTreeMap;
+
+    use super::{ConsoleFixture, FixtureOutcome, FixturePlan, FixtureStep, FixtureValue};
+
+    pub(crate) fn step(
+        operation: &str,
+        target: Option<&str>,
+        arguments: BTreeMap<String, FixtureValue>,
+        effective_rights: Option<Vec<String>>,
+        outcome: FixtureOutcome,
+    ) -> FixtureStep {
+        FixtureStep {
+            operation: operation.into(),
+            target: target.map(str::to_owned),
+            arguments,
+            effective_rights,
+            outcome,
+            required: true,
+        }
+    }
+
+    pub(crate) fn returned(value: &str) -> FixtureOutcome {
+        FixtureOutcome::Return {
+            value: FixtureValue::String(value.into()),
+        }
+    }
+
+    pub(crate) fn console_plan(script: Vec<FixtureStep>) -> FixturePlan {
+        FixturePlan {
+            console: Some(ConsoleFixture { script }),
+            ..Default::default()
+        }
+    }
+}

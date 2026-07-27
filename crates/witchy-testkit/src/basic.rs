@@ -470,7 +470,7 @@ fn seeded_next(state: &mut u64) -> u64 {
 mod tests {
     use super::*;
     use crate::{
-        ClockFixture, ConsoleFixture, EnvFixture, Expectations, FixtureStep, RandFixture,
+        test_support, ClockFixture, ConsoleFixture, EnvFixture, Expectations, RandFixture,
         TestResult, U64Text,
     };
 
@@ -504,32 +504,17 @@ mod tests {
         let plan = FixturePlan {
             console: Some(ConsoleFixture {
                 script: vec![
-                    FixtureStep {
-                        operation: "console_read_len".into(),
-                        target: None,
-                        arguments: BTreeMap::new(),
-                        effective_rights: Some(vec!["Read".into()]),
-                        outcome: FixtureOutcome::Return {
-                            value: FixtureValue::String("hello".into()),
-                        },
-                        required: true,
-                    },
-                    FixtureStep {
-                        operation: "print".into(),
-                        target: None,
-                        arguments: BTreeMap::from([(
+                    test_support::step(
+                        "console_read_len", None, BTreeMap::new(), Some(vec!["Read".into()]),
+                        test_support::returned("hello"),
+                    ),
+                    test_support::step(
+                        "print", None, BTreeMap::from([(
                             "text".into(),
                             FixtureValue::String("hello".into()),
-                        )]),
-                        effective_rights: Some(vec!["Write".into()]),
-                        outcome: FixtureOutcome::Fail {
-                            error: failure(
-                                FixtureErrorCode::ProviderFailure,
-                                "configured write failure",
-                            ),
-                        },
-                        required: true,
-                    },
+                        )]), Some(vec!["Write".into()]),
+                        FixtureOutcome::Fail { error: failure(FixtureErrorCode::ProviderFailure, "configured write failure") },
+                    ),
                 ],
             }),
             expectations: Expectations {

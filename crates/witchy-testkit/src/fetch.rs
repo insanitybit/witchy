@@ -307,7 +307,7 @@ fn fetch_failure(code: FixtureErrorCode, message: impl Into<String>) -> FixtureF
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FetchFixture, FixtureStep};
+    use crate::{test_support, FetchFixture, FixtureStep};
 
     fn response(status: &str, body: &str) -> FixtureOutcome {
         FixtureOutcome::Return {
@@ -339,18 +339,11 @@ mod tests {
     }
 
     fn step(url: &str, outcome: FixtureOutcome) -> FixtureStep {
-        FixtureStep {
-            operation: "fetch_send_len".into(),
-            target: Some(url.into()),
-            arguments: BTreeMap::from([
+        test_support::step("fetch_send_len", Some(url), BTreeMap::from([
                 ("method".into(), FixtureValue::String("GET".into())),
                 ("headers".into(), FixtureValue::List(Vec::new())),
                 ("body".into(), FixtureValue::Bytes(String::new())),
-            ]),
-            effective_rights: Some(vec!["https://example.com:443".into()]),
-            outcome,
-            required: true,
-        }
+            ]), Some(vec!["https://example.com:443".into()]), outcome)
     }
 
     #[test]

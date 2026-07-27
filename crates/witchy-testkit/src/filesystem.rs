@@ -850,7 +850,7 @@ fn fs_failure(code: FixtureErrorCode, message: impl Into<String>) -> FixtureFail
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FilesystemFixture, FixtureStep, TestResult};
+    use crate::{test_support, FilesystemFixture, TestResult};
 
     fn plan(rights: &[&str], policy: Option<&str>) -> FixturePlan {
         FixturePlan {
@@ -923,39 +923,23 @@ mod tests {
     fn scripted_partial_write_and_failure_are_observable() {
         let mut fixture = plan(&["Read", "Write"], None);
         fixture.filesystem.as_mut().expect("fixture").script = vec![
-            FixtureStep {
-                operation: "mint_dir".into(),
-                target: None,
-                arguments: BTreeMap::new(),
-                effective_rights: Some(vec!["Read".into(), "Write".into()]),
-                outcome: FixtureOutcome::Return {
-                    value: FixtureValue::String("Dir".into()),
-                },
-                required: true,
-            },
-            FixtureStep {
-                operation: "dir_write".into(),
-                target: Some("partial.txt".into()),
-                arguments: BTreeMap::from([(
+            test_support::step(
+                "mint_dir", None, BTreeMap::new(),
+                Some(vec!["Read".into(), "Write".into()]),
+                test_support::returned("Dir"),
+            ),
+            test_support::step(
+                "dir_write", Some("partial.txt"), BTreeMap::from([(
                     "bytes".into(),
                     FixtureValue::Bytes("61626364".into()),
-                )]),
-                effective_rights: Some(vec!["Read".into(), "Write".into()]),
-                outcome: FixtureOutcome::Return {
-                    value: FixtureValue::String("2".into()),
-                },
-                required: true,
-            },
-            FixtureStep {
-                operation: "dir_read_len".into(),
-                target: Some("partial.txt".into()),
-                arguments: BTreeMap::new(),
-                effective_rights: Some(vec!["Read".into(), "Write".into()]),
-                outcome: FixtureOutcome::Fail {
-                    error: fs_failure(FixtureErrorCode::Timeout, "configured timeout"),
-                },
-                required: true,
-            },
+                )]), Some(vec!["Read".into(), "Write".into()]),
+                test_support::returned("2"),
+            ),
+            test_support::step(
+                "dir_read_len", Some("partial.txt"), BTreeMap::new(),
+                Some(vec!["Read".into(), "Write".into()]),
+                FixtureOutcome::Fail { error: fs_failure(FixtureErrorCode::Timeout, "configured timeout") },
+            ),
         ];
         fixture.expectations.require_complete_scripts = true;
         let mut session = FixtureSession::new(fixture).expect("session");
