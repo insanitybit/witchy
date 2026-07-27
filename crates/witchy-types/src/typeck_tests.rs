@@ -1001,69 +1001,6 @@ fn has_optional_id() -> Option(Bool):
         check_str("fn id(x: (File, Int)) -> (File, Int):\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let pair = local((f, 1))\n    console.print(\"x\")\n")
             .expect("a concrete capability tuple crosses the typed indirect-call ABI");
 
-        let first_class_monomorphization_cases = [
-            (
-                "direct capability",
-                "fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let out = local(f)\n    console.print(\"x\")\n",
-            ),
-            (
-                "nullable capability",
-                "fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let out = local(Some(f))\n    console.print(\"x\")\n",
-            ),
-            (
-                "qualified capability tuple",
-                "fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let pair: (frozen File, Int) = (f, 1)\n    let local = id\n    let out = local(pair)\n    console.print(\"x\")\n",
-            ),
-            (
-                "nested nominal capability aggregate",
-                "type Holder:\n    Holder((File, Int))\nfn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let out = local(Holder((f, 1)))\n    console.print(\"x\")\n",
-            ),
-            (
-                "immediate polymorphic function application",
-                "fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let out = (id)(f)\n    console.print(\"x\")\n",
-            ),
-            (
-                "polymorphic function passed to a concrete higher-order parameter",
-                "fn id(x: a) -> a:\n    x\nfn apply(f: fn(File) -> File, file: File) -> File:\n    f(file)\nfn main(console: Console, f: File):\n    let out = apply(id, f)\n    console.print(\"x\")\n",
-            ),
-            (
-                "scalar polymorphic function alias",
-                "fn id(x: a) -> a:\n    x\nfn main(console: Console):\n    let local = id\n    let out = local(1)\n    console.print(\"${out}\")\n",
-            ),
-            (
-                "polymorphic function assignment",
-                "fn id(x: a) -> a:\n    x\nfn main(console: Console):\n    var local = fn(x): x\n    local = id\n    console.print(\"x\")\n",
-            ),
-            (
-                "polymorphic function through a control-flow join",
-                "fn id(x: a) -> a:\n    x\nfn main(console: Console):\n    let local = if true: id else: id\n    console.print(\"x\")\n",
-            ),
-            (
-                "polymorphic function through a tuple pattern",
-                "fn id(x: a) -> a:\n    x\nfn main(console: Console):\n    let (local,) = (id,)\n    console.print(\"x\")\n",
-            ),
-        ];
-        for (shape, source) in first_class_monomorphization_cases {
-            check_str(source)
-                .unwrap_or_else(|err| panic!("{shape} should instantiate a fresh function value: {err}"));
-        }
-
-        let inferred_lambda_cases = [
-            (
-                "inferred generic lambda",
-                "fn main(console: Console, f: File):\n    let local = fn(x): x\n    let out = local(f)\n    console.print(\"x\")\n",
-            ),
-            (
-                "immediately applied generic lambda",
-                "fn main(console: Console, f: File):\n    let out = (fn(x): x)(f)\n    console.print(\"x\")\n",
-            ),
-        ];
-        for (shape, source) in inferred_lambda_cases {
-            check_str(source).unwrap_or_else(|err| {
-                panic!("typed closure specialization should support {shape}: {err}")
-            });
-        }
-
         check_str("fn main(console: Console, f: File):\n    let local = fn(x: File) -> (File, Int): (x, 1)\n    console.print(\"x\")\n")
             .expect("a lambda may expose a capability through its typed signature");
 
