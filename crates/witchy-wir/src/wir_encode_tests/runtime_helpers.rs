@@ -56,19 +56,7 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![run],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        let module = print_int_module(vec![run], vec![]);
         assert_agrees(&module, &["99", "1", "1", "0"]);
     }
 
@@ -105,19 +93,7 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![run],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        let module = print_int_module(vec![run], vec![]);
         assert_agrees(&module, &["65", "66"]);
     }
 
@@ -158,16 +134,9 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![ensure_helper(false), list_push_cap_helper(), run],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![
+        let module = print_int_module(
+            vec![ensure_helper(false), list_push_cap_helper(), run],
+            vec![
                 WirGlobal {
                     name: "heap".into(),
                     kind: Kind::I32,
@@ -183,9 +152,7 @@
                     export: Some("__witchy_reowns".into()),
                 },
             ],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        );
         // Agreement gate: the encoder AND the WAT printer (multi-value func +
         // CallStoreMulti arm) both run identically.
         assert_agrees(&module, &["2", "20", "2048", "2"]);
@@ -220,16 +187,13 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
-            funcs: vec![
+        let module = print_int_module(
+            vec![
                 crate::wir_helpers::ensure_helper(false),
                 crate::wir_helpers::list_push_cap_helper(),
                 run,
             ],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![
+            vec![
                 WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(2060), export: None },
                 WirGlobal {
                     name: "__witchy_reowns".into(),
@@ -239,9 +203,7 @@
                     export: Some("__witchy_reowns".into()),
                 },
             ],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        );
         assert_traps(&module);
     }
 
@@ -275,16 +237,13 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
-            funcs: vec![
+        let module = print_int_module(
+            vec![
                 crate::wir_helpers::ensure_helper(false),
                 crate::wir_helpers::str_append_cap_helper(),
                 run,
             ],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![
+            vec![
                 WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(2080), export: None },
                 WirGlobal {
                     name: "__witchy_reowns".into(),
@@ -294,9 +253,7 @@
                     export: Some("__witchy_reowns".into()),
                 },
             ],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        );
         assert_traps(&module);
     }
 
@@ -334,12 +291,9 @@
         };
         let mut funcs = helper_closure("dict_insert_cap");
         funcs.push(run);
-        let module = WirModule {
-            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
+        let module = print_int_module(
             funcs,
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![
+            vec![
                 WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(2200), export: None },
                 WirGlobal {
                     name: "__witchy_reowns".into(),
@@ -349,9 +303,7 @@
                     export: Some("__witchy_reowns".into()),
                 },
             ],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        );
         assert_traps(&module);
     }
 
@@ -398,19 +350,7 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![pair, run],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        let module = print_int_module(vec![pair, run], vec![]);
         assert_agrees(&module, &["10", "20"]);
     }
 
@@ -1316,13 +1256,8 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
-            funcs: vec![
+        let module = print_int_module(
+            vec![
                 ensure_helper(false),
                 rc_alloc_helper(),
                 str_eq_helper(),
@@ -1335,9 +1270,7 @@
                 dict_has_helper(),
                 run,
             ],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![
+            vec![
                 WirGlobal {
                     name: "heap".into(),
                     kind: Kind::I32,
@@ -1360,9 +1293,7 @@
                     export: None,
                 },
             ],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        );
         assert_agrees(&module, &["111", "200", "-1", "1", "0", "2"]);
     }
 
@@ -1466,9 +1397,8 @@
             body,
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
-            funcs: vec![
+        let module = print_int_module(
+            vec![
                 ensure_helper(false),
                 bump_alloc_helper(),
                 rc_alloc_helper(),
@@ -1486,9 +1416,7 @@
                 dict_remove_extract_helper(),
                 run,
             ],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![
+            vec![
                 WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(4096), export: None },
                 WirGlobal { name: "rc_freelist".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
                 WirGlobal { name: "__rc_reused_bytes".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
@@ -1508,9 +1436,7 @@
                 WirGlobal { name: "searches".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
                 WirGlobal { name: "find_result".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
             ],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        );
         assert_agrees(
             &module,
             &[
@@ -1576,9 +1502,8 @@
             ],
             raw_body: None,
         };
-        let module = WirModule {
-            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
-            funcs: vec![
+        let module = print_int_module(
+            vec![
                 ensure_helper(false),
                 rc_alloc_helper(),
                 str_eq_helper(),
@@ -1593,16 +1518,12 @@
                 dict_remove_helper(),
                 run,
             ],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![
+            vec![
                 WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(1024), export: None },
                 WirGlobal { name: "rc_freelist".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
                 WirGlobal { name: "__rc_reused_bytes".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
             ],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
+        );
         assert_agrees(&module, &["3", "1", "3", "200", "2", "100", "-1"]);
     }
 
@@ -1665,4 +1586,18 @@
         };
         assert_agrees(&module, &["5", "76", "76", "6", "98", "5", "45", "97"]);
     }
-
+    fn print_int_module(funcs: Vec<WirFunc>, globals: Vec<WirGlobal>) -> WirModule {
+        WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs,
+            memory_pages: 1,
+            data: vec![],
+            globals,
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        }
+    }
