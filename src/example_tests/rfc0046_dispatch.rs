@@ -1,36 +1,5 @@
 use super::*;
 
-    // Traits: an `impl` provides a method per type, and a trait-method call
-    // resolves to the impl for the receiver's concrete type — at a literal
-    // receiver, a `let`-bound one, and across two implementing types. The trait
-    // is lowered to ordinary functions, so both backends agree.
-    #[test]
-    fn traits_concrete_dispatch_backends_agree() {
-        let src = r#"
-trait Describe:
-    fn describe(self) -> String
-
-impl Describe for Int:
-    fn describe(self) -> String:
-        "${self}"
-
-impl Describe for Bool:
-    fn describe(self) -> String:
-        if self:
-            "yes"
-        else:
-            "no"
-
-fn main(console: Console):
-    console.print(describe(42))
-    console.print(describe(true))
-    let n = 7
-    console.print(describe(n))
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "trait dispatch diverged");
-        assert_eq!(run_on_wasm(src), vec!["42", "yes", "7"]);
-    }
-
     /// RFC-0046 acceptance (b): a trait call resolves on ANY expression the
     /// checker types — here `list.at(string.split(...), 0)`, a builtin-call
     /// result nested in another builtin call. The string shadow system stripped

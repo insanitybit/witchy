@@ -218,20 +218,6 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), want, "compiled WASM");
     }
 
-    // Boundary behavior of the string builtins: an empty separator yields the
-    // whole string, substrings clamp (and start>end gives ""), an empty needle
-    // for index_of returns 0, a missing one returns -1, and empty-string concat
-    // is identity. These clamp/empty rules are easy to get subtly different in
-    // codegen, so assert the backends agree.
-    // Immediately applying a function-valued expression — `make(3)(4)`,
-    // `(fn(x){..})(7)`, chains, and an application nested inside another's
-    // argument — must behave identically on both backends. The nested-in-arg
-    // case in particular exercises codegen's per-level scratch locals (the
-    // callee pointer must survive argument evaluation).
-    // Function values stored in data structures and applied immediately — the
-    // composition unlocked by Expr::Apply. A closure pulled from a list with
-    // `at`, one selected by an `if` expression, and one held in a record field
-    // (reached via `(b.f)(b.n)`) must all apply identically on both backends.
     #[test]
     fn fn_values_in_data_backends_agree() {
         let src = r#"
