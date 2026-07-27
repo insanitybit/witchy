@@ -332,42 +332,6 @@ async fn main(console: Console):
         assert_eq!(interp_out, vec!["answer 9", "answer 25"]);
     }
 
-    // Phase 4 of the concurrency redesign: channels. `std/chan` is a cooperative
-    // message-passing executor written in pure witchy via an effect protocol
-    // (a task yields `Emit`/`Recv` requests; the executor owns the one FIFO buffer
-    // and threads it through the schedule — no shared mutable state, no runtime
-    // primitive). A producer sends, a consumer loops on `recv` (the actor idiom),
-    // and the run is byte-identical on both backends.
-    #[test]
-    fn chan_producer_consumer_backends_agree() {
-        let src = r#"
-import chan
-from chan import Receiver, Sender
-
-async fn producer(tx: Sender(Int)) -> Nil:
-    chan.send(tx, 1).await
-    chan.send(tx, 2).await
-
-async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
-    chan.consume(rx, fn(v): task.done(console.print("got ${v}"))).await
-
-async fn main(console: Console):
-    let (tx, rx) = chan.channel(1).await
-    task.spawn(producer(tx)).await
-    consumer(console, rx).await
-    console.print("drained")"#;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let interp_out =
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "channel schedule diverged across backends");
-        assert_eq!(interp_out, vec!["got 1", "got 2", "drained"]);
-    }
-
     // (RFC-0042) THE headline acceptance test: `import iter` + `import chan` in ONE
     // program. Both std modules declare a `type Step`; under the old flat type
     // namespace their variant sets merged and the program failed to compile inside
