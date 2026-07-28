@@ -24,13 +24,14 @@ pub const FIXTURE_HOST_WIRE_VERSION: u32 = 1;
 pub struct HostHandle(u64);
 
 impl HostHandle {
+    #[cfg(test)]
     #[must_use]
-    pub const fn from_raw(raw: u64) -> Self {
+    const fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
 
     #[must_use]
-    pub const fn into_raw(self) -> u64 {
+    const fn into_raw(self) -> u64 {
         self.0
     }
 }
