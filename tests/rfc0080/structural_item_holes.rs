@@ -1,7 +1,6 @@
 //! RFC-0080 compiler-owned item templates with typed AST holes.
 
-use witchy::runtime::{Capabilities, Runtime};
-use witchy::{ast, codegen, comptime, format, interpreter, parser, pipeline, typeck};
+use witchy::{ast, comptime, format, interpreter, parser, pipeline, typeck};
 
 const SOURCE: &str = r#"
 import meta
@@ -80,15 +79,5 @@ fn mixed_item_holes_expand_as_ast_and_run_on_both_backends() {
         expected
     );
 
-    let wasm = codegen::compile_module_binary(&linked).expect_lowered("compile expanded item");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            64,
-        )
-        .expect("spawn");
-    actor.run().expect("run compiled module");
-    assert_eq!(actor.output(), expected);
+    super::assert_compiled_output(&linked, &expected, "compile expanded item", 64);
 }

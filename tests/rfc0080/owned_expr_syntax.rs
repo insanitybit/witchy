@@ -1,7 +1,6 @@
 //! RFC-0080 compiler-owned expression payloads with compatibility projection.
 
-use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, comptime, format, interpreter, parser, pipeline, typeck};
+use witchy::{comptime, format, interpreter, parser, pipeline, typeck};
 
 const SOURCE: &str = r#"
 import meta
@@ -53,15 +52,5 @@ fn owned_expressions_survive_direct_flow_and_project_for_builders() {
         expected
     );
 
-    let wasm = codegen::compile_module_binary(&linked).expect_lowered("compile expanded program");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            64,
-        )
-        .expect("spawn");
-    actor.run().expect("run compiled program");
-    assert_eq!(actor.output(), expected);
+    super::assert_compiled_output(&linked, &expected, "compile expanded program", 64);
 }

@@ -1,7 +1,6 @@
 //! RFC-0080 definition-site resolution for compiler-owned typed tag output.
 
-use witchy::runtime::{Capabilities, Runtime};
-use witchy::{ast, codegen, interpreter, parser, pipeline, typeck};
+use witchy::{ast, interpreter, parser, pipeline, typeck};
 
 const SUPPORT: &str = r#"
 type ImportedValue:
@@ -213,17 +212,7 @@ fn typed_tag_names_resolve_at_definition_site_on_both_backends() {
         expected,
     );
 
-    let wasm = codegen::compile_module_binary(&linked).expect_lowered("compile typed tag program");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            64,
-        )
-        .expect("spawn");
-    actor.run().expect("run compiled typed tag program");
-    assert_eq!(actor.output(), expected);
+    super::assert_compiled_output(&linked, &expected, "compile typed tag program", 64);
 }
 
 #[test]
@@ -377,18 +366,12 @@ fn main(console: Console):
         interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
         expected,
     );
-    let wasm = codegen::compile_module_binary(&linked)
-        .expect_lowered("compile call-site type and constructor identities");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            64,
-        )
-        .expect("spawn");
-    actor.run().expect("run compiled call-site identity program");
-    assert_eq!(actor.output(), expected);
+    super::assert_compiled_output(
+        &linked,
+        &expected,
+        "compile call-site type and constructor identities",
+        64,
+    );
 }
 
 #[test]

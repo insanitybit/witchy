@@ -1,7 +1,6 @@
 //! RFC-0080 structural substitution for hole-bearing expression syntax.
 
-use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter, parser, pipeline, typeck};
+use witchy::{interpreter, parser, pipeline, typeck};
 
 const SOURCE: &str = r#"
 import list
@@ -50,15 +49,5 @@ fn expression_holes_remain_structural_through_items_and_tags() {
         expected,
     );
 
-    let wasm = codegen::compile_module_binary(&linked).expect_lowered("compile structural holes");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            64,
-        )
-        .expect("spawn");
-    actor.run().expect("run compiled structural holes");
-    assert_eq!(actor.output(), expected);
+    super::assert_compiled_output(&linked, &expected, "compile structural holes", 64);
 }

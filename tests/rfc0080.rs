@@ -4,6 +4,26 @@
 //! Files live in `tests/rfc0080/` (a subdir is not auto-compiled as its own
 //! binary) and are attached here via `#[path]` since a test crate root
 //! resolves bare `mod` names against `tests/`, not the subdir.
+
+fn assert_compiled_output(
+    module: &witchy::ast::Module,
+    expected: &[String],
+    label: &str,
+    stack_size: usize,
+) {
+    let wasm = witchy::codegen::compile_module_binary(module).expect_lowered(label);
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(
+            &wasm,
+            witchy::runtime::Capabilities { print: true, quiet: true, ..Default::default() },
+            stack_size,
+        )
+        .expect("spawn");
+    actor.run().expect(label);
+    assert_eq!(actor.output(), expected, "{label}");
+}
+
 #[path = "rfc0080/fresh_ident.rs"]
 mod fresh_ident;
 #[path = "rfc0080/expansion_diagnostics.rs"]

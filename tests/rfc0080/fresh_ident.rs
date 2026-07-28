@@ -1,8 +1,7 @@
 //! RFC-0080 hygiene seam: compiler-owned fresh identifiers are deterministic,
 //! source-unspellable, and distinct across calls and expansion evaluators.
 
-use witchy::runtime::{Capabilities, Runtime};
-use witchy::{ast, codegen, interpreter, parser, pipeline, typeck};
+use witchy::{ast, interpreter, parser, pipeline, typeck};
 
 const SOURCE: &str = r#"
 import meta
@@ -77,17 +76,7 @@ fn fresh_identifiers_are_deterministic_distinct_and_backend_neutral() {
         expected
     );
 
-    let wasm = codegen::compile_module_binary(&first).expect_lowered("compile expanded program");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            128,
-        )
-        .expect("spawn compiled expanded program");
-    actor.run().expect("run compiled expanded program");
-    assert_eq!(actor.output(), expected);
+    super::assert_compiled_output(&first, &expected, "compile expanded program", 128);
 }
 
 #[test]

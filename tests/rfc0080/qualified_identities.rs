@@ -1,7 +1,6 @@
 //! RFC-0080 compiler-owned identities for module-qualified type and pattern builders.
 
-use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter, parser, pipeline, typeck};
+use witchy::{interpreter, parser, pipeline, typeck};
 
 const DEFINITION_SUPPORT: &str = r#"
 type Wrapped(a):
@@ -104,16 +103,5 @@ fn qualified_builder_origins_resolve_on_both_backends() {
         expected,
     );
 
-    let wasm = codegen::compile_module_binary(&linked)
-        .expect_lowered("compile qualified identity program");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            64,
-        )
-        .expect("spawn");
-    actor.run().expect("run compiled program");
-    assert_eq!(actor.output(), expected);
+    super::assert_compiled_output(&linked, &expected, "compile qualified identity program", 64);
 }

@@ -1,8 +1,7 @@
 //! RFC-0080 compiler-owned item syntax: hole-free item quotes stay as AST
 //! through comptime evaluation and preserve typed emission order.
 
-use witchy::runtime::{Capabilities, Runtime};
-use witchy::{ast, codegen, comptime, format, interpreter, parser, pipeline, typeck};
+use witchy::{ast, comptime, format, interpreter, parser, pipeline, typeck};
 
 const SOURCE: &str = r#"
 import meta
@@ -84,18 +83,12 @@ fn compiler_owned_items_expand_in_order_and_run_on_both_backends() {
         expected
     );
 
-    let wasm = codegen::compile_module_binary(&linked)
-        .expect_lowered("compile expanded structural item program");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            128,
-        )
-        .expect("spawn compiled structural item program");
-    actor.run().expect("run compiled structural item program");
-    assert_eq!(actor.output(), expected);
+    super::assert_compiled_output(
+        &linked,
+        &expected,
+        "compile expanded structural item program",
+        128,
+    );
 }
 
 #[test]
@@ -131,15 +124,5 @@ fn main(console: Console):
         interpreter::run_module(linked.module().clone(), ".", Vec::new()).expect("interpret"),
         expected
     );
-    let wasm = codegen::compile_module_binary(linked.module()).expect_lowered("compile");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            128,
-        )
-        .expect("spawn");
-    actor.run().expect("run compiled program");
-    assert_eq!(actor.output(), expected);
+    super::assert_compiled_output(linked.module(), &expected, "compile", 128);
 }
