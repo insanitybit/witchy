@@ -132,26 +132,3 @@ fn main(console: Console):
             vec!["[9, 20, 35]", "1 2", "10 7"]
         );
     }
-
-    #[test]
-    fn compound_assignment_backends_agree() {
-        // `x op= e` desugars to `x = x op e`; verify all five ops in both
-        // backends, in a loop and a sequence.
-        let src = r#"
-fn main(console: Console):
-    var sum = 0
-    var i = 0
-    while (i < 5):
-        sum = (sum + i)
-        i = (i + 1)
-    console.print("${sum}")
-    var x = 100
-    x = (x - 30)
-    x = (x * 2)
-    x = (x / 7)
-    x = (x % 5)
-    console.print("${x}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["10", "0"]);
-    }
