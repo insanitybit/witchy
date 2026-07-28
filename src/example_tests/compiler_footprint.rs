@@ -113,36 +113,15 @@ use crate::{ast, interpreter, parser, typeck};
         );
     }
 
-    /// `compiler.footprint` runs in the WASM backend (staged-JSON host bridge)
-    /// and agrees byte-for-byte with the interpreter — a self-hosted package
-    /// manager can compute footprints from inside the sandbox.
-    #[test]
-    fn compiler_footprint_runs_in_the_wasm_backend() {
-        let prog = "import compiler\nfn main(console: Console):\n    console.print(compiler.footprint(\"pub fn read_all(d: Dir[Read]) -> String:\\n    d.read(\\\"x\\\")\\n\"))\n";
-        let out = wasm_run(prog);
-        assert_eq!(out, link_run(prog));
-        assert!(out[0].contains("Dir[Read]"), "{out:?}");
-    }
-
-    /// `compiler.diff` runs in the WASM backend and flags widening exactly as
-    /// the interpreter does.
-    #[test]
-    fn compiler_diff_runs_in_the_wasm_backend() {
-        let prog = "import compiler\nfn main(console: Console):\n    let old = \"pub fn pure(x: Int) -> Int:\\n    x\\n\"\n    let new = \"pub fn pure(x: Int, d: Dir) -> Int:\\n    x\\n\"\n    console.print(compiler.diff(old, new))\n";
-        let out = wasm_run(prog);
-        assert_eq!(out, link_run(prog));
-        assert!(out[0].contains("\"widened\":true"), "{out:?}");
-    }
-
     /// `compiler.footprint` exposes witchy's own capability analyzer to witchy
     /// programs (the heart of a self-hosted package manager): it returns the
     /// rights-precise footprint as JSON, which composes with `std/json`.
     #[test]
     fn compiler_footprint_exposes_the_analyzer() {
         // The rights-precise footprint comes back as JSON.
-        let out = link_run(
-            "import compiler\nfn main(console: Console):\n    console.print(compiler.footprint(\"pub fn load(d: Dir[Read]) -> String:\\n    d.read(\\\"x\\\")\\n\"))\n",
-        );
+        let footprint = "import compiler\nfn main(console: Console):\n    console.print(compiler.footprint(\"pub fn load(d: Dir[Read]) -> String:\\n    d.read(\\\"x\\\")\\n\"))\n";
+        let out = link_run(footprint);
+        assert_eq!(wasm_run(footprint), out, "footprint interpreter/WASM parity");
         assert!(out[0].contains("\"total\":[\"Dir[Read]\"]"), "total wrong: {}", out[0]);
         assert!(out[0].contains("\"name\":\"load\""), "entry missing: {}", out[0]);
         // The output is valid JSON — it round-trips through `std/json`.
@@ -178,10 +157,12 @@ use crate::{ast, interpreter, parser, typeck};
     #[test]
     fn compiler_diff_is_the_widening_gate() {
         let diff = |old: &str, new: &str| -> String {
-            link_run(&format!(
+            let source = format!(
                 "import compiler\nfn main(console: Console):\n    console.print(compiler.diff(\"{old}\", \"{new}\"))\n"
-            ))
-            .remove(0)
+            );
+            let interpreted = link_run(&source).remove(0);
+            assert_eq!(wasm_run(&source), vec![interpreted.clone()], "compiler.diff parity");
+            interpreted
         };
         // A connect-only client that gains `Listen` is a widening (the gate blocks).
         let widen = diff(
