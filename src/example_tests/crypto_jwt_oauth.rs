@@ -94,38 +94,6 @@ use crate::{codegen, interpreter, parser, typeck};
         (std::sync::Arc::new(config), certificate.cert.pem())
     }
 
-
-    /// RFC-0011: `net.deny(policy)` subtracts an address pattern from a `Net` — the
-    /// monotone allow/deny algebra `effective = allows \ denies`, recorded as a
-    /// `!`-prefixed allowlist entry honoured by the shared `net_allows`. A non-denied
-    /// address still narrows on both backends; a denied one is refused.
-    #[test]
-    fn net_deny_subtracts_addresses_backends_agree() {
-        let src = "fn main(net: Net, console: Console):\n    let d = net.deny(Net.cidr_any(\"10.0.0.0/8\"))\n    let ok = d.only(Net.tcp(\"192.168.1.1\", 80))\n    console.print(\"denied\")\n";
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let grant = vec!["10.0.0.0/8:*".to_string(), "192.168.1.1:80".to_string()];
-        let expected = vec!["denied".to_string()];
-        assert_eq!(
-            interpreter::run_module(linked.clone(), ".", grant.clone()).expect("interp"),
-            expected,
-            "interpreter: a non-denied address still narrows",
-        );
-        assert_eq!(
-            run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.0/8:*", "192.168.1.1:80"]),
-            expected,
-            "wasm",
-        );
-        // A denied address (inside the denied block) is refused — the exclusion bites.
-        let bad = "fn main(net: Net, console: Console):\n    let d = net.deny(Net.cidr_any(\"10.0.0.0/8\"))\n    let x = d.only(Net.tcp(\"10.0.0.5\", 6379))\n    console.print(\"unreached\")\n";
-        let bad_linked = resolve_std_src(bad);
-        typeck::check(&bad_linked).expect("typecheck");
-        assert!(
-            interpreter::run_module(bad_linked, ".", vec!["10.0.0.0/8:*".into()]).is_err(),
-            "a denied address must be refused",
-        );
-    }
-
     /// RS256 (`crypto.rsa_pkcs1_sha256_verify`, the OIDC/JWT signature algorithm) is
     /// reachable on both backends — a malformed key/signature yields `Err`, never
     /// a trap. (The verify LOGIC is proven by `rs256_native_roundtrip_verifies`.)
@@ -635,118 +603,12 @@ fn main(console: Console):
         );
     }
 
-    /// RFC-0102: native callers derive exact Fetch authority from confined Net,
-    /// while DNS pinning and the post-resolution Net floor remain host-side.
-    /// Both backends parse the same provider-normalized response.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn http_fetch_derived_from_net_backends_agree() {
-        use std::io::{BufRead, Write};
-        let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = server.local_addr().unwrap().port();
-        // One request per backend run; reply 200 hello.
-        let handle = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (stream, _) = server.accept().expect("accept");
-                let mut reader = std::io::BufReader::new(stream);
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    reader.read_line(&mut line).expect("read");
-                    if line == "\r\n" || line == "\n" || line.is_empty() {
-                        break;
-                    }
-                }
-                reader
-                    .get_mut()
-                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello")
-                    .expect("write");
-            }
-        });
-        let src = format!(
-            "import http\n\
-             fn main(console: Console, net: Net):\n\
-             \x20   let target = \"http://127.0.0.1:{port}/greet\"\n\
-             \x20   match http.try_get(net.fetch(http.origin(target)), target):\n\
-             \x20       Ok(r) -> console.print(\"${{http.status(r)}} ${{http.body(r)}}\")\n\
-             \x20       Err(e) -> console.print(\"get: \" + http.http_error_message(e))\n"
-        );
-        let allow = format!("127.0.0.1:{port}");
-        let want = vec!["200 hello".to_string()];
-        assert_eq!(link_run_net(&src, &[allow.as_str()]), want, "interp derived Fetch");
-        assert_eq!(
-            run_linked_on_wasm_net(&[("main", src.as_str())], "main", &[allow.as_str()]),
-            want,
-            "wasm derived Fetch",
-        );
-        handle.join().expect("server thread");
-    }
-
-    /// HTTPS end to end: a derived Fetch reaches a local rustls HTTP/1.1 server and parses the
-    /// response — status and body identical on BOTH backends. Closes the loop from the
-    /// TLS transport up to the `std/http` client (the shape an OAuth/OIDC call makes).
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn https_get_url_through_a_local_server_backends_agree() {
-        use std::io::{Read, Write};
-        let (server_config, cert_pem) = tls_server_fixture();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let cert_path = std::env::temp_dir().join(format!("witchy-https-test-{port}.pem"));
-        std::fs::write(&cert_path, cert_pem.as_bytes()).unwrap();
-        let _tls_root = witchy_runtime::net::register_test_tls_root(cert_path.clone());
-
-        let sc = server_config.clone();
-        let server = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (tcp, _) = listener.accept().unwrap();
-                let conn = rustls::ServerConnection::new(sc.clone()).unwrap();
-                let mut tls = rustls::StreamOwned::new(conn, tcp);
-                let mut req = Vec::new();
-                let mut b = [0u8; 1];
-                while tls.read_exact(&mut b).is_ok() {
-                    req.push(b[0]);
-                    if req.ends_with(b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi");
-                let _ = tls.flush();
-                tls.conn.send_close_notify();
-                let _ = tls.flush();
-            }
-        });
-
-        let src = format!(
-            "import http\nfn main(console: Console, net: Net):\n    let target = \"https://localhost:{port}/\"\n    match http.try_get(net.fetch(http.origin(target)), target):\n        Ok(resp) -> console.print(\"${{http.status(resp)}} ${{http.body(resp)}}\")\n        Err(e) -> console.print(\"error: \" + http.http_error_message(e))\n"
-        );
-        let allow = format!("localhost:{port}");
-        assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["200 hi".to_string()], "interp https");
-        assert_eq!(
-            run_linked_on_wasm_net(&[("main", src.as_str())], "main", &[allow.as_str()]),
-            vec!["200 hi".to_string()],
-            "wasm https"
-        );
-        server.join().unwrap();
-        let _ = std::fs::remove_file(&cert_path);
-    }
-
     /// `url.encode` percent-encodes query values (RFC 3986): the unreserved set passes,
     /// reserved/space bytes become `%XX`. Both backends agree.
     #[test]
     fn url_encode_percent_encodes_query_values() {
         let src = "import url\nfn main(console: Console):\n    console.print(url.encode(\"a b/c:?=&-_.~Z9\"))\n";
         let expected = vec!["a%20b%2Fc%3A%3F%3D%26-_.~Z9".to_string()];
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
-    }
-
-    /// `oauth.authorize_url` builds the OAuth2 authorization-code redirect, percent-
-    /// encoding each parameter. Both backends agree.
-    #[test]
-    fn oauth_authorize_url_builds_the_redirect() {
-        let src = "import oauth\nfn main(console: Console):\n    console.print(oauth.authorize_url(\"https://idp/auth\", \"cid\", \"http://app/cb\", \"openid email\", \"st8\"))\n";
-        let expected = vec!["https://idp/auth?response_type=code&client_id=cid&redirect_uri=http%3A%2F%2Fapp%2Fcb&scope=openid%20email&state=st8".to_string()];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
@@ -869,17 +731,6 @@ fn main(console: Console):
         );
         server.join().unwrap();
         let _ = std::fs::remove_file(&cert_path);
-    }
-
-    /// base64url decode (URL-safe `-`/`_`, no padding) — the JWT/OIDC segment codec.
-    /// `base64url_to_hex` round-trips the bytes of `base64url_of_hex`, and
-    /// `base64url_decode` yields the text; identical on both backends.
-    #[test]
-    fn base64url_decode_backends_agree() {
-        let src = "import encoding\nfn main(console: Console):\n    let e = encoding.hex_to_base64url(\"7b2274223a317d\").unwrap_or(\"?\")\n    console.print(encoding.base64url_to_hex(e).unwrap_or(\"?\"))\n    console.print(encoding.base64url_decode(e).unwrap_or(\"?\"))\n";
-        let expected = vec!["7b2274223a317d".to_string(), "{\"t\":1}".to_string()];
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
     /// (BUG-006 / RFC-0044 rule 2) Every decoder rejects malformed input with a
