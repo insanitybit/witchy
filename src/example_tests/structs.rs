@@ -145,21 +145,39 @@ use crate::{codegen, interpreter, parser};
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
-    /// Interpolating a record field — `"${p.x}"` (scalar) and `"${p.tags}"`
-    /// (compound) — renders on WASM, including inside a custom `Show` impl. A
-    /// field access previously resolved to no value type, so `to_string` of it
-    /// errored on the compiled backend even though the field's type is known.
+    /// Record field access corpus with shared parity setup and labeled expected values.
     #[test]
-    fn record_field_interpolation_renders_on_wasm() {
-        let src = "type Post:\n    title: String\n    views: Int\n    tags: List(Int)\nfn main(console: Console):\n    let p = Post(\"hi\", 9, [1, 2, 3])\n    console.print(\"${p.title} (${p.views}): ${p.tags}\")\n";
-        assert_eq!(run_on_wasm(src), vec!["hi (9): [1, 2, 3]".to_string()]);
-    }
-
-    #[test]
-    fn direct_field_access_on_expressions_backends_agree() {
-        // Field access directly on a record-producing expression (no `let`): a
-        // constructor literal, a record-returning call, and an `at` result.
-        let src = r#"
+    fn record_field_access_shapes_agree_on_both_backends() {
+        let cases: &[(&str, &[&str], bool)] = &[
+            (
+                "interpolation",
+                &["hi (9): [1, 2, 3]"],
+                false,
+            ),
+            (
+                "direct expressions",
+                &["7", "10", "4"],
+                true,
+            ),
+            (
+                "conditional and match",
+                &["30", "10", "2", "5"],
+                true,
+            ),
+            (
+                "list records",
+                &["30", "8", "9"],
+                true,
+            ),
+            (
+                "dict records",
+                &["30", "0"],
+                true,
+            ),
+        ];
+        let sources: &[&str] = &[
+            "type Post:\n    title: String\n    views: Int\n    tags: List(Int)\nfn main(console: Console):\n    let p = Post(\"hi\", 9, [1, 2, 3])\n    console.print(\"${p.title} (${p.views}): ${p.tags}\")\n",
+            r#"
 type Item:
     price: Int
     qty: Int
@@ -169,22 +187,13 @@ fn lookup(b: Bool) -> Item:
         Item(3, 10)
     else:
         Item(5, 2)
-
 fn main(console: Console):
     console.print("${(Item(7, 6)).price}")
     console.print("${(lookup(true)).qty}")
     let items = [Item(1, 2), Item(3, 4)]
     console.print("${(list.at(items, 1)).qty}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["7", "10", "4"]);
-    }
-
-    #[test]
-    fn conditional_record_field_access_backends_agree() {
-        // `let x = if c { A } else { B }; x.field` (and a match-bound record):
-        // the binding's record type is recovered from the branch/arm.
-        let src = r#"
+"#,
+            r#"
 type Item:
     price: Int
     qty: Int
@@ -192,7 +201,6 @@ type Item:
 fn pick(b: Bool) -> Int:
     let x = if b: Item(3, 10) else: Item(5, 2)
     ((x).price * (x).qty)
-
 fn from_tag(t: Int) -> Int:
     let y = match t:
         0 -> Item(1, 1)
@@ -204,17 +212,8 @@ fn main(console: Console):
     console.print("${pick(false)}")
     console.print("${from_tag(0)}")
     console.print("${from_tag(9)}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["30", "10", "2", "5"]);
-    }
-
-    #[test]
-    fn list_of_records_index_access_backends_agree() {
-        // `list.at(items, i).field` via a let, for both a List(Record) parameter and a
-        // let-bound list literal of records; and a for-loop over the let-bound
-        // list. Both backends agree.
-        let src = r#"
+"#,
+            r#"
 type Item:
     price: Int
     qty: Int
@@ -222,7 +221,6 @@ type Item:
 fn first_value(items: List(Item)) -> Int:
     let first = list.at(items, 0)
     ((first).price * (first).qty)
-
 fn main(console: Console):
     console.print("${first_value([Item(3, 10), Item(5, 2)])}")
     let items = [Item(2, 4), Item(7, 1)]
@@ -232,20 +230,11 @@ fn main(console: Console):
     for it in items:
         total = (total + (it).price)
     console.print("${total}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["30", "8", "9"]);
-    }
-
-    #[test]
-    fn dict_of_records_field_access_backends_agree() {
-        // Looking a record up in a Dict and accessing its field: the result of
-        // get_or carries the default's record type, so `it.price` resolves.
-        let src = r#"
+"#,
+            r#"
 type Item:
     price: Int
     qty: Int
-
 fn main(console: Console):
     var d = dict.new()
     dict.insert(d, "apple", Item(3, 10))
@@ -254,9 +243,16 @@ fn main(console: Console):
     console.print("${((it).price * (it).qty)}")
     let missing = dict.get_or(d, "milk", Item(0, 0))
     console.print("${(missing).price}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["30", "0"]);
+"#,
+        ];
+        for ((label, expected, parity), src) in cases.iter().zip(sources) {
+            let compiled = run_on_wasm(src);
+            let want: Vec<String> = expected.iter().map(|value| (*value).to_string()).collect();
+            assert_eq!(compiled, want, "{label}: compiled output");
+            if *parity {
+                assert_eq!(interp(src), compiled, "{label}: backend parity");
+            }
+        }
     }
 
     /// A record SPREAD (`Point(x: 5, ..p)`) is validated exactly like plain
