@@ -33,16 +33,16 @@ does not hide the contract under test.
 paths; its `--run` form executes them. Full workspace, Clippy, Wasm, browser,
 and book validation is serialized by `./scripts/merge-queue.sh submit`.
 
-At master commit `d6648348` on 2026-07-28, the measured footprint is:
+At master commit `81cd65b8` on 2026-07-28, the measured footprint is:
 
 | layer | files | Rust lines |
 | --- | ---: | ---: |
-| integration | 96 | 19,787 |
-| example matrix | 56 | 19,236 |
+| integration | 96 | 19,766 |
+| example matrix | 56 | 18,437 |
 | extracted crate tests | 14 | 14,245 |
-| explicit total | 166 | 53,268 |
+| explicit total | 166 | 52,448 |
 | support | 20 | 8,383 |
-| explicit plus support | 186 | 61,651 |
+| explicit plus support | 186 | 60,831 |
 
 The normalized baselines are 56,984 explicit lines and 65,435 total lines.
 Recent serialized gates were green for the merged browser-driver, sanitizer,
@@ -50,6 +50,28 @@ string-boundary, and scalar-codegen slices. The queue must remain the source of
 truth for exact gate timing; recent recorded gate durations ranged from 191 s
 to 2,539 s, with CPU contention explaining the outliers.
 
+The normalized reduction is currently 4,536 explicit lines and 4,604 lines
+including support; the remaining distance to 40,000 explicit lines is 12,448.
 The footprint reduction remains in progress. This document records the
 retained evidence model and current measurement; it does not waive the goal's
 15,000-line deletion, API-shrink, or final-gate requirements.
+
+## Current retained-census record
+
+The completed deletion audit retained the following authorities after review:
+
+- capability, confinement, provenance, authentication, and browser-host tests;
+- ABI, WIR, ownership, region, allocation, and runtime-shape tests;
+- malformed-input, Unicode, URL, typed-error, source-location, and historical
+  regression diagnostics;
+- interpreter/Wasm parity with explicit expected values, plus the independent
+  `semantic_conformance` and mutation/fault-injection oracles;
+- JSON, concurrency, traits, RFC-0080, RFC-0081, package-manager, testkit,
+  test-host, merge-queue, runnable-book, and end-to-end security layers.
+
+Merged reduction slices on this measurement include standard-library smokes,
+quote parity, closure parity, sandbox parity, region/capability smokes,
+mutation trampolines, network duplicates, and JSON API fixture consolidation.
+The RFC-0080 compiled-output helper saves another 158 lines but is not merged:
+its full gate reached the existing browser capability-host test and failed
+because the current Node runtime lacks WebAssembly JSPI.
