@@ -33,16 +33,16 @@ does not hide the contract under test.
 paths; its `--run` form executes them. Full workspace, Clippy, Wasm, browser,
 and book validation is serialized by `./scripts/merge-queue.sh submit`.
 
-At master commit `61f298c2` on 2026-07-28, the measured footprint is:
+At master commit `7fe6169c` on 2026-07-28, the measured footprint is:
 
 | layer | files | Rust lines |
 | --- | ---: | ---: |
 | integration | 96 | 19,642 |
-| example matrix | 56 | 18,271 |
+| example matrix | 56 | 18,239 |
 | extracted crate tests | 14 | 14,245 |
-| explicit total | 166 | 52,158 |
+| explicit total | 166 | 52,126 |
 | support | 20 | 8,383 |
-| explicit plus support | 186 | 60,541 |
+| explicit plus support | 186 | 60,509 |
 
 The normalized baselines are 56,984 explicit lines and 65,435 total lines.
 Recent serialized gates were green for the merged browser-driver, sanitizer,
@@ -50,8 +50,8 @@ string-boundary, and scalar-codegen slices. The queue must remain the source of
 truth for exact gate timing; recent recorded gate durations ranged from 191 s
 to 2,539 s, with CPU contention explaining the outliers.
 
-The normalized reduction is currently 4,826 explicit lines and 4,894 lines
-including support; the remaining distance to 40,000 explicit lines is 12,158.
+The normalized reduction is currently 4,858 explicit lines and 4,926 lines
+including support; the remaining distance to 40,000 explicit lines is 12,126.
 The footprint reduction remains in progress. This document records the
 retained evidence model and current measurement; it does not waive the goal's
 15,000-line deletion, API-shrink, or final-gate requirements.
@@ -72,8 +72,9 @@ The completed deletion audit retained the following authorities after review:
 Merged reduction slices on this measurement include standard-library smokes,
 quote parity, closure parity, sandbox parity, region/capability smokes,
 mutation trampolines, network duplicates, JSON API fixture consolidation,
-the RFC-0080 compiled-output helper, crypto fixture pruning, and traits
-protocol-fixture consolidation. The browser gate now probes for actual
+the RFC-0080 compiled-output helper, crypto fixture pruning, traits
+protocol-fixture consolidation, and dominated network/ownership cases. The
+browser gate now probes for actual
 WebAssembly JSPI support: capable Node hosts run the capability-host driver,
 while hosts that expose no JSPI constructors report an explicit skip; pure
 Node browser drivers remain covered on those hosts.
