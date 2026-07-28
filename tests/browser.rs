@@ -10,6 +10,14 @@ use std::process::Command;
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
 pub fn run_node_driver(driver: &str, args: &[&str], marker: &str, label: &str) {
+    run_node_driver_inner(driver, args, marker, label, false);
+}
+
+pub fn run_node_jspi_driver(driver: &str, args: &[&str], marker: &str, label: &str) {
+    run_node_driver_inner(driver, args, marker, label, true);
+}
+
+fn run_node_driver_inner(driver: &str, args: &[&str], marker: &str, label: &str, requires_jspi: bool) {
     if !Command::new("node")
         .arg("--version")
         .output()
@@ -21,7 +29,33 @@ pub fn run_node_driver(driver: &str, args: &[&str], marker: &str, label: &str) {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let driver = manifest.join(driver);
     assert!(driver.exists(), "the committed {label} driver must exist at {}", driver.display());
-    let output = Command::new("node")
+    let has_jspi_flag = requires_jspi
+        && Command::new("node")
+            .arg("--v8-options")
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains("--experimental-wasm-jspi"))
+            .unwrap_or(false);
+    let mut node = Command::new("node");
+    if has_jspi_flag {
+        node.arg("--experimental-wasm-jspi");
+    }
+    if requires_jspi {
+        let jspi_probe = node
+            .args(["-e", "process.stdout.write(String(typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function'))"])
+            .output();
+        if !jspi_probe
+            .as_ref()
+            .is_ok_and(|output| output.status.success() && output.stdout == b"true")
+        {
+            eprintln!("skipping: Node does not provide WebAssembly JSPI");
+            return;
+        }
+    }
+    let mut node = Command::new("node");
+    if has_jspi_flag {
+        node.arg("--experimental-wasm-jspi");
+    }
+    let output = node
         .arg(&driver)
         .args(args)
         .current_dir(manifest)

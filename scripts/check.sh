@@ -280,11 +280,20 @@ validate_runnable_book() {
     [ -f scripts/validate_book_examples.mjs ] || { echo "validator absent — skipping"; return 0; }
     local built="$target_dir/wasm32-unknown-unknown/debug/witchy.wasm"
     [ -f "$built" ] || { echo "wasm not built at $built — skipping"; return 0; }
+    local -a node_flags=()
+    if node --v8-options 2>/dev/null | grep -q -- '--experimental-wasm-jspi'; then
+        node_flags+=(--experimental-wasm-jspi)
+    fi
+    if ! node "${node_flags[@]}" -e \
+        'process.exit(typeof WebAssembly.Suspending === "function" && typeof WebAssembly.promising === "function" ? 0 : 1)'; then
+        echo "Node lacks WebAssembly JSPI — skipping runnable-book validation"
+        return 0
+    fi
     # Point the validator at the freshly-built wasm via env — do NOT copy over the
     # tracked web/witchy.wasm (a dirtied worktree would break the coordinator's ff-merge).
-    WITCHY_WASM_PATH="$built" node scripts/validate_book_examples.mjs
-    WITCHY_WASM_PATH="$built" node scripts/audit-browser-runnable.mjs
-    WITCHY_WASM_PATH="$built" node web/witchy-runtime/fixture-host.test.mjs
+    WITCHY_WASM_PATH="$built" node "${node_flags[@]}" scripts/validate_book_examples.mjs
+    WITCHY_WASM_PATH="$built" node "${node_flags[@]}" scripts/audit-browser-runnable.mjs
+    WITCHY_WASM_PATH="$built" node "${node_flags[@]}" web/witchy-runtime/fixture-host.test.mjs
 }
 
 # nextest builds what it needs, so no separate build step; without nextest the

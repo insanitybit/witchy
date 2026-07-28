@@ -162,7 +162,7 @@ fn playground_examples_are_current_witchy() {
 /// This is the parity + non-widening guarantee for RFC-0091 phase 1.
 #[test]
 fn browser_capability_host_runs_portable_providers_and_denies_the_rest() {
-    super::run_node_driver(
+    super::run_node_jspi_driver(
         "web/witchy-runtime/capability-host.test.mjs",
         &[super::BIN],
         "CAPABILITY-HOST OK",
