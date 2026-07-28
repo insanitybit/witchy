@@ -33,16 +33,16 @@ does not hide the contract under test.
 paths; its `--run` form executes them. Full workspace, Clippy, Wasm, browser,
 and book validation is serialized by `./scripts/merge-queue.sh submit`.
 
-At master commit `65afd272` on 2026-07-28, the measured footprint is:
+At master commit `c9c8b0d4` on 2026-07-28, the measured footprint is:
 
 | layer | files | Rust lines |
 | --- | ---: | ---: |
 | integration | 96 | 19,642 |
-| example matrix | 56 | 18,177 |
-| extracted crate tests | 14 | 14,245 |
-| explicit total | 166 | 52,064 |
+| example matrix | 56 | 18,116 |
+| extracted crate tests | 14 | 14,220 |
+| explicit total | 166 | 51,978 |
 | support | 20 | 8,384 |
-| explicit plus support | 186 | 60,448 |
+| explicit plus support | 186 | 60,362 |
 
 The normalized baselines are 56,984 explicit lines and 65,435 total lines.
 Recent serialized gates were green for the merged browser-driver, sanitizer,
@@ -50,8 +50,8 @@ string-boundary, and scalar-codegen slices. The queue must remain the source of
 truth for exact gate timing; recent recorded gate durations ranged from 191 s
 to 2,539 s, with CPU contention explaining the outliers.
 
-The normalized reduction is currently 4,920 explicit lines and 4,987 lines
-including support; the remaining distance to 40,000 explicit lines is 12,064.
+The normalized reduction is currently 5,006 explicit lines and 5,073 lines
+including support; the remaining distance to 40,000 explicit lines is 11,978.
 The footprint reduction remains in progress. This document records the
 retained evidence model and current measurement; it does not waive the goal's
 15,000-line deletion, API-shrink, or final-gate requirements.
@@ -73,7 +73,9 @@ Merged reduction slices on this measurement include standard-library smokes,
 quote parity, closure parity, sandbox parity, region/capability smokes,
 mutation trampolines, network duplicates, JSON API fixture consolidation,
 the RFC-0080 compiled-output helper, crypto fixture pruning, traits
-protocol-fixture consolidation, and dominated network/ownership cases. The
+protocol-fixture consolidation, dominated network/ownership cases, comptime
+boundary consolidation, compiler-footprint WASM-smoke folding, and WIR
+arithmetic-smoke removal. The
 browser gate now probes for actual
 WebAssembly JSPI support: capable Node hosts run the capability-host driver,
 while hosts that expose no JSPI constructors report an explicit skip; pure
