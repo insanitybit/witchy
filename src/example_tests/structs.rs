@@ -1,15 +1,9 @@
 use super::*;
 use crate::{codegen, interpreter, parser};
 
-    /// RFC-0005 Stage 4 (records slice): plain named-field and positional
-    /// nominal aggregates may carry a migrated capability, lowered to typed GC
-    /// structs. Construction, spread, field access through a nested record
-    /// chain, `match` destructuring, and `var` place assignment all agree between
-    /// the backends, and the authority never crosses the i64 slot. Nesting is
-    /// also the BUG-566 regression: the
-    /// classifier lives in one home now, so typeck and codegen cannot disagree
-    /// about which records GC-lower (the old codegen copy missed nested records
-    /// and ICE'd the encoder).
+    /// RFC-0005 Stage 4 / BUG-566: capability-carrying named and positional
+    /// records exercise construction, spread, nesting, destructuring, and
+    /// assignment across both backends without crossing the i64 slot.
     #[test]
     fn plain_cap_record_runs_on_both_backends() {
         use crate::runtime::{Capabilities, Runtime};
@@ -55,8 +49,7 @@ use crate::{codegen, interpreter, parser};
     /// and agrees on both backends.
     #[test]
     fn for_tuple_patterns_destructure() {
-        // Both the parenthesized and the unparenthesized (canonical, Python-style)
-        // tuple patterns parse and run identically on both backends.
+        // Parenthesized and canonical unparenthesized tuple patterns agree.
         let head = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n";
         let paren = format!("{head}    for (k, v) in dict.pairs(d):\n        console.print(\"${{k}}=${{v}}\")\n");
         let unparen = format!("{head}    for k, v in dict.pairs(d):\n        console.print(\"${{k}}=${{v}}\")\n");
@@ -87,13 +80,8 @@ use crate::{codegen, interpreter, parser};
         assert_eq!(run_on_wasm(src), vec!["1 2 3", "10 20"]);
     }
 
-    /// Generic stdlib functions over USER RECORD types compare by content:
-    /// typed lowering resolves the type argument (confirmed via the table),
-    /// the specialization's `==` becomes structural. Previously the generic
-    /// fallback pointer-compared (or, post-hotfix, refused to compile).
-    /// RFC-0046 step 3: `list.contains`/`index_of` now carry a `where a: Eq`
-    /// bound, so a record element type derives `Eq` (its content equality) to
-    /// use them — which is exactly what makes them monomorphize on WASM.
+    /// Generic stdlib equality over user records is structural and monomorphizes
+    /// through the `where a: Eq` bound on `list.contains` and `index_of`.
     #[test]
     fn generic_equality_on_records_is_structural() {
         let src = "import list\nimport cmp\n\ntype Point derive(PartialEq, Eq):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let pts = [Point(1, 2), Point(3, 4)]\n    let probe = Point(1 + 2, 4)\n    console.print(\"${list.contains(pts, probe)}\")\n    console.print(\"${list.index_of(pts, Point(1, 2)) ?? -1}\")\n";
@@ -102,12 +90,8 @@ use crate::{codegen, interpreter, parser};
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
-    /// Structural `==`/`!=` on compound values (lists, nested lists, tuples,
-    /// records, lists of records) must agree on both backends. WASM previously
-    /// compared heap POINTERS, so two equal-but-distinct values compared unequal;
-    /// codegen now derives the operands' `EqShape` and routes through generated
-    /// per-shape structural-equality helpers. (Regression for the silent
-    /// compound-`==` pointer-compare divergence.)
+    /// Structural `==`/`!=` on compound values must agree across both backends;
+    /// codegen derives `EqShape` and uses generated structural-equality helpers.
     #[test]
     fn structural_equality_agrees_on_both_backends() {
         let src = "type Pt:\n    x: Int\n    y: Int\ntype Bag:\n    items: List(Int)\nfn main(console: Console):\n    console.print(\"${[1, 2, 3] == [1, 2, 3]}\")\n    console.print(\"${[1, 2, 3] == [1, 9, 3]}\")\n    console.print(\"${[[1], [2]] == [[1], [2]]}\")\n    console.print(\"${(1, \"a\") == (1, \"a\")}\")\n    console.print(\"${(1, \"a\") != (1, \"b\")}\")\n    console.print(\"${Pt(1, 2) == Pt(1, 2)}\")\n    console.print(\"${Pt(1, 2) == Pt(3, 4)}\")\n    console.print(\"${[Pt(1, 2)] == [Pt(1, 2)]}\")\n    console.print(\"${Bag([1, 2]) == Bag([1, 2])}\")\n    console.print(\"${[\"a\", \"b\"] == [\"a\", \"b\"]}\")\n";
@@ -288,10 +272,7 @@ fn main(console: Console):
         assert_eq!(wasm_run(ok), vec!["7 2"], "wasm");
     }
 
-    // Nested records: `l.from.x` requires codegen to resolve the record type of
-    // the intermediate field (`l.from` is a Point) to index the next one. Record
-    // update rebuilds the outer record with one field replaced, leaving the rest
-    // (and the original value) untouched. Both backends must agree.
+    // Nested field access and record update preserve the other fields on both backends.
     #[test]
     fn nested_records_and_update_backends_agree() {
         let src = r#"
@@ -316,9 +297,7 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["1", "4", "10", "4", "1"]);
     }
 
-    // Comprehensions compose with records: the element expression and the `if`
-    // filter both access fields of the loop variable (resolved because the
-    // source is a List(Record)). Both backends agree.
+    // Record fields work in comprehension expressions and filters on both backends.
     #[test]
     fn list_comprehension_over_records_backends_agree() {
         let client = r#"
@@ -342,11 +321,7 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["apple", "milk", "30", "10", "20"]);
     }
 
-    // `update` on a base that is not a bare variable: a field access (`l.from`)
-    // and an `if` expression. Codegen used to require a record-typed variable;
-    // it now evaluates an arbitrary base once into a scratch slot, matching the
-    // interpreter. Nested update in an override (`update p { x: update q ... }`)
-    // exercises the level-scoped scratch reuse.
+    // Record update accepts field and conditional expression bases, including nesting.
     #[test]
     fn record_update_on_expression_base_backends_agree() {
         let src = r#"
@@ -375,10 +350,7 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["100", "2", "1", "99", "7", "4"]);
     }
 
-    // Iterating records produced by a non-variable expression: a call returning
-    // `List(Record)` and a list literal of records. Codegen now resolves the
-    // loop variable's record type (so `p.x` works in the body) for any list
-    // expression, not just a bare variable — matching the interpreter.
+    // Iteration resolves record fields from calls and list literals on both backends.
     #[test]
     fn for_over_nonvar_record_list_backends_agree() {
         let src = r#"
@@ -401,9 +373,7 @@ fn main(console: Console):
 
     #[test]
     fn record_with_collection_field_backends_agree() {
-        // A record holding a List(Int) and a String: field access, length on a
-        // list field, and a `for` loop iterating a list *field* (the iterand is a
-        // field expression, not a variable). Both backends agree.
+        // Exercise collection and string fields, including iteration over a field.
         let src = r#"
 type Bag:
     items: List(Int)

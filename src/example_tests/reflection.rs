@@ -180,10 +180,7 @@ use crate::{interpreter, parser, typeck};
     #[test]
     fn reflection_covers_lists_options_tuples_and_generic_records() {
         let src = "import json\nimport reflect\n\ntype Box(a) derive(Reflect):\n    item: a\n\nfn main(console: Console):\n    console.print(json.stringify([1, 2, 3]))\n    console.print(json.stringify(Some(\"x\")))\n    console.print(json.stringify((\"p\", 5)))\n    console.print(json.stringify([(\"a\", \"b\")]))\n    console.print(json.stringify(Box([1, 2])))\n";
-        let want: Vec<String> = ["[1,2,3]", "\"x\"", "[\"p\",5]", "[[\"a\",\"b\"]]", "{\"item\":[1,2]}"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let want = vec!["[1,2,3]", "\"x\"", "[\"p\",5]", "[[\"a\",\"b\"]]", "{\"item\":[1,2]}"];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
@@ -206,17 +203,14 @@ use crate::{interpreter, parser, typeck};
     #[test]
     fn reflection_protocol_covers_duration_result_and_set() {
         let src = "import json\nimport reflect\nimport set\nimport duration\n\nfn main(console: Console):\n    let ok: Result(Int, String) = Ok(7)\n    let err: Result(Int, String) = Err(\"bad\")\n    let s = set.from_list([2, 1, 2])\n    console.print(json.stringify(1500ms))\n    console.print(reflect.debug(duration.seconds(2)))\n    console.print(json.stringify(ok))\n    console.print(json.stringify(err))\n    console.print(json.stringify(s))\n    console.print(reflect.debug(s))\n";
-        let want: Vec<String> = [
+        let want = vec![
             "1500",
             "2000",
             "{\"$variant\":\"Ok\",\"$values\":[7]}",
             "{\"$variant\":\"Err\",\"$values\":[\"bad\"]}",
             "[2,1]",
             "[2, 1]",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+        ];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
@@ -227,14 +221,11 @@ use crate::{interpreter, parser, typeck};
     #[test]
     fn reflective_debug_render_other_use_case() {
         let src = "import reflect\n\ntype Point derive(Reflect):\n    x: Int\n    y: Int\n\ntype Bag derive(Reflect):\n    items: List(Int)\n    label: String\n\nfn main(console: Console):\n    console.print(reflect.debug(Point(1, 2)))\n    console.print(reflect.debug(Bag([1, 2, 3], \"nums\")))\n    console.print(reflect.debug(42))\n";
-        let want: Vec<String> = [
+        let want = vec![
             "Point { x: 1, y: 2 }",
             "Bag { items: [1, 2, 3], label: \"nums\" }",
             "42",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+        ];
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");

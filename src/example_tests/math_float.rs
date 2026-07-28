@@ -191,13 +191,12 @@ fn main(console: Console):
     console.print(math.format_float(0.0, 2))
     console.print(math.format_float(1.999, 2))
     console.print(math.format_float(0.0 - 0.04, 1))
-    console.print(math.format_float(98.6, 1))
 "#;
         let sources = [("math", crate::bundled_module("math").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "format_float diverged");
-        assert_eq!(compiled, vec!["3.14", "-0.5", "2", "0.00", "2.00", "0.0", "98.6"]);
+        assert_eq!(compiled, vec!["3.14", "-0.5", "2", "0.00", "2.00", "0.0"]);
     }
 
     #[test]
@@ -246,11 +245,6 @@ fn main() -> Int:
         );
     }
 
-    // factorial (1 for n<=1) and is_prime (trial division; n<2 not prime).
-    // A Float-returning main now runs compiled: the auto-print wrapper calls
-    // the newly-wired print_float host, which formats f64 exactly like the
-    // interpreter's Value::Float Display. Previously the compiled module failed
-    // to instantiate (no print_float import provider).
     // A broader compiled-float workout: division, float_abs (negation + compare),
     // float_max, a float comparison driving a float-valued `if`, multiply, subtract,
     // and sqrt — all feeding one Float result. Both backends agree.

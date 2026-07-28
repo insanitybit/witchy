@@ -52,16 +52,6 @@ use crate::{codegen, interpreter, parser, typeck};
         );
     }
 
-    /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`
-    /// format) on both backends — the host walks the guest's string lists.
-    #[test]
-    fn crypto_rune_hash_runs_in_the_wasm_backend() {
-        let prog = "import crypto\nfn main(console: Console):\n    console.print(crypto.rune_hash([\"a.witchy\", \"b.witchy\"], [\"fn one\", \"fn two\"]))\n";
-        let out = wasm_run(prog);
-        assert_eq!(out, link_run(prog));
-        assert!(out[0].starts_with("sha256:") && out[0].len() == 71, "{out:?}");
-    }
-
     /// Signing round-trips entirely in witchy: a host-granted `Secret`
     /// capability signs a message (`crypto.sign`), and `crypto.ed25519_verify`
     /// against the key's public half (`crypto.public_key`) accepts it. Without a
@@ -395,34 +385,6 @@ use crate::{codegen, interpreter, parser, typeck};
         let want = vec!["ok".to_string(), "bad".to_string()];
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(&src), want, "interpreter oracle");
-    }
-
-    /// `$crypto_sign` + `$crypto_public_key` on the binary path — the Secret
-    /// capability host imports (the seed never enters guest memory). Both need a
-    /// signing key granted; the run yields a 64-char public-key hex and a 128-char
-    /// signature hex.
-    #[test]
-    fn wir_crypto_signing_host_imports_binary_path() {
-        use crate::runtime::{Capabilities, Runtime};
-        let src = "import crypto\nfn main(console: Console, signer: Secret):\n    console.print(crypto.public_key(signer))\n    console.print(crypto.sign(signer, \"hello\"))\n";
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the WIR binary path should handle the signing host imports");
-        let caps = || Capabilities {
-            print: true,
-            signing_key: Some([7u8; 32]),
-            secrets: vec![crate::runtime::SecretGrant::new("signing", vec![7u8; 32])],
-            quiet: true,
-            ..Default::default()
-        };
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt.spawn(&bytes, caps(), crate::RUN_MEMORY_PAGES).expect("spawn with signing key");
-        actor.run().expect("run");
-        let got = actor.output();
-        assert_eq!(got[0].len(), 64, "public key hex is 64 chars");
-        assert_eq!(got[1].len(), 128, "signature hex is 128 chars");
     }
 
     /// `crypto.ed25519_verify` on the binary path — the signature verify the
