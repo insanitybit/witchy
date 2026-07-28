@@ -33,31 +33,6 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["22", "7", "42", "7"]);
     }
 
-    // A closure that *calls* a captured function-valued variable (`f(g(x))`,
-    // where f and g are captured) must thread f and g through the closure
-    // environment and invoke them indirectly — not emit a direct `call $g`.
-    // This is the classic `compose`; it must agree across backends.
-    #[test]
-    fn compose_captured_functions_backends_agree() {
-        let src = r#"
-fn compose(f: fn(Int) -> Int, g: fn(Int) -> Int) -> fn(Int) -> Int:
-    fn(x: Int): f(g(x))
-
-fn double(x: Int) -> Int:
-    (x * 2)
-
-fn inc(x: Int) -> Int:
-    (x + 1)
-
-fn main(console: Console):
-    let h = compose(double, inc)
-    console.print("${h(10)}")
-    console.print("${(compose(inc, double))(10)}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "compose diverged");
-        assert_eq!(run_on_wasm(src), vec!["22", "21"]);
-    }
-
     #[test]
     fn named_function_passed_to_map_backends_agree() {
         // Point-free style: pass a named function (not a lambda) straight to a

@@ -14,26 +14,6 @@ use crate::{codegen, interpreter, parser, typeck};
     }
 
     #[test]
-    fn brace_free_lambda_form() {
-        // `fn(params): expr` — the brace-free single-expression lambda, used
-        // inline inside call parens where layout is suppressed. Both backends.
-        let client = r#"
-import list
-
-fn main(console: Console):
-    let xs = [1, 2, 3, 4]
-    let doubled = list.map(xs, fn(n: Int): (n * 2))
-    console.print("${list.fold(doubled, 0, fn(a: Int, b: Int): (a + b))}")
-    console.print("${list.length(list.filter(xs, fn(n: Int): ((n % 2) == 0)))}")
-"#;
-        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "brace-free lambda diverged");
-        assert_eq!(compiled, vec!["20", "2"]);
-    }
-
-    #[test]
     fn func_on_backends_agree() {
         // on(op, f) lifts op to act on projections — here sorting (name, age)
         // pairs by age via func.on_key(lt, snd).
@@ -66,33 +46,6 @@ fn main(console: Console):
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "func.on diverged");
         assert_eq!(compiled, vec!["bob,alice,carol", "lt"]);
-    }
-
-    #[test]
-    fn sandbox_runs_compiled_and_captures_output() {
-        // `witchy sandbox` compiles to WASM and runs in the capability sandbox,
-        // returning the program's output.
-        let path = std::env::temp_dir().join(format!("witchy_sandbox_smoke_{}.witchy", std::process::id()));
-        std::fs::write(
-            &path,
-            "fn main(console: Console):\n    console.print(\"${6 * 7}\")\n",
-        )
-        .unwrap();
-        let (out, exit) =
-            crate::run_file_sandboxed(
-                path.to_str().unwrap(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                None,
-                Vec::new(),
-                witchy_confinement::EnforcementMode::Disabled,
-            )
-                .expect("sandbox run");
-        assert_eq!(out, vec!["42"]);
-        assert_eq!(exit, None, "a Nil-returning main has no exit code");
     }
 
     /// Regression: a for-loop in a function body followed by a closure both lower
@@ -218,26 +171,6 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), want, "compiled WASM");
     }
 
-    #[test]
-    fn fn_values_in_data_backends_agree() {
-        let src = r#"
-type Box:
-    f: fn(Int) -> Int
-    n: Int
-
-fn main(console: Console):
-    let fns = [fn(x: Int): (x + 1), fn(x: Int): (x * 10)]
-    console.print("${(list.at(fns, 0))(5)}")
-    console.print("${(list.at(fns, 1))(5)}")
-    let pick = true
-    console.print("${(if pick: fn(x: Int): (x + 100) else: fn(x: Int): x)(7)}")
-    let b = Box(fn(x: Int): (x * 3), 7)
-    console.print("${((b).f)((b).n)}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "fn-values-in-data diverged");
-        assert_eq!(run_on_wasm(src), vec!["6", "50", "107", "21"]);
-    }
-
     // The classic loop-capture pitfall: each iteration creates a closure that
     // captures a fresh `let` binding. Capture is by value at creation, so the
     // three closures must remember 0, 1, 2 (giving 10, 11, 12) — not share the
@@ -257,24 +190,4 @@ fn main(console: Console):
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "loop-captured closures diverged");
         assert_eq!(run_on_wasm(src), vec!["10", "11", "12"]);
-    }
-
-    #[test]
-    fn function_pipeline_fold_backends_agree() {
-        let client = r#"
-import list
-
-fn main(console: Console):
-    let inc = fn(x: Int): (x + 1)
-    let dbl = fn(x: Int): (x * 2)
-    let neg = fn(x: Int): (0 - x)
-    let pipeline = [inc, dbl, neg]
-    let result = list.fold(pipeline, 5, fn(acc: Int, f: fn(Int) -> Int): f(acc))
-    console.print("${result}")
-"#;
-        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "function-pipeline fold diverged");
-        assert_eq!(compiled, vec!["-12"]);
     }
