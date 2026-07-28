@@ -264,28 +264,13 @@ fn main() -> Float:
     let b = math.float_abs((0.0 - 1.5))
     let c = math.float_max(a, b)
     let d = if (c > 2.0): (c * 2.0) else: 0.0
-    (d - math.sqrt(4.0))
+    ((d - math.sqrt(4.0)) + math.float_min(2.5, math.sqrt(2.25)) + math.float_clamp(5.0, 0.0, 1.0))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "compiled float arithmetic diverged");
-        assert_eq!(compiled, vec!["3.0"]);
-    }
-
-    #[test]
-    fn float_returning_main_backends_agree() {
-        let client = r#"
-import math
-
-fn main() -> Float:
-    (math.float_min(2.5, math.sqrt(2.25)) + math.float_clamp(5.0, 0.0, 1.0))
-"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "float main diverged");
-        assert_eq!(compiled, vec!["2.5"]);
+        assert_eq!(compiled, vec!["5.5"]);
     }
 
     #[test]
