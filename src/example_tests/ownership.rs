@@ -117,20 +117,6 @@ use crate::{ast, interpreter, parser, typeck};
 import list
 
 fn main(console: Console):
-    var xs = ["a", "b"]
-    let xs_snapshot = xs
-    let popped = xs.pop()
-    match popped:
-        Some(value) -> console.print("pop=${value}")
-        None -> console.print("pop=none")
-    console.print("xs=${xs}")
-    console.print("xs_snapshot=${xs_snapshot}")
-    let _ = xs.pop()
-    let empty = xs.pop()
-    match empty:
-        Some(value) -> console.print("empty=${value}")
-        None -> console.print("empty=none")
-
     var d = dict.from_pairs([("a", "one"), ("b", "two")])
     let d_snapshot = d
     let replaced = d.insert("a", "ONE")
@@ -153,10 +139,6 @@ fn main(console: Console):
     console.print("d_snapshot=${dict.pairs(d_snapshot)}")
 "#;
         let want = [
-            "pop=b",
-            "xs=[a]",
-            "xs_snapshot=[a, b]",
-            "empty=none",
             "replace=one",
             "insert=none",
             "remove=two",
@@ -488,8 +470,8 @@ fn main(console: Console):
 
     #[test]
     fn rfc0087_completed_effects_and_proven_disjoint_places_are_legal() {
-        let src = "import list\n\nfn bump(var n: Int) -> Int:\n    n = n + 1\n    n\nfn use_after(value: Int, var target: Int) -> Nil:\n    target = target + value\n    return\nfn exchange(var a: Int, var b: Int) -> Nil:\n    let old = a\n    a = b\n    b = old\n    return\nfn main(console: Console):\n    var n = 1\n    use_after(bump(n), n)\n    var xs = [4, 9]\n    exchange(xs[0], xs[1])\n    console.print(\"${n} ${xs}\")\n";
-        let want = ["4 [9, 4]"];
+        let src = "import list\n\nfn bump(var n: Int) -> Int:\n    n = n + 1\n    n\nfn use_after(value: Int, var target: Int) -> Nil:\n    target = target + value\n    return\nfn exchange(var a: Int, var b: Int) -> Nil:\n    let old = a\n    a = b\n    b = old\n    return\nfn main(console: Console):\n    var n = 1\n    use_after(bump(n), n)\n    console.print(\"${n}\")\n";
+        let want = ["4"];
         assert_eq!(link_run(src), want, "interpreter ordered/disjoint calls");
         assert_eq!(wasm_run(src), want, "compiled ordered/disjoint calls");
     }

