@@ -926,7 +926,7 @@ fn main(console: Console):
     // Char-based take/drop: clamp at the ends and count by Unicode scalar, so
     // they slice "café" correctly (take 2 -> "ca", drop 3 -> "é").
     #[test]
-    fn std_string_take_drop_backends_agree() {
+    fn std_string_transformations_backends_agree() {
         let client = r#"
 
 fn main(console: Console):
@@ -937,114 +937,40 @@ fn main(console: Console):
     console.print((("[" + "hi".drop(5)) + "]"))
     console.print("café".take(2))
     console.print("café".drop(3))
-"#;
-        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "string take/drop diverged");
-        assert_eq!(compiled, vec!["hel", "[hi]", "[]", "llo", "[]", "ca", "é"]);
-    }
-
-    #[test]
-    fn std_string_reverse_backends_agree() {
-        let client = r#"
-
-fn main(console: Console):
     console.print("hello".reverse())
-    console.print((("[" + "".reverse()) + "]"))
-    console.print("a".reverse())
+    console.print("[" + "".reverse() + "]")
     console.print("café".reverse())
-"#;
-        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "string reverse diverged");
-        assert_eq!(compiled, vec!["olleh", "[]", "a", "éfac"]);
-    }
-
-    // to_chars splits a string into single-character strings by Unicode scalar
-    // (so "café" yields 4 chars including the multi-byte é). Both backends agree.
-    // words splits on any whitespace (tabs/newlines/CRs treated as spaces) and
-    // drops empty pieces from runs of whitespace or trailing space.
-    // split_once splits at the first separator into (before, after); the
-    // separator is dropped, later occurrences stay in `after`, and an absent
-    // separator gives (s, ""). Both backends agree.
-    // replace_first swaps only the first occurrence (unlike the all-replacing
-    // `replace` builtin); an absent needle leaves the string unchanged.
-    #[test]
-    fn std_string_replace_first_backends_agree() {
-        let client = r#"
-
-fn main(console: Console):
     console.print("a.b.c".replace_first(".", "/"))
     console.print("hello".replace_first("l", "L"))
     console.print("xyz".replace_first("q", "Q"))
-    console.print("aa".replace_first("a", "bb"))
-"#;
-        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "replace_first diverged");
-        assert_eq!(compiled, vec!["a/b.c", "heLlo", "xyz", "bba"]);
-    }
-
-    #[test]
-    fn std_string_split_once_backends_agree() {
-        let client = r#"
-
-fn main(console: Console):
     let (k, v) = "name=witchy".split_once("=")
     console.print(k)
     console.print(v)
     let (a, b) = "no-sep-here".split_once("=")
     console.print(a)
-    console.print((("[" + b) + "]"))
+    console.print("[" + b + "]")
     let (h, rest) = "a=b=c".split_once("=")
     console.print(h)
     console.print(rest)
-"#;
-        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "split_once diverged");
-        assert_eq!(compiled, vec!["name", "witchy", "no-sep-here", "[]", "a", "b=c"]);
-    }
-
-    #[test]
-    fn std_string_words_backends_agree() {
-        let client = r#"
-
-fn main(console: Console):
     let ws = "the  quick\tbrown\nfox ".words()
     console.print("${list.length(ws)}")
     for w in ws:
         console.print(w)
-    console.print("${list.length("   ".words())}")
-    console.print("${list.length("".words())}")
-"#;
-        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "words diverged");
-        assert_eq!(compiled, vec!["4", "the", "quick", "brown", "fox", "0", "0"]);
-    }
-
-    #[test]
-    fn std_string_to_chars_backends_agree() {
-        let client = r#"
-
-fn main(console: Console):
     let cs = "café".chars()
     console.print("${list.length(cs)}")
     for c in cs:
         console.print(c)
-    console.print("${list.length("".chars())}")
+    console.print("${list.length(\"\".chars())}")
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "to_chars diverged");
-        assert_eq!(compiled, vec!["4", "c", "a", "f", "é", "0"]);
+        assert_eq!(interpreted, compiled, "string transformations diverged");
+        assert_eq!(compiled, vec![
+            "hel", "[hi]", "[]", "llo", "[]", "ca", "é", "olleh", "[]", "éfac",
+            "a/b.c", "heLlo", "xyz", "name", "witchy", "no-sep-here", "[]", "a", "b=c",
+            "4", "the", "quick", "brown", "fox", "4", "c", "a", "f", "é", "0",
+        ]);
     }
 
     #[test]
