@@ -729,64 +729,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn std_string_pad_backends_agree() {
-        // pad_left/pad_right reach an exact target width, trimming the padding
-        // even when `fill` is multi-character; an already-wide string is left
-        // untouched. Multi-char fill "-=" padding "ab" to 7 -> "-=-=-ab".
-        let client = r#"
-
-fn main(console: Console):
-    console.print("42".pad_left(5, "0"))
-    console.print("42".pad_right(5, "."))
-    console.print("hello".pad_left(3, "x"))
-    console.print("ab".pad_left(7, "-="))
-    console.print("café".pad_left(6, "*"))
-    console.print("café".pad_right(6, "*"))
-"#;
-        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "pad diverged between backends");
-        // Widths are by character: "café" is 4 chars, so pad to 6 adds two stars
-        // (a byte-based width would have added only one).
-        assert_eq!(
-            compiled,
-            vec!["00042", "42...", "hello", "-=-=-ab", "**café", "café**"]
-        );
-    }
-
-    #[test]
-    fn std_string_strip_backends_agree() {
-        // strip_prefix/strip_suffix remove an affix only when it matches,
-        // leaving the string untouched otherwise; stripping the whole string
-        // yields "". Complements starts_with/ends_with.
-        let client = r#"
-
-fn main(console: Console):
-    console.print("witchy.lang".strip_prefix("witchy."))
-    console.print("witchy.lang".strip_prefix("scala."))
-    console.print("main.witchy".strip_suffix(".witchy"))
-    console.print("main.rs".strip_suffix(".witchy"))
-    console.print("abc".strip_prefix("abc"))
-    console.print("émile".strip_prefix("é"))
-    console.print("héllo!".strip_suffix("!"))
-    console.print("naïveté".strip_suffix("té"))
-"#;
-        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "strip diverged between backends");
-        // The multibyte rows pin the char-count fix: the old bodies mixed
-        // string.length (bytes) into substring's character offsets, so any
-        // multibyte affix ate extra chars (prefix) or disabled the strip
-        // entirely (suffix).
-        assert_eq!(
-            compiled,
-            vec!["lang", "witchy.lang", "main", "main.rs", "", "mile", "héllo", "naïve"]
-        );
-    }
-
-    #[test]
     fn large_string_concat_grows_memory() {
         // Concatenating a 400-char string one char at a time allocates ~80KB of
         // intermediate strings — past the initial page — and must grow.
@@ -800,26 +742,6 @@ fn main() -> Int:
     s.length()
 "#;
         assert_eq!(run_on_wasm(src), vec!["400"]);
-    }
-
-    #[test]
-    fn string_prefix_suffix_on_wasm() {
-        // starts_with / ends_with compile to byte-loop helpers.
-        // check("html")=2, check("http")=1, check("xml")=0 -> 210.
-        let src = r#"
-fn check(s: String) -> Int:
-    if s.starts_with("ht"):
-        if s.ends_with("ml"):
-            2
-        else:
-            1
-    else:
-        0
-
-fn main() -> Int:
-    (((check("html") * 100) + (check("http") * 10)) + check("xml"))
-"#;
-        assert_eq!(run_on_wasm(src), vec!["210"]);
     }
 
     #[test]
@@ -929,6 +851,15 @@ fn main(console: Console):
     fn std_string_transformations_backends_agree() {
         let client = r#"
 
+fn prefix_suffix(s: String) -> Int:
+    if s.starts_with("ht"):
+        if s.ends_with("ml"):
+            2
+        else:
+            1
+    else:
+        0
+
 fn main(console: Console):
     console.print("hello".take(3))
     console.print((("[" + "hi".take(10)) + "]"))
@@ -961,6 +892,38 @@ fn main(console: Console):
     for c in cs:
         console.print(c)
     console.print("${list.length(\"\".chars())}")
+    console.print("42".pad_left(5, "0"))
+    console.print("42".pad_right(5, "."))
+    console.print("hello".pad_left(3, "x"))
+    console.print("ab".pad_left(7, "-="))
+    console.print("café".pad_left(6, "*"))
+    console.print("café".pad_right(6, "*"))
+    console.print("witchy.lang".strip_prefix("witchy."))
+    console.print("witchy.lang".strip_prefix("scala."))
+    console.print("main.witchy".strip_suffix(".witchy"))
+    console.print("main.rs".strip_suffix(".witchy"))
+    console.print("abc".strip_prefix("abc"))
+    console.print("émile".strip_prefix("é"))
+    console.print("héllo!".strip_suffix("!"))
+    console.print("naïveté".strip_suffix("té"))
+    console.print("${prefix_suffix(\"html\") * 100 + prefix_suffix(\"http\") * 10 + prefix_suffix(\"xml\")}")
+    console.print("${\"\".is_empty()}")
+    console.print("${\"x\".is_empty()}")
+    console.print("${\"banana\".count(\"a\")}")
+    console.print("${\"banana\".count(\"an\")}")
+    console.print("${\"aaaa\".count(\"aa\")}")
+    console.print("${\"abc\".count(\"x\")}")
+    console.print("${\"abc\".count(\"\")}")
+    console.print("${\"aéaéa\".count(\"éa\")}")
+    console.print("witchy".char_at(0) ?? "?")
+    console.print("witchy".char_at(5) ?? "?")
+    console.print("[" + ("witchy".char_at(10) ?? "") + "]")
+    console.print("[" + ("".char_at(0) ?? "") + "]")
+    console.print("[" + "  hello  ".trim() + "]")
+    console.print("[" + "  hi".trim_start() + "]")
+    console.print("[" + "bye  ".trim_end() + "]")
+    console.print("[" + "\t\n x \r\n".trim() + "]")
+    console.print("[" + "nospace".trim() + "]")
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -970,53 +933,14 @@ fn main(console: Console):
             "hel", "[hi]", "[]", "llo", "[]", "ca", "é", "olleh", "[]", "éfac",
             "a/b.c", "heLlo", "xyz", "name", "witchy", "no-sep-here", "[]", "a", "b=c",
             "4", "the", "quick", "brown", "fox", "4", "c", "a", "f", "é", "0",
+            "00042", "42...", "hello", "-=-=-ab", "**café", "café**",
+            "lang", "witchy.lang", "main", "main.rs", "", "mile", "héllo", "naïve",
+            "210", "true", "false", "3", "2", "2", "0", "0", "2",
+            "w", "y", "[]", "[]", "[hello]", "[hi]", "[bye]", "[x]", "[nospace]",
         ]);
     }
 
-    #[test]
-    fn std_string_is_empty_count_backends_agree() {
-        // is_empty checks for zero characters; count returns non-overlapping
-        // occurrences (0 for an empty needle, and overlapping matches don't
-        // double-count: "aaaa"/"aa" is 2). Both backends agree.
-        let client = r#"
-
-fn main(console: Console):
-    console.print("${"".is_empty()}")
-    console.print("${"x".is_empty()}")
-    console.print("${"banana".count("a")}")
-    console.print("${"banana".count("an")}")
-    console.print("${"aaaa".count("aa")}")
-    console.print("${"abc".count("x")}")
-    console.print("${"abc".count("")}")
-    console.print("${"aéaéa".count("éa")}")
-"#;
-        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "string is_empty/count diverged");
-        // The last counts a multi-byte needle: "éa" occurs twice in "aéaéa" —
-        // a byte-based advance would miscount it (and matters only off ASCII).
-        assert_eq!(compiled, vec!["true", "false", "3", "2", "2", "0", "0", "2"]);
-    }
-
-    #[test]
-    fn std_string_char_at_backends_agree() {
-        // RFC-0044 rule 1: char_at returns `Some(c)` in range, `None` out of range
-        // (no more "" sentinel). `?? "?"` recovers a display char for the miss.
-        let client = r#"
-
-fn main(console: Console):
-    console.print("witchy".char_at(0) ?? "?")
-    console.print("witchy".char_at(5) ?? "?")
-    console.print((("[" + ("witchy".char_at(10) ?? "")) + "]"))
-    console.print((("[" + ("".char_at(0) ?? "")) + "]"))
-"#;
-        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "char_at diverged");
-        assert_eq!(compiled, vec!["w", "y", "[]", "[]"]);
-    }
+    // is_empty/count and char_at cases are part of the transformations corpus above.
 
     #[test]
     fn dict_string_key_through_helpers_backends_agree() {
@@ -1074,23 +998,6 @@ fn main(console: Console):
     // std/http get_url: parse a URL string and GET it (loopback). Interpreter-only.
     // std/string trimming: trim/trim_start/trim_end over assorted whitespace.
     // Pure, so both backends agree.
-    #[test]
-    fn std_string_trim_backends_agree() {
-        let client = r#"
-fn main(console: Console):
-    console.print("[" + "  hello  ".trim() + "]")
-    console.print("[" + "  hi".trim_start() + "]")
-    console.print("[" + "bye  ".trim_end() + "]")
-    console.print("[" + "\t\n x \r\n".trim() + "]")
-    console.print("[" + "nospace".trim() + "]")
-"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "std string trim diverged");
-        assert_eq!(compiled, vec!["[hello]", "[hi]", "[bye]", "[x]", "[nospace]"]);
-    }
-
     // std/http: a real HTTP/1.1 GET over the Net capability against a loopback
     // server. Networking is interpreter-only (not compiled), so this isn't a
     // differential test; it proves the capability-gated socket primitives plus
