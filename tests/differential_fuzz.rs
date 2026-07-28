@@ -731,6 +731,50 @@ fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("witchy_{prefix}_{}_{n}_{nanos}.witchy", std::process::id()))
 }
 
+struct SanitizerCorpus {
+    programs_key: &'static str,
+    statements_key: &'static str,
+    prefix: &'static str,
+    seed_mul: u64,
+    seed_add: u64,
+    sanitizer: &'static str,
+    signal_message: &'static str,
+    diverge_message: &'static str,
+}
+
+fn run_sanitizer_corpus(config: SanitizerCorpus) {
+    let programs = env_usize(config.programs_key, 12);
+    let statements = env_usize(config.statements_key, 100);
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..programs as u64).map(|seed| {
+            s.spawn(move || {
+                let (src, _) = gen_program(seed.wrapping_mul(config.seed_mul).wrapping_add(config.seed_add), statements);
+                let path = unique_temp_path(&format!("{}{seed}", config.prefix));
+                std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
+                let out = Command::new(BIN)
+                    .args(["parity", path.to_str().unwrap()])
+                    .env("WITCHY_OPT", "rc-floor")
+                    .env(config.sanitizer, "1")
+                    .output()
+                    .unwrap();
+                let _ = std::fs::remove_file(&path);
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                assert!(
+                    out.status.code().is_some(),
+                    "{} on seed {seed}.\n--- program ---\n{src}\n--- stderr ---\n{stderr}", config.signal_message
+                );
+                if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
+                    panic!(
+                        "{} on seed {seed}.\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}", config.diverge_message
+                    );
+                }
+            })
+        }).collect();
+        for h in handles { h.join().unwrap(); }
+    });
+}
+
 /// The per-program wall-clock budget (RFC-0058 §3). A generated program that runs longer
 /// than this is a hang (or a pathological blow-up) — a bug, never silently "agree".
 fn fuzz_timeout() -> std::time::Duration {
@@ -1349,35 +1393,11 @@ fn metamorphic_property_laws() {
 
 #[test]
 fn uaf_sanitizer_is_false_positive_free() {
-    let programs = env_usize("WITCHY_UAF_FUZZ_PROGRAMS", 12);
-    let statements = env_usize("WITCHY_UAF_FUZZ_STATEMENTS", 100);
-    std::thread::scope(|s| {
-        let handles: Vec<_> = (0..programs as u64).map(|seed| {
-            s.spawn(move || {
-                let (src, _) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
-                let path = unique_temp_path(&format!("uaf_{seed}"));
-                std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
-                let out = Command::new(BIN)
-                    .args(["parity", path.to_str().unwrap()])
-                    .env("WITCHY_OPT", "rc-floor")
-                    .env("WITCHY_UAF_CHECK", "1")
-                    .output()
-                    .unwrap();
-                let _ = std::fs::remove_file(&path);
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                assert!(
-                    out.status.code().is_some(),
-                    "witchy crashed (signal) on seed {seed} under the UAF sanitizer — a bad poison store.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
-                );
-                if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
-                    panic!(
-                        "UAF sanitizer FALSE POSITIVE on seed {seed}: a correct compiler diverged under WITCHY_UAF_CHECK=1 (poisoning a freed block must never change output).\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
-                    );
-                }
-            })
-        }).collect();
-        for h in handles { h.join().unwrap(); }
+    run_sanitizer_corpus(SanitizerCorpus {
+        programs_key: "WITCHY_UAF_FUZZ_PROGRAMS", statements_key: "WITCHY_UAF_FUZZ_STATEMENTS", prefix: "uaf_",
+        seed_mul: 0x1234_5678_9ABC_DEF1, seed_add: 1, sanitizer: "WITCHY_UAF_CHECK",
+        signal_message: "witchy crashed (signal) under the UAF sanitizer — a bad poison store",
+        diverge_message: "UAF sanitizer FALSE POSITIVE: a correct compiler diverged under WITCHY_UAF_CHECK=1 (poisoning a freed block must never change output)",
     });
 }
 
@@ -1394,34 +1414,10 @@ fn uaf_sanitizer_is_false_positive_free() {
 /// (the only lever that emits dup/drop).
 #[test]
 fn rc_assert_dup_drop_is_false_positive_free() {
-    let programs = env_usize("WITCHY_RC_ASSERT_PROGRAMS", 12);
-    let statements = env_usize("WITCHY_RC_ASSERT_STATEMENTS", 100);
-    std::thread::scope(|s| {
-        let handles: Vec<_> = (0..programs as u64).map(|seed| {
-            s.spawn(move || {
-                let (src, _) = gen_program(seed.wrapping_mul(0x0F1E_2D3C_4B5A_6978).wrapping_add(7), statements);
-                let path = unique_temp_path(&format!("rcassert_{seed}"));
-                std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
-                let out = Command::new(BIN)
-                    .args(["parity", path.to_str().unwrap()])
-                    .env("WITCHY_OPT", "rc-floor")
-                    .env("WITCHY_RC_ASSERT", "1")
-                    .output()
-                    .unwrap();
-                let _ = std::fs::remove_file(&path);
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                assert!(
-                    out.status.code().is_some(),
-                    "witchy crashed (signal) on seed {seed} under the RC assertion.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
-                );
-                if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
-                    panic!(
-                        "RC-ASSERT I1 VIOLATION on seed {seed}: codegen emitted a dup/drop on a value with an implausible header (a view/slice/scalar reached a count op) under WITCHY_RC_ASSERT=1 — the type predicate is not airtight for this shape.\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
-                    );
-                }
-            })
-        }).collect();
-        for h in handles { h.join().unwrap(); }
+    run_sanitizer_corpus(SanitizerCorpus {
+        programs_key: "WITCHY_RC_ASSERT_PROGRAMS", statements_key: "WITCHY_RC_ASSERT_STATEMENTS", prefix: "rcassert_",
+        seed_mul: 0x0F1E_2D3C_4B5A_6978, seed_add: 7, sanitizer: "WITCHY_RC_ASSERT",
+        signal_message: "witchy crashed (signal) under the RC assertion",
+        diverge_message: "RC-ASSERT I1 VIOLATION: codegen emitted a dup/drop on a value with an implausible header (a view/slice/scalar reached a count op) under WITCHY_RC_ASSERT=1 — the type predicate is not airtight for this shape",
     });
 }
