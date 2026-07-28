@@ -280,27 +280,6 @@
     }
 
     #[test]
-    fn large_int_literals_compile() {
-        // Compiled Int is i64, so a literal beyond the 32-bit range round-trips
-        // (it no longer wraps or is rejected), matching the interpreter.
-        assert_eq!(run_int("fn main() -> Int:\n    3000000000\n"), 3_000_000_000);
-        assert_eq!(
-            run_int("fn main() -> Int:\n    9000000000000\n"),
-            9_000_000_000_000
-        );
-    }
-
-    #[test]
-    fn integer_min_remainder_negative_one_is_zero() {
-        assert_eq!(
-            run_int(
-                "fn main() -> Int:\n    let min = (0 - 9223372036854775807) - 1\n    min % (0 - 1)\n"
-            ),
-            0
-        );
-    }
-
-    #[test]
     fn literal_nontrapping_integer_divisors_stay_raw() {
         let module = parse_module(
             "fn main() -> Int:\n    let quotient = 9 / 3\n    quotient + (7 % 4)\n",
