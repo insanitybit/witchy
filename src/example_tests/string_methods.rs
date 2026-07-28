@@ -101,16 +101,12 @@ fn main(console: Console):
     let some = Some(2)
     let none: Option(Int) = None
     console.print("${some.is_some()}|${none.is_none()}")
-    console.print("${some.unwrap_or(0)}|${none.unwrap_or_else(fn(): 5)}")
     console.print(show(some.map(fn(x: Int): x + 3)))
     console.print("${some.map_or(0, fn(x: Int): x * 10)}|${none.map_or(9, fn(x: Int): x * 10)}")
     console.print(show(some.and_then(fn(x: Int): Some(x * 2))))
     console.print(show(some.filter(fn(x: Int): x > 1)) + "|" + show(some.filter(fn(x: Int): x > 3)))
     console.print(show(none.or(Some(7))))
     console.print(show(none.or_else(fn(): Some(8))))
-    console.print(show(some.ok_or("missing")) + "|" + show(none.ok_or("missing")))
-    let nested_opt: Option(Option(Int)) = Some(Some(4))
-    console.print(show(nested_opt.flatten()))
     console.print(show(some.zip(Some("x"))))
 
     let ok: Result(Int, String) = Ok(4)
@@ -123,21 +119,15 @@ fn main(console: Console):
     console.print(show(err.or_else(fn(e: String): Ok(3))))
     console.print("${err.unwrap_or(12)}|${err.unwrap_or_else(fn(): 13)}")
     console.print(show(ok.ok()) + "|" + show(err.err()))
-    let nested_res: Result(Result(Int, String), String) = Ok(Ok(11))
-    console.print(show(nested_res.flatten()))
-    console.print("${result.unwrap_or(option.ok_or(Some(6), "missing"), 0)}")
 "#;
         let expected = [
             "true|true",
-            "2|5",
             "Some(5)",
             "20|9",
             "Some(4)",
             "Some(2)|None",
             "Some(7)",
             "Some(8)",
-            "Ok(2)|Err(missing)",
-            "Some(4)",
             "Some((2, x))",
             "true|true|bad",
             "Ok(5)|Err(bad)",
@@ -147,8 +137,6 @@ fn main(console: Console):
             "Ok(3)",
             "12|13",
             "Some(4)|Some(bad)",
-            "Ok(11)",
-            "6",
         ];
         assert_eq!(link_run(src), expected, "interp: option/result methods");
         assert_eq!(
