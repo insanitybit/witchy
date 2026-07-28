@@ -33,16 +33,16 @@ does not hide the contract under test.
 paths; its `--run` form executes them. Full workspace, Clippy, Wasm, browser,
 and book validation is serialized by `./scripts/merge-queue.sh submit`.
 
-At master commit `c9c8b0d4` on 2026-07-28, the measured footprint is:
+At master commit `6d555c9e` on 2026-07-28, the measured footprint is:
 
 | layer | files | Rust lines |
 | --- | ---: | ---: |
 | integration | 96 | 19,642 |
-| example matrix | 56 | 18,116 |
+| example matrix | 56 | 18,075 |
 | extracted crate tests | 14 | 14,220 |
-| explicit total | 166 | 51,978 |
+| explicit total | 166 | 51,937 |
 | support | 20 | 8,384 |
-| explicit plus support | 186 | 60,362 |
+| explicit plus support | 186 | 60,321 |
 
 The normalized baselines are 56,984 explicit lines and 65,435 total lines.
 Recent serialized gates were green for the merged browser-driver, sanitizer,
@@ -50,8 +50,8 @@ string-boundary, and scalar-codegen slices. The queue must remain the source of
 truth for exact gate timing; recent recorded gate durations ranged from 191 s
 to 2,539 s, with CPU contention explaining the outliers.
 
-The normalized reduction is currently 5,006 explicit lines and 5,073 lines
-including support; the remaining distance to 40,000 explicit lines is 11,978.
+The normalized reduction is currently 5,047 explicit lines and 5,114 lines
+including support; the remaining distance to 40,000 explicit lines is 11,937.
 The footprint reduction remains in progress. This document records the
 retained evidence model and current measurement; it does not waive the goal's
 15,000-line deletion, API-shrink, or final-gate requirements.
@@ -76,6 +76,8 @@ the RFC-0080 compiled-output helper, crypto fixture pruning, traits
 protocol-fixture consolidation, dominated network/ownership cases, comptime
 boundary consolidation, compiler-footprint WASM-smoke folding, and WIR
 arithmetic-smoke removal. The
+TOML lockfile authority is now consolidated with the existing TOML array-of-
+tables test, retaining capability-array and fail-closed wrong-type checks. The
 browser gate now probes for actual
 WebAssembly JSPI support: capable Node hosts run the capability-host driver,
 while hosts that expose no JSPI constructors report an explicit skip; pure
