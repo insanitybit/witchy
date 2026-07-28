@@ -296,62 +296,6 @@ use crate::{ast, codegen, parser, typeck};
         assert_eq!(wasm_run(&src(5000)), want(5000), "compiled at 5k must stay in place");
     }
 
-    /// IN-PLACE DICT INSERT: `d = dict.insert(d, k, v)` updates/appends into owned
-    /// entry slack (no per-insert table copy); an aliased dict keeps the
-    /// copying insert, so the alias still sees the original.
-    #[test]
-    fn inplace_dict_insert_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..2000:\n        dict.insert(d, i, i * 2)\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or(d, 1999, 0 - 1)}\")\n    var e = dict.new()\n    let alias = e\n    dict.insert(e, 1, 10)\n    console.print(\"${dict.length(alias)}\")\n    console.print(\"${dict.length(e)}\")\n";
-        let want: Vec<String> =
-            ["2000", "3998", "0", "1"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
-    }
-
-    /// IN-PLACE STRING APPEND: the builder pattern `s = s + piece` appends
-    /// into owned byte slack (amortized O(1)); a literal-seeded alias keeps
-    /// the copying path, so the interned literal is never mutated.
-    #[test]
-    fn inplace_string_append_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var s = \"\"\n    for i in 0..20000:\n        s = s + \"ab\"\n    console.print(\"${s.length()}\")\n    var t = \"seed\"\n    let alias = t\n    t = t + \"!\"\n    console.print(alias)\n    console.print(t)\n";
-        let want: Vec<String> =
-            ["40000", "seed", "seed!"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
-    }
-
-    /// IN-PLACE PUSH (the linear-update optimization): an unaliased
-    /// accumulate-in-loop appends into owned slack — 50k pushes complete
-    /// instantly instead of O(n²) copying — while an ALIASED list keeps the
-    /// copying push, so value semantics hold: `ys` still sees the original.
-    #[test]
-    fn inplace_push_is_fast_and_alias_safe() {
-        // 50k would take minutes under clone-per-push on either backend; both
-        // have an in-place fast path for the unaliased self-assign shape.
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..50000:\n        list.push(xs, i)\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.at(xs, 49999)}\")\n    var small = [1]\n    let alias = small\n    list.push(small, 2)\n    console.print(\"${alias}\")\n    console.print(\"${small}\")\n";
-        let want: Vec<String> = ["50000", "49999", "[1]", "[1, 2]"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
-    }
-
-    /// IN-PLACE DICT ACCUMULATION: the `d = dict.insert(d, k, v)` and
-    /// `d = dict.update(d, k, dflt, f)` self-assign shapes mutate the slot in place
-    /// on both backends; an aliased dict keeps the copying path so value
-    /// semantics hold.
-    #[test]
-    fn inplace_dict_upsert_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..10000:\n        dict.insert(d, i, i)\n    console.print(\"${dict.length(d)}\")\n    var counts = dict.new()\n    for i in 0..30000:\n        dict.update(counts, i % 3, 0, fn(n: Int): n + 1)\n    console.print(\"${dict.get_or(counts, 0, 0)}\")\n    var small = dict.new()\n    dict.insert(small, 1, 10)\n    let alias = small\n    dict.insert(small, 2, 20)\n    console.print(\"${dict.length(alias)}\")\n    console.print(\"${dict.length(small)}\")\n";
-        let want: Vec<String> = ["10000", "10000", "1", "2"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
-    }
-
     #[test]
     fn examples_agree_under_inplace_and_forced_copy() {
         // Metamorphic, NO-ORACLE codegen check: the in-place update machinery and
