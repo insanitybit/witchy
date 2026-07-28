@@ -511,57 +511,6 @@ fn main(console: Console, root: Dir[Read]):
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// RFC-0011: `dir.only(Dir.ext(...))` confines a `Dir` to an ENTRY policy —
-    /// reading a matching extension is allowed, a non-matching one is refused at the
-    /// policy check — identically on both backends.
-    #[test]
-    fn dir_only_ext_policy_confines_on_both_backends() {
-        use crate::runtime::{Capabilities, Runtime};
-        let root = std::env::temp_dir().join(format!("witchy_dirpol_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
-        std::fs::write(root.join("ok.txt"), "hello").expect("seed txt");
-        std::fs::write(root.join("secret.key"), "TOPSECRET").expect("seed key");
-        let root_str = root.to_str().expect("utf8 root").to_string();
-
-        let caps = || Capabilities {
-            print: true,
-            quiet: true,
-            dir_root: Some(root.clone()),
-            dir_read: true,
-            dir_write: true,
-            ..Default::default()
-        };
-
-        // Allowed: read a `.txt` through a Dir narrowed to `ext(".txt")`.
-        let ok_src = "fn main(console: Console, dir: Dir):\n    let txt = dir.only(Dir.ext(\".txt\"))\n    console.print(txt.read(\"ok.txt\"))\n";
-        let want = vec!["hello".to_string()];
-        assert_eq!(
-            interpreter::run_module(resolve_std_src(ok_src), &root_str, Vec::new()).expect("interp"),
-            want,
-            "interpreter",
-        );
-        let bytes = codegen::compile_module_binary(&resolve_std_src(ok_src))
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt.spawn(&bytes, caps(), 64).expect("spawn");
-        actor.run().expect("run");
-        assert_eq!(actor.output(), want, "compiled WASM must agree");
-
-        // Denied: a `.key` through the same narrowed Dir is refused on both backends.
-        let bad_src = "fn main(console: Console, dir: Dir):\n    let txt = dir.only(Dir.ext(\".txt\"))\n    console.print(txt.read(\"secret.key\"))\n";
-        assert!(
-            interpreter::run_module(resolve_std_src(bad_src), &root_str, Vec::new()).is_err(),
-            "interp must refuse a .key",
-        );
-        let bbytes = codegen::compile_module_binary(&resolve_std_src(bad_src))
-            .expect_lowered("the binary path lowers this program");
-        let mut rt2 = Runtime::batch().expect("runtime");
-        let mut a = rt2.spawn(&bbytes, caps(), 64).expect("spawn");
-        assert!(a.run().is_err(), "WASM must refuse a .key");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
     /// RFC-0011: the `kind:` Dir entry policy. `dir.only(Dir.files())` admits a file
     /// read but DENIES opening a sub-directory; `dir.only(Dir.dirs())` is the mirror.
     /// An `ext`-only policy still traverses (kind gates directories, ext gates file names),
@@ -573,6 +522,7 @@ fn main(console: Console, root: Dir[Read]):
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sub")).expect("mkdir sub");
         std::fs::write(root.join("ok.txt"), "hello").expect("seed txt");
+        std::fs::write(root.join("secret.key"), "TOPSECRET").expect("seed key");
         let root_str = root.to_str().expect("utf8 root").to_string();
 
         let caps = || Capabilities {
@@ -629,6 +579,11 @@ fn main(console: Console, root: Dir[Read]):
             "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    let s = d.subtree(\"sub\")\n    console.print(\"traversed\")\n",
             vec!["traversed".to_string()],
         );
+        ok_both(
+            "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"ok.txt\"))\n",
+            vec!["hello".to_string()],
+        );
+        err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"secret.key\"))\n");
 
         let _ = std::fs::remove_dir_all(&root);
     }
