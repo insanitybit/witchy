@@ -175,24 +175,6 @@ fn area(s: Shape) -> Int:
         Circle(r) -> 3 * r * r
         Rect(w, h) -> w * h
 
-fn main(console: Console):
-    let xs = [area(Circle(2)), area(Rect(3, 4))]
-    var total = 0
-    for x in xs:
-        total = total + x
-    console.print("${total}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "indentation backends diverged");
-        assert_eq!(run_on_wasm(src), vec!["24"]);
-    }
-
-    // Regression: a `(...)` expression on the line after a block must be its own
-    // statement, not an application of the block's value — the virtual closing
-    // brace sits on the previous line so `} (a, n)` stays two things. (This is
-    // what `list.partition`'s trailing `(yes, no)` exercises.)
-    #[test]
-    fn indentation_block_then_paren_expr_backends_agree() {
-        let src = r#"
 fn pair(n: Int) -> (Int, Int):
     var a = 0
     for i in [1, 2, 3]:
@@ -200,12 +182,19 @@ fn pair(n: Int) -> (Int, Int):
     (a, n)
 
 fn main(console: Console):
+    let xs = [area(Circle(2)), area(Rect(3, 4))]
+    var total = 0
+    for x in xs:
+        total = total + x
+    console.print("${total}")
+    // A tuple expression after an indented block must remain a separate
+    // statement, not an application of the block's value.
     let (x, y) = pair(10)
     console.print("${x}")
     console.print("${y}")
 "#;
-        assert_eq!(interp(src), run_on_wasm(src), "block-then-paren diverged");
-        assert_eq!(run_on_wasm(src), vec!["6", "10"]);
+        assert_eq!(interp(src), run_on_wasm(src), "indentation backends diverged");
+        assert_eq!(run_on_wasm(src), vec!["24", "6", "10"]);
     }
 
     #[test]

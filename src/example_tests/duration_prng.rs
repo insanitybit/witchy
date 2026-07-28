@@ -231,7 +231,8 @@ fn main(console: Console):
     fn duration_parse_backends_agree() {
         // parse is the inverse of human, returning a Duration (ms): unit-tagged
         // (incl. ms/hr) or bare-ms input, Err on junk/dangling (RFC-0044 rule 2),
-        // and parse(human(d)) round-trips.
+        // and parse(human(d)) round-trips. Missing-unit and overflowing inputs
+        // stay Err, while abs of the minimum duration saturates.
         let client = r#"
 import duration
 fn show(o: Result(Duration, duration.DurationParseError)) -> String:
@@ -250,9 +251,12 @@ fn main(console: Console):
     console.print(show(duration.parse("1h30")))
     console.print(show(duration.parse("")))
     console.print(show(duration.parse("abc")))
+    console.print(show(duration.parse("ms")))
+    console.print(show(duration.parse("99999999999999999999w")))
     console.print(roundtrip(1h + 1m + 1s))
     console.print(roundtrip(90s))
     console.print(roundtrip(250ms))
+    console.print("${duration.to_milliseconds(duration.abs(duration.milliseconds(0 - 9223372036854775807 - 1)))}")
 "#;
         let sources = [
             ("duration", crate::bundled_module("duration").unwrap()),
@@ -264,24 +268,7 @@ fn main(console: Console):
         assert_eq!(
             compiled,
             vec![
-                "3723000", "500", "7200000", "90", "none", "none", "none", "ok", "ok", "ok",
+                "3723000", "500", "7200000", "90", "none", "none", "none", "none", "none", "ok", "ok", "ok", "9223372036854775807",
             ]
         );
-    }
-
-    /// REGRESSION (BUG-189/BUG-413): `duration.parse` returns a reachable `Err` for
-    /// a unit with no preceding count (`"ms"`) and for an overflowing value (rather
-    /// than `Ok(0)` or a silently-wrapped, backend-divergent number), and
-    /// `duration.abs` saturates the most-negative value instead of staying negative.
-    #[test]
-    fn duration_parse_and_abs_edge_cases_backends_agree() {
-        let src = "import duration\nfn tag(r: Result(Duration, duration.DurationParseError)) -> String:\n    match r:\n        Ok(d) -> \"ok:\" + \"${duration.to_milliseconds(d)}\"\n        Err(_e) -> \"err\"\nfn main(console: Console):\n    console.print(tag(duration.parse(\"ms\")))\n    console.print(tag(duration.parse(\"1h2m3s\")))\n    console.print(tag(duration.parse(\"99999999999999999999w\")))\n    console.print(\"${duration.to_milliseconds(duration.abs(duration.milliseconds(0 - 9223372036854775807 - 1)))}\")\n";
-        let expected = ["err", "ok:3723000", "err", "9223372036854775807"];
-        let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
-            expected,
-            "interp"
-        );
-        assert_eq!(wasm_run(src), expected, "wasm");
     }
