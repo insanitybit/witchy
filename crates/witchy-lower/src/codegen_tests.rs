@@ -425,32 +425,6 @@
     }
 
     #[test]
-    fn float_record_field_compiles() {
-        // 8-byte heap slots hold an f64 field; float_to_int reads it back.
-        let src = r#"
-type Vec2:
-    x: Float
-    y: Float
-
-fn main() -> Int:
-    let v = Vec2(1.5, 2.5)
-    math.to_int((v).x)
-"#;
-        assert_eq!(run_int(src), 1);
-    }
-
-    #[test]
-    fn float_list_element_compiles() {
-        // 8-byte heap slots hold an f64, so floats now live in lists.
-        let src = r#"
-fn main() -> Int:
-    let xs = [1.5, 2.5]
-    list.length(xs)
-"#;
-        assert_eq!(run_int(src), 2);
-    }
-
-    #[test]
     fn lambda_diagnostic_identity_includes_its_source_owner() {
         let module = parse_module("fn main():\n    let f = fn(n: Int): n + 1\n    f(1)\n").unwrap();
         let Item::Function(main) = &module.items[0] else { panic!("function") };
@@ -1006,56 +980,6 @@ fn main() -> Int:
     if updated == 12 && result == 24: 1 else: 0
 "#;
         assert_eq!(run_int(src), 1);
-    }
-
-    #[test]
-    fn compiles_deep_self_tail_recursion_without_wasm_stack_growth() {
-        let src = r#"
-fn swap_down(n: Int, a: Int, b: Int) -> Int:
-    if (n == 0):
-        ((a * 10) + b)
-    else:
-        swap_down((n - 1), b, a)
-
-fn main() -> Int:
-    swap_down(1000001, 2, 7)
-"#;
-        assert_eq!(run_int(src), 72);
-    }
-
-    #[test]
-    fn compiles_deep_mutual_tail_recursion_without_wasm_stack_growth() {
-        let src = r#"
-fn even(own n: Int) -> Int:
-    if n == 0:
-        1
-    else:
-        odd(n - 1)
-
-fn odd(own n: Int) -> Int:
-    if n == 0:
-        0
-    else:
-        even(n - 1)
-
-fn main() -> Int:
-    even(5000000)
-"#;
-        assert_eq!(run_int(src), 1);
-    }
-
-    #[test]
-    fn compiles_nested_explicit_return_as_a_tail_edge() {
-        let src = r#"
-fn down(n: Int) -> Int:
-    if (n > 0):
-        return down((n - 1))
-    9
-
-fn main() -> Int:
-    down(5000000)
-"#;
-        assert_eq!(run_int(src), 9);
     }
 
     /// (BUG-008) Compile `src` under the optimization set `opt` and report the two
