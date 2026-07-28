@@ -7,6 +7,12 @@ fn assert_json_backends(src: &str, expected: &[&str], label: &str) {
     assert_eq!(wasm_run(src), expected, "{label}: compiled WASM");
 }
 
+fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
+    for (label, src, expected) in cases {
+        assert_json_backends(src, expected, label);
+    }
+}
+
     /// (BUG-545) A decoded/built `JsonObject` reflects as the JSON object shape,
     /// not as the `JsonObject(...)` constructor. Its debug rendering should
     /// therefore look like an object, not like an accidental nameless record with
@@ -303,13 +309,15 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
-    /// `std/json` typed field accessors: `get_string`/`get_int`/`get_strings`/
-    /// `index_string` compose `get`/`index` with the `as_*` coercions — collapsing
-    /// the common "read a typed field" pattern, and yielding `[]` for an absent
-    /// string array.
+    /// Ordinary `std/json` API contracts share one table while keeping each
+    /// source fixture and expected output independent. Every row exercises both
+    /// backends, including the typed field-accessor fixture.
     #[test]
-    fn json_module_typed_field_accessors() {
-        let src = r#"import json
+    fn json_api_contracts_backends_agree() {
+        assert_json_contract_cases(&[
+            (
+                "typed field accessors",
+                r#"import json
 
 fn main(console: Console):
     match json.decode("{\"name\":\"acme\",\"n\":7,\"caps\":[\"Net\",\"Console\"],\"arr\":[\"a\",\"b\"]}"):
@@ -329,30 +337,22 @@ fn oi(o: Option(Int)) -> String:
     match o:
         Some(n) -> "${n}"
         None -> "?"
-"#;
-        assert_eq!(link_run(src), vec!["acme", "7", "Net,Console", "[]"]);
-    }
-
-    #[test]
-    fn json_encode_pretty_backends_agree() {
-        let client = r#"
+"#,
+                &["acme", "7", "Net,Console", "[]"],
+            ),
+            (
+                "encode_pretty",
+                r#"
 import json
 from json import Json
 fn main(console: Console):
     let doc = JsonObject([("name", JsonString("witchy")), ("tags", JsonArray([JsonInt(1), JsonInt(2)])), ("empty", JsonArray([]))])
-    console.print(json.encode_pretty(doc))"#;
-        assert_json_backends(
-            client,
-            &["{\n  \"name\": \"witchy\",\n  \"tags\": [\n    1,\n    2\n  ],\n  \"empty\": []\n}"],
-            "encode_pretty",
-        );
-    }
-
-    #[test]
-    fn json_as_object_backends_agree() {
-        // as_object exposes an object's key/value pairs for iteration when the
-        // keys aren't known ahead of time; a non-object yields None.
-        let client = r#"
+    console.print(json.encode_pretty(doc))"#,
+                &["{\n  \"name\": \"witchy\",\n  \"tags\": [\n    1,\n    2\n  ],\n  \"empty\": []\n}"],
+            ),
+            (
+                "as_object",
+                r#"
 import json
 import option
 from json import Json
@@ -366,15 +366,12 @@ fn main(console: Console):
                         console.print(k)
                 None -> console.print("not object")
         Err(_e) -> console.print("err")
-    console.print(if option.is_none(json.as_object(JsonInt(5))): "none" else: "some")"#;
-        assert_json_backends(client, &["a", "b", "none"], "as_object");
-    }
-
-    #[test]
-    fn json_merge_and_has_key_backends_agree() {
-        // merge is a shallow override (b wins per-key; a's other keys kept; a
-        // non-object b replaces wholesale); has_key checks top-level presence.
-        let client = r#"
+    console.print(if option.is_none(json.as_object(JsonInt(5))): "none" else: "some")"#,
+                &["a", "b", "none"],
+            ),
+            (
+                "json.merge/contains_key",
+                r#"
 import json
 from json import Json
 fn main(console: Console):
@@ -384,12 +381,58 @@ fn main(console: Console):
     console.print(json.encode(json.merge(a, JsonInt(9))))
     console.print(if json.contains_key(a, "x"): "T" else: "F")
     console.print(if json.contains_key(a, "z"): "T" else: "F")
-    console.print(if json.contains_key(JsonInt(5), "x"): "T" else: "F")"#;
-        assert_json_backends(
-            client,
-            &["{\"name\":\"a\",\"x\":2,\"y\":3}", "9", "T", "F", "F"],
-            "json.merge/has_key",
-        );
+    console.print(if json.contains_key(JsonInt(5), "x"): "T" else: "F")"#,
+                &["{\"name\":\"a\",\"x\":2,\"y\":3}", "9", "T", "F", "F"],
+            ),
+            (
+                "std json get_path",
+                r#"
+import json
+import option
+from json import Json
+fn str_at(j: Json, path: String) -> String:
+    match json.get_path(j, path):
+        Some(v) -> option.unwrap_or(json.as_string(v), "?")
+        None -> "none"
+fn int_at(j: Json, path: String) -> Int:
+    match json.get_path(j, path):
+        Some(v) -> option.unwrap_or(json.as_int(v), 0)
+        None -> 0
+fn main(console: Console):
+    match json.decode("{\"user\":{\"name\":\"witchy\",\"age\":1},\"tags\":[\"a\"]}"):
+        Ok(j) ->
+            console.print(str_at(j, "user.name"))
+            console.print("${int_at(j, "user.age")}")
+            console.print(str_at(j, "user.missing"))
+        Err(e) -> console.print(json.decode_error_message(e))"#,
+                &["witchy", "1", "none"],
+            ),
+            (
+                "std json indexed access",
+                r#"
+import json
+import option
+from json import Json
+fn field(j: Json, k: String) -> Json:
+    match json.get(j, k):
+        Some(v) -> v
+        None -> JsonNull
+
+fn elem_int(j: Json, k: String, i: Int) -> Int:
+    match json.index(field(j, k), i):
+        Some(e) -> option.unwrap_or(json.as_int(e), 0)
+        None -> 0
+
+fn main(console: Console):
+    match json.decode("{\"name\":\"witchy\",\"version\":3,\"items\":[10,20,30]}"):
+        Ok(j) ->
+            console.print(option.unwrap_or(json.as_string(field(j, "name")), "?"))
+            console.print("${option.unwrap_or(json.as_int(field(j, "version")), 0)}")
+            console.print("${elem_int(j, "items", 1)}")
+        Err(e) -> console.print(json.decode_error_message(e))"#,
+                &["witchy", "3", "20"],
+            ),
+        ]);
     }
 
     #[test]
@@ -446,56 +489,6 @@ fn main(console: Console):
                 .collect();
         assert_eq!(link_run(client), want, "interpreter");
         assert_eq!(wasm_run(client), want, "wasm");
-    }
-
-    #[test]
-    fn std_json_get_path_backends_agree() {
-        let client = r#"
-import json
-import option
-from json import Json
-fn str_at(j: Json, path: String) -> String:
-    match json.get_path(j, path):
-        Some(v) -> option.unwrap_or(json.as_string(v), "?")
-        None -> "none"
-fn int_at(j: Json, path: String) -> Int:
-    match json.get_path(j, path):
-        Some(v) -> option.unwrap_or(json.as_int(v), 0)
-        None -> 0
-fn main(console: Console):
-    match json.decode("{\"user\":{\"name\":\"witchy\",\"age\":1},\"tags\":[\"a\"]}"):
-        Ok(j) ->
-            console.print(str_at(j, "user.name"))
-            console.print("${int_at(j, "user.age")}")
-            console.print(str_at(j, "user.missing"))
-        Err(e) -> console.print(json.decode_error_message(e))"#;
-        assert_json_backends(client, &["witchy", "1", "none"], "std json get_path");
-    }
-
-    #[test]
-    fn std_json_accessors_backends_agree() {
-        let client = r#"
-import json
-import option
-from json import Json
-fn field(j: Json, k: String) -> Json:
-    match json.get(j, k):
-        Some(v) -> v
-        None -> JsonNull
-
-fn elem_int(j: Json, k: String, i: Int) -> Int:
-    match json.index(field(j, k), i):
-        Some(e) -> option.unwrap_or(json.as_int(e), 0)
-        None -> 0
-
-fn main(console: Console):
-    match json.decode("{\"name\":\"witchy\",\"version\":3,\"items\":[10,20,30]}"):
-        Ok(j) ->
-            console.print(option.unwrap_or(json.as_string(field(j, "name")), "?"))
-            console.print("${option.unwrap_or(json.as_int(field(j, "version")), 0)}")
-            console.print("${elem_int(j, "items", 1)}")
-        Err(e) -> console.print(json.decode_error_message(e))"#;
-        assert_json_backends(client, &["witchy", "3", "20"], "std json accessors");
     }
 
     /// std/json: `decode` rejects an overflowing exponent (BUG-241), an invalid
