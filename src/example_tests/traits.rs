@@ -270,62 +270,11 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["42", "true", "hi", "(2, 3)"]);
     }
 
-    // Generic bounds: `pick_max(x: a, y: a) -> a where a: Ord` is a template,
-    // monomorphized per concrete instantiation; the `greater` trait call inside
-    // each specialization resolves to that type's Ord impl. Exercised over Int
-    // (built-in impl) and a user type. Both backends agree.
-    #[test]
-    fn generic_bounds_backends_agree() {
-        let client = r#"
-import cmp
-
-type Box:
-    Box(Int)
-
-impl PartialEq for Box:
-    fn eq(self, other: Box) -> Bool:
-        match self:
-            Box(a) -> match other:
-                Box(b) -> a == b
-
-impl Eq for Box
-
-impl PartialOrd for Box:
-    fn partial_compare(self, other: Box) -> Option(Ordering):
-        Some(compare(self, other))
-
-impl Ord for Box:
-    fn compare(self, other: Box) -> Ordering:
-        match self:
-            Box(a) -> match other:
-                Box(b) -> if (a < b): Less else: if (a > b): Greater else: Equal
-
-fn pick_max(x: a, y: a) -> a where a: Ord:
-    if greater(x, y):
-        x
-    else:
-        y
-
-fn unbox(b: Box) -> Int:
-    match b:
-        Box(n) -> n
-
-fn main(console: Console):
-    console.print("${pick_max(3, 7)}")
-    console.print("${pick_max(20, 5)}")
-    console.print("${unbox(pick_max(Box(4), Box(11)))}")
-"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "generic bounds diverged");
-        assert_eq!(compiled, vec!["7", "20", "11"]);
-    }
-
-    // The stdlib's generic `Ord` helpers (max_of/min_of/clamp) are bounded
-    // generics living in the `ord` module, monomorphized at the user's call
-    // sites — over Int (incl. a negative literal) and a user Box type. Proves
-    // cross-module bounded-generic monomorphization. Both backends agree.
+    // Generic `Ord` bounds are exercised through both user-defined and stdlib
+    // helpers in one fixture: `pick_max` is monomorphized locally while
+    // max_of/min_of/clamp are bounded generics living in the `cmp` module.
+    // The shared Box hierarchy keeps the backend comparison authority intact;
+    // the stdlib calls also prove cross-module bounded-generic monomorphization.
     #[test]
     fn std_ord_generics_backends_agree() {
         let client = r#"
@@ -356,7 +305,16 @@ fn unbox(b: Box) -> Int:
     match b:
         Box(n) -> n
 
+fn pick_max(x: a, y: a) -> a where a: Ord:
+    if greater(x, y):
+        x
+    else:
+        y
+
 fn main(console: Console):
+    console.print("${pick_max(3, 7)}")
+    console.print("${pick_max(20, 5)}")
+    console.print("${unbox(pick_max(Box(4), Box(11)))}")
     console.print("${cmp.max_of((-5), 3)}")
     console.print("${cmp.min_of(8, 2)}")
     console.print("${cmp.clamp(10, 0, 5)}")
@@ -367,7 +325,7 @@ fn main(console: Console):
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "std Ord generics diverged");
-        assert_eq!(compiled, vec!["3", "2", "5", "3", "11"]);
+        assert_eq!(compiled, vec!["7", "20", "11", "3", "2", "5", "3", "11"]);
     }
 
     // Bounds through `List(a)`: a generic over a collection. `cmp.maximum` /
