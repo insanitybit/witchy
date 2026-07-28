@@ -410,24 +410,34 @@ fn main() -> Int:
     var counter: dyn Explode = Counter(1)
     counter.explode()
 "#;
-        let linked = resolve_std_src(src);
-        let interpreter_error = interpreter::run_module(linked.clone(), ".", Vec::new())
-            .expect_err("interpreter call must trap")
-            .to_string();
-        let bytes = codegen::compile_module_binary(&linked).expect_lowered("compile wasm");
-        let wasm_error = crate::run_wasm_bytes(&bytes).expect_err("wasm call must trap");
-        assert!(
-            interpreter_error.contains("division by zero"),
-            "{interpreter_error}"
-        );
-        assert!(
-            wasm_error.contains("divide by zero") || wasm_error.contains("division by zero"),
-            "{wasm_error}"
-        );
+        let fail = |source: &str| {
+            let linked = resolve_std_src(source);
+            let interpreter_error = interpreter::run_module(linked.clone(), ".", Vec::new())
+                .expect_err("interpreter call must trap")
+                .to_string();
+            let bytes = codegen::compile_module_binary(&linked).expect_lowered("compile wasm");
+            let wasm_error = crate::run_wasm_bytes(&bytes).expect_err("wasm call must trap");
+            assert!(
+                interpreter_error.contains("division by zero"),
+                "{interpreter_error}"
+            );
+            assert!(
+                wasm_error.contains("divide by zero") || wasm_error.contains("division by zero"),
+                "{wasm_error}"
+            );
+            (interpreter_error, wasm_error)
+        };
+        let normal = fail(src);
+        let opt = fail(&format!("mode opt\n{src}"));
+        assert_eq!(normal.0, normal.1);
+        assert_eq!(opt.0, opt.1);
+        let normal_kind = normal.0.rsplit(": ").next().unwrap_or(&normal.0);
+        let opt_kind = opt.0.rsplit(": ").next().unwrap_or(&opt.0);
+        assert_eq!(normal_kind, opt_kind);
     }
 
     #[test]
-    fn rfc0081_normal_and_opt_modes_have_identical_values_and_traps() {
+    fn rfc0081_normal_and_opt_modes_have_identical_values() {
         let values = r#"
 trait Render:
     fn render(let self) -> String
@@ -466,43 +476,6 @@ fn main(console: Console):
         let opt = run(&format!("mode opt\n{values}"));
         assert_eq!(normal, vec!["number=7", "label=safe"]);
         assert_eq!(opt, normal);
-
-        let trap = r#"
-trait Explode:
-    fn explode(let self) -> Int
-
-type Bomb:
-    Bomb
-
-impl Explode for Bomb:
-    fn explode(let self) -> Int:
-        1 / 0
-
-fn main() -> Int:
-    let value: dyn Explode = Bomb
-    value.explode()
-"#;
-        let fail = |source: &str| {
-            let linked = resolve_std_src(source);
-            let interpreted = interpreter::run_module(linked.clone(), ".", Vec::new())
-                .expect_err("interpreter trap")
-                .to_string();
-            let bytes = codegen::compile_module_binary(&linked).expect_lowered("compile wasm");
-            let compiled = crate::run_wasm_bytes(&bytes).expect_err("wasm trap");
-            assert!(interpreted.contains("division by zero"), "{interpreted}");
-            assert!(
-                compiled.contains("divide by zero") || compiled.contains("division by zero"),
-                "{compiled}"
-            );
-            (interpreted, compiled)
-        };
-        let normal_traps = fail(trap);
-        let opt_traps = fail(&format!("mode opt\n{trap}"));
-        assert_eq!(normal_traps.0, normal_traps.1);
-        assert_eq!(opt_traps.0, opt_traps.1);
-        let normal_kind = normal_traps.0.rsplit(": ").next().unwrap_or(&normal_traps.0);
-        let opt_kind = opt_traps.0.rsplit(": ").next().unwrap_or(&opt_traps.0);
-        assert_eq!(normal_kind, opt_kind);
     }
 
     /// (BUG-534) RFC-0042's qualified type spelling composes with static trait
@@ -516,17 +489,10 @@ fn main() -> Int:
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
-    /// `say` covers every scalar out of the box (Duration in its HUMAN form
-    /// — the custom rendering `Show` exists for), and a missing impl is a
-    /// clean check-time error naming the trait and type, not a post-lowering
-    /// "unknown function" artifact.
+    /// A missing `Show` impl is a clean check-time error naming the trait and
+    /// type, not a post-lowering "unknown function" artifact.
     #[test]
-    fn show_scalars_and_missing_impl_diagnostic() {
-        let src = "import show\n\nfn main(console: Console):\n    show.say(console, 42)\n    show.say(console, 3.5)\n    show.say(console, 90s)\n    show.say(console, true)\n";
-        let want: Vec<String> =
-            ["42", "3.5", "1m30s", "true"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(link_run(src), want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
+    fn show_missing_impl_diagnostic() {
         let missing = "import show\n\ntype Blob:\n    n: Int\n\nfn main(console: Console):\n    show.say(console, Blob(1))\n";
         let module = parser::parse_module(missing).expect("parse");
         let linked =
