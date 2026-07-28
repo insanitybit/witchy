@@ -170,7 +170,7 @@ fn main(console: Console):
     console.print(opt(toml.inline_get("{ path = \"../util\", version = \"1.2\" }", "version")))
     console.print(list.join(toml.inline_get_array("{ programs = [\"git\", \"witchy\"], child-paths = [\"~/.gitconfig\"] }", "programs"), "|"))
     console.print(list.join(toml.inline_get_array("{ programs = [\"git\", \"witchy\"], child-paths = [\"~/.gitconfig\"] }", "child-paths"), "|"))
-    let lock = "[[rune]]\nname = \"money\"\nhash = \"sha256:aa\"\n\n[[rune]]\nname = \"util\"\nhash = \"sha256:bb\"\n"
+    let lock = "[[rune]]\nname = \"money\"\nhash = \"sha256:aa\"\nruntime_footprint = [\"Console\"]\n\n[[rune]]\nname = \"util\"\nhash = \"sha256:bb\"\nruntime_footprint = [\"Console\", \"Dir[Read]\"]\n"
     console.print(rune_summary(lock))
 
 fn rune_summary(lock: String) -> String:
@@ -182,8 +182,22 @@ fn rune_summary(lock: String) -> String:
                 Ok(entries) ->
                     var names = []
                     for entry in entries:
-                        list.push(names, field(entry, "name") + "=" + field(entry, "hash"))
-                    list.join(names, "|")
+                        let caps = match toml.string_array_field(entry, "runtime_footprint"):
+                            Ok(xs) -> list.join(xs, ",")
+                            Err(e) -> "(bad:" + toml.decode_error_message(e) + ")"
+                        list.push(names, field(entry, "name") + "=" + field(entry, "hash") + "[" + caps + "]")
+                    list.join(names, "|") + "|" + bad_name()
+
+fn bad_name() -> String:
+    match toml.decode("[[rune]]\nname = 42\n"):
+        Err(e) -> "decode: " + toml.decode_error_message(e)
+        Ok(doc) ->
+            match toml.array_of_tables(doc, "rune"):
+                Err(e) -> "aot: " + toml.decode_error_message(e)
+                Ok(entries) ->
+                    match toml.required_string(list.at(entries, 0), "name", "a [[rune]]"):
+                        Ok(s) -> "wrongly accepted: " + s
+                        Err(e) -> "fail-closed: " + toml.decode_error_message(e)
 
 fn field(entry: toml.Toml, key: String) -> String:
     match toml.table_field(entry, key):
@@ -206,7 +220,7 @@ fn opt(o: Option(String)) -> String:
                 "1.2",
                 "git|witchy",
                 "~/.gitconfig",
-                "money=sha256:aa|util=sha256:bb"
+                "money=sha256:aa[Console]|util=sha256:bb[Console,Dir[Read]]|fail-closed: a [[rune]]'s `name` field is not a string (found an integer)"
             ]
         );
     }
