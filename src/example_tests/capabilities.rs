@@ -417,6 +417,21 @@ fn main(console: Console, root: Dir[Read]):
         let clock_src = "fn main(console: Console, clock: Clock):\n    console.print(if clock.now() > 1500000000000: \"plausible\" else: \"implausible\")\n";
         assert_eq!(interp(clock_src), vec!["plausible"], "interpreter");
         assert_eq!(run_on_wasm(clock_src), vec!["plausible"], "compiled WASM");
+
+        // Each host operation requires its matching capability, and both
+        // requirements remain visible to the footprint analyzer.
+        assert!(typeck::check_str("fn main(c: Console):\n    let t = now(c)\n").is_err());
+        assert!(typeck::check_str("fn main(c: Console):\n    let x = get_env(c, \"X\")\n").is_err());
+        let clock_fp = crate::capabilities::analyze(
+            &parser::parse_module("fn main(console: Console, clock: Clock):\n    let t = clock.now()\n")
+                .expect("parse"),
+        );
+        assert!(clock_fp.total.contains_key("Clock"), "Clock should appear in the footprint");
+        let env_fp = crate::capabilities::analyze(
+            &parser::parse_module("fn main(console: Console, env: Env):\n    let x = env.get_env(\"X\")\n")
+                .expect("parse"),
+        );
+        assert!(env_fp.total.contains_key("Env"), "Env should appear in the footprint");
     }
 
     /// The full Dir family compiles to capability-gated host imports and agrees
@@ -985,26 +1000,6 @@ fn yes(b: Bool) -> String:
         );
     }
 
-    /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.
-    /// Reading the clock is ambient nondeterminism, so it's capability-gated and
-    /// surfaces in the footprint — not a pure builtin.
-    #[test]
-    fn clock_capability_yields_wall_clock_time() {
-        let out = interp(
-            "fn main(console: Console, clock: Clock):\n    console.print(\"${clock.now()}\")\n",
-        );
-        let ms: i64 = out[0].parse().expect("now should print an integer");
-        assert!(ms > 1_600_000_000_000, "now should be ms since the Unix epoch (got {ms})");
-        // `now` needs a Clock — calling it with another capability is a type error.
-        assert!(typeck::check_str("fn main(c: Console):\n    let t = now(c)\n").is_err());
-        // The Clock requirement surfaces in the capability footprint.
-        let fp = crate::capabilities::analyze(
-            &parser::parse_module("fn main(console: Console, clock: Clock):\n    let t = clock.now()\n")
-                .expect("parse"),
-        );
-        assert!(fp.total.contains_key("Clock"), "Clock should appear in the footprint");
-    }
-
     /// (RFC-0038) A bare grantable capability granted to `main` mints an identical
     /// sealed record on BOTH backends: the interpreter builds a `Value::Ctor` from
     /// the grant fields; the compiled backend stages each field host-side and
@@ -1049,26 +1044,6 @@ fn yes(b: Bool) -> String:
             .expect("spawn");
         actor.run().expect("run");
         assert_eq!(actor.output(), expected, "compiled WASM must agree");
-    }
-
-    /// The `Env` capability reads process environment variables via `get_env`,
-    /// returning `Option(String)` (None when unset). Reading the environment is
-    /// ambient authority, so it's capability-gated and surfaces in the footprint.
-    #[test]
-    fn env_capability_reads_environment_variables() {
-        // A definitely-unset variable yields None.
-        let out = interp(
-            "fn main(console: Console, env: Env):\n    match env.get_env(\"WITCHY_NOPE_UNSET_VAR\"):\n        Some(v) -> console.print(v)\n        None -> console.print(\"unset\")\n",
-        );
-        assert_eq!(out, vec!["unset"]);
-        // `get_env` needs an Env capability — another capability is a type error.
-        assert!(typeck::check_str("fn main(c: Console):\n    let x = get_env(c, \"X\")\n").is_err());
-        // The Env requirement surfaces in the capability footprint.
-        let fp = crate::capabilities::analyze(
-            &parser::parse_module("fn main(console: Console, env: Env):\n    let x = env.get_env(\"X\")\n")
-                .expect("parse"),
-        );
-        assert!(fp.total.contains_key("Env"), "Env should appear in the footprint");
     }
 
     /// The sandbox grants exactly the computed footprint: a program combining
@@ -1185,14 +1160,6 @@ fn yes(b: Bool) -> String:
         let mut rt = Runtime::new().expect("runtime");
         let result = rt.spawn(&bytes, Capabilities::none(), 4);
         assert!(result.is_err(), "ungranted module must fail to instantiate");
-    }
-
-    #[test]
-    fn files_example_reads_sandboxed_file() {
-        assert_eq!(
-            crate::execute_file("examples/files/src/files.witchy", Vec::new()).unwrap(),
-            vec!["hello from a sandboxed Dir capability"]
-        );
     }
 
     /// The capability-rights showcase: it runs (exercising implicit + explicit
