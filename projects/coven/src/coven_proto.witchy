@@ -1,0 +1,105 @@
+// coven_proto — the client<->server request envelopes, as types. The server reads
+// `req.name` instead of fishing fields out of raw JSON, and the client builds the
+// very shape the server parses, so the two never drift. Parsers are fallible: a
+// missing or empty required field returns Err at the envelope boundary rather than
+// defaulting to "" and failing later inside authorization/storage.
+
+import coven_json
+import coven_validate
+from json import Json
+
+// A publish: the manifest, the full source tree, and the claimed identity — a
+// trusted-publishing token when present (`id_token`), otherwise the client-asserted
+// `uploaded_by` (honoured only by an anonymous registry).
+type PublishRequest:
+    manifest: String
+    files: List((String, String))
+    uploaded_by: String
+    id_token: Option(String)
+
+// A promote: the decoded rune name + version, promoter identity, and identity token.
+// `second_factor` is only a local/anonymous-mode confirmation marker; a trusted
+// registry ignores it and derives proof from the verified token's `amr` claim.
+type PromoteRequest:
+    name: String
+    version: String
+    second_factor: String
+    promoted_by: String
+    id_token: Option(String)
+
+// A yank: name + version, plus the trusted-publishing token (SEC-018) — yank is a
+// maintainer action, so a trusted registry requires the same identity token as promote.
+type YankRequest:
+    name: String
+    version: String
+    id_token: Option(String)
+
+// --- server side: parse an untrusted request body into its envelope --------------
+pub fn publish_of(doc: Json) -> Result(PublishRequest, String):
+    let manifest = require_str(doc, "manifest_toml")?
+    let files = source_files(doc)?
+    let uploaded_by = coven_json.str(doc, "uploaded_by")
+    Ok(PublishRequest(manifest, files, uploaded_by, json.get_string(doc, "id_token")))
+
+pub fn promote_of(doc: Json) -> Result(PromoteRequest, String):
+    let name = require_str(doc, "name")?
+    let version = require_str(doc, "version")?
+    let factor = require_str(doc, "second_factor")?
+    let promoted_by = coven_json.str(doc, "promoted_by")
+    Ok(PromoteRequest(coven_validate.unwire(name), version, factor, promoted_by, json.get_string(doc, "id_token")))
+
+pub fn yank_of(doc: Json) -> Result(YankRequest, String):
+    let name = require_str(doc, "name")?
+    let version = require_str(doc, "version")?
+    Ok(YankRequest(coven_validate.unwire(name), version, json.get_string(doc, "id_token")))
+
+fn require_str(doc: Json, key: String) -> Result(String, String):
+    match json.get_string(doc, key):
+        Some(s) -> if s.is_empty(): Err("missing required field `" + key + "`") else: Ok(s)
+        None -> Err("missing required field `" + key + "`")
+
+// The wire source is {"source":{"files":[[path,text],...]}} (matches SourceDto).
+fn source_files(doc: Json) -> Result(List((String, String)), String):
+    let files_json = json.get(doc, "source")
+        .and_then(fn(src: Json): json.get(src, "files"))
+        .and_then(fn(a: Json): json.as_array(a))
+    match files_json:
+        Some(files) ->
+            var out = []
+            for it in files:
+                let pair = file_pair(it)?
+                list.push(out, pair)
+            Ok(out)
+        None -> Err("missing required field `source.files`")
+
+fn file_pair(it: Json) -> Result((String, String), String):
+    let path = coven_json.index_str(it, 0)
+    if path.is_empty():
+        Err("source file entry has empty path")
+    else:
+        Ok((path, coven_json.index_str(it, 1)))
+
+// --- client side: build the exact body the server parses -------------------------
+// `id_token` is the trusted-publishing identity token: `Some(t)` on a trusted registry,
+// `None` for an anonymous one. It is emitted only when present, matching the lenient
+// parsers (`publish_of`/`promote_of`/`yank_of`) which read it as an optional field.
+pub fn publish_body(manifest: String, files: List((String, String)), uploaded_by: String, id_token: Option(String)) -> String:
+    json.encode(JsonObject(with_id_token([("manifest_toml", JsonString(manifest)), ("source", JsonObject([("files", JsonArray(file_jsons(files)))])), ("uploaded_by", JsonString(uploaded_by))], id_token)))
+
+pub fn promote_body(name: String, version: String, factor: String, promoter: String, id_token: Option(String)) -> String:
+    json.encode(JsonObject(with_id_token([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString(factor)), ("promoted_by", JsonString(promoter))], id_token)))
+
+pub fn yank_body(name: String, version: String, id_token: Option(String)) -> String:
+    json.encode(JsonObject(with_id_token([("name", JsonString(name)), ("version", JsonString(version))], id_token)))
+
+// Append the `id_token` field only when a token is present, so an anonymous body omits it.
+fn with_id_token(fields: List((String, Json)), id_token: Option(String)) -> List((String, Json)):
+    match id_token:
+        Some(t) ->
+            var out = fields
+            out.push(("id_token", JsonString(t)))
+            out
+        None -> fields
+
+fn file_jsons(files: List((String, String))) -> List(Json):
+    list.map(files, fn(file: (String, String)): JsonArray([JsonString(file.0), JsonString(file.1)]))

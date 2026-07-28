@@ -1,0 +1,33 @@
+// Records + lists + for-in + Result/`?` together. `total` folds balances over a
+// list; `debit` returns the prelude Result, and `?` in `pay_both` short-circuits
+// the whole computation on the first overdraft.
+type Account:
+    name: String
+    balance: Int
+
+fn total(accounts: List(Account)) -> Int:
+    var sum = 0
+    for a in accounts:
+        sum = sum + a.balance
+    sum
+
+fn debit(a: Account, amount: Int) -> Result(Account, String):
+    match a.balance < amount:
+        true -> Err("insufficient funds for " + a.name)
+        false -> Ok(Account(a.name, a.balance - amount))
+
+fn pay_both(a: Account, b: Account, amount: Int) -> Result(Int, String):
+    let a2 = debit(a, amount)?
+    let b2 = debit(b, amount)?
+    Ok(a2.balance + b2.balance)
+
+fn show(r: Result(Int, String)) -> String:
+    match r:
+        Ok(n) -> "remaining: " + "${n}"
+        Err(e) -> "error: " + e
+
+fn main(console: Console):
+    let accounts = [Account("alice", 100), Account("bob", 50)]
+    console.print("total = " + "${total(accounts)}")
+    console.print(show(pay_both(Account("alice", 100), Account("bob", 50), 30)))
+    console.print(show(pay_both(Account("alice", 100), Account("bob", 50), 70)))

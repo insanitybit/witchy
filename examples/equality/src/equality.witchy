@@ -1,0 +1,37 @@
+// The standard comparison hierarchy gives content-correct equality that holds
+// up in compiled code, not just the interpreter. Eq-bound `list` helpers search
+// by the element type's `Eq` impl, so they find runtime-built strings and your
+// own types. Built-in impls cover the primitives; derive your own, or implement
+// `PartialEq` (the `==`/`!=` operators dispatch through it).
+
+import cmp
+
+type Color:
+    Red
+    Green
+    Blue
+
+impl PartialEq for Color:
+    fn eq(self, other: Self) -> Bool:
+        match self:
+            Red ->
+                match other:
+                    Red -> true
+                    _ -> false
+            Green ->
+                match other:
+                    Green -> true
+                    _ -> false
+            Blue ->
+                match other:
+                    Blue -> true
+                    _ -> false
+
+impl Eq for Color
+
+fn main(console: Console):
+    let palette = [Red, Green, Blue]
+    console.print("${palette.contains(Green)}")
+    console.print("${palette.index_of(Blue)}")
+    console.print("${[1, 2, 3].contains(4)}")
+    console.print("${Red != Blue}")

@@ -1,0 +1,11 @@
+// The common bound for typed errors.
+//
+// Errors are ordinary values carried in `Result(_, e)`. Library-specific error
+// enums should implement `Show` for display, `Error` for the conventional bound,
+// and `From(source)` for each lower-level error they want `?` to propagate.
+
+import show
+
+trait Error: Show
+
+impl Error for String

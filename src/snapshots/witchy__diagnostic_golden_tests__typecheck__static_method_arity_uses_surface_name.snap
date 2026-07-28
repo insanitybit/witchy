@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"type Score:\\n    value: Int\\n\\nimpl Score:\\n    fn zero() -> Score:\\n        Score(0)\\n\\nfn main(console: Console):\\n    print(console, __render(Score.zero(1)))\\n\")"
+---
+type error: `main`, line 9: `Score.zero` expects 0 argument(s) but got 1

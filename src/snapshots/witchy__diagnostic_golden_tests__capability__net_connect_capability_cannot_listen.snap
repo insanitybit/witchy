@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(net: Net[Connect]):\\n    net.listen(\\\"127.0.0.1:0\\\")\\n\")"
+---
+type error: `main`, line 2: `listen` needs `Listen` but the capability is `Net[Connect]`

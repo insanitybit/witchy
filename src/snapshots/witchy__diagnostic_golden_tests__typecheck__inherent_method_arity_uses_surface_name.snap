@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+assertion_line: 309
+expression: "type_diag(\"type Point:\\n    x: Int\\n\\nimpl Point:\\n    fn scaled(self, factor: Int) -> Int:\\n        self.x * factor\\n\\nfn main(console: Console):\\n    let p = Point(3)\\n    print(console, __render(p.scaled(2, 3)))\\n\")"
+---
+type error: `main`, line 10: `Point.scaled` expects 2 argument(s) (Point, Int) but got 3

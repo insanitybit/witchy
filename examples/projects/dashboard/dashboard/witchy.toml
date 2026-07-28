@@ -1,0 +1,7 @@
+[rune]
+name = "dashboard"
+version = "0.1.0"
+
+[dependencies]
+"tasks" = { path = "../tasks" }
+"coverage" = { path = "../coverage" }

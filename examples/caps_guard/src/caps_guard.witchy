@@ -1,0 +1,83 @@
+// caps_guard — the supply-chain gate, written in witchy. It reads two versions of
+// a rune with a read-only Dir capability, asks the compiler whether the new one
+// *widens* the capability footprint of the old (`compiler.diff`), and prints an
+// ALLOW / BLOCK verdict — the block-on-widening decision that guards a dependency
+// upgrade. Together with caps_audit, this is the package manager's heart, in
+// witchy. Run:
+//   witchy examples/caps_guard/src/caps_guard.witchy
+
+import compiler
+from json import Json
+
+fn main(console: Console, root: Dir[Read]) -> Int:
+    let old = root.read("examples/data/sample_rune.witchy")
+    let new = root.read("examples/data/sample_rune_v2.witchy")
+    let report = compiler.diff(old, new)
+    console.print(gate(report))
+    exit_code(report)
+
+// The process exit status: 2 on a blocked widening, 1 on a malformed diff or
+// compiler error, else 0 — so the gate can be wired into CI
+// (`witchy caps_guard.witchy && deploy`).
+fn exit_code(report: String) -> Int:
+    match json.decode(report):
+        Ok(doc) ->
+            if is_error(doc):
+                1
+            else if widened(doc):
+                2
+            else:
+                0
+        Err(e) -> 1
+
+// Render the gate's JSON verdict for a human. Fails closed: a compiler error
+// report is surfaced, never rendered as "OK: no new authority".
+fn gate(report: String) -> String:
+    match json.decode(report):
+        Ok(doc) ->
+            if is_error(doc):
+                "error: " + error_message(doc)
+            else:
+                verdict(doc)
+        Err(e) -> "error: " + json.decode_error_message(e)
+
+// A compiler report shaped {"error": ...} means the diff could not be computed.
+fn is_error(doc: Json) -> Bool:
+    match json.get(doc, "error"):
+        Some(_) -> true
+        None -> false
+
+fn error_message(doc: Json) -> String:
+    match json.get_string(doc, "error"):
+        Some(m) -> m
+        None -> "unknown compiler error"
+
+fn verdict(doc: Json) -> String:
+    if widened(doc):
+        "BLOCK: upgrade widens authority by " + added(doc)
+    else:
+        "OK: no new authority"
+
+fn widened(doc: Json) -> Bool:
+    match json.get(doc, "widened"):
+        Some(w) -> bool_or(w, false)
+        None -> false
+
+fn bool_or(j: Json, default: Bool) -> Bool:
+    match json.as_bool(j):
+        Some(b) -> b
+        None -> default
+
+fn added(doc: Json) -> String:
+    match json.get(doc, "added"):
+        Some(a) -> join_strs(a)
+        None -> "(?)"
+
+// Collect a JSON array of strings into a comma-joined string.
+fn join_strs(j: Json) -> String:
+    var out = []
+    if let Some(items) = json.as_array(j):
+        for it in items:
+            if let Some(s) = json.as_string(it):
+                out.push(s)
+    out.join(", ")

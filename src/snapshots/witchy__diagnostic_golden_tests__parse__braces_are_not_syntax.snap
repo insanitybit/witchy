@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "parse_diag(\"fn main(console: Console) {\\n    print(console, \\\"hi\\\")\\n}\\n\")"
+---
+parse error at 1:28: braces are not part of witchy syntax — use indentation (`:` and an indented block)

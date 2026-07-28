@@ -1,0 +1,21 @@
+// In-rune tests for `matrix`. Lists are rendered with interpolation and compared
+// as strings (there is no list-equality assertion). Run with `witchy test
+// examples/matrix`.
+
+import matrix
+import testing
+
+fn test_multiply():
+    let a = [[1, 2, 3], [4, 5, 6]]
+    let b = [[7, 8], [9, 10], [11, 12]]
+    testing.assert_eq("${matrix.multiply(a, b)}", "[[58, 64], [139, 154]]")
+
+fn test_transpose():
+    let a = [[1, 2, 3], [4, 5, 6]]
+    testing.assert_eq("${matrix.transpose(a)}", "[[1, 4], [2, 5], [3, 6]]")
+
+fn test_identity():
+    testing.assert_eq("${matrix.identity(3)}", "[[1, 0, 0], [0, 1, 0], [0, 0, 1]]")
+
+fn test_cell_width():
+    testing.assert_int_eq(matrix.cell_width([[1, 22], [333, 4]]), 3)

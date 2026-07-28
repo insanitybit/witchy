@@ -1,0 +1,115 @@
+// path — pure manipulation of '/'-separated path strings.
+//
+// This is string surgery only — it never touches the filesystem (that is the
+// `Dir` capability, wrapped by `std/fs`). Splitting, joining, the base/dir/ext
+// components, and a `normalize` that collapses `.` and `..`.
+
+import string
+import iter
+import option
+
+// Whether `p` is absolute (rooted at `/`).
+pub fn is_abs(p: String) -> Bool:
+    p.starts_with("/")
+
+// Join two path pieces with a single `/`. An empty piece is ignored; an absolute
+// `b` replaces `a`.
+pub fn join(a: String, b: String) -> String:
+    if a.is_empty() || is_abs(b):
+        b
+    else if b.is_empty():
+        a
+    else if a.ends_with("/"):
+        a + b
+    else:
+        a + "/" + b
+
+// The final component: "a/b/c.txt" -> "c.txt", "a/b/" -> "b", "/" -> "/".
+// The empty relative path has the conventional lexical component "."; it is
+// never confused with the absolute root.
+pub fn base(p: String) -> String:
+    let t = trim_slashes(p)
+    if t.is_empty():
+        "."
+    else if t == "/":
+        "/"
+    else if t.contains("/"):
+        let (_head, b) = t.rsplit_once("/")
+        b
+    else:
+        t
+
+// The parent before the final component as `Some`: "a/b/c" -> Some("a/b"),
+// "/x" -> Some("/"). A single-component path and the root have no parent, so
+// "c" and "/" are `None` (RFC-0044 rule 1: absence is `Option`, never an ""
+// sentinel). In particular, repeatedly taking `dir` cannot loop at root.
+pub fn dir(p: String) -> Option(String):
+    let t = trim_slashes(p)
+    if t == "/" || !t.contains("/"):
+        None
+    else:
+        let (head, _b) = t.rsplit_once("/")
+        if head.is_empty():
+            Some("/")
+        else:
+            Some(head)
+
+// The extension after the final `.` in the base name, WITHOUT the leading dot,
+// as `Some` ("a/b.tar.gz" -> Some("gz")) — matching Rust's `Path::extension`
+// both in dropping the dot AND in the `Option` shape (RFC-0044 rule 1). A base
+// with no extension, a dotfile base (".bashrc"), or the parent marker ("..")
+// is `None`. A trailing dot on an ordinary filename is an empty extension.
+pub fn ext(p: String) -> Option(String):
+    let b = base(p)
+    let i = b.last_index_of(".") ?? -1
+    if b != ".." && i > 0:
+        Some(b.substring(i + 1, b.char_count()))
+    else:
+        None
+
+// The base name without its extension (".bashrc" -> ".bashrc"; "a.b.c" -> "a.b").
+pub fn stem(p: String) -> String:
+    let b = base(p)
+    match ext(p):
+        Some(e) -> b.strip_suffix("." + e)
+        None -> b
+
+// Collapse `.` and `..` segments and redundant slashes. A relative path that
+// backs out past its start keeps the leading `..`s; an absolute one cannot escape
+// its root. An empty result is "." (relative) or "/" (absolute).
+pub fn normalize(p: String) -> String:
+    let absolute = is_abs(p)
+    var stack = []
+    for seg in p.split("/"):
+        if seg == "..":
+            if list.length(stack) > 0 && last(stack) != "..":
+                stack = drop_last(stack)
+            else if !absolute:
+                list.push(stack, "..")
+        else if seg != "" && seg != ".":
+            list.push(stack, seg)
+    let joined = list.join(stack, "/")
+    if absolute:
+        "/" + joined
+    else if joined.is_empty():
+        "."
+    else:
+        joined
+
+// --- internals ---------------------------------------------------------------
+fn trim_slashes(p: String) -> String:
+    var t = p
+    while t.char_count() > 1 && t.ends_with("/"):
+        t = t.strip_suffix("/")
+    t
+
+fn last(xs: List(String)) -> String:
+    if list.length(xs) == 0:
+        ""
+    else:
+        list.at(xs, list.length(xs) - 1)
+
+fn drop_last(xs: List(String)) -> List(String):
+    // Everything but the final element — `take` of one fewer (empty when `xs`
+    // is, since `take` of a non-positive count is empty). Dogfoods std/iter.
+    iter.collect(iter.from_list(xs).take(list.length(xs) - 1))

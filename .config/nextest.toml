@@ -1,0 +1,159 @@
+# cargo-nextest configuration — run the suite with `cargo nextest run`.
+# Docs: https://nexte.st/book/configuration
+#
+# nextest is the preferred local + CI runner: it runs each test in its own
+# process (so a panic/abort can't take the runner down), parallelizes across
+# the whole suite, and prints a clean per-test summary. There are no doctests
+# in this crate, so `nextest run` covers everything `cargo test` did.
+
+# Setup scripts (nextest experimental, stable in practice; nextest-rs/nextest#978):
+# warm the wasmtime caches for the embedded pm/coven programs ONCE before any
+# server-spawning e2e test runs. The caches are keyed on the witchy binary's
+# mtime+size, so every rebuild invalidates them; without this, the first suite
+# after a rebuild re-compiles the same embedded programs in EVERY spawned
+# subprocess. The script is best-effort and always exits 0.
+experimental = ["setup-scripts", "wrapper-scripts"]
+
+[scripts.setup.warm-witchy-caches]
+command = "scripts/warm-witchy-caches.sh"
+slow-timeout = { period = "150s", terminate-after = 1 }
+
+# macOS can wedge dyld when nextest discovers the workspace's ~100 MB test
+# binaries at CPU-count concurrency. Bound only the list phase there; test
+# execution retains the profile's normal scheduling and test groups.
+[scripts.wrapper.bounded-list]
+command = { command-line = "scripts/nextest-list-wrapper.sh", relative-to = "workspace-root" }
+
+[[profile.default.scripts]]
+platform = "cfg(target_os = \"macos\")"
+list-wrapper = "bounded-list"
+
+[profile.default]
+# Surface every failure in one run rather than stopping at the first.
+fail-fast = false
+# Show a failing test's output as it fails, then recap all failures at the end.
+failure-output = "immediate-final"
+status-level = "fail"
+# Flag pathologically slow tests (the registry e2e tests are the slowest) and
+# kill anything that hangs well past that.
+slow-timeout = { period = "45s", terminate-after = 3 }
+
+# CI profile: `cargo nextest run --profile ci`. Retries absorb the occasional
+# flaky network/registry e2e test; JUnit output feeds CI test reporting.
+[profile.ci]
+fail-fast = false
+failure-output = "immediate"
+final-status-level = "slow"
+retries = 2
+slow-timeout = { period = "90s", terminate-after = 2 }
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# The registry/coven e2e tests each bind a TCP port and spawn a `witchy` server
+# subprocess, then poll for readiness. Run concurrently across the whole suite,
+# many servers compile + start under heavy CPU contention and a few overrun
+# their readiness window — false failures that always pass in isolation (the
+# long-standing "don't run two suites at once" flakiness). Bound them to a
+# small group so server spawns stay rare; the rest of the suite still
+# parallelizes fully.
+#
+# Width 2 (was 1): the merge-queue coordinator now guarantees at most ONE
+# heavyweight suite runs at a time (scripts/merge-queue.sh), which removes the
+# machine-wide contention that motivated full serialization — and ~40% of the
+# spawning tests had drifted out of the old keyword filter and were running
+# concurrently anyway, without flaking. The group is ~90% of the gate's test
+# stage, so width 2 nearly halves gate wall-clock. The single per-group retry
+# absorbs a rare readiness overrun without masking real failures (a genuinely
+# red test fails twice).
+[test-groups]
+registry-serial = { max-threads = 2 }
+perf-serial = { max-threads = 1 }
+wasm-heavy = { max-threads = 2 }
+gate-cold-heavy = { max-threads = 4 }
+queue-concurrency-serial = { max-threads = 1 }
+
+# These two hermetic fixtures each create concurrent coordinator/metadata
+# writers. Running both races at once has no additional coverage, but doubles
+# process and lock pressure enough to make both hit nextest's 135s hard timeout
+# on an otherwise green gate. Keep every assertion and the existing timeout;
+# serialize only the two nested-concurrency fixtures while the rest of the
+# queue-infrastructure shard retains width two.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::merge_queue) & test(/^concurrent_daemon_starts_create_exactly_one_coordinator$|^concurrent_dependency_updates_cannot_commit_opposite_cycle_edges$/)'
+test-group = 'queue-concurrency-serial'
+
+# Bound cold, compiler-heavy test binaries without serializing unrelated tests.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::glamour) | (binary_id(witchy::misc) & not test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)) | binary_id(witchy::rfc0005) | binary_id(witchy::rfc0080) | binary_id(witchy::rfc0081_existential_frontend) | binary_id(witchy::rfc0090) | binary_id(witchy::rfc0092) | binary_id(witchy::test_for_paths) | binary_id(witchy::worktree) | (binary_id(witchy::bin/witchy) & test(/^(cli_flag_tests|compiled_build_step_tests)::/)) | (binary_id(witchy-lower) & test(/^analysis::(fip_tests|last_use_tests)::/)) | (binary_id(witchy-syntax) & test(/^aliases::tests::/))'
+test-group = 'gate-cold-heavy'
+
+# Long-running regression guards: the at-scale perf programs and the
+# type-resolved repository census can exceed the default 135s slow-kill under
+# a busy gate (the census was the sole timeout after 2,284 tests passed on
+# 2026-07-18). Serialize them in their own group, start them early, and retain
+# a bounded 360s hard cap; assertions are unchanged.
+[[profile.default.overrides]]
+filter = 'test(/list_reverse_flatten_flat_map_are_linear_at_scale|inplace_set_at_is_fast_and_alias_safe|inplace_update_at_is_fast_and_alias_safe|repository_census_matches_the_checked_in_type_resolved_snapshot/)'
+test-group = 'perf-serial'
+slow-timeout = { period = "120s", terminate-after = 3 }
+priority = 90
+
+# Serial-tail elimination: these tests are slow AND sort late by name, so at
+# default priority they were the last to COMPLETE every gate — `wir_binary_path`
+# (~9s) and the heavy differential/example-matrix tests trailed the bulk. (The
+# `stdlib_properties` proptests used to lead this list at ~19s; the linker's
+# pulled-std expansion cache cut them to ~2-4s, below the bar.) Running
+# alone at the end wastes ~9 idle cores for the length of the longest straggler.
+# priority 90 dispatches them at the front so they overlap the parallel bulk
+# instead of extending the tail. Each process also drives the multi-core Wasm
+# compiler; starting the whole set together can make every member exceed the
+# 135s timeout on a cold cache. Width 2 keeps useful overlap without the
+# compiler thundering herd. Keep this list to tests measured >8s that also sort
+# late; re-check with the per-test timings in a merge-queue gate log.
+[[profile.default.overrides]]
+filter = 'test(/^example_tests::wir_binary_path_runs_and_agrees_with_oracle$|^example_tests::(documentation_examples_are_valid|every_example_agrees_under_unbox|every_compilable_example_agrees_on_both_backends|every_example_agrees_under_rc_floor|examples_agree_under_rc_floor|examples_agree_under_inplace_and_forced_copy|all_examples_run_via_cli|book_examples_manifest_is_current)$|^example_tests::range_for_properties::/) | test(/differential_sweep_output_is_invariant_on_both_backends/)'
+test-group = 'wasm-heavy'
+priority = 90
+
+[[profile.ci.overrides]]
+filter = 'test(/^example_tests::wir_binary_path_runs_and_agrees_with_oracle$|^example_tests::(documentation_examples_are_valid|every_example_agrees_under_unbox|every_compilable_example_agrees_on_both_backends|every_example_agrees_under_rc_floor|examples_agree_under_rc_floor|examples_agree_under_inplace_and_forced_copy|all_examples_run_via_cli|book_examples_manifest_is_current)$|^example_tests::range_for_properties::/) | test(/differential_sweep_output_is_invariant_on_both_backends/)'
+test-group = 'wasm-heavy'
+priority = 90
+
+# Keyword filter: nextest can only match on names, so this must cover every
+# test that spawns a registry/coven server (RegistryServer::start() or raw
+# coven dispatch in tests/e2e.rs). If you add a spawning test, either match an
+# existing keyword or extend this list — `cargo nextest show-config test-groups`
+# shows current membership.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widen|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves|tuf|vendored|registry|provenance|outdated|tree_shows|std_shadowing|module_name_collision|update_single|upgrade|transitive/)'
+test-group = 'registry-serial'
+retries = 1
+# Start the serialized long pole FIRST so it overlaps the parallel tail
+# instead of running after it (nextest runs same-priority tests in name
+# order; priority range is -100..=100, higher starts earlier).
+priority = 100
+
+# Interpreter server tests perform the same bind/spawn/connect readiness loop
+# as the registry e2e tests. Under a compiler-heavy gate, running four of them
+# at once can exhaust their one-second startup window even though the server is
+# healthy. Share the existing two-wide server group instead of retrying the
+# entire semantic batch after a load-only connect failure.
+[[profile.default.overrides]]
+filter = 'test(/^interpreter::tests::(net_server_listen_accept_roundtrip|serve_loopback_roundtrip|http_client_builder_loopback|serve_status_constructors_roundtrip|serve_method_not_allowed_vs_not_found|serve_var_receiver_method_resolution|serve_any_method_route_roundtrip|serve_middleware_nest_and_notfound_roundtrip|serve_json_handler_roundtrip|serve_json_body_decode_roundtrip|serve_form_field_roundtrip|serve_static_files_roundtrip)$/)'
+test-group = 'registry-serial'
+retries = 1
+priority = 100
+
+[[profile.default.scripts]]
+filter = 'binary_id(witchy::e2e)'
+setup = 'warm-witchy-caches'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widen|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves|tuf|vendored|registry|provenance|outdated|tree_shows|std_shadowing|module_name_collision|update_single|upgrade|transitive/)'
+test-group = 'registry-serial'
+
+[[profile.ci.overrides]]
+filter = 'test(/^interpreter::tests::(net_server_listen_accept_roundtrip|serve_loopback_roundtrip|http_client_builder_loopback|serve_status_constructors_roundtrip|serve_method_not_allowed_vs_not_found|serve_var_receiver_method_resolution|serve_any_method_route_roundtrip|serve_middleware_nest_and_notfound_roundtrip|serve_json_handler_roundtrip|serve_json_body_decode_roundtrip|serve_form_field_roundtrip|serve_static_files_roundtrip)$/)'
+test-group = 'registry-serial'

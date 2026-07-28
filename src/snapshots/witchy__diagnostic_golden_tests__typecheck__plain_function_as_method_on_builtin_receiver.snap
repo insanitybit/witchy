@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn describe(s: String) -> Int:\\n    string.length(s)\\n\\nfn main(console: Console):\\n    let s = \\\"hi\\\"\\n    console.print(\\\"${s.describe()}\\\")\\n\")"
+---
+type error: no method `describe` on `String` — `describe` is a plain function, not a method; methods come from `impl` blocks or the type's own module, so call it directly as `describe(value, …)` (or module-qualified if it lives in an imported module)

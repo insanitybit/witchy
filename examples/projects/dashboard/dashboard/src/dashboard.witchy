@@ -1,0 +1,13 @@
+// dashboard — composes two widget runes, `tasks` and `coverage`, each of which
+// depends on the shared `bars` base. So the dependency graph is a *diamond*:
+// `witchy tree` shows `bars` resolved once, and because every rune is pure the
+// whole program's footprint is just `Console`. Run with:  witchy run
+//   witchy tree     # see the diamond (bars appears once, marked `(*)`)
+
+import tasks
+import coverage
+
+fn main(console: Console):
+    console.print("── status ──")
+    console.print(tasks.summary(3, 6))
+    console.print(coverage.summary(6, 8))

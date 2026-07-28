@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console):\\n    if 3: print(console, \\\"hi\\\")\\n\")"
+---
+type error: `main`, line 2: `if` condition: expected `Bool`, found `Int`

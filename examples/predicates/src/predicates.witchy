@@ -1,0 +1,9 @@
+// `any`/`all` test a predicate (a closure) against a list and short-circuit via
+// early return. Generic over the element type.
+fn main(console: Console):
+    let nums = [2, 4, 6, 8]
+
+    console.print("${nums.all(fn(n: Int): n % 2 == 0)}")
+    console.print("${nums.any(fn(n: Int): n > 5)}")
+    console.print("${nums.any(fn(n: Int): n > 100)}")
+    console.print("${nums.all(fn(n: Int): n > 3)}")

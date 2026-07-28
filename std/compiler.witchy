@@ -1,0 +1,94 @@
+// compiler — witchy's own toolchain, exposed to witchy programs.
+//
+// A native intrinsic module (implemented in Rust, like `crypto`): it gives a
+// program access to the compiler's capability analyzer, so a (self-hosted)
+// package manager can compute a rune's supply-chain footprint from within
+// witchy — on either backend. The body below is a placeholder the runtime never
+// executes (the call is intercepted by its qualified name).
+
+import json
+import option
+import result
+import show
+import error
+import convert
+
+// Matchable compiler-service failures. `SourceRejected` is the ordinary parse,
+// type, or comptime boundary reported by the compiler; the internal variants
+// are for malformed native bridge output and should be treated as toolchain bugs.
+type CompilerError:
+    SourceRejected(String)
+    InternalJson(json.DecodeError)
+    InternalShape(String)
+
+pub fn compiler_error_message(e: CompilerError) -> String:
+    match e:
+        SourceRejected(message) -> message
+        InternalJson(reason) -> "compiler.try_doc internal JSON error: " + json.decode_error_message(reason)
+        InternalShape(message) -> "compiler.try_doc internal JSON error: " + message
+
+impl Show for CompilerError:
+    fn show(self) -> String:
+        compiler_error_message(self)
+
+impl Error for CompilerError
+
+impl From(CompilerError) for String:
+    fn from(value: CompilerError) -> Self:
+        compiler_error_message(value)
+
+// The capability footprint of witchy `source`, as JSON:
+//   {"total":[..],"build":[..],"user_caps":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}
+// or {"error":".."} if the source does not parse or contains `comptime:` blocks.
+// Use the source-file CLI path for expanded comptime introspection. `build` is
+// the build-time footprint — the build capabilities the rune's `build` entrypoint
+// demands (gated separately from the runtime `total`). `user_caps` lists grantable
+// user-capability names the source requires. Parse it with `import json`.
+pub fn footprint(source: String) -> String:
+    source
+
+// Compare two sources by capability footprint, as JSON:
+//   {"widened":bool,"added":[..],"removed":[..],"build_added":[..],
+//    "build_removed":[..],"user_caps_added":[..],"user_caps_removed":[..]}
+// or {"error":".."} if either source does not parse. `widened` is the
+// rights-precise block-on-widening gate: true when `new` demands any runtime
+// capability, build capability, or user cap that `old` did not.
+pub fn diff(old: String, new: String) -> String:
+    old
+
+fn __doc_result_json(name: String, source: String) -> String:
+    name
+
+// Render `source` to Markdown API documentation, or return a typed parse/comptime
+// boundary error as `Err`. This is the tooling API for registries and package
+// managers: it gives callers an inspectable error channel instead of hiding a
+// failure inside presentation Markdown.
+pub fn try_doc(name: String, source: String) -> Result(String, CompilerError):
+    match json.decode(__doc_result_json(name, source)):
+        Err(e) -> Err(InternalJson(e))
+        Ok(doc_result) ->
+            match json.get_string(doc_result, "ok"):
+                Some(md) -> Ok(md)
+                None ->
+                    match json.get_string(doc_result, "error"):
+                        Some(message) -> Err(SourceRejected(message))
+                        None -> Err(InternalShape("missing `ok` or `error`"))
+
+// Render docs with String errors for application-style boundaries.
+pub fn try_doc_string(name: String, source: String) -> Result(String, String):
+    match try_doc(name, source):
+        Ok(md) -> Ok(md)
+        Err(e) -> Err(compiler_error_message(e))
+
+// Render `source` to Markdown API documentation (the same output as `witchy doc`
+// for source-only modules):
+// the module's public types, traits, trait implementations, and functions with
+// their signatures and doc-comments, under a heading titled `name`. This only
+// PARSES the source — it never runs it —
+// so a registry can safely generate browsable docs from a rune's stored source on
+// either backend. Display callers get parse/comptime-boundary errors as an HTML
+// comment; tooling should prefer `try_doc`.
+pub fn doc(name: String, source: String) -> String:
+    match try_doc(name, source):
+        Ok(md) -> md
+        Err(e) -> "<!-- doc error: " + compiler_error_message(e) + " -->"

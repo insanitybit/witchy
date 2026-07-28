@@ -1,0 +1,16 @@
+// In-rune tests for `durations`. Each `test_*` function takes no parameters,
+// passes by returning, and fails by aborting (the `testing` assertions do that
+// with a message). Run them with `witchy test examples/durations`.
+
+import durations
+import duration
+import testing
+
+fn test_backoff_doubles():
+    testing.assert_eq(duration.human(durations.backoff(0, 1s, 5s)), "1s")
+    testing.assert_eq(duration.human(durations.backoff(1, 1s, 5s)), "2s")
+    testing.assert_eq(duration.human(durations.backoff(2, 1s, 5s)), "4s")
+
+fn test_backoff_caps():
+    testing.assert_eq(duration.human(durations.backoff(3, 1s, 5s)), "5s")
+    testing.assert_eq(duration.human(durations.backoff(10, 1s, 5s)), "5s")

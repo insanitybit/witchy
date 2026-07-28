@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "trap_pair(\"fn main(console: Console):\\n    let z = 0\\n    console.print(__render(10 / z))\\n\")"
+---
+interp: runtime error: `main`, line 3: division by zero
+wasm:   runtime error: `main`, line 3: division by zero

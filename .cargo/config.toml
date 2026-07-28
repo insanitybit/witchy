@@ -1,0 +1,12 @@
+# Cargo configuration for the witchy workspace.
+
+[env]
+# witchy's compiler and interpreter both recurse on the HOST stack in proportion
+# to a program's nesting/expression depth (the interpreter already runs its work
+# on a dedicated large-stack thread — see `run_on_deep_stack`). The Rust test
+# harness, however, spawns each `#[test]` on a thread whose stack defaults to
+# only 2 MiB, which `RUST_MIN_STACK` overrides. Compiling the larger example
+# programs (notably the async/channel ones) to WASM recurses deep enough to
+# overflow 2 MiB and abort the test process. The production CLI is unaffected (it
+# runs on the 8 MiB main thread); this only sizes the test threads to match.
+RUST_MIN_STACK = "16777216"

@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "trap_pair(\"fn main(console: Console):\\n    fail(\\\"something broke\\\")\\n\")"
+---
+interp: runtime error: `main`, line 2: something broke
+wasm:   runtime error: `main`, line 2: something broke

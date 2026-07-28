@@ -1,0 +1,8 @@
+/* A touch of witchy flavor on top of the mdBook theme. */
+.menu-title::before {
+  content: "✦ ";
+  color: #b48ead;
+}
+blockquote {
+  border-inline-start-color: #b48ead;
+}

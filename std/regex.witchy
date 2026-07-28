@@ -1,0 +1,69 @@
+// Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear
+// time, with full alternation `a|b` and grouping `(...)` — and a loud error, not
+// a silent non-match, on an invalid pattern. The engine itself is the native
+// `match_spans`, which returns the character spans of every match; the whole
+// public API here is built on those spans in plain witchy, so it runs the same
+// on the interpreter and the compiled backend. Positions are character indices.
+
+import string
+
+// The native engine: every non-overlapping match of `pattern` in `text`, as
+// character spans encoded "s,e;s,e;..." ("" when there is no match). Overridden
+// by the native registry / WASM host import; the body is an unreachable stub.
+fn match_spans(pattern: String, text: String) -> String:
+    text
+    ""
+
+// True if `pattern` matches anywhere in `text`.
+pub fn matches(pattern: String, text: String) -> Bool:
+    !match_spans(pattern, text).is_empty()
+
+// The leftmost match as a (start, end) character span — end exclusive — or None.
+pub fn find(pattern: String, text: String) -> Option((Int, Int)):
+    let all = find_all(pattern, text)
+    if list.length(all) == 0:
+        None
+    else:
+        Some(list.at(all, 0))
+
+// Every non-overlapping match, leftmost first.
+pub fn find_all(pattern: String, text: String) -> List((Int, Int)):
+    let encoded = match_spans(pattern, text)
+    if encoded.is_empty():
+        []
+    else:
+        var out = []
+        for part in encoded.split(";"):
+            let pair = part.split(",")
+            list.push(out, (list.at(pair, 0).to_int(), list.at(pair, 1).to_int()))
+        out
+
+// The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
+pub fn extract(pattern: String, text: String) -> List(String):
+    var out = []
+    for span in find_all(pattern, text):
+        let (s, e) = span
+        list.push(out, text.substring(s, e))
+    out
+
+// `text` with every match replaced (the replacement is literal — no `$1` group
+// expansion): replace_all("\\s+", "a  b", "-") is "a-b".
+pub fn replace_all(pattern: String, text: String, replacement: String) -> String:
+    var out = ""
+    var prev = 0
+    for span in find_all(pattern, text):
+        let (s, e) = span
+        out = out + text.substring(prev, s) + replacement
+        prev = e
+    out + text.drop(prev)
+
+// `text` split on every match: split(",\\s*", "a, b,c") is ["a", "b", "c"].
+pub fn split(pattern: String, text: String) -> List(String):
+    var out = []
+    var prev = 0
+    for span in find_all(pattern, text):
+        let (s, e) = span
+        list.push(out, text.substring(prev, s))
+        prev = e
+    list.push(out, text.drop(prev))
+    out

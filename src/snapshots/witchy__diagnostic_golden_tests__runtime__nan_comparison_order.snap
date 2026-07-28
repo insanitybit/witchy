@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "trap_pair(\"fn main(console: Console):\\n    let a = 0.0 / 0.0\\n    let b = 1.0\\n    if a < b: console.print(\\\"lt\\\") else: console.print(\\\"ge\\\")\\n\")"
+---
+interp: runtime error: `main`, line 4: cannot compare NaN
+wasm:   runtime error: `main`, line 4: cannot compare NaN

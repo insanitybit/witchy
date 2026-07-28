@@ -1,0 +1,20 @@
+// In-rune tests for `rle`. Each `test_*` function takes no parameters, passes by
+// returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/rle`.
+
+import rle
+import testing
+
+fn test_encode():
+    testing.assert_eq(rle.encode("aaabbbbc"), "3a4b1c")
+    testing.assert_eq(rle.encode("wwwwww"), "6w")
+    testing.assert_eq(rle.encode("abcdef"), "1a1b1c1d1e1f")
+    testing.assert_eq(rle.encode(""), "")
+
+fn test_decode():
+    testing.assert_eq(rle.decode("3a4b1c"), "aaabbbbc")
+    testing.assert_eq(rle.decode("6w"), "wwwwww")
+
+fn test_round_trip():
+    for sample in ["aaabbbbc", "wwwwww", "abcdef", "mississippi", ""]:
+        testing.assert_eq(rle.decode(rle.encode(sample)), sample)

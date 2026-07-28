@@ -1,0 +1,9 @@
+[package]
+name = "witchy-cap-model"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "witchy compiler - dependency-bottom capability catalog and rights vocabulary"
+
+[dependencies]

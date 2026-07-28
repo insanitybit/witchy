@@ -1,0 +1,395 @@
+// The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`:
+// `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar
+// through these traits, so `a == b` and `x < y` work on your own types once you
+// implement (or derive) them — there is no separate `compare`/`greater` to call
+// by name. Built-in impls cover the primitives; `Self` in a method signature
+// stands for the implementing type. Pure and capability-free.
+
+import bytes
+import option
+
+// The result of a comparison: `a` is `Less` than, `Equal` to, or `Greater` than
+// `b`. The return of `Ord.compare`, and (wrapped in `Some`) `PartialOrd`.
+type Ordering:
+    Less
+    Equal
+    Greater
+
+// `==` and `!=`. The minimal equality trait: implement `eq` and `ne` comes free.
+// `Float` is `PartialEq` but NOT `Eq` — `NaN != NaN`, so equality is not
+// reflexive.
+trait PartialEq:
+    fn eq(self, other: Self) -> Bool
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+// Total equality: a marker refining `PartialEq` with reflexivity (no `NaN`).
+// Types usable as `Set` / `Dict` keys are `Eq`.
+trait Eq: PartialEq
+
+// `<` `>` `<=` `>=`. `partial_compare` returns `None` for incomparable values
+// (a `NaN`); the four ordering operators are then all false, as in Rust.
+// Implement `partial_compare`; the rest come free.
+trait PartialOrd: PartialEq:
+    fn partial_compare(self, other: Self) -> Option(Ordering)
+    fn less(self, other: Self) -> Bool:
+        match partial_compare(self, other):
+            Some(Less) -> true
+            _ -> false
+    fn greater(self, other: Self) -> Bool:
+        match partial_compare(self, other):
+            Some(Greater) -> true
+            _ -> false
+    fn less_equal(self, other: Self) -> Bool:
+        match partial_compare(self, other):
+            Some(Less) -> true
+            Some(Equal) -> true
+            _ -> false
+    fn greater_equal(self, other: Self) -> Bool:
+        match partial_compare(self, other):
+            Some(Greater) -> true
+            Some(Equal) -> true
+            _ -> false
+
+// A total order: `compare` never reports "incomparable". Sorting and the `min`/
+// `max` helpers require `Ord`. Implement `compare`; the companion `PartialOrd`
+// impl's `partial_compare` is `Some` of it.
+trait Ord: Eq + PartialOrd:
+    fn compare(self, other: Self) -> Ordering
+
+// Flip an ordering — `Less` <-> `Greater`, `Equal` unchanged — for reverse sorts.
+pub fn reverse(o: Ordering) -> Ordering:
+    match o:
+        Less -> Greater
+        Greater -> Less
+        Equal -> Equal
+
+// --- primitive impls ---------------------------------------------------------
+impl PartialEq for Ordering:
+    fn eq(self, other: Self) -> Bool:
+        match self:
+            Less ->
+                match other:
+                    Less -> true
+                    _ -> false
+            Equal ->
+                match other:
+                    Equal -> true
+                    _ -> false
+            Greater ->
+                match other:
+                    Greater -> true
+                    _ -> false
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for Ordering
+
+impl PartialEq for Int:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl Eq for Int
+
+impl PartialOrd for Int:
+    fn partial_compare(self, other: Self) -> Option(Ordering):
+        Some(compare(self, other))
+
+impl Ord for Int:
+    fn compare(self, other: Self) -> Ordering:
+        if self < other:
+            Less
+        else if self > other:
+            Greater
+        else:
+            Equal
+
+impl PartialEq for Bool:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl Eq for Bool
+
+// Lexicographic ordering by code point — the same order `<` gives on strings, and
+// content-correct in compiled code (both backends compare bytes, not pointers).
+impl PartialEq for String:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl Eq for String
+
+impl PartialOrd for String:
+    fn partial_compare(self, other: Self) -> Option(Ordering):
+        Some(compare(self, other))
+
+impl Ord for String:
+    fn compare(self, other: Self) -> Ordering:
+        if self < other:
+            Less
+        else if self > other:
+            Greater
+        else:
+            Equal
+
+// Byte buffers compare by byte contents, matching direct `==` and String's
+// content equality. `Bytes` deliberately has equality but no ordering protocol.
+impl PartialEq for Bytes:
+    fn eq(self, other: Self) -> Bool:
+        let n = bytes.length(self)
+        if n != bytes.length(other):
+            return false
+        var i = 0
+        while i < n:
+            if bytes.at(self, i) != bytes.at(other, i):
+                return false
+            i = i + 1
+        true
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for Bytes
+
+impl PartialEq for Duration:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl Eq for Duration
+
+impl PartialOrd for Duration:
+    fn partial_compare(self, other: Self) -> Option(Ordering):
+        Some(compare(self, other))
+
+impl Ord for Duration:
+    fn compare(self, other: Self) -> Ordering:
+        if self < other:
+            Less
+        else if self > other:
+            Greater
+        else:
+            Equal
+
+// `Float` is `PartialEq` + `PartialOrd` only: a `NaN` is unequal to everything
+// (including itself) and unordered, so `Float` is neither `Eq` nor `Ord`. Sort a
+// `List(Float)` with a total wrapper or by comparing a derived key.
+impl PartialEq for Float:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl PartialOrd for Float:
+    fn partial_compare(self, other: Self) -> Option(Ordering):
+        // A `NaN` is unordered: detect it FIRST (a `NaN` is the only value not
+        // equal to itself), because the `<` / `>` operators trap on a `NaN`
+        // operand rather than returning false. With both sides known non-`NaN`,
+        // the ordering compares safely.
+        if !(self == self) || !(other == other):
+            None
+        else if self < other:
+            Some(Less)
+        else if self > other:
+            Some(Greater)
+        else:
+            Some(Equal)
+
+// --- structural container impls ---------------------------------------------
+
+// Lists compare element-by-element through the element type's `PartialEq` impl.
+impl PartialEq for List(a) where a: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let n = list.length(self)
+        if n != list.length(other):
+            return false
+        var i = 0
+        while i < n:
+            if !(list.at(self, i) == list.at(other, i)):
+                return false
+            i = i + 1
+        true
+
+impl Eq for List(a) where a: Eq
+
+impl PartialEq for Option(a) where a: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        match self:
+            Some(left) ->
+                match other:
+                    Some(right) -> left == right
+                    None -> false
+            None ->
+                match other:
+                    Some(_) -> false
+                    None -> true
+
+impl Eq for Option(a) where a: Eq
+
+impl PartialEq for Result(a, e) where a: PartialEq, e: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        match self:
+            Ok(left) ->
+                match other:
+                    Ok(right) -> left == right
+                    Err(_) -> false
+            Err(left) ->
+                match other:
+                    Ok(_) -> false
+                    Err(right) -> left == right
+
+impl Eq for Result(a, e) where a: Eq, e: Eq
+
+impl PartialEq for Dict(k, v) where k: Eq, v: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        if dict.length(self) != dict.length(other):
+            return false
+        for left_entry in dict.pairs(self):
+            let (left_key, left_value) = left_entry
+            var found = false
+            for right_entry in dict.pairs(other):
+                let (right_key, right_value) = right_entry
+                if left_key == right_key:
+                    found = true
+                    if !(left_value == right_value):
+                        return false
+            if !found:
+                return false
+        true
+
+impl Eq for Dict(k, v) where k: Eq, v: Eq
+
+// Tuples compare slot-by-slot through each slot's equality protocol. The tuple
+// protocol surface is explicit through arity 8, matching `Show` and `Reflect`.
+impl PartialEq for (a, b) where a: PartialEq, b: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1) = self
+        let (y0, y1) = other
+        x0 == y0 && x1 == y1
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b) where a: Eq, b: Eq
+
+impl PartialEq for (a, b, c) where a: PartialEq, b: PartialEq, c: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2) = self
+        let (y0, y1, y2) = other
+        x0 == y0 && x1 == y1 && x2 == y2
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c) where a: Eq, b: Eq, c: Eq
+
+impl PartialEq for (a, b, c, d) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2, x3) = self
+        let (y0, y1, y2, y3) = other
+        x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c, d) where a: Eq, b: Eq, c: Eq, d: Eq
+
+impl PartialEq for (a, b, c, d, e) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2, x3, x4) = self
+        let (y0, y1, y2, y3, y4) = other
+        x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c, d, e) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq
+
+impl PartialEq for (a, b, c, d, e, f) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2, x3, x4, x5) = self
+        let (y0, y1, y2, y3, y4, y5) = other
+        x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4 && x5 == y5
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c, d, e, f) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq
+
+impl PartialEq for (a, b, c, d, e, f, g) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2, x3, x4, x5, x6) = self
+        let (y0, y1, y2, y3, y4, y5, y6) = other
+        x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4 && x5 == y5 && x6 == y6
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c, d, e, f, g) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq
+
+impl PartialEq for (a, b, c, d, e, f, g, h) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq, h: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2, x3, x4, x5, x6, x7) = self
+        let (y0, y1, y2, y3, y4, y5, y6, y7) = other
+        x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4 && x5 == y5 && x6 == y6 && x7 == y7
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c, d, e, f, g, h) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq, h: Eq
+
+// --- generic helpers over `Ord` ----------------------------------------------
+
+// True when `a` orders strictly before `b` by the type's TOTAL order. Going
+// through `compare` (not the `<` operator, which only needs `PartialOrd`) is what
+// makes these helpers reject a merely-partial type like `Float`.
+fn lt(a: x, b: x) -> Bool where x: Ord:
+    match compare(a, b):
+        Less -> true
+        _ -> false
+
+pub fn max_of(x: a, y: a) -> a where a: Ord:
+    if lt(x, y):
+        y
+    else:
+        x
+
+pub fn min_of(x: a, y: a) -> a where a: Ord:
+    if lt(y, x):
+        y
+    else:
+        x
+
+// `x` confined to the range [lo, hi]. `lo` must not exceed `hi` (RFC-0044
+// rule 3): inverted bounds describe an empty range, so they fail loudly
+// instead of silently returning `lo` (matching `math.clamp`).
+pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord:
+    if lt(hi, lo):
+        fail("cmp.clamp: lo exceeds hi (an empty range)")
+    if lt(x, lo):
+        lo
+    else if lt(hi, x):
+        hi
+    else:
+        x
+
+// The largest element of `xs`, or `default` when `xs` is empty. `default` is
+// only the empty fallback — it never participates in the comparison, so it is
+// returned unchanged only for an empty list (a small `default` no longer wins
+// over the elements, nor a large one lose to them).
+pub fn maximum(xs: List(a), default: a) -> a where a: Ord:
+    var best = default
+    var seen = false
+    for x in xs:
+        if !seen || lt(best, x):
+            best = x
+            seen = true
+    best
+
+// The smallest element of `xs`, or `default` when `xs` is empty. As with
+// `maximum`, `default` is the empty fallback only, never a competing bound.
+pub fn minimum(xs: List(a), default: a) -> a where a: Ord:
+    var best = default
+    var seen = false
+    for x in xs:
+        if !seen || lt(x, best):
+            best = x
+            seen = true
+    best

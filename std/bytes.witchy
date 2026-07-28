@@ -1,0 +1,197 @@
+// std/bytes — immutable byte buffers.
+//
+// A `Bytes` is a flat, UTF-8-free sequence of bytes — the type for binary data
+// (file contents, network frames, hashes, serialized payloads) that `String` (which
+// is always valid UTF-8) cannot faithfully hold. It shares `String`'s in-memory
+// layout (`[length][bytes…]`), so the bridge operations (`from_string`/`to_string`)
+// are free, and a `Bytes` is FLAT: it byte-copies directly across a worker VM
+// boundary (RFC-0032), making it the canonical cross-VM and serialization payload.
+
+import list
+import option
+import result
+import show
+import error
+import convert
+
+// Matchable byte-buffer conversion failures.
+type BytesError:
+    ByteOutOfRange(Int)
+    InvalidUtf8
+
+pub fn bytes_error_message(e: BytesError) -> String:
+    match e:
+        ByteOutOfRange(n) -> "bytes.from_list: value ${n} is outside 0..=255"
+        InvalidUtf8 -> "bytes.decode_utf8: invalid UTF-8"
+
+impl Show for BytesError:
+    fn show(self) -> String:
+        bytes_error_message(self)
+
+impl Error for BytesError
+
+impl From(BytesError) for String:
+    fn from(value: BytesError) -> Self:
+        bytes_error_message(value)
+
+// --- Receiver-less constructors and the compiler-referenced module functions
+// (`bytes.at`, `bytes.concat`, `bytes.from_list`, `bytes.from_string`,
+// `bytes.length`, `bytes.slice`, `bytes.to_string`) stay module-level; the
+// same-named methods below delegate to them. Everything else is methods-only
+// (RFC-0099). ---
+
+// The UTF-8 bytes of a string.
+pub fn from_string(s: String) -> Bytes:
+    __bytes_from_string(s)
+
+// Build raw bytes from integers in `0..=255`, or Err on the first invalid byte.
+pub fn from_list(xs: List(Int)) -> Result(Bytes, BytesError):
+    for n in xs:
+        if n < 0 || n > 255:
+            return Err(ByteOutOfRange(n))
+    Ok(__bytes_from_list(xs))
+
+pub fn from_list_string(xs: List(Int)) -> Result(Bytes, String):
+    match from_list(xs):
+        Ok(b) -> Ok(b)
+        Err(e) -> Err(bytes_error_message(e))
+
+// Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy),
+// so this never fails; round-tripping a string is exact because witchy strings are
+// always valid UTF-8. Prefer `to_string_lossy` when the lossy boundary matters.
+pub fn to_string(b: Bytes) -> String:
+    __bytes_to_string(b)
+
+// The number of bytes.
+pub fn length(b: Bytes) -> Int:
+    __bytes_length(b)
+
+// The byte at `index`, as an Int in `0..=255`.
+pub fn at(b: Bytes, index: Int) -> Int:
+    __bytes_at(b, index)
+
+// The two byte buffers joined.
+pub fn concat(first: Bytes, second: Bytes) -> Bytes:
+    __bytes_concat(first, second)
+
+// The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
+pub fn slice(b: Bytes, start: Int, end: Int) -> Bytes:
+    __bytes_slice(b, start, end)
+
+// --- Private cores (non-colliding names, shared by the methods below). ---
+
+// The bytes as a list of Ints — the core behind the `to_list` method, also used
+// by `decode_utf8`'s strict round-trip check.
+fn int_list(b: Bytes) -> List(Int):
+    var out = []
+    var i = 0
+    while i < __bytes_length(b):
+        list.push(out, __bytes_at(b, i))
+        i = i + 1
+    out
+
+fn bytes_match_at(b: Bytes, needle: Bytes, start: Int) -> Bool:
+    var j = 0
+    while j < __bytes_length(needle):
+        if __bytes_at(b, start + j) != __bytes_at(needle, j):
+            return false
+        j = j + 1
+    true
+
+// Methods are the primary surface (RFC-0099). A method whose name matches a
+// kept module function delegates to it; the rest own their implementation.
+impl Bytes:
+    // Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is
+    // explicit about being lossy; use `decode_utf8` when invalid bytes must be an Err.
+    pub fn to_string_lossy(self) -> String:
+        __bytes_to_string(self)
+
+    // Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD
+    // (lossy), so this never fails; round-tripping a string is exact because
+    // witchy strings are always valid UTF-8. Prefer `to_string_lossy` when the
+    // lossy boundary matters.
+    pub fn to_string(self) -> String:
+        to_string(self)
+
+    // Strict UTF-8 decode. Returns Err instead of replacing invalid byte sequences.
+    pub fn decode_utf8(self) -> Result(String, BytesError):
+        let text = __bytes_to_string(self)
+        if int_list(__bytes_from_string(text)) == int_list(self):
+            Ok(text)
+        else:
+            Err(InvalidUtf8)
+
+    pub fn decode_utf8_string(self) -> Result(String, String):
+        match self.decode_utf8():
+            Ok(text) -> Ok(text)
+            Err(e) -> Err(bytes_error_message(e))
+
+    // The number of bytes.
+    pub fn length(self) -> Int:
+        length(self)
+
+    // Whether the buffer has no bytes.
+    pub fn is_empty(self) -> Bool:
+        __bytes_length(self) == 0
+
+    // The byte at `index`, as an Int in `0..=255`.
+    pub fn at(self, index: Int) -> Int:
+        at(self, index)
+
+    // The byte at `index`, or None when out of range.
+    pub fn get(self, index: Int) -> Option(Int):
+        if index < 0 || index >= __bytes_length(self):
+            None
+        else:
+            Some(__bytes_at(self, index))
+
+    // The two byte buffers joined.
+    pub fn concat(self, second: Bytes) -> Bytes:
+        concat(self, second)
+
+    // The bytes in `start..end` (clamped to the buffer; `start >= end` yields
+    // empty).
+    pub fn slice(self, start: Int, end: Int) -> Bytes:
+        slice(self, start, end)
+
+    // The bytes as a list of Ints in `0..=255`.
+    pub fn to_list(self) -> List(Int):
+        int_list(self)
+
+    // Whether `needle` appears in the buffer. The empty needle is always present.
+    pub fn contains(self, needle: Bytes) -> Bool:
+        match self.index_of(needle):
+            Some(_) -> true
+            None -> false
+
+    // The first byte index where `needle` appears, or None when absent. The empty
+    // needle is found at 0, matching string/list search conventions.
+    pub fn index_of(self, needle: Bytes) -> Option(Int):
+        let n = __bytes_length(needle)
+        if n == 0:
+            Some(0)
+        else:
+            let limit = __bytes_length(self) - n
+            var i = 0
+            while i <= limit:
+                if bytes_match_at(self, needle, i):
+                    return Some(i)
+                i = i + 1
+            None
+
+    // Whether the buffer starts with `prefix`.
+    pub fn starts_with(self, prefix: Bytes) -> Bool:
+        let n = __bytes_length(prefix)
+        if n > __bytes_length(self):
+            false
+        else:
+            bytes_match_at(self, prefix, 0)
+
+    // Whether the buffer ends with `suffix`.
+    pub fn ends_with(self, suffix: Bytes) -> Bool:
+        let n = __bytes_length(suffix)
+        let len = __bytes_length(self)
+        if n > len:
+            false
+        else:
+            bytes_match_at(self, suffix, len - n)

@@ -1,0 +1,10 @@
+// In-rune tests for `regions`. Each `test_*` function takes no parameters,
+// passes by returning, and fails by aborting (the `testing` assertions do that
+// with a message). Run them with `witchy test examples/regions`.
+
+import regions
+import testing
+
+fn test_summarize():
+    testing.assert_eq(regions.summarize(["w0", "w1", "w2"]), "3 words, first: w0")
+    testing.assert_eq(regions.summarize(["only"]), "1 words, first: only")

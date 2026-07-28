@@ -1,0 +1,12 @@
+[package]
+name = "witchy-test-host"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "backend-neutral authority-free host dispatch for Witchy fixture tests"
+publish = false
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1"
+witchy-testkit = { path = "../witchy-testkit" }

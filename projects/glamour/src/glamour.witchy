@@ -1,0 +1,1116 @@
+// glamour — the view layer (RFC-0008): a capability-pure MVU core over a `VNode`
+// tree. A view is a VALUE, not a side effect: `view(state) -> VNode(msg)` is a
+// pure projection of state to data, an event is a `msg` VALUE carried by `On`,
+// and `update(state, msg) -> (state, Cmd(msg))` is an ordinary `match`. The rune
+// holds NO capability; `witchy caps projects/glamour/src/glamour.witchy` proves
+// the footprint is empty. A capability-holding host shell diffs the tree into the
+// real DOM and marshals DOM events back as `msg` values — the rune computes, the
+// shell acts.
+//
+// `string`/`list` come from the prelude (no import needed) and are PURE, so they
+// grant no authority — that is what keeps this rune's footprint empty.
+
+// `json`/`reflect` are PURE (capability-free) too — they serialize the VNode tree
+// and reflect a `msg` value to JSON the host shell consumes. Importing them keeps
+// the empty footprint (they touch no Net/Dir/Clock); see `to_json`/the run loop.
+
+import reflect
+import meta
+from json import Json
+
+// ---------------------------------------------------------------------------
+// UI capabilities (RFC-0039) — Glamour's own authority vocabulary. `UiRoot` is a
+// BARE grantable capability an app's `main` receives from the host (a `[user_caps]`
+// grant, RFC-0038); Glamour NARROWS it into per-concern tokens. A component can
+// only construct the effects for which it holds the matching token, so effect
+// authority is statically reviewable — while REAL browser authority stays in the
+// host shell (RFC-0007/0008). These carry only policy data (no host capability),
+// so the rune's host footprint stays empty; they surface on the `user_caps` axis.
+// ---------------------------------------------------------------------------
+
+// The app-root UI token, granted to `main`. Bare: policy data only.
+grantable capability UiRoot:
+    policy: String
+
+// Authority to construct a fetch command, confined to a method-set + path prefix.
+capability UiFetch:
+    scope: String
+    methods: String
+    prefix: String
+
+// Authority to construct a navigation command, within a base path.
+capability UiRoute:
+    base: String
+    rights: String
+
+// Authority to construct a timer command (no shorter than `min_ms`).
+capability UiTimer:
+    min_ms: Int
+
+// Authority to invoke a named host credential port (login, passkey, promote).
+capability CredentialPort:
+    name: String
+
+// Authority to render a host-owned secret input — the value stays host-side.
+capability SecretInput:
+    form: String
+    field: String
+
+// An opaque handle to a host-held secret value — passed, never read by the rune.
+capability SecretRef:
+    slot: String
+
+// Narrow the app-root token into per-concern tokens. Only Glamour (this module)
+// can mint them; an app hands each narrowed token to the component that needs it,
+// so the component-authority graph is explicit and reviewable.
+pub fn fetch_scope(root: UiRoot, scope: String, methods: String, prefix: String) -> UiFetch:
+    match root:
+        UiRoot(_) -> UiFetch(scope, methods, prefix)
+
+pub fn route_scope(root: UiRoot, base: String, rights: String) -> UiRoute:
+    match root:
+        UiRoot(_) -> UiRoute(base, rights)
+
+pub fn timer_scope(root: UiRoot, min_ms: Int) -> UiTimer:
+    match root:
+        UiRoot(_) -> UiTimer(min_ms)
+
+pub fn credential_port(root: UiRoot, name: String) -> CredentialPort:
+    match root:
+        UiRoot(_) -> CredentialPort(name)
+
+pub fn secret_field(root: UiRoot, form: String, field: String) -> SecretInput:
+    match root:
+        UiRoot(_) -> SecretInput(form, field)
+
+// ---------------------------------------------------------------------------
+// VNode — the view as data (parameterized over the app's message type `msg`,
+// because event handlers carry app-specific messages).
+// ---------------------------------------------------------------------------
+
+// An element with a tag name, attributes, and children, OR a text node. Text is
+// ALWAYS a leaf carrying a plain String — there is no `string -> markup` variant,
+// so a `${userInput}` routed here (see the `html` tag) can only ever be inert
+// text. That is the XSS-immunity-by-construction guarantee, made structural.
+type VNode(msg):
+    Element(String, List(Attr(msg)), List(VNode(msg)))
+    Text(String)
+    Compartment(String, String, String)
+    Keyed(String, VNode(msg))
+    SecretField(SecretInput, String)
+    Slot(String, String)
+
+// An isolated FOREIGN-CODE compartment (RFC-0015): `renderer` names a sealed bundle
+// the host shell loads into a locked-down iframe (opaque origin, `connect-src 'none'`);
+// `grant` is the ONLY data that crosses in (a JSON string); `on_event` is the msg-tag
+// the narrow channel may send back. The witchy rune holds no authority over it — the
+// capability model expressed at the browser boundary.
+
+// A child with a STABLE KEY (RFC-0015): in a list, the host diffs by key instead of
+// by position, so reordering/inserting/removing items reuses the matching DOM node
+// (preserving its identity — and an `<input>`'s focus/caret) instead of rebuilding.
+
+// (RFC-0039) A host-owned SECRET input field. `SecretInput` is the unforgeable
+// authority to render it, and NAMES the host slot (`form`/`field`); the second field
+// is the msg-tag the shell dispatches — carrying only a NON-sensitive status
+// ("Empty"/"NonEmpty") — when the field changes. The typed value stays in host
+// custody: it NEVER crosses into the rune as a msg or model String, so a sibling
+// component cannot observe another component's password. To act on the value, the
+// rune passes an opaque `SecretRef` to `submit_secret` — it holds the handle, never
+// the bytes.
+
+// (RFC-0041) A HOST SLOT: a subtree the host renders ONCE via a registered renderer named
+// `kind`, and that glamour NEVER diffs into — the framework-owns-the-DOM escape hatch for a
+// host-managed widget (e.g. a runnable code cell). `data` is the payload the renderer
+// receives (for `"witchy-runnable"`, the cell's source). Unlike `Compartment` this is NOT a
+// sandboxed iframe — the host mounts it in the MAIN frame; the rune only names the slot and
+// supplies its data, while what goes inside is entirely the host's (see `glamour-dom.mjs`).
+
+// A DOM property/attribute (`class="card"`, `href=…`), OR an event→msg binding.
+// `On` carries a `msg` VALUE, not a closure — the whole MVU model: events are
+// DATA the shell hands back to `update`, never live handlers wired into the view.
+type Attr(msg):
+    Prop(String, String)
+    On(String, msg)
+    OnInput(String, String)
+
+// An input-VALUE handler: on `event`, the shell dispatches the 1-arg msg variant named
+// `tag` carrying the target's current value — the forms/controlled-input path the
+// fixed-msg `On` can't express (a keystroke's text isn't known at view time). The value
+// is delivered as data into `update`, so the rune still performs no DOM reads.
+
+// ---- constructors / helpers (the names the `html` tag emits) ----
+// The typed `html` tag gives these calls definition-site identity, so a consumer's
+// `let text = …` cannot shadow the emitted `text` constructor (RFC-0006/RFC-0080
+// hygiene). The hole values are spliced as
+// already-parsed AST at the tag's markers (see the `html` tag below), so a hole
+// expression resolves at the CALL site — the other half of the hygiene split.
+pub fn element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> VNode(msg):
+    Element(tag, attrs, children)
+
+pub fn text(s: String) -> VNode(msg):
+    Text(s)
+
+// Embed an isolated foreign-code compartment (RFC-0015). `renderer` is a sealed bundle
+// id the host serves under a locked-down origin; `grant` is the JSON-string payload that
+// crosses in (the ONLY thing that does); `on_event` is the Reflect variant name the
+// compartment's narrow channel may dispatch back. Spawning foreign code is the host's
+// `Js` authority — the rune only describes it, exactly like every other effect.
+pub fn compartment(renderer: String, grant: String, on_event: String) -> VNode(msg):
+    Compartment(renderer, grant, on_event)
+
+// Tag a child with a stable key for keyed list reconciliation (see `Keyed`).
+pub fn keyed(key: String, node: VNode(msg)) -> VNode(msg):
+    Keyed(key, node)
+
+// (RFC-0041) Emit a host slot: the host's `kind` renderer mounts a widget here (in the main
+// frame) and glamour never diffs into it. `data` is the payload (e.g. a runnable cell's
+// source). The rune stays pure — it only names the slot; the host owns the widget.
+pub fn slot(kind: String, data: String) -> VNode(msg):
+    Slot(kind, data)
+
+// (RFC-0039) Render a host-owned secret input. Requires a `SecretInput` token (minted by
+// `secret_field`), so a component without one cannot even put a password field on screen.
+// `on_ready` is the msg-tag the shell dispatches — carrying only a non-sensitive status —
+// when the field changes. The typed value stays in host custody; to act on it, hand
+// `secret_ref(input)` to `submit_secret`.
+pub fn secret_input(input: SecretInput, on_ready: String) -> VNode(msg):
+    SecretField(input, on_ready)
+
+pub fn prop(name: String, value: String) -> Attr(msg):
+    Prop(name, value)
+
+pub fn on(event: String, msg: msg) -> Attr(msg):
+    On(event, msg)
+
+// An input-value handler: on `event` (e.g. "input"), the shell dispatches the 1-arg msg
+// variant named `tag` with the field's current value — for search boxes and form fields.
+pub fn on_input(event: String, tag: String) -> Attr(msg):
+    OnInput(event, tag)
+
+// ---------------------------------------------------------------------------
+// Cmd — effects as data (RFC-0008's "honest hard part"). `update` does not
+// PERFORM effects — the rune is capability-denied — it DESCRIBES them: it returns
+// a `Cmd(msg)` the capability-HOLDING host shell interprets. The rune decides
+// WHAT should happen; the shell, which alone holds the capability, decides
+// WHETHER it may and actually does it. This is the purest expression of "authority
+// lives at the edge":
+//     view:   fn(state) -> VNode(msg)
+//     update: fn(state, msg) -> (state, Cmd(msg))
+// ---------------------------------------------------------------------------
+
+// `NoCmd` (not `None`) names the empty effect: `None` is already `Option.None`
+// from the prelude, so an `update` returning `(model, None)` would be read as an
+// `Option`. `NoCmd` is unambiguous and reads as "no command".
+//
+// `After(timer, ms, msg)` is the canonical Elm timer effect: "after `ms`
+// milliseconds, dispatch `msg`". The rune CANNOT perform this — it holds no `Clock`
+// capability — so it only DESCRIBES it; the shell holds the timer (`setTimeout`) and
+// performs it. (RFC-0039) The leading `UiTimer` is the unforgeable authority to arm
+// a timer, confined to `min_ms`; a component without one cannot schedule work.
+// `Batch(cmds)` runs several commands; it lets one `update` request more than one
+// effect.
+type Cmd(msg):
+    NoCmd
+    After(UiTimer, Int, msg)
+    Batch(List(Cmd(msg)))
+    Http(UiFetch, String, String, String, String)
+    Nav(UiRoute, String)
+    Port(CredentialPort, String, String)
+    SubmitSecret(SecretRef, CredentialPort, String)
+
+// An async HTTP request (RFC-0015): method, url, body, and the Reflect VARIANT NAME
+// the shell wraps the `(status, body)` response into and dispatches back. The rune
+// holds no `Net` — it only DESCRIBES the request; the capability-holding host shell
+// performs the fetch (attaching any session credential ITSELF) and feeds the result
+// back as that msg, exactly like the `After` timer. So `update` stays pure and the
+// footprint stays empty, while the app still talks to a server.
+// (RFC-0039) The leading `UiFetch` is the unforgeable authority to construct
+// this fetch: a component without one CANNOT emit an HTTP effect. The token is
+// NOT serialized (it gates construction, not the wire) — see `cmd_to_json`.
+
+// Push a new URL onto history (client-side routing); the shell mirrors it back as
+// the app's route msg so `view` re-renders for the new path.
+// (RFC-0039) The leading `UiRoute` is the unforgeable authority to navigate,
+// confined to a `base` path; a component without one cannot redirect the app.
+
+// A host-shell PORT (RFC-0015): run a named host capability (session login, a
+// WebAuthn passkey ceremony, storage) with `arg`, dispatching the 1-arg msg `tag(result)`
+// back. The port — and any credential or browser-native API it touches
+// (`navigator.credentials`, the session token) — lives entirely in the host; the rune
+// emits only the description and receives only the result, holding no authority itself.
+// (RFC-0039) The leading `CredentialPort` is the unforgeable authority AND it NAMES
+// the port: the name is read out of the token (see `cmd_to_json`), never passed as a
+// free argument, so a component holding a `promote` port can ONLY ever emit a promote
+// call — it cannot invoke `yank` or any other port it was not granted.
+
+// (RFC-0039) Submit a host-held SECRET (named by the opaque `SecretRef`) to a host
+// credential port, dispatching `on_done(result)` back. The rune never holds the secret
+// bytes — only the opaque handle — and the shell reads the value out of its OWN custody
+// and hands it to the port. Both the secret slot and the port name ride their tokens,
+// so neither is a forgeable free argument. This is how a password is used without ever
+// becoming rune-visible data.
+
+// ---------------------------------------------------------------------------
+// Cmd WIRE FORMAT — serialize a `Cmd(msg)` to the JSON shape the host shell
+// (`web/witchy-runtime/glamour-dom.mjs`) reads and INTERPRETS. The shell holds the
+// authority (the `setTimeout` timer); the rune only produced this description.
+//
+// Shape (compact JSON):
+//   NoCmd          -> {"cmd": "none"}
+//   After(ms, msg) -> {"cmd": "after", "ms": ms, "msg": <msg-json>}
+//   Batch(cmds)    -> {"cmd": "batch", "cmds": [<cmd-json>...]}
+//
+// The embedded `msg` is serialized via the same caller-supplied `msg_to_json`
+// the VNode `on` bindings use, so a `Cmd`'s deferred msg round-trips back into
+// `update` exactly as a click-sourced msg would. Events AND effects are data.
+// ---------------------------------------------------------------------------
+pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
+    match cmd:
+        // (BUG-017) Carry the token's `min_ms` floor so the shell — the real authority —
+        // re-clamps the delay itself, rather than trusting the emitted `ms` blindly.
+
+        // `tag` is a literal variant NAME (not routed through msg_to_json): the shell
+        // reconstructs `{"$variant": tag, "$values": [status, body]}` once the response
+        // arrives, so the response carries data the rune did not have at emit time.
+        // (BUG-017) The `UiFetch` policy (`methods`/`prefix`/`scope`) rides the wire so the
+        // host re-checks method+prefix before performing the fetch — the real authority.
+
+        // (BUG-017) Carry the `UiRoute` `base`/`rights` so the host re-checks the path is
+        // under the authorized base before `pushState`.
+
+        // The port NAME is read out of the `CredentialPort` token (not a free arg), so
+        // the wire can only ever name the port the component was actually granted.
+
+        // A secret submit carries the host-slot name (from the `SecretRef`) and the port
+        // name (from the `CredentialPort`) — both from tokens, neither forgeable — plus the
+        // reply tag. The secret VALUE is NOT here: the shell reads it from its own custody.
+        NoCmd -> JsonObject([("cmd", JsonString("none"))])
+        After(timer, ms, msg) ->
+            let mj: Json = msg_to_json(msg)
+            match timer:
+                UiTimer(min_ms) ->
+                    JsonObject([("cmd", JsonString("after")), ("ms", JsonInt(ms)), ("min_ms", JsonInt(min_ms)), ("msg", mj)])
+        Batch(cmds) ->
+            var cjs: List(Json) = []
+            for c in cmds:
+                let cj: Json = cmd_to_json(c, msg_to_json)
+                cjs.push(cj)
+            JsonObject([("cmd", JsonString("batch")), ("cmds", JsonArray(cjs))])
+        Http(fetch, method, url, body, tag) ->
+            match fetch:
+                UiFetch(scope, methods, prefix) ->
+                    JsonObject([("cmd", JsonString("http")), ("method", JsonString(method)), ("url", JsonString(url)), ("body", JsonString(body)), ("tag", JsonString(tag)), ("methods", JsonString(methods)), ("prefix", JsonString(prefix)), ("scope", JsonString(scope))])
+        Nav(route, path) ->
+            match route:
+                UiRoute(base, rights) ->
+                    JsonObject([("cmd", JsonString("nav")), ("path", JsonString(path)), ("base", JsonString(base)), ("rights", JsonString(rights))])
+        Port(cred, arg, tag) ->
+            match cred:
+                CredentialPort(name) ->
+                    JsonObject([("cmd", JsonString("port")), ("port", JsonString(name)), ("arg", JsonString(arg)), ("tag", JsonString(tag))])
+        SubmitSecret(secret, cred, tag) ->
+            match secret:
+                SecretRef(slot) ->
+                    match cred:
+                        CredentialPort(name) ->
+                            JsonObject([("cmd", JsonString("submit_secret")), ("slot", JsonString(slot)), ("port", JsonString(name)), ("tag", JsonString(tag))])
+
+// Convenience constructors for the HTTP effect. `on_done` is the name of a 2-arg msg
+// variant `Tag(Int, String)` the shell dispatches with `(status, body)` (status 0 on a
+// transport error, so failures are ordinary `update` arms, never exceptions).
+pub fn http_get(fetch: UiFetch, url: String, on_done: String) -> Cmd(msg):
+    fetch_cmd(fetch, "GET", url, "", on_done)
+
+pub fn http_post(fetch: UiFetch, url: String, body: String, on_done: String) -> Cmd(msg):
+    fetch_cmd(fetch, "POST", url, body, on_done)
+
+// (BUG-017) Enforce the `UiFetch` token policy at CONSTRUCTION: the method must be in the
+// token's method-set and the URL under its path prefix. FAIL CLOSED — a violation yields
+// `NoCmd`, so a component cannot even describe an effect its token does not authorize. The
+// host shell re-checks the same policy (carried on the wire by `cmd_to_json`) as the real
+// authority boundary; this witchy-side gate is the reviewable first line.
+fn fetch_cmd(fetch: UiFetch, method: String, url: String, body: String, on_done: String) -> Cmd(msg):
+    match fetch:
+        UiFetch(_scope, methods, prefix) ->
+            if method_allowed(methods, method) && url.starts_with(prefix):
+                Http(fetch, method, url, body, on_done)
+            else:
+                NoCmd
+
+// Arm a timer: after `ms` milliseconds the shell dispatches `msg`. Requires a `UiTimer`
+// token (the shell holds the real `setTimeout` and re-checks the token's `min_ms`).
+pub fn after(timer: UiTimer, ms: Int, msg: msg) -> Cmd(msg):
+    // (BUG-017) A `UiTimer` promises "no shorter than `min_ms`". Enforce the floor at
+    // construction by clamping UP; the host re-clamps against the wired `min_ms` too.
+    match timer:
+        UiTimer(min_ms) ->
+            let safe_ms = if ms < min_ms: min_ms else: ms
+            After(timer, safe_ms, msg)
+
+// Navigate to `path` (pushes history; the shell echoes it back as the route msg).
+// Requires a `UiRoute` token — a component without one cannot redirect the app.
+pub fn navigate(route: UiRoute, path: String) -> Cmd(msg):
+    // (BUG-017) Enforce the `UiRoute` token's `base` at construction — a path outside the
+    // authorized base is FAIL CLOSED to `NoCmd`. The host re-checks the wired `base`.
+    match route:
+        UiRoute(base, _rights) ->
+            if path.starts_with(base):
+                Nav(route, path)
+            else:
+                NoCmd
+
+// Run a host-shell port (session login, WebAuthn, storage) with `arg`; the shell dispatches
+// the 1-arg msg variant `on_done` with the port's result. The port NAME is carried by the
+// `CredentialPort` token (minted by `credential_port`), not passed here — so a component can
+// only invoke the exact port it was granted. Authority stays in the host; the rune never
+// sees the credential, only the outcome.
+pub fn port(cred: CredentialPort, arg: String, on_done: String) -> Cmd(msg):
+    Port(cred, arg, on_done)
+
+// (RFC-0039) An opaque handle to the host-held secret named by `input`. The rune can pass
+// it to `submit_secret`, but — `SecretRef` being a sealed capability of this module — a
+// consuming component can never unwrap it to read the bytes or even the slot. Only Glamour
+// mints it, and only from a `SecretInput` the component already holds, so the handle can
+// never outrun the render authority that produced the secret.
+pub fn secret_ref(input: SecretInput) -> SecretRef:
+    match input:
+        // (BUG-273) Collision-free slot encoding so two distinct `(form, field)` pairs can
+        // never map to the same host-custody key (see `slot_encode`).
+        SecretInput(form, field) -> SecretRef(slot_encode(form, field))
+
+// (RFC-0039) Submit the host-held secret (named by `secret`) to a host credential `port`.
+// The shell reads the value out of its OWN custody and hands it to the port, dispatching
+// `on_done(result)` back — the rune never sees the bytes, only the outcome.
+pub fn submit_secret(secret: SecretRef, cred: CredentialPort, on_done: String) -> Cmd(msg):
+    SubmitSecret(secret, cred, on_done)
+
+// ---------------------------------------------------------------------------
+// Serializer — render a VNode tree to an HTML string. There is no browser here,
+// so this is how the structural safety becomes OBSERVABLE in tests: text content
+// is escaped, so a text-node hole containing `<script>` renders as the literal
+// characters `&lt;script&gt;`, never executable markup.
+// ---------------------------------------------------------------------------
+pub fn to_html(node: VNode(msg)) -> String:
+    // idiom-exempt: rendering assembles exact HTML bytes after escaping each dynamic field.
+    match node:
+        // (BUG-272) The renderer is a REGISTRY KEY, not URL path material. Validate it as
+        // an opaque, non-path id; a value carrying `/`, `.`, `%`, `?`, `#` (which URL
+        // resolution could normalize out of the `/compartments/<id>/` namespace) is FAIL
+        // CLOSED to an inert `about:blank` frame instead of a crafted path.
+        Text(s) -> escape_text(s)
+        Compartment(renderer, _grant, _on) ->
+            if valid_renderer_id(renderer):
+                "<iframe sandbox=\"allow-scripts\" class=\"glamour-compartment\" src=\"/compartments/" + renderer + "/\"></iframe>"
+            else:
+                "<iframe sandbox=\"allow-scripts\" class=\"glamour-compartment\" src=\"about:blank\"></iframe>"
+        Keyed(_key, inner) -> to_html(inner)
+        SecretField(_input, _on_ready) -> "<input type=\"password\" class=\"glamour-secret\"></input>"
+        Slot(_kind, data) -> "<pre class=\"glamour-slot\"><code>" + escape_text(data) + "</code></pre>"
+        Element(tag, attrs, children) -> render_element(tag, attrs, children)
+
+// A foreign-code compartment renders as a locked-down iframe; the grant/event
+// channel is wired by the JS host at runtime (it never enters the HTML).
+
+// The key is a diff hint only — render the inner node.
+
+// A secret field renders as an INERT password input carrying no value — the typed
+// bytes live only in host custody, never in this (or any) rune-produced string.
+
+// A host slot has no static HTML (the host mounts its widget at runtime); the
+// fallback shows the payload as an inert, escaped code block so a no-JS render still
+// presents the source.
+fn render_element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> String:
+    // (BUG-259) FAIL CLOSED: `element(tag, …)` takes an arbitrary `String`, so a crafted
+    // name (` onload=x`, `a"><script`) could otherwise break out of the static-HTML string
+    // boundary. Validate the tag against the name allowlist; an invalid one is inertized to
+    // a `<span>` that records the rejected name as an escaped, non-executable data attribute.
+    let ok_tag = valid_tag_name(tag)
+    let emit_tag = if ok_tag: tag else: "span"
+    var out = "<" + emit_tag
+    if !ok_tag:
+        out = out + " data-glamour-invalid-tag=\"" + escape_attr(tag) + "\""
+    for a in attrs:
+        out = out + render_attr(a)
+    if children.is_empty():
+        out + "></" + emit_tag + ">"
+    else:
+        out = out + ">"
+        for c in children:
+            out = out + to_html(c)
+        out + "</" + emit_tag + ">"
+
+fn render_attr(a: Attr(msg)) -> String:
+    match a:
+        // (BUG-259) An attribute/event NAME is validated against the allowlist so it can
+        // never break the `name="value"` boundary; a rejected name is dropped in favor of an
+        // inert `data-glamour-invalid-*` marker (the value is still escaped as before).
+        Prop(name, value) ->
+            if valid_attr_name(name):
+                " " + name + "=\"" + escape_attr(value) + "\""
+            else:
+                " data-glamour-invalid-attr=\"" + escape_attr(name) + "\""
+        On(event, msg) ->
+            if valid_tag_name(event):
+                " data-on-" + event + "=\"[msg]\""
+            else:
+                " data-glamour-invalid-event=\"[msg]\""
+        OnInput(event, _tag) ->
+            if valid_tag_name(event):
+                " data-on-" + event + "=\"[input]\""
+            else:
+                " data-glamour-invalid-event=\"[input]\""
+
+// (BUG-259) NAME allowlists — the load-bearing complement to value escaping. Value escaping
+// (`escape_attr`) keeps a value from breaking its quotes; these keep a NAME from breaking the
+// tag/attribute structure itself. A tag/event name must start with an ASCII letter and then
+// contain only ASCII letters, digits, or `-`. An attribute name may also carry `_ : .` (for
+// `data-*`, `aria-*`, namespaced attrs) — none of which can break the `name="value"` boundary,
+// whereas a space, quote, `<`, `>`, `=`, or `/` can.
+fn name_alpha() -> String:
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+fn valid_tag_name(name: String) -> Bool:
+    // idiom-exempt: these suffixes define the accepted character sets.
+    valid_name_with(name, name_alpha() + "0123456789-")
+
+fn valid_attr_name(name: String) -> Bool:
+    valid_name_with(name, name_alpha() + "0123456789-_:.")
+
+fn valid_name_with(name: String, allowed_rest: String) -> Bool:
+    if name.is_empty():
+        false
+    else:
+        let cs = name.chars()
+        var ok = name_alpha().contains(cs.at(0))
+        var i = 1
+        let n = cs.length()
+        while i < n:
+            if !allowed_rest.contains(cs.at(i)):
+                ok = false
+            i = i + 1
+        ok
+
+// A static/property attribute. The value is attribute-escaped so a `"`
+// can't break out of the quoted value.
+
+// An event binding is data for the host shell; it has no HTML rendering
+// surface, so the serializer marks it inertly (the shell reads the live
+// `On` value out of the VNode, not out of this string).
+
+// Escape text content: the four characters that could otherwise be parsed as
+// markup. This is the load-bearing line for XSS-immunity being observable.
+fn escape_text(s: String) -> String:
+    var out = s.replace("&", "&amp;")
+    out = out.replace("<", "&lt;")
+    out = out.replace(">", "&gt;")
+    out
+
+// Escape an attribute value: as text, plus the quote that delimits the value.
+fn escape_attr(s: String) -> String:
+    var out = escape_text(s)
+    out = out.replace("\"", "&quot;")
+    out
+
+// (BUG-272) A compartment renderer id must be a REGISTRY KEY, never URL path material:
+// lowercase ASCII alnum, `-`, `_`, starting with an alnum, non-empty. This grammar excludes
+// `/`, `.`, `%`, `?`, `#` and whitespace, so the id can never escape the `/compartments/<id>/`
+// namespace (browser URL resolution can normalize `..`/dot-segments out of a path). The JS
+// host re-checks the same grammar at the live iframe sink.
+fn valid_renderer_id(id: String) -> Bool:
+    // idiom-exempt: these literals define the renderer-id character set.
+    if id.is_empty():
+        false
+    else:
+        let cs = id.chars()
+        let lead = "abcdefghijklmnopqrstuvwxyz0123456789"
+        let rest = lead + "-_"
+        var ok = lead.contains(cs.at(0))
+        var i = 1
+        let n = cs.length()
+        while i < n:
+            if !rest.contains(cs.at(i)):
+                ok = false
+            i = i + 1
+        ok
+
+// (BUG-273) Encode a secret slot from its `(form, field)` coordinates so distinct pairs can
+// NEVER collide. A raw `form + "/" + field` join lets `("a/b","c")` and `("a","b/c")` collapse
+// to the same key; here each component's `%` and `/` are percent-escaped first, so the `/`
+// separator is unambiguous and the mapping is injective. The JS host mirrors this exact
+// encoding (`secretSlot`), so `secret_ref` and the rendered `SecretField` name the same slot.
+fn slot_encode(form: String, field: String) -> String:
+    // idiom-exempt: this is a collision-resistant encoded key, not presentation text.
+    slot_escape(form) + "/" + slot_escape(field)
+
+fn slot_escape(s: String) -> String:
+    var out = s.replace("%", "%25")
+    out = out.replace("/", "%2F")
+    out
+
+// (BUG-017) A fetch token's method-set membership test. `methods` is a set spelled with any of
+// `,`/`space`/`|` as separators (e.g. "GET", "GET,POST", "GET POST"); a method is allowed only
+// if it appears as a whole token. Case-normalized to the uppercase HTTP-verb convention.
+fn method_allowed(methods: String, method: String) -> Bool:
+    // idiom-exempt: delimiters make the comma-separated membership check exact.
+    let norm = methods.to_upper().replace(" ", ",").replace("|", ",")
+    ("," + norm + ",").contains("," + method.to_upper() + ",")
+
+// ===========================================================================
+// The WIRE FORMAT — serialize a VNode tree to JSON the JS DOM host shell
+// (`web/witchy-runtime/glamour-dom.mjs`) consumes (RFC-0007's string-bridge,
+// RFC-0008's run loop). There is no DOM here; the shell deserializes this and
+// builds nodes with `createElement`/`textContent`/`setAttribute` ONLY — never an
+// HTML-string sink — so the Perfect-Types-safe render path is structural.
+//
+// Shape (compact JSON):
+//   element : {"el": tag, "attrs": [<attr>...], "kids": [<node>...]}
+//   text    : {"text": "..."}
+//   <attr>  : ["prop", name, value]            (a static property)
+//           | ["on", event, <msg-json>]        (an event->msg binding; the msg is
+//                                                serialized by the app's
+//                                                `msg_to_json`, sent back verbatim
+//                                                by the shell as the next
+//                                                `{model, msg}` input)
+//
+// The `On` binding embeds the message value as JSON via a caller-supplied
+// `msg_to_json: fn(msg) -> Json` (symmetric with `parse_msg` on the way back in).
+// Passing the serializer as a value — rather than reflecting a still-generic type
+// var inside this function — keeps monomorphization happy; `json.from_value(msg)` is
+// the obvious `msg_to_json` an app hands in (it works for any `Reflect` msg).
+// ===========================================================================
+pub fn to_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> String:
+    json.encode(node_json(node, msg_to_json))
+
+fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
+    match node:
+        // A secret field carries only its host-slot coordinates (`form`/`field`, read out
+        // of the `SecretInput` token) and the non-sensitive `on_ready` msg-tag. No value —
+        // the shell owns the bytes; the rune never emitted them.
+
+        // A host slot names its `kind` renderer and carries its `data` payload; the host
+        // mounts the widget (glamour never diffs into it).
+
+        // The msg VALUE serialized to JSON — the host sends it back
+        // unchanged, so a `${Inc}` event handler round-trips as the
+        // `Inc` message into `update`. Events are data.
+
+        // The shell fills the target's value into a `tag(value)` msg on `event`.
+
+        // Keep the live-DOM wire contract identical to `to_html`: an
+        // invalid name becomes an inert marker instead of reaching a
+        // host `setAttribute`/`addEventListener` sink (BUG-512).
+        Text(s) -> JsonObject([("text", JsonString(s))])
+        Compartment(renderer, grant, on_event) ->
+            JsonObject([("compartment", JsonString(renderer)), ("grant", JsonString(grant)), ("on", JsonString(on_event))])
+        Keyed(key, inner) ->
+            JsonObject([("key", JsonString(key)), ("node", node_json(inner, msg_to_json))])
+        SecretField(input, on_ready) ->
+            match input:
+                SecretInput(form, field) ->
+                    JsonObject([("secret", JsonObject([("form", JsonString(form)), ("field", JsonString(field))])), ("on_ready", JsonString(on_ready))])
+        Slot(kind, data) ->
+            JsonObject([("slot", JsonString(kind)), ("data", JsonString(data))])
+        Element(tag, attrs, children) ->
+            var ajs: List(Json) = []
+            for a in attrs:
+                let aj: Json = match a:
+                    Prop(name, value) ->
+                        if valid_attr_name(name):
+                            JsonArray([JsonString("prop"), JsonString(name), JsonString(value)])
+                        else:
+                            JsonArray([JsonString("prop"), JsonString("data-glamour-invalid-attr"), JsonString(name)])
+                    On(event, msg) ->
+                        if valid_tag_name(event):
+                            let mj: Json = msg_to_json(msg)
+                            JsonArray([JsonString("on"), JsonString(event), mj])
+                        else:
+                            JsonArray([JsonString("prop"), JsonString("data-glamour-invalid-event"), JsonString("[msg]")])
+                    OnInput(event, tag) ->
+                        if valid_tag_name(event):
+                            JsonArray([JsonString("oninput"), JsonString(event), JsonString(tag)])
+                        else:
+                            JsonArray([JsonString("prop"), JsonString("data-glamour-invalid-event"), JsonString("[input]")])
+                ajs.push(aj)
+            var kjs: List(Json) = []
+            for c in children:
+                let cj: Json = node_json(c, msg_to_json)
+                kjs.push(cj)
+            JsonObject([("el", JsonString(tag)), ("attrs", JsonArray(ajs)), ("kids", JsonArray(kjs))])
+
+// ===========================================================================
+// The RUN-LOOP glue (RFC-0008's MVU loop, host-driven). The app author writes a
+// single pure `pub fn export_step(input: String) -> String` (the `export_`
+// prefix marks it a JS-callable WASM export — see `is_string_export` in codegen).
+// The host calls it with `{"model": <model-json>}` (initial render) or
+// `{"model": <model-json>, "msg": <msg-json>}` (after an event). `step_with`
+// below is the reusable engine: parse the input, run `update(model, msg)` when a
+// msg is present, then `view(model)`, and return `{"model": <model-json>,
+// "vnode": <vnode-json>}` for the shell to diff into the DOM.
+//
+// `step_with` is generic over the app's `model`/`msg` and takes `view`/`update`
+// and the model/msg encode+decode as first-class function values (the stdlib
+// already passes `fn` values throughout). The app supplies:
+//   * `parse_model: fn(Json) -> model` / `parse_msg: fn(Json) -> msg` (a small
+//     match over its own JSON shape — the inbound boundary), and
+//   * `model_to_json: fn(model) -> Json` / `msg_to_json: fn(msg) -> Json` (the
+//     outbound boundary; `json.from_value` is the obvious choice for a `Reflect`
+//     type).
+// `update` returns `(model, Cmd(msg))`; this engine THREADS the `Cmd` through and
+// serializes it into the returned JSON (`cmd_to_json`), so the shell — which alone
+// holds the authority — can interpret it. The initial render (model-only input,
+// no msg) emits `NoCmd`. Passing the serializers as values (rather than a
+// `where _: Reflect` bound here) keeps the generic monomorphization tractable —
+// the unproven part RFC-0008 flagged.
+// ===========================================================================
+pub fn step_with(input: String, view: fn(model) -> VNode(msg), update: fn(model, msg) -> (model, Cmd(msg)), parse_model: fn(Json) -> model, parse_msg: fn(Json) -> msg, model_to_json: fn(model) -> Json, msg_to_json: fn(msg) -> Json) -> String:
+    let parsed = json.decode(input)
+    match parsed:
+        // The model is required; a missing/invalid `model` is an error result.
+
+        // Apply `update` only when a `msg` is present (the event step);
+        // the initial render has model-only input and so emits `NoCmd`.
+        // Kept inline (not a helper) so the `model`/`msg` type vars
+        // thread without a cross-function inference hop.
+
+        // Initial render: model-only input, no msg, so no effect.
+
+        // Event step: fold the msg in and carry its command out.
+
+        // Serialize the command so the host shell can interpret it —
+        // the shell holds the authority (e.g. the timer); the rune only
+        // described the effect here.
+        Err(e) -> json.encode(JsonObject([("error", JsonString(json.decode_error_message(e)))]))
+        Ok(doc) ->
+            match json.get(doc, "model"):
+                None -> json.encode(JsonObject([("error", JsonString("missing `model`"))]))
+                Some(model_json) ->
+                    let model0 = parse_model(model_json)
+                    let stepped = match json.get(doc, "msg"):
+                        None -> (model0, NoCmd)
+                        Some(msg_json) ->
+                            let msg = parse_msg(msg_json)
+                            update(model0, msg)
+                    let (model1, cmd) = stepped
+                    let vnode = view(model1)
+                    let model_j = model_to_json(model1)
+                    let vnode_j = node_json(vnode, msg_to_json)
+                    let cmd_j = cmd_to_json(cmd, msg_to_json)
+                    json.encode(JsonObject([("model", model_j), ("vnode", vnode_j), ("cmd", cmd_j)]))
+
+// ===========================================================================
+// The `html` tag — a COMPILE-TIME tagged literal (RFC-0006). `html"<div…>"`
+// expands DURING COMPILATION: this function runs once in the compiler, receives
+// the static fragments (`parts`) and an OPAQUE MARKER per hole (`holes` — each
+// element is a `__witchy_hole_N` token, NOT the hole's source), and returns typed
+// expression syntax constructing a `VNode`. The tag PLACES each marker where the
+// hole's value belongs; `tagged::expand` substitutes the real hole expression
+// (parsed once at the call site, carrying its source position) at each marker. The
+// emitted constructors receive definition-site identity, so they resolve in this
+// module and cannot be shadowed by a call-site local — the hygiene
+// split (RFC-0006). The result is spliced over the literal, so both backends
+// compile the same AST.
+//
+// Holes are typed BY POSITION (the headline safety property):
+//   * a hole in TEXT position      -> `text(<marker>)`  (a text NODE; if
+//     the hole is a String it is inert text — XSS-immune; a VNode hole is spliced
+//     directly, the simplest correct rule).
+//   * a hole in ATTRIBUTE-VALUE    -> `prop("name", <marker>)`
+//     position
+//   * a hole in `on:event=${...}`  -> `on("event", <marker>)`  (events as
+//     data; the hole is a `msg` value).
+//   * a hole in a FORBIDDEN spot   -> `fail("…")` at comptime, aborting the
+//     (e.g. as a tag NAME)            compile with a message naming the problem.
+//
+// Supported subset: nested `<tag attr=… on:evt=…>children</tag>`, self-closing
+// `<tag/>`, static text, static `name="value"` / `name=value` attributes, and
+// `${}` holes in text / attribute-value / event positions. NOT supported (noted):
+// HTML comments, entities beyond the escape set, boolean attributes without a
+// value, and namespaced/SVG tags.
+// ===========================================================================
+pub comptime fn html(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    // A source `\0` escape is legal in a tagged literal's static parts, but NUL
+    // is the private hole-marker delimiter below. Reject it before weaving so
+    // static text can never be parsed as a synthetic hole (BUG-439).
+    let _safe_parts = reject_static_nul(parts)
+    // Reconstruct the full template, replacing each hole with a sentinel marker
+    // `<NUL>N<NUL>`, so the parser can walk a single char stream and recover
+    // hole `N`'s source when it meets a marker.
+    let template = weave(parts)
+    let toks = lex_html(template)
+    // Parse one top-level node (the RFC's examples are single-rooted).
+    let parsed = parse_node(toks, 0, holes)
+    let (src, next) = parsed
+    // (BUG-227) A template must have exactly ONE root: reject any content after it.
+    let _checked = no_trailing_tokens(toks, next)
+    meta.expr_raw(src)
+
+fn reject_static_nul(parts: List(String)) -> Bool:
+    let nul = string.from_code(0)
+    for part in parts:
+        if part.contains(nul):
+            let _bad = fail("glamour html: NUL is not allowed in static template text")
+    true
+
+// (BUG-227) After the single root node, no meaningful tokens may remain — a second root
+// (`<div/><span/>`) or trailing markup is a compile-time error. Whitespace-only text runs
+// (indentation/newlines around the template) are ignored. Returns `true` when clean; `fail`s
+// at comptime otherwise.
+fn no_trailing_tokens(toks: List(HtmlTok), from: Int) -> Bool:
+    let n = toks.length()
+    var i = from
+    while i < n:
+        if let TextRun(s) = toks.at(i):
+            if !s.trim().is_empty():
+                let _b = fail("glamour html: content after the root element — a template must have a single root")
+        else:
+            let _b2 = fail("glamour html: more than one root element — wrap the roots in a single parent")
+        i = i + 1
+    true
+
+// Interleave static parts with NUL-delimited hole markers: part0 + M0 + part1 +
+// M1 + … . `parts.len() == holes.len() + 1`, so every gap gets exactly one
+// marker indexed by its position.
+fn weave(parts: List(String)) -> String:
+    // idiom-exempt: this emits the parser's NUL-delimited hole wire format.
+    let nul = string.from_code(0)
+    var out = ""
+    var i = 0
+    let n = parts.length()
+    for p in parts:
+        out = out + p
+        if i < n - 1:
+            out = out + nul + "${i}" + nul
+        i = i + 1
+    out
+
+// ---- a tiny HTML lexer over the woven template ----
+// Tokens are encoded as strings for simplicity (no extra type leaks into the
+// rune's public surface): a tag-open marker, attributes, text runs, and holes.
+type HtmlTok:
+    Open(String, List(HAttr), Bool)
+    Close(String)
+    TextRun(String)
+    HoleNode(Int)
+
+// `<tag` open (the tag name; "" if the name was a forbidden hole — caught
+// later) with the parsed attributes and whether it self-closed (`/>`).
+
+// `</tag>` close.
+
+// A run of literal text (already de-woven: holes inside text are separate).
+
+// A `${N}` hole appearing in TEXT position (child of an element).
+type HAttr:
+    SProp(String, String)
+    HProp(String, Int)
+    HOn(String, Int)
+    Bad(String)
+
+// `name="value"` / `name=value` — a static attribute.
+
+// `name=${N}` — an attribute whose value is hole `N`.
+
+// `on:event=${N}` — an event binding to hole `N` (a `msg` value).
+
+// `on:event=${N}` written with a static literal is rejected at parse time;
+// a forbidden attribute shape becomes `Bad(message)`.
+fn lex_html(s: String) -> List(HtmlTok):
+    let cs = s.chars()
+    let n = cs.length()
+    var out = []
+    var i = 0
+    var text = ""
+    let nul = string.from_code(0)
+    while i < n:
+        let c = cs.at(i)
+        if c == nul:
+            // A hole marker `<NUL>N<NUL>` in TEXT position.
+            if text.length() > 0:
+                out.push(TextRun(text))
+                text = ""
+            let (idx, j) = read_marker(cs, i, nul)
+            out.push(HoleNode(idx))
+            i = j
+        else if c == "<":
+            if text.length() > 0:
+                out.push(TextRun(text))
+                text = ""
+            let (tok, j) = lex_tag(cs, i, nul)
+            out.push(tok)
+            i = j
+        else:
+            text = text + c
+            i = i + 1
+    if text.length() > 0:
+        out.push(TextRun(text))
+    out
+
+// Read a NUL-delimited marker `<NUL>digits<NUL>` starting at `i` (which is the
+// opening NUL). Returns (hole index, index after the closing NUL).
+fn read_marker(cs: List(String), i: Int, nul: String) -> (Int, Int):
+    var j = i + 1
+    var digits = ""
+    let n = cs.length()
+    while j < n && cs.at(j) != nul:
+        digits = digits + cs.at(j)
+        j = j + 1
+    (digits.to_int(), j + 1)
+
+// Lex a `<...>` tag starting at the `<`. Returns (token, index after `>`).
+fn lex_tag(cs: List(String), start: Int, nul: String) -> (HtmlTok, Int):
+    let n = cs.length()
+    var i = start + 1
+    // Closing tag `</name>`.
+    if i < n && cs.at(i) == "/":
+        i = i + 1
+        var name = ""
+        while i < n && cs.at(i) != ">":
+            name = name + cs.at(i)
+            i = i + 1
+        (Close(name.trim()), i + 1)
+    else:
+        // Opening tag: read the name (up to whitespace, `>`, or `/`). A name that
+        // is or contains a hole marker is FORBIDDEN.
+        var name = ""
+        if i < n && cs.at(i) == nul:
+            // Tag name is a hole — forbidden. Emit an empty-named Open carrying a
+            // marker the parser turns into a comptime `fail`.
+            let (_idx, j) = read_marker(cs, i, nul)
+            (Open("", [], false), j)
+        else:
+            while i < n && !is_name_end(cs.at(i)):
+                name = name + cs.at(i)
+                i = i + 1
+            let (attrs, j, self_close) = lex_attrs(cs, i, nul)
+            (Open(name.trim(), attrs, self_close), j)
+
+fn is_name_end(c: String) -> Bool:
+    c == " " || c == "\t" || c == "\n" || c == "\r" || c == ">" || c == "/"
+
+fn is_ws(c: String) -> Bool:
+    c == " " || c == "\t" || c == "\n" || c == "\r"
+
+// Lex the attribute list after the tag name, up to (and consuming) `>` or `/>`.
+// Returns (attrs, index after `>`, self_closing?).
+fn lex_attrs(cs: List(String), start: Int, nul: String) -> (List(HAttr), Int, Bool):
+    let n = cs.length()
+    var i = start
+    var attrs = []
+    while i < n:
+        let c = cs.at(i)
+        if is_ws(c):
+            i = i + 1
+        else if c == ">":
+            return (attrs, i + 1, false)
+        else if c == "/":
+            // `/>` self-close.
+            return (attrs, i + 2, true)
+        else:
+            let (attr, j) = lex_one_attr(cs, i, nul)
+            attrs.push(attr)
+            i = j
+    (attrs, i, false)
+
+// Lex a single `name=value` (or `on:event=value`) attribute.
+fn lex_one_attr(cs: List(String), start: Int, nul: String) -> (HAttr, Int):
+    let n = cs.length()
+    var i = start
+    var name = ""
+    while i < n && !is_attr_name_end(cs.at(i)):
+        name = name + cs.at(i)
+        i = i + 1
+    // No `=value`: a bare/boolean attribute (unsupported in this subset).
+    if i >= n || cs.at(i) != "=":
+        (Bad("attribute `${name}` has no value — boolean attributes are unsupported"), i)
+    else:
+        i = i + 1
+        // Value: a bare `${N}` hole, a `"quoted"` value (static OR a single `"${N}"` hole),
+        // or a bare token.
+        if i < n && cs.at(i) == nul:
+            let (idx, j) = read_marker(cs, i, nul)
+            (hole_attr(name, idx), j)
+        else if i < n && cs.at(i) == "\"":
+            // (BUG-405) A quoted value: recognize the natural `href="${url}"` spelling as a
+            // hole, not static text (which used to capture the NUL marker literally).
+            lex_quoted_attr(cs, i, nul, name)
+        else:
+            let (value, j) = lex_attr_value(cs, i, nul)
+            // A static value for an `on:` handler is rejected — events are data.
+            if name.starts_with("on:"):
+                (Bad("event `${name}` needs a \${msg} hole, not a static value"), j)
+            else:
+                (SProp(name, value), j)
+
+// (BUG-405) Lex a double-quoted attribute value starting at the opening `"`. Three shapes:
+//   * `"${N}"`  — exactly one hole: substituted like the bare `name=${N}` form (`hole_attr`).
+//   * `"text"`  — static: emitted as `SProp` (or rejected for an `on:` handler — events are
+//                 data, not a static string).
+//   * `"x ${N}"`— MIXED static + hole: rejected (`Bad`) until concatenated attribute
+//                 expressions are intentionally designed.
+// Returns (attr, index after the closing quote).
+fn lex_quoted_attr(cs: List(String), start: Int, nul: String, name: String) -> (HAttr, Int):
+    let n = cs.length()
+    let body_start = start + 1
+    if body_start < n && cs.at(body_start) == nul:
+        // Leads with a hole marker: valid only if the closing quote immediately follows it.
+        let (idx, after_marker) = read_marker(cs, body_start, nul)
+        if after_marker < n && cs.at(after_marker) == "\"":
+            (hole_attr(name, idx), after_marker + 1)
+        else:
+            (Bad("attribute `${name}` mixes static text and a \${hole} in a quoted value — unsupported"), scan_to_quote(cs, after_marker))
+    else:
+        // Static (or mixed) text: read to the closing quote; a marker anywhere inside means
+        // the value mixes static text and a hole.
+        var v = ""
+        var has_hole = false
+        var k = body_start
+        while k < n && cs.at(k) != "\"":
+            if cs.at(k) == nul:
+                has_hole = true
+            v = v + cs.at(k)
+            k = k + 1
+        let after = k + 1
+        if has_hole:
+            (Bad("attribute `${name}` mixes static text and a \${hole} in a quoted value — unsupported"), after)
+        else if name.starts_with("on:"):
+            (Bad("event `${name}` needs a \${msg} hole, not a static value"), after)
+        else:
+            (SProp(name, v), after)
+
+// Advance past the next closing `"` from `start` (used to resynchronize after a rejected
+// mixed quoted value). Returns the index just after the quote.
+fn scan_to_quote(cs: List(String), start: Int) -> Int:
+    let n = cs.length()
+    var i = start
+    while i < n && cs.at(i) != "\"":
+        i = i + 1
+    i + 1
+
+fn is_attr_name_end(c: String) -> Bool:
+    c == "=" || is_ws(c) || c == ">" || c == "/"
+
+fn hole_attr(name: String, idx: Int) -> HAttr:
+    if name.starts_with("on:"):
+        HOn(name.drop(3), idx)
+    else:
+        HProp(name, idx)
+
+// Read a static attribute value: `"quoted"` (may contain a hole marker? no — a
+// holed value is handled by the caller) or a bare token up to whitespace/`>`.
+fn lex_attr_value(cs: List(String), start: Int, nul: String) -> (String, Int):
+    let n = cs.length()
+    var i = start
+    if i < n && cs.at(i) == "\"":
+        i = i + 1
+        var v = ""
+        while i < n && cs.at(i) != "\"":
+            v = v + cs.at(i)
+            i = i + 1
+        (v, i + 1)
+    else:
+        var v = ""
+        while i < n && !is_name_end(cs.at(i)):
+            v = v + cs.at(i)
+            i = i + 1
+        (v, i)
+
+// ---- the parser: tokens -> witchy expression source building a VNode ----
+
+// Parse the node starting at token `at`. Returns (source, index after the node).
+fn parse_node(toks: List(HtmlTok), at: Int, holes: List(String)) -> (String, Int):
+    let n = toks.length()
+    if at >= n:
+        fail("glamour html: empty template — expected a single root element")
+        ("", at)
+    else:
+        match toks.at(at):
+            TextRun(s) -> (emit_text_literal(s), at + 1)
+            HoleNode(idx) -> (emit_text_hole(idx, holes), at + 1)
+            Close(name) ->
+                let _bad = fail("glamour html: unexpected closing tag </${name}>")
+                ("", at + 1)
+            Open(name, attrs, self_close) -> parse_element(toks, at, name, attrs, self_close, holes)
+
+fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr), self_close: Bool, holes: List(String)) -> (String, Int):
+    // idiom-exempt: this parser emits Witchy source and must preserve quoting byte-for-byte.
+    if name.length() == 0:
+        let _bad = fail("glamour html: a tag NAME may not be a \${hole} — the element name must be static")
+        ("", at + 1)
+    else:
+        let attr_src = emit_attrs(attrs, holes)
+        if self_close:
+            ("element(\"" + escape_src(name) + "\", [" + attr_src + "], [])", at + 1)
+        else:
+            let (kids_src, after) = parse_children(toks, at + 1, name, holes)
+            ("element(\"" + escape_src(name) + "\", [" + attr_src + "], [" + kids_src + "])", after)
+
+// Parse children until the matching `</name>`. Returns (comma-joined child
+// sources, index after the close tag).
+fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String)) -> (String, Int):
+    let n = toks.length()
+    var i = at
+    var kids = []
+    var done = false
+    var closed = false
+    while i < n && !done:
+        // (BUG-227) A close tag must MATCH the element being parsed. The old loop closed on
+        // ANY `</…>`, so `<div><span>x</div>` (mismatched) and `<div><span>x` (missing close,
+        // ending at EOF) both silently "succeeded". Compare the name and fail on a mismatch;
+        // an unterminated element (EOF before its close) is caught by `!closed` below.
+        if let Close(close_name) = toks.at(i):
+            if close_name == name:
+                closed = true
+            else:
+                let _bad = fail("glamour html: expected </${name}>, found </${close_name}>")
+            done = true
+            i = i + 1
+        else:
+            let (src, j) = parse_node(toks, i, holes)
+            kids.push(src)
+            i = j
+    if !closed:
+        let _bad2 = fail("glamour html: unclosed <${name}> — missing its </${name}>")
+    (kids.join(", "), i)
+
+// ---- emitters: produce witchy expression SOURCE ----
+
+// idiom-exempt: these emitters assemble Witchy source and preserve quoting byte-for-byte.
+
+// Static text -> `text("…")` with the literal string-escaped for re-parsing.
+fn emit_text_literal(s: String) -> String:
+    "text(\"" + escape_src(s) + "\")"
+
+// A text-position hole -> `text(<marker>)`. `holes.at(idx)` is the
+// opaque `__witchy_hole_idx` token; `tagged::expand` substitutes the real hole
+// expression there. This is the SIMPLEST CORRECT rule and the security crux: the
+// hole is ALWAYS wrapped in `text(...)`, so a String hole becomes an inert
+// text NODE (escaped on render — XSS-immune by construction), and the position
+// therefore TYPES the hole as `String` (a VNode in text position is a type error
+// here). Splicing a child VNode directly — to nest a precomputed subtree via
+// `${node}` — is a documented later refinement (it needs the tag to emit the hole
+// unwrapped when its type is `VNode`).
+fn emit_text_hole(idx: Int, holes: List(String)) -> String:
+    "text(" + holes.at(idx) + ")"
+
+fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> String:
+    var srcs = []
+    for a in attrs:
+        srcs.push(emit_attr(a, holes))
+    srcs.join(", ")
+
+fn emit_attr(a: HAttr, holes: List(String)) -> String:
+    match a:
+        SProp(name, value) -> "prop(\"" + escape_src(name) + "\", \"" + escape_src(value) + "\")"
+        HProp(name, idx) -> "prop(\"" + escape_src(name) + "\", " + holes.at(idx) + ")"
+        HOn(event, idx) -> "on(\"" + escape_src(event) + "\", " + holes.at(idx) + ")"
+        Bad(msg) ->
+            let _bad = fail("glamour html: ${msg}")
+            ""
+
+// Escape a string so it can be re-parsed as a witchy string LITERAL (the emitted
+// source is parsed by the compiler). Backslash first, then quote.
+fn escape_src(s: String) -> String:
+    var out = s.replace("\\", "\\\\")
+    out = out.replace("\"", "\\\"")
+    out

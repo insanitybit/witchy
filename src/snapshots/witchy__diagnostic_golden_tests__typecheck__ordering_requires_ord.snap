@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"type Widget:\\n    n: Int\\n\\nfn main(console: Console):\\n    let a = Widget(n: 1)\\n    let b = Widget(n: 2)\\n    if a < b: print(console, \\\"lt\\\") else: print(console, \\\"ge\\\")\\n\")"
+---
+type error: `Widget` does not implement `PartialOrd` (no `impl PartialOrd for Widget`) — required by a call to `less`

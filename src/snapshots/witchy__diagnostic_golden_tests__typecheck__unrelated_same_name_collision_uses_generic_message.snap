@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"import list\\n\\ntype Point:\\n    x: Int\\n\\nfn main(console: Console):\\n    let p = Point(1)\\n    console.print(\\\"${p.map(fn(v): v)}\\\")\\n\")"
+---
+type error: no method `map` on `Point` — methods come from `impl` blocks; a plain function is called as `map(value, …)` (or module-qualified, e.g. `list.map(value, …)`)

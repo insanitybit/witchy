@@ -1,0 +1,27 @@
+[package]
+name = "witchy-lower"
+version = "0.1.0"
+edition = "2024"
+publish = false            # internal workspace crate — not published standalone
+license = "MIT OR Apache-2.0"
+description = "witchy compiler — AST→WIR lowering (the compiled backend's front half)"
+
+[features]
+# Synthetic AST and lowerer tests intentionally exercise stages below the
+# checked pipeline. Production dependents receive only proof-carrying entries.
+raw-module-test-api = []
+
+# Non-test code is pure (it builds WIR via witchy-wir), so this crate is
+# wasm-clean. The tests run the emitted module under wasmtime — a dev-dependency,
+# so it never enters a non-test or wasm build.
+[dependencies]
+witchy-syntax = { path = "../witchy-syntax" }
+witchy-types = { path = "../witchy-types" }
+witchy-wir = { path = "../witchy-wir" }
+# Fast non-DoS-resistant hasher for internal tables (see witchy-types).
+foldhash = "0.2.0"
+# Validates the emitted module; pure Rust, so the lowering path stays wasm-clean.
+wasmparser = "0.251"
+
+[dev-dependencies]
+wasmtime = "45.0.0"

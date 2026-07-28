@@ -1,0 +1,13 @@
+# coven_app — the coven-web SHELL on glamour (RFC-0015 Phase D): one routed, data-fetched
+# app wiring the views to the HTTP + routing effects. The host shell performs every fetch
+# (attaching the session credential itself), so the rune holds no Net and no token. The
+# trusted shell — XSS-immune by construction. Empty footprint.
+[rune]
+name = "coven_app"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]
+
+[dependencies]
+"glamour" = { path = "../.." }

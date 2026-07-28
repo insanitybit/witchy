@@ -1,0 +1,224 @@
+// coven_test — unit tests for coven's pure logic. Run with `witchy test`.
+// The server lifecycle (publish -> promote -> add, TUF, trusted publishing) is
+// covered end-to-end by the Rust e2e suite; these lock the pure pieces:
+// name/version validation, and the derive(Json) round-trip the records rely on.
+
+import testing
+import coven_validate
+import coven_proto
+import coven_footprint
+import coven_trust
+import reflect
+import result
+import option
+from json import Json
+from coven_record import State
+
+// --- name + version validation -----------------------------------------------
+fn test_valid_name_accepts_namespaced():
+    testing.assert(coven_validate.valid_name("acme/json"), "namespace/name is valid")
+    testing.assert(coven_validate.valid_name("std/http-client"), "hyphens allowed in the name")
+
+fn test_valid_name_rejects_bad():
+    testing.assert(!coven_validate.valid_name("acme"), "a bare name (no namespace) is rejected")
+    testing.assert(!coven_validate.valid_name("../../etc"), "path traversal is rejected")
+    testing.assert(!coven_validate.valid_name("acme/a/b"), "two slashes are rejected")
+    testing.assert(!coven_validate.valid_name("/etc/passwd"), "a leading slash is rejected")
+
+// BUG-019: the name charset is `[a-z0-9-]` per segment — reject uppercase and any
+// URL-unsafe character rather than accepting them as before.
+fn test_valid_name_rejects_unsafe_charset():
+    testing.assert(!coven_validate.valid_name("Acme/money"), "uppercase in the namespace is rejected")
+    testing.assert(!coven_validate.valid_name("acme/Money"), "uppercase in the name is rejected")
+    testing.assert(!coven_validate.valid_name("acme/mo ney"), "a space is rejected")
+    testing.assert(!coven_validate.valid_name("acme/mo_ney"), "an underscore is rejected")
+    testing.assert(!coven_validate.valid_name("acme/mo.ney"), "a dot is rejected")
+    testing.assert(!coven_validate.valid_name("acme/mon%65y"), "a percent-escape is rejected")
+    testing.assert(coven_validate.valid_name("acme/money-2"), "lowercase, digits, and hyphen are accepted")
+
+fn test_valid_version():
+    testing.assert(coven_validate.valid_version("1.0.0"), "strict semver is valid")
+    testing.assert(coven_validate.valid_version("0.1.0"), "a lone zero component is valid")
+    testing.assert(!coven_validate.valid_version("1.0"), "two components are rejected")
+    testing.assert(!coven_validate.valid_version("1.x.0"), "non-digits are rejected")
+
+// BUG-248: a redundant leading zero (`01`) is not canonical semver — reject it.
+fn test_valid_version_rejects_leading_zero():
+    testing.assert(!coven_validate.valid_version("01.2.3"), "a leading-zero major is rejected")
+    testing.assert(!coven_validate.valid_version("1.02.3"), "a leading-zero minor is rejected")
+    testing.assert(!coven_validate.valid_version("1.2.03"), "a leading-zero patch is rejected")
+
+fn test_unwire():
+    testing.assert_eq(coven_validate.unwire("acme~json"), "acme/json")
+
+// SEC-013: a record field must not embed the signing-payload line separator.
+fn test_single_line():
+    testing.assert(coven_validate.single_line("ci@github/acme/foo"), "a normal identity is single-line")
+    testing.assert(coven_validate.single_line(""), "empty is single-line")
+    testing.assert(!coven_validate.single_line("x\npromoted_by=admin"), "an embedded newline is rejected")
+
+// --- State <-> wire round-trip (the publish lifecycle as a sum type) ----------
+fn test_state_round_trips():
+    testing.assert_eq(coven_record.state_wire(Staged), "staged")
+    testing.assert_eq(coven_record.state_wire(Released), "released")
+    testing.assert_eq(coven_record.state_wire(Yanked), "yanked")
+    testing.assert(coven_record.state_of("released") == Released, "the wire string parses back to its variant")
+    // BUG-224: an unrecognized state must NOT read as `Staged` (which is promotable) —
+    // it maps to `Unknown`, so a corrupt state can never be promoted.
+    testing.assert(coven_record.state_of("nonsense") == Unknown, "an unknown state maps to Unknown, not Staged")
+    testing.assert(coven_record.state_of("staged") == Staged, "the staged wire string still parses to Staged")
+
+// BUG-363: the signed footprint payload must commit to list element boundaries.
+// Capability strings themselves may contain commas (`Net[Connect, Tcp]`), so a raw
+// comma join would make `["A,B"]` and `["A", "B"]` indistinguishable.
+fn test_runtime_footprint_payload_is_injective():
+    let one = coven_record.signing_payload("acme/net", "1.0.0", "released", "sha256:x", ["Net[Connect, Tcp]"], "ci", "alice", "webauthn", "prov", 1)
+    let split = coven_record.signing_payload("acme/net", "1.0.0", "released", "sha256:x", ["Net[Connect", " Tcp]"], "ci", "alice", "webauthn", "prov", 1)
+    testing.assert(one != split, "different footprint list shapes must produce different signed payloads")
+    testing.assert(one.contains("rt=[\"Net[Connect, Tcp]\"]"), "the runtime footprint is encoded as a JSON array")
+
+fn test_record_parse_errors_are_typed():
+    match coven_record.parse("{"):
+        Ok(_r) -> testing.assert(false, "malformed record JSON must fail")
+        Err(e) ->
+            match e:
+                coven_record.RecordJson(_reason) -> testing.assert(true, "malformed JSON is typed")
+                _ -> testing.assert(false, "malformed JSON should be RecordJson")
+
+    match coven_record.parse("{\"name\":\"acme/x\"}"):
+        Ok(_r) -> testing.assert(false, "wrong-shaped record JSON must fail")
+        Err(e) ->
+            match e:
+                coven_record.RecordShape(_reason) -> testing.assert(true, "wrong shape is typed")
+                _ -> testing.assert(false, "wrong shape should be RecordShape")
+
+// --- proto builders carry the identity token (BUG-225) -----------------------
+// The client builders must emit `id_token` when a trusted-publishing token is present
+// (the parsers already read it), and omit it for an anonymous registry.
+fn test_publish_body_round_trips_id_token():
+    let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", Some("tok123"))
+    match json.decode(body):
+        Ok(doc) ->
+            match coven_proto.publish_of(doc):
+                Ok(req) -> match req.id_token:
+                    Some(t) -> testing.assert_eq(t, "tok123")
+                    None -> testing.assert(false, "id_token should round-trip as Some")
+                Err(e) -> testing.assert(false, "publish_of failed: ${e}")
+        Err(e) -> testing.assert(false, "decode failed: ${json.decode_error_message(e)}")
+
+fn test_publish_body_omits_id_token_when_anonymous():
+    let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", None)
+    testing.assert(!body.contains("id_token"), "an anonymous publish body omits id_token")
+
+fn test_yank_body_carries_id_token():
+    let body = coven_proto.yank_body("acme/x", "1.0.0", Some("ytok"))
+    match json.decode(body):
+        Ok(doc) ->
+            match coven_proto.yank_of(doc):
+                Ok(req) -> match req.id_token:
+                    Some(t) -> testing.assert_eq(t, "ytok")
+                    None -> testing.assert(false, "yank_body id_token should round-trip as Some")
+                Err(e) -> testing.assert(false, "yank_of failed: ${e}")
+        Err(e) -> testing.assert(false, "decode failed: ${json.decode_error_message(e)}")
+
+fn unsigned_token(iss: String) -> String:
+    "eyJhbGciOiJSUzI1NiJ9.${json_b64_payload(iss)}.sig"
+
+fn json_b64_payload(iss: String) -> String:
+    if iss == "rogue":
+        "eyJpc3MiOiJyb2d1ZSJ9"
+    else:
+        "eyJpc3MiOiJnaGEifQ"
+
+fn test_verify_token_errors_are_typed():
+    match coven_trust.verify_token([], unsigned_token("rogue"), 0):
+        Ok(_claims) -> testing.assert(false, "untrusted issuer must fail")
+        Err(e) ->
+            match e:
+                coven_trust.TokenUntrustedIssuer(iss) -> testing.assert_eq(iss, "rogue")
+                _ -> testing.assert(false, "untrusted issuer should be TokenUntrustedIssuer")
+
+    let jwks_issuer = coven_trust.Issuer("gha", "", Some(JsonObject([])))
+    match coven_trust.verify_token([jwks_issuer], unsigned_token("gha"), 0):
+        Ok(_claims) -> testing.assert(false, "JWKS issuer without kid must fail")
+        Err(e) ->
+            match e:
+                coven_trust.TokenMissingKid(id) -> testing.assert_eq(id, "gha")
+                _ -> testing.assert(false, "missing kid should be TokenMissingKid")
+
+// BUG-219: trusted promotion proof comes only from claims in the verified identity
+// token. A client-provided request marker must never substitute for an IdP `amr`.
+fn test_second_factor_method_accepts_verified_amr():
+    match coven_trust.second_factor_method(JsonObject([("amr", JsonString("webauthn"))])):
+        Some(method) -> testing.assert_eq(method, "webauthn")
+        None -> testing.assert(false, "a verified WebAuthn amr should be accepted")
+
+    let array_claims = JsonObject([("amr", JsonArray([JsonString("pwd"), JsonString("mfa")]))])
+    match coven_trust.second_factor_method(array_claims):
+        Some(method) -> testing.assert_eq(method, "mfa")
+        None -> testing.assert(false, "an accepted method in an amr array should be accepted")
+
+fn test_second_factor_method_rejects_client_marker():
+    let claims = JsonObject([("amr", JsonString("pwd")), ("second_factor", JsonString("webauthn"))])
+
+    testing.assert(option.is_none(coven_trust.second_factor_method(claims)), "a request marker is not verified authentication proof")
+
+// BUG-219: the original hole — an empty-string second factor (or missing `amr`)
+// passed the old string-marker check. Verify both reject with the new claims-based gate.
+fn test_second_factor_method_rejects_empty_string_and_missing_amr():
+    // Empty-string amr claim: not a valid MFA attestation.
+    let empty_amr = JsonObject([("amr", JsonString(""))])
+    testing.assert(option.is_none(coven_trust.second_factor_method(empty_amr)), "an empty-string amr must not be accepted as MFA proof")
+
+    // No amr claim at all: the most common attack vector from BUG-219.
+    let no_amr = JsonObject([("sub", JsonString("attacker")), ("iss", JsonString("https://idp.example"))])
+    testing.assert(option.is_none(coven_trust.second_factor_method(no_amr)), "a token with no amr claim must not be accepted as MFA proof")
+
+    // amr array containing only non-MFA methods: must still reject.
+    let weak_amr = JsonObject([("amr", JsonArray([JsonString("pwd"), JsonString("sms")]))])
+    testing.assert(option.is_none(coven_trust.second_factor_method(weak_amr)), "an amr array without mfa or webauthn must not be accepted")
+
+// --- footprint recompute fails closed (BUG-422) ------------------------------
+// A source whose footprint cannot be computed (it does not compile) must be a hard
+// error, never a silently-empty footprint that trivially passes the under-declaration
+// gate. A valid pure library computes an empty footprint.
+fn test_computed_footprint_fails_closed_on_bad_source():
+    match coven_footprint.computed_footprint([("src/x.witchy", "fn broken( ->")]):
+        Ok(_caps) -> testing.assert(false, "a non-compiling source must not yield a footprint")
+        Err(e) ->
+            match e:
+                coven_footprint.FootprintSourceDoesNotCompile -> testing.assert(true, "an uncomputable footprint is a typed hard error")
+                _ -> testing.assert(false, "a non-compiling source should be FootprintSourceDoesNotCompile")
+
+fn test_computed_footprint_ok_for_pure_source():
+    match coven_footprint.computed_footprint([("src/x.witchy", "pub fn f(n: Int) -> Int:\n    n\n")]):
+        Ok(caps) -> testing.assert(caps.length() == 0, "a pure library has an empty footprint")
+        Err(e) -> testing.assert(false, "a valid pure source should compute: ${coven_footprint.footprint_error_message(e)}")
+
+// --- encode (reflection) + derive(Deserialize) round-trip ------
+type Sample derive(Reflect, Deserialize):
+    name: String
+    versions: List(String)
+    note: Option(String)
+    count: Int
+
+fn test_json_roundtrip():
+    let s = Sample("acme/json", ["1.0.0", "1.1.0"], Some("hi"), 2)
+    match Sample.from_json(json.from_value(s)):
+        Ok(b) ->
+            testing.assert_eq(b.name, "acme/json")
+            testing.assert_int_eq(b.count, 2)
+            testing.assert_int_eq(b.versions.length(), 2)
+            testing.assert(option.is_some(b.note), "the optional note round-trips as Some")
+        Err(e) -> testing.assert(false, "round-trip failed: ${e}")
+
+fn test_json_missing_field_errors():
+    match Sample.from_json(JsonObject([("name", JsonString("x"))])):
+        Ok(_b) -> testing.assert(false, "decode should fail when a required field is absent")
+        Err(_e) -> testing.assert(true, "missing field is a loud Err")
+
+fn test_json_null_optional_is_none():
+    let s = Sample("a/b", [], None, 0)
+    match Sample.from_json(json.from_value(s)):
+        Ok(b) -> testing.assert(option.is_none(b.note), "an absent optional decodes to None")
+        Err(e) -> testing.assert(false, "round-trip failed: ${e}")

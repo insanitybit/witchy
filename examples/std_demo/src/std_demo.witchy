@@ -1,0 +1,16 @@
+// Uses the bundled standard library. `import list` brings in pure combinators;
+// because that module was never handed a capability, it cannot perform effects —
+// only `main` (which holds the Console) decides what to print.
+
+import list
+
+fn main(console: Console):
+    let ns = list.range(5)
+    let squares = ns.map(fn(n: Int): n * n)
+    let total = squares.fold(0, fn(acc: Int, n: Int): acc + n)
+    console.print("${total}")
+
+    let odds = ns.filter(fn(n: Int): n % 2 == 1)
+    var rev = odds
+    rev.reverse()
+    console.print("${rev.at(0)}")

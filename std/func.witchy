@@ -1,0 +1,37 @@
+// The witchy standard function-combinator library. Pure and capability-free.
+// With first-class functions these build new functions from existing ones
+// without writing wrapper lambdas by hand.
+
+// Return the argument unchanged.
+pub fn identity(x: a) -> a:
+    x
+
+// `compose(f, g)` is the function `x -> f(g(x))` — apply `g`, then `f`.
+pub fn compose(f: fn(b) -> c, g: fn(a) -> b) -> fn(a) -> c:
+    fn(x): f(g(x))
+
+// `flip(f)` applies the two-argument `f` with its arguments swapped.
+pub fn flip(f: fn(a, b) -> c) -> fn(b, a) -> c:
+    fn(x, y): f(y, x)
+
+// `on_key(op, key)` is the function `(x, y) -> op(key(x), key(y))` — run a
+// two-argument `op` on the projections of two values. Pairs with the
+// comparator-taking list functions: `list.sort_by(people,
+// func.on_key(fn(a, b): a < b, person_age))` sorts by age. (Named `on_key`
+// because bare `on` is a keyword.)
+pub fn on_key(op: fn(b, b) -> c, key: fn(a) -> b) -> fn(a, a) -> c:
+    fn(x, y): op(key(x), key(y))
+
+// A function that ignores its argument and always returns `x`.
+pub fn constant(x: a) -> fn(b) -> a:
+    fn(y): x
+
+// The first / second component of a pair — handy for the tuples `iter.zip` and
+// `iter.enumerate` produce, without writing a `match` each time.
+pub fn first(p: (a, b)) -> a:
+    match p:
+        (x, _y) -> x
+
+pub fn second(p: (a, b)) -> b:
+    match p:
+        (_x, y) -> y

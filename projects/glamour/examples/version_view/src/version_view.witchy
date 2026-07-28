@@ -1,0 +1,71 @@
+// version_view — coven's per-version DETAIL view on glamour (RFC-0015 Phase D): a published
+// version's signed Record rendered as the registry's security audit page — the capability
+// FOOTPRINT, the content hash, the identity trace (uploaded_by / promoted_by), the SLSA
+// provenance, and the promote/yank controls. Every field is an untrusted registry value
+// flowing through a glamour `text` node, so a hostile field is inert. The record is baked
+// in (the shell fills it from `/coven/record`); the promote/yank buttons are shown here
+// but the shell gates them on the signed-in session. Empty footprint.
+
+import list
+import reflect
+from glamour import VNode, Cmd
+from json import Json
+
+type Msg derive(Reflect):
+    Promote
+    Yank
+
+fn row(label: String, value: String) -> List(VNode(Msg)):
+    [glamour.element("dt", [], [glamour.text(label)]), glamour.element("dd", [], [glamour.text(value)])]
+
+fn chip(label: String) -> VNode(Msg):
+    glamour.element("span", [glamour.prop("class", "chip cap")], [glamour.text(label)])
+
+fn footprint_chips(caps: List(String)) -> VNode(Msg):
+    if caps.is_empty():
+        glamour.element("span", [glamour.prop("class", "chip cap-none")], [glamour.text("no authority")])
+    else:
+        var cs = []
+        for c in caps:
+            cs.push(chip(c))
+        glamour.element("span", [glamour.prop("class", "chips")], cs)
+
+fn view(model: Int) -> VNode(Msg):
+    var rows = []
+    rows = rows.concat(row("state", "released"))
+    rows = rows.concat(row("hash", "sha256:9f2c…a13b"))
+    rows = rows.concat(row("uploaded_by", "repo:acme/charts:ref:refs/heads/main"))
+    rows = rows.concat(row("promoted_by", "alice"))
+    rows = rows.concat(row("provenance", "trusted-publisher|issuer=token.actions.githubusercontent.com"))
+    rows = rows.concat(row("released_at", "2026-06-26"))
+    glamour.element("article", [glamour.prop("class", "version")], [glamour.element("h1", [], [glamour.text("acme/charts@1.2.0")]), glamour.element("span", [glamour.prop("class", "chip state-released")], [glamour.text("released")]), footprint_chips(["Net[Connect, Tls]", "Js{d3-runes-chart}"]), glamour.element("dl", [glamour.prop("class", "record")], rows), glamour.element("div", [glamour.prop("class", "promote")], [glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Promote)], [glamour.text("promote")]), glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Yank)], [glamour.text("yank")])])])
+
+fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):
+    (model, NoCmd)
+
+fn parse_model(j: Json) -> Int:
+    match json.as_int(j):
+        Some(n) -> n
+        None -> 0
+
+fn parse_msg(j: Json) -> Msg:
+    match json.get_string(j, "\$variant"):
+        Some(v) ->
+            if v == "Yank":
+                Yank
+            else:
+                Promote
+        None -> Promote
+
+fn model_to_json(model: Int) -> Json:
+    json.from_value(model)
+
+fn msg_to_json(m: Msg) -> Json:
+    json.from_value(m)
+
+pub fn export_step(input: String) -> String:
+    glamour.step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+
+fn main(console: Console):
+    let output = export_step("{\"model\": 0}")
+    console.print("${output}\n")

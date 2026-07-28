@@ -1,0 +1,16 @@
+// A small release reporter whose effectful boundary is explicit and whose
+// decision logic remains directly unit-testable.
+pub fn release_line(service: String, environment: String, observed_ms: Int) -> String:
+    "release ${service} at ${observed_ms}ms in ${environment}"
+
+pub fn emit_release(console: Console, clock: Clock, env: Env, args: List(String)):
+    let service = if args.length() == 0: "unknown" else: args.at(0)
+    let environment = match env.get_env("DEPLOY_ENV"):
+        Some(value) -> value
+        None -> "development"
+
+    console.print(release_line(service, environment, clock.now()))
+
+fn main(console: Console, clock: Clock, env: Env, args: List(String)) -> Int:
+    emit_release(console, clock, env, args)
+    0

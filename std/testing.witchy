@@ -1,0 +1,105 @@
+// The Witchy test support module. `witchy test <file>` discovers `test_*`
+// functions and reports each as passing unless it aborts. Plain tests receive
+// zero real authority. Deterministic capability parameters come only from a
+// validated external fixture plan; this module provides assertions and
+// ordinary collaborators, not capability constructors.
+//
+//   import testing
+//
+//   fn test_addition():
+//       testing.assert_eq("${2 + 2}", "4")
+//
+//   fn test_truth():
+//       testing.assert(1 < 2, "one is less than two")
+
+import cmp
+import show
+
+// An injectable wall/monotonic clock protocol. Production code can accept a
+// generic `c: ClockSource`: real entrypoints pass their `Clock`, while unit
+// tests pass `fixed_clock` and need no host grant.
+trait ClockSource:
+    fn wall_ms(self) -> Int
+    fn monotonic_ns(self) -> Int
+
+type FixedClock:
+    FixedClock(Int, Int)
+
+impl ClockSource for Clock:
+    fn wall_ms(self) -> Int:
+        self.now()
+
+    fn monotonic_ns(self) -> Int:
+        self.now_monotonic()
+
+impl ClockSource for FixedClock:
+    fn wall_ms(self) -> Int:
+        match self:
+            FixedClock(wall_ms, _) -> wall_ms
+
+    fn monotonic_ns(self) -> Int:
+        match self:
+            FixedClock(_, monotonic_ns) -> monotonic_ns
+
+// A fixed, authority-free clock collaborator. This is ordinary data, not a
+// forged `Clock`; inject it through `ClockSource` in deterministic unit tests.
+pub fn fixed_clock(wall_ms: Int, monotonic_ns: Int) -> FixedClock:
+    FixedClock(wall_ms, monotonic_ns)
+
+// An injectable one-draw randomness protocol. Real entrypoints pass `Rand`;
+// deterministic unit tests can pass `fixed_rand` without a host grant.
+trait RandSource:
+    fn draw_u64(self) -> Int
+
+type FixedRand:
+    FixedRand(Int)
+
+impl RandSource for Rand:
+    fn draw_u64(self) -> Int:
+        self.rand_u64()
+
+impl RandSource for FixedRand:
+    fn draw_u64(self) -> Int:
+        match self:
+            FixedRand(draw) -> draw
+
+// A fixed, authority-free Rand collaborator. Every draw returns `value`, which
+// makes boundary/error paths reproducible without pretending to be a real
+// cryptographic randomness capability.
+pub fn fixed_rand(value: Int) -> FixedRand:
+    FixedRand(value)
+
+// Abort the test with `msg` unless `cond` holds.
+pub fn assert(cond: Bool, msg: String):
+    if !cond:
+        fail("assertion failed: " + msg)
+
+// Abort unless the two strings are equal, showing both. Convert values at the
+// call site with interpolation, or with `show.render` when you want `Show`.
+pub fn assert_eq(got: String, want: String):
+    if got != want:
+        fail("assertion failed: got `" + got + "`, want `" + want + "`")
+
+// Abort if the two strings ARE equal.
+pub fn assert_ne(got: String, other: String):
+    if got == other:
+        fail("assertion failed: `" + got + "` should differ from `" + other + "`")
+
+// Abort unless two protocol values are equal, showing both through `Show`.
+pub fn assert_value_eq(got: a, want: a) where a: PartialEq, a: Show:
+    if got != want:
+        fail("assertion failed: got `" + show.render(got) + "`, want `" + show.render(want) + "`")
+
+// Abort if two protocol values ARE equal.
+pub fn assert_value_ne(got: a, other: a) where a: PartialEq, a: Show:
+    if got == other:
+        fail("assertion failed: `" + show.render(got) + "` should differ from `" + show.render(other) + "`")
+
+// Abort unless the two Ints are equal, showing both.
+pub fn assert_int_eq(got: Int, want: Int):
+    if got != want:
+        fail("assertion failed: got ${got}, want " + "${want}")
+
+// Unconditional failure with a message (e.g. an unreachable branch).
+pub fn fail_with(msg: String):
+    fail(msg)

@@ -1,0 +1,140 @@
+// crypto — cryptographic hashing and signatures.
+//
+// Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and
+// Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve
+// field arithmetic), so they are implemented in Rust. They are reachable only
+// through this module — there is no global builtin. The function bodies below
+// are placeholders the runtime never executes for native-backed functions: the
+// interpreter intercepts their qualified names (`crypto.sha256`,
+// `crypto.__ed25519_verify_status`, ...), and the WASM backend bridges them to
+// the same implementation as host imports. Fallible public verify functions are
+// ordinary Witchy wrappers around private native status intrinsics.
+
+import show
+import error
+import convert
+
+// Malformed verifier input is typed so callers can distinguish "bad key bytes",
+// "bad message encoding", "bad signature encoding", and a missing verifier from
+// a well-formed signature that simply does not match (`Ok(false)`).
+type VerifyError:
+    MalformedPublicKey(String)
+    MalformedMessage(String)
+    MalformedSignature(String)
+    VerifierUnavailable(String)
+
+// Human-readable verifier failure text. Kept as an explicit helper so existing
+// String-oriented callers can preserve diagnostics while matching on
+// `VerifyError` remains available for libraries.
+pub fn verify_error_message(e: VerifyError) -> String:
+    match e:
+        MalformedPublicKey(name) -> name + " public key is malformed"
+        MalformedMessage(name) -> name + " message is malformed"
+        MalformedSignature(name) -> name + " signature is malformed"
+        VerifierUnavailable(name) -> name + " verifier is unavailable"
+
+impl Show for VerifyError:
+    fn show(self) -> String:
+        verify_error_message(self)
+
+impl Error for VerifyError
+
+impl From(VerifyError) for String:
+    fn from(value: VerifyError) -> Self:
+        verify_error_message(value)
+
+// SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
+pub fn sha256(data: String) -> String:
+    data
+
+// The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass
+// parallel lists — one entry per file (`witchy.toml` plus each `src/**/*.witchy`):
+// `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and
+// length-prefixed before hashing, so the result is the rune's stable content
+// address — the package manager's tamper-evident identity.
+pub fn rune_hash(paths: List(String), contents: List(String)) -> String:
+    ""
+
+// Verify an Ed25519 signature. `public_key` and `signature` are hex-encoded;
+// `message` is the raw string. Malformed inputs are `Err`; a well-formed but
+// non-matching signature is `Ok(false)`.
+pub fn ed25519_verify(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError):
+    verify_result(__ed25519_verify_status(public_key, message, signature), "Ed25519")
+
+// Sign `message` with a `Secret` capability (the host grants it; it cannot be
+// forged), returning the hex signature.
+pub fn sign(key: Secret, message: String) -> String:
+    message
+
+// The hex Ed25519 public key for a `Secret` — what verifiers check against.
+pub fn public_key(key: Secret) -> String:
+    ""
+
+// Reveal a `Secret`'s raw bytes as a string — for revealable value secrets
+// (tokens, passwords) that must be handed to an external sink. Errors on secrets
+// that are not revealable: signing keys (granted with `--signing-key`, used via
+// `sign`/`public_key`) and any secret granted use-only (`--secret-file
+// name=path,use-only`, e.g. a TLS private key).
+pub fn reveal(key: Secret) -> String:
+    ""
+
+// Verify an ECDSA P-256 / SHA-256 signature — WebAuthn "ES256" (COSE alg -7).
+// `public_key` is the hex SEC1 uncompressed point (`04 || x || y`); `signature` is
+// the hex ASN.1-DER signature; `message` is the raw bytes it covers. Malformed
+// inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`.
+// (Native/interpreter-only.)
+pub fn ecdsa_p256_verify(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError):
+    verify_result(__ecdsa_p256_verify_status(public_key, message, signature), "ECDSA P-256")
+
+// Like `ecdsa_p256_verify` but the message is also hex — for binary messages such
+// as WebAuthn's `authenticatorData || SHA256(clientDataJSON)`. Malformed message
+// hex is `Err`, not a false signature. (Native-only.)
+pub fn ecdsa_p256_verify_hex(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError):
+    verify_result(__ecdsa_p256_verify_hex_status(public_key, message, signature), "ECDSA P-256")
+
+// Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature — JWT/OIDC "RS256" (the algorithm
+// GitHub Actions and Google sign their identity tokens with). `public_key` is the hex
+// of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`); `signature` is hex; `message`
+// is the raw signed bytes (`header.payload` for a JWT). Malformed inputs are `Err`;
+// a well-formed but non-matching signature is `Ok(false)`. (Native-only.)
+pub fn rsa_pkcs1_sha256_verify(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError):
+    verify_result(__rsa_pkcs1_sha256_verify_status(public_key, message, signature), "RSA PKCS#1 SHA-256")
+
+// SHA-512 of a string's UTF-8 bytes, as 128 lowercase hex characters. (Native-only.)
+pub fn sha512(data: String) -> String:
+    ""
+
+// SHA3-256 (FIPS 202) of a string's UTF-8 bytes, as 64 hex characters. (Native-only.)
+pub fn sha3_256(data: String) -> String:
+    ""
+
+// HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable);
+// `message` is raw text. Returns the 64-hex-char tag. (Native-only.)
+pub fn hmac_sha256(key: String, message: String) -> String:
+    ""
+
+fn verify_result(status: Int, name: String) -> Result(Bool, VerifyError):
+    if status == 1:
+        Ok(true)
+    else if status == 0:
+        Ok(false)
+    else if status == -1:
+        Err(MalformedPublicKey(name))
+    else if status == -2:
+        Err(MalformedMessage(name))
+    else if status == -3:
+        Err(MalformedSignature(name))
+    else:
+        Err(VerifierUnavailable(name))
+
+fn __ed25519_verify_status(public_key: String, message: String, signature: String) -> Int:
+    -4
+
+fn __ecdsa_p256_verify_status(public_key: String, message: String, signature: String) -> Int:
+    -4
+
+fn __ecdsa_p256_verify_hex_status(public_key: String, message: String, signature: String) -> Int:
+    -4
+
+fn __rsa_pkcs1_sha256_verify_status(public_key: String, message: String, signature: String) -> Int:
+    -4

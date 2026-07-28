@@ -1,0 +1,98 @@
+// catalog — coven's home/index VIEW on glamour (RFC-0015 Phase D): the rune catalog with a
+// live SEARCH box (filter by name OR capability) and KEYED rune cards. It exercises the
+// framework features a real registry list needs: `on_input` carries the search box's value
+// into the MVU loop as data (the rune holds no DOM); `keyed` cards reconcile by name so the
+// filtered list reorders/removes without rebuilding; clicking a name emits a `Nav` to the
+// package page. The catalog data is baked in (the shell fills it from `/coven/catalog` over
+// the HTTP effect); this is the template the shell's index view is built on. Empty footprint.
+
+import list
+import reflect
+from glamour import VNode, Cmd, UiRoute, UiRoot
+from json import Json
+
+type Msg derive(Reflect):
+    Search(String)
+    Goto(String)
+
+// The baked catalog — (name, version, capability footprint). The shell loads this from the
+// registry; here it is constant so the view renders standalone.
+fn catalog() -> List((String, String, List(String))):
+    [("acme/charts", "1.2.0", ["Net[Connect, Tls]", "Js{d3-runes-chart}"]), ("acme/log", "0.3.0", []), ("std/json", "1.0.0", [])]
+
+fn matches(name: String, caps: List(String), q: String) -> Bool:
+    if q.is_empty():
+        true
+    else if name.contains(q):
+        true
+    else:
+        var hit = false
+        for c in caps:
+            if c.contains(q):
+                hit = true
+        hit
+
+fn chip(label: String) -> VNode(Msg):
+    glamour.element("span", [glamour.prop("class", "chip cap")], [glamour.text(label)])
+
+fn caps_row(caps: List(String)) -> VNode(Msg):
+    if caps.is_empty():
+        glamour.element("span", [glamour.prop("class", "chip cap-none")], [glamour.text("no authority")])
+    else:
+        var cs = []
+        for c in caps:
+            cs.push(chip(c))
+        glamour.element("span", [glamour.prop("class", "chips")], cs)
+
+fn card(name: String, ver: String, caps: List(String)) -> VNode(Msg):
+    glamour.element("li", [glamour.prop("class", "rune-row")], [glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Goto(name))], [glamour.text(name)]), glamour.element("span", [glamour.prop("class", "rune-version")], [glamour.text("v${ver}")]), caps_row(caps)])
+
+fn view(query: String) -> VNode(Msg):
+    var items = []
+    for name, ver, caps in catalog():
+        if matches(name, caps, query):
+            items.push(glamour.keyed(name, card(name, ver, caps)))
+    glamour.element("section", [glamour.prop("class", "catalog")], [glamour.element("h1", [], [glamour.text("Runes")]), glamour.element("input", [glamour.prop("class", "search"), glamour.prop("type", "search"), glamour.prop("placeholder", "filter by name or capability"), glamour.on_input("input", "Search")], []), glamour.element("ul", [glamour.prop("class", "rune-list")], items)])
+
+fn update(query: String, msg: Msg, route: UiRoute) -> (String, Cmd(Msg)):
+    match msg:
+        Search(q) -> (q, NoCmd)
+        Goto(name) -> (query, glamour.navigate(route, "/p/${name}"))
+
+// --- MVU glue ----------------------------------------------------------------
+fn parse_model(j: Json) -> String:
+    json.as_string(j).unwrap_or("")
+
+fn arg_str(j: Json, i: Int) -> String:
+    match json.get(j, "\$values"):
+        Some(arr) ->
+            match json.index(arr, i):
+                Some(v) -> json.as_string(v).unwrap_or("")
+                None -> ""
+        None -> ""
+
+fn parse_msg(j: Json) -> Msg:
+    match json.get_string(j, "\$variant"):
+        Some(v) ->
+            if v == "Goto":
+                Goto(arg_str(j, 0))
+            else:
+                Search(arg_str(j, 0))
+        None -> Search("")
+
+fn model_to_json(query: String) -> Json:
+    json.from_value(query)
+
+fn msg_to_json(m: Msg) -> Json:
+    json.from_value(m)
+
+pub fn export_step(ui: UiRoot, input: String) -> String:
+    // (RFC-0039/0040) narrow the app-root token into a `UiRoute` (push under `/p`),
+    // curried into `update` via a closure — only code holding it can navigate.
+    let route = glamour.route_scope(ui, "/p", "push")
+    let upd = fn(query: String, msg: Msg): update(query, msg, route)
+    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+
+fn main(console: Console, ui: UiRoot):
+    let output = export_step(ui, "{\"model\": \"\"}")
+    console.print("${output}\n")

@@ -1,0 +1,14 @@
+// Uses the bundled `option` module: the Option type comes from the import (so
+// `?` works on it too), and `option.unwrap_or` supplies a default. `first`
+// returns the head of a list, or None when empty.
+
+import option
+
+pub fn first(xs: List(Int)) -> Option(Int):
+    match xs:
+        [] -> None
+        [head, ..] -> Some(head)
+
+fn main(console: Console):
+    console.print("${option.unwrap_or(first([10, 20, 30]), 0)}")
+    console.print("${option.unwrap_or(first([]), 0 - 1)}")

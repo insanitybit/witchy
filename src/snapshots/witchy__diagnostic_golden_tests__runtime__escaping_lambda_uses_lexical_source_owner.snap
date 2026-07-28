@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "trap_pair(\"fn make() -> fn() -> Int:\\n    fn(): 10 / 0\\n\\nfn main(console: Console):\\n    let explode = make()\\n    console.print(__render(explode()))\\n\")"
+---
+interp: runtime error: `main.make`, line 2: division by zero
+wasm:   runtime error: `main.make`, line 2: division by zero

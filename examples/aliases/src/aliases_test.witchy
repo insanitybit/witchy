@@ -1,0 +1,14 @@
+// In-rune tests for `aliases`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting. Run them with `witchy test examples/aliases`.
+
+import aliases
+import testing
+
+fn test_to_fahrenheit():
+    testing.assert_int_eq(aliases.to_fahrenheit(0), 32)
+    testing.assert_int_eq(aliases.to_fahrenheit(25), 77)
+    testing.assert_int_eq(aliases.to_fahrenheit(100), 212)
+
+fn test_average():
+    testing.assert_int_eq(aliases.average([18, 21, 25, 23, 20, 19, 22]), 21)
+    testing.assert_int_eq(aliases.average([10, 20]), 15)

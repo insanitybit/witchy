@@ -1,0 +1,201 @@
+// dict — the associative map.
+//
+// The core operations are native primitives (intercepted by both backends;
+// the bodies are self-recursive placeholders giving the type checker their
+// signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.at`,
+// `dict.update`, `dict.contains_key`, `dict.remove`, `dict.keys`, `dict.values`,
+// `dict.pairs`, `dict.length`. The rest is the compositional layer — a lookup returning
+// `Option`, constructors from pairs, and the map/filter/merge transforms.
+
+// --- native primitives ---
+
+// An empty Dict.
+pub fn new() -> Dict(k, v):
+    dict.new()
+
+// A new dict with `key` set to `val` (replacing any existing entry).
+// Insertion order of first appearance is preserved. The `d[key] = val` sugar
+// (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to
+// `insert` once the receiver is known to be a Dict (RFC-0049).
+fn __insert(d: unique Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Eq:
+    dict.__insert(d, key, val)
+
+// Select the displaced value and perform the upsert with one semantic key
+// search. The ordinary result and repaired dictionary use the uniform `var`
+// ABI's independent result channels.
+fn __insert_extract(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
+    dict.__insert_extract(d, key, val)
+
+// Insert `key` with `val`, returning the displaced value when the key existed.
+// The dictionary performs one semantic key search. A uniquely owned dictionary
+// preserves its hash index and updates or grows geometrically; a shared root is
+// copied before repair so aliases keep their old contents in normal mode. The
+// `unique` receiver makes that cost a checked contract in `mode opt`: a call
+// whose dictionary was aliased or loaned is rejected with the ownership reason.
+pub fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
+    dict.__insert_extract(d, key, val)
+
+// The value for `key`, or `default` when absent.
+pub fn get_or(d: Dict(k, v), key: k, default: v) -> v where k: Eq:
+    dict.get_or(d, key, default)
+
+// The value for `key`, or a runtime error when absent. This is the read half of
+// the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
+pub fn at(d: Dict(k, v), key: k) -> v where k: Eq:
+    dict.at(d, key)
+
+// Single-lookup upsert: apply `f` to the current value (or `default` when
+// `key` is absent) and store the result under `key`.
+fn __update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Eq:
+    dict.__update(d, key, default, f)
+
+pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Eq:
+    d = dict.__update(d, key, default, f)
+    return
+
+// Whether `key` is present. The `_key` suffix is deliberate: a Dict contains
+// key/value pairs, so bare `contains` would be ambiguous between keys and values.
+pub fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq:
+    dict.contains_key(d, key)
+
+// A new dict with `key` (and its value) removed; unchanged when absent.
+fn __remove(d: unique Dict(k, v), key: k) -> Dict(k, v) where k: Eq:
+    dict.__remove(d, key)
+
+fn __remove_extract(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
+    dict.__remove_extract(d, key)
+
+// Remove `key`, returning its old value when present. The dictionary performs
+// one semantic key search. Unique storage moves the old value out and repairs
+// insertion order in place; shared storage uses copy-on-write in normal mode.
+// In `mode opt`, the `unique` receiver rejects a shared or loaned call site
+// instead of silently taking that copy.
+pub fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Eq:
+    dict.__remove_extract(d, key)
+
+// The keys, in insertion order.
+pub fn keys(d: Dict(k, v)) -> List(k):
+    dict.keys(d)
+
+// The values, in insertion order.
+pub fn values(d: Dict(k, v)) -> List(v):
+    dict.values(d)
+
+// The (key, value) pairs, in insertion order.
+pub fn pairs(d: Dict(k, v)) -> List((k, v)):
+    dict.pairs(d)
+
+// The number of entries.
+pub fn length(d: Dict(k, v)) -> Int:
+    dict.length(d)
+
+// Methods are the primary surface. The module level keeps only the native
+// primitives (the intrinsic interception targets above) and the receiver-less
+// constructor `from_pairs`; the compositional layer lives here.
+impl Dict(k, v):
+    // The number of entries.
+    pub fn length(self) -> Int:
+        dict.length(self)
+
+    // Whether the dict has no entries.
+    pub fn is_empty(self) -> Bool:
+        dict.length(self) == 0
+
+    // The keys, in insertion order.
+    pub fn keys(self) -> List(k):
+        dict.keys(self)
+
+    // The values, in insertion order.
+    pub fn values(self) -> List(v):
+        dict.values(self)
+
+    // The (key, value) pairs, in insertion order.
+    pub fn pairs(self) -> List((k, v)):
+        dict.pairs(self)
+
+    // The values whose keys satisfy `pred`, in the Dict's iteration order.
+    pub fn values_where(self, pred: fn(k) -> Bool) -> List(v):
+        var out = []
+        for entry in dict.pairs(self):
+            let (key, value) = entry
+            if pred(key):
+                list.push(out, value)
+        out
+
+impl Dict(k, v) where k: Eq:
+    pub fn insert(var self: unique Dict(k, v), key: k, val: v) -> Option(v):
+        dict.insert(self, key, val)
+
+    pub fn update(var self, key: k, default: v, f: fn(v) -> v):
+        dict.update(self, key, default, f)
+
+    pub fn remove(var self: unique Dict(k, v), key: k) -> Option(v):
+        dict.remove(self, key)
+
+    // A lookup that says whether the key was present, rather than forcing a
+    // default.
+    pub fn get(self, key: k) -> Option(v):
+        var found = None
+        for entry in dict.pairs(self):
+            let (key2, value) = entry
+            if key2 == key:
+                found = Some(value)
+        found
+
+    pub fn get_or(self, key: k, default: v) -> v:
+        dict.get_or(self, key, default)
+
+    // The value for `key`, or a runtime error when absent. This is the read
+    // half of the `d[key]` subscript surface; use `get`/`get_or` when absence
+    // is ordinary.
+    pub fn at(self, key: k) -> v:
+        dict.at(self, key)
+
+    // Whether `key` is present. The `_key` suffix is deliberate: a Dict
+    // contains key/value pairs, so bare `contains` would be ambiguous between
+    // keys and values.
+    pub fn contains_key(self, key: k) -> Bool:
+        dict.contains_key(self, key)
+
+    // A new Dict with every value passed through `f` (keys unchanged).
+    pub fn map_values(self, f: fn(v) -> w) -> Dict(k, w):
+        var out = dict.new()
+        for entry in dict.pairs(self):
+            let (key, value) = entry
+            dict.insert(out, key, f(value))
+        out
+
+    // Keep only the entries for which `keep(key, value)` holds.
+    pub fn filter(self, keep: fn(k, v) -> Bool) -> Dict(k, v):
+        var out = dict.new()
+        for entry in dict.pairs(self):
+            let (key, value) = entry
+            if keep(key, value):
+                dict.insert(out, key, value)
+        out
+
+    // `self` with `other`'s entries laid over it (on a key collision, `other`
+    // wins).
+    pub fn merge(self, other: Dict(k, v)) -> Dict(k, v):
+        var out = self
+        for entry in dict.pairs(other):
+            let (key, value) = entry
+            dict.insert(out, key, value)
+        out
+
+impl Dict(k, v) where v: Eq:
+    // Swap keys and values. With duplicate values, a later entry wins.
+    pub fn invert(self) -> Dict(v, k):
+        var out = dict.new()
+        for entry in dict.pairs(self):
+            let (key, value) = entry
+            dict.insert(out, value, key)
+        out
+
+// Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
+pub fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Eq:
+    var d = dict.new()
+    for entry in entries:
+        let (key, value) = entry
+        dict.insert(d, key, value)
+    d

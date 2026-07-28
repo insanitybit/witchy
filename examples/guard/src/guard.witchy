@@ -1,0 +1,21 @@
+// `return` exits a function early — handy for guard clauses and for bailing out
+// of a loop once you've found an answer.
+pub fn classify(n: Int) -> String:
+    if n < 0:
+        return "negative"
+    if n == 0:
+        return "zero"
+    "positive"
+
+pub fn first_even(xs: List(Int)) -> Int:
+    for x in xs:
+        if x % 2 == 0:
+            return x
+    0 - 1
+
+fn main(console: Console):
+    console.print(classify(-4))
+    console.print(classify(0))
+    console.print(classify(9))
+    console.print("${first_even([1, 3, 8, 5])}")
+    console.print("${first_even([1, 3, 5])}")

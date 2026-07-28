@@ -1,0 +1,43 @@
+import dynamic
+import reflect
+
+trait Named:
+    fn name(self) -> String
+
+type Counter derive(Reflect):
+    value: Int
+
+impl Named for Counter:
+    fn name(self) -> String:
+        "counter"
+
+@dynamic
+pub fn add(self: Counter, amount: Int) -> Counter:
+    Counter(self.value + amount)
+
+fn main(console: Console):
+    let value = dynamic.dynamic(Counter(4))
+    let descriptor = dynamic.type_of(value)
+    console.print("${dynamic.type_name(descriptor)}")
+
+    for method in dynamic.methods(descriptor):
+        console.print(dynamic.method_name(method))
+
+    let named = dynamic.runtime_type(dyn Named)
+    console.print("implements Named: ${dynamic.implements(value, named)}")
+
+    match dynamic.field(value, "value"):
+        Ok(field_value) ->
+            let decoded: Result(Int, dynamic.DynamicError) = dynamic.decode(field_value)
+            match decoded:
+                Ok(number) -> console.print("field value: ${number}")
+                Err(error) -> console.print("${error}")
+        Err(error) -> console.print("${error}")
+
+    match dynamic.call(value, "add", [dynamic.dynamic(3)]):
+        Ok(result) ->
+            let decoded: Result(Counter, dynamic.DynamicError) = dynamic.decode(result)
+            match decoded:
+                Ok(counter) -> console.print("result: ${counter.value}")
+                Err(error) -> console.print("${error}")
+        Err(error) -> console.print("${error}")

@@ -1,0 +1,162 @@
+// std/future — cooperative single-threaded futures via CPS over closures.
+//
+// A `Future(a)` is a thunk that, when polled, either completes (`Done`) or hands
+// back the rest of the work (`More`). It is a standalone building block for
+// racing and joining independent computations (`select`, `join_all`) — NOT what
+// the `async`/`await` surface lowers onto (that targets `std/task`, which points
+// here for `select`). A future's live state is the captured values of its
+// continuation closure — owned values, never internal references, so unlike Rust
+// there is nothing self-referential and no `Pin`. Pure structure (closures + sum
+// types), so it runs byte-identically on both backends.
+//
+// `More` is the cooperative yield point: an executor drives a future by polling
+// it one step at a time, so several futures can interleave at their `pending` points.
+
+import option
+
+// The result of polling a future once: either the final value, or the rest.
+type Poll:
+    Done(a)
+    More(Future(a))
+
+// A future is a thunk producing its next `Poll`. Pull it with `poll`.
+type Future:
+    Future(fn() -> Poll(a))
+
+pub fn poll(f: Future(a)) -> Poll(a):
+    match f:
+        Future(thunk) -> thunk()
+
+// ---- constructors ----
+
+// An already-complete future.
+pub fn ready(x: a) -> Future(a):
+    Future(fn(): Done(x))
+
+// Completes with `x`, but yields control once first — a cooperative scheduling
+// point an executor can interleave other tasks across.
+pub fn pending(x: a) -> Future(a):
+    Future(fn(): More(ready(x)))
+
+// ---- combinators ----
+
+// Sequence: run `f` to completion, then continue with `k` applied to its result.
+// The CPS analogue of `let y = await f; k(y)` — continuation-passing over futures.
+pub fn and_then(f: Future(a), k: fn(a) -> Future(b)) -> Future(b):
+    Future(fn(): and_then_step(poll(f), k))
+
+fn and_then_step(p: Poll(a), k: fn(a) -> Future(b)) -> Poll(b):
+    match p:
+        Done(v) -> More(k(v))
+        More(f2) -> More(and_then(f2, k))
+
+// Transform the result of a future.
+pub fn map(f: Future(a), g: fn(a) -> b) -> Future(b):
+    and_then(f, fn(x): ready(g(x)))
+
+// Run `thunk` at poll time and complete with its result. Unlike `ready`, which
+// captures an already-computed value, `defer` delays the work (and any effects in
+// it) until this future is polled. A `Future` is a replayable execution recipe,
+// not a memo cell: polling the same `defer` value again reruns `thunk`.
+pub fn defer(thunk: fn() -> a) -> Future(a):
+    Future(fn(): Done(thunk()))
+
+// Build the future `thunk()` lazily: nothing runs until this future is polled.
+// The usual drivers replace a `More` result with its continuation, so a normal
+// drive path enters the lazy wrapper once. The value itself is not consumed or
+// memoized, though: polling the same `Future` value again reruns `thunk`.
+pub fn lazy(thunk: fn() -> Future(a)) -> Future(a):
+    Future(fn(): poll(thunk()))
+
+// The unit value (`Nil`), for async bodies that complete without a value.
+fn unit():
+    let _ignore = 0
+
+// An already-complete `Future(Nil)` — the lowering target for an async body that
+// falls off its end.
+pub fn ready_unit() -> Future(Nil):
+    ready(unit())
+
+// Yield control to the executor once, then continue. `await yield_now()` is a
+// cooperative scheduling point an async task uses to let its peers run.
+pub fn yield_now() -> Future(Nil):
+    pending(unit())
+
+// ---- driver ----
+
+// Drive a single future to completion and return its value. Recursive on `More`
+// so it needs no initial `a` (there is no default value for a generic type).
+pub fn block_on(f: Future(a)) -> a:
+    match poll(f):
+        Done(v) -> v
+        More(nxt) -> block_on(nxt)
+
+// ---- executor (structured concurrency) ----
+
+// A scheduling slot: a task still running, or its finished result.
+type Slot:
+    Running(Future(a))
+    Finished(a)
+
+fn is_running(s: Slot(a)) -> Bool:
+    match s:
+        Running(_) -> true
+        Finished(_) -> false
+
+fn step_slot(s: Slot(a)) -> Slot(a):
+    match s:
+        Finished(v) -> Finished(v)
+        Running(f) ->
+            match poll(f):
+                Done(v) -> Finished(v)
+                More(nxt) -> Running(nxt)
+
+// Extract a slot's value. `join_all` only calls this once every slot is
+// Finished, so the Running branch is unreachable; it drives the future to
+// completion anyway, which keeps the function TOTAL (no partial `fail` that would
+// pin the generic `a` to Nil).
+fn slot_value(s: Slot(a)) -> a:
+    match s:
+        Finished(v) -> v
+        Running(f) -> block_on(f)
+
+// Drive every task in `tasks` concurrently to completion, returning their results
+// in the original order. The schedule is a deterministic round-robin — one poll
+// step per task per round — so it is single-threaded and fixed-order, and both
+// backends produce byte-identical output. Tasks interleave at their `pending`/
+// `await` points. This is the structured-concurrency primitive (`scope`/`join`):
+// hand it the task list and it fans them out, joining all before it returns.
+pub fn join_all(tasks: List(Future(a))) -> List(a):
+    var slots = list.map(tasks, fn(f): Running(f))
+    while list.any(slots, fn(s): is_running(s)):
+        slots = list.map(slots, fn(s): step_slot(s))
+    list.map(slots, fn(s): slot_value(s))
+
+// Race `tasks`: drive them concurrently until the FIRST one finishes, and return
+// its index and value; the losers are simply dropped (no further polling — and
+// because futures are pure and lazy, dropping is cancellation, no cleanup hook
+// needed). On a tie within a round the lowest index wins, so the result is
+// deterministic and both backends agree. This is the `select` of structured
+// concurrency (e.g. race a task against `sleep` for a timeout).
+pub fn select(tasks: List(Future(a))) -> (Int, a):
+    if list.is_empty(tasks):
+        // No task can win a race with no entrants, and the `(Int, a)` result has
+        // no `a` to fabricate — so fail loudly rather than recurse forever.
+        fail("future.select: cannot race an empty task list")
+    let polled = list.map(tasks, fn(f): poll(f))
+    match first_done(polled, 0):
+        Some(hit) -> hit
+        None -> select(list.map(polled, fn(p): resume(p)))
+
+fn first_done(polls: List(Poll(a)), i: Int) -> Option((Int, a)):
+    if i >= list.length(polls):
+        None
+    else:
+        match list.at(polls, i):
+            Done(v) -> Some((i, v))
+            More(_) -> first_done(polls, i + 1)
+
+fn resume(p: Poll(a)) -> Future(a):
+    match p:
+        Done(v) -> ready(v)
+        More(f) -> f

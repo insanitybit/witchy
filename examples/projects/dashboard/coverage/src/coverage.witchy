@@ -1,0 +1,8 @@
+// coverage — a dashboard widget: a one-line test-coverage summary, rendered with
+// the shared `bars` base (a path dependency). Pure: no host capabilities.
+
+import bars
+
+// "coverage [######--]  75%"
+pub fn summary(passed: Int, total: Int) -> String:
+    "coverage".pad_right(9, " ") + bars.bar(passed, total, 8) + " " + "${bars.pct(passed, total)}".pad_left(3, " ") + "%"

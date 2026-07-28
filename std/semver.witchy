@@ -1,0 +1,218 @@
+// semver — semantic versions and constraints, for dependency resolution.
+//
+// Intentionally minimal (matching the package manager's needs): `major.minor.patch`
+// versions and the `^`, `~`, exact, `>=`, and `*` constraints — enough for
+// deterministic resolution without a full SemVer grammar. A missing component
+// parses as 0 (`1.2` is `1.2.0`); a non-numeric component is an error.
+
+import cmp
+import string
+import iter
+import show
+import error
+import convert
+
+// A version orders by major, then minor, then patch — exactly the lexicographic
+// order `derive(Ord)` gives the fields in declaration order, so `<`, `>`, and
+// `==` compare versions directly. `Version` is sealed (RFC-0065): external code
+// cannot forge one with the raw data constructor, so a `Version` can only be
+// built through this module — `parse`, which rejects negative components, or
+// `version`. This closes the arbitrary-raw-construction vector of BUG-191
+// (`semver.Version(-1, 2, 3)` from another module is now a compile error).
+sealed type Version derive(PartialEq, Eq, PartialOrd, Ord):
+    major: Int
+    minor: Int
+    patch: Int
+
+// A version constraint (requirement). `Req` is sealed so requirements retain
+// the component precision recorded by `parse_req`; use that parser rather
+// than forging a raw variant.
+sealed type Req:
+    Caret(Version, Int)
+    Tilde(Version, Int)
+    Exact(Version)
+    AtLeast(Version)
+    Any
+
+// Matchable semantic-version parse failures. Requirement parsing reuses the
+// same cases because every non-`*` requirement wraps a version coordinate.
+type SemverError:
+    BadVersionShape(String)
+    SignedVersionComponent(String)
+    NegativeVersionComponent(String)
+    NonNumericVersionComponent(String)
+
+pub fn semver_error_message(e: SemverError) -> String:
+    match e:
+        BadVersionShape(raw) -> "bad version `" + raw + "`: expected major.minor.patch"
+        SignedVersionComponent(component) -> "bad version component `" + component + "`: sign characters are not allowed"
+        NegativeVersionComponent(component) -> "bad version component `" + component + "`: must be non-negative"
+        NonNumericVersionComponent(component) -> "bad version component `" + component + "`"
+
+impl Show for SemverError:
+    fn show(self) -> String:
+        semver_error_message(self)
+
+impl Error for SemverError
+
+impl From(SemverError) for String:
+    fn from(value: SemverError) -> Self:
+        semver_error_message(value)
+
+// --- constructors ------------------------------------------------------------
+// A convenience constructor for known-good components (e.g. a computed bump).
+// A negative component is not a version at all, so it is a contract violation
+// (RFC-0044 rule 3): fail loudly naming the bad coordinate rather than minting
+// an impossible one. Untrusted input belongs in `parse`, which returns `Err`
+// instead of aborting.
+pub fn version(major: Int, minor: Int, patch: Int) -> Version:
+    if major < 0 || minor < 0 || patch < 0:
+        fail("semver.version: components `${major}.${minor}.${patch}` must be non-negative")
+    Version(major, minor, patch)
+
+// --- parsing + rendering -----------------------------------------------------
+
+// Parse `major.minor.patch` (missing trailing components default to 0), returning
+// a typed error a library can match.
+pub fn parse(s: String) -> Result(Version, SemverError):
+    let parts = s.trim().split(".")
+    if list.length(parts) == 0 || list.length(parts) > 3:
+        Err(BadVersionShape(s))
+    else:
+        match component(parts, 0):
+            Ok(a) -> match component(parts, 1):
+                Ok(b) -> match component(parts, 2):
+                    Ok(c) -> Ok(Version(a, b, c))
+                    Err(e) -> Err(e)
+                Err(e) -> Err(e)
+            Err(e) -> Err(e)
+
+// Parse with String errors for application-style boundaries.
+pub fn parse_string(s: String) -> Result(Version, String):
+    match parse(s):
+        Ok(v) -> Ok(v)
+        Err(e) -> Err(semver_error_message(e))
+
+fn component(parts: List(String), i: Int) -> Result(Int, SemverError):
+    if i >= list.length(parts):
+        Ok(0)
+    else if list.at(parts, i).starts_with("+"):
+        // `parse_int` deliberately accepts a leading `+`, but a SemVer component
+        // is a bare unsigned decimal: `+1.2.3` is not a version coordinate.
+        Err(SignedVersionComponent(list.at(parts, i)))
+    else:
+        match list.at(parts, i).parse_int():
+            Some(n) ->
+                if n < 0:
+                    Err(NegativeVersionComponent(list.at(parts, i)))
+                else:
+                    Ok(n)
+            None -> Err(NonNumericVersionComponent(list.at(parts, i)))
+
+pub fn format(v: Version) -> String:
+    "${v.major}.${v.minor}.${v.patch}"
+
+impl Show for Version:
+    fn show(self) -> String:
+        format(self)
+
+// --- ordering ----------------------------------------------------------------
+
+// -1 if a < b, 0 if equal, 1 if a > b. `Version` derives `Ord`, so callers that
+// only need a Bool can compare with `<` / `>` / `==` directly.
+pub fn compare(a: Version, b: Version) -> Int:
+    if a < b:
+        -1
+    else if a > b:
+        1
+    else:
+        0
+
+pub fn less(a: Version, b: Version) -> Bool:
+    a < b
+
+// --- constraints -------------------------------------------------------------
+pub fn parse_req(s: String) -> Result(Req, SemverError):
+    let t = s.trim()
+    if t == "*":
+        Ok(Any)
+    else if t.starts_with("^"):
+        let raw = t.drop(1)
+        wrap_caret(parse(raw), version_precision(raw))
+    else if t.starts_with("~"):
+        let raw = t.drop(1)
+        wrap_tilde(parse(raw), version_precision(raw))
+    else if t.starts_with(">="):
+        wrap_atleast(parse(t.drop(2)))
+    else:
+        wrap_exact(parse(t))
+
+pub fn parse_req_string(s: String) -> Result(Req, String):
+    match parse_req(s):
+        Ok(r) -> Ok(r)
+        Err(e) -> Err(semver_error_message(e))
+
+fn version_precision(raw: String) -> Int:
+    list.length(raw.trim().split("."))
+
+fn wrap_caret(r: Result(Version, SemverError), precision: Int) -> Result(Req, SemverError):
+    match r:
+        Ok(v) -> Ok(Caret(v, precision))
+        Err(e) -> Err(e)
+
+fn wrap_tilde(r: Result(Version, SemverError), precision: Int) -> Result(Req, SemverError):
+    match r:
+        Ok(v) -> Ok(Tilde(v, precision))
+        Err(e) -> Err(e)
+
+fn wrap_atleast(r: Result(Version, SemverError)) -> Result(Req, SemverError):
+    match r:
+        Ok(v) -> Ok(AtLeast(v))
+        Err(e) -> Err(e)
+
+fn wrap_exact(r: Result(Version, SemverError)) -> Result(Req, SemverError):
+    match r:
+        Ok(v) -> Ok(Exact(v))
+        Err(e) -> Err(e)
+
+// Whether `v` satisfies the constraint `req`.
+pub fn matches(req: Req, v: Version) -> Bool:
+    match req:
+        Any -> true
+        Exact(r) -> v == r
+        AtLeast(r) -> v >= r
+        Tilde(r, precision) -> tilde_matches(r, precision, v)
+        Caret(r, precision) -> caret_matches(r, precision, v)
+
+// `~x` stays in x.*, while `~x.y` and `~x.y.z` stay in x.y.*.
+fn tilde_matches(r: Version, precision: Int, v: Version) -> Bool:
+    if v < r:
+        false
+    else if precision == 1:
+        v.major == r.major
+    else:
+        v.major == r.major && v.minor == r.minor
+
+// Caret compatibility ends at the next bump of the left-most non-zero written
+// component. Omitted zero components remain a range: `^0` covers 0.*, while
+// `^0.0` covers 0.0.* and `^0.0.3` covers only 0.0.3.
+fn caret_matches(r: Version, precision: Int, v: Version) -> Bool:
+    if v < r:
+        false
+    else if r.major > 0 || precision == 1:
+        v.major == r.major
+    else if r.minor > 0 || precision == 2:
+        v.major == 0 && v.minor == r.minor
+    else:
+        v.major == 0 && v.minor == 0 && v.patch == r.patch
+
+// The highest version in `versions` that satisfies `req`, or None if none do.
+// Keep the matching versions and fold to the highest — dogfoods std/iter.
+pub fn best(versions: List(Version), req: Req) -> Option(Version):
+    let ok = iter.from_list(versions).filter(fn(v: Version): matches(req, v))
+    ok.fold(None, fn(chosen: Option(Version), v: Version): if higher_than(v, chosen): Some(v) else: chosen)
+
+fn higher_than(v: Version, current: Option(Version)) -> Bool:
+    match current:
+        Some(c) -> v > c
+        None -> true

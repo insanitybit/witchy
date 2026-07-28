@@ -1,0 +1,15 @@
+// Result is the standard preluded failure ADT. Its value and error parameters
+// are inferred per use; write `Result(Int, String)` to pin them explicitly.
+pub fn safe_div(a: Int, b: Int) -> Result(Int, String):
+    match b:
+        0 -> Err("divide by zero")
+        _ -> Ok(a / b)
+
+pub fn show(r: Result(Int, String)) -> String:
+    match r:
+        Ok(n) -> "ok " + "${n}"
+        Err(msg) -> "err " + msg
+
+fn main(console: Console):
+    console.print(show(safe_div(10, 2)))
+    console.print(show(safe_div(10, 0)))

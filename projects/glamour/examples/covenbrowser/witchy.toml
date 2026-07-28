@@ -1,0 +1,19 @@
+# covenbrowser — the capstone glamour MVU app (RFC-0008): a mini "coven browser"
+# combining the runecard view and the source highlighter into ONE navigable,
+# multi-view interactive UI. `Model` is a list of runes plus a selected index;
+# `Msg = Open(Int) | Back` drives navigation between the INDEX (clickable rune
+# cards) and a DETAIL view (the card + highlighted source + a back button). A
+# capability-pure rune: its only host call is `print` from `main` (Console =
+# output, not authority); `export_step` itself holds NO runtime authority. The JS
+# DOM host shell (web/witchy-runtime/glamour-dom.mjs) diffs the returned VNode
+# into the real DOM and routes click events back as `Msg` values — the rune
+# computes, the shell acts.
+[rune]
+name = "covenbrowser"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]
+
+[dependencies]
+"glamour" = { path = "../.." }

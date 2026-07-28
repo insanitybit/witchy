@@ -1,0 +1,757 @@
+// The witchy standard list library. Every function here is pure: the module
+// declares no capability parameters, so importing it grants no authority — it
+// can only transform data. This is the capability model in miniature: a library
+// you didn't hand a Console/Dir/Net to literally cannot reach them.
+
+// `Option` powers the total lookups below (head/last/get/find): a missing
+// element is `None`, never an out-of-bounds trap.
+
+import option
+// `Eq`/`Ord` back the equality- and order-bounded lookups (`contains`, `unique`,
+// `index_of`, `position`, `sort`): the bound monomorphizes the comparison per
+// element type, so it is content-correct on both backends (RFC-0046).
+import cmp
+
+// --- Native primitives and compiler-referenced module functions. The natives
+// are intercepted by both backends (the self-recursive placeholder bodies give
+// the type checker the signatures and are never executed); the rest are the
+// lowering targets the compiler references by qualified name (`list.push`,
+// `list.set_at`, ...). These must stay module-level; the methods below
+// delegate to them. Everything else is methods-only (RFC-0099). ---
+
+// The number of elements.
+pub fn length(xs: List(a)) -> Int:
+    list.length(xs)
+
+// The element at `index` (0-based). Out of bounds is a runtime error on
+// every backend.
+pub fn at(xs: List(a), index: Int) -> a:
+    list.at(xs, index)
+
+// Compiler primitive used by the public move-in/move-out operation below.
+fn __push(xs: List(a), x: a) -> List(a):
+    list.__push(xs, x)
+
+// Remove the final element and return its old leaf. The repaired list travels
+// through the same `var` write-back channel as every public mutator.
+fn __pop_extract(var xs: List(a)) -> Option(a):
+    list.__pop_extract(xs)
+
+// Append `x` in place.
+pub fn push(var xs: List(a), x: a):
+    xs = list.__push(xs, x)
+    return
+
+// A new list that is `xs` followed by `ys`.
+pub fn concat(xs: List(a), ys: List(a)) -> List(a):
+    list.concat(xs, ys)
+
+// Compiler primitive used by place-assignment lowering.
+fn __set_at(xs: List(a), index: Int, value: a) -> List(a):
+    list.__set_at(xs, index, value)
+
+// Store `value` at `index`. An out-of-range (or negative) index is a runtime
+// error on both backends, symmetric with `list.at` and `xs[i]`.
+pub fn set_at(var xs: List(a), index: Int, value: a):
+    xs = list.__set_at(xs, index, value)
+    return
+
+// A copy of `xs` with the function `f` applied to the element at `index`. An
+// out-of-range (or negative) index is a runtime error on both backends, exactly
+// like `list.at` — a silently discarded update is a contract violation (RFC-0044
+// rule 3), so it aborts rather than leaving the list unchanged.
+pub fn update_at(var xs: List(a), index: Int, f: fn(a) -> a):
+    if index < 0 || index >= list.length(xs):
+        fail("list index ${index} out of bounds (length ${list.length(xs)})")
+    var out = []
+    var i = 0
+    for x in xs:
+        if i == index:
+            list.push(out, f(x))
+        else:
+            list.push(out, x)
+        i = i + 1
+    xs = out
+    return
+
+// Remove and return the final element. A uniquely owned non-empty list moves
+// the leaf out in O(1) without copying its spine; a shared root is copied so
+// aliases retain their old contents in normal mode. In `mode opt`, the `unique`
+// receiver rejects a shared or loaned call site with the ownership reason. An
+// empty list returns None without copying.
+pub fn pop(var xs: unique List(a)) -> Option(a):
+    list.__pop_extract(xs)
+
+// The elements in the half-open index range [start, end), clamped to bounds.
+// `slice(xs, 1, 3)` of [a,b,c,d] is [b,c].
+pub fn slice(xs: List(a), start: Int, end: Int) -> List(a):
+    var out = []
+    var i = 0
+    for x in xs:
+        if i >= start && i < end:
+            list.push(out, x)
+        i = i + 1
+    out
+
+// --- Receiver-less constructors ---
+
+// [0, 1, ..., n-1].
+pub fn range(n: Int) -> List(Int):
+    var out = []
+    var i = 0
+    while i < n:
+        list.push(out, i)
+        i = i + 1
+    out
+
+// The half-open span `lo..hi`: [lo, lo+1, ..., hi-1], empty when `lo >= hi`.
+pub fn range_between(lo: Int, hi: Int) -> List(Int):
+    var out = []
+    var i = lo
+    while i < hi:
+        list.push(out, i)
+        i = i + 1
+    out
+
+// The span from `start` toward `stop` (exclusive) advancing by `step`. A
+// positive `step` counts up while below `stop`, a negative `step` counts down
+// while above `stop`, and a zero `step` yields [] rather than looping forever.
+pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
+    var out = []
+    if step > 0:
+        var i = start
+        while i < stop:
+            list.push(out, i)
+            // Stop before `i + step` would overflow past i64::MAX and wrap
+            // negative — otherwise `i < stop` stays true and the loop never ends.
+            if i > 9223372036854775807 - step:
+                break
+            i = i + step
+    else if step < 0:
+        var i = start
+        while i > stop:
+            list.push(out, i)
+            // Likewise stop before `i + step` underflows past i64::MIN.
+            if i < 0 - 9223372036854775807 - 1 - step:
+                break
+            i = i + step
+    out
+
+// A list of `n` copies of `x` (empty when `n <= 0`).
+pub fn repeat(x: a, n: Int) -> List(a):
+    var out = []
+    var i = 0
+    while i < n:
+        list.push(out, x)
+        i = i + 1
+    out
+
+// --- Private cores. The recursive sort machinery stays as free functions:
+// the quiet pre-mono pass cannot resolve a method called from inside a
+// generic recursive helper, so the methods delegate here (the same shape as
+// std/iter's lazy adapter cores). ---
+
+// The list, reversed.
+fn reversed(xs: List(a)) -> List(a):
+    var out = []
+    var i = list.length(xs) - 1
+    while i >= 0:
+        list.push(out, list.at(xs, i))
+        i = i - 1
+    out
+
+// Merge two already-sorted lists. Stable: on a tie an element from `a` (the
+// left half) is taken before one from `b`.
+fn merge(a: List(a), b: List(a), less: fn(a, a) -> Bool) -> List(a):
+    var out = []
+    var i = 0
+    var j = 0
+    let na = list.length(a)
+    let nb = list.length(b)
+    while i < na && j < nb:
+        if less(list.at(b, j), list.at(a, i)):
+            list.push(out, list.at(b, j))
+            j = j + 1
+        else:
+            list.push(out, list.at(a, i))
+            i = i + 1
+    while i < na:
+        list.push(out, list.at(a, i))
+        i = i + 1
+    while j < nb:
+        list.push(out, list.at(b, j))
+        j = j + 1
+    out
+
+// Sort using a caller-supplied "is-less-than" comparator — a stable merge sort
+// (O(n log n)), so equal elements keep their original order. Generic over the
+// element type.
+fn sorted_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
+    let n = list.length(xs)
+    if n <= 1:
+        xs
+    else:
+        let mid = n / 2
+        merge(sorted_by(list.slice(xs, 0, mid), less), sorted_by(list.slice(xs, mid, n), less), less)
+
+// Strict "is-less-than" via the element type's TOTAL order — through `compare`
+// (not `<`, which needs only `PartialOrd`), matching `cmp`'s own `Ord` helpers.
+fn before(x: a, y: a) -> Bool where a: Ord:
+    match compare(x, y):
+        Less -> true
+        _ -> false
+
+// The length of the shortest row.
+fn min_len(xss: List(List(a))) -> Int:
+    var m = 0 - 1
+    for row in xss:
+        let l = list.length(row)
+        if m < 0 || l < m:
+            m = l
+    m
+
+// --- Methods are the primary surface (RFC-0099). The module level above keeps
+// only the native/compiler-referenced functions and the receiver-less
+// constructors; every other operation lives here. A method whose name matches
+// a kept module function delegates to it; the rest own their implementation. ---
+impl List(a):
+    pub fn push(var self, x: a):
+        list.push(self, x)
+
+    pub fn concat(self, ys: List(a)) -> List(a):
+        list.concat(self, ys)
+
+    // Apply `f` to every element, collecting the results.
+    pub fn map(self, f: fn(a) -> b) -> List(b):
+        var out = []
+        for x in self:
+            list.push(out, f(x))
+        out
+
+    // Keep only the elements for which `keep` returns true.
+    pub fn filter(self, keep: fn(a) -> Bool) -> List(a):
+        var out = []
+        for x in self:
+            if keep(x):
+                list.push(out, x)
+        out
+
+    // Reverse in place.
+    pub fn reverse(var self):
+        self = reversed(self)
+        return
+
+    // Sort using a caller-supplied "is-less-than" comparator — a stable merge
+    // sort (O(n log n)), so equal elements keep their original order. Generic
+    // over the element type.
+    pub fn sort_by(var self, less: fn(a, a) -> Bool):
+        self = sorted_by(self, less)
+        return
+
+    pub fn set_at(var self, index: Int, value: a):
+        list.set_at(self, index, value)
+
+    pub fn update_at(var self, index: Int, f: fn(a) -> a):
+        list.update_at(self, index, f)
+
+    pub fn pop(var self: unique List(a)) -> Option(a):
+        list.pop(self)
+
+    // Remove and return the first element, or `None` for the empty list.
+    pub fn pop_front(var self) -> Option(a):
+        if list.length(self) == 0:
+            None
+        else:
+            let value = list.at(self, 0)
+            self = list.slice(self, 1, list.length(self))
+            Some(value)
+
+    // Exchange the elements at `i` and `j`. An out-of-range index is a runtime
+    // error on both backends, like `list.at`.
+    pub fn swap(var self, i: Int, j: Int):
+        let left = list.at(self, i)
+        let right = list.at(self, j)
+        list.set_at(self, i, right)
+        list.set_at(self, j, left)
+
+    pub fn length(self) -> Int:
+        list.length(self)
+
+    // Whether the list has no elements.
+    pub fn is_empty(self) -> Bool:
+        list.length(self) == 0
+
+    pub fn at(self, index: Int) -> a:
+        list.at(self, index)
+
+    pub fn slice(self, start: Int, end: Int) -> List(a):
+        list.slice(self, start, end)
+
+    // The element at `index` as `Some`, or `None` when `index` is out of range —
+    // a total, bounds-checked alternative to the `at` builtin.
+    pub fn get(self, index: Int) -> Option(a):
+        if index >= 0 && index < list.length(self):
+            Some(list.at(self, index))
+        else:
+            None
+
+    // The first element as `Some`, or `None` for the empty list.
+    pub fn head(self) -> Option(a):
+        if list.length(self) == 0:
+            None
+        else:
+            Some(list.at(self, 0))
+
+    // The last element as `Some`, or `None` for the empty list.
+    pub fn last(self) -> Option(a):
+        if list.length(self) == 0:
+            None
+        else:
+            Some(list.at(self, list.length(self) - 1))
+
+    // The first element, or `default` when the list is empty. (A total accessor
+    // in the style of `get_or`/`unwrap_or`, so it never indexes out of bounds.)
+    pub fn head_or(self, default: a) -> a:
+        if list.length(self) == 0:
+            default
+        else:
+            list.at(self, 0)
+
+    // The last element, or `default` when the list is empty.
+    pub fn last_or(self, default: a) -> a:
+        if list.length(self) == 0:
+            default
+        else:
+            list.at(self, list.length(self) - 1)
+
+    // The first element satisfying `pred` as `Some`, or `None` if none do.
+    pub fn find(self, pred: fn(a) -> Bool) -> Option(a):
+        for x in self:
+            if pred(x):
+                return Some(x)
+        None
+
+    // The first non-`None` result of applying `f` across the list (search and
+    // transform in one pass), or `None` if every result is `None`.
+    pub fn find_map(self, f: fn(a) -> Option(b)) -> Option(b):
+        for x in self:
+            let r = f(x)
+            if option.is_some(r):
+                return r
+        None
+
+    // The first element satisfying `pred`, or `default` if none do.
+    pub fn find_or(self, pred: fn(a) -> Bool, default: a) -> a:
+        for x in self:
+            if pred(x):
+                return x
+        default
+
+    // Whether at least one element satisfies `pred`.
+    pub fn any(self, pred: fn(a) -> Bool) -> Bool:
+        for x in self:
+            if pred(x):
+                return true
+        false
+
+    // Whether every element satisfies `pred` (true for the empty list).
+    pub fn all(self, pred: fn(a) -> Bool) -> Bool:
+        for x in self:
+            if !pred(x):
+                return false
+        true
+
+    // The index of the first element satisfying `pred` as `Some`, or `None` if
+    // none do — the by-predicate search (`index_of` is the by-value search). One
+    // name per axis, both `Option`, no sentinel (RFC-0044/0049).
+    pub fn position(self, pred: fn(a) -> Bool) -> Option(Int):
+        var i = 0
+        for x in self:
+            if pred(x):
+                return Some(i)
+            i = i + 1
+        None
+
+    // How many elements satisfy `pred`.
+    pub fn count_where(self, pred: fn(a) -> Bool) -> Int:
+        var n = 0
+        for x in self:
+            if pred(x):
+                n = n + 1
+        n
+
+    // Reduce the list to a single value, left to right.
+    pub fn fold(self, init: b, f: fn(b, a) -> b) -> b:
+        var acc = init
+        for x in self:
+            acc = f(acc, x)
+        acc
+
+    // Combine the elements left to right using the first as the seed, as `Some`;
+    // `None` for the empty list. (A `fold` that needs no initial value — handy
+    // for max/min/sum over a non-empty list with a plain binary op.)
+    pub fn reduce(self, f: fn(a, a) -> a) -> Option(a):
+        if list.length(self) == 0:
+            None
+        else:
+            var acc = list.at(self, 0)
+            var i = 1
+            let n = list.length(self)
+            while i < n:
+                acc = f(acc, list.at(self, i))
+                i = i + 1
+            Some(acc)
+
+    // Like `fold`, but collect every intermediate accumulator left to right,
+    // starting from `init`: scan([1,2,3], 0, +) -> [0, 1, 3, 6].
+    pub fn scan(self, init: b, f: fn(b, a) -> b) -> List(b):
+        var acc = init
+        var out = [init]
+        for x in self:
+            acc = f(acc, x)
+            list.push(out, acc)
+        out
+
+    // The sum of a list of integers (0 for the empty list).
+    pub fn sum(self: List(Int)) -> Int:
+        var total = 0
+        for x in self:
+            total = total + x
+        total
+
+    // The sum of `f` applied to each element (0 for the empty list) — e.g. a
+    // total over a record field: `cart.sum_by(fn(it): it.price * it.qty)`.
+    pub fn sum_by(self, f: fn(a) -> Int) -> Int:
+        var total = 0
+        for x in self:
+            total = total + f(x)
+        total
+
+    // The product of a list of integers (1 for the empty list).
+    pub fn product(self: List(Int)) -> Int:
+        var p = 1
+        for x in self:
+            p = p * x
+        p
+
+    // Map each element to a list, then concatenate the results.
+    pub fn flat_map(self, f: fn(a) -> List(b)) -> List(b):
+        var out = []
+        for x in self:
+            for y in f(x):
+                list.push(out, y)
+        out
+
+    // Concatenate a list of lists into one.
+    pub fn flatten(self: List(List(b))) -> List(b):
+        var out = []
+        for xs in self:
+            for x in xs:
+                list.push(out, x)
+        out
+
+    // Turn a list of rows into a list of columns. Rows are read only up to the
+    // length of the SHORTEST row, so a ragged tail is dropped and the result stays
+    // rectangular: `[[1, 2, 3], [4, 5, 6]].transpose()` is `[[1, 4], [2, 5], [3, 6]]`.
+    pub fn transpose(self: List(List(b))) -> List(List(b)):
+        if list.length(self) == 0:
+            []
+        else:
+            let cols = min_len(self)
+            var out = []
+            var c = 0
+            while c < cols:
+                var col = []
+                for row in self:
+                    list.push(col, list.at(row, c))
+                list.push(out, move col)
+                c = c + 1
+            out
+
+    // The first `n` elements (fewer if the list is shorter).
+    pub fn take(self, n: Int) -> List(a):
+        var out = []
+        var i = 0
+        for x in self:
+            if i < n:
+                list.push(out, x)
+            i = i + 1
+        out
+
+    // All but the first `n` elements.
+    pub fn drop(self, n: Int) -> List(a):
+        var out = []
+        var i = 0
+        for x in self:
+            if i >= n:
+                list.push(out, x)
+            i = i + 1
+        out
+
+    // The longest leading run of elements satisfying `pred`.
+    pub fn take_while(self, pred: fn(a) -> Bool) -> List(a):
+        var out = []
+        var taking = true
+        for x in self:
+            if taking:
+                if pred(x):
+                    list.push(out, x)
+                else:
+                    taking = false
+        out
+
+    // Drop the longest leading run satisfying `pred`, keeping the rest.
+    pub fn drop_while(self, pred: fn(a) -> Bool) -> List(a):
+        var out = []
+        var dropping = true
+        for x in self:
+            if dropping:
+                if !pred(x):
+                    dropping = false
+                    list.push(out, x)
+            else:
+                list.push(out, x)
+        out
+
+    // Split the list at index `n` into `(first n, the rest)`. `n` is clamped, so
+    // `xs.split_at(0)` is `([], xs)` and an `n` past the end gives `(xs, [])`.
+    pub fn split_at(self, n: Int) -> (List(a), List(a)):
+        (list.slice(self, 0, n), list.slice(self, n, list.length(self)))
+
+    // All elements after the first; the empty list maps to the empty list.
+    pub fn tail(self) -> List(a):
+        list.slice(self, 1, list.length(self))
+
+    // All elements except the last; the empty list maps to the empty list.
+    pub fn drop_last(self) -> List(a):
+        list.slice(self, 0, list.length(self) - 1)
+
+    // Split the list into consecutive sublists of length `n` (the final one may
+    // be shorter). `[1,2,3,4,5].chunks(2)` is `[[1,2],[3,4],[5]]`; there are no
+    // chunks of a non-positive length, so `n < 1` yields `[]` (like `windows`).
+    pub fn chunks(self, n: Int) -> List(List(a)):
+        if n < 1:
+            return []
+        var out = []
+        var cur = []
+        var count = 0
+        for x in self:
+            list.push(cur, x)
+            count = count + 1
+            if count == n:
+                list.push(out, move cur)
+                cur = []
+                count = 0
+        if count > 0:
+            list.push(out, move cur)
+        out
+
+    // All contiguous sublists of length `n` (a sliding window of step 1). Empty
+    // when `n < 1` or longer than the list. `[1,2,3,4].windows(2)` is
+    // `[[1,2],[2,3],[3,4]]`.
+    pub fn windows(self, n: Int) -> List(List(a)):
+        if n < 1:
+            []
+        else:
+            var out = []
+            var i = 0
+            while i + n <= list.length(self):
+                list.push(out, list.slice(self, i, i + n))
+                i = i + 1
+            out
+
+    // Pair up two lists element-wise, stopping at the shorter one.
+    pub fn zip(self, ys: List(b)) -> List((a, b)):
+        var out = []
+        var i = 0
+        while i < list.length(self) && i < list.length(ys):
+            list.push(out, (list.at(self, i), list.at(ys, i)))
+            i = i + 1
+        out
+
+    // Combine two lists element-wise with `f`, stopping at the shorter one.
+    pub fn zip_with(self, ys: List(b), f: fn(a, b) -> c) -> List(c):
+        var out = []
+        var i = 0
+        while i < list.length(self) && i < list.length(ys):
+            list.push(out, f(list.at(self, i), list.at(ys, i)))
+            i = i + 1
+        out
+
+    // Split a list of pairs into a pair of lists — the inverse of `zip`.
+    pub fn unzip(self: List((x, y))) -> (List(x), List(y)):
+        var firsts = []
+        var seconds = []
+        for pair in self:
+            let (first, second) = pair
+            list.push(firsts, first)
+            list.push(seconds, second)
+        (firsts, seconds)
+
+    // Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
+    pub fn enumerate(self) -> List((Int, a)):
+        var out = []
+        var i = 0
+        for x in self:
+            list.push(out, (i, x))
+            i = i + 1
+        out
+
+    // Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
+    pub fn intersperse(self, sep: a) -> List(a):
+        var out = []
+        var first = true
+        for x in self:
+            if first:
+                list.push(out, x)
+                first = false
+            else:
+                list.push(out, sep)
+                list.push(out, x)
+        out
+
+    // Split the list into (matching, non-matching) by `pred`, each preserving
+    // the original order. A single pass — the dual of running `filter` twice.
+    pub fn partition(self, pred: fn(a) -> Bool) -> (List(a), List(a)):
+        var yes = []
+        var no = []
+        for x in self:
+            if pred(x):
+                list.push(yes, x)
+            else:
+                list.push(no, x)
+        (yes, no)
+
+    // The maximum element under a caller-supplied "is-less-than" comparator, as
+    // `Some` (the first of equal maxima), or `None` for the empty list. Generic,
+    // so it works for any type — e.g. max by a record field.
+    pub fn max_by(self, less: fn(a, a) -> Bool) -> Option(a):
+        if list.length(self) == 0:
+            None
+        else:
+            var best = list.at(self, 0)
+            for x in self:
+                if less(best, x):
+                    best = x
+            Some(best)
+
+    // The minimum element under `less`, as `Some`; `None` for the empty list.
+    pub fn min_by(self, less: fn(a, a) -> Bool) -> Option(a):
+        if list.length(self) == 0:
+            None
+        else:
+            var best = list.at(self, 0)
+            for x in self:
+                if less(x, best):
+                    best = x
+            Some(best)
+
+impl List(a) where a: Eq:
+    // Whether `target` appears in the list, by the element type's `Eq` impl. The
+    // `where a: Eq` bound monomorphizes the equality per element type, so the
+    // comparison is content-correct on both backends — including user record
+    // element types, which the compiled backend cannot compare through an
+    // unbounded generic `==` (RFC-0046).
+    pub fn contains(self, target: a) -> Bool:
+        for x in self:
+            if x == target:
+                return true
+        false
+
+    // The index of the first element equal to `target` as `Some`, or `None` if
+    // absent (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). The
+    // `where a: Eq` bound makes the equality content-correct on both backends.
+    pub fn index_of(self, target: a) -> Option(Int):
+        var i = 0
+        for x in self:
+            if x == target:
+                return Some(i)
+            i = i + 1
+        None
+
+    // Remove the first occurrence of `target`, reporting whether one was
+    // removed; the list is unchanged when absent. To remove every occurrence,
+    // use `xs.filter(fn(y): y != target)`.
+    pub fn remove(var self, target: a) -> Bool:
+        var out = []
+        var removed = false
+        for x in self:
+            if !removed && x == target:
+                removed = true
+            else:
+                list.push(out, x)
+        self = out
+        removed
+
+    // The number of elements equal to `target`, by the element type's `Eq` impl.
+    // This is the counted companion to `contains`, so equality dispatch stays in
+    // the list module alongside membership, indexing, and de-duplication.
+    pub fn count(self, target: a) -> Int:
+        var n = 0
+        for x in self:
+            if x == target:
+                n = n + 1
+        n
+
+    // The list with duplicates removed, keeping the first occurrence of each
+    // element (by the element type's `Eq`), in original order.
+    pub fn unique(self) -> List(a):
+        var out = []
+        for x in self:
+            var seen = false
+            for y in out:
+                if y == x:
+                    seen = true
+            if !seen:
+                list.push(out, x)
+        out
+
+impl List(a) where a: Ord:
+    // Sort any list whose elements are `Ord` ascending — a stable merge sort
+    // (O(n log n)) that dispatches through the element type's total order, so
+    // `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord`
+    // records, content-correct on both backends (RFC-0046). A merely-partial type
+    // like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
+    pub fn sort(var self):
+        self = sorted_by(self, fn(x: a, y: a): before(x, y))
+        return
+
+    // The smallest element as `Some`, or `None` for the empty list. Generic over
+    // any `Ord` element type (like `sort`), dispatching through the total order —
+    // so `xs.min()` works for `Int`, `String`, `Duration`, or a derived-`Ord`
+    // record. For a merely-partial type or a custom criterion, use `min_by`.
+    pub fn min(self) -> Option(a):
+        if list.length(self) == 0:
+            None
+        else:
+            var best = list.at(self, 0)
+            for x in self:
+                if before(x, best):
+                    best = x
+            Some(best)
+
+    // The largest element as `Some`, or `None` for the empty list. Generic over
+    // any `Ord` element type — see `min`.
+    pub fn max(self) -> Option(a):
+        if list.length(self) == 0:
+            None
+        else:
+            var best = list.at(self, 0)
+            for x in self:
+                if before(best, x):
+                    best = x
+            Some(best)
+
+impl List(String):
+    // Concatenate the strings, inserting `sep` between adjacent elements:
+    // `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
+    pub fn join(self, sep: String) -> String:
+        var s = ""
+        var first = true
+        for p in self:
+            if first:
+                s = p
+                first = false
+            else:
+                s = s + sep + p
+        s

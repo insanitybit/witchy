@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console):\\n    print(console, __render(push([1], 2)))\\n\")"
+---
+type error: `main`, line 2: `push` moved to `list.push` — pure data operations are module-qualified now (no import needed; the core modules are always available)

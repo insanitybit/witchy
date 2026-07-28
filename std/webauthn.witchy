@@ -1,0 +1,113 @@
+// webauthn — server-side verification of a WebAuthn *assertion* (the credential
+// "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.
+//
+// The browser hands every BINARY value to the server HEX-ENCODED (it holds them as
+// ArrayBuffers, so this is free). The server then INDEPENDENTLY re-derives and
+// checks everything that matters — it trusts none of the client's interpretation:
+//   * clientDataJSON.type == "webauthn.get"
+//   * clientDataJSON.challenge == the exact challenge the server issued (anti-replay)
+//   * clientDataJSON.origin == the expected origin (anti-phishing)
+//   * authenticatorData.rpIdHash == SHA-256(expected RP id) (wrong relying party)
+//   * the user-presence (and, for 2FA, user-verification) flags are set
+//   * the ECDSA-P256 signature over `authenticatorData || SHA256(clientDataJSON)`
+//     verifies under the public key bound to this credential at registration.
+// A forged or replayed assertion fails one of these and is rejected here.
+
+import crypto
+import bytes
+import encoding
+import show
+import error
+import convert
+from json import Json
+
+// Matchable assertion-verification failures. Malformed wire inputs are distinct
+// from semantic rejection of a well-formed but replayed, phishing, or forged
+// assertion.
+type AssertionError:
+    ClientDataJson(String)
+    WrongClientType
+    ChallengeMismatch
+    OriginMismatch
+    AuthenticatorDataHex(String)
+    AuthenticatorDataTooShort
+    RpIdHashMismatch
+    UserPresenceRequired
+    UserVerificationRequired
+    SignatureInputMalformed(String)
+    SignatureInvalid
+
+// Human-readable assertion failure text for logs and HTTP responses.
+pub fn assertion_error_message(e: AssertionError) -> String:
+    match e:
+        ClientDataJson(reason) -> "clientDataJSON did not parse: " + reason
+        WrongClientType -> "clientData.type is not webauthn.get"
+        ChallengeMismatch -> "challenge mismatch (replay?)"
+        OriginMismatch -> "origin mismatch (phishing?)"
+        AuthenticatorDataHex(reason) -> "authenticatorData is not valid hex: " + reason
+        AuthenticatorDataTooShort -> "authenticatorData too short"
+        RpIdHashMismatch -> "rpIdHash mismatch (wrong relying party)"
+        UserPresenceRequired -> "user-presence flag not set"
+        UserVerificationRequired -> "user-verification required but flag not set"
+        SignatureInputMalformed(reason) -> "signature input malformed: " + reason
+        SignatureInvalid -> "signature invalid"
+
+impl Show for AssertionError:
+    fn show(self) -> String:
+        assertion_error_message(self)
+
+impl Error for AssertionError
+
+impl From(AssertionError) for String:
+    fn from(value: AssertionError) -> Self:
+        assertion_error_message(value)
+
+fn json_str(doc: Json, key: String) -> String:
+    match json.get_string(doc, key):
+        Some(s) -> s
+        None -> ""
+
+// Verify an assertion. All `*_hex` arguments are hex-encoded bytes;
+// `client_data_json` is the exact clientDataJSON text the browser signed over (it
+// must be re-hashed verbatim, never re-serialized). `require_uv` demands user
+// verification — pass `true` for a genuine second-factor gate. Returns `Ok(true)`
+// when every check passes, or a typed `Err`.
+pub fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError):
+    match json.decode(client_data_json):
+        Err(e) -> Err(ClientDataJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            if json_str(doc, "type") != "webauthn.get":
+                Err(WrongClientType)
+            else if json_str(doc, "challenge") != expected_challenge:
+                Err(ChallengeMismatch)
+            else if json_str(doc, "origin") != expected_origin:
+                Err(OriginMismatch)
+            else:
+                check_auth_and_sig(stored_pubkey_hex, auth_data_hex, client_data_json, signature_hex, expected_rp_id, require_uv)
+
+fn check_auth_and_sig(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError):
+    match encoding.hex_decode_bytes(auth_data_hex):
+        Err(e) -> Err(AuthenticatorDataHex(encoding.encoding_error_message(e)))
+        Ok(auth_data) -> check_auth_bytes(stored_pubkey_hex, auth_data, client_data_json, signature_hex, expected_rp_id, require_uv)
+
+fn check_auth_bytes(stored_pubkey_hex: String, auth_data: Bytes, client_data_json: String, signature_hex: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError):
+    // authenticatorData = rpIdHash[32] || flags[1] || signCount[4] || ... (>= 37 bytes).
+    if bytes.length(auth_data) < 37:
+        Err(AuthenticatorDataTooShort)
+    else if encoding.hex_encode_bytes(bytes.slice(auth_data, 0, 32)) != crypto.sha256(expected_rp_id):
+        Err(RpIdHashMismatch)
+    else:
+        let flags = bytes.at(auth_data, 32)
+        let up = flags - flags / 2 * 2
+        let uv = flags / 4 - flags / 8 * 2
+        if up != 1:
+            Err(UserPresenceRequired)
+        else if require_uv && uv != 1:
+            Err(UserVerificationRequired)
+        else:
+            // The signed message is authenticatorData || SHA256(clientDataJSON).
+            let msg_hex = encoding.hex_encode_bytes(auth_data) + crypto.sha256(client_data_json)
+            match crypto.ecdsa_p256_verify_hex(stored_pubkey_hex, msg_hex, signature_hex):
+                Err(e) -> Err(SignatureInputMalformed(crypto.verify_error_message(e)))
+                Ok(true) -> Ok(true)
+                Ok(false) -> Err(SignatureInvalid)

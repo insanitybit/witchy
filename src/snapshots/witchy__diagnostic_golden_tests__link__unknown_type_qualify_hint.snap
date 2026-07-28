@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "link_diag(\"type Wrapper:\\n    inner: Wibble\\n\\nfn main(console: Console):\\n    print(console, \\\"hi\\\")\\n\")"
+---
+link error: unknown type `Wibble` (in module `main`) — it is not declared here, not a built-in, and no in-scope module exports a type named `Wibble`

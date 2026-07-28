@@ -1,0 +1,77 @@
+# cargo build output — root workspace AND the per-example-project targets
+# (examples/projects/*/*/target/) that `witchy build` leaves behind
+target/
+.claude/
+skills/
+**/skills/
+
+# Development-only material; the public tree keeps product code and tests.
+rfcs/
+bugs/
+scratch/
+state/
+external-refs/
+security-eval/
+wiki/
+internal/
+handoffs/
+notes/
+**/AGENTS.md
+**/CLAUDE.md
+**/RELEASE-READINESS.md
+**/PRODUCT-STATUS.md
+**/OVERNIGHT_REPORT.md
+**/KNOWN-ISSUES.md
+**/PLAN.md
+
+# isolated root build caches used by concurrent agents (`CARGO_TARGET_DIR=target-<agent>`)
+/target-*/
+*.wasm
+*.wat
+*.wast
+*.png
+*.bin
+*.exe
+*.dylib
+*.so
+*.dll
+*.o
+*.a
+*.rlib
+# run artifact of the convert example project
+/examples/projects/convert/convert/output.json
+/benchmarks/.build
+/web/witchy.wasm
+.playwright-mcp/
+/dist
+bench/bin/
+
+.claude/scheduled_tasks.lock
+
+# coven local registry store + Ed25519 signing keys — never commit
+coven-store/
+*.seed
+
+# security evaluation: vulnerability reports + PoCs — never commit
+security-eval/
+
+# vendored zizmor binary cache (scripts/zizmor.sh)
+scripts/.zizmor/
+
+# scratch experiments + regenerable build output (dist bundles, incl. the
+# coven-web app.js + WebAuthn cred/challenge state — never commit)
+scratch/
+# local operational coordination state (merge queue, agent handoffs, logs)
+/state/
+# local bug reports (deep-eval triage backlog — kept out of tracked history)
+bugs/
+dist/
+!projects/coven-web/web/dist/
+!projects/coven-web/web/dist/compartments/
+!projects/coven-web/web/dist/compartments/d3-runes-chart/
+!projects/coven-web/web/dist/compartments/d3-runes-chart/index.html
+!projects/coven-web/web/dist/compartments/d3-runes-chart/chart.test.mjs
+
+# source PDFs (e.g. the papers under external-refs/) — keep locally as
+# reference; commit the markdown notes/index, not the binaries
+*.pdf

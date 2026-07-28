@@ -1,0 +1,19 @@
+// More list combinators from the standard library: membership, search, and
+// slicing. `contains`/`index_of` work for any element type (they compare by
+// value); `take`/`drop` split a list. `index_of` returns `Option(Int)` — a
+// found position is `Some(i)`, a miss is `None` — so the `??` fallback names a
+// sentinel only where the caller wants one.
+
+import list
+
+fn main(console: Console):
+    let xs = [10, 20, 30, 40]
+
+    console.print("${xs.contains(30)}")
+    console.print("${xs.index_of(40) ?? -1}")
+    console.print("${xs.index_of(99) ?? -1}")
+
+    let head2 = xs.take(2)
+    let tail2 = xs.drop(2)
+    console.print("${head2.at(1)}")
+    console.print("${tail2.at(0)}")

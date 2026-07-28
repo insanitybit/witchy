@@ -1,0 +1,54 @@
+// A tiny INTERACTIVE glamour app for the book (RFC-0041): a live counter. Pure MVU — it holds
+// no capability and emits no effect, so it needs no network and no timer. The docs page mounts
+// it with the SAME `glamour-dom` runtime that drives the book itself, with `UiFetch` denied —
+// proof that a live glamour app runs in the docs with authority withheld by construction.
+
+from glamour import VNode, Cmd, UiRoot
+from json import Json
+
+type Model:
+    Model(Int)
+
+type Msg:
+    Inc
+    Dec
+    Reset
+
+fn view(m: Model) -> VNode(Msg):
+    match m:
+        Model(n) ->
+            glamour.element("div", [glamour.prop("class", "counter-demo")], [glamour.element("button", [glamour.prop("class", "counter-btn"), glamour.on("click", Dec)], [glamour.text("−")]), glamour.element("span", [glamour.prop("class", "counter-value")], [glamour.text("${n}")]), glamour.element("button", [glamour.prop("class", "counter-btn"), glamour.on("click", Inc)], [glamour.text("+")]), glamour.element("button", [glamour.prop("class", "counter-reset"), glamour.on("click", Reset)], [glamour.text("reset")])])
+
+fn update(m: Model, msg: Msg) -> (Model, Cmd(Msg)):
+    match m:
+        Model(n) ->
+            match msg:
+                Inc -> (Model(n + 1), NoCmd)
+                Dec -> (Model(n - 1), NoCmd)
+                Reset -> (Model(0), NoCmd)
+
+// Model/Msg (de)serialization — the small JSON boundary `step_with` threads over (custom, so
+// there is no reflection-shape ambiguity for a one-field model + no-arg messages).
+fn model_to_json(m: Model) -> Json:
+    match m:
+        Model(n) -> JsonObject([("n", JsonInt(n))])
+
+fn parse_model(j: Json) -> Model:
+    Model(json.get_int(j, "n").unwrap_or(0))
+
+fn msg_to_json(msg: Msg) -> Json:
+    match msg:
+        Inc -> JsonObject([("t", JsonString("Inc"))])
+        Dec -> JsonObject([("t", JsonString("Dec"))])
+        Reset -> JsonObject([("t", JsonString("Reset"))])
+
+fn parse_msg(j: Json) -> Msg:
+    match json.get_string(j, "t"):
+        Some("Inc") -> Inc
+        Some("Dec") -> Dec
+        _ -> Reset
+
+// The JS-callable step export the shell drives (the `export_` prefix marks it a string export).
+// It takes no `UiRoot`: a pure counter needs no UI authority, so none is minted for it.
+pub fn export_step(input: String) -> String:
+    glamour.step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)

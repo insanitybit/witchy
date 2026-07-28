@@ -1,0 +1,1086 @@
+use super::*;
+use crate::{codegen, interpreter, parser, typeck};
+
+    /// (BUG-276) The public hex decoders reject malformed input before it can
+    /// reach the private raw byte-level primitives (`encoding.hex_decode_lossy`,
+    /// `encoding.hex_to_base64url_lossy`). Invalid input is `Err` on both
+    /// backends, never the old silent-drop that could hand mangled crypto
+    /// material to a signature check. Valid hex still round-trips.
+    #[test]
+    fn hex_primitives_reject_non_hex_strictly_on_both_backends() {
+        let prog = |call: &str| {
+            format!(
+                "import encoding\n\nfn main(console: Console):\n    match {call}:\n        Ok(x) -> console.print(x)\n        Err(e) -> console.print(\"err\")\n"
+            )
+        };
+        for bad in [
+            "encoding.hex_decode(\"68zz69\")",
+            "encoding.hex_to_base64url(\"zz6869\")",
+            "encoding.hex_decode(\"abc\")", // odd length
+        ] {
+            let src = prog(bad);
+            assert_eq!(link_run(&src), ["err"], "interpreter must reject non-hex: {bad}");
+            assert_eq!(
+                run_linked_on_wasm(&[("main", &src)], "main"),
+                ["err"],
+                "WASM must reject non-hex: {bad}"
+            );
+        }
+        // Valid hex still decodes identically on both backends.
+        let ok = prog("encoding.hex_decode(\"6869\")");
+        assert_eq!(link_run(&ok), ["hi"], "interp decodes valid hex");
+        assert_eq!(run_linked_on_wasm(&[("main", &ok)], "main"), ["hi"], "wasm decodes valid hex");
+    }
+
+    /// Python-style f-strings: `f"...{expr}..."` interpolates (with `{{`/`}}` for
+    /// literal braces), desugaring to generated render + concat — same result on
+    /// both backends.
+    #[test]
+    fn f_strings_interpolate() {
+        let src = "fn main(console: Console):\n    let name = \"world\"\n    let n = 6\n    console.print(f\"hi {name} #{n * 7}\")\n    console.print(f\"{{braces}}\")\n";
+        assert_eq!(interp(src), vec!["hi world #42", "{braces}"]);
+        assert_eq!(run_on_wasm(src), vec!["hi world #42", "{braces}"]);
+    }
+
+    /// THE F11 FAMILY (learning log): interpolating values whose type only
+    /// typed lowering knows — an ADT String payload and a generic-combinator
+    /// return — renders identically on both backends.
+    #[test]
+    fn interpolation_of_mono_typed_values_agrees() {
+        let src = "import iter\n\ntype Msg:\n    Text(String)\n    Silence\n\nfn main(console: Console):\n    match Text(\"hi\"):\n        Text(s) -> console.print(\"got: ${s}\")\n        Silence -> console.print(\"none\")\n    let collected: List(Int) = iter.collect(iter.range(1, 100).take(3))\n    console.print(\"collected: ${collected}\")\n";
+        let want: Vec<String> = ["got: hi", "collected: [1, 2, 3]"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    #[test]
+    fn interpolation_tail_after_guard_returns_string() {
+        let src = "fn checked(n: Int) -> String:\n    if n < 0:\n        fail(\"bad\")\n    \"${n}\"\n\nfn main(console: Console):\n    console.print(checked(7))\n";
+        let want = vec!["7".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// The formatter ROUND-TRIPS string interpolation. The lexer desugars it to
+    /// a generated render chain, and `interpolation_sugar` prints that AST back
+    /// to the public interpolation spelling.
+    #[test]
+    fn fmt_round_trips_interpolation() {
+        let src = "fn main(console: Console):\n    let n = 3\n    console.print(\"n is ${n}, doubled ${n * 2}\")\n    console.print(\"cost: \\$${n}\")\n";
+        assert_eq!(crate::format::reformat(src).as_deref(), Some(src), "interpolation must round-trip");
+    }
+
+    /// Regression (found by `examples/calc/src/calc.witchy` via the both-backends invariant):
+    /// comparing a String whose type isn't locally tracked — a List(String)
+    /// element via `at` — to a literal must be a *structural* `$str_eq` on the
+    /// WASM backend, not a pointer compare, with the literal on either side.
+    #[test]
+    fn wasm_string_eq_uses_str_eq_when_literal_on_either_side() {
+        let src = "fn main(console: Console):\n    let cs = [\"a\", \" \", \"z\"]\n    console.print(if list.at(cs, 1) == \" \": \"eq\" else: \"ne\")\n    console.print(if \"a\" == list.at(cs, 0): \"eq\" else: \"ne\")\n    console.print(if list.at(cs, 0) == \"z\": \"eq\" else: \"ne\")\n";
+        let want = vec!["eq".to_string(), "eq".to_string(), "ne".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// Comparing two `list.at(list, i)` results — where neither operand is a literal —
+    /// must compare String *content* on WASM, not pointers. The list holds two
+    /// runtime-built (concatenated) strings with equal content but distinct heap
+    /// addresses, so a pointer comparison would wrongly report "ne". Codegen now
+    /// carries a `List(String)`'s element value type to `list.at(...)`, so `==` lowers
+    /// to `$str_eq`. (Regression for the run-length-encoding parity divergence.)
+    #[test]
+    fn wasm_string_eq_on_two_at_results_compares_content() {
+        let src = "fn main(console: Console):\n    let a = \"x\" + \"y\"\n    let b = \"x\" + \"y\"\n    let xs = [a, b, \"zz\"]\n    console.print(if list.at(xs, 0) == list.at(xs, 1): \"eq\" else: \"ne\")\n    console.print(if list.at(xs, 0) == list.at(xs, 2): \"eq\" else: \"ne\")\n";
+        let want = vec!["eq".to_string(), "ne".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// An *unbounded* generic function that compares its type-variable values
+    /// (`x == target`) must compare String CONTENT on WASM, not pointers. The
+    /// WASM backend monomorphizes the call on the concrete element type
+    /// (`count_eq__String`), so `==` lowers to `$str_eq`. The strings are built at
+    /// runtime (distinct pointers, equal content) so a pointer compare would give
+    /// the wrong count. (Regression for the generic-`==`-on-non-primitives gap.)
+    #[test]
+    fn wasm_monomorphizes_generic_equality_on_strings() {
+        let src = "fn count_eq(xs: List(a), target: a) -> Int:\n    var n = 0\n    for x in xs:\n        if x == target:\n            n = n + 1\n    n\n\nfn b(s: String) -> String:\n    s + \"\"\n\nfn main(console: Console):\n    console.print(\"${count_eq([b(\"aa\"), b(\"bb\"), b(\"aa\")], b(\"aa\"))}\")\n";
+        let want = vec!["2".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// `string_to_int` of a value that overflows i64 must FAIL on both backends,
+    /// not silently wrap on WASM. The compiled `$str_to_int` now traps once the
+    /// running magnitude would exceed the sign-appropriate i64 bound (2^63-1, or
+    /// 2^63 for a negative), matching Rust's checked parse. The exact boundaries
+    /// (i64::MAX / i64::MIN) still parse. (Regression for a silent overflow-wrap
+    /// divergence.)
+    #[test]
+    fn string_to_int_overflow_errors_on_both_backends() {
+        let err_cases = [
+            "99999999999999999999999",
+            "9223372036854775808",  // i64::MAX + 1
+            "-9223372036854775809", // i64::MIN - 1
+        ];
+        for v in err_cases {
+            let src = format!(
+                "fn main(console: Console):\n    console.print(\"${{\"{v}\".to_int()}}\")\n"
+            );
+            let module = parser::parse_module(&src).expect("parse");
+            let bytes = codegen::compile_module_binary(&module)
+                .expect_lowered("the binary path lowers this program");
+            assert!(interpreter::run(&src).is_err(), "interpreter must error on `{v}`");
+            assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on `{v}`");
+        }
+        // The exact i64 boundaries parse identically on both backends.
+        let ok = "fn main(console: Console):\n    console.print(\"${\"9223372036854775807\".to_int()}\")\n    console.print(\"${\"-9223372036854775808\".to_int()}\")\n";
+        let want = vec![
+            "9223372036854775807".to_string(),
+            "-9223372036854775808".to_string(),
+        ];
+        assert_eq!(interp(ok), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(ok), want, "compiled WASM must agree");
+    }
+
+    /// `to_string` of a builtin call result (`has` -> Bool, `size` -> Int) must
+    /// compile and render the same on both backends — codegen knows these
+    /// builtins' value types, so it picks the right formatter instead of erroring
+    /// with "could not determine the value's type". (Regression for the
+    /// call-result val-type gap that previously forced `int_to_string`/explicit
+    /// conversion.)
+    #[test]
+    fn to_string_of_builtin_call_results_agrees() {
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    console.print(\"${dict.contains_key(d, \"a\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${\"hello\".contains(\"ell\")}\")\n";
+        let want = vec![
+            "true".to_string(),
+            "false".to_string(),
+            "2".to_string(),
+            "true".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// The `encoding` module (hex/base64) must agree on both backends. WASM
+    /// bridges each `String -> String` transform to the same native registry the
+    /// interpreter uses (a host import), so output is byte-for-byte identical.
+    /// (Regression for the interpreter-only encoding-module gap.)
+    #[test]
+    fn encoding_module_agrees_on_both_backends() {
+        let src = "import encoding\n\nfn main(console: Console):\n    let p = \"Hello, witchy!\"\n    let b = encoding.base64_encode(p)\n    console.print(b)\n    console.print(encoding.base64_decode(b).unwrap_or(\"?\"))\n    let h = encoding.hex_encode(p)\n    console.print(h)\n    console.print(encoding.hex_decode(h).unwrap_or(\"?\"))\n    console.print(encoding.base64_encode(\"foo\"))\n";
+        let want = vec![
+            "SGVsbG8sIHdpdGNoeSE=".to_string(),
+            "Hello, witchy!".to_string(),
+            "48656c6c6f2c2077697463687921".to_string(),
+            "Hello, witchy!".to_string(),
+            "Zm9v".to_string(),
+        ];
+        // `import encoding` is a native module: link to register its signatures,
+        // then run each backend on the linked module.
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("the binary path lowers this program");
+        assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
+        assert_eq!(crate::run_wasm_bytes(&bytes).expect("wasm run"), want, "compiled WASM must agree");
+    }
+
+    /// `to_string` on a `Float` must produce the same text on both backends.
+    /// WASM has no float formatter in hand-written WAT, so codegen calls a
+    /// `float_to_str` host import that formats with Rust `Display` — byte-for-byte
+    /// the interpreter's format. (Regression for the interpreter-only float
+    /// `to_string` gap.)
+    #[test]
+    fn float_to_string_agrees_on_both_backends() {
+        // Ordinary floats plus the IEEE special values whose rendering is most
+        // likely to diverge between a Rust f64 and the compiled backend: the
+        // infinities, NaN, and negative zero must format identically on both.
+        let src = "fn main(console: Console):\n    console.print(\"${3.5}\")\n    console.print(\"${2.0}\")\n    console.print(\"${0.0 - 1.0 / 3.0}\")\n    console.print(\"${0.1 + 0.2}\")\n    console.print(\"${1000000.0}\")\n    console.print(\"${0.0}\")\n    console.print(\"${10.0 / 0.0}\")\n    console.print(\"${(0.0 - 10.0) / 0.0}\")\n    console.print(\"${0.0 / 0.0}\")\n    console.print(\"${(0.0 - 1.0) * 0.0}\")\n";
+        let want = vec![
+            "3.5".to_string(),
+            "2.0".to_string(),
+            "-0.3333333333333333".to_string(),
+            "0.30000000000000004".to_string(),
+            "1000000.0".to_string(),
+            "0.0".to_string(),
+            "inf".to_string(),
+            "-inf".to_string(),
+            "NaN".to_string(),
+            "-0.0".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// `to_upper`/`to_lower` now compile to WASM (ASCII case mapping), matching
+    /// the interpreter's ASCII fold byte-for-byte — no longer interpreter-only.
+    #[test]
+    fn wasm_ascii_case_mapping() {
+        let src = "fn main(console: Console):\n    console.print(\"Hi, World! 9z\".to_upper())\n    console.print(\"Hi, World! 9A\".to_lower())\n";
+        let want = vec!["HI, WORLD! 9Z".to_string(), "hi, world! 9a".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// `string_to_int` must accumulate in i64 (matching the interpreter's
+    /// `parse::<i64>()`) and trim surrounding whitespace. WASM used to parse into
+    /// i32, so a value past 2^31 (e.g. 5000000000) silently truncated to a wrong
+    /// number; it now agrees on both backends.
+    #[test]
+    fn wasm_string_to_int_uses_i64_and_trims() {
+        let src = "fn main(console: Console):\n    console.print(\"${\"5000000000\".to_int()}\")\n    console.print(\"${\"-7000000000\".to_int()}\")\n    console.print(\"${\"  42  \".to_int()}\")\n";
+        let want = vec![
+            "5000000000".to_string(),
+            "-7000000000".to_string(),
+            "42".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// (BUG-011) `string.substring` must clamp BOTH indices to `[0, char_count]`
+    /// in full i64 width on BOTH backends. The compiled path used to narrow the
+    /// i64 char index to i32 *before* clamping, so an index near the i64 extremes
+    /// wrapped (a huge `end` became `< start`) and the slice came back `""` while
+    /// the interpreter clamped in i64 and returned the whole string. Covers a
+    /// negative `i`, `i > len`, `j > len`, `i > j`, and both i64 extremes.
+    #[test]
+    fn wasm_substring_clamps_out_of_range_indices_in_i64() {
+        let src = r#"fn main(console: Console):
+    let s = "abcdef"
+    console.print(s.substring((-2), 3))
+    console.print(s.substring(2, 100))
+    console.print(s.substring(4, 2))
+    console.print(s.substring(0, 6))
+    console.print(s.substring((-9000000000), 9000000000))
+    console.print(s.substring((-9223372036854775807), 9223372036854775807))
+    console.print("X-5166417078869286437Y".substring((-3261219961577993898), 5500724189412945291))
+"#;
+        let want = vec![
+            "abc".to_string(),
+            "cdef".to_string(),
+            String::new(),
+            "abcdef".to_string(),
+            "abcdef".to_string(),
+            "abcdef".to_string(),
+            "X-5166417078869286437Y".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    #[test]
+    fn sort_strings_backends_agree() {
+        // Sorting strings lexicographically with `sort_by` and a String
+        // comparator — exercising string `<` through call_indirect inside
+        // insert_sorted — agrees across backends.
+        let client = r#"
+import list
+
+fn main(console: Console):
+    var words = ["cherry", "apple", "banana", "date", "apple"]
+    list.sort_by(words, fn(a: String, b: String): (a < b))
+    for w in words:
+        console.print(w)
+"#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "string sort diverged between backends");
+        assert_eq!(
+            compiled,
+            vec!["apple", "apple", "banana", "cherry", "date"]
+        );
+    }
+
+    #[test]
+    fn std_ascii_classification_backends_agree() {
+        // ASCII predicates are implemented purely via string comparison, so they
+        // must agree across the interpreter and the compiled backend. Also drives
+        // a tiny tokenizer-style use: sum the digit values in a string.
+        let client = r#"
+import ascii
+
+fn digit_sum(s: String) -> Int:
+    var total = 0
+    var i = 0
+    while (i < s.char_count()):
+        let c = s.char_at(i) ?? ""
+        if ascii.is_digit(c):
+            total = (total + (ascii.to_digit(c) ?? 0))
+        i = (i + 1)
+    total
+
+fn main(console: Console):
+    console.print("${ascii.is_digit("7")}")
+    console.print("${ascii.is_digit("x")}")
+    console.print("${ascii.is_alpha("Q")}")
+    console.print("${ascii.is_alnum("_")}")
+    console.print("${ascii.is_space("\t")}")
+    console.print("${ascii.to_digit("4") ?? -1}")
+    console.print("${ascii.to_digit("z") ?? -1}")
+    console.print("${digit_sum("a1b2c3")}")
+    console.print("${ascii.all_digits("12345")}")
+    console.print("${ascii.all_digits("12a45")}")
+    console.print("${ascii.all_digits("")}")
+    console.print("${ascii.all_digits("0")}")
+"#;
+        let sources = [
+            ("ascii", crate::bundled_module("ascii").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std ascii diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "true", "false", "true", "false", "true", "4", "-1", "6", // all_digits:
+                "true", "false", "false", "true",
+            ]
+        );
+    }
+
+    /// `string_chars` (the O(n) string -> List(String) primitive behind a fast
+    /// `to_chars`) agrees across the interpreter and WASM —
+    /// including a multi-byte (UTF-8) character. Counted by Unicode scalar.
+    #[test]
+    fn string_chars_backends_agree() {
+        let src = "fn main(console: Console):\n    let cs = \"café\".chars()\n    console.print(\"${list.length(cs)}\")\n    console.print(list.at(cs, 0))\n    console.print(list.at(cs, 3))\n";
+        let expected = vec!["4".to_string(), "c".to_string(), "é".to_string()];
+        // Interpreter (source of truth).
+        assert_eq!(interpreter::run(src).expect("interp"), expected);
+        // WASM.
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm diverged");
+    }
+
+    #[test]
+    fn string_parse_int_backends_agree() {
+        // parse_int validates an optional sign + digits before calling the raw
+        // string_to_int builtin, so bad input is None (not a trap) consistently.
+        let client = r#"
+import option
+fn show(o: Option(Int)) -> String:
+    match o:
+        Some(n) -> "${n}"
+        None -> "none"
+fn main(console: Console):
+    console.print(show("42".parse_int()))
+    console.print(show("-7".parse_int()))
+    console.print(show("0".parse_int()))
+    console.print(show("".parse_int()))
+    console.print(show("-".parse_int()))
+    console.print(show("12a".parse_int()))
+    console.print(show("3.5".parse_int()))
+    console.print(show(" 5".parse_int()))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "parse_int diverged");
+        assert_eq!(
+            compiled,
+            vec!["42", "-7", "0", "none", "none", "none", "none", "none"]
+        );
+    }
+
+    #[test]
+    fn string_center_backends_agree() {
+        // center pads both sides; an odd remainder goes on the right, and a
+        // string already at/over width is returned unchanged.
+        let client = r#"
+fn main(console: Console):
+    console.print("[" + "hi".center(6, " ") + "]")
+    console.print("[" + "hi".center(7, " ") + "]")
+    console.print("[" + "odd".center(8, "*") + "]")
+    console.print("[" + "toolong".center(4, " ") + "]")
+    console.print("[" + "x".center(1, " ") + "]")
+"#;
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "center diverged");
+        assert_eq!(
+            compiled,
+            vec!["[  hi  ]", "[  hi   ]", "[**odd***]", "[toolong]", "[x]"]
+        );
+    }
+
+    #[test]
+    fn url_format_roundtrip_backends_agree() {
+        // format is parse's inverse; the default port is omitted, a non-default
+        // port is kept, and an absent path renders as "/".
+        let client = r#"
+import url
+import result
+fn render(s: String) -> String:
+    match url.parse(s):
+        Ok(u) -> url.format(u)
+        Err(_e) -> "no parse"
+fn main(console: Console):
+    console.print(render("https://example.com/path"))
+    console.print(render("http://example.com:8080/x"))
+    console.print(render("ftp://host:21/file"))
+    console.print(render("http://example.com"))
+    console.print(render("not a url"))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("url", crate::bundled_module("url").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "url.format diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "https://example.com/path",
+                "http://example.com:8080/x",
+                "ftp://host:21/file",
+                "http://example.com/",
+                "no parse",
+            ]
+        );
+    }
+
+    #[test]
+    fn url_parse_rejects_bad_port_without_trapping_backends_agree() {
+        // A non-decimal or empty `:port` makes parse return None — it used to trap
+        // in string_to_int. Signs accepted by the general integer parser are not
+        // URL port syntax. A valid or defaulted port still parses, both backends.
+        let client = r#"
+import url
+import result
+fn p(s: String) -> String:
+    match url.parse(s):
+        Ok(u) -> "ok:" + "${url.port(u)}"
+        Err(_e) -> "none"
+fn main(console: Console):
+    console.print(p("https://h:8443/x"))
+    console.print(p("https://h:abc/x"))
+    console.print(p("https://h:/x"))
+    console.print(p("https://h:80x/x"))
+    console.print(p("https://h:+80/x"))
+    console.print(p("https://h:-0/x"))
+    console.print(p("https://h/x"))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("url", crate::bundled_module("url").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "url bad-port diverged");
+        assert_eq!(
+            compiled,
+            vec!["ok:8443", "none", "none", "none", "none", "none", "ok:443"]
+        );
+    }
+
+    /// (BUG-470) `url.decode` percent-decodes path components (+ stays literal),
+    /// `url.decode_form` also maps + to space (query/form convention). Both handle
+    /// multi-byte UTF-8 escapes and stray `%` passthrough. Parity on both backends.
+    #[test]
+    fn url_decode_and_decode_form_backends_agree() {
+        let client = r#"
+import url
+fn main(console: Console):
+    // Basic ASCII escapes
+    console.print(url.decode("hello%20world"))
+    // Multi-byte UTF-8 (€ = E2 82 AC)
+    console.print(url.decode("%E2%82%AC"))
+    // + stays literal in path mode
+    console.print(url.decode("a+b"))
+    // + becomes space in form mode
+    console.print(url.decode_form("a+b"))
+    // Mixed: encoded and plain
+    console.print(url.decode_form("key%3D%26val+ue"))
+    // Stray % passes through
+    console.print(url.decode("100%"))
+    // encode/decode round-trip
+    console.print(url.decode(url.encode("hello world/€")))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("url", crate::bundled_module("url").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "url.decode diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "hello world",
+                "€",
+                "a+b",
+                "a b",
+                "key=&val ue",
+                "100%",
+                "hello world/€",
+            ]
+        );
+    }
+
+    #[test]
+    fn url_parse_ipv6_and_userinfo_backends_agree() {
+        // A bracketed IPv6 authority keeps its inner colons in the host and splits
+        // the port at the colon after `]` — matching the Net layer's last-colon /
+        // bracket-aware split (BUG-351). Userinfo (`user@`, `user:pass@`) is outside
+        // this minimal grammar and is rejected loudly rather than reinterpreted as
+        // host/port text (BUG-380), and an empty bracketed literal is malformed.
+        // Both backends agree, and format round-trips.
+        let client = r#"
+import url
+import result
+fn p(s: String) -> String:
+    match url.parse(s):
+        Ok(u) -> url.host(u) + " " + "${url.port(u)}" + " " + url.format(u)
+        Err(_e) -> "err"
+fn main(console: Console):
+    console.print(p("http://[::1]:8080/x"))
+    console.print(p("http://[::1]/x"))
+    console.print(p("https://[2001:db8::1]:443/y"))
+    console.print(p("http://[]/x"))
+    console.print(p("https://user@example.com/x"))
+    console.print(p("https://user:pass@example.com/x"))
+    console.print(p("https://example.com:8443/z"))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("url", crate::bundled_module("url").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "url ipv6/userinfo diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "[::1] 8080 http://[::1]:8080/x",
+                "[::1] 80 http://[::1]/x",
+                "[2001:db8::1] 443 https://[2001:db8::1]/y",
+                "err",
+                "err",
+                "err",
+                "example.com 8443 https://example.com:8443/z",
+            ]
+        );
+    }
+
+    #[test]
+    fn string_rsplit_once_backends_agree() {
+        // rsplit_once splits on the LAST separator (vs split_once's first); when
+        // the separator is absent the whole string is the right part.
+        let client = r#"
+fn show2(p: (String, String)) -> String:
+    let (a, b) = p
+    a + "|" + b
+fn main(console: Console):
+    console.print(show2("a.b.c".rsplit_once(".")))
+    console.print(show2("a.b.c".split_once(".")))
+    console.print(show2("nodot".rsplit_once(".")))
+    console.print(show2("file.tar.gz".rsplit_once(".")))
+    console.print("${"a.b.c".last_index_of(".") ?? -1}")
+    console.print("${"nodot".last_index_of(".") ?? -1}")
+"#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "rsplit_once diverged");
+        assert_eq!(
+            compiled,
+            vec!["a.b|c", "a|b.c", "|nodot", "file.tar|gz", "3", "-1"]
+        );
+    }
+
+    #[test]
+    fn std_ord_string_and_sort_backends_agree() {
+        // `impl Ord for String` makes strings comparable, and the bounded generic
+        // `list.sort` dispatches through the element's Ord impl — so it sorts
+        // runtime-BUILT strings content-correctly on both backends (a pointer
+        // comparison sort would scramble them in compiled code). Also covers
+        // Ord-over-String for max_of/maximum and Ints via the same `sort`.
+        let client = r#"
+import cmp
+
+fn build(s: String) -> String:
+    var acc = ""
+    var i = 0
+    while (i < s.char_count()):
+        acc = (acc + s.substring(i, (i + 1)))
+        i = (i + 1)
+    acc
+
+fn main(console: Console):
+    var words = [build("pear"), build("apple"), build("fig"), build("apple")]
+    list.sort(words)
+    console.print(list.join(words, ","))
+    var letters = ["c", "a", "b"]
+    list.sort(letters)
+    console.print(list.join(letters, ""))
+    console.print(cmp.max_of(build("alpha"), build("omega")))
+    console.print(cmp.maximum([build("x"), build("a"), build("m")], ""))
+    var nums = [3, 1, 2, 1]
+    list.sort(nums)
+    console.print("${(list.at(nums, 0) + (list.at(nums, 3) * 10))}")
+"#;
+        let sources = [
+            ("cmp", crate::bundled_module("cmp").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std ord string/sort diverged");
+        assert_eq!(
+            compiled,
+            vec!["apple,apple,fig,pear", "abc", "omega", "x", "31"]
+        );
+    }
+
+    /// The first host-import helper ($encoding) on the binary path. Kept out of
+    /// the corpus above because `encoding.*` requires `import encoding`, which the
+    /// corpus's `run_on_wasm`/`typeck::check_str` leg can't resolve (it doesn't
+    /// pull in std modules); the linked interpreter oracle (`link_run`) can. So we
+    /// compare the pruned binary against the interpreter directly. The pruned
+    /// module must import "encoding" alongside "print".
+    #[test]
+    fn wir_encoding_host_import_binary_path() {
+        let src = "import encoding\nfn main(console: Console):\n    console.print(encoding.hex_encode(\"Hi\"))\n    console.print(encoding.base64_encode(\"Hi\"))\n";
+        let want = vec!["4869".to_string(), "SGk=".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("the WIR binary path should handle encoding via the host import");
+        // AST → WIR → binary runs identically to the interpreter oracle, under a
+        // print-only grant (proving the pruned module imports only print+encoding,
+        // and that `encoding` is host-provided regardless of the grant).
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
+    #[test]
+    fn to_string_on_compound_renders_on_wasm() {
+        // A compound (list/tuple/record/ADT/dict, any nesting) renders byte-
+        // identically to the interpreter via a generated per-shape helper — so
+        // `to_string`/`${...}` work on WASM, not just the interpreter.
+        let src = r#"
+type Shape:
+    Circle(Int)
+    Dot
+
+fn main(console: Console):
+    console.print("${[1, 2, 3]}")
+    console.print("${[[1, 2], [3]]}")
+    console.print("${(1, "two", true)}")
+    console.print("${[Circle(2), Dot]}")
+    var d = dict.new()
+    dict.insert(d, "a", 1)
+    dict.insert(d, "b", 2)
+    console.print("${d}")
+    let tc = ([1, 2], (3, 4))          // a let-bound tuple whose slots are compound
+    console.print("${tc}")
+"#;
+        assert_eq!(
+            run_on_wasm(src),
+            vec![
+                "[1, 2, 3]",
+                "[[1, 2], [3]]",
+                "(1, two, true)",
+                "[Circle(2), Dot]",
+                "{a: 1, b: 2}",
+                "([1, 2], (3, 4))",
+            ]
+        );
+    }
+
+    #[test]
+    fn to_string_through_generics_renders() {
+        // Typed lowering (Phase 0) resolves what used to be undetermined: a
+        // generic tuple rendered through a monomorphizable call works
+        // identically on both backends. (The loud could-not-determine error
+        // remains for shapes with NO resolvable call site.)
+        let src = r#"
+fn render(t: (a, a)) -> String:
+    "${t}"
+
+fn main(console: Console):
+    console.print(render((1, 2)))
+"#;
+        assert_eq!(link_run(src), vec!["(1, 2)"], "interpreter");
+        assert_eq!(wasm_run(src), vec!["(1, 2)"], "wasm");
+    }
+
+    #[test]
+    fn large_string_concat_grows_memory() {
+        // Concatenating a 400-char string one char at a time allocates ~80KB of
+        // intermediate strings — past the initial page — and must grow.
+        let src = r#"
+fn main() -> Int:
+    var s = ""
+    var i = 0
+    while (i < 400):
+        s = (s + "x")
+        i = (i + 1)
+    s.length()
+"#;
+        assert_eq!(run_on_wasm(src), vec!["400"]);
+    }
+
+    #[test]
+    fn string_interpolation_backends_agree() {
+        // `${expr}` desugars through generated render + concat, so interpolation works
+        // in both backends: String pass-through, Int/Bool via to_string, embedded
+        // calls/arithmetic, `\$` for a literal `$`, and adjacent interpolations.
+        let src = r#"
+fn main(console: Console):
+    let name = "witchy"
+    let age = 3
+    console.print("hi ${name}, age ${age}")
+    console.print("sum: ${"${age + 10}"}")
+    console.print("flag ${age > 1}")
+    console.print("literal \${x} stays")
+    console.print("${name}${name}")
+"#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(
+            run_on_wasm(src),
+            vec![
+                "hi witchy, age 3",
+                "sum: 13",
+                "flag true",
+                "literal ${x} stays",
+                "witchywitchy",
+            ]
+        );
+    }
+
+    // `replace` with an empty `from` is a notorious edge (the interpreter's
+    // Rust `str::replace` inserts the replacement around every character);
+    // Int-keyed dicts exercise the by-value key-comparison path. Both must
+    // match the compiled backend exactly, with explicit expected values for both
+    // the replacement and integer-key dictionary contracts.
+    #[test]
+    fn replace_and_int_keyed_dict_backends_agree() {
+        let src = r#"
+fn main(console: Console):
+    console.print((("[" + "abc".replace("", "-")) + "]"))
+    console.print("abc".replace("x", "y"))
+    console.print("aaa".replace("a", "bb"))
+    console.print("hello world".replace("o", "0"))
+    console.print("a,b,c".replace(",", ";"))
+    console.print("aXXbXXc".replace("XX", "-"))
+    console.print("aaa".replace("aa", "x"))
+    console.print("a,b,c".replace(",", ""))
+    console.print("abc".replace("b", "XYZ"))
+    console.print("abc".replace("z", "Q"))
+    console.print("café".replace("é", "e"))
+    var d = dict.new()
+    dict.insert(d, 1, 100)
+    dict.insert(d, 2, 200)
+    dict.insert(d, 1, 111)
+    console.print("${dict.get_or(d, 1, 0)}")
+    console.print("${dict.get_or(d, 2, 0)}")
+    console.print("${dict.length(d)}")
+"#;
+        let expected = [
+            "[-a-b-c-]", "abc", "bbbbbb", "hell0 w0rld", "a;b;c", "a-b-c", "xa", "abc",
+            "aXYZc", "abc", "cafe", "111", "200", "2",
+        ];
+        assert_eq!(interp(src), expected, "interpreter replace/int-key dict");
+        assert_eq!(run_on_wasm(src), expected, "compiled replace/int-key dict");
+    }
+
+    // char_count returns Unicode scalars; string_length returns bytes. They
+    // agree for ASCII and diverge for multi-byte UTF-8 ("café" is 4 chars, 5
+    // bytes) — and both backends must compute each identically.
+    #[test]
+    fn char_count_vs_string_length_backends_agree() {
+        let src = r#"
+fn main(console: Console):
+    console.print("${"hello".char_count()}")
+    console.print("${"hello".length()}")
+    console.print("${"café".char_count()}")
+    console.print("${"café".length()}")
+    console.print("${"".char_count()}")
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "char_count diverged");
+        assert_eq!(run_on_wasm(src), vec!["5", "5", "4", "5", "0"]);
+    }
+
+    #[test]
+    fn substring_is_char_indexed_across_multibyte_on_both_backends() {
+        // substring indexes by CHARACTER, not byte: slicing across a 2-byte (é)
+        // or 4-byte (emoji) boundary must compute the same char->byte offsets on
+        // both backends, while length (bytes) vs char_count tracks UTF-8 widths.
+        let src = r#"
+fn main(console: Console):
+    console.print("café".substring(0, 3))
+    console.print("café".substring(3, 4))
+    console.print("${"a😀b".length()}")
+    console.print("${"a😀b".char_count()}")
+    console.print("a😀b".substring(1, 2))
+    console.print("a😀b".substring(0, 2))
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "multibyte substring diverged");
+        assert_eq!(run_on_wasm(src), vec!["caf", "é", "6", "3", "😀", "a😀"]);
+    }
+
+    // reverse flips character order using char_count + char-based substring, so
+    // it's correct for multi-byte UTF-8 ("café" -> "éfac"), not just ASCII.
+    // Char-based take/drop: clamp at the ends and count by Unicode scalar, so
+    // they slice "café" correctly (take 2 -> "ca", drop 3 -> "é").
+    #[test]
+    fn std_string_transformations_backends_agree() {
+        let client = r#"
+
+fn prefix_suffix(s: String) -> Int:
+    if s.starts_with("ht"):
+        if s.ends_with("ml"):
+            2
+        else:
+            1
+    else:
+        0
+
+fn main(console: Console):
+    console.print("hello".take(3))
+    console.print((("[" + "hi".take(10)) + "]"))
+    console.print((("[" + "hi".take(0)) + "]"))
+    console.print("hello".drop(2))
+    console.print((("[" + "hi".drop(5)) + "]"))
+    console.print("café".take(2))
+    console.print("café".drop(3))
+    console.print("hello".reverse())
+    console.print("[" + "".reverse() + "]")
+    console.print("café".reverse())
+    console.print("a.b.c".replace_first(".", "/"))
+    console.print("hello".replace_first("l", "L"))
+    console.print("xyz".replace_first("q", "Q"))
+    let (k, v) = "name=witchy".split_once("=")
+    console.print(k)
+    console.print(v)
+    let (a, b) = "no-sep-here".split_once("=")
+    console.print(a)
+    console.print("[" + b + "]")
+    let (h, rest) = "a=b=c".split_once("=")
+    console.print(h)
+    console.print(rest)
+    let ws = "the  quick\tbrown\nfox ".words()
+    console.print("${list.length(ws)}")
+    for w in ws:
+        console.print(w)
+    let cs = "café".chars()
+    console.print("${list.length(cs)}")
+    for c in cs:
+        console.print(c)
+    console.print("${list.length(\"\".chars())}")
+    console.print("42".pad_left(5, "0"))
+    console.print("42".pad_right(5, "."))
+    console.print("hello".pad_left(3, "x"))
+    console.print("ab".pad_left(7, "-="))
+    console.print("café".pad_left(6, "*"))
+    console.print("café".pad_right(6, "*"))
+    console.print("witchy.lang".strip_prefix("witchy."))
+    console.print("witchy.lang".strip_prefix("scala."))
+    console.print("main.witchy".strip_suffix(".witchy"))
+    console.print("main.rs".strip_suffix(".witchy"))
+    console.print("abc".strip_prefix("abc"))
+    console.print("émile".strip_prefix("é"))
+    console.print("héllo!".strip_suffix("!"))
+    console.print("naïveté".strip_suffix("té"))
+    console.print("${prefix_suffix(\"html\") * 100 + prefix_suffix(\"http\") * 10 + prefix_suffix(\"xml\")}")
+    console.print("${\"\".is_empty()}")
+    console.print("${\"x\".is_empty()}")
+    console.print("${\"banana\".count(\"a\")}")
+    console.print("${\"banana\".count(\"an\")}")
+    console.print("${\"aaaa\".count(\"aa\")}")
+    console.print("${\"abc\".count(\"x\")}")
+    console.print("${\"abc\".count(\"\")}")
+    console.print("${\"aéaéa\".count(\"éa\")}")
+    console.print("witchy".char_at(0) ?? "?")
+    console.print("witchy".char_at(5) ?? "?")
+    console.print("[" + ("witchy".char_at(10) ?? "") + "]")
+    console.print("[" + ("".char_at(0) ?? "") + "]")
+    console.print("[" + "  hello  ".trim() + "]")
+    console.print("[" + "  hi".trim_start() + "]")
+    console.print("[" + "bye  ".trim_end() + "]")
+    console.print("[" + "\t\n x \r\n".trim() + "]")
+    console.print("[" + "nospace".trim() + "]")
+"#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "string transformations diverged");
+        assert_eq!(compiled, vec![
+            "hel", "[hi]", "[]", "llo", "[]", "ca", "é", "olleh", "[]", "éfac",
+            "a/b.c", "heLlo", "xyz", "name", "witchy", "no-sep-here", "[]", "a", "b=c",
+            "4", "the", "quick", "brown", "fox", "4", "c", "a", "f", "é", "0",
+            "00042", "42...", "hello", "-=-=-ab", "**café", "café**",
+            "lang", "witchy.lang", "main", "main.rs", "", "mile", "héllo", "naïve",
+            "210", "true", "false", "3", "2", "2", "0", "0", "2",
+            "w", "y", "[]", "[]", "[hello]", "[hi]", "[bye]", "[x]", "[nospace]",
+        ]);
+    }
+
+    // is_empty/count and char_at cases are part of the transformations corpus above.
+
+    #[test]
+    fn dict_string_key_through_helpers_backends_agree() {
+        let src = r#"
+fn put(var d: Dict(String, Int), k: String, v: Int) -> Nil:
+    dict.insert(d, k, v)
+    return
+
+fn lookup(d: Dict(String, Int), k: String) -> Int:
+    dict.get_or(d, k, (0 - 1))
+
+fn main(console: Console):
+    var d = dict.new()
+    put(d, "apple", 1)
+    put(d, "banana", 2)
+    console.print("${lookup(d, ("ap" + "ple"))}")
+    console.print("${lookup(d, "banana")}")
+    console.print("${lookup(d, "cherry")}")
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "dict string-key via helpers diverged");
+        assert_eq!(run_on_wasm(src), vec!["1", "2", "-1"]);
+    }
+
+    // std/url: parse assorted URL strings (default ports, explicit port, path,
+    // and a malformed one). Pure, so both backends agree.
+    #[test]
+    fn std_url_parse_backends_agree() {
+        let client = r#"
+import url
+fn describe(s: String) -> String:
+    match url.parse(s):
+        Ok(u) -> url.scheme(u) + " " + url.host(u) + " " + "${url.port(u)}" + " " + url.pathname(u)
+        Err(e) -> "invalid: " + url.url_error_message(e)
+fn main(console: Console):
+    console.print(describe("http://example.com"))
+    console.print(describe("http://example.com:8080/foo"))
+    console.print(describe("https://x.com/a/b"))
+    console.print(describe("notaurl"))
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std url parse diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "http example.com 80 /",
+                "http example.com 8080 /foo",
+                "https x.com 443 /a/b",
+                "invalid: missing `scheme://` in: notaurl"
+            ]
+        );
+    }
+
+    // std/http get_url: parse a URL string and GET it (loopback). Interpreter-only.
+    // std/string trimming: trim/trim_start/trim_end over assorted whitespace.
+    // Pure, so both backends agree.
+    // std/http: a real HTTP/1.1 GET over the Net capability against a loopback
+    // server. Networking is interpreter-only (not compiled), so this isn't a
+    // differential test; it proves the capability-gated socket primitives plus
+    // the http library parse a live response into status + body.
+    // A server replying with a non-numeric status code must not crash the client:
+    // `status_code` guards `string_to_int` and reports 0 for a malformed status
+    // line, so the body is still readable. Interpreter-only.
+    // std/http POST: send a request body and read it back from a loopback echo
+    // server. Interpreter-only (networking isn't compiled).
+    // std/http response headers: case-insensitive lookup + a missing header.
+    // Interpreter-only (networking).
+    // std/json: build a nested Json value and serialize it. Pure (no
+    // capabilities), so it compiles to WASM and both backends must agree.
+    // std/json decode: parse JSON text then re-encode it. The round trip
+    // exercises the recursive-descent parser (objects, arrays, strings, bools,
+    // null, negative ints, nesting) and must agree on both backends.
+    // std/json accessors: decode then pull out a string field (object key
+    // lookup), an int field, and an array element. Object lookup compares the
+    // decoded, heap-built key with `==`; both backends agree now that codegen
+    // tracks the type of a tuple-destructured loop variable (so the comparison
+    // is by content, not pointer).
+
+    /// std/url: malformed URLs return `Err` identically on both backends rather
+    /// than accepting a blank scheme/host (BUG-187), swallowing a query into the
+    /// host (BUG-249), or trapping on an oversized port (BUG-197).
+    #[test]
+    fn url_parse_rejects_malformed_on_both_backends() {
+        let src = "import url\n\
+                   fn show(label: String, s: String, console: Console):\n\
+                   \x20   match url.parse(s):\n\
+                   \x20       Ok(u) -> console.print(label + \": \" + url.scheme(u) + \"|\" + url.host(u) + \"|${url.port(u)}|\" + url.request_target(u))\n\
+                   \x20       Err(e) -> console.print(label + \": ERR\")\n\
+                   fn main(console: Console):\n\
+                   \x20   show(\"empty_scheme\", \"://host\", console)\n\
+                   \x20   show(\"empty_host\", \"https:///path\", console)\n\
+                   \x20   show(\"query\", \"https://example.com?x=1\", console)\n\
+                   \x20   show(\"big_port\", \"https://host:99999999999999999999999/p\", console)\n\
+                   \x20   show(\"bad_port\", \"https://host:abc/x\", console)\n\
+                   \x20   show(\"ok\", \"https://example.com/a/b\", console)\n";
+        let expected = [
+            "empty_scheme: ERR",
+            "empty_host: ERR",
+            "query: https|example.com|443|/?x=1",
+            "big_port: ERR",
+            "bad_port: ERR",
+            "ok: https|example.com|443|/a/b",
+        ];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// std/encoding: base64/base64url reject malformed `=` padding (a middle `=`,
+    /// three `=`, an incomplete final group) rather than silently accepting it
+    /// (BUG-198), and `hex_to_base64url` is fallible on non-hex input instead of
+    /// silently dropping bytes (BUG-201). Both backends agree.
+    #[test]
+    fn encoding_rejects_malformed_padding_and_hex_on_both_backends() {
+        let src = "import encoding\n\
+                   fn show(label: String, r: Result(String, encoding.EncodingError), console: Console):\n\
+                   \x20   match r:\n\
+                   \x20       Ok(v) -> console.print(label + \": OK\")\n\
+                   \x20       Err(e) -> console.print(label + \": ERR\")\n\
+                   fn main(console: Console):\n\
+                   \x20   show(\"mid_pad\", encoding.base64_decode(\"S=Gk\"), console)\n\
+                   \x20   show(\"tail_after_pad\", encoding.base64_decode(\"ab=c\"), console)\n\
+                   \x20   show(\"triple_pad\", encoding.base64_decode(\"ab===\"), console)\n\
+                   \x20   show(\"pad_ok\", encoding.base64_decode(\"SGk=\"), console)\n\
+                   \x20   show(\"nopad_ok\", encoding.base64_decode(\"SGk\"), console)\n\
+                   \x20   show(\"url_mid_pad\", encoding.base64url_decode(\"J=Gk\"), console)\n\
+                   \x20   show(\"url_ok\", encoding.base64url_decode(\"SGk\"), console)\n\
+                   \x20   show(\"bad_hex\", encoding.hex_to_base64url(\"zz\"), console)\n\
+                   \x20   show(\"good_hex\", encoding.hex_to_base64url(\"4869\"), console)\n";
+        let expected = [
+            "mid_pad: ERR",
+            "tail_after_pad: ERR",
+            "triple_pad: ERR",
+            "pad_ok: OK",
+            "nopad_ok: OK",
+            "url_mid_pad: ERR",
+            "url_ok: OK",
+            "bad_hex: ERR",
+            "good_hex: OK",
+        ];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }

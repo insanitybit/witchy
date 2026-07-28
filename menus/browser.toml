@@ -1,0 +1,44 @@
+host = "browser-playground"
+axis = "runtime"
+
+[enforcement]
+csp = "derived"
+
+[grants.Console]
+provider = "page-stdio"
+determinism = "deterministic"
+rights = ["Read", "Write"]
+source = "page"
+
+[grants.Clock]
+provider = "browser-clock"
+determinism = "nondeterministic"
+
+[grants.Env]
+provider = "page-map"
+determinism = "deterministic"
+source = "page"
+
+[grants.Dir]
+provider = "memory"
+determinism = "deterministic"
+rights = ["Read", "Write"]
+source = "per-run"
+
+[grants.Fetch]
+provider = "browser-fetch"
+determinism = "nondeterministic"
+origins = "host-configured"
+
+[grants.SecretStore]
+provider = "page-secrets"
+determinism = "deterministic"
+source = "page"
+
+[facilities.argv]
+provider = "page-argv"
+determinism = "deterministic"
+
+[facilities.vm]
+provider = "sequential-instance"
+determinism = "deterministic"

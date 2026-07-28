@@ -1,0 +1,6 @@
+[rune]
+name = "wordfreq"
+version = "0.1.0"
+
+[dependencies]
+"wordlib" = { path = "../wordlib" }

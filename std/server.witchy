@@ -1,0 +1,800 @@
+// The witchy web framework — a slice of axum/tower over the `Net` capability,
+// built on the shared `Request`/`Response` types in `http`.
+//
+// A handler is a pure `fn(Request) -> Response`: it has NO capability
+// parameters, so it is *structurally* unable to touch the network, filesystem,
+// or console. To give a handler authority (a logger, a store, an outbound
+// client), capture it in the closure — capture IS dependency injection. `serve`
+// holds the `Net` to listen and never hands it to a handler, so even a mounted
+// third-party handler can only compute over the request; it cannot phone home.
+//
+//   let app = server.router()
+//       .get("/", home)
+//       .get("/users/:id", show)
+//       .layer(logging(console))
+//   server.serve(net, "127.0.0.1:8080", app)
+
+import option
+import reflect
+import encoding
+import show
+import error
+import convert
+from http import Request, Response
+from json import Json
+
+// Matchable failures when parsing an inbound HTTP request frame. The server
+// boundary maps these to 400 responses, but libraries and tests can match them
+// without scraping a rendered response body.
+type RequestParseError:
+    UnsupportedTransferEncoding
+    ConflictingContentLength
+    BadRequestLine
+
+pub fn request_parse_error_message(e: RequestParseError) -> String:
+    match e:
+        UnsupportedTransferEncoding -> "unsupported Transfer-Encoding"
+        ConflictingContentLength -> "conflicting Content-Length headers"
+        BadRequestLine -> "malformed request line"
+
+impl Show for RequestParseError:
+    fn show(self) -> String:
+        request_parse_error_message(self)
+
+impl Error for RequestParseError
+
+impl From(RequestParseError) for String:
+    fn from(value: RequestParseError) -> Self:
+        request_parse_error_message(value)
+
+// ---- Request accessors ----
+pub fn method(req: Request) -> String:
+    match req:
+        Request(m, _p, _pa, _q, _h, _b) -> m
+
+// The request path, normalized and percent-decoded for the handler. Routing and
+// this accessor see the same normalized form (BUG-432): consecutive slashes are
+// collapsed and trailing slashes stripped. Percent-decoding is applied after
+// normalization so a `%2F` stays inside one segment (no forged separator, BUG-375).
+pub fn path(req: Request) -> String:
+    percent_decode(normalize_path(raw_path_of(req)), false)
+
+// The raw (still percent-encoded) request path — used by the router so that
+// segment boundaries are taken from literal `/` only.
+fn raw_path_of(req: Request) -> String:
+    match req:
+        Request(_m, p, _pa, _q, _h, _b) -> p
+
+// A captured path parameter (`:name`), or None if absent.
+pub fn param(req: Request, name: String) -> Option(String):
+    match req:
+        Request(_m, _p, pa, _q, _h, _b) -> lookup(pa, name)
+
+// A captured path parameter, or `default` if absent.
+pub fn param_or(req: Request, name: String, default: String) -> String:
+    option.unwrap_or(param(req, name), default)
+
+// A query-string parameter (`?name=...`), or None if absent.
+pub fn query(req: Request, name: String) -> Option(String):
+    match req:
+        Request(_m, _p, _pa, q, _h, _b) -> lookup(q, name)
+
+// A query-string parameter, or `default` if absent.
+pub fn query_or(req: Request, name: String, default: String) -> String:
+    option.unwrap_or(query(req, name), default)
+
+// A request header, looked up case-insensitively, or None.
+pub fn request_header(req: Request, name: String) -> Option(String):
+    match req:
+        Request(_m, _p, _pa, _q, h, _b) -> http.find_header(h, name.to_lower())
+
+pub fn request_body(req: Request) -> String:
+    match req:
+        Request(_m, _p, _pa, _q, _h, b) -> b
+
+// Decode the request body as JSON — the role of axum's `Json` extractor. Returns
+// a typed Err (rather than panicking) on malformed input, so handlers stay total
+// without collapsing trust-boundary failures to display text.
+pub fn json_body(req: Request) -> Result(Json, json.DecodeError):
+    json.decode(request_body(req))
+
+// Compatibility bridge for applications that intentionally want rendered errors.
+pub fn json_body_string(req: Request) -> Result(Json, String):
+    match json_body(req):
+        Ok(doc) -> Ok(doc)
+        Err(e) -> Err(json.decode_error_message(e))
+
+// Parse an `application/x-www-form-urlencoded` body (`a=1&b=2`) into key/value
+// pairs — for HTML form POSTs.
+pub fn form_body(req: Request) -> List((String, String)):
+    parse_query(request_body(req))
+
+// A single form field, or None if absent.
+pub fn form_field(req: Request, name: String) -> Option(String):
+    lookup(form_body(req), name)
+
+// A single form field, or `default` if absent.
+pub fn form_field_or(req: Request, name: String, default: String) -> String:
+    option.unwrap_or(form_field(req, name), default)
+
+fn lookup(pairs: List((String, String)), name: String) -> Option(String):
+    for p in pairs:
+        let (k, v) = p
+        if k == name:
+            return Some(v)
+    None
+
+// ---- Response constructors (an axum `IntoResponse` in spirit) ----
+pub fn text(code: Int, b: String) -> Response:
+    Response(code, [("content-type", "text/plain; charset=utf-8")], b)
+
+pub fn html(code: Int, b: String) -> Response:
+    Response(code, [("content-type", "text/html; charset=utf-8")], b)
+
+// `b` is an already-encoded JSON string (e.g. from `json.encode`).
+pub fn json(code: Int, b: String) -> Response:
+    Response(code, [("content-type", "application/json")], b)
+
+// A JSON response from a `Json` value — encodes it for you.
+pub fn json_value(code: Int, j: Json) -> Response:
+    json(code, json.encode(j))
+
+// A JSON response from any reflectable value. Reflection serializes it, so a handler
+// can return `server.send(200, .{names: names})`, or a record, without building
+// `Json` by hand. Use `json` or `json_value` for pre-encoded bytes or a `Json` value.
+pub fn send(code: Int, value: a) -> Response where a: Reflect:
+    json(code, json.stringify(value))
+
+pub fn status_only(code: Int) -> Response:
+    Response(code, [], "")
+
+// ---- Status-named constructors (axum `StatusCode` ergonomics) ----
+pub fn ok(b: String) -> Response:
+    text(200, b)
+
+pub fn created(b: String) -> Response:
+    text(201, b)
+
+pub fn accepted(b: String) -> Response:
+    text(202, b)
+
+pub fn no_content() -> Response:
+    status_only(204)
+
+pub fn bad_request(b: String) -> Response:
+    text(400, b)
+
+pub fn unauthorized(b: String) -> Response:
+    text(401, b)
+
+pub fn forbidden(b: String) -> Response:
+    text(403, b)
+
+pub fn server_error(b: String) -> Response:
+    text(500, b)
+
+pub fn not_found() -> Response:
+    Response(404, [("content-type", "text/plain; charset=utf-8")], "Not Found")
+
+pub fn method_not_allowed() -> Response:
+    Response(405, [("content-type", "text/plain; charset=utf-8")], "Method Not Allowed")
+
+pub fn redirect(location: String) -> Response:
+    Response(303, [("location", location)], "")
+
+// Return `resp` with an extra header — for handlers and middleware that decorate
+// a response (e.g. add a `set-cookie` or a tracing header). The stored name is
+// lowercased: `Response` documents its header list as lowercase so
+// `http.header(resp, name)` can look up case-insensitively — headers are
+// case-insensitive on the wire, and rendering emits the lowercase form.
+pub fn with_header(resp: Response, name: String, value: String) -> Response:
+    match resp:
+        Response(code, hdrs, body) ->
+            var headers = hdrs
+            list.push(headers, (name.to_lower(), value))
+            Response(code, headers, body)
+
+// Return `resp` with its status code replaced.
+pub fn with_status(resp: Response, code: Int) -> Response:
+    match resp:
+        Response(_code, hdrs, body) -> Response(code, hdrs, body)
+
+// ---- Router (axum-flavored: declarative routes, path params, layers) ----
+
+// One route: HTTP method, a path pattern (`:param` captures a segment, `*rest`
+// captures the remainder), and the handler.
+type Route:
+    Route(String, String, fn(Request) -> Response)
+
+// A router: its routes plus the middleware layers wrapping the whole dispatch.
+type Router:
+    Router(List(Route), List(fn(fn(Request) -> Response) -> fn(Request) -> Response))
+
+pub fn router() -> Router:
+    Router([], [])
+
+pub fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Router:
+    match r:
+        Router(routes, layers) ->
+            var next_routes = routes
+            list.push(next_routes, Route(m, p, h))
+            Router(next_routes, layers)
+
+// The fluent surface: real METHODS on Router (`router().get(...).post(...)`),
+// each returning the extended Router.
+impl Router:
+    pub fn get(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route GET requests at `p` to `h`.
+        route(self, "GET", p, h)
+
+    pub fn post(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route POST requests at `p` to `h`.
+        route(self, "POST", p, h)
+
+    pub fn put(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route PUT requests at `p` to `h`.
+        route(self, "PUT", p, h)
+
+    pub fn delete(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route DELETE requests at `p` to `h`.
+        route(self, "DELETE", p, h)
+
+    pub fn patch(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route PATCH requests at `p` to `h`.
+        route(self, "PATCH", p, h)
+
+    pub fn head(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route HEAD requests at `p` to `h`.
+        route(self, "HEAD", p, h)
+
+    pub fn any(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route any HTTP method at `p` to `h`.
+        route(self, "*", p, h)
+
+    pub fn nest(self, prefix: String, sub: Router) -> Router:
+        // Mount `sub` under `prefix`, preserving the sub-router's own layers.
+        match sub:
+            Router(sub_routes, sub_layers) ->
+                var out = self
+                for rt in sub_routes:
+                    match rt:
+                        Route(m, p, h) -> out = route(out, m, prefix + p, wrap_layers(h, sub_layers))
+                out
+
+    pub fn layer(self, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
+        // Add a tower-style middleware layer wrapping the whole dispatch.
+        match self:
+            Router(routes, layers) ->
+                var next_layers = layers
+                list.push(next_layers, mw)
+                Router(routes, next_layers)
+
+// ---- Dispatch + path matching ----
+fn dispatch(routes: List(Route)) -> fn(Request) -> Response:
+    fn(req: Request): dispatch_one(routes, req)
+
+fn dispatch_one(routes: List(Route), req: Request) -> Response:
+    match try_routes(routes, req):
+        // The path may exist under a different method — that's a 405, not a
+        // 404 (so clients can tell "wrong verb" from "no such resource").
+        Some(resp) -> resp
+        None ->
+            if path_matches_any(routes, req):
+                method_not_allowed()
+            else:
+                not_found()
+
+fn path_matches_any(routes: List(Route), req: Request) -> Bool:
+    for rt in routes:
+        if route_path_matches(rt, req):
+            return true
+    false
+
+fn route_path_matches(rt: Route, req: Request) -> Bool:
+    match rt:
+        Route(_m, pat, _h) -> option.is_some(match_path(pat, raw_path_of(req)))
+
+fn try_routes(routes: List(Route), req: Request) -> Option(Response):
+    for rt in routes:
+        let result = check_route(rt, req)
+        if option.is_some(result):
+            return result
+    None
+
+fn check_route(rt: Route, req: Request) -> Option(Response):
+    match rt:
+        Route(m, pat, h) ->
+            if m == method(req) || m == "*":
+                match match_path(pat, raw_path_of(req)):
+                    Some(params) -> Some(h(with_params(req, params)))
+                    None -> None
+            else:
+                None
+
+fn with_params(req: Request, params: List((String, String))) -> Request:
+    match req:
+        Request(m, p, _old, q, h, b) -> Request(m, p, params, q, h, b)
+
+// Match a path against a pattern, returning the captured params or None.
+// The request path is normalized (collapsed slashes, no trailing slash) before
+// segment splitting, so `/api//x/` routes identically to `/api/x`.
+fn match_path(pattern: String, p: String) -> Option(List((String, String))):
+    match_segs(split_path(pattern), split_path(normalize_path(p)), [])
+
+fn split_path(p: String) -> List(String):
+    // (BUG-375) Split on literal `/` FIRST, then percent-decode each segment — so a
+    // captured `:param` / `*rest` reaches the handler decoded (`a%20b` -> `a b`),
+    // while a `%2F` inside a segment decodes to a literal `/` that stays WITHIN that
+    // one segment rather than forging a new routing boundary. (`+` is left literal:
+    // it is a space only in query/form encoding, not in a path.)
+    var out = []
+    for seg in p.split("/"):
+        if seg != "":
+            list.push(out, percent_decode(seg, false))
+    out
+
+fn match_segs(pat: List(String), segs: List(String), acc: List((String, String))) -> Option(List((String, String))):
+    if list.length(pat) == 0:
+        if list.length(segs) == 0:
+            Some(acc)
+        else:
+            None
+    else:
+        let ps = list.at(pat, 0)
+        if ps.starts_with("*"):
+            var out = acc
+            list.push(out, (ps.substring(1, ps.char_count()), join_segs(segs)))
+            Some(out)
+        else if list.length(segs) == 0:
+            None
+        else:
+            let seg = list.at(segs, 0)
+            if ps.starts_with(":"):
+                var out = acc
+                list.push(out, (ps.substring(1, ps.char_count()), seg))
+                match_segs(rest(pat), rest(segs), out)
+            else if ps == seg:
+                match_segs(rest(pat), rest(segs), acc)
+            else:
+                None
+
+fn rest(xs: List(a)) -> List(a):
+    var out = []
+    var i = 1
+    while i < list.length(xs):
+        list.push(out, list.at(xs, i))
+        i = i + 1
+    out
+
+fn join_segs(xs: List(String)) -> String:
+    var out = ""
+    var first = true
+    for s in xs:
+        if first:
+            out = s
+            first = false
+        else:
+            out = out + "/" + s
+    out
+
+// ---- Request parsing from the socket ----
+fn read_request(sock: Socket) -> Result(Request, Response):
+    let request_line = sock.recv_line()
+    match validate_request_line(request_line):
+        Err(e) -> Err(request_parse_error_response(e))
+        Ok((m, target)) ->
+            let raw_path = normalize_path(before(target, "?"))
+            let q = parse_query(after(target, "?"))
+            let headers = read_headers(sock)
+            match framed_length(headers):
+                Err(e) -> Err(request_parse_error_response(e))
+                Ok(len) ->
+                    let body = if len > 0: sock.recv_bytes(len) else: ""
+                    Ok(Request(m, raw_path, [], q, headers, body))
+
+fn read_headers(sock: Socket) -> List((String, String)):
+    var hdrs = []
+    var done = false
+    while !done:
+        let line = sock.recv_line().trim()
+        if line == "":
+            done = true
+        else:
+            if let Some(hv) = parse_header_line(line):
+                list.push(hdrs, hv)
+
+    hdrs
+
+// Parse one `Name: value` header line into `(lowercased name, trimmed value)`, or
+// None if it has no colon. Shared by the streaming reader and `parse_request`.
+fn parse_header_line(line: String) -> Option((String, String)):
+    let colon = line.index_of(":") ?? -1
+    if colon < 0:
+        None
+    else:
+        let name = line.substring(0, colon).trim().to_lower()
+        let value = line.substring(colon + 1, line.char_count()).trim()
+        Some((name, value))
+
+// Parse a whole raw HTTP/1.1 request string into a `Request`, preserving malformed
+// framing as a typed error. This is the network-free mirror of the socket reader
+// and of `http.try_parse_response`. Public so a router can be tested, or a request
+// framed by another transport re-parsed, without a socket.
+pub fn parse_request(raw: String) -> Result(Request, RequestParseError):
+    let sep = raw.index_of("\r\n\r\n") ?? -1
+    let head: String = if sep < 0: raw else: raw.substring(0, sep)
+    let body_all: String = if sep < 0: "" else: raw.substring(sep + 4, raw.char_count())
+    let lines = head.split("\r\n")
+    let request_line = if list.length(lines) > 0: list.at(lines, 0) else: ""
+    match validate_request_line(request_line):
+        Err(e) -> Err(e)
+        Ok((m, target)) ->
+            let raw_path = normalize_path(before(target, "?"))
+            let q = parse_query(after(target, "?"))
+            var headers = []
+            var i = 1
+            while i < list.length(lines):
+                if let Some(hv) = parse_header_line(list.at(lines, i)):
+                    list.push(headers, hv)
+
+                i = i + 1
+            match framed_length(headers):
+                Err(e) -> Err(e)
+                Ok(len) ->
+                    let body = if len > 0: body_all.take(len) else: ""
+                    Ok(Request(m, raw_path, [], q, headers, body))
+
+// Application/server-boundary bridge for callers that want the old "parse or 400
+// Response" shape explicitly.
+pub fn parse_request_response(raw: String) -> Result(Request, Response):
+    match parse_request(raw):
+        Ok(req) -> Ok(req)
+        Err(e) -> Err(request_parse_error_response(e))
+
+fn request_parse_error_response(e: RequestParseError) -> Response:
+    bad_request(request_parse_error_message(e))
+
+fn framed_length(headers: List((String, String))) -> Result(Int, RequestParseError):
+    // Content-Length and Transfer-Encoding are attacker-controlled framing. Two
+    // Content-Length headers with DIFFERENT values (or one header carrying a
+    // differing comma list) is a request-smuggling ambiguity — reject it (400)
+    // rather than pick first-wins. Any Transfer-Encoding is rejected for now:
+    // pretending it has no body would desynchronize the handler from the wire, and
+    // mixed Transfer-Encoding/Content-Length is explicitly ambiguous.
+    var seen = false
+    var transfer = false
+    var value = ""
+    var conflict = false
+    for h in headers:
+        let (k, v) = h
+        if k == "content-length":
+            let tv = v.trim()
+            if seen:
+                if tv != value:
+                    conflict = true
+            else:
+                seen = true
+                value = tv
+        else if k == "transfer-encoding":
+            transfer = true
+    if transfer:
+        Err(UnsupportedTransferEncoding)
+    else if conflict:
+        Err(ConflictingContentLength)
+    else if !seen:
+        Ok(0)
+    else:
+        match value.parse_int():
+            Some(n) -> if n > 0: Ok(n) else: Ok(0)
+            None -> Ok(0)
+
+fn parse_query(q: String) -> List((String, String)):
+    // (BUG-236 / BUG-352) `application/x-www-form-urlencoded`: keys and values are
+    // percent-encoded and `+` stands for a space. Decode BOTH (`%XX` and `+`) so a
+    // handler sees `q=a b` for `?q=a%20b` or `?q=a+b`, not the raw escapes. Empty
+    // pairs (a stray `&`) are skipped rather than yielding a bogus `("", "")`.
+    if q == "":
+        []
+    else:
+        var out = []
+        for pair in q.split("&"):
+            if pair != "":
+                let eq = pair.index_of("=") ?? -1
+                if eq >= 0:
+                    let k = percent_decode(pair.substring(0, eq), true)
+                    let v = percent_decode(pair.substring(eq + 1, pair.char_count()), true)
+                    list.push(out, (k, v))
+                else:
+                    list.push(out, (percent_decode(pair, true), ""))
+        out
+
+// Percent-decode `s` (RFC 3986): each `%XX` becomes the byte it names, and — when
+// `plus_space` — a `+` becomes a space (the form/query convention; false for paths).
+// Consecutive `%XX` bytes are accumulated and decoded together so a multi-byte UTF-8
+// escape (`%E2%82%AC` -> `€`) round-trips. Total: a stray `%` (not followed by two
+// hex digits) is passed through literally rather than trapping.
+fn percent_decode(s: String, plus_space: Bool) -> String:
+    var out = ""
+    var pending = ""
+    var i = 0
+    let n = s.char_count()
+    while i < n:
+        let ch = s.char_at(i) ?? ""
+        if ch == "%" && i + 2 < n && is_hex(s.char_at(i + 1) ?? "") && is_hex(s.char_at(i + 2) ?? ""):
+            pending = pending + s.substring(i + 1, i + 3)
+            i = i + 3
+        else:
+            out = out + flush_bytes(pending)
+            pending = ""
+            if plus_space && ch == "+":
+                out = out + " "
+            else:
+                out = out + ch
+            i = i + 1
+    out + flush_bytes(pending)
+
+// Decode an accumulated hex string of pending percent-escaped bytes to text (lossy
+// UTF-8). The string only ever holds valid, even-count hex digits, so the decode
+// succeeds; on the impossible failure the raw hex is returned rather than trapping.
+fn flush_bytes(hex: String) -> String:
+    if hex == "":
+        ""
+    else:
+        match encoding.hex_decode(hex):
+            Ok(text) -> text
+            Err(_e) -> hex
+
+fn is_hex(c: String) -> Bool:
+    c.char_count() == 1 && "0123456789abcdefABCDEF".contains(c)
+
+// Validate that a request line has the form "METHOD target HTTP/x.y". Returns
+// the method and target on success, or BadRequestLine on failure.
+fn validate_request_line(line: String) -> Result((String, String), RequestParseError):
+    let m = first_word(line)
+    if m == "" || m == line:
+        Err(BadRequestLine)
+    else:
+        let target = second_word(line)
+        if target == "":
+            Err(BadRequestLine)
+        else:
+            let version = third_word(line)
+            if !version.starts_with("HTTP/"):
+                Err(BadRequestLine)
+            else:
+                Ok((m, target))
+
+// Normalize a path: collapse consecutive slashes and strip trailing slash
+// (except for the root path "/").
+fn normalize_path(p: String) -> String:
+    if p == "" || p == "/":
+        p
+    else:
+        var out = ""
+        var prev_slash = false
+        var i = 0
+        let n = p.char_count()
+        while i < n:
+            let ch = p.char_at(i) ?? ""
+            if ch == "/":
+                if !prev_slash:
+                    out = out + ch
+                prev_slash = true
+            else:
+                out = out + ch
+                prev_slash = false
+            i = i + 1
+        if out.char_count() > 1 && out.ends_with("/"):
+            out.substring(0, out.char_count() - 1)
+        else:
+            out
+
+fn third_word(s: String) -> String:
+    let sp = s.index_of(" ") ?? -1
+    if sp < 0:
+        ""
+    else:
+        let r = s.substring(sp + 1, s.char_count())
+        let sp2 = r.index_of(" ") ?? -1
+        if sp2 < 0:
+            ""
+        else:
+            r.substring(sp2 + 1, r.char_count()).trim()
+
+fn first_word(s: String) -> String:
+    let sp = s.index_of(" ") ?? -1
+    if sp < 0:
+        s
+    else:
+        s.substring(0, sp)
+
+fn second_word(s: String) -> String:
+    let sp = s.index_of(" ") ?? -1
+    if sp < 0:
+        ""
+    else:
+        let r = s.substring(sp + 1, s.char_count())
+        let sp2 = r.index_of(" ") ?? -1
+        if sp2 < 0:
+            r
+        else:
+            r.substring(0, sp2)
+
+fn before(s: String, sep: String) -> String:
+    let i = s.index_of(sep) ?? -1
+    if i < 0:
+        s
+    else:
+        s.substring(0, i)
+
+fn after(s: String, sep: String) -> String:
+    let i = s.index_of(sep) ?? -1
+    if i < 0:
+        ""
+    else:
+        s.substring(i + sep.char_count(), s.char_count())
+
+// ---- Rendering + the serve loop ----
+
+// Dispatch `req` through `app` (all routes and middleware layers) and return the
+// Response — the whole request pipeline WITHOUT a socket. The axum "oneshot" analog:
+// handlers and routers become unit-testable with a `Request` literal, and it is the
+// in-process way to call one app from another. `serve*` is this plus the accept loop.
+pub fn handle(app: Router, req: Request) -> Response:
+    handler_of(app)(req)
+
+// Serialize a `Response` to its HTTP/1.1 wire form (inverse of `http.parse_response`).
+// The framing headers (Content-Length, Connection) are owned here; a status outside
+// 100..599 traps. Public so a test or a custom transport can render a Response itself.
+pub fn render(resp: Response) -> String:
+    render_for(resp, "")
+
+// `render`, honoring the request method: a HEAD response carries the same
+// status/headers — including the Content-Length the body WOULD have — but the
+// body bytes themselves are never sent (RFC 9110 §9.3.2). This is enforced at
+// the rendering boundary so a `.head(...)` handler may simply return the GET
+// response and the framework suppresses the body.
+pub fn render_for(resp: Response, method: String) -> String:
+    match resp:
+        // (BUG-255) A status code outside 100..599 is not a valid HTTP status
+        // and would render a malformed status line; trap loudly (both backends).
+
+        // (SEC-043) A handler-set header name/value (e.g. a `location` from
+        // `redirect`, a `set-cookie`) may carry attacker-derived data; a
+        // `\r`/`\n` here would inject a header or split the response. Validate
+        // before concatenating — trap loudly rather than emit a split response.
+
+        // (BUG-358) The framing headers are OWNED below (Content-Length +
+        // Connection). Drop any handler-supplied Content-Length /
+        // Transfer-Encoding / Connection so the response never carries two
+        // conflicting framing headers (a response-smuggling primitive).
+        Response(code, headers, b) ->
+            check_status(code)
+            var out = "HTTP/1.1 ${code} " + reason(code) + "\r\n"
+            for h in headers:
+                let (k, v) = h
+                http.check_header(k, v)
+                if !http.is_framing_header(k):
+                    out = out + k + ": " + v + "\r\n"
+            out = out + "Content-Length: " + "${b.length()}" + "\r\n"
+            out = out + "Connection: close\r\n\r\n"
+            if method == "HEAD":
+                out
+            else:
+                out + b
+
+// (BUG-255) Trap unless `code` is a syntactically valid HTTP status (100..599).
+fn check_status(code: Int):
+    if code < 100 || code > 599:
+        fail("invalid HTTP status code (must be 100..599): ${code}")
+
+fn reason(code: Int) -> String:
+    if code == 200:
+        "OK"
+    else if code == 201:
+        "Created"
+    else if code == 202:
+        "Accepted"
+    else if code == 204:
+        "No Content"
+    else if code == 303:
+        "See Other"
+    else if code == 400:
+        "Bad Request"
+    else if code == 401:
+        "Unauthorized"
+    else if code == 403:
+        "Forbidden"
+    else if code == 404:
+        "Not Found"
+    else if code == 405:
+        "Method Not Allowed"
+    else if code == 500:
+        "Internal Server Error"
+    else:
+        "Status"
+
+fn handler_of(app: Router) -> fn(Request) -> Response:
+    match app:
+        Router(routes, layers) -> wrap_layers(dispatch(routes), layers)
+
+fn wrap_layers(handler: fn(Request) -> Response, layers: List(fn(fn(Request) -> Response) -> fn(Request) -> Response)) -> fn(Request) -> Response:
+    var h = handler
+    for mw in layers:
+        h = mw(h)
+    h
+
+fn handle_one(server: Listener, handler: fn(Request) -> Response):
+    let sock = server.accept()
+    // A malformed request (e.g. conflicting Content-Length, BUG-390) short-circuits
+    // to its error Response without ever reaching a handler. The request method is
+    // retained for rendering: a HEAD response must not carry body bytes (BUG-376).
+    let (m, resp) = match read_request(sock):
+        Ok(req) -> (method(req), handler(req))
+        Err(err_resp) -> ("", err_resp)
+
+    sock.send_bytes(render_for(resp, m))
+    sock.close()
+
+// Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to
+// listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each
+// re-running this program and accepting from the SAME bound listener — the kernel
+// load-balances connections across them, so the server scales across cores with no
+// extra effort from you. Handlers are pure `fn(Request) -> Response` whose state lives
+// in their captured capabilities (e.g. a store `Dir` = the filesystem), so the workers
+// are interchangeable. (For a single-threaded server, use `serve_one`.)
+pub fn serve(net: Net[Listen, Tcp], addr: String, app: Router):
+    let server = net.listen(addr)
+    server.serve_pool()
+    let handler = handler_of(app)
+    var running = true
+    while running:
+        handle_one(server, handler)
+
+// Serve `app` on `addr` forever on a SINGLE core (one accept loop, no worker pool) —
+// for servers with per-process in-memory state, or when one core is plenty.
+pub fn serve_one(net: Net[Listen, Tcp], addr: String, app: Router):
+    let server = net.listen(addr)
+    let handler = handler_of(app)
+    var running = true
+    while running:
+        handle_one(server, handler)
+
+// Serve exactly `n` requests then return — for tests and one-shot servers.
+pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
+    let server = net.listen(addr)
+    let handler = handler_of(app)
+    var i = 0
+    while i < n:
+        handle_one(server, handler)
+        i = i + 1
+
+// Serve `app` over HTTPS on `addr` forever, using ALL cores — `serve` with TLS
+// terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text —
+// inline, or read via an ordinary `Dir` grant); `key` is the private key as a
+// `Secret` (`secretstore.require(store, "tls-key")`), consumed by opaque host
+// reference: the key bytes never enter this program's memory, so even a bug in a
+// handler cannot exfiltrate them. Grant the key use-only
+// (`--secret-file tls-key=key.pem,use-only`) and `crypto.reveal` on it errors too.
+// A malformed or mismatched cert/key fails
+// LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad
+// ClientHello) drops that connection and the server keeps serving. Handlers,
+// `Router`, and `Request`/`Response` are unchanged — TLS is transparent above the
+// accepted connection.
+pub fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router):
+    let server = net.listen_tls(addr, cert_pem, key)
+    server.serve_pool()
+    let handler = handler_of(app)
+    var running = true
+    while running:
+        handle_one(server, handler)
+
+// Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twin
+// (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
+pub fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router, n: Int):
+    let server = net.listen_tls(addr, cert_pem, key)
+    let handler = handler_of(app)
+    var i = 0
+    while i < n:
+        handle_one(server, handler)
+        i = i + 1

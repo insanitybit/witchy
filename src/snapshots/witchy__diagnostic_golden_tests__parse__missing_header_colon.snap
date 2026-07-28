@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "parse_diag(\"fn main(console: Console)\\n    console.print(\\\"hi\\\")\\n\")"
+---
+parse error at 2:5: expected an indented block; add `:` after the header (found `console`)

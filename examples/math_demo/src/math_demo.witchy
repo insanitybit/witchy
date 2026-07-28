@@ -1,0 +1,11 @@
+// Uses the bundled `math` standard library. Like every std module it is pure —
+// importing it grants no authority, only computation.
+
+import math
+
+fn main(console: Console):
+    console.print("${math.max(3, 7)}")
+    console.print("${math.abs(-5)}")
+    console.print("${math.clamp(12, 0, 10)}")
+    console.print("${math.pow(2, 10)}")
+    console.print("${math.gcd(24, 36)}")

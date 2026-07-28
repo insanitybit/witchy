@@ -1,0 +1,135 @@
+// The witchy standard `Option` type and helpers. `Option`, `Some`, and `None`
+// are prelude names and never need an import; `import option` brings in the
+// qualified helper forms such as `option.map`. Pure and capability-free.
+
+// For the `ok_or`/`ok_or_else` conversions to Result.
+
+import result
+
+type Option:
+    Some(a)
+    None
+
+// --- The compiler-referenced `ok_or` (the `?`-operator desugar lowers through
+// `option.ok_or`) and the receiver-less List collector `all` stay module-level;
+// every other helper is methods-only (RFC-0099). ---
+
+// Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes
+// `Err(err)` — the inverse of `result.ok`.
+pub fn ok_or(o: Option(a), err: e) -> Result(a, e):
+    match o:
+        Some(v) -> Ok(v)
+        None -> Err(err)
+
+// Methods are the primary surface (RFC-0099). `ok_or` delegates to the kept
+// module function; the rest own their implementation.
+impl Option(a):
+    // True if the option holds a value.
+    pub fn is_some(self) -> Bool:
+        match self:
+            Some(_) -> true
+            None -> false
+
+    // True if the option holds no value.
+    pub fn is_none(self) -> Bool:
+        match self:
+            Some(_) -> false
+            None -> true
+
+    // The Some value, or `default` if it's None.
+    pub fn unwrap_or(self, default: a) -> a:
+        match self:
+            Some(v) -> v
+            None -> default
+
+    // The Some value, or the result of calling `f` (a lazily-computed default).
+    pub fn unwrap_or_else(self, f: fn() -> a) -> a:
+        match self:
+            Some(v) -> v
+            None -> f()
+
+    // Transform the Some value, leaving None untouched.
+    pub fn map(self, f: fn(a) -> b) -> Option(b):
+        match self:
+            Some(v) -> Some(f(v))
+            None -> None
+
+    // Apply `f` to the Some value, or return `default` for None — `map` then
+    // `unwrap_or` in one step.
+    pub fn map_or(self, default: b, f: fn(a) -> b) -> b:
+        match self:
+            Some(v) -> f(v)
+            None -> default
+
+    // Chain a fallible step: apply `f` (which itself yields an Option) to the
+    // Some value, or short-circuit on None.
+    pub fn and_then(self, f: fn(a) -> Option(b)) -> Option(b):
+        match self:
+            Some(v) -> f(v)
+            None -> None
+
+    // Keep the Some value only if it satisfies `keep`; otherwise None.
+    pub fn filter(self, keep: fn(a) -> Bool) -> Option(a):
+        match self:
+            Some(v) -> if keep(v): Some(v) else: None
+            None -> None
+
+    // The option if it is Some, otherwise the `alt` option.
+    pub fn or(self, alt: Option(a)) -> Option(a):
+        match self:
+            Some(v) -> Some(v)
+            None -> alt
+
+    // The option if it is Some, otherwise the option produced by `f` (lazy).
+    pub fn or_else(self, f: fn() -> Option(a)) -> Option(a):
+        match self:
+            Some(v) -> Some(v)
+            None -> f()
+
+    // Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes
+    // `Err(err)` — the inverse of `result.ok`.
+    pub fn ok_or(self, err: e) -> Result(a, e):
+        option.ok_or(self, err)
+
+    // Like `ok_or`, but the error for `None` is produced lazily by `f`.
+    pub fn ok_or_else(self, f: fn() -> e) -> Result(a, e):
+        match self:
+            Some(v) -> Ok(v)
+            None -> Err(f())
+
+    // Combine two options into an option of a pair: `Some((x, y))` only when
+    // both are `Some`, otherwise `None`.
+    pub fn zip(self, other: Option(b)) -> Option((a, b)):
+        match self:
+            Some(x) ->
+                match other:
+                    Some(y) -> Some((x, y))
+                    None -> None
+            None -> None
+
+impl Option(Option(a)):
+    // Collapse one layer of nesting: `Some(Some(v))` becomes `Some(v)`, and
+    // both `Some(None)` and `None` become `None`.
+    pub fn flatten(self) -> Option(a):
+        match self:
+            Some(inner) -> inner
+            None -> None
+
+// Collect a list of Options into an Option of the list: `Some` of every value in
+// order, or `None` if any element is `None`.
+pub fn all(xs: List(Option(a))) -> Option(List(a)):
+    var acc = Some([])
+    for x in xs:
+        acc = combine(acc, x)
+    acc
+
+fn combine(acc: Option(List(a)), x: Option(a)) -> Option(List(a)):
+    match acc:
+        None -> None
+        Some(vs) ->
+            match x:
+                Some(v) ->
+                    var out = vs
+                    list.push(out, v)
+                    Some(out)
+                None -> None

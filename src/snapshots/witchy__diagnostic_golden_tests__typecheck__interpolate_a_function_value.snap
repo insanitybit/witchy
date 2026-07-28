@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console):\\n    let f = fn(n: Int): n + 1\\n    print(console, \\\"${f}\\\")\\n\")"
+---
+type error: `main`, line 3: cannot render a function value with `"${…}"` — a function has no printable form. Interpolation renders data; call the function (e.g. `f(x)`) and interpolate its result instead

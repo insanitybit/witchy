@@ -1,0 +1,13 @@
+// In-rune tests for `temperature`. Each `test_*` function takes no parameters,
+// passes by returning, and fails by aborting (the `testing` assertions do that
+// with a message). Floats are rendered with `math.format_float` before
+// comparison. Run them with `witchy test examples/temperature`.
+
+import temperature
+import math
+import testing
+
+fn test_to_celsius():
+    testing.assert_eq(math.format_float(temperature.to_celsius(32.0), 1), "0.0")
+    testing.assert_eq(math.format_float(temperature.to_celsius(212.0), 1), "100.0")
+    testing.assert_eq(math.format_float(temperature.to_celsius(0.0), 1), "-17.8")
