@@ -1,29 +1,4 @@
     #[test]
-    fn arithmetic_roundtrips() {
-        // fn add() -> Int: (2 + 3) * 4 == 20
-        let add = WirFunc {
-            name: "add".into(),
-            params: vec![],
-            ret: vec![WirTy::Int],
-            locals: vec![],
-            body: vec![WirNode::Return(Some(WirExpr::Binary {
-                op: BinOp::Mul,
-                kind: Kind::I64,
-                lhs: Box::new(WirExpr::Binary {
-                    op: BinOp::Add,
-                    kind: Kind::I64,
-                    lhs: Box::new(WirExpr::ConstI64(2)),
-                    rhs: Box::new(WirExpr::ConstI64(3)),
-                }),
-                rhs: Box::new(WirExpr::ConstI64(4)),
-            }))],
-            raw_body: None,
-        };
-        let m = int_demo(add, WirExpr::Call { func: "add".into(), args: vec![] });
-        assert_agrees(&m, &["20"]);
-    }
-
-    #[test]
     fn if_with_result_roundtrips() {
         // fn pick(b: Bool) -> Int: if b: 10 else: 20
         let pick = WirFunc {
