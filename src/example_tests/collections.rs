@@ -491,7 +491,7 @@ fn main(console: Console):
     }
 
     #[test]
-    fn std_list_find_index_backends_agree() {
+    fn std_list_transformations_backends_agree() {
         // RFC-0049: `find_index` is deleted; `position` is the by-PREDICATE
         // Option-index form (it took over the role find_index vacated).
         // `?? -1` (RFC-0048) recovers the old sentinel for a compact assertion.
@@ -499,26 +499,10 @@ fn main(console: Console):
 import list
 
 fn main(console: Console):
-    let xs = [3, 8, 1, 9, 4]
+    let xs = [1, 2, 3, 10, 4, 5]
     console.print("${list.position(xs, fn(n: Int): (n > 5)) ?? -1}")
     console.print("${list.position(xs, fn(n: Int): (n > 100)) ?? -1}")
     console.print("${list.position(xs, fn(n: Int): (n == 1)) ?? -1}")
-"#;
-        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "position diverged");
-        assert_eq!(compiled, vec!["1", "-1", "2"]);
-    }
-
-    #[test]
-    fn std_list_zip_with_intersperse_backends_agree() {
-        // zip_with combines element-wise (stopping at the shorter list);
-        // intersperse inserts a separator between elements. Both backends agree.
-        let client = r#"
-import list
-
-fn main(console: Console):
     let sums = list.zip_with([1, 2, 3], [10, 20], fn(a: Int, b: Int): (a + b))
     console.print("${list.length(sums)}")
     console.print("${list.sum(sums)}")
@@ -527,23 +511,6 @@ fn main(console: Console):
     console.print("${list.sum(spaced)}")
     console.print("${list.length(list.intersperse([9], 0))}")
     console.print("${list.length(list.intersperse([], 0))}")
-"#;
-        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "zip_with/intersperse diverged");
-        assert_eq!(compiled, vec!["2", "33", "5", "18", "1", "0"]);
-    }
-
-    #[test]
-    fn std_list_take_drop_while_repeat_backends_agree() {
-        // take_while/drop_while split at the first failing element; repeat makes
-        // n copies. Both backends agree.
-        let client = r#"
-import list
-
-fn main(console: Console):
-    let xs = [1, 2, 3, 10, 4, 5]
     console.print("${list.sum(list.take_while(xs, fn(n: Int): (n < 5)))}")
     console.print("${list.sum(list.drop_while(xs, fn(n: Int): (n < 5)))}")
     let threes = list.repeat(7, 3)
@@ -554,8 +521,8 @@ fn main(console: Console):
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "take_while/drop_while/repeat diverged");
-        assert_eq!(compiled, vec!["6", "19", "21", "3", "0"]);
+        assert_eq!(interpreted, compiled, "list transformations diverged");
+        assert_eq!(compiled, vec!["3", "-1", "0", "2", "33", "5", "18", "1", "0", "6", "19", "21", "3", "0"]);
     }
 
     // flatten collapses Option(Option(a)) one level; zip pairs two options into
