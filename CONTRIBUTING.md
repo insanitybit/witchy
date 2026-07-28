@@ -73,6 +73,9 @@ The intended layers are:
 - mutation/fault-injection tests for evidence that the retained oracles reject
   deliberately wrong behavior.
 
+The canonical evidence-layer and measurement details are maintained in
+[Test footprint and evidence layers](spec/test-footprint.md).
+
 Fixtures belong at the narrowest shared boundary. Use `tests/support/` for
 integration-process fixtures, `witchy-testkit` for cross-crate semantic
 fixtures, and `witchy-test-host` for deterministic host plans. Do not add a
