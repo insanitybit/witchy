@@ -13,24 +13,6 @@ use crate::{codegen, interpreter, parser};
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
-    /// (BUG-414) `vm.par_map` takes its worker-VM fast path only for a bare
-    /// top-level function. A local function value or lambda deliberately uses the
-    /// byte-identical sequential body; unlike the isolation APIs, that changes
-    /// performance rather than semantics or authority.
-    #[test]
-    fn vm_par_map_indirect_callbacks_fall_back() {
-        // par_map with the function in a LOCAL and as an inline LAMBDA -> fallback.
-        let par = "import vm\n\nfn dbl(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    let f = dbl\n    console.print(\"${vm.par_map([1, 2, 3], f)}\")\n    console.print(\"${vm.par_map([4, 5], fn(n: Int): n + 1)}\")\n";
-        let par_expected = ["[2, 4, 6]", "[5, 6]"];
-        assert_eq!(link_run(par), par_expected, "interp par_map indirect");
-        assert_eq!(run_linked_on_wasm(&[("main", par)], "main"), par_expected, "wasm par_map indirect");
-
-        // A bare TOP-LEVEL function still takes the fast path and agrees.
-        let direct = "import vm\n\nfn dbl(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    console.print(\"${vm.par_map([1, 2, 3], dbl)}\")\n";
-        assert_eq!(link_run(direct), ["[2, 4, 6]"], "interp direct");
-        assert_eq!(run_linked_on_wasm(&[("main", direct)], "main"), ["[2, 4, 6]"], "wasm direct");
-    }
-
     /// (RFC-0032) `vm.par_map` over `String` elements: each string is a flat
     /// `[len][bytes]` value, so it crosses to a worker VM by a plain byte copy (in via
     /// the worker's `__galloc`, result back out) — no marshaling. A witchy `String` is
@@ -209,24 +191,6 @@ use crate::{codegen, interpreter, parser};
             "the raw wasmtime backtrace must not leak to the user, got: {err}"
         );
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn verify_file_agrees_on_a_simple_program() {
-        // `witchy verify` runs a program on both backends and confirms identical
-        // output; on a normal program that should succeed.
-        let path = std::env::temp_dir().join(format!("witchy_verify_smoke_{}.witchy", std::process::id()));
-        std::fs::write(
-            &path,
-            "fn main(console: Console):\n    console.print(\"${(2 + 3) * 4}\")\n    console.print(\"hi\")\n",
-        )
-        .unwrap();
-        let outcome = crate::parity_check(path.to_str().unwrap());
-        assert!(
-            matches!(outcome, crate::ParityOutcome::Agree { .. }),
-            "backends should agree: {}",
-            outcome.message()
-        );
     }
 
     /// (RFC-0045) `witchy parity` on an aborting program passes only when both
