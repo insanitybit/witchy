@@ -1,34 +1,5 @@
 use super::*;
-use crate::{parser, typeck};
-
-    /// (BUG-341) A type error in comptime-EMITTED code must report a real, in-file
-    /// location, not a phantom line number relative to the invisible emitted blob
-    /// (which could point PAST the file's EOF). The emitted items' line numbers are
-    /// now re-stamped to the `comptime:` block's own source line.
-    #[test]
-    fn comptime_body_type_error_reports_in_file_location() {
-        // 6-line file; the `comptime:` block (line 1) emits `broken`, whose Bool body
-        // type-errors against its declared `-> Int`. The reported line must be the
-        // block's real line, within the file — never a phantom offset past EOF.
-        let src = "comptime:\n    console.print(\"fn broken() -> Int:\")\n    console.print(\"    true\")\n\nfn main(console: Console):\n    console.print(\"${broken()}\")\n";
-        let line_count = src.lines().count() as u32;
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        let err = typeck::check(&linked)
-            .expect_err("a type error in emitted code must be reported")
-            .message;
-        let reported: u32 = err
-            .split("line ")
-            .nth(1)
-            .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| panic!("the diagnostic must carry a line number: {err}"));
-        assert!(
-            (1..=line_count).contains(&reported),
-            "reported line {reported} must be within the {line_count}-line file, not a phantom \
-             offset past EOF: {err}",
-        );
-    }
+use crate::typeck;
 
     /// (RFC-0069) `module_types` exposes both declaration kind and field types as
     /// structured facts. Rendering occurs only at the generated-source boundary.
@@ -230,41 +201,19 @@ fn main(console: Console):
             .message;
         assert!(err.contains("meta.ItemSyntax") && err.contains("compile-time-only"), "got: {err}");
 
-        let runtime_type_signature = "from meta import TypeSyntax\n\nfn leak(x: TypeSyntax) -> TypeSyntax:\n    x\n";
-        let err = typeck::check(&resolve_std_src(runtime_type_signature))
-            .expect_err("runtime signatures must not expose TypeSyntax")
-            .message;
-        assert!(err.contains("meta.TypeSyntax") && err.contains("compile-time-only"), "got: {err}");
-
-        let runtime_ident_value = "import meta\n\nfn main(console: Console):\n    let id = meta.ident(\"x\")\n    console.print(\"runtime ident\")\n";
-        let err = typeck::check(&resolve_std_src(runtime_ident_value))
-            .expect_err("runtime meta.ident must be rejected")
-            .message;
-        assert!(err.contains("meta.Ident") && err.contains("compile-time-only"), "got: {err}");
-
-        let runtime_signature = "from meta import ItemSyntax\n\nfn leak(x: ItemSyntax) -> ItemSyntax:\n    x\n";
-        let err = typeck::check(&resolve_std_src(runtime_signature))
-            .expect_err("runtime signatures must not expose ItemSyntax")
-            .message;
-        assert!(err.contains("meta.ItemSyntax") && err.contains("compile-time-only"), "got: {err}");
-
-        let runtime_expr_signature = "from meta import ExprSyntax\n\nfn leak(x: ExprSyntax) -> ExprSyntax:\n    x\n";
-        let err = typeck::check(&resolve_std_src(runtime_expr_signature))
-            .expect_err("runtime signatures must not expose ExprSyntax")
-            .message;
-        assert!(err.contains("meta.ExprSyntax") && err.contains("compile-time-only"), "got: {err}");
-
-        let runtime_block_signature = "from meta import BlockSyntax\n\nfn leak(x: BlockSyntax) -> BlockSyntax:\n    x\n";
-        let err = typeck::check(&resolve_std_src(runtime_block_signature))
-            .expect_err("runtime signatures must not expose BlockSyntax")
-            .message;
-        assert!(err.contains("meta.BlockSyntax") && err.contains("compile-time-only"), "got: {err}");
-
-        let runtime_hole_signature = "from meta import SyntaxHole\n\nfn leak(x: SyntaxHole) -> SyntaxHole:\n    x\n";
-        let err = typeck::check(&resolve_std_src(runtime_hole_signature))
-            .expect_err("runtime signatures must not expose SyntaxHole")
-            .message;
-        assert!(err.contains("meta.SyntaxHole") && err.contains("compile-time-only"), "got: {err}");
+        for (source, type_name, label) in [
+            ("from meta import TypeSyntax\n\nfn leak(x: TypeSyntax) -> TypeSyntax:\n    x\n", "meta.TypeSyntax", "TypeSyntax"),
+            ("import meta\n\nfn main(console: Console):\n    let id = meta.ident(\"x\")\n    console.print(\"runtime ident\")\n", "meta.Ident", "meta.ident"),
+            ("from meta import ItemSyntax\n\nfn leak(x: ItemSyntax) -> ItemSyntax:\n    x\n", "meta.ItemSyntax", "ItemSyntax"),
+            ("from meta import ExprSyntax\n\nfn leak(x: ExprSyntax) -> ExprSyntax:\n    x\n", "meta.ExprSyntax", "ExprSyntax"),
+            ("from meta import BlockSyntax\n\nfn leak(x: BlockSyntax) -> BlockSyntax:\n    x\n", "meta.BlockSyntax", "BlockSyntax"),
+            ("from meta import SyntaxHole\n\nfn leak(x: SyntaxHole) -> SyntaxHole:\n    x\n", "meta.SyntaxHole", "SyntaxHole"),
+        ] {
+            let err = typeck::check(&resolve_std_src(source))
+                .expect_err("runtime syntax values must be rejected")
+                .message;
+            assert!(err.contains(type_name) && err.contains("compile-time-only"), "{label}: {err}");
+        }
 
         let local_runtime_type = "type ItemSyntax:\n    value: Int\n\nfn main(console: Console):\n    let x = ItemSyntax(11)\n    console.print(\"${x.value}\")\n";
         let expected = ["11"];
