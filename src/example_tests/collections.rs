@@ -476,6 +476,16 @@ fn main(console: Console):
     console.print("${list.contains(xs, 9)}")
     console.print("${list.any(xs, fn(n: Int): (n > 8))}")
     console.print("${list.all(xs, fn(n: Int): (n > 0))}")
+    let empty = list.filter([1], fn(n: Int): (n > 100))
+    console.print("${list.all(empty, fn(n: Int): (n > 0))}")
+    console.print("${list.any(empty, fn(n: Int): (n > 0))}")
+    let ps = list.zip([1, 2, 3], ["a", "b"])
+    console.print("${list.length(ps)}")
+    let (pn, ps_text) = list.at(ps, 0)
+    console.print("${pn}" + ps_text)
+    let words = ["a", "bb", "ccc"]
+    console.print("${list.contains(words, "bb")}")
+    console.print("${list.index_of(words, "ccc") ?? -1}")
     console.print("${list.sum(xs)}")
     console.print("${list.is_empty(xs)}")
     console.print("${list.is_empty(list.filter(xs, fn(n: Int): (n > 100)))}")
@@ -484,9 +494,14 @@ fn main(console: Console):
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std list library diverged between interpreter and compiled");
         assert_eq!(
-            interpreted, compiled,
-            "std list library diverged between interpreter and compiled"
+            compiled,
+            vec![
+                "2,5", "3:8", "9", "1..9", "22", "1200", "56", "2", "Some(2)", "true",
+                "true", "true", "true", "false", "2", "1a", "true", "2", "28", "false", "true", "2",
+            ],
+            "std list library golden output drifted",
         );
     }
 

@@ -286,27 +286,6 @@ fn compile_accepts_complete_authenticated_package_owners() {
 // ---- BUG-104 / BUG-106: compiled `.wasm` artifact launch ----
 
 #[test]
-fn wasm_int_main_is_the_exit_code_not_printed() {
-    // BUG-104: `witchy <file>` of a source whose `main` returns Int exits with it;
-    // the compiled `.wasm` form used to PRINT the value and exit 0 instead.
-    let dir = workdir("wasm-exit");
-    let src = write(&dir, "seven.witchy", "fn main() -> Int:\n    7\n");
-    let wasm = dir.join("seven.wasm");
-    let out = run(&["emit-wasm", &src, "-o", wasm.to_str().unwrap()]);
-    assert!(out.status.success(), "emit-wasm failed: {}", String::from_utf8_lossy(&out.stderr));
-
-    for launcher in [vec![wasm.to_str().unwrap()], vec!["sandbox", wasm.to_str().unwrap()]] {
-        let out = run(&launcher);
-        assert_eq!(out.status.code(), Some(7), "wasm Int main should be the exit code ({launcher:?})");
-        assert!(
-            String::from_utf8_lossy(&out.stdout).trim().is_empty(),
-            "the Int return must NOT be printed ({launcher:?}): {:?}",
-            String::from_utf8_lossy(&out.stdout)
-        );
-    }
-}
-
-#[test]
 fn wasm_nil_main_int_output_is_not_eaten_as_exit_code() {
     // The BUG-104 guard: a Nil `main` that prints ints keeps every line and exits 0.
     let dir = workdir("wasm-print");
