@@ -33,7 +33,7 @@ does not hide the contract under test.
 paths; its `--run` form executes them. Full workspace, Clippy, Wasm, browser,
 and book validation is serialized by `./scripts/merge-queue.sh submit`.
 
-At master commit `7fe6169c` on 2026-07-28, the measured footprint is:
+At master commit `42adea80` on 2026-07-28, the measured footprint is:
 
 | layer | files | Rust lines |
 | --- | ---: | ---: |
