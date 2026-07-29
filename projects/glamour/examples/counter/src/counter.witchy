@@ -15,8 +15,7 @@ from glamour import VNode, Cmd
 from json import Json
 
 // `Model = Int` (RFC-0008's example model): the count. A bare `Int` reflects to a
-// JSON integer, so it round-trips through the wire with no wrapper shape to keep in
-// sync — `model_to_json(3)` is `3` and `parse_model(3)` is `3`.
+// JSON integer, so it round-trips with no wrapper shape to keep in sync.
 type Msg derive(Reflect):
     Inc
     Dec
@@ -50,35 +49,19 @@ fn parse_model(j: Json) -> Int:
         Some(n) -> n
         None -> 0
 
-// Parse a `Msg` from its reflected JSON `{"$variant":"Inc","$values":[]}`. A small
-// match over the app's own message shape — this is the deliberate MVU glue (the
-// shell sends back exactly the JSON `to_json` embedded in the `on` handler).
+// Parse the reflected event returned by the host.
 fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "\$variant"):
-        Some(v) ->
-            if v == "Dec":
-                Dec
-            else:
-                Inc
-        None -> Inc
+    match glamour.msg_variant(j):
+        Some("Dec") -> Dec
+        _ -> Inc
 
-// The outbound boundary: encode the model / msg to JSON. `json.from_value` works
-// for any `Reflect` type, so these are one-liners (passed to `step_with` as
-// values — see the note there on why serializers are passed, not bound).
-fn model_to_json(count: Int) -> Json:
-    json.from_value(count)
-
-fn msg_to_json(m: Msg) -> Json:
-    json.from_value(m)
-
-// The single JS-callable export. `step_with` is glamour's reusable MVU engine:
-// it parses the input, runs `update` when a `msg` is present, then `view`, and
-// returns `{"model": ..., "vnode": ...}`.
+// The single JS-callable export. Reflect supplies the outbound model/message
+// encoding; the app owns only its inbound parsing.
 pub fn export_step(input: String) -> String:
-    glamour.step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.step(input, view, update, parse_model, parse_msg)
 
 // A `main` so the rune also runs as a CLI program (and the compiled module gets a
 // `run` export): render the initial model (count 0) and print the wire JSON.
 fn main(console: Console):
-    let output = export_step("{\"model\": 0}")
+    let output = export_step(json.stringify(.{model: 0}))
     console.print("${output}\n")

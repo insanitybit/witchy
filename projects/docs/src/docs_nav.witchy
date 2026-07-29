@@ -19,6 +19,9 @@ pub fn slug(route: String) -> String:
 pub fn page_path(page: Page) -> String:
     "/p/${page.slug}"
 
+pub fn is_current(page: Page, route: String) -> Bool:
+    page.slug == slug(route)
+
 fn depth(line: String) -> Int:
     (line.length() - line.trim_start().length()) / 2
 
@@ -46,7 +49,7 @@ pub fn pages(entries: List(Entry)) -> List(Page):
     result
 
 pub fn route_position(ordered: List(Page), route: String) -> Option(Int):
-    ordered.position(fn(page: Page): page_path(page) == route)
+    ordered.position(fn(page: Page): is_current(page, route))
 
 pub fn cover_path(entries: List(Entry)) -> String:
     match entries.head():

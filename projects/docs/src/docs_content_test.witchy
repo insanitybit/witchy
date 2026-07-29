@@ -1,0 +1,28 @@
+import docs_content
+import testing
+from glamour import VNode
+
+type Msg:
+    Never
+
+fn first_block(source: String) -> VNode(Msg):
+    match docs_content.render(source):
+        Element(_tag, _attrs, children) -> children.head().unwrap_or(Text(""))
+        other -> other
+
+fn test_staged_runnable_fence_becomes_a_runnable_slot():
+    match first_block("```witchy-runnable\nfn main():\n    ()\n```\n"):
+        Slot(kind, source) ->
+            testing.assert_eq(kind, "witchy-runnable")
+            testing.assert(source.contains("fn main"), "the slot keeps the source")
+        _ -> testing.assert(false, "expected a runnable host slot")
+
+fn test_staged_static_fence_becomes_a_static_slot():
+    match first_block("```witchy-static\nfn helper() -> Int:\n    1\n```\n"):
+        Slot(kind, _source) -> testing.assert_eq(kind, "witchy-static")
+        _ -> testing.assert(false, "expected a static host slot")
+
+fn test_unclassified_witchy_fence_fails_closed():
+    match first_block("```witchy\nfn main():\n    ()\n```\n"):
+        Slot(kind, _source) -> testing.assert_eq(kind, "witchy-static")
+        _ -> testing.assert(false, "expected an unclassified fence to stay read-only")

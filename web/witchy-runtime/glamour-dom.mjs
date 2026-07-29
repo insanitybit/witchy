@@ -247,15 +247,17 @@ export async function mount(wasmBytes, root, opts = {}) {
       if (typeof cmd.url !== "string" || typeof cmd.method !== "string") return;
       if (cmd.methods != null && !methodAllowed(cmd.methods, cmd.method)) return;
       if (cmd.prefix != null && !cmd.url.startsWith(cmd.prefix)) return;
+      if (cmd.args != null && !Array.isArray(cmd.args)) return;
+      const responseArgs = cmd.args || [];
       // The SHELL attaches credentials — the rune never holds the session token.
       const headers = opts.authHeaders ? opts.authHeaders() : {};
       const init = { method: cmd.method, headers };
       if (cmd.body) init.body = cmd.body;
       Promise.resolve(doFetch(cmd.url, init))
         .then((resp) => Promise.resolve(resp.text()).then((body) => ({ status: resp.status, body })))
-        .then(({ status, body }) => dispatch({ $variant: cmd.tag, $values: [status, body] }))
+        .then(({ status, body }) => dispatch({ $variant: cmd.tag, $values: [...responseArgs, status, body] }))
         // A transport error is status 0 — an ordinary `update` arm, never an exception.
-        .catch((e) => dispatch({ $variant: cmd.tag, $values: [0, String(e)] }));
+        .catch((e) => dispatch({ $variant: cmd.tag, $values: [...responseArgs, 0, String(e)] }));
       return;
     }
     if (cmd.cmd === "nav") {

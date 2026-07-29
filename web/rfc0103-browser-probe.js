@@ -11,7 +11,10 @@ function extractWitchyBlocks(markdown) {
   const blocks = [];
   let current = null;
   for (const line of markdown.split("\n")) {
-    if (current === null && line.trimEnd() === "```witchy") {
+    if (
+      current === null
+      && /^```witchy(?:-runnable|-static)?$/.test(line.trimEnd())
+    ) {
       current = [];
     } else if (current !== null && line.trimEnd() === "```") {
       blocks.push(current.join("\n"));

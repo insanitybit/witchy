@@ -8,6 +8,7 @@ import { mount } from "./glamour-dom.mjs";
 import { runnableSlot, staticSlot } from "./witchy-runnable.js";
 import { createSandboxedProgramRunner } from "./witchy-cell-sandbox.js";
 import { assetUrl, contentUrl } from "./docs-asset-url.js";
+import { createHashRouting } from "./docs-routing.js";
 import { fetchWasm } from "./wasm-fetch.js";
 import { highlightWitchy, highlightShell, highlightToml } from "./witchy-highlight.js";
 import { DOCS_SANDBOX_RUN_OPTIONS } from "./docs-run-options.js";
@@ -71,42 +72,20 @@ const glamourAppSlot = (doc, name) => {
   return host;
 };
 
-// HASH ROUTING so a refresh or a shared deep link works on ANY static host — `python3 -m
-// http.server`, GitHub Pages, anything. The `#…` fragment is never sent to the server, so it
-// always serves index.html and the app routes from the hash (no server SPA-fallback, no 404s).
-// The app still emits normal `/p/<slug>` nav; we adapt it to the hash through glamour-dom's
-// injectable history/location/popstate hooks, so glamour-dom itself is unchanged.
-const hashPath = () => {
-  const h = window.location.hash;
-  return h && h.length > 1 ? h.slice(1) : "/";
-};
-let navProgrammatic = false;
-const historyShim = {
-  pushState: (_state, _title, path) => {
-    navProgrammatic = true;
-    window.location.hash = path;
-  },
-};
-const locationShim = { get pathname() { return hashPath(); } };
-const onPopState = (fire) => {
-  window.addEventListener("hashchange", () => {
-    // glamour-dom already dispatched the route for OUR nav; only a user hash change
-    // (Back/Forward, refresh, manual edit, a shared link) needs to re-fire.
-    if (navProgrammatic) { navProgrammatic = false; return; }
-    fire();
-  });
-};
+// Hash routing makes deep links work on any static host while the Witchy app
+// continues to see ordinary `/p/<slug>` paths.
+const routing = createHashRouting(window);
 
 const wasm = await fetchWasm(assetUrl("docs.wasm", here), {
   hint: "Rebuild the bundle with `just book-serve` (or ./scripts/build-docs.sh dist).",
 });
 await mount(wasm, document.getElementById("app"), {
-  initialModel: { route: hashPath(), summary: "", content: "" },
+  initialModel: { route: routing.path(), summary: "", content: "" },
   fetch: contentFetch,
   routeTag: "Route",
-  location: locationShim,
-  history: historyShim,
-  onPopState,
+  location: routing.location,
+  history: routing.history,
+  onPopState: routing.onPopState,
   // (RFC-0040) the host mints the app's `UiRoot`; the policy value is just a label.
   instantiateOpts: { userCaps: [["witchy-book"]] },
   // (RFC-0041) each `witchy` fence becomes a SYNTAX-HIGHLIGHTED cell in a non-diffed slot:

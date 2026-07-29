@@ -2,23 +2,25 @@
 // ordinary Witchy; the browser host supplies narrowly scoped fetch and route
 // authority and renders the resulting VNode tree.
 
-import json
 import list
 import docs_content
 import reflect
 from glamour import VNode, Cmd, UiFetch, UiRoute, UiRoot
 from docs_model import Model, Msg
 from docs_nav import Entry, Page
+from json import Json
 
 fn update(model: Model, msg: Msg, fetch: UiFetch, route: UiRoute) -> (Model, Cmd(Msg)):
     match msg:
         Visit(path) -> (model, glamour.navigate(route, path))
         Route(path) ->
-            let page = glamour.http_get(fetch, "/content/${docs_nav.slug(path)}.md", "GotPage")
-            let command = if model.summary.is_empty(): Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page]) else: page
-            (Model(route: path, ..model), command)
+            let source = "/content/${docs_nav.slug(path)}.md"
+            let page = glamour.http_get_with(fetch, source, "GotPage", [JsonString(path)])
+            let navigation = glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav")
+            let command = if model.summary.is_empty(): Batch([navigation, page]) else: page
+            (docs_model.route_started(model, path), command)
         GotNav(_status, body) -> (Model(summary: body, ..model), NoCmd)
-        GotPage(_status, body) -> (Model(content: body, ..model), NoCmd)
+        GotPage(path, _status, body) -> (docs_model.page_loaded(model, path, body), NoCmd)
 
 fn view(model: Model) -> VNode(Msg):
     let entries = docs_nav.parse(model.summary)
@@ -40,7 +42,8 @@ fn empty_edge() -> VNode(Msg):
 fn edge_link(pages: List(Page), index: Int, class_name: String, direction: String) -> VNode(Msg):
     match pages.get(index):
         Some(page) ->
-            let attrs = [glamour.prop("class", "nav-chapter ${class_name}"), glamour.on("click", Visit(docs_nav.page_path(page)))]
+            let path = docs_nav.page_path(page)
+            let attrs = [glamour.prop("class", "nav-chapter ${class_name}"), glamour.on("click", Visit(path))]
             let label = html"<span class=dir>${direction}</span>"
             let title = html"<span class=title>${page.title}</span>"
             glamour.element("button", attrs, [label, title])
@@ -57,8 +60,9 @@ fn nav_entry(entry: Entry, route: String) -> VNode(Msg):
         Divider -> html"<li class=nav-divider></li>"
         PageLink(depth, page) ->
             let path = docs_nav.page_path(page)
-            let active = if path == route: " active" else: ""
-            let attrs = [glamour.prop("class", "nav-item nav-depth-${depth}${active}"), glamour.on("click", Visit(path))]
+            let active = if docs_nav.is_current(page, route): " active" else: ""
+            let class_name = "nav-item nav-depth-${depth}${active}"
+            let attrs = [glamour.prop("class", class_name), glamour.on("click", Visit(path))]
             let button = glamour.element("button", attrs, [glamour.text(page.title)])
             glamour.element("li", [], [button])
 
