@@ -1,0 +1,78 @@
+// Render trusted book Markdown and replace supported fenced blocks with host
+// slots. The host owns each slot subtree; Glamour never diffs inside it.
+
+import list
+import markdown
+from glamour import VNode, Attr
+
+pub fn render(source: String) -> VNode(msg):
+    match markdown.to_vnode(source):
+        Element(tag, attrs, blocks) -> Element(tag, attrs, blocks.map(with_slot))
+        other -> other
+
+fn with_slot(block: VNode(msg)) -> VNode(msg):
+    match fenced_code(block):
+        Some((language, source)) -> slot_for(language, source, block)
+        None -> block
+
+fn fenced_code(block: VNode(msg)) -> Option((String, String)):
+    match block:
+        Element(tag, _attrs, children) ->
+            if tag == "pre":
+                code_child(children)
+            else:
+                None
+        _ -> None
+
+fn code_child(children: List(VNode(msg))) -> Option((String, String)):
+    match children.head():
+        Some(Element(tag, attrs, body)) ->
+            if tag == "code":
+                Some((code_language(attrs), code_text(body)))
+            else:
+                None
+        _ -> None
+
+fn slot_for(language: String, source: String, original: VNode(msg)) -> VNode(msg):
+    if language == "witchy":
+        let kind = if runs_in_browser(source): "witchy-runnable" else: "witchy-static"
+        glamour.slot(kind, source)
+    else if language == "sh":
+        glamour.slot("shell-static", source)
+    else if language == "toml":
+        glamour.slot("toml-static", source)
+    else if language == "glamour-app":
+        glamour.slot("glamour-app", source.trim())
+    else:
+        original
+
+fn runs_in_browser(source: String) -> Bool:
+    source.contains("fn main(") && !names_denied_capability(source)
+
+fn names_denied_capability(source: String) -> Bool:
+    let denied = ["Net", "File", "Rand", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]
+    denied.any(fn(name: String): source.contains(name)) || source.replace("SecretStore", "").contains("Secret")
+
+fn attr_language(attr: Attr(msg)) -> String:
+    match attr:
+        Prop(name, value) ->
+            if name == "class" && value.starts_with("language-"):
+                value.drop(9)
+            else:
+                ""
+        On(_event, _msg) -> ""
+        OnInput(_event, _tag) -> ""
+
+fn code_language(attrs: List(Attr(msg))) -> String:
+    attrs.fold("", fn(language: String, attr: Attr(msg)):
+        let candidate = attr_language(attr)
+        if candidate.is_empty():
+            language
+        else:
+            candidate
+    )
+
+fn code_text(children: List(VNode(msg))) -> String:
+    match children.head():
+        Some(Text(source)) -> source
+        _ -> ""

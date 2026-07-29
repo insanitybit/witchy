@@ -148,6 +148,10 @@ type Attr(msg):
 pub fn element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> VNode(msg):
     Element(tag, attrs, children)
 
+// The common dynamic-tree case: one CSS class and a computed child list.
+pub fn classed(tag: String, class_name: String, children: List(VNode(msg))) -> VNode(msg):
+    Element(tag, [Prop("class", class_name)], children)
+
 pub fn text(s: String) -> VNode(msg):
     Text(s)
 
@@ -643,25 +647,20 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
 // single pure `pub fn export_step(input: String) -> String` (the `export_`
 // prefix marks it a JS-callable WASM export — see `is_string_export` in codegen).
 // The host calls it with `{"model": <model-json>}` (initial render) or
-// `{"model": <model-json>, "msg": <msg-json>}` (after an event). `step_with`
-// below is the reusable engine: parse the input, run `update(model, msg)` when a
+// `{"model": <model-json>, "msg": <msg-json>}` (after an event). `step` is the
+// usual engine: parse the input, run `update(model, msg)` when a
 // msg is present, then `view(model)`, and return `{"model": <model-json>,
 // "vnode": <vnode-json>}` for the shell to diff into the DOM.
 //
-// `step_with` is generic over the app's `model`/`msg` and takes `view`/`update`
-// and the model/msg encode+decode as first-class function values (the stdlib
-// already passes `fn` values throughout). The app supplies:
-//   * `parse_model: fn(Json) -> model` / `parse_msg: fn(Json) -> msg` (a small
-//     match over its own JSON shape — the inbound boundary), and
-//   * `model_to_json: fn(model) -> Json` / `msg_to_json: fn(msg) -> Json` (the
-//     outbound boundary; `json.from_value` is the obvious choice for a `Reflect`
-//     type).
+// Both engines are generic over the app's `model` and `msg`. `step` reflects
+// outbound values and asks the app only for its inbound parsers. `step_with`
+// accepts explicit encoders too, for applications with a custom wire format.
 // `update` returns `(model, Cmd(msg))`; this engine THREADS the `Cmd` through and
 // serializes it into the returned JSON (`cmd_to_json`), so the shell — which alone
 // holds the authority — can interpret it. The initial render (model-only input,
-// no msg) emits `NoCmd`. Passing the serializers as values (rather than a
-// `where _: Reflect` bound here) keeps the generic monomorphization tractable —
-// the unproven part RFC-0008 flagged.
+// no msg) emits `NoCmd`. Explicit serializers keep this lower-level entrypoint
+// available for custom wire formats; `step` below is the concise path for
+// reflectable application types.
 // ===========================================================================
 pub fn step_with(input: String, view: fn(model) -> VNode(msg), update: fn(model, msg) -> (model, Cmd(msg)), parse_model: fn(Json) -> model, parse_msg: fn(Json) -> msg, model_to_json: fn(model) -> Json, msg_to_json: fn(msg) -> Json) -> String:
     let parsed = json.decode(input)
@@ -697,6 +696,28 @@ pub fn step_with(input: String, view: fn(model) -> VNode(msg), update: fn(model,
                     let vnode_j = node_json(vnode, msg_to_json)
                     let cmd_j = cmd_to_json(cmd, msg_to_json)
                     json.encode(JsonObject([("model", model_j), ("vnode", vnode_j), ("cmd", cmd_j)]))
+
+// The common application boundary: reflectable models and messages already
+// have their JSON encoders, so callers only supply the two inbound parsers.
+pub fn step(input: String, view: fn(model) -> VNode(msg), update: fn(model, msg) -> (model, Cmd(msg)), parse_model: fn(Json) -> model, parse_msg: fn(Json) -> msg) -> String where model: Reflect, msg: Reflect:
+    let encode_model = fn(value: model) -> Json: json.from_value(value)
+    let encode_msg = fn(value: msg) -> Json: json.from_value(value)
+    step_with(input, view, update, parse_model, parse_msg, encode_model, encode_msg)
+
+// Reflected messages use `{"$variant": name, "$values": [...]}`. These
+// accessors keep that wire shape in Glamour instead of every app reimplementing
+// nested JSON indexing.
+pub fn msg_variant(value: Json) -> Option(String):
+    json.get_string(value, "\$variant")
+
+fn msg_arg(value: Json, index: Int) -> Option(Json):
+    json.get(value, "\$values").and_then(fn(values: Json): json.index(values, index))
+
+pub fn msg_arg_string(value: Json, index: Int) -> Option(String):
+    msg_arg(value, index).and_then(fn(arg: Json): json.as_string(arg))
+
+pub fn msg_arg_int(value: Json, index: Int) -> Option(Int):
+    msg_arg(value, index).and_then(fn(arg: Json): json.as_int(arg))
 
 // ===========================================================================
 // The `html` tag — a COMPILE-TIME tagged literal (RFC-0006). `html"<div…>"`

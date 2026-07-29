@@ -1,0 +1,22 @@
+import counter
+import testing
+from json import Json
+
+fn step(model: Int, message: Option(Json)) -> Json:
+    let fields = match message:
+        Some(value) -> [("model", JsonObject([("n", JsonInt(model))])), ("msg", value)]
+        None -> [("model", JsonObject([("n", JsonInt(model))]))]
+
+    match json.decode(counter.export_step(json.encode(JsonObject(fields)))):
+        Ok(output) -> output
+        Err(_) -> JsonNull
+
+fn count(output: Json) -> Int:
+    json.get(output, "model").and_then(fn(model: Json): json.get_int(model, "n")).unwrap_or(-1)
+
+fn test_counter_renders_its_initial_model():
+    testing.assert_int_eq(count(step(0, None)), 0)
+
+fn test_counter_uses_reflected_messages():
+    let output = step(4, Some(JsonObject([("\$variant", JsonString("Inc")), ("\$values", JsonArray([]))])))
+    testing.assert_int_eq(count(output), 5)

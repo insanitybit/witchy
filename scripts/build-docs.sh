@@ -48,10 +48,11 @@ fi
 rm -rf "$OUT"
 mkdir -p "$OUT/content"
 
-# 1. Compile the docs app (glamour + markdown as siblings) to wasm.
+# 1. Compile the docs app (glamour + markdown + its local modules as siblings) to wasm.
 tmp="$(mktemp -d)"
 cp projects/glamour/src/glamour.witchy projects/glamour/src/markdown.witchy \
-   projects/docs/src/docs.witchy "$tmp/"
+   projects/docs/src/docs.witchy projects/docs/src/docs_content.witchy \
+   projects/docs/src/docs_model.witchy projects/docs/src/docs_nav.witchy "$tmp/"
 "$BIN" compile "$tmp/docs.witchy" --out "$OUT/docs.wasm"
 rm -rf "$tmp"
 

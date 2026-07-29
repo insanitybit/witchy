@@ -211,10 +211,11 @@ fn main(console: Console):
     console.print(glamour.to_html(view))
 ```
 
-Beyond rendering, a full Glamour app adds an MVU loop (`view`/`update`/`step_with`) and
+Beyond rendering, a full Glamour app adds an MVU loop (`view`/`update`/`step`) and
 effects-as-data (`Cmd`s the host performs), with UI authority — fetch, routing, timers —
 carried as capabilities (`UiFetch`, `UiRoute`, …) narrowed from a single app-root
-`UiRoot`, exactly like every other capability in witchy.
+`UiRoot`, exactly like every other capability in witchy. Apps with a custom JSON
+wire format can use the lower-level `step_with`.
 
 The live example below is a Glamour counter (`view`/`update`, clickable buttons)
 compiled to WebAssembly and mounted by the runtime that renders this book. Its
