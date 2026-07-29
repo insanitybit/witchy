@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - agent/github-pages
   workflow_dispatch:
 
 permissions:
