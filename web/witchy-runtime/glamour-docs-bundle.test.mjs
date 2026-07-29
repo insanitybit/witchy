@@ -109,10 +109,13 @@ printf 'fresh browser compiler' >"$out"
     env: { ...process.env, WITCHY: BIN, WITCHY_BROWSER_WASM: missingCompiler },
     stdio: "pipe",
   });
-  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "witchy-cell-sandbox.js", "witchy-cell-frame.js", "witchy-runtime/witchy-runtime.mjs", "docs-boot.js", "docs-run-options.js", "docs-asset-url.js", "docs-routing.js", "wasm-fetch.js", "rfc0103-browser-probe.html", "rfc0103-browser-probe.js", "examples.json", "content/SUMMARY.md", "content/introduction.md"]) {
+  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "witchy-cell-sandbox.js", "witchy-cell-frame.js", "witchy-runtime/witchy-runtime.mjs", "docs-boot.js", "docs-run-options.js", "docs-asset-url.js", "docs-routing.js", "wasm-fetch.js", "content/SUMMARY.md", "content/introduction.md"]) {
     ok(existsSync(join(dist, f)), `the bundle contains ${f}`);
   }
-  const manifest = JSON.parse(readFileSync(join(dist, "examples.json"), "utf8"));
+  for (const f of ["rfc0103-browser-probe.html", "rfc0103-browser-probe.js", "examples.json", "fixture-showcase"]) {
+    ok(!existsSync(join(dist, f)), `the public bundle omits internal asset ${f}`);
+  }
+  const manifest = JSON.parse(readFileSync(join(REPO, "book/examples.json"), "utf8"));
   const bookExamples = manifest.filter((entry) => entry.file.startsWith("book/src/"));
   const stagedBook = readdirSync(join(dist, "content"))
     .filter((file) => file.endsWith(".md"))

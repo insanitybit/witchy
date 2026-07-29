@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// RFC-0007 spike: prove that a footprint-empty witchy rune, compiled to WASM,
-// runs under the pure-compute JS host (witchy-runtime.mjs) and produces output
-// IDENTICAL to the native interpreter run — and that a capability-using rune is
-// structurally refused (deny-by-omission: missing-import LinkError).
+// Browser runtime smoke test: prove that a footprint-empty Witchy rune,
+// compiled to WASM, runs under the pure-compute JS host and produces output
+// identical to the native interpreter run. A capability-using rune must be
+// structurally refused through a missing-import LinkError.
 //
 // Usage:
-//   node web/witchy-runtime/spike.mjs [path/to/witchy-binary]
+//   node web/witchy-runtime/browser-runtime-smoke.mjs [path/to/witchy-binary]
 // The binary defaults to ./target/debug/witchy (override for a release build).
 //
 // Exit 0 on success; non-zero (with a diff) on any mismatch.
@@ -43,7 +43,7 @@ const IMPURE = `fn main(console: Console, root: Dir):
     console.print(root.read("note.txt"))
 `;
 
-const work = mkdtempSync(join(tmpdir(), "witchy-rfc7-spike-"));
+const work = mkdtempSync(join(tmpdir(), "witchy-browser-runtime-smoke-"));
 let failures = 0;
 const ok = (cond, msg) => {
   if (cond) {
@@ -122,7 +122,7 @@ fn main(console: Console):
 }
 
 if (failures > 0) {
-  console.error(`\nSPIKE FAILED (${failures} check(s))`);
+  console.error(`\nBROWSER-RUNTIME-SMOKE FAILED (${failures} check(s))`);
   process.exit(1);
 }
-console.log("\nSPIKE OK");
+console.log("\nBROWSER-RUNTIME-SMOKE OK");

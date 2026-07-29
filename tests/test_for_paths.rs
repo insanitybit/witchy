@@ -238,7 +238,7 @@ fn glamour_runtime_changes_get_javascript_and_integration_checks() {
 fn browser_runtime_modules_route_to_their_consolidated_binary_modules() {
     assert_eq!(
         selected(&["web/witchy-runtime/witchy-runnable.test.mjs"])[1],
-        "cargo nextest run --test browser -E 'test(/^shim::/)'"
+        "cargo nextest run --test browser -E 'test(/^runtime::/)'"
     );
     assert_eq!(
         selected(&["web/witchy-runtime/encoding-abi.test.mjs"])[1],

@@ -141,13 +141,13 @@ injected backend — Node's `node:crypto` by default. In a plain browser those
 wider algorithms need an injected `cryptoBackend`; using one without it raises a
 clear error rather than producing wrong output.
 
-## Spike
+## Browser runtime smoke test
 
-`spike.mjs` is the RFC-0007 proof, runnable directly:
+`browser-runtime-smoke.mjs` checks the browser runtime directly:
 
 ```sh
-node web/witchy-runtime/spike.mjs            # uses ./target/debug/witchy
-node web/witchy-runtime/spike.mjs path/to/witchy
+node web/witchy-runtime/browser-runtime-smoke.mjs            # uses ./target/debug/witchy
+node web/witchy-runtime/browser-runtime-smoke.mjs path/to/witchy
 ```
 
 It compiles a footprint-empty rune, runs it under this runtime, asserts the

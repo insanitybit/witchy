@@ -73,7 +73,7 @@ cp projects/glamour/src/glamour.witchy projects/glamour/src/markdown.witchy \
 # book/examples.json; the app never guesses runnability from source text.
 "$NODE_BIN" scripts/stage-book-content.mjs book/src "$OUT/content" book/examples.json
 
-# 3. The shared web modules (flat — they import each other as siblings), the page, the manifest.
+# 3. The shared web modules (flat — they import each other as siblings) and the page.
 cp web/witchy-runtime/glamour-dom.mjs web/witchy-runtime/witchy-runtime.mjs \
    web/witchy-host.js web/witchy-runnable.js web/witchy-cell-sandbox.js \
    web/witchy-cell-frame.js \
@@ -83,12 +83,6 @@ cp web/witchy-runtime/glamour-dom.mjs web/witchy-runtime/witchy-runtime.mjs \
 mkdir -p "$OUT/witchy-runtime"
 cp web/witchy-runtime/witchy-runtime.mjs "$OUT/witchy-runtime/"
 cp web/docs.html "$OUT/index.html"
-cp web/rfc0103-browser-probe.html web/rfc0103-browser-probe.js "$OUT/"
-cp book/examples.json "$OUT/"
-mkdir -p "$OUT/fixture-showcase"
-cp projects/fixture-showcase/src/fixture_showcase.witchy \
-   projects/fixture-showcase/release.fixture.json \
-   "$OUT/fixture-showcase/"
 
 # 4. The browser compiler (built by build-playground.sh) — required for the Run buttons.
 if [[ -n "$BROWSER_COMPILER" && -f "$BROWSER_COMPILER" ]]; then

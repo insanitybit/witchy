@@ -323,9 +323,9 @@ use crate::{codegen, interpreter, parser, typeck};
             );
         }
         // The module validates (the synthesized wrappers are well-formed wasm). The
-        // spike (`tests/browser_shim.rs`) proves it round-trips through the JS shim
-        // and that the wrappers add NO host import (the rune stays instantiable
-        // under the deny-all pure-compute host).
+        // browser runtime smoke test proves it round-trips through the JS host and
+        // that the wrappers add NO host import (the rune stays instantiable under
+        // the deny-all pure-compute host).
         assert!(
             validates_wasm_gc(&bytes),
             "a module with string-export wrappers must validate"

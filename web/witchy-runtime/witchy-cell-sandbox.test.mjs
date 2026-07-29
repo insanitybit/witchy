@@ -24,10 +24,8 @@ const frameSource = readFileSync(
   "utf8",
 );
 const frameHash = createHash("sha256").update(frameSource).digest("base64");
-for (const path of ["../docs.html", "../rfc0103-browser-probe.html"]) {
-  const page = readFileSync(new URL(path, import.meta.url), "utf8");
-  assert.match(page, new RegExp(`'sha256-${frameHash.replaceAll("+", "\\+")}'`));
-}
+const docsPage = readFileSync(new URL("../docs.html", import.meta.url), "utf8");
+assert.match(docsPage, new RegExp(`'sha256-${frameHash.replaceAll("+", "\\+")}'`));
 
 const policy = sandboxContentSecurityPolicy(
   { fetch: { origins: ["https://allowed.example"] } },

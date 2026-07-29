@@ -72,5 +72,5 @@ fn run_node_driver_inner(driver: &str, args: &[&str], marker: &str, label: &str,
 
 #[path = "browser/encoding.rs"]
 mod encoding;
-#[path = "browser/shim.rs"]
-mod shim;
+#[path = "browser/runtime.rs"]
+mod runtime;

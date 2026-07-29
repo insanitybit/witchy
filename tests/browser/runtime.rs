@@ -1,6 +1,7 @@
 //! RFC-0007 ("witchy-WASM in the browser: a pure-compute target") end-to-end test.
 //!
-//! Drives the committed Node spike (`web/witchy-runtime/spike.mjs`), which:
+//! Drives the browser runtime smoke test
+//! (`web/witchy-runtime/browser-runtime-smoke.mjs`), which:
 //!   1. compiles a footprint-EMPTY witchy rune to WASM via the real `witchy`
 //!      binary (`witchy compile … --out …`),
 //!   2. runs it under the pure-compute JS host (`web/witchy-runtime/witchy-runtime.mjs`)
@@ -12,15 +13,16 @@
 //!
 //! Node is the host engine here. If `node` is absent (a CI without it), the test
 //! SKIPS cleanly rather than failing, so the Rust suite stays green everywhere;
-//! the spike is independently runnable (`node web/witchy-runtime/spike.mjs`).
+//! the smoke test is independently runnable
+//! (`node web/witchy-runtime/browser-runtime-smoke.mjs`).
 
 #[test]
-fn browser_shim_runs_pure_rune_and_denies_capabilities() {
+fn browser_runtime_runs_pure_rune_and_denies_capabilities() {
     super::run_node_driver(
-        "web/witchy-runtime/spike.mjs",
+        "web/witchy-runtime/browser-runtime-smoke.mjs",
         &[super::BIN],
-        "SPIKE OK",
-        "browser-shim spike",
+        "BROWSER-RUNTIME-SMOKE OK",
+        "browser runtime smoke",
     );
 }
 
