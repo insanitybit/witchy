@@ -206,8 +206,8 @@ markup. This example needs only `Console` and runs in the page:
 import glamour
 
 fn main(console: Console):
-    let view = glamour.element("article", [glamour.prop("class", "post")], [glamour.element("h1", [], [glamour.text("Hello from a rune")]), glamour.element("p", [], [glamour.text("Glamour renders <script> as text.")])])
-
+    let unsafe_text = "Glamour renders <script> as text."
+    let view = html"<article class=post><h1>Hello from a rune</h1><p>${unsafe_text}</p></article>"
     console.print(glamour.to_html(view))
 ```
 

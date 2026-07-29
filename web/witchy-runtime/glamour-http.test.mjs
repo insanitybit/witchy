@@ -3,9 +3,10 @@
 // `http_get("/data", "GotData")` — it holds NO `Net`, only describes the request — and
 // the shell performs the fetch with an INJECTED `opts.fetch` (a fake server), attaches a
 // session credential ITSELF via `opts.authHeaders`, and dispatches the response back as
-// the `GotData(status, body)` msg. We assert: the response updates the model; the request
-// carried the host-attached auth header; and the rune's emitted Cmd did NOT contain the
-// token (the credential never enters the WASM). Failures arrive as status 0 — ordinary
+// the `GotData(request_id, status, body)` msg. We assert: request context survives
+// the async boundary; the response updates the model; the request carried the
+// host-attached auth header; and the rune's emitted Cmd did NOT contain the token
+// (the credential never enters the WASM). Failures arrive as status 0 — ordinary
 // `update` arms, not exceptions.
 //
 // Usage:  node web/witchy-runtime/glamour-http.test.mjs [path/to/witchy-binary]
@@ -110,14 +111,14 @@ function querySelector(node, tag) {
 
 const RUNE = `
 import glamour
-from glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort
+from glamour import VNode, Cmd, UiRoot, UiFetch
 import json
 from json import Json
 import reflect
 
 type Msg derive(Reflect):
     Fetch
-    GotData(Int, String)
+    GotData(String, Int, String)
 
 fn view(model: String) -> VNode(Msg):
     glamour.element("div", [], [
@@ -127,47 +128,25 @@ fn view(model: String) -> VNode(Msg):
 
 fn update(model: String, msg: Msg, fetch: UiFetch) -> (String, Cmd(Msg)):
     match msg:
-        Fetch -> (model, glamour.http_get(fetch, "/data", "GotData"))
-        GotData(status, body) -> ("\${status}: " + body, NoCmd)
+        Fetch -> (model, glamour.http_get_with(fetch, "/data", "GotData", [JsonString("request-42")]))
+        GotData(request, status, body) -> (request + " \${status}: " + body, NoCmd)
 
 fn parse_model(j: Json) -> String:
     json.as_string(j).unwrap_or("loading")
 
-fn arg_int(j: Json, i: Int) -> Int:
-    match json.get(j, "$values"):
-        Some(arr) ->
-            match json.index(arr, i):
-                Some(v) -> json.as_int(v).unwrap_or(0)
-                None -> 0
-        None -> 0
-
-fn arg_str(j: Json, i: Int) -> String:
-    match json.get(j, "$values"):
-        Some(arr) ->
-            match json.index(arr, i):
-                Some(v) -> json.as_string(v).unwrap_or("")
-                None -> ""
-        None -> ""
-
 fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "$variant"):
+    match glamour.msg_variant(j):
         Some(v) ->
             if v == "GotData":
-                GotData(arg_int(j, 0), arg_str(j, 1))
+                GotData(glamour.msg_arg_string(j, 0).unwrap_or(""), glamour.msg_arg_int(j, 1).unwrap_or(0), glamour.msg_arg_string(j, 2).unwrap_or(""))
             else:
                 Fetch
         None -> Fetch
 
-fn model_to_json(model: String) -> Json:
-    json.from_value(model)
-
-fn msg_to_json(m: Msg) -> Json:
-    json.from_value(m)
-
 pub fn export_step(ui: UiRoot, input: String) -> String:
     let fetch = glamour.fetch_scope(ui, "fetcher", "GET", "/")
     let upd = fn(m: String, msg: Msg): update(m, msg, fetch)
-    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.step(input, view, upd, parse_model, parse_msg)
 
 fn main(console: Console, ui: UiRoot):
     console.print(export_step(ui, "{\\"model\\": \\"loading\\"}") + "\\n")
@@ -218,7 +197,10 @@ try {
   // The async response dispatches back as GotData and updates the model.
   await tick();
   await tick();
-  ok(querySelector(root, "span").textContent === "200: HELLO_FROM_SERVER", "the response updates the model via the GotData msg");
+  ok(
+    querySelector(root, "span").textContent === "request-42 200: HELLO_FROM_SERVER",
+    "the response preserves request context and updates the model via GotData",
+  );
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

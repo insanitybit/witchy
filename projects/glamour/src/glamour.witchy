@@ -218,13 +218,14 @@ type Cmd(msg):
     NoCmd
     After(UiTimer, Int, msg)
     Batch(List(Cmd(msg)))
-    Http(UiFetch, String, String, String, String)
+    Http(UiFetch, String, String, String, String, List(Json))
     Nav(UiRoute, String)
     Port(CredentialPort, String, String)
     SubmitSecret(SecretRef, CredentialPort, String)
 
-// An async HTTP request (RFC-0015): method, url, body, and the Reflect VARIANT NAME
-// the shell wraps the `(status, body)` response into and dispatches back. The rune
+// An async HTTP request (RFC-0015): method, URL, body, the reflected response
+// variant name, and optional request-local arguments. The shell appends
+// `(status, body)` to those arguments and dispatches the resulting message. The rune
 // holds no `Net` — it only DESCRIBES the request; the capability-holding host shell
 // performs the fetch (attaching any session credential ITSELF) and feeds the result
 // back as that msg, exactly like the `After` timer. So `update` stays pure and the
@@ -264,6 +265,7 @@ type Cmd(msg):
 //   NoCmd          -> {"cmd": "none"}
 //   After(ms, msg) -> {"cmd": "after", "ms": ms, "msg": <msg-json>}
 //   Batch(cmds)    -> {"cmd": "batch", "cmds": [<cmd-json>...]}
+//   Http(args, ...) -> {"cmd": "http", "args": [<request-json>...], ...}
 //
 // The embedded `msg` is serialized via the same caller-supplied `msg_to_json`
 // the VNode `on` bindings use, so a `Cmd`'s deferred msg round-trips back into
@@ -275,8 +277,9 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
         // re-clamps the delay itself, rather than trusting the emitted `ms` blindly.
 
         // `tag` is a literal variant NAME (not routed through msg_to_json): the shell
-        // reconstructs `{"$variant": tag, "$values": [status, body]}` once the response
-        // arrives, so the response carries data the rune did not have at emit time.
+        // reconstructs `{"$variant": tag, "$values": [..args, status, body]}` once the
+        // response arrives. `args` lets an app retain request identity without
+        // putting authority or closures on the wire.
         // (BUG-017) The `UiFetch` policy (`methods`/`prefix`/`scope`) rides the wire so the
         // host re-checks method+prefix before performing the fetch — the real authority.
 
@@ -301,10 +304,10 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
                 let cj: Json = cmd_to_json(c, msg_to_json)
                 cjs.push(cj)
             JsonObject([("cmd", JsonString("batch")), ("cmds", JsonArray(cjs))])
-        Http(fetch, method, url, body, tag) ->
+        Http(fetch, method, url, body, tag, args) ->
             match fetch:
                 UiFetch(scope, methods, prefix) ->
-                    JsonObject([("cmd", JsonString("http")), ("method", JsonString(method)), ("url", JsonString(url)), ("body", JsonString(body)), ("tag", JsonString(tag)), ("methods", JsonString(methods)), ("prefix", JsonString(prefix)), ("scope", JsonString(scope))])
+                    JsonObject([("cmd", JsonString("http")), ("method", JsonString(method)), ("url", JsonString(url)), ("body", JsonString(body)), ("tag", JsonString(tag)), ("args", JsonArray(args)), ("methods", JsonString(methods)), ("prefix", JsonString(prefix)), ("scope", JsonString(scope))])
         Nav(route, path) ->
             match route:
                 UiRoute(base, rights) ->
@@ -324,21 +327,30 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
 // variant `Tag(Int, String)` the shell dispatches with `(status, body)` (status 0 on a
 // transport error, so failures are ordinary `update` arms, never exceptions).
 pub fn http_get(fetch: UiFetch, url: String, on_done: String) -> Cmd(msg):
-    fetch_cmd(fetch, "GET", url, "", on_done)
+    fetch_cmd(fetch, "GET", url, "", on_done, [])
 
 pub fn http_post(fetch: UiFetch, url: String, body: String, on_done: String) -> Cmd(msg):
-    fetch_cmd(fetch, "POST", url, body, on_done)
+    fetch_cmd(fetch, "POST", url, body, on_done, [])
+
+// Preserve request-local data in the eventual response message. The shell
+// dispatches `Tag(args..., status, body)`, which lets an update reject a stale
+// response after the route, query, or request generation has changed.
+pub fn http_get_with(fetch: UiFetch, url: String, on_done: String, args: List(Json)) -> Cmd(msg):
+    fetch_cmd(fetch, "GET", url, "", on_done, args)
+
+pub fn http_post_with(fetch: UiFetch, url: String, body: String, on_done: String, args: List(Json)) -> Cmd(msg):
+    fetch_cmd(fetch, "POST", url, body, on_done, args)
 
 // (BUG-017) Enforce the `UiFetch` token policy at CONSTRUCTION: the method must be in the
 // token's method-set and the URL under its path prefix. FAIL CLOSED — a violation yields
 // `NoCmd`, so a component cannot even describe an effect its token does not authorize. The
 // host shell re-checks the same policy (carried on the wire by `cmd_to_json`) as the real
 // authority boundary; this witchy-side gate is the reviewable first line.
-fn fetch_cmd(fetch: UiFetch, method: String, url: String, body: String, on_done: String) -> Cmd(msg):
+fn fetch_cmd(fetch: UiFetch, method: String, url: String, body: String, on_done: String, args: List(Json)) -> Cmd(msg):
     match fetch:
         UiFetch(_scope, methods, prefix) ->
             if method_allowed(methods, method) && url.starts_with(prefix):
-                Http(fetch, method, url, body, on_done)
+                Http(fetch, method, url, body, on_done, args)
             else:
                 NoCmd
 

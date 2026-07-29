@@ -63,7 +63,9 @@ const work = mkdtempSync(join(tmpdir(), "glamour-docs-"));
 try {
   copyFileSync(join(REPO, "projects/glamour/src/glamour.witchy"), join(work, "glamour.witchy"));
   copyFileSync(join(REPO, "projects/glamour/src/markdown.witchy"), join(work, "markdown.witchy"));
-  copyFileSync(join(REPO, "projects/docs/src/docs.witchy"), join(work, "docs.witchy"));
+  for (const file of ["docs.witchy", "docs_content.witchy", "docs_model.witchy", "docs_nav.witchy"]) {
+    copyFileSync(join(REPO, "projects/docs/src", file), join(work, file));
+  }
   const wasmPath = join(work, "docs.wasm");
   execFileSync(BIN, ["compile", join(work, "docs.witchy"), "--out", wasmPath], { cwd: work });
   const wasm = readFileSync(wasmPath);
@@ -82,12 +84,13 @@ try {
     const m = url.match(/\/content\/([^.]+)\.md/);
     const slug = m ? m[1] : "unknown";
     const title = slug.charAt(0).toUpperCase() + slug.slice(1);
-    // Every page carries a runnable `witchy` example, so the docs app's slot-remap has
-    // something to turn into a runnable cell (the `language-witchy` fence).
+    // These are already staged classifications, exactly as build-docs emits
+    // them from book/examples.json: two browser-supported examples and one
+    // native-only example.
     const page = `## ${title}\n\nBody text for the **${slug}** page.\n\n`
-      + `\`\`\`witchy\nfn main(console: Console):\n    console.print("hi from ${slug}")\n\`\`\`\n\n`
-      + `\`\`\`witchy\nfn main(console: Console, clock: Clock, env: Env, dir: Dir, fetch: Fetch, secrets: SecretStore):\n    console.print("portable browser capabilities")\n\`\`\`\n\n`
-      + `\`\`\`witchy\nfn main(console: Console, exec: Exec):\n    console.print("native only")\n\`\`\`\n`;
+      + `\`\`\`witchy-runnable\nfn main(console: Console):\n    console.print("hi from ${slug}")\n\`\`\`\n\n`
+      + `\`\`\`witchy-runnable\nfn main(console: Console, clock: Clock, env: Env, dir: Dir, fetch: Fetch, secrets: SecretStore):\n    console.print("portable browser capabilities")\n\`\`\`\n\n`
+      + `\`\`\`witchy-static\nfn main(console: Console, exec: Exec):\n    console.print("native only")\n\`\`\`\n`;
     return Promise.resolve({ status: 200, text: () => Promise.resolve(page) });
   };
   const location = { pathname: "/" };

@@ -34,7 +34,12 @@ fn test_navigation_helpers_use_option_for_absence():
     let entries = docs_nav.parse(sample_summary())
     let pages = docs_nav.pages(entries)
     testing.assert_value_eq(docs_nav.route_position(pages, "/p/tour"), Some(1))
+    testing.assert_value_eq(docs_nav.route_position(pages, "/"), Some(0))
     testing.assert_value_eq(docs_nav.route_position(pages, "/p/missing"), None)
+    match pages.get(0):
+        Some(page) -> testing.assert(docs_nav.is_current(page, "/"), "the home route is the introduction")
+        None -> testing.assert(false, "the sample navigation has an introduction")
+
     testing.assert_eq(docs_nav.cover_path(entries), "/p/introduction")
     testing.assert_eq(docs_nav.cover_path([]), "/p/introduction")
 

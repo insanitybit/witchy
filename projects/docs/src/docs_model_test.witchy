@@ -17,11 +17,20 @@ fn test_model_round_trips_through_json():
     testing.assert_eq(parsed.content, original.content)
 
 fn test_reflected_messages_decode_through_glamour_wire_helpers():
-    match docs_model.parse_msg(json.from_value(GotPage(200, "chapter"))):
-        GotPage(status, body) ->
+    match docs_model.parse_msg(json.from_value(GotPage("/p/tour", 200, "chapter"))):
+        GotPage(path, status, body) ->
+            testing.assert_eq(path, "/p/tour")
             testing.assert_int_eq(status, 200)
             testing.assert_eq(body, "chapter")
         _ -> testing.assert(false, "GotPage should round-trip")
+
+fn test_page_responses_apply_only_to_the_current_route():
+    let loading = docs_model.route_started(docs_model.initial("/p/old"), "/p/current")
+    testing.assert_eq(loading.content, "")
+    let stale = docs_model.page_loaded(loading, "/p/old", "stale")
+    testing.assert_eq(stale.content, "")
+    let current = docs_model.page_loaded(stale, "/p/current", "current")
+    testing.assert_eq(current.content, "current")
 
 fn test_unknown_message_is_a_safe_home_route():
     let value = JsonObject([("\$variant", JsonString("Unknown")), ("\$values", JsonArray([JsonString("/p/unsafe")]))])

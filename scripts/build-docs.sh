@@ -20,10 +20,12 @@ fi
 OUT="${1:-dist}"
 BROWSER_COMPILER="${WITCHY_BROWSER_WASM:-}"
 GENERATED_BROWSER_DIR=""
-cleanup_generated_browser() {
+DOCS_SOURCE_DIR=""
+cleanup() {
   if [[ -n "$GENERATED_BROWSER_DIR" ]]; then rm -rf "$GENERATED_BROWSER_DIR"; fi
+  if [[ -n "$DOCS_SOURCE_DIR" ]]; then rm -rf "$DOCS_SOURCE_DIR"; fi
 }
-trap cleanup_generated_browser EXIT
+trap cleanup EXIT
 
 # A complete bundle must use a compiler built from this checkout. In particular,
 # never silently reuse web/witchy.wasm: it is gitignored and may predate the
@@ -44,32 +46,39 @@ if [ -z "$BIN" ]; then
   td="${CARGO_TARGET_DIR:-target}"
   if [ -x "$td/release/witchy" ]; then BIN="$td/release/witchy"; else BIN="$td/debug/witchy"; fi
 fi
+NODE_BIN="${NODE:-node}"
+OUT="$("$NODE_BIN" -e 'console.log(require("node:path").resolve(process.argv[1]))' "$OUT")"
+if [[ "$OUT" == "/" || "$OUT" == "$(pwd -P)" ]]; then
+  echo "build-docs: refusing unsafe output directory: $OUT" >&2
+  exit 2
+fi
 
-rm -rf "$OUT"
+rm -rf -- "$OUT"
 mkdir -p "$OUT/content"
 
 # 1. Compile the docs app (glamour + markdown + its local modules as siblings) to wasm.
-tmp="$(mktemp -d)"
+DOCS_SOURCE_DIR="$(mktemp -d)"
 cp projects/glamour/src/glamour.witchy projects/glamour/src/markdown.witchy \
    projects/docs/src/docs.witchy projects/docs/src/docs_content.witchy \
-   projects/docs/src/docs_model.witchy projects/docs/src/docs_nav.witchy "$tmp/"
-"$BIN" compile "$tmp/docs.witchy" --out "$OUT/docs.wasm"
-rm -rf "$tmp"
+   projects/docs/src/docs_model.witchy projects/docs/src/docs_nav.witchy "$DOCS_SOURCE_DIR/"
+"$BIN" compile "$DOCS_SOURCE_DIR/docs.witchy" --out "$OUT/docs.wasm"
 
 # 1b. Compile the INTERACTIVE demo app(s) mounted live in the book (RFC-0041) — each a small
 # glamour app the docs page mounts with the same runtime, network denied. `glamour` resolves
 # from the bundled-rune path (no adjacent copy needed).
 "$BIN" compile projects/docs/src/counter.witchy --out "$OUT/counter.wasm"
 
-# 2. Stage the book content (SUMMARY + every page) under /content/, where the app fetches it.
-cp book/src/*.md "$OUT/content/"
+# 2. Stage the book content under /content/. The staging pass replaces each
+# `witchy` fence with the compiler-derived browser classification recorded in
+# book/examples.json; the app never guesses runnability from source text.
+"$NODE_BIN" scripts/stage-book-content.mjs book/src "$OUT/content" book/examples.json
 
 # 3. The shared web modules (flat — they import each other as siblings), the page, the manifest.
 cp web/witchy-runtime/glamour-dom.mjs web/witchy-runtime/witchy-runtime.mjs \
    web/witchy-host.js web/witchy-runnable.js web/witchy-cell-sandbox.js \
    web/witchy-cell-frame.js \
    web/witchy-highlight.js \
-   web/docs-boot.js web/docs-run-options.js web/docs-asset-url.js \
+   web/docs-boot.js web/docs-run-options.js web/docs-asset-url.js web/docs-routing.js \
    web/wasm-fetch.js web/docs.css "$OUT/"
 mkdir -p "$OUT/witchy-runtime"
 cp web/witchy-runtime/witchy-runtime.mjs "$OUT/witchy-runtime/"

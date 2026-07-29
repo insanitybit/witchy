@@ -1,5 +1,7 @@
-// Render trusted book Markdown and replace supported fenced blocks with host
-// slots. The host owns each slot subtree; Glamour never diffs inside it.
+// Render staged book Markdown and replace supported fenced blocks with host
+// slots. Build-time staging marks each Witchy block from the compiler-generated
+// examples manifest; this module does not guess browser support from source.
+// The host owns each slot subtree, so Glamour never diffs inside it.
 
 import list
 import markdown
@@ -34,24 +36,17 @@ fn code_child(children: List(VNode(msg))) -> Option((String, String)):
         _ -> None
 
 fn slot_for(language: String, source: String, original: VNode(msg)) -> VNode(msg):
-    if language == "witchy":
-        let kind = if runs_in_browser(source): "witchy-runnable" else: "witchy-static"
-        glamour.slot(kind, source)
-    else if language == "sh":
-        glamour.slot("shell-static", source)
-    else if language == "toml":
-        glamour.slot("toml-static", source)
-    else if language == "glamour-app":
-        glamour.slot("glamour-app", source.trim())
-    else:
-        original
-
-fn runs_in_browser(source: String) -> Bool:
-    source.contains("fn main(") && !names_denied_capability(source)
-
-fn names_denied_capability(source: String) -> Bool:
-    let denied = ["Net", "File", "Rand", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]
-    denied.any(fn(name: String): source.contains(name)) || source.replace("SecretStore", "").contains("Secret")
+    match language:
+        "witchy-runnable" -> glamour.slot("witchy-runnable", source)
+        "witchy-static" -> glamour.slot("witchy-static", source)
+        "witchy" ->
+            // An unclassified Witchy fence fails closed to read-only. Production
+            // bundles replace every plain `witchy` marker during staging.
+            glamour.slot("witchy-static", source)
+        "sh" -> glamour.slot("shell-static", source)
+        "toml" -> glamour.slot("toml-static", source)
+        "glamour-app" -> glamour.slot("glamour-app", source.trim())
+        _ -> original
 
 fn attr_language(attr: Attr(msg)) -> String:
     match attr:

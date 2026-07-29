@@ -11,7 +11,7 @@
 import { mount } from "./glamour-dom.mjs";
 import { runnableSlot } from "../witchy-runnable.js";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,6 +94,7 @@ printf 'fresh browser compiler' >"$out"
       CARGO: fakeCargo,
       CARGO_TARGET_DIR: fakeTarget,
       WITCHY_SKIP_WASM_OPT: "1",
+      NODE: process.execPath,
     },
     stdio: "pipe",
   });
@@ -108,9 +109,26 @@ printf 'fresh browser compiler' >"$out"
     env: { ...process.env, WITCHY: BIN, WITCHY_BROWSER_WASM: missingCompiler },
     stdio: "pipe",
   });
-  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "witchy-cell-sandbox.js", "witchy-cell-frame.js", "witchy-runtime/witchy-runtime.mjs", "docs-boot.js", "docs-run-options.js", "docs-asset-url.js", "wasm-fetch.js", "rfc0103-browser-probe.html", "rfc0103-browser-probe.js", "examples.json", "content/SUMMARY.md", "content/introduction.md"]) {
+  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "witchy-cell-sandbox.js", "witchy-cell-frame.js", "witchy-runtime/witchy-runtime.mjs", "docs-boot.js", "docs-run-options.js", "docs-asset-url.js", "docs-routing.js", "wasm-fetch.js", "rfc0103-browser-probe.html", "rfc0103-browser-probe.js", "examples.json", "content/SUMMARY.md", "content/introduction.md"]) {
     ok(existsSync(join(dist, f)), `the bundle contains ${f}`);
   }
+  const manifest = JSON.parse(readFileSync(join(dist, "examples.json"), "utf8"));
+  const bookExamples = manifest.filter((entry) => entry.file.startsWith("book/src/"));
+  const stagedBook = readdirSync(join(dist, "content"))
+    .filter((file) => file.endsWith(".md"))
+    .map((file) => readFileSync(join(dist, "content", file), "utf8"))
+    .join("\n");
+  const runnableFences = stagedBook.match(/^```witchy-runnable$/gm) || [];
+  const staticFences = stagedBook.match(/^```witchy-static$/gm) || [];
+  ok(
+    runnableFences.length === bookExamples.filter((entry) => entry.browser_runnable).length,
+    "staged runnable fences match the compiler-generated manifest",
+  );
+  ok(
+    staticFences.length === bookExamples.filter((entry) => !entry.browser_runnable).length,
+    "staged static fences match the compiler-generated manifest",
+  );
+  ok(!/^```witchy$/m.test(stagedBook), "the bundle contains no heuristically classified Witchy fence");
 
   // 3. Mount the bundle's docs.wasm; fetch reads the bundle's staged `content/`.
   const wasm = readFileSync(join(dist, "docs.wasm"));
@@ -142,6 +160,15 @@ printf 'fresh browser compiler' >"$out"
   const navButtons = qsa(root, "nav").flatMap((n) => qsa(n, "button"));
   ok(navButtons.length >= 10, `the real SUMMARY.md renders a full nav (got ${navButtons.length} pages)`);
   ok(navButtons.some((b) => b.textContent === "Introduction"), "a real page title (Introduction) renders in the nav");
+  const introduction = navButtons.find((button) => button.textContent === "Introduction");
+  ok(
+    (introduction?.getAttribute("class") || "").includes("active"),
+    "the home route canonically highlights Introduction",
+  );
+  const chapterLinks = qsa(root, "button").filter((button) =>
+    (button.getAttribute("class") || "").includes("nav-chapter"),
+  );
+  ok(chapterLinks.length === 2, "the home route renders previous and next chapter links");
   ok(qsa(root, "h1").length + qsa(root, "h2").length >= 1, "the real home page renders a heading");
   ok(root.textContent.length > 200, "the real home page has substantial rendered content");
 
