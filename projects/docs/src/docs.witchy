@@ -1,298 +1,73 @@
-// docs — The witchy Book as a glamour app (RFC-0041). A capability-PURE MVU app that
-// renders the book's Markdown pages (via std/markdown) with a sidebar DERIVED FROM
-// `SUMMARY.md`, routed client-side. Every fetch is the host shell's authority — the rune
-// holds no `Net`, only a `UiFetch` narrowed from the app-root `UiRoot` (RFC-0039/0040) — so
-// the whole docs site is XSS-immune by construction and its host footprint is empty. This
-// is the dogfood: the language's own front door is a witchy program, a sibling of coven-web.
+// The Witchy Book is a Glamour application. Its model and update loop are
+// ordinary Witchy; the browser host supplies narrowly scoped fetch and route
+// authority and renders the resulting VNode tree.
 
-import markdown
+import json
 import list
+import docs_content
 import reflect
-from glamour import VNode, Attr, Cmd, UiFetch, UiRoute, UiRoot
-from json import Json
+from glamour import VNode, Cmd, UiFetch, UiRoute, UiRoot
+from docs_model import Model, Msg
+from docs_nav import Entry, Page
 
-// The current path, the book's `SUMMARY.md` source (for the nav), and the current page's
-// raw Markdown. The host fetches both; the app parses the nav from the summary itself.
-type Model:
-    Model(String, String, String)
+fn update(model: Model, msg: Msg, fetch: UiFetch, route: UiRoute) -> (Model, Cmd(Msg)):
+    match msg:
+        Visit(path) -> (model, glamour.navigate(route, path))
+        Route(path) ->
+            let page = glamour.http_get(fetch, "/content/${docs_nav.slug(path)}.md", "GotPage")
+            let command = if model.summary.is_empty(): Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page]) else: page
+            (Model(route: path, ..model), command)
+        GotNav(_status, body) -> (Model(summary: body, ..model), NoCmd)
+        GotPage(_status, body) -> (Model(content: body, ..model), NoCmd)
 
-type Msg derive(Reflect):
-    Route(String)
-    Visit(String)
-    GotNav(Int, String)
-    GotPage(Int, String)
+fn view(model: Model) -> VNode(Msg):
+    let entries = docs_nav.parse(model.summary)
+    let content = docs_content.render(model.content)
+    let main = glamour.classed("main", "page", [content, chapter_links(model.route, entries)])
+    glamour.classed("div", "book", [sidebar(model.route, entries), main])
 
-// The slug for a route: `/p/<slug>` -> `<slug>`; anything else is the home page.
-fn slug_of(route: String) -> String:
-    if route.starts_with("/p/"):
-        route.drop(3)
-    else:
-        "introduction"
+fn chapter_links(route: String, entries: List(Entry)) -> VNode(Msg):
+    let pages = docs_nav.pages(entries)
+    let (previous, next) = match docs_nav.route_position(pages, route):
+        Some(current) -> (edge_link(pages, current - 1, "prev", "Previous"), edge_link(pages, current + 1, "next", "Next"))
+        None -> (empty_edge(), empty_edge())
 
-// A parsed `SUMMARY.md` entry: a page link at some nesting depth, or the `---` rule that
-// separates the appendices from the main chapters.
-type Nav:
-    Item(Int, String, String)
-    Divider
+    glamour.classed("div", "nav-chapters", [previous, next])
 
-// Parse `SUMMARY.md` into nav entries, PRESERVING its two-level structure: every
-// `[Title](slug.md)` link becomes an `Item` tagged with its indentation depth (so the sidebar
-// nests sub-pages under their chapter), and a `---` line becomes a `Divider`. Lines without a
-// Markdown link (the `# Summary` header, blanks) are skipped. Pure string surgery — no cap.
-fn parse_nav(summary: String) -> List(Nav):
-    var out = []
-    for line in summary.lines():
-        if line.trim() == "---":
-            out.push(Divider)
-        else if line.contains("](") && line.contains(".md)"):
-            let (_pre, after_lb) = line.split_once("[")
-            let (title, after_bracket) = after_lb.split_once("](")
-            let (slug, _rest) = after_bracket.split_once(".md)")
-            out.push(Item(nav_depth(line), title, slug))
-    out
+fn empty_edge() -> VNode(Msg):
+    html"<span class=nav-spacer></span>"
 
-// A nav line's indentation depth: bulleted sub-pages nest by a 2-space indent (`  - `); a
-// chapter (`- `) or an un-bulleted part link (the cover, the appendices) sits at depth 0.
-fn nav_depth(line: String) -> Int:
-    (line.length() - line.trim_start().length()) / 2
+fn edge_link(pages: List(Page), index: Int, class_name: String, direction: String) -> VNode(Msg):
+    match pages.get(index):
+        Some(page) ->
+            let attrs = [glamour.prop("class", "nav-chapter ${class_name}"), glamour.on("click", Visit(docs_nav.page_path(page)))]
+            let label = html"<span class=dir>${direction}</span>"
+            let title = html"<span class=title>${page.title}</span>"
+            glamour.element("button", attrs, [label, title])
+        None -> empty_edge()
 
-// The flat reading-order list of real pages (dropping depth + dividers). Prev/next and the
-// active-page lookup walk the book in order, independent of how it nests in the sidebar.
-fn nav_pages(nav: List(Nav)) -> List((String, String)):
-    var out = []
-    for entry in nav:
-        if let Item(_depth, title, slug) = entry:
-            out.push((title, slug))
+fn sidebar(route: String, entries: List(Entry)) -> VNode(Msg):
+    let items = entries.drop(1).map(fn(entry: Entry): nav_entry(entry, route))
+    let brand = html"<button class=sidebar-brand on:click=${Visit(docs_nav.cover_path(entries))}>The witchy Book</button>"
+    let links = glamour.element("ul", [], items)
+    glamour.classed("nav", "sidebar", [brand, links])
 
-    out
-
-fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd(Msg)):
-    match m:
-        // A sidebar click is a real navigation; the shell echoes it back as `Route`.
-
-        // The route changed: fetch that page. On the FIRST route (no nav yet) also
-        // fetch SUMMARY.md, batched — the host performs both (it holds the Net).
-        Model(route, summary, content) ->
-            match msg:
-                Visit(path) -> (m, glamour.navigate(route_cap, path))
-                Route(path) ->
-                    let slug = slug_of(path)
-                    let page = glamour.http_get(fetch, "/content/${slug}.md", "GotPage")
-                    let cmd = if summary.is_empty(): Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page]) else: page
-                    (Model(path, summary, content), cmd)
-                GotNav(_status, body) -> (Model(route, body, content), NoCmd)
-                GotPage(_status, body) -> (Model(route, summary, body), NoCmd)
-
-fn view(m: Model) -> VNode(Msg):
-    match m:
-        Model(route, summary, content) ->
-            glamour.element("div", [glamour.prop("class", "book")], [sidebar(route, summary), glamour.element("main", [glamour.prop("class", "page")], [runnable_markdown(content), nav_chapters(route, summary)])])
-
-// Untrusted Markdown renders INLINE as data (never an HTML sink) — safe by
-// construction (std/markdown): raw HTML shows as literal text, hrefs are
-// scheme-checked. No compartment needed for content.
-
-// Prev/next chapter links at the foot of the page (mdBook-style), from the current route's
-// position in the SUMMARY-derived nav. A missing edge (first/last page) renders a spacer so the
-// remaining link keeps its side.
-fn nav_chapters(route: String, summary: String) -> VNode(Msg):
-    let entries = nav_pages(parse_nav(summary))
-    let idx = index_of_route(entries, route)
-    glamour.element("div", [glamour.prop("class", "nav-chapters")], [edge_link(entries, idx - 1, "prev", "Previous"), edge_link(entries, idx + 1, "next", "Next")])
-
-fn index_of_route(entries: List((String, String)), route: String) -> Int:
-    var idx = 0 - 1
-    var i = 0
-    for _title, slug in entries:
-        if "/p/${slug}" == route:
-            idx = i
-        i = i + 1
-    idx
-
-fn edge_link(entries: List((String, String)), i: Int, cls: String, label: String) -> VNode(Msg):
-    if i >= 0 && i < entries.length():
-        let (title, slug) = entries.at(i)
-        glamour.element("button", [glamour.prop("class", "nav-chapter ${cls}"), glamour.on("click", Visit("/p/${slug}"))], [glamour.element("span", [glamour.prop("class", "dir")], [glamour.text(label)]), glamour.element("span", [glamour.prop("class", "title")], [glamour.text(title)])])
-    else:
-        glamour.element("span", [glamour.prop("class", "nav-spacer")], [])
-
-fn sidebar(route: String, summary: String) -> VNode(Msg):
-    let nav = parse_nav(summary)
-    // The first entry is the book's cover (the un-bulleted title link); the sidebar header IS
-    // its link, so it isn't repeated in the list below.
-    let items = nav.drop(1).map(fn(entry: Nav): nav_node(entry, route))
-    glamour.element("nav", [glamour.prop("class", "sidebar")], [glamour.element("button", [glamour.prop("class", "sidebar-brand"), glamour.on("click", Visit(cover_path(nav)))], [glamour.text("The witchy Book")]), glamour.element("ul", [], items)])
-
-// The route of the cover page (the first nav entry), so the sidebar header links to it.
-fn cover_path(nav: List(Nav)) -> String:
-    if nav.length() >= 1:
-        match nav.at(0):
-            Item(_d, _t, slug) -> "/p/${slug}"
-            Divider -> "/p/introduction"
-    else:
-        "/p/introduction"
-
-// One sidebar entry: a page button (indented by its depth, highlighted when it is the current
-// route) or the appendix divider.
-fn nav_node(entry: Nav, route: String) -> VNode(Msg):
+fn nav_entry(entry: Entry, route: String) -> VNode(Msg):
     match entry:
-        Divider -> glamour.element("li", [glamour.prop("class", "nav-divider")], [])
-        Item(depth, title, slug) ->
-            let path = "/p/${slug}"
+        Divider -> html"<li class=nav-divider></li>"
+        PageLink(depth, page) ->
+            let path = docs_nav.page_path(page)
             let active = if path == route: " active" else: ""
-            let cls = "nav-item nav-depth-${depth}${active}"
-            glamour.element("li", [], [glamour.element("button", [glamour.prop("class", cls), glamour.on("click", Visit(path))], [glamour.text(title)])])
-
-// (RFC-0041 P2) Render the page's Markdown, then replace each `witchy` code block with a host
-// `Slot` — the DOM shell mounts a RUNNABLE cell there, in a subtree glamour never diffs into,
-// so re-renders (a nav change, another fetch) can't clobber it. `markdown.to_vnode` wraps the
-// page in `<div class="markdown">[blocks]`, and a fenced block is a top-level `<pre>`, so we
-// only remap the div's immediate children. Everything else renders exactly as before.
-fn runnable_markdown(md: String) -> VNode(Msg):
-    match markdown.to_vnode(md):
-        Element(tag, attrs, blocks) -> Element(tag, attrs, blocks.map(to_runnable))
-        other -> other
-
-fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
-    match block:
-        // A Run cell ONLY where the snippet actually runs in the cell;
-        // a capability example is highlighted static code (no Run
-        // button, so no misleading "capability denied" error).
-
-        // The fence body NAMES a bundled demo app; the host mounts it
-        // live (via the book's own glamour-dom runtime, network denied).
-
-        // `text` (program output / diagrams) and untagged fences stay
-        // as plain styled blocks — not code to syntax-highlight.
-        Element(tag, _attrs, kids) ->
-            if tag == "pre" && kids.length() == 1:
-                match kids.at(0):
-                    Element(ctag, cattrs, ckids) ->
-                        if ctag == "code":
-                            let code = code_text(ckids)
-                            let lang = code_language(cattrs)
-                            if lang == "witchy":
-                                let kind = if runs_in_browser(code): "witchy-runnable" else: "witchy-static"
-                                glamour.slot(kind, code)
-                            else if lang == "sh":
-                                glamour.slot("shell-static", code)
-                            else if lang == "toml":
-                                glamour.slot("toml-static", code)
-                            else if lang == "glamour-app":
-                                glamour.slot("glamour-app", code.trim())
-                            else:
-                                block
-                        else:
-                            block
-                    _ -> block
-            else:
-                block
-        _ -> block
-
-// A `witchy` fence RUNS in the browser cell iff its `main` needs no capability the denied
-// sandbox withholds — the cell grants only `Console`, so a `Dir`/`Net`/`Secret`/… example
-// (or one taking a glamour UI token) can't run here. Heuristic over the snippet: it has a
-// `main`, and its code names no non-Console capability TYPE. Types are Title-cased, so
-// builtins (`read_file`, `connect`) don't false-match; a capability appears as a `main`
-// parameter type in every real example.
-//
-// This book's cell deliberately uses the capability-DENIED host (`web/witchy-host.js`), so a
-// capability example is shown as read-only code — never a Run button that would fail to
-// instantiate. RFC-0091 adds an OPT-IN playground host (`web/witchy-runtime/witchy-runtime.mjs`)
-// that can back `Clock`/`Env`/`Dir` with browser-honest resources; a teaching embedder that
-// wires that host in (and the `browser_runnable` classification in `book/examples.json`) can
-// offer Run for those families. We keep the denied host here so the guarantee stays: no
-// affordance the book's own engine can't honor.
-fn runs_in_browser(code: String) -> Bool:
-    code.contains("fn main(") && !names_denied_capability(code)
-
-fn names_denied_capability(code: String) -> Bool:
-    let denied = ["Net", "File", "Rand", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]
-    denied.any(fn(cap: String): code.contains(cap)) || code.replace("SecretStore", "").contains("Secret")
-
-// The fence language from a `<code>`'s `language-<lang>` class (markdown preserves the fence's
-// info string there), or "" if none — so the app can slot each fence to the right highlighter.
-fn attr_language(a: Attr(Msg)) -> String:
-    match a:
-        Prop(name, value) ->
-            if name == "class" && value.starts_with("language-"):
-                value.drop(9)
-            else:
-                ""
-        On(_e, _m) -> ""
-        OnInput(_e, _t) -> ""
-
-fn code_language(attrs: List(Attr(Msg))) -> String:
-    attrs.fold("", fn(language: String, a: Attr(Msg)):
-        let l = attr_language(a)
-        if l.is_empty():
-            language
-        else:
-            l
-    )
-
-// The source text inside a `<code>` (its single child text node).
-fn code_text(kids: List(VNode(Msg))) -> String:
-    if kids.length() >= 1:
-        match kids.at(0):
-            Text(s) -> s
-            _ -> ""
-    else:
-        ""
-
-// --- MVU glue (the inbound/outbound JSON boundary) -----------------------------
-fn parse_model(j: Json) -> Model:
-    let route = json.get_string(j, "route").unwrap_or("/")
-    let summary = json.get_string(j, "summary").unwrap_or("")
-    let content = json.get_string(j, "content").unwrap_or("")
-    Model(route, summary, content)
-
-fn arg_int(j: Json, i: Int) -> Int:
-    match json.get(j, "\$values"):
-        Some(arr) ->
-            match json.index(arr, i):
-                Some(v) -> json.as_int(v).unwrap_or(0)
-                None -> 0
-        None -> 0
-
-fn arg_str(j: Json, i: Int) -> String:
-    match json.get(j, "\$values"):
-        Some(arr) ->
-            match json.index(arr, i):
-                Some(v) -> json.as_string(v).unwrap_or("")
-                None -> ""
-        None -> ""
-
-fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "\$variant"):
-        Some(v) ->
-            if v == "Visit":
-                Visit(arg_str(j, 0))
-            else if v == "GotNav":
-                GotNav(arg_int(j, 0), arg_str(j, 1))
-            else if v == "GotPage":
-                GotPage(arg_int(j, 0), arg_str(j, 1))
-            else:
-                Route(arg_str(j, 0))
-        None -> Route("/")
-
-fn model_to_json(m: Model) -> Json:
-    match m:
-        Model(route, summary, content) ->
-            JsonObject([("route", JsonString(route)), ("summary", JsonString(summary)), ("content", JsonString(content))])
-
-fn msg_to_json(m: Msg) -> Json:
-    json.from_value(m)
+            let attrs = [glamour.prop("class", "nav-item nav-depth-${depth}${active}"), glamour.on("click", Visit(path))]
+            let button = glamour.element("button", attrs, [glamour.text(page.title)])
+            glamour.element("li", [], [button])
 
 pub fn export_step(ui: UiRoot, input: String) -> String:
-    // (RFC-0039/0040) narrow the host-minted `UiRoot` into a GET-only `UiFetch` (confined
-    // to the content dir) and a `UiRoute` (push under `/p`), curried into `update` — so the
-    // docs app can fetch pages and navigate only because it holds those tokens.
     let fetch = glamour.fetch_scope(ui, "book", "GET", "/content/")
-    let route_cap = glamour.route_scope(ui, "/p", "push")
-    let upd = fn(m: Model, msg: Msg): update(m, msg, fetch, route_cap)
-    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+    let route = glamour.route_scope(ui, "/p", "push")
+    let app_update = fn(model: Model, msg: Msg): update(model, msg, fetch, route)
+    glamour.step(input, view, app_update, docs_model.parse, docs_model.parse_msg)
 
 fn main(console: Console, ui: UiRoot):
-    // idiom-exempt: the trailing newline frames the exported JSON for the host.
-    console.print(export_step(ui, "{\"model\": {\"route\": \"/\", \"summary\": \"\", \"content\": \"# The witchy Book\\n\\nWelcome.\"}}") + "\n")
+    let input = json.stringify(.{model: docs_model.initial("/")})
+    console.print("${export_step(ui, input)}\n")

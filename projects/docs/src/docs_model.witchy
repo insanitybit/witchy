@@ -1,0 +1,41 @@
+// Application state and the JSON boundary shared with Glamour's browser host.
+
+import glamour
+import reflect
+from json import Json
+
+type Model derive(Reflect, Deserialize):
+    route: String
+    summary: String
+    content: String
+
+type Msg derive(Reflect):
+    Route(String)
+    Visit(String)
+    GotNav(Int, String)
+    GotPage(Int, String)
+
+pub fn initial(route: String) -> Model:
+    Model(route: route, summary: "", content: "")
+
+pub fn parse(value: Json) -> Model:
+    match Model.from_json(value):
+        Ok(model) -> model
+        Err(_) -> initial("/")
+
+pub fn parse_msg(value: Json) -> Msg:
+    let arg_string = fn(index: Int): glamour.msg_arg_string(value, index).unwrap_or("")
+    let arg_int = fn(index: Int): glamour.msg_arg_int(value, index).unwrap_or(0)
+    match glamour.msg_variant(value):
+        Some(tag) ->
+            if tag == "Visit":
+                Visit(arg_string(0))
+            else if tag == "GotNav":
+                GotNav(arg_int(0), arg_string(1))
+            else if tag == "GotPage":
+                GotPage(arg_int(0), arg_string(1))
+            else if tag == "Route":
+                Route(arg_string(0))
+            else:
+                Route("/")
+        None -> Route("/")
