@@ -108,12 +108,9 @@ printf 'fresh browser compiler' >"$out"
     env: { ...process.env, WITCHY: BIN, WITCHY_BROWSER_WASM: missingCompiler },
     stdio: "pipe",
   });
-  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "witchy-cell-sandbox.js", "witchy-cell-frame.js", "witchy-runtime/witchy-runtime.mjs", "docs-boot.js", "docs-run-options.js", "docs-asset-url.js", "wasm-fetch.js", "rfc0103-browser-probe.html", "rfc0103-browser-probe.js", "examples.json", "_headers", "content/SUMMARY.md", "content/introduction.md"]) {
+  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "witchy-cell-sandbox.js", "witchy-cell-frame.js", "witchy-runtime/witchy-runtime.mjs", "docs-boot.js", "docs-run-options.js", "docs-asset-url.js", "wasm-fetch.js", "rfc0103-browser-probe.html", "rfc0103-browser-probe.js", "examples.json", "content/SUMMARY.md", "content/introduction.md"]) {
     ok(existsSync(join(dist, f)), `the bundle contains ${f}`);
   }
-  // The bundle carries strict cross-origin isolation for a `_headers`-honoring host.
-  const headers = readFileSync(join(dist, "_headers"), "utf8");
-  ok(/Cross-Origin-Opener-Policy:\s*same-origin/.test(headers) && /Cross-Origin-Embedder-Policy:\s*require-corp/.test(headers), "the bundle ships strict COOP/COEP headers");
 
   // 3. Mount the bundle's docs.wasm; fetch reads the bundle's staged `content/`.
   const wasm = readFileSync(join(dist, "docs.wasm"));

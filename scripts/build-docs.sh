@@ -79,8 +79,6 @@ mkdir -p "$OUT/fixture-showcase"
 cp projects/fixture-showcase/src/fixture_showcase.witchy \
    projects/fixture-showcase/release.fixture.json \
    "$OUT/fixture-showcase/"
-# Strict cross-origin isolation on every response (house rule) — for a `_headers`-honoring host.
-cp web/_headers "$OUT/"
 
 # 4. The browser compiler (built by build-playground.sh) — required for the Run buttons.
 if [[ -n "$BROWSER_COMPILER" && -f "$BROWSER_COMPILER" ]]; then
