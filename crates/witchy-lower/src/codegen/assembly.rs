@@ -182,6 +182,24 @@ fn destination_constructor_tail_expr(expr: &Expr) -> bool {
     }
 }
 
+fn direct_scalar_result_fields(function: &Function) -> Option<&[Expr]> {
+    let [Stmt::Expr(Expr::Ctor { args, .. })] = function.body.stmts.as_slice() else {
+        return None;
+    };
+    args.iter().all(direct_scalar_result_expr).then_some(args)
+}
+
+fn direct_scalar_result_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Bool(_) | Expr::Var(_) => true,
+        Expr::Unary { expr, .. } | Expr::As { expr, .. } => direct_scalar_result_expr(expr),
+        Expr::Binary { lhs, rhs, .. } => {
+            direct_scalar_result_expr(lhs) && direct_scalar_result_expr(rhs)
+        }
+        _ => false,
+    }
+}
+
 /// The names of every JS-callable string export in declaration order (`__export_*`
 /// wrappers are emitted for these and they are extra reachability roots).
 fn string_export_functions(module: &Module) -> Vec<String> {
@@ -1063,6 +1081,30 @@ fn register_module_items(
                         })
                     {
                         cg.fn_destination_layouts.insert(f.name.clone(), id);
+                        if matches!(
+                            cg.specialized_layouts.get(id).map(|layout| layout.kind()),
+                            Some(LayoutKind::PackedRecord { .. })
+                        ) && checked_access.is_some_and(|signature| {
+                            signature.params().iter().all(|param| {
+                                matches!(
+                                    param.kind(),
+                                    witchy_types::access::AccessKind::OwnedImmutable
+                                        | witchy_types::access::AccessKind::SharedBorrow
+                                )
+                            })
+                        })
+                            && let Some(fields) = direct_scalar_result_fields(f)
+                            && !fields.is_empty()
+                            && fields.iter().all(|field| !cg.kind_of(field).is_ref())
+                        {
+                            cg.scalar_record_producers.insert(
+                                f.name.clone(),
+                                ScalarRecordProducer {
+                                    layout: id,
+                                    field_count: fields.len(),
+                                },
+                            );
+                        }
                     }
                 }
                 // A function returning a closure (`-> fn(...) -> RET`): record the

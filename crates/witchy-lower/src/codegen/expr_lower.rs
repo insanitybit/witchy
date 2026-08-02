@@ -1694,6 +1694,26 @@ impl<'types> Codegen<'types> {
             // legacy emission is `base; i32.const off; i32.add; i64.load;
             // from_slot(k)` — reproduced as `FromSlot(Load{Add(base, off)}, k)`.
             Expr::Field { base, field } => {
+                // A scalar-replaced aggregate is representation-independent:
+                // consult its field locals before the declared packed-layout
+                // path, which would otherwise treat the absent object as a
+                // canonical heap pointer.
+                if let Expr::Var(name) = base.as_ref()
+                    && self.sroa_active.contains_key(name)
+                {
+                    let (index, kind) = if let Ok(index) = field.parse::<usize>() {
+                        (index, valtype_kind(self.val_type_of(e)))
+                    } else {
+                        let base_type = self.record_type_of(base)?;
+                        let fields = self.record_fields.get(&base_type)?;
+                        let index = fields.iter().position(|(name, _)| name == field)?;
+                        (index, name_kind(fields[index].1.as_deref()))
+                    };
+                    return Some(W::FromSlot(
+                        Box::new(W::GetLocal(format!("{name}${index}"))),
+                        Self::wir_kind(kind),
+                    ));
+                }
                 if self.specialized_layout_of_expr(base).is_some()
                     || matches!(base.as_ref(), Expr::Call { name, args }
                         if name == intrinsics::LIST_AT
@@ -1790,26 +1810,6 @@ impl<'types> Codegen<'types> {
                                 return Some(read);
                             }
                         }
-                    }
-                }
-                // (RFC-0027) A scalar-replaced aggregate's field is read straight
-                // from its `${p}$<i>` slot local — no heap load. Only for names the
-                // `let` actually replaced (`sroa_active`); a `let` precedes its uses
-                // in statement order, so the set is populated first.
-                if let Expr::Var(p) = base.as_ref() {
-                    if self.sroa_active.contains_key(p) {
-                        let (idx, kind) = if let Ok(i) = field.parse::<usize>() {
-                            (i, valtype_kind(self.val_type_of(e)))
-                        } else {
-                            let base_ty = self.record_type_of(base)?;
-                            let names = self.record_fields.get(&base_ty)?;
-                            let i = names.iter().position(|(n, _)| n == field)?;
-                            (i, name_kind(names[i].1.as_deref()))
-                        };
-                        return Some(W::FromSlot(
-                            Box::new(W::GetLocal(format!("{p}${idx}"))),
-                            Self::wir_kind(kind),
-                        ));
                     }
                 }
                 if let Some(base_ty) = self.record_type_of(base) {

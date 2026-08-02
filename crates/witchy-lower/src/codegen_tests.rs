@@ -1278,8 +1278,8 @@ fn main() -> Int:
         ];
         let (result, counters) = run_int_with_i64_globals(source, &names);
         assert_eq!(result, 49_999_959);
-        assert_eq!(counters["__witchy_packed_alloc_calls"], 1);
-        assert_eq!(counters["__witchy_packed_alloc_bytes"], 16);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 0);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 0);
         assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
         assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
         assert_eq!(counters["__witchy_destination_candidates_forwarded"], 999_999);
@@ -1296,8 +1296,8 @@ fn main() -> Int:
             .unwrap_or(tail.len());
         let main = &tail[..end];
         assert!(
-            main.contains("call $build"),
-            "loop calls the destination-aware builder: {main}"
+            main.contains("call $build$scalar_result"),
+            "loop calls the scalar-result companion: {main}"
         );
         assert_eq!(
             main.matches("global.set $__witchy_destination_candidates_forwarded").count(),
@@ -1309,8 +1309,10 @@ fn main() -> Int:
             "the hot loop aggregates its destination count in a local: {main}"
         );
         assert!(
-            !main.contains("call $rc_alloc"),
-            "the hot caller has no allocator call: {main}"
+            !main.contains("call $rc_alloc")
+                && !main.contains("i64.load")
+                && !main.contains("i64.store"),
+            "the hot caller keeps both record fields in locals: {main}"
         );
         assert!(
             !main.contains("call $__witchy_packed_record_destination_"),
@@ -1320,7 +1322,7 @@ fn main() -> Int:
             !wat.contains("__witchy_packed_record_destination_"),
             "the builder stores its canonical descriptor fields inline: {wat}"
         );
-        let build_start = wat.find("(func $build").expect("build function");
+        let build_start = wat.find("(func $build (").expect("build function");
         let build_tail = &wat[build_start..];
         let build_end = build_tail[1..]
             .find("\n  (func $")
@@ -1337,6 +1339,28 @@ fn main() -> Int:
                 "the zero-destination fallback remains checked: {wat}"
             );
         }
+
+        let deopt = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::Sroa);
+        witchy_syntax::opt::set_for_tests(Some(deopt));
+        let (deopt_result, deopt_counters) = run_int_with_i64_globals(source, &names);
+        assert_eq!(deopt_result, 49_999_959);
+        assert_eq!(deopt_counters["__witchy_packed_alloc_calls"], 1);
+        assert_eq!(deopt_counters["__witchy_packed_alloc_bytes"], 16);
+        assert_eq!(
+            deopt_counters["__witchy_destination_candidates_forwarded"],
+            999_999
+        );
+        let deopt_module = parse_module(source).expect("parse scalar-result deopt oracle");
+        let deopt_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&deopt_module).expect_lowered("scalar-result deopt lowers"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let deopt_main = &deopt_wat[deopt_wat.find("(func $main").expect("deopt main")..];
+        assert!(
+            !deopt_main.contains("call $build$scalar_result"),
+            "disabling SROA keeps the destination-pointer call: {deopt_main}"
+        );
     }
 
     #[test]
@@ -1367,6 +1391,24 @@ fn main() -> Int:
         assert_eq!(counters["__witchy_packed_alloc_calls"], 2);
         assert_eq!(counters["__witchy_packed_alloc_bytes"], 32);
         assert_eq!(counters["__witchy_destination_candidates_forwarded"], 0);
+
+        let module = parse_module(source).expect("parse escaping destination fallback");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("escaping destination fallback lowers"),
+        );
+        let start = wat.find("(func $main").expect("main function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let main = &tail[..end];
+        assert!(
+            main.contains("call $build")
+                && !main.contains("call $build$scalar_result")
+                && main.contains("i64.load"),
+            "an observable alias keeps the allocating pointer ABI: {main}"
+        );
     }
 
     #[test]

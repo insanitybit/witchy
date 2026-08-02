@@ -236,6 +236,35 @@ impl<'types> Codegen<'types> {
                         && !scalar_sum_done
                         && !packed_done
                         && !view_done
+                        && let Some(local_layout) =
+                            self.scalar_record_call_candidates.get(name).copied()
+                        && let Expr::Call {
+                            name: producer,
+                            args,
+                        } = value
+                        && self
+                            .scalar_record_producers
+                            .get(producer)
+                            .is_some_and(|plan| plan.layout == local_layout)
+                        && self.call_access_signature(value).is_some_and(|access| {
+                            let ownership = Self::ownership_envelope_for_signature(access);
+                            ownership.unique_capacity_result
+                                && ownership.own_capacity_param.is_none()
+                                && ownership.var_capacity_params.is_empty()
+                        })
+                        && let Some(nodes) =
+                            self.lower_scalar_record_call(producer, args, name, false)
+                    {
+                        let count = self.scalar_record_producers[producer].field_count;
+                        seq.extend(nodes);
+                        self.sroa_active.insert(name.clone(), count);
+                        sroa_done = true;
+                    }
+                    if !list_builder_done
+                        && !scalar_sum_done
+                        && !packed_done
+                        && !view_done
+                        && !sroa_done
                         && self.sroa_candidates.contains(name)
                     {
                         // (RFC-0005 stage 4) A cap-carrying (GC-lowered) record has
@@ -521,6 +550,30 @@ impl<'types> Codegen<'types> {
                 Stmt::Assign { value, .. } | Stmt::Expr(value) => {
                     let name = assignment_name?.to_string();
                     let name = &name;
+                    let scalar_record_call = matches!(analyzed_stmt, Stmt::Assign { .. })
+                        .then(|| match value {
+                            Expr::Call {
+                                name: producer,
+                                args,
+                            } if self.sroa_active.contains_key(name)
+                                && self
+                                    .scalar_record_call_candidates
+                                    .get(name)
+                                    .is_some_and(|layout| {
+                                        self.scalar_record_producers
+                                            .get(producer)
+                                            .is_some_and(|plan| plan.layout == *layout)
+                                    })
+                                && self.call_access_signature(value).is_some_and(|access| {
+                                    let ownership =
+                                        Self::ownership_envelope_for_signature(access);
+                                    ownership.unique_capacity_result
+                                        && ownership.own_capacity_param.is_none()
+                                        && ownership.var_capacity_params.is_empty()
+                                }) => Some((producer.clone(), args)),
+                            _ => None,
+                        })
+                        .flatten();
                     let direct_builder = matches!(analyzed_stmt, Stmt::Assign { .. })
                         .then(|| {
                             self.active_direct_list_builder
@@ -566,7 +619,15 @@ impl<'types> Codegen<'types> {
                         }
                         _ => None,
                     };
-                    if let Some((plan, element)) = direct_builder {
+                    if let Some((producer, args)) = scalar_record_call {
+                        seq.extend(self.lower_scalar_record_call(
+                            &producer,
+                            args,
+                            name,
+                            true,
+                        )?);
+                        tail_is_value = false;
+                    } else if let Some((plan, element)) = direct_builder {
                         let element_kind = self.kind_of(element);
                         let element = self.lower_expr(element)?;
                         let logical_index = W::Convert {

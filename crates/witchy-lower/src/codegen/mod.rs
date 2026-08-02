@@ -767,6 +767,7 @@ struct SavedScope {
     sroa_active: HashMap<String, usize>,
     scalar_sum_candidates: HashSet<String>,
     scalar_sum_active: HashMap<String, ScalarSumLayout>,
+    scalar_record_call_candidates: HashMap<String, LayoutId>,
     direct_list_builder_lets: HashMap<usize, DirectListBuilderPlan>,
     direct_list_builder_loops: HashMap<usize, DirectListBuilderPlan>,
     active_direct_list_builder: Option<DirectListBuilderPlan>,
@@ -804,6 +805,12 @@ struct GcCtorLayout {
 struct ScalarSumLayout {
     id: LayoutId,
     max_arity: usize,
+}
+
+#[derive(Clone)]
+struct ScalarRecordProducer {
+    layout: LayoutId,
+    field_count: usize,
 }
 
 #[derive(Clone)]
@@ -970,6 +977,8 @@ struct Codegen<'types> {
     /// scrutinees. Their tag and payload arguments remain in scalar locals.
     scalar_sum_candidates: HashSet<String>,
     scalar_sum_active: HashMap<String, ScalarSumLayout>,
+    scalar_record_producers: HashMap<String, ScalarRecordProducer>,
+    scalar_record_call_candidates: HashMap<String, LayoutId>,
     /// Exact-capacity, direct-store list builders proven by adjacent empty-list
     /// bindings and literal counted loops. AST identities prevent a later loop
     /// over the same binding from inheriting the builder privilege.
@@ -1537,6 +1546,8 @@ impl<'types> Codegen<'types> {
             sroa_active: HashMap::new(),
             scalar_sum_candidates: HashSet::new(),
             scalar_sum_active: HashMap::new(),
+            scalar_record_producers: HashMap::new(),
+            scalar_record_call_candidates: HashMap::new(),
             direct_list_builder_lets: HashMap::new(),
             direct_list_builder_loops: HashMap::new(),
             active_direct_list_builder: None,
@@ -3724,11 +3735,63 @@ impl<'types> Codegen<'types> {
         if capture_failed {
             self.abort_unit(&f.name)?;
         } else {
+            self.install_scalar_record_companion(f)?;
             self.finish_unit(&f.name)?;
         }
         self.cur_fn_own_param = None;
         self.cur_fn_var_cap_params.clear();
         self.cur_fn_unique_ret = false;
+        Ok(())
+    }
+
+    fn scalar_record_companion_name(name: &str) -> String {
+        format!("{name}$scalar_result")
+    }
+
+    fn install_scalar_record_companion(&mut self, function: &Function) -> Result<(), CodegenError> {
+        use witchy_wir::wir::{WirFunc, WirLocal, WirNode as N, WirTy};
+        let Some(producer) = self.scalar_record_producers.get(&function.name).cloned() else {
+            return Ok(());
+        };
+        let [Stmt::Expr(Expr::Ctor { args, .. })] = function.body.stmts.as_slice() else {
+            return Ok(());
+        };
+        if args.len() != producer.field_count {
+            return Ok(());
+        }
+        let mut body = Vec::with_capacity(args.len());
+        for field in args {
+            let kind = self.kind_of(field);
+            let Some(value) = self.lower_expr(field) else {
+                return Ok(());
+            };
+            body.push(N::Push(witchy_wir::wir::WirExpr::ToSlot(
+                Box::new(value),
+                Self::wir_kind(kind),
+            )));
+        }
+        let params = function
+            .params
+            .iter()
+            .map(|param| WirLocal {
+                name: param.name.clone(),
+                ty: Self::wir_ty_for_kind(
+                    self.locals.get(&param.name).copied().unwrap_or(Kind::I32),
+                ),
+            })
+            .collect();
+        let name = Self::scalar_record_companion_name(&function.name);
+        self.layout_wir_funcs.insert(
+            name.clone(),
+            WirFunc {
+                name,
+                params,
+                ret: vec![WirTy::Int; producer.field_count],
+                locals: Vec::new(),
+                body,
+                raw_body: None,
+            },
+        );
         Ok(())
     }
 
@@ -4135,6 +4198,20 @@ impl<'types> Codegen<'types> {
         };
         let nested_var_roots = nested_var_place_roots(body, &self.fn_conventions);
         self.sroa_candidates.retain(|name| !nested_var_roots.contains(name));
+        self.scalar_record_call_candidates = if !force_copy_mode()
+            && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Sroa)
+        {
+            scalar_record_call_candidates_block(
+                body,
+                &self.scalar_record_producers,
+                &self.local_types,
+                &self.specialized_type_ids,
+            )
+        } else {
+            HashMap::new()
+        };
+        self.scalar_record_call_candidates
+            .retain(|name, _| !nested_var_roots.contains(name));
         self.scalar_sum_active.clear();
         self.scalar_sum_candidates = if !force_copy_mode()
             && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Sroa)
@@ -6559,6 +6636,54 @@ impl<'types> Codegen<'types> {
         Some(W::Seq(nodes))
     }
 
+    fn lower_scalar_record_call(
+        &mut self,
+        producer: &str,
+        args: &[Expr],
+        destination: &str,
+        count_forwarding: bool,
+    ) -> Option<witchy_wir::wir::WirSeq> {
+        use witchy_wir::wir::WirNode as N;
+        let plan = self.scalar_record_producers.get(producer)?.clone();
+        let param_kinds: Vec<Kind> = self
+            .fn_params
+            .get(producer)?
+            .iter()
+            .map(|param| {
+                param
+                    .ty
+                    .as_ref()
+                    .map(|ty| self.kind_for_type(ty))
+                    .unwrap_or(Kind::I32)
+            })
+            .collect();
+        let mut lowered = Vec::with_capacity(args.len());
+        for (index, argument) in args.iter().enumerate() {
+            let source_kind = self.kind_of(argument);
+            let value = self.lower_expr(argument)?;
+            lowered.push(match param_kinds.get(index) {
+                Some(&parameter_kind) => {
+                    Self::wir_convert(value, source_kind, parameter_kind)
+                }
+                None => value,
+            });
+        }
+        let mut nodes = Vec::with_capacity(2);
+        if count_forwarding {
+            nodes.push(self.increment_hot_counter(
+                "__witchy_destination_candidates_forwarded",
+            ));
+        }
+        nodes.push(N::CallStoreMulti {
+            func: Self::scalar_record_companion_name(producer),
+            args: lowered,
+            dests: (0..plan.field_count)
+                .map(|index| format!("{destination}${index}"))
+                .collect(),
+        });
+        Some(nodes)
+    }
+
     fn owned_argument_cap(&self, arg: &Expr) -> witchy_wir::wir::WirExpr {
         use witchy_wir::wir::WirExpr as W;
         match arg {
@@ -8073,6 +8198,9 @@ impl<'types> Codegen<'types> {
             sroa_active: std::mem::take(&mut self.sroa_active),
             scalar_sum_candidates: std::mem::take(&mut self.scalar_sum_candidates),
             scalar_sum_active: std::mem::take(&mut self.scalar_sum_active),
+            scalar_record_call_candidates: std::mem::take(
+                &mut self.scalar_record_call_candidates,
+            ),
             direct_list_builder_lets: std::mem::take(&mut self.direct_list_builder_lets),
             direct_list_builder_loops: std::mem::take(&mut self.direct_list_builder_loops),
             active_direct_list_builder: self.active_direct_list_builder.take(),
@@ -8126,6 +8254,7 @@ impl<'types> Codegen<'types> {
         self.sroa_active = s.sroa_active;
         self.scalar_sum_candidates = s.scalar_sum_candidates;
         self.scalar_sum_active = s.scalar_sum_active;
+        self.scalar_record_call_candidates = s.scalar_record_call_candidates;
         self.direct_list_builder_lets = s.direct_list_builder_lets;
         self.direct_list_builder_loops = s.direct_list_builder_loops;
         self.active_direct_list_builder = s.active_direct_list_builder;
@@ -9487,6 +9616,168 @@ fn sroa_fields(e: &Expr) -> Option<&[Expr]> {
     match e {
         Expr::Ctor { args, .. } | Expr::Tuple(args) => Some(args),
         _ => None,
+    }
+}
+
+fn scalar_record_call_candidates_block(
+    body: &Block,
+    producers: &HashMap<String, ScalarRecordProducer>,
+    local_types: &HashMap<String, Type>,
+    specialized_types: &[(Type, LayoutId)],
+) -> HashMap<String, LayoutId> {
+    let mut bindings = HashMap::new();
+    let mut candidates = HashMap::new();
+    for statement in &body.stmts {
+        let Stmt::Let {
+            name,
+            value: Expr::Call { name: producer, .. },
+            ..
+        } = statement
+        else {
+            continue;
+        };
+        let Some(producer) = producers.get(producer) else {
+            continue;
+        };
+        let local_layout = local_types.get(name).and_then(|ty| {
+            specialized_types
+                .iter()
+                .find_map(|(known, id)| (known == ty).then_some(*id))
+        });
+        if local_layout == Some(producer.layout) {
+            bindings.insert(name.clone(), (statement as *const Stmt) as usize);
+            candidates.insert(name.clone(), producer.layout);
+        }
+    }
+    if candidates.is_empty() {
+        return candidates;
+    }
+    let mut disqualified = HashSet::new();
+    scan_scalar_record_block(
+        body,
+        &candidates,
+        producers,
+        &bindings,
+        &mut disqualified,
+    );
+    candidates.retain(|name, _| !disqualified.contains(name));
+    candidates
+}
+
+fn scan_scalar_record_block(
+    block: &Block,
+    candidates: &HashMap<String, LayoutId>,
+    producers: &HashMap<String, ScalarRecordProducer>,
+    bindings: &HashMap<String, usize>,
+    disqualified: &mut HashSet<String>,
+) {
+    for statement in &block.stmts {
+        match statement {
+            Stmt::Let { name, value, .. } => {
+                if candidates.contains_key(name)
+                    && bindings.get(name).copied() != Some((statement as *const Stmt) as usize)
+                {
+                    disqualified.insert(name.clone());
+                }
+                scan_scalar_record_expr(value, candidates, producers, bindings, disqualified);
+            }
+            Stmt::Assign { name, value } if candidates.contains_key(name) => {
+                let compatible = matches!(value,
+                    Expr::Call { name: producer, .. }
+                        if producers.get(producer).map(|producer| producer.layout)
+                            == candidates.get(name).copied());
+                if !compatible {
+                    disqualified.insert(name.clone());
+                }
+                scan_scalar_record_expr(value, candidates, producers, bindings, disqualified);
+            }
+            Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => {
+                scan_scalar_record_expr(value, candidates, producers, bindings, disqualified);
+            }
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn scan_scalar_record_expr(
+    expr: &Expr,
+    candidates: &HashMap<String, LayoutId>,
+    producers: &HashMap<String, ScalarRecordProducer>,
+    bindings: &HashMap<String, usize>,
+    disqualified: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::Field { base, .. }
+            if matches!(base.as_ref(), Expr::Var(name) if candidates.contains_key(name)) => {}
+        Expr::Var(name) if candidates.contains_key(name) => {
+            disqualified.insert(name.clone());
+        }
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
+            scan_scalar_record_expr(cond, candidates, producers, bindings, disqualified);
+            scan_scalar_record_block(
+                then_block,
+                candidates,
+                producers,
+                bindings,
+                disqualified,
+            );
+            if let Some(block) = else_block {
+                scan_scalar_record_block(
+                    block,
+                    candidates,
+                    producers,
+                    bindings,
+                    disqualified,
+                );
+            }
+        }
+        Expr::Block(block) | Expr::Lambda { body: block, .. } => scan_scalar_record_block(
+            block,
+            candidates,
+            producers,
+            bindings,
+            disqualified,
+        ),
+        Expr::While { cond, body } => {
+            scan_scalar_record_expr(cond, candidates, producers, bindings, disqualified);
+            scan_scalar_record_block(body, candidates, producers, bindings, disqualified);
+        }
+        Expr::For { iter, body, .. } => {
+            scan_scalar_record_expr(iter, candidates, producers, bindings, disqualified);
+            scan_scalar_record_block(body, candidates, producers, bindings, disqualified);
+        }
+        Expr::WhileLet {
+            scrutinee, body, ..
+        } => {
+            scan_scalar_record_expr(scrutinee, candidates, producers, bindings, disqualified);
+            scan_scalar_record_block(body, candidates, producers, bindings, disqualified);
+        }
+        Expr::Match { scrutinee, arms } => {
+            scan_scalar_record_expr(scrutinee, candidates, producers, bindings, disqualified);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    scan_scalar_record_expr(guard, candidates, producers, bindings, disqualified);
+                }
+                scan_scalar_record_expr(
+                    &arm.body,
+                    candidates,
+                    producers,
+                    bindings,
+                    disqualified,
+                );
+            }
+        }
+        _ => crate::escape::for_each_immediate_subexpr(expr, &mut |inner| {
+            scan_scalar_record_expr(inner, candidates, producers, bindings, disqualified)
+        }),
     }
 }
 
