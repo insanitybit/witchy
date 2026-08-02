@@ -6,7 +6,9 @@ use wasm_encoder::{CustomSection, Section as _};
 
 use witchy_syntax::ast;
 use witchy_caps::capabilities;
-use witchy_wir::layout::{LayoutBundle, LayoutInterner};
+use witchy_wir::layout::{
+    HostLayoutContract, HostLayoutPolicy, LayoutBundle, LayoutInterner,
+};
 
 const LAUNCH_SECTION: &str = "witchy.launch";
 const LAUNCH_VERSION: u8 = 1;
@@ -103,10 +105,67 @@ pub fn embed_layout_bundle(mut wasm: Vec<u8>, bundle: &LayoutBundle) -> Vec<u8> 
 pub fn layout_bundle(
     wasm: &[u8],
 ) -> Result<Option<(LayoutBundle, LayoutInterner)>, String> {
-    layout_bundle_payload(wasm)?
+    let decoded = layout_bundle_payload(wasm)?
         .map(LayoutBundle::decode_canonical)
         .transpose()
+        .map_err(|error| invalid_layout_contract(&error.to_string()))?;
+    authenticate_artifact_import_layouts(wasm, decoded.as_ref())?;
+    Ok(decoded)
+}
+
+fn authenticate_artifact_import_layouts(
+    wasm: &[u8],
+    decoded: Option<&(LayoutBundle, LayoutInterner)>,
+) -> Result<(), String> {
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        let payload = payload.map_err(|error| invalid_layout_contract(&error.to_string()))?;
+        let wasmparser::Payload::ImportSection(reader) = payload else { continue };
+        for import in reader.into_imports() {
+            let import = import.map_err(|error| invalid_layout_contract(&error.to_string()))?;
+            if import.module != "witchy"
+                || !matches!(import.ty, wasmparser::TypeRef::Func(_))
+            {
+                continue;
+            }
+            let info = witchy_wir::wir_prelude::abi_import_info(import.name).ok_or_else(|| {
+                invalid_layout_contract(&format!(
+                    "host import `{}` has no generated ABI metadata",
+                    import.name,
+                ))
+            })?;
+            info.specialized_layouts
+                .authenticate(decoded.map(|(bundle, layouts)| (bundle, layouts)))
+                .map_err(|error| {
+                    invalid_layout_contract(&format!(
+                        "host import `{}` layout contract rejected: {error}",
+                        import.name,
+                    ))
+                })?;
+        }
+    }
+    Ok(())
+}
+
+/// Authenticate one generated host-import layout contract against the exact
+/// canonical descriptor graph carried by an artifact. This is the packaging
+/// and trusted-link boundary used before a concrete adapter can be selected.
+pub fn authenticate_host_layout_contract(
+    wasm: &[u8],
+    contract: HostLayoutContract<'_>,
+) -> Result<HostLayoutPolicy, String> {
+    let decoded = layout_bundle(wasm)?;
+    contract
+        .authenticate(decoded.as_ref().map(|(bundle, layouts)| (bundle, layouts)))
         .map_err(|error| invalid_layout_contract(&error.to_string()))
+}
+
+/// Authenticate the checked-in ABI metadata for one canonical `witchy` host
+/// import. Every production import currently carries an explicit reject-all
+/// contract; a future nonempty set must arrive with its real adapter.
+pub fn import_layout_policy(wasm: &[u8], import: &str) -> Result<HostLayoutPolicy, String> {
+    let info = witchy_wir::wir_prelude::abi_import_info(import)
+        .ok_or_else(|| invalid_layout_contract(&format!("unknown host import `{import}`")))?;
+    authenticate_host_layout_contract(wasm, info.specialized_layouts)
 }
 
 /// Return the exact encoded layout payload after checking section uniqueness.
@@ -197,7 +256,7 @@ fn invalid_layout_contract(detail: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasm_encoder::Module;
+    use wasm_encoder::{EntityType, ImportSection, Module, TypeSection};
     use witchy_syntax::ast::Type;
     use witchy_wir::layout::{
         ClosedTypeResolver, LayoutId, ResolvedNamed, ScalarKind,
@@ -265,6 +324,53 @@ mod tests {
         let (decoded, imported) = layout_bundle(&wasm).unwrap().expect("layout bundle");
         assert_eq!(decoded, bundle);
         assert!(imported.get(int).is_some());
+    }
+
+    #[test]
+    fn artifact_authenticates_generated_host_layout_contracts() {
+        let mut layouts = LayoutInterner::new();
+        let int = layouts
+            .intern_type(&Type::Named("Int".to_owned(), Vec::new()), &ScalarResolver)
+            .unwrap();
+        let bundle = LayoutBundle::from_interner(&layouts, [int]).unwrap();
+        let wasm = embed_layout_bundle(Module::new().finish(), &bundle);
+        let exact = HostLayoutContract {
+            schema: witchy_wir::layout::LAYOUT_SCHEMA_VERSION,
+            accepted: &[int],
+        };
+        let policy = authenticate_host_layout_contract(&wasm, exact).unwrap();
+        assert_eq!(
+            policy.decide(&layouts, int),
+            witchy_wir::layout::HostLayoutDecision::Exact,
+        );
+
+        let unknown = LayoutId::from_bytes([0x51; 32]);
+        let error = authenticate_host_layout_contract(
+            &wasm,
+            HostLayoutContract {
+                schema: witchy_wir::layout::LAYOUT_SCHEMA_VERSION,
+                accepted: &[unknown],
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("host accepts unknown artifact layout"), "{error}");
+
+        let bare = Module::new().finish();
+        let policy = import_layout_policy(&bare, "print").unwrap();
+        assert_eq!(
+            policy.decide(&LayoutInterner::new(), unknown),
+            witchy_wir::layout::HostLayoutDecision::Reject,
+        );
+
+        let mut types = TypeSection::new();
+        types.ty().function([], []);
+        let mut imports = ImportSection::new();
+        imports.import("witchy", "not_generated", EntityType::Function(0));
+        let mut unknown_import = Module::new();
+        unknown_import.section(&types);
+        unknown_import.section(&imports);
+        let error = layout_bundle(&unknown_import.finish()).unwrap_err();
+        assert!(error.contains("has no generated ABI metadata"), "{error}");
     }
 
     #[test]

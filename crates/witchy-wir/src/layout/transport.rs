@@ -168,6 +168,98 @@ pub enum HostMarshalMetric {
     ReshapedBytes,
 }
 
+/// Generated host-import metadata for one specialized structured boundary.
+///
+/// The accepted IDs are meaningful only for this descriptor schema and only
+/// after authentication against the canonical bundle carried by the guest
+/// artifact. Production imports keep this list empty until their real adapter
+/// lands; an empty contract is an explicit reject-all policy, not a wildcard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostLayoutContract<'a> {
+    pub schema: u32,
+    pub accepted: &'a [LayoutId],
+}
+
+impl HostLayoutContract<'_> {
+    pub const fn reject_all() -> Self {
+        Self { schema: LAYOUT_SCHEMA_VERSION, accepted: &[] }
+    }
+
+    /// Authenticate generated ABI metadata against the exact descriptor graph
+    /// decoded from an artifact. A digest alone never grants adapter access:
+    /// every accepted ID must occur in the bundle and resolve to identical
+    /// canonical descriptor bytes in the paired interner.
+    pub fn authenticate(
+        &self,
+        bundle: Option<(&LayoutBundle, &LayoutInterner)>,
+    ) -> Result<HostLayoutPolicy, HostLayoutContractError> {
+        if self.schema != LAYOUT_SCHEMA_VERSION {
+            return Err(HostLayoutContractError::UnsupportedSchema(self.schema));
+        }
+        if !self.accepted.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err(HostLayoutContractError::NonCanonicalAcceptedLayouts);
+        }
+        if self.accepted.is_empty() {
+            return Ok(HostLayoutPolicy::default());
+        }
+        let (bundle, layouts) = bundle.ok_or(HostLayoutContractError::MissingLayoutBundle)?;
+        for accepted in self.accepted {
+            let canonical = bundle
+                .descriptors
+                .iter()
+                .find_map(|(id, bytes)| (*id == *accepted).then_some(bytes.as_slice()))
+                .ok_or(HostLayoutContractError::UnknownAcceptedLayout(*accepted))?;
+            let descriptor = layouts
+                .get(*accepted)
+                .ok_or(HostLayoutContractError::BundleInternerMismatch(*accepted))?;
+            if descriptor.canonical_bytes() != canonical {
+                return Err(HostLayoutContractError::BundleInternerMismatch(*accepted));
+            }
+            if !scalar_storage_layout(layouts, *accepted) {
+                return Err(HostLayoutContractError::UnsupportedStorage(*accepted));
+            }
+        }
+        Ok(HostLayoutPolicy::new(self.accepted.iter().copied()))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostLayoutContractError {
+    UnsupportedSchema(u32),
+    NonCanonicalAcceptedLayouts,
+    MissingLayoutBundle,
+    UnknownAcceptedLayout(LayoutId),
+    BundleInternerMismatch(LayoutId),
+    UnsupportedStorage(LayoutId),
+}
+
+impl fmt::Display for HostLayoutContractError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedSchema(schema) => {
+                write!(formatter, "unsupported host layout schema {schema}")
+            }
+            Self::NonCanonicalAcceptedLayouts => {
+                formatter.write_str("host accepted layouts are not strictly sorted")
+            }
+            Self::MissingLayoutBundle => {
+                formatter.write_str("host accepted layouts require artifact layout metadata")
+            }
+            Self::UnknownAcceptedLayout(id) => {
+                write!(formatter, "host accepts unknown artifact layout `{id}`")
+            }
+            Self::BundleInternerMismatch(id) => {
+                write!(formatter, "artifact layout bundle/interner mismatch for `{id}`")
+            }
+            Self::UnsupportedStorage(id) => {
+                write!(formatter, "host layout `{id}` is not closed scalar storage")
+            }
+        }
+    }
+}
+
+impl std::error::Error for HostLayoutContractError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostLayoutPolicy {
     exact: BTreeSet<LayoutId>,

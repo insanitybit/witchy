@@ -55,6 +55,8 @@
 
 use std::sync::OnceLock;
 
+use crate::layout::HostLayoutContract;
+
 /// Function names for the static prelude helpers, in canonical
 /// `emit_data_globals_helpers` "all features on" order. The binary path uses
 /// these names as its resolution filter; the bodies come from the `wir_helper`
@@ -314,7 +316,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 pub const IMPORT_COUNT: usize = 96;
 
 /// Version of the public `"witchy"` host-import contract.
-pub const WITCHY_ABI_VERSION: u32 = 7;
+pub const WITCHY_ABI_VERSION: u32 = 8;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -428,6 +430,10 @@ pub struct AbiImportInfo {
     pub authorities: &'static [AbiImportAuthority],
     /// Whether the deny-by-omission browser host implements this import.
     pub browser: bool,
+    /// Descriptor schema and exact specialized layouts this import can read.
+    /// The reject-all production default may be replaced only with the real
+    /// adapter that consumes the authenticated descriptor.
+    pub specialized_layouts: HostLayoutContract<'static>,
 }
 
 /// Classify one canonical host import. Every name is explicit so adding an
@@ -610,7 +616,12 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
             | "args_size"
             | "__witchy_abort"
     );
-    Some(AbiImportInfo { class, authorities, browser })
+    Some(AbiImportInfo {
+        class,
+        authorities,
+        browser,
+        specialized_layouts: HostLayoutContract::reject_all(),
+    })
 }
 
 /// Whether a host import is cataloged as using a specific authority family.
@@ -799,11 +810,18 @@ mod tests {
         let names = imports.iter().map(|i| i.name.as_str()).collect::<std::collections::BTreeSet<_>>();
         assert_eq!(names.len(), imports.len(), "ABI import names must be unique");
         for import in imports {
-            assert!(
-                abi_import_info(&import.name).is_some(),
-                "ABI import `{}` needs an explicit class and browser decision",
-                import.name
+            let info = abi_import_info(&import.name).unwrap_or_else(|| {
+                panic!("ABI import `{}` needs explicit generated metadata", import.name)
+            });
+            assert_eq!(
+                info.specialized_layouts,
+                HostLayoutContract::reject_all(),
+                "ABI import `{}` cannot accept a layout before its adapter lands",
+                import.name,
             );
+            info.specialized_layouts
+                .authenticate(None)
+                .expect("an explicit reject-all contract authenticates without a bundle");
         }
         assert_eq!(render_abi_import_catalog().lines().count(), IMPORT_COUNT + 2);
         assert!(

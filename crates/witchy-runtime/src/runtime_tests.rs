@@ -1,6 +1,9 @@
     use super::*;
     use std::borrow::Cow;
-    use wasm_encoder::{CustomSection, Module as WasmModule, Section as _};
+    use wasm_encoder::{
+        CustomSection, EntityType, ImportSection, Module as WasmModule, Section as _,
+        TypeSection, ValType,
+    };
     use witchy_wir::layout::{LayoutBundle, LayoutInterner};
 
     fn wasm_with_layout_payload(payload: Vec<u8>) -> Vec<u8> {
@@ -11,6 +14,17 @@
         }
         .append_to(&mut wasm);
         wasm
+    }
+
+    fn wasm_with_host_import(name: &str) -> Vec<u8> {
+        let mut types = TypeSection::new();
+        types.ty().function([ValType::I32, ValType::I32], []);
+        let mut imports = ImportSection::new();
+        imports.import("witchy", name, EntityType::Function(0));
+        let mut module = WasmModule::new();
+        module.section(&types);
+        module.section(&imports);
+        module.finish()
     }
 
     #[test]
@@ -55,6 +69,27 @@
             Err(error) => error,
         };
         assert!(error.to_string().contains("duplicate section"), "{error}");
+    }
+
+    #[test]
+    fn host_imports_require_generated_layout_metadata_before_linking() {
+        let mut runtime = Runtime::batch().expect("runtime");
+        runtime
+            .spawn(wasm_with_host_import("print"), Capabilities::none(), 4)
+            .expect("the explicit reject-all print contract authenticates without layouts");
+
+        let error = match runtime.spawn(
+            wasm_with_host_import("not_generated"),
+            Capabilities::none(),
+            4,
+        ) {
+            Ok(_) => panic!("an import without generated ABI metadata must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("has no generated ABI metadata"),
+            "{error}"
+        );
     }
 
     #[cfg(feature = "test-fixtures")]

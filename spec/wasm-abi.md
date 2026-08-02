@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **7**. The JavaScript host pins it as
+The current ABI version is **8**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -30,8 +30,13 @@ opaque Fetch grant, attenuation, and staged request imports. Version 3 adds the
 Net-to-Fetch derivation import. Version 4 makes Env an opaque, attenuable
 externref rather than ambient host state. Version 5 does the same for Exec.
 Version 6 adds staged `Console[Read]` line input. Version 7 adds exact
-checked-heap object retirement for the UAF sanitizer;
-earlier pre-release import counts were not separately published ABI versions.
+checked-heap object retirement for the UAF sanitizer.
+Version 8 adds a descriptor-schema and accepted-`LayoutId` contract to every
+generated import entry. The linker authenticates any accepted ID against the
+artifact's canonical `witchy.layouts` bundle before selecting an adapter. All
+version-8 production imports declare an empty accepted set and therefore reject
+specialized structured values until their real adapters land. Earlier
+pre-release import counts were not separately published ABI versions.
 
 ## Import inclusion is tree-shaken
 
@@ -135,7 +140,7 @@ It does **not** implement unavailable capability sizing imports
 
 ## The imports
 
-ABI version 7 declares **96 imports** (`IMPORT_COUNT` in
+ABI version 8 declares **96 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -152,6 +157,11 @@ precompiled `.wasm` classification; `none` means the import is not a capability
 grant. Regenerate the table with `cargo run -p witchy-wir --example abi_catalog`;
 the test suite compares the committed block with the compiler catalog
 byte-for-byte and instantiates an all-import probe against the native host.
+
+Each generated entry also carries `specialized_layouts = { schema, accepted }`.
+This field is intentionally summarized once rather than repeated in every table
+row: for ABI version 8 every row declares layout schema 1 with `accepted = []`.
+An empty set is an authenticated reject-all contract, never a wildcard.
 
 <!-- BEGIN GENERATED WASM ABI IMPORTS -->
 | import | signature | class | authority | browser |

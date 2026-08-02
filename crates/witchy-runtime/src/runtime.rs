@@ -15,42 +15,65 @@ use wasmtime::{
     Module, Result, Store, StoreLimits, StoreLimitsBuilder,
 };
 use witchy_wir::layout::{HEAP_REDZONE, LayoutBundle};
+use witchy_wir::wir_prelude::abi_import_info;
 
 mod compiler;
 mod host;
 
 const LAYOUT_SECTION: &str = "witchy.layouts";
 
-/// Validate the canonical physical-layout graph before Wasmtime compiles or
-/// instantiates an artifact. A missing section is the explicit legacy path;
-/// once present, duplicate sections, unknown schemas, bad descriptor digests,
-/// dangling roots, and non-canonical graphs all fail closed.
-fn validate_layout_bundle_metadata(wasm: &[u8]) -> Result<()> {
+/// Validate the canonical physical-layout graph and every imported host layout
+/// contract before Wasmtime compiles or instantiates an artifact. A missing
+/// section is valid only while the imported contracts accept no specialized
+/// layouts; duplicate sections, unknown schemas, bad descriptor digests,
+/// dangling roots, non-canonical graphs, and uncataloged imports fail closed.
+fn validate_layout_metadata(wasm: &[u8]) -> Result<()> {
     // Wasmtime also accepts textual WAT in developer/test entry points. Text
     // is not a distributable binary artifact and cannot carry this custom
     // section; every binary module takes the fail-closed path below.
     if !wasm.starts_with(b"\0asm") {
         return Ok(());
     }
-    let mut found = false;
+    let mut decoded = None;
+    let mut imports = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(wasm) {
         let payload = payload
             .map_err(|error| Error::msg(format!("invalid wasm metadata: {error}")))?;
-        let wasmparser::Payload::CustomSection(section) = payload else {
-            continue;
-        };
-        if section.name() != LAYOUT_SECTION {
-            continue;
+        match payload {
+            wasmparser::Payload::ImportSection(reader) => {
+                for import in reader.into_imports() {
+                    let import = import.map_err(|error| {
+                        Error::msg(format!("invalid wasm import metadata: {error}"))
+                    })?;
+                    if import.module == "witchy"
+                        && matches!(import.ty, wasmparser::TypeRef::Func(_))
+                    {
+                        imports.push(import.name.to_owned());
+                    }
+                }
+            }
+            wasmparser::Payload::CustomSection(section) if section.name() == LAYOUT_SECTION => {
+                if decoded.is_some() {
+                    return Err(Error::msg(format!(
+                        "invalid `{LAYOUT_SECTION}` metadata: duplicate section"
+                    )));
+                }
+                decoded = Some(LayoutBundle::decode_canonical(section.data()).map_err(|error| {
+                    Error::msg(format!("invalid `{LAYOUT_SECTION}` metadata: {error}"))
+                })?);
+            }
+            _ => {}
         }
-        if found {
-            return Err(Error::msg(format!(
-                "invalid `{LAYOUT_SECTION}` metadata: duplicate section"
-            )));
-        }
-        LayoutBundle::decode_canonical(section.data()).map_err(|error| {
-            Error::msg(format!("invalid `{LAYOUT_SECTION}` metadata: {error}"))
+    }
+    for import in imports {
+        let info = abi_import_info(&import).ok_or_else(|| {
+            Error::msg(format!("host import `{import}` has no generated ABI metadata"))
         })?;
-        found = true;
+        info.specialized_layouts
+            .authenticate(decoded.as_ref().map(|(bundle, layouts)| (bundle, layouts)))
+            .map_err(|error| {
+                Error::msg(format!("host import `{import}` layout contract rejected: {error}"))
+            })?;
     }
     Ok(())
 }
@@ -189,7 +212,7 @@ fn binaryen_optimize(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 /// native-code reuse internally. `cacheable` is false on the preempt engine,
 /// whose differing config must not share artifacts.
 fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Module> {
-    validate_layout_bundle_metadata(opt_wasm)?;
+    validate_layout_metadata(opt_wasm)?;
     if !cacheable {
         return Module::new(engine, opt_wasm);
     }

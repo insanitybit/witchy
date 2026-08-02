@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use witchy_syntax::ast::{Expr, Item, Module, Type, TypeDef, Variant};
 
 use crate::layout::{
-    ClosedTypeResolver, FieldKind, HeaderLayout, HostLayoutDecision, HostLayoutPolicy,
-    HostMarshalMetric, LAYOUT_SCHEMA_VERSION, LayoutBundle, LayoutError, LayoutId,
-    LayoutInterner, LayoutKind, LayoutSize, LayoutTransportError, OperationShape,
-    OwnershipPosition, RcHeader, ReferenceKind, ResolvedNamed, ScalarKind, StorageClass,
+    ClosedTypeResolver, FieldKind, HeaderLayout, HostLayoutContract,
+    HostLayoutContractError, HostLayoutDecision, HostLayoutPolicy, HostMarshalMetric,
+    LAYOUT_SCHEMA_VERSION, LayoutBundle, LayoutError, LayoutId, LayoutInterner,
+    LayoutKind, LayoutSize, LayoutTransportError, OperationShape, OwnershipPosition,
+    RcHeader, ReferenceKind, ResolvedNamed, ScalarKind, StorageClass,
 };
 
 struct TestResolver<'a> {
@@ -517,6 +518,42 @@ fn host_layout_policy_has_only_exact_counted_marshal_or_reject_outcomes() {
 }
 
 #[test]
+fn generated_host_contract_authenticates_only_bundle_backed_layouts() {
+    let resolver = TestResolver { definitions: BTreeMap::new() };
+    let mut layouts = LayoutInterner::new();
+    let exact = layouts.intern_type(&named("Int"), &resolver).unwrap();
+    let bundle = LayoutBundle::from_interner(&layouts, [exact]).unwrap();
+    let contract = HostLayoutContract { schema: LAYOUT_SCHEMA_VERSION, accepted: &[exact] };
+    let policy = contract.authenticate(Some((&bundle, &layouts))).unwrap();
+    assert_eq!(policy.decide(&layouts, exact), HostLayoutDecision::Exact);
+
+    assert_eq!(
+        HostLayoutContract { schema: LAYOUT_SCHEMA_VERSION + 1, accepted: &[] }
+            .authenticate(None)
+            .unwrap_err(),
+        HostLayoutContractError::UnsupportedSchema(LAYOUT_SCHEMA_VERSION + 1),
+    );
+    assert_eq!(
+        contract.authenticate(None).unwrap_err(),
+        HostLayoutContractError::MissingLayoutBundle,
+    );
+
+    let unknown = LayoutId::from_bytes([0x91; 32]);
+    assert_eq!(
+        HostLayoutContract { schema: LAYOUT_SCHEMA_VERSION, accepted: &[unknown] }
+            .authenticate(Some((&bundle, &layouts)))
+            .unwrap_err(),
+        HostLayoutContractError::UnknownAcceptedLayout(unknown),
+    );
+    assert_eq!(
+        contract
+            .authenticate(Some((&bundle, &LayoutInterner::new())))
+            .unwrap_err(),
+        HostLayoutContractError::BundleInternerMismatch(exact),
+    );
+}
+
+#[test]
 fn host_layout_policy_cannot_authorize_capability_or_reference_storage() {
     let definitions = [record("Authority", true, vec![("console", named("Console"))])];
     let resolver = TestResolver::with_definitions(&definitions);
@@ -537,6 +574,14 @@ fn host_layout_policy_cannot_authorize_capability_or_reference_storage() {
         policy.decide(&layouts, fabricated),
         HostLayoutDecision::Reject,
         "a digest without a validated scalar descriptor cannot select a host adapter"
+    );
+    let empty = LayoutBundle::from_interner(&layouts, []).unwrap();
+    assert_eq!(
+        HostLayoutContract { schema: LAYOUT_SCHEMA_VERSION, accepted: &[fabricated] }
+            .authenticate(Some((&empty, &layouts)))
+            .unwrap_err(),
+        HostLayoutContractError::UnknownAcceptedLayout(fabricated),
+        "a fabricated capability digest cannot enter generated ABI metadata"
     );
 }
 
