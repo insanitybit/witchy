@@ -10196,4 +10196,7 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
 mod tests;
 
 #[cfg(test)]
+mod callable_layout_tests;
+
+#[cfg(test)]
 mod host_layout_tests;

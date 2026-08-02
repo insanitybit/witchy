@@ -53,6 +53,13 @@ impl Codegen<'_> {
     }
 
     pub(super) fn reject_unsupported_specialized_boundary(&mut self, expr: &Expr) -> bool {
+        let callable_detail = self.callable_layout_rejection_detail(expr);
+        let capture_detail = match expr {
+            Expr::Lambda { params, body, .. } => {
+                self.specialized_capture_rejection_detail(params, body)
+            }
+            _ => None,
+        };
         let boundary = match expr {
             Expr::Call { name, args }
                 if self.locals.contains_key(name)
@@ -117,6 +124,9 @@ impl Codegen<'_> {
             {
                 Some(format!("function value `{name}`"))
             }
+            Expr::Lambda { .. } if capture_detail.is_some() => {
+                Some("closure capture".to_string())
+            }
             Expr::Binary { lhs, rhs, .. }
                 if self.specialized_layout_of_expr(lhs).is_some()
                     || self.specialized_layout_of_expr(rhs).is_some() =>
@@ -126,10 +136,14 @@ impl Codegen<'_> {
             _ => None,
         };
         let Some(boundary) = boundary else { return false };
+        let detail = callable_detail
+            .or(capture_detail)
+            .map(|detail| format!("; {detail}"))
+            .unwrap_or_default();
         self.reject_reason.get_or_insert_with(|| CodegenError {
             message: format!(
                 "declared packed layout cannot cross unsupported {boundary}; \
-                 this boundary requires an exact RFC-0111 LayoutId adapter and cannot box or reshape"
+                 this boundary requires an exact RFC-0111 LayoutId adapter and cannot box or reshape{detail}"
             ),
         });
         true
