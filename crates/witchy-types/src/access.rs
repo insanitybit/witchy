@@ -1410,6 +1410,13 @@ impl<'a> AccessVerifier<'a> {
         self.table.type_of(expression).and_then(ty_to_ast)
     }
 
+    fn contextual_expression_type(&self, expression: &Expr) -> Option<Type> {
+        self.expression_type_hints
+            .get(&(expression as *const Expr as usize))
+            .cloned()
+            .or_else(|| self.resolved_expression_type(expression))
+    }
+
     fn declaration_signature(
         &self,
         function: &Function,
@@ -1925,6 +1932,10 @@ impl<'a> AccessVerifier<'a> {
         actual: &Type,
         substitutions: &mut HashMap<String, Type>,
     ) {
+        if let Type::Qualified(_, inner) = declared {
+            Self::collect_type_substitutions(inner, actual.unqualified(), substitutions);
+            return;
+        }
         if let Type::Named(name, arguments) = declared
             && arguments.is_empty()
             && !name.contains('.')
@@ -2020,6 +2031,7 @@ impl<'a> AccessVerifier<'a> {
         signature: AccessSignature,
         arguments: &[AccessFlow],
         argument_types: &[Option<Type>],
+        result_type: Option<&Type>,
     ) -> Result<(AccessSignature, HashMap<String, Type>), AccessFlowError> {
         let mut substitutions = HashMap::new();
         for (index, (parameter, argument)) in
@@ -2034,6 +2046,13 @@ impl<'a> AccessVerifier<'a> {
                 );
             }
             Self::collect_flow_substitutions(parameter.ty(), argument, &mut substitutions);
+        }
+        if let Some(result_type) = result_type {
+            Self::collect_type_substitutions(
+                signature.result().ty(),
+                result_type,
+                &mut substitutions,
+            );
         }
         if substitutions.is_empty() {
             return Ok((signature, substitutions));
@@ -2396,10 +2415,12 @@ impl<'a> AccessVerifier<'a> {
                     .collect::<Vec<_>>();
                 match signature {
                     Some(signature) => {
+                        let result_type = self.contextual_expression_type(expression);
                         let (signature, _) = self.specialize_signature_from_flows(
                             signature,
                             &arguments,
                             &argument_types,
+                            result_type.as_ref(),
                         )?;
                         self.verify_arguments(name, &signature, &arguments)?;
                         self.record_call(expression, &signature);
@@ -2433,10 +2454,12 @@ impl<'a> AccessVerifier<'a> {
                     .collect::<Vec<_>>();
                 match signature {
                     Some(signature) => {
+                        let result_type = self.contextual_expression_type(expression);
                         let (signature, _) = self.specialize_signature_from_flows(
                             signature,
                             &arguments,
                             &argument_types,
+                            result_type.as_ref(),
                         )?;
                         self.verify_arguments(name, &signature, &arguments)?;
                         self.record_call(expression, &signature);
@@ -2474,10 +2497,12 @@ impl<'a> AccessVerifier<'a> {
                 let Some(signature) = signature else {
                     return Ok(self.record(expression, AccessFlow::None));
                 };
+                let result_type = self.contextual_expression_type(expression);
                 let (signature, _) = self.specialize_signature_from_flows(
                     signature,
                     &arguments,
                     &argument_types,
+                    result_type.as_ref(),
                 )?;
                 self.verify_arguments("indirect function", &signature, &arguments)?;
                 self.record_call(expression, &signature);
@@ -2695,6 +2720,7 @@ impl<'a> AccessVerifier<'a> {
                     signature,
                     &all_arguments,
                     &argument_types,
+                    self.contextual_expression_type(expression).as_ref(),
                 )?;
                 if let Some(receiver_param) = signature.params().first() {
                     let expected = AccessFlow::from_type(receiver_param.ty())

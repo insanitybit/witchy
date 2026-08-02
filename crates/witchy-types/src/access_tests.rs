@@ -561,6 +561,25 @@ fn callee_substitution_does_not_capture_caller_generic_names() {
 }
 
 #[test]
+fn result_only_generics_use_the_contextual_call_result_access_shape() {
+    crate::typeck::check_str(
+        "fn empty() -> Option(a):\n    None\n\n\
+         fn main() -> Int:\n    let callbacks: Option(fn(Int) -> Int) = empty()\n    0\n",
+    )
+    .expect("a result-only generic specializes from the checked contextual call result");
+
+    let error = crate::typeck::check_str(
+        "fn empty() -> Option(unique a):\n    None\n\n\
+         fn main() -> Int:\n    let callbacks: Option(fn(Int) -> Int) = empty()\n    0\n",
+    )
+    .expect_err("contextual result specialization must retain source qualifiers");
+    assert!(
+        error.contains("ownership/access contract") && error.contains("Qualifier"),
+        "{error}"
+    );
+}
+
+#[test]
 fn try_propagation_preserves_nested_callable_access() {
     crate::typeck::check_str(
         "fn option(value: Option(fn(unique List(Int)) -> Int)) -> Option(fn(unique List(Int)) -> Int):\n    let callback = value?\n    Some(callback)\n\n\
