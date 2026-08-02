@@ -499,6 +499,57 @@
     }
 
     #[test]
+    fn borrowed_nominal_lifetime_relations_are_not_erased_by_type_unification() {
+        let error = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn relabel(let left: let('left) String, let right: let('right) String, own holder: Holder('left)) -> Holder('right):\n    holder\n",
+        )
+        .expect_err("a borrowed nominal lifetime cannot be relabeled");
+        assert!(
+            error.contains("function `relabel` body")
+                && error.contains("expected `'right`, found `'left`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn borrowed_nominal_construction_is_gated_until_owner_root_lowering() {
+        let error = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn hold(let input: let('a) String) -> Holder('a):\n    Holder(input)\n",
+        )
+        .expect_err("stage 1 must not expose an ordinary owning constructor");
+        assert!(
+            error.contains("construction of borrowed nominal type `Holder` is not available")
+                && error.contains("projection-aware loans and runtime owner-root lowering"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn borrowed_nominals_reject_owned_container_storage_before_descriptors() {
+        let error = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntype Bag('a):\n    holders: List(Holder('a))\n",
+        )
+        .expect_err("borrowed container storage belongs to RFC-0112 stage 5");
+        assert!(
+            error.contains("type `Bag` stores a borrowed nominal relation inside `List`")
+                && error.contains("descriptor/root-lowering stage"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn nested_function_lifetime_does_not_satisfy_an_outer_nominal_binder() {
+        let error = check_str(
+            "mode opt\n\ntype Phantom('a):\n    callback: fn(View(String, 'a)) -> Int\n",
+        )
+        .expect_err("nested callable lifetimes are independently quantified");
+        assert!(
+            error.contains("type `Phantom` declares lifetime parameter `'a` but no field uses it"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn local_unique_cannot_be_a_return_type() {
         // (RFC-0026) `local unique` is valid only within the call — it cannot escape,
         // so it cannot be returned.

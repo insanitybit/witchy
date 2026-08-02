@@ -518,12 +518,91 @@ fn collect_declared_lifetime_uses(t: &ast::Type, used: &mut HashSet<String>) {
                 collect_declared_lifetime_uses(field, used);
             }
         }
-        ast::Type::Fn(parameters, result, _) => {
-            for parameter in parameters {
-                collect_declared_lifetime_uses(parameter, used);
-            }
-            collect_declared_lifetime_uses(result, used);
+        // A nested function type binds its own lifetime relations. A same-spelled
+        // nested binder must not make an outer nominal lifetime look used.
+        ast::Type::Fn(_, _, _) => {}
+    }
+}
+
+fn type_contains_nominal_lifetime_relation(t: &ast::Type) -> bool {
+    match t {
+        ast::Type::Qualified(ast::TypeQual::Borrow(_), _) => true,
+        ast::Type::Qualified(_, inner) => type_contains_nominal_lifetime_relation(inner),
+        ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
+            arguments.iter().any(|argument| {
+                lifetime_argument_name(argument).is_some()
+                    || type_contains_nominal_lifetime_relation(argument)
+            })
         }
+        ast::Type::RecordCompose { base, fields } => {
+            type_contains_nominal_lifetime_relation(base)
+                || fields
+                    .iter()
+                    .any(|(_, field)| type_contains_nominal_lifetime_relation(field))
+        }
+        // The function value owns its independently quantified relations; it is
+        // not itself a borrowed aggregate stored by the enclosing shell.
+        ast::Type::Fn(_, _, _) => false,
+    }
+}
+
+fn reject_borrowed_nominal_containers(
+    t: &ast::Type,
+    lifetime_nominals: &HashSet<String>,
+    context: &str,
+) -> Result<(), TypeError> {
+    match t {
+        ast::Type::Qualified(_, inner) => {
+            reject_borrowed_nominal_containers(inner, lifetime_nominals, context)
+        }
+        ast::Type::Tuple(items) => items
+            .iter()
+            .try_for_each(|item| reject_borrowed_nominal_containers(item, lifetime_nominals, context)),
+        ast::Type::Named(name, arguments) => {
+            let is_borrowed_shell = lifetime_nominals.contains(name);
+            if !is_borrowed_shell
+                && arguments
+                    .iter()
+                    .any(type_contains_nominal_lifetime_relation)
+            {
+                return terr(format!(
+                    "{context} stores a borrowed nominal relation inside `{}`; RFC-0112 stage 1 \
+                     supports fixed borrowed records and tuples only. Borrowed containers require \
+                     the later descriptor/root-lowering stage",
+                    name.rsplit('.').next().unwrap_or(name)
+                ));
+            }
+            arguments.iter().try_for_each(|argument| {
+                reject_borrowed_nominal_containers(argument, lifetime_nominals, context)
+            })
+        }
+        ast::Type::RecordCompose { base, fields } => {
+            if type_contains_nominal_lifetime_relation(t) {
+                return terr(format!(
+                    "{context} stores a borrowed nominal relation inside an anonymous structural \
+                     record; RFC-0112 stage 1 supports fixed nominal records and tuples only"
+                ));
+            }
+            reject_borrowed_nominal_containers(base, lifetime_nominals, context)?;
+            fields.iter().try_for_each(|(_, field)| {
+                reject_borrowed_nominal_containers(field, lifetime_nominals, context)
+            })
+        }
+        ast::Type::Dyn(_, arguments) => {
+            if arguments
+                .iter()
+                .any(type_contains_nominal_lifetime_relation)
+            {
+                return terr(format!(
+                    "{context} stores a borrowed nominal relation inside `dyn`; borrowed \
+                     existentials are outside RFC-0112 stage 1"
+                ));
+            }
+            Ok(())
+        }
+        // Nested callable relations are separately quantified and do not store
+        // an outer borrowed aggregate relation.
+        ast::Type::Fn(_, _, _) => Ok(()),
     }
 }
 
@@ -555,6 +634,18 @@ fn validate_callable_nominal_lifetimes(
 /// compile-time-only and remain restricted to fixed single-variant shells.
 fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError> {
     let opt = module.modes.iter().any(|mode| mode == "opt");
+    let lifetime_nominals = module
+        .items
+        .iter()
+        .filter_map(|item| {
+            let Item::Type(definition) = item else { return None };
+            definition
+                .params
+                .iter()
+                .any(|parameter| ast::is_lifetime_param(parameter))
+                .then(|| definition.name.clone())
+        })
+        .collect::<HashSet<_>>();
     for item in &module.items {
         match item {
             Item::Type(definition) => {
@@ -587,6 +678,11 @@ fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError>
                 for variant in &definition.variants {
                     for field in &variant.fields {
                         validate_nominal_lifetime_uses(field, &declared, &context, true)?;
+                        reject_borrowed_nominal_containers(
+                            field,
+                            &lifetime_nominals,
+                            &context,
+                        )?;
                         collect_declared_lifetime_uses(field, &mut used);
                     }
                 }
@@ -990,8 +1086,31 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     }
                     Ok(())
                 }
-                Expr::Call { args, .. } | Expr::Ctor { args, .. }
-                | Expr::AnonCtor { args, .. } => {
+                Expr::Call { args, .. } | Expr::AnonCtor { args, .. } => {
+                    for arg in args {
+                        validate_expr_types(arg, known, arities, type_defs, ctx, in_ctx)?;
+                    }
+                    Ok(())
+                }
+                Expr::Ctor { name, args } => {
+                    if let Some(definition) = type_defs.values().find(|definition| {
+                        definition
+                            .params
+                            .iter()
+                            .any(|parameter| ast::is_lifetime_param(parameter))
+                            && definition
+                                .variants
+                                .iter()
+                                .any(|variant| variant.name == *name)
+                    }) {
+                        return terr(format!(
+                            "in `{}`: construction of borrowed nominal type `{}` is not available \
+                             in RFC-0112 stage 1; this stage preserves syntax, kinds, and reflection \
+                             only. Wait for projection-aware loans and runtime owner-root lowering",
+                            ctx.rsplit('.').next().unwrap_or(ctx),
+                            definition.name.rsplit('.').next().unwrap_or(&definition.name)
+                        ));
+                    }
                     for arg in args {
                         validate_expr_types(arg, known, arities, type_defs, ctx, in_ctx)?;
                     }
@@ -2954,13 +3073,7 @@ impl Checker {
         {
             return Ty::Var(self.current_typarams[name.as_str()]);
         }
-        Ty::Named(
-            name.clone(),
-            args.iter()
-                .filter(|argument| lifetime_argument_name(argument).is_none())
-                .map(|a| self.to_ty(a))
-                .collect(),
-        )
+        Ty::Named(name.clone(), args.iter().map(|a| self.to_ty(a)).collect())
     }
 
     /// Like `to_ty`, but a lowercase, argument-less type name becomes a type
@@ -3010,7 +3123,6 @@ impl Checker {
                 Ty::Named(
                     name.clone(),
                     args.iter()
-                        .filter(|argument| lifetime_argument_name(argument).is_none())
                         .map(|a| self.to_ty_generic(a, vars))
                         .collect(),
                 )

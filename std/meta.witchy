@@ -618,6 +618,7 @@ type TypeExpr:
     TTuple(List(TypeExpr))
     TFn(List(TypeExpr), TypeExpr, List(String))
     TQualified(String, TypeExpr)
+    TBorrowed(TypeExpr, String)
 
 // The declaration shape. `TypeUninhabited` is intentionally not called "unit":
 // a fieldless declaration has no constructor and therefore no values.
@@ -668,8 +669,14 @@ fn where_each(params: List(String), trait_name: String) -> String:
     else:
         var bounds = []
         for p in params:
-            list.push(bounds, p + ": " + trait_name)
-        " where " + list.join(bounds, ", ")
+            // Lifetime parameters are compile-time owner relations, not types
+            // implementing the derived trait.
+            if !p.starts_with("'"):
+                list.push(bounds, p + ": " + trait_name)
+        if list.is_empty(bounds):
+            ""
+        else:
+            " where " + list.join(bounds, ", ")
 
 fn type_sources(types: List(TypeExpr)) -> List(String):
     var out = []
@@ -704,6 +711,7 @@ pub fn type_source(ty: TypeExpr) -> String:
         TTuple(slots) -> "(" + list.join(type_sources(slots), ", ") + ")"
         TFn(params, ret, conventions) -> "fn(" + list.join(function_type_sources(params, conventions), ", ") + ") -> " + type_source(ret)
         TQualified(q, inner) -> q + " " + type_source(inner)
+        TBorrowed(inner, lifetime) -> "View(" + type_source(inner) + ", '" + lifetime + ")"
 
 // `derive(Show)` -> constructor-shaped rendering with each field/payload rendered
 // through its own `Show` impl. Primitive fields still match structural

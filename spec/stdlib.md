@@ -2378,6 +2378,7 @@ A declared type expression, exposed as data so generators do not have to parse s
 - `TTuple(List(TypeExpr))`
 - `TFn(List(TypeExpr), TypeExpr, List(String))`
 - `TQualified(String, TypeExpr)`
+- `TBorrowed(TypeExpr, String)`
 
 #### `type TypeKind`
 
