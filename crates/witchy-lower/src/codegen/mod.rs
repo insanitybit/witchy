@@ -2153,6 +2153,19 @@ impl<'types> Codegen<'types> {
         }
     }
 
+    fn signature_has_unique_layout_result(
+        signature: &witchy_types::access::AccessSignature,
+    ) -> bool {
+        signature
+            .result()
+            .qualifiers()
+            .contains(&witchy_types::access::AccessQualifier::Unique)
+            && matches!(
+                signature.result().ownership_output(),
+                Some(witchy_types::access::OwnershipStateClass::LayoutDependent { .. })
+            )
+    }
+
     fn ownership_envelope_for_type(ty: &Type) -> ClosureOwnershipEnvelope {
         witchy_types::access::AccessSignature::from_function_type(ty)
             .ok()

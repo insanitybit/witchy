@@ -277,12 +277,9 @@ impl<'types> Codegen<'types> {
                             .scalar_record_producers
                             .get(producer)
                             .is_some_and(|plan| plan.layout == local_layout)
-                        && self.call_access_signature(value).is_some_and(|access| {
-                            let ownership = Self::ownership_envelope_for_signature(access);
-                            ownership.unique_capacity_result
-                                && ownership.own_capacity_param.is_none()
-                                && ownership.var_capacity_params.is_empty()
-                        })
+                        && self
+                            .call_access_signature(value)
+                            .is_some_and(Self::signature_has_unique_layout_result)
                         && let Some(nodes) =
                             self.lower_scalar_record_call(producer, args, name, false)
                     {
@@ -595,13 +592,12 @@ impl<'types> Codegen<'types> {
                                             .get(producer)
                                             .is_some_and(|plan| plan.layout == *layout)
                                     })
-                                && self.call_access_signature(value).is_some_and(|access| {
-                                    let ownership =
-                                        Self::ownership_envelope_for_signature(access);
-                                    ownership.unique_capacity_result
-                                        && ownership.own_capacity_param.is_none()
-                                        && ownership.var_capacity_params.is_empty()
-                                }) => Some((producer.clone(), args)),
+                                && self
+                                    .call_access_signature(value)
+                                    .is_some_and(Self::signature_has_unique_layout_result) =>
+                            {
+                                Some((producer.clone(), args))
+                            }
                             _ => None,
                         })
                         .flatten();
@@ -642,7 +638,7 @@ impl<'types> Codegen<'types> {
                                     Self::ownership_envelope_for_signature(&access);
                                 (local_layout.is_some()
                                     && local_layout == callee_layout
-                                    && ownership.unique_capacity_result
+                                    && Self::signature_has_unique_layout_result(&access)
                                     && ownership.own_capacity_param.is_none()
                                     && ownership.var_capacity_params.is_empty())
                                     .then(|| (callee.clone(), args, access))

@@ -1072,12 +1072,9 @@ fn register_module_items(
                             matches!(layout.size(), LayoutSize::Fixed(_))
                                 && (matches!(layout.kind(), LayoutKind::ClosedSum { .. })
                                     || (matches!(layout.kind(), LayoutKind::PackedRecord { .. })
-                                        && checked_ownership.unique_capacity_result
-                                        && checked_access.is_some_and(|signature| {
-                                            signature.result().qualifiers().contains(
-                                                &witchy_types::access::AccessQualifier::Unique,
-                                            )
-                                        })))
+                                        && checked_access.is_some_and(
+                                            Codegen::signature_has_unique_layout_result,
+                                        )))
                         })
                     {
                         cg.fn_destination_layouts.insert(f.name.clone(), id);
