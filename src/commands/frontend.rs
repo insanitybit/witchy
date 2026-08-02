@@ -83,7 +83,13 @@ fn document_files(files: &[String]) -> Result<String, String> {
             .map_err(|e| format!("{f}: {e}"))?;
         out.push_str(&markdown);
     }
-    Ok(out)
+    Ok(canonical_document_eof(out))
+}
+
+pub(crate) fn canonical_document_eof(mut markdown: String) -> String {
+    markdown.truncate(markdown.trim_end_matches('\n').len());
+    markdown.push('\n');
+    markdown
 }
 
 /// Run `witchy expand` when it is the requested command.
@@ -233,6 +239,8 @@ mod tests {
         assert!(alpha_at < beta_at, "{output}");
         assert!(output.contains("Alpha docs."), "{output}");
         assert!(output.contains("Beta docs."), "{output}");
+        assert!(output.ends_with('\n'));
+        assert!(!output.ends_with("\n\n"));
     }
 
     #[test]

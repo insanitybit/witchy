@@ -150,6 +150,7 @@ pub(super) fn prepare_dynamic_methods(
     methods: Vec<DynamicMethodDefinition>,
     runtime_catalog: &RuntimeDeclarationCatalog,
     runtime_types: &RuntimeTypePlan,
+    module: &Module,
 ) -> Result<Vec<RuntimeMethodDescriptor>, String> {
     let descriptor = |ty: &Type| {
         let identity = runtime_catalog
@@ -191,7 +192,7 @@ pub(super) fn prepare_dynamic_methods(
                 .collect::<Result<Vec<_>, String>>()?;
             let result = descriptor(&method.result)?;
             let callable_identity = runtime_catalog
-                .checked_callable_identity(&method.access)
+                .checked_callable_identity_with_authority(&method.access, module)
                 .map_err(|error| error.to_string())?;
             if runtime_types.id(&callable_identity).is_none() {
                 return Err(format!(
@@ -1058,14 +1059,14 @@ fn runtime_callable_access_expr(
     use crate::runtime_type::RuntimeAccessKind as Kind;
     let callable_qualifiers = Expr::List(
         access
-            .callable_qualifiers
+            .callable_qualifiers()
             .iter()
             .map(runtime_access_qualifier_expr)
             .collect(),
     );
     let parameters = Expr::List(
         access
-            .parameters
+            .parameters()
             .iter()
             .map(|parameter| {
                 let kind = match parameter.kind {
@@ -1097,18 +1098,18 @@ fn runtime_callable_access_expr(
         args: vec![
             Expr::List(
                 access
-                    .result
+                    .result()
                     .qualifier_sites
                     .iter()
                     .map(runtime_qualifier_site_expr)
                     .collect(),
             ),
-            Expr::Bool(access.result.ownership_output),
+            Expr::Bool(access.result().ownership_output),
         ],
     };
     let relations = Expr::List(
         access
-            .borrow_relations
+            .borrow_relations()
             .iter()
             .enumerate()
             .map(|(index, relation)| {
@@ -1167,51 +1168,41 @@ fn dynamic_type_of(value: &str) -> Expr {
 fn dynamic_decode_step(
     value: &str,
     decoded: &str,
-    ty: &Type,
     descriptor: crate::runtime_type::RuntimeTypeId,
     success: Expr,
     failure: Expr,
 ) -> Expr {
-    let option = Type::Named("Option".into(), vec![ty.clone()]);
     Expr::Block(Block {
-        stmts: vec![
-            Stmt::Let {
-                name: format!("{decoded}_option"),
-                ty: Some(option),
-                value: Expr::Call {
-                    name: intrinsics::DYNAMIC_TRY_DECODE_TYPED.into(),
-                    args: vec![
-                        Expr::Var(value.into()),
-                        Expr::Int(i64::from(descriptor.index())),
-                    ],
-                },
-                mutable: false,
-            },
-            Stmt::Expr(Expr::Match {
-                scrutinee: Box::new(Expr::Var(format!("{decoded}_option"))),
-                arms: vec![
-                    witchy_syntax::ast::MatchArm {
-                        line: u32::MAX,
-                        pattern: witchy_syntax::ast::Pattern::Ctor {
-                            name: "Some".into(),
-                            args: vec![witchy_syntax::ast::Pattern::Var(decoded.into())],
-                        },
-                        guard: None,
-                        body: success,
-                    },
-                    witchy_syntax::ast::MatchArm {
-                        line: u32::MAX,
-                        pattern: witchy_syntax::ast::Pattern::Ctor {
-                            name: "None".into(),
-                            args: Vec::new(),
-                        },
-                        guard: None,
-                        body: failure,
-                    },
+        stmts: vec![Stmt::Expr(Expr::Match {
+            scrutinee: Box::new(Expr::Call {
+                name: intrinsics::DYNAMIC_TRY_DECODE_TYPED.into(),
+                args: vec![
+                    Expr::Var(value.into()),
+                    Expr::Int(i64::from(descriptor.index())),
                 ],
             }),
-        ],
-        lines: vec![u32::MAX, u32::MAX],
+            arms: vec![
+                witchy_syntax::ast::MatchArm {
+                    line: u32::MAX,
+                    pattern: witchy_syntax::ast::Pattern::Ctor {
+                        name: "Some".into(),
+                        args: vec![witchy_syntax::ast::Pattern::Var(decoded.into())],
+                    },
+                    guard: None,
+                    body: success,
+                },
+                witchy_syntax::ast::MatchArm {
+                    line: u32::MAX,
+                    pattern: witchy_syntax::ast::Pattern::Ctor {
+                        name: "None".into(),
+                        args: Vec::new(),
+                    },
+                    guard: None,
+                    body: failure,
+                },
+            ],
+        })],
+        lines: vec![u32::MAX],
         region: None,
     })
 }
@@ -1335,7 +1326,6 @@ fn runtime_method_invocation(
         let decode = dynamic_decode_step(
             value,
             &decoded_arguments[index],
-            &argument.ty,
             argument.descriptor,
             body,
             dynamic_error("MalformedPayload", vec![actual_type.clone()]),
@@ -1376,7 +1366,6 @@ fn runtime_method_invocation(
     body = dynamic_decode_step(
         receiver,
         &self_name,
-        &method.receiver_type,
         method.receiver,
         body,
         dynamic_error("MalformedPayload", vec![dynamic_type_of(receiver)]),

@@ -310,16 +310,23 @@ impl RuntimeDeclarationCatalog {
         })
     }
 
-    /// Resolve one callable through the authenticated declaration catalog while
-    /// retaining the exact module-owned access relation supplied by
-    /// `CheckedAccessFacts`.
-    pub fn checked_callable_identity(
+    /// Resolve a checked callable while retaining authority-bearing parameter
+    /// identity outside the runtime-value descriptor closure.
+    pub(crate) fn checked_callable_identity_with_authority(
         &self,
         signature: &crate::access::AccessSignature,
+        module: &Module,
     ) -> Result<RuntimeTypeIdentity, RuntimeTypeError> {
-        RuntimeTypeIdentity::from_checked_callable(signature, &|name, kind| {
-            self.resolve(name, kind).cloned()
-        })
+        RuntimeTypeIdentity::from_checked_callable_with_authority(
+            signature,
+            &|name, kind| self.resolve(name, kind).cloned(),
+            &|ty| match self.capability_free_type_identity(ty, module) {
+                Ok(_) => Ok(false),
+                Err(RuntimeTypeError::CapabilityType(_)
+                | RuntimeTypeError::CapabilityRetained { .. }) => Ok(true),
+                Err(error) => Err(error),
+            },
+        )
     }
 
     /// Resolve a runtime identity only after proving that its complete nominal
@@ -505,6 +512,34 @@ fn validate_capability_free_type(
                     path: path.to_vec(),
                 });
             }
+            let nominal_parameters =
+                witchy_syntax::ast::effective_nominal_type_def_params(definition);
+            let instantiated_args = if nominal_parameters.len() == instantiated_args.len() {
+                let mut runtime_arguments = Vec::new();
+                for (parameter, argument) in
+                    nominal_parameters.iter().zip(instantiated_args)
+                {
+                    if witchy_syntax::ast::is_lifetime_param(parameter) {
+                        if !super::is_runtime_lifetime_argument(&argument) {
+                            let mut child_path = path.to_vec();
+                            child_path.push(format!("{} lifetime authority", definition.name));
+                            validate_capability_free_type(
+                                &argument,
+                                catalog,
+                                definitions,
+                                &BTreeMap::new(),
+                                visiting,
+                                &child_path,
+                            )?;
+                        }
+                    } else {
+                        runtime_arguments.push(argument);
+                    }
+                }
+                runtime_arguments
+            } else {
+                instantiated_args
+            };
             let parameters = crate::typeck::type_def_params(definition);
             if parameters.len() != instantiated_args.len() {
                 return Err(RuntimeTypeError::RuntimeShapeArity {

@@ -17,6 +17,29 @@ pub enum PrimitiveType {
     Unit,
 }
 
+/// Compiler-authenticated identity for one toolchain capability. These names
+/// are language ABI, not loader/display strings, and never receive readable
+/// runtime descriptors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RuntimeCapabilityIdentity {
+    Console,
+    Clock,
+    Rand,
+    Env,
+    Secret,
+    Exec,
+    Dir,
+    File,
+    Net,
+    Socket,
+    Listener,
+    BuildOut,
+    BuildRead,
+    BuildEnv,
+    BuildNet,
+    BuildExec,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuntimeConvention {
     Let,
@@ -116,7 +139,7 @@ pub struct RuntimeBorrowRelationIdentity {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RuntimeAccessAuthority {
+pub(crate) enum RuntimeAccessAuthority {
     /// Derived from a function type without module-owned checked access facts.
     /// Nominal owner relations are conservative roots and cannot compare equal
     /// to checked projection facts.
@@ -129,13 +152,86 @@ pub enum RuntimeAccessAuthority {
 /// Its authority distinguishes exact checked relations from conservative
 /// function-type relations. Physical offsets, flattened slots, and
 /// ownership-token representations never enter this value.
+/// Checked authority cannot be claimed with a struct literal outside
+/// `witchy-types`; callers receive read-only accessors instead.
+///
+/// ```compile_fail
+/// use witchy_types::runtime_type::RuntimeCallableAccessIdentity;
+/// let _forged = RuntimeCallableAccessIdentity {
+///     authority: unreachable!(),
+///     callable_qualifiers: Vec::new(),
+///     parameters: Vec::new(),
+///     result: unreachable!(),
+///     borrow_relations: Vec::new(),
+/// };
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RuntimeCallableAccessIdentity {
-    pub authority: RuntimeAccessAuthority,
-    pub callable_qualifiers: Vec<RuntimeAccessQualifier>,
-    pub parameters: Vec<RuntimeAccessParameterIdentity>,
-    pub result: RuntimeAccessResultIdentity,
-    pub borrow_relations: Vec<RuntimeBorrowRelationIdentity>,
+    authority: RuntimeAccessAuthority,
+    callable_qualifiers: Vec<RuntimeAccessQualifier>,
+    parameters: Vec<RuntimeAccessParameterIdentity>,
+    result: RuntimeAccessResultIdentity,
+    borrow_relations: Vec<RuntimeBorrowRelationIdentity>,
+}
+
+impl RuntimeCallableAccessIdentity {
+    pub fn is_checked(&self) -> bool {
+        self.authority == RuntimeAccessAuthority::CheckedFacts
+    }
+
+    pub fn is_conservative(&self) -> bool {
+        self.authority == RuntimeAccessAuthority::ConservativeType
+    }
+
+    pub fn callable_qualifiers(&self) -> &[RuntimeAccessQualifier] {
+        &self.callable_qualifiers
+    }
+
+    pub fn parameters(&self) -> &[RuntimeAccessParameterIdentity] {
+        &self.parameters
+    }
+
+    pub fn result(&self) -> &RuntimeAccessResultIdentity {
+        &self.result
+    }
+
+    pub fn borrow_relations(&self) -> &[RuntimeBorrowRelationIdentity] {
+        &self.borrow_relations
+    }
+}
+
+/// One callable parameter's canonical identity. Construction is private so a
+/// catalog-free caller cannot relabel capability authority as an ordinary
+/// runtime value.
+///
+/// ```compile_fail
+/// use witchy_types::runtime_type::{PrimitiveType, RuntimeCallableParameterIdentity, RuntimeTypeIdentity};
+/// let _forged = RuntimeCallableParameterIdentity::Value(
+///     RuntimeTypeIdentity::Primitive(PrimitiveType::Int),
+/// );
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeCallableParameterIdentity {
+    identity: RuntimeTypeIdentity,
+    authority: bool,
+}
+
+impl RuntimeCallableParameterIdentity {
+    pub fn identity(&self) -> &RuntimeTypeIdentity {
+        &self.identity
+    }
+
+    pub fn is_authority(&self) -> bool {
+        self.authority
+    }
+
+    pub(crate) fn value(identity: RuntimeTypeIdentity) -> Self {
+        Self { identity, authority: false }
+    }
+
+    pub(crate) fn authority(identity: RuntimeTypeIdentity) -> Self {
+        Self { identity, authority: true }
+    }
 }
 
 #[derive(Default)]
@@ -352,14 +448,23 @@ pub struct UnionVariantIdentity {
     pub payloads: Vec<RuntimeTypeIdentity>,
 }
 
-/// Canonical semantic identity of one runtime-representable type.
+/// Canonical semantic identity of one runtime-representable type. Compiler
+/// authority variants are inspectable but cannot be constructed externally.
+///
+/// ```compile_fail
+/// use witchy_types::runtime_type::{RuntimeCapabilityIdentity, RuntimeTypeIdentity};
+/// let _forged = RuntimeTypeIdentity::Capability {
+///     authority: RuntimeCapabilityIdentity::Console,
+/// };
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuntimeTypeIdentity {
     Primitive(PrimitiveType),
     List(Box<Self>),
     Tuple(Vec<Self>),
+    #[non_exhaustive]
     Function {
-        params: Vec<Self>,
+        params: Vec<RuntimeCallableParameterIdentity>,
         result: Box<Self>,
         conventions: Vec<RuntimeConvention>,
         access: Box<RuntimeCallableAccessIdentity>,
@@ -374,21 +479,31 @@ pub enum RuntimeTypeIdentity {
     },
     Record(Vec<(String, Self)>),
     Union(Vec<UnionVariantIdentity>),
+    /// Authenticated authority identity retained only beneath a callable's
+    /// `Authority` parameter. Direct runtime descriptors for capabilities stay
+    /// forbidden.
+    #[non_exhaustive]
+    Capability { authority: RuntimeCapabilityIdentity },
 }
 
 impl RuntimeTypeIdentity {
-    /// Construct a callable identity from the exact checked access authority.
-    /// Module/authenticated callers use this path whenever a declaration or
-    /// function-value fact is available; it cannot collide with the explicitly
-    /// conservative function-type path.
-    pub fn from_checked_callable(
+    pub(crate) fn from_checked_callable_with_authority(
         signature: &AccessSignature,
         resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
+        authority_parameter: &impl Fn(&Type) -> Result<bool, RuntimeTypeError>,
     ) -> Result<Self, RuntimeTypeError> {
         let params = signature
             .params()
             .iter()
-            .map(|param| Self::from_resolved_type(param.ty(), resolve))
+            .map(|param| {
+                if authority_parameter(param.ty())? {
+                    Self::from_resolved_type_inner(param.ty(), resolve, true)
+                        .map(RuntimeCallableParameterIdentity::authority)
+                } else {
+                    Self::from_resolved_type(param.ty(), resolve)
+                        .map(RuntimeCallableParameterIdentity::value)
+                }
+            })
             .collect::<Result<_, _>>()?;
         let result = Box::new(Self::from_resolved_type(signature.result().ty(), resolve)?);
         let conventions = signature
@@ -421,9 +536,17 @@ impl RuntimeTypeIdentity {
         ty: &Type,
         resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
     ) -> Result<Self, RuntimeTypeError> {
+        Self::from_resolved_type_inner(ty, resolve, false)
+    }
+
+    fn from_resolved_type_inner(
+        ty: &Type,
+        resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
+        allow_capability: bool,
+    ) -> Result<Self, RuntimeTypeError> {
         match ty {
             Type::Qualified(_, inner) if !matches!(ty.unqualified(), Type::Fn(..)) => {
-                Self::from_resolved_type(inner, resolve)
+                Self::from_resolved_type_inner(inner, resolve, allow_capability)
             }
             Type::RecordCompose { .. } => Err(RuntimeTypeError::MalformedStructuralType(
                 "compiler invariant violated: structural record composition reached runtime type identity before records::lower normalized it"
@@ -433,7 +556,7 @@ impl RuntimeTypeIdentity {
             Type::Tuple(items) => Ok(Self::Tuple(
                 items
                     .iter()
-                    .map(|item| Self::from_resolved_type(item, resolve))
+                    .map(|item| Self::from_resolved_type_inner(item, resolve, allow_capability))
                     .collect::<Result<_, _>>()?,
             )),
             Type::Fn(..) | Type::Qualified(_, _) => {
@@ -457,9 +580,16 @@ impl RuntimeTypeIdentity {
                 Ok(Self::Function {
                     params: params
                         .iter()
-                        .map(|param| Self::from_resolved_type(param, resolve))
+                        .map(|param| {
+                            Self::from_resolved_type_inner(param, resolve, allow_capability)
+                                .map(RuntimeCallableParameterIdentity::value)
+                        })
                         .collect::<Result<_, _>>()?,
-                    result: Box::new(Self::from_resolved_type(result, resolve)?),
+                    result: Box::new(Self::from_resolved_type_inner(
+                        result,
+                        resolve,
+                        allow_capability,
+                    )?),
                     conventions,
                     access: Box::new(RuntimeCallableAccessIdentity::from_conservative_type(
                         &signature,
@@ -474,18 +604,25 @@ impl RuntimeTypeIdentity {
                         name: name.clone(),
                     }
                 })?,
-                arguments: convert_arguments(args, resolve)?,
+                arguments: convert_arguments(args, resolve, allow_capability)?,
             }),
             Type::Named(name, args) => {
                 if capability_type(name) {
+                    if allow_capability {
+                        return Ok(Self::Capability {
+                            authority: capability_identity(name)
+                                .expect("capability type has compiler identity"),
+                        });
+                    }
                     return Err(RuntimeTypeError::CapabilityType(name.clone()));
                 }
                 if let Some(primitive) = primitive(name, args.len()) {
                     return Ok(Self::Primitive(primitive));
                 }
                 if name == "List" && args.len() == 1 {
-                    return Ok(Self::List(Box::new(Self::from_resolved_type(
+                    return Ok(Self::List(Box::new(Self::from_resolved_type_inner(
                         &args[0], resolve,
+                        allow_capability,
                     )?)));
                 }
                 if let Some(fields) = decode_anon_record(name) {
@@ -500,14 +637,21 @@ impl RuntimeTypeIdentity {
                             .into_iter()
                             .zip(args)
                             .map(|(field, ty)| {
-                                Ok((field, Self::from_resolved_type(ty, resolve)?))
+                                Ok((
+                                    field,
+                                    Self::from_resolved_type_inner(
+                                        ty,
+                                        resolve,
+                                        allow_capability,
+                                    )?,
+                                ))
                             })
                             .collect::<Result<Vec<_>, RuntimeTypeError>>()?;
                     fields.sort_by(|left, right| left.0.cmp(&right.0));
                     return Ok(Self::Record(fields));
                 }
                 if let Some(variants) = crate::typeck::anon_union_synthetic_variants(name) {
-                    return convert_union(variants, args, resolve);
+                    return convert_union(variants, args, resolve, allow_capability);
                 }
                 Ok(Self::Nominal {
                     declaration: resolve(name, DeclarationKind::Type).ok_or_else(|| {
@@ -516,7 +660,7 @@ impl RuntimeTypeIdentity {
                             name: name.clone(),
                         }
                     })?,
-                    arguments: convert_runtime_arguments(args, resolve)?,
+                    arguments: convert_runtime_arguments(args, resolve, allow_capability)?,
                 })
             }
         }
@@ -526,21 +670,31 @@ impl RuntimeTypeIdentity {
 fn convert_arguments(
     args: &[Type],
     resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
+    allow_capability: bool,
 ) -> Result<Vec<RuntimeTypeIdentity>, RuntimeTypeError> {
     args.iter()
-        .map(|arg| RuntimeTypeIdentity::from_resolved_type(arg, resolve))
+        .map(|arg| {
+            RuntimeTypeIdentity::from_resolved_type_inner(arg, resolve, allow_capability)
+        })
         .collect()
 }
 
 fn convert_runtime_arguments(
     args: &[Type],
     resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
+    allow_capability: bool,
 ) -> Result<Vec<RuntimeTypeIdentity>, RuntimeTypeError> {
     args.iter()
         .filter(|argument| {
             !matches!(argument, Type::Named(name, arguments) if arguments.is_empty() && name.starts_with('\''))
         })
-        .map(|argument| RuntimeTypeIdentity::from_resolved_type(argument, resolve))
+        .map(|argument| {
+            RuntimeTypeIdentity::from_resolved_type_inner(
+                argument,
+                resolve,
+                allow_capability,
+            )
+        })
         .collect()
 }
 
@@ -548,6 +702,7 @@ fn convert_union(
     variants: Vec<(String, usize)>,
     args: &[Type],
     resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
+    allow_capability: bool,
 ) -> Result<RuntimeTypeIdentity, RuntimeTypeError> {
     let expected: usize = variants.iter().map(|(_, arity)| arity).sum();
     if expected != args.len() {
@@ -561,7 +716,9 @@ fn convert_union(
     for (tag, arity) in variants {
         let payloads = args[at..at + arity]
             .iter()
-            .map(|ty| RuntimeTypeIdentity::from_resolved_type(ty, resolve))
+            .map(|ty| {
+                RuntimeTypeIdentity::from_resolved_type_inner(ty, resolve, allow_capability)
+            })
             .collect::<Result<_, _>>()?;
         converted.push(UnionVariantIdentity { tag, payloads });
         at += arity;
@@ -587,25 +744,29 @@ pub(super) fn primitive(name: &str, arity: usize) -> Option<PrimitiveType> {
 }
 
 pub(super) fn capability_type(name: &str) -> bool {
-    matches!(
-        name,
-        "Console"
-            | "Clock"
-            | "Rand"
-            | "Env"
-            | "Secret"
-            | "Exec"
-            | "Dir"
-            | "File"
-            | "Net"
-            | "Socket"
-            | "Listener"
-            | "BuildOut"
-            | "BuildRead"
-            | "BuildEnv"
-            | "BuildNet"
-            | "BuildExec"
-    )
+    capability_identity(name).is_some()
+}
+
+fn capability_identity(name: &str) -> Option<RuntimeCapabilityIdentity> {
+    Some(match name {
+        "Console" => RuntimeCapabilityIdentity::Console,
+        "Clock" => RuntimeCapabilityIdentity::Clock,
+        "Rand" => RuntimeCapabilityIdentity::Rand,
+        "Env" => RuntimeCapabilityIdentity::Env,
+        "Secret" => RuntimeCapabilityIdentity::Secret,
+        "Exec" => RuntimeCapabilityIdentity::Exec,
+        "Dir" => RuntimeCapabilityIdentity::Dir,
+        "File" => RuntimeCapabilityIdentity::File,
+        "Net" => RuntimeCapabilityIdentity::Net,
+        "Socket" => RuntimeCapabilityIdentity::Socket,
+        "Listener" => RuntimeCapabilityIdentity::Listener,
+        "BuildOut" => RuntimeCapabilityIdentity::BuildOut,
+        "BuildRead" => RuntimeCapabilityIdentity::BuildRead,
+        "BuildEnv" => RuntimeCapabilityIdentity::BuildEnv,
+        "BuildNet" => RuntimeCapabilityIdentity::BuildNet,
+        "BuildExec" => RuntimeCapabilityIdentity::BuildExec,
+        _ => return None,
+    })
 }
 
 pub(super) fn decode_anon_record(name: &str) -> Option<Vec<String>> {

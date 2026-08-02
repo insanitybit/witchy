@@ -27,10 +27,11 @@ pub use catalog::{
     PackageCoordinate, PackageSource, RuntimeDeclarationCatalog,
 };
 pub use identity::{
-    PrimitiveType, RuntimeAccessAuthority, RuntimeAccessKind, RuntimeAccessParameterIdentity,
+    PrimitiveType, RuntimeAccessKind, RuntimeAccessParameterIdentity,
     RuntimeAccessQualifier, RuntimeAccessResultIdentity, RuntimeBorrowOwnerIdentity,
-    RuntimeBorrowRelationIdentity, RuntimeCallableAccessIdentity, RuntimeConvention,
-    RuntimeLoanProjection, RuntimeLoanProjectionStep, RuntimeQualifierPathStep,
+    RuntimeBorrowRelationIdentity, RuntimeCallableAccessIdentity, RuntimeCallableParameterIdentity,
+    RuntimeCapabilityIdentity, RuntimeConvention, RuntimeLoanProjection,
+    RuntimeLoanProjectionStep, RuntimeQualifierPathStep,
     RuntimeQualifierSite, RuntimeTypeIdentity, UnionVariantIdentity,
 };
 
@@ -124,6 +125,7 @@ impl RuntimeTypePlan {
         let mut identities = identities.into_iter().collect::<BTreeSet<_>>();
         let roots = identities.iter().cloned().collect::<Vec<_>>();
         for root in &roots {
+            validate_descriptor_identity(root)?;
             collect_nested_identities(root, &mut identities);
         }
         let mut descriptors = Vec::with_capacity(identities.len());
@@ -161,7 +163,7 @@ impl RuntimeTypePlan {
     /// callable identities. A caller without `CheckedAccessFacts` deliberately
     /// receives only conservative function identities from
     /// `build_with_runtime_shapes`.
-    pub fn build_with_runtime_shapes_and_checked_callables<'a>(
+    pub(crate) fn build_with_runtime_shapes_and_checked_callables<'a>(
         types: impl IntoIterator<Item = &'a Type>,
         callables: impl IntoIterator<Item = &'a crate::access::AccessSignature>,
         catalog: &RuntimeDeclarationCatalog,
@@ -181,19 +183,28 @@ impl RuntimeTypePlan {
             )?;
         }
         for callable in callables {
-            identities.insert(catalog.checked_callable_identity(callable)?);
-            for ty in callable
-                .params()
-                .iter()
-                .map(|parameter| parameter.ty())
-                .chain(std::iter::once(callable.result().ty()))
-                .chain(
-                    callable
-                        .borrow_relations()
-                        .iter()
-                        .map(|relation| relation.storage_type()),
-                )
-            {
+            identities.insert(catalog.checked_callable_identity_with_authority(callable, module)?);
+            for parameter in callable.params() {
+                match catalog.capability_free_type_identity(parameter.ty(), module) {
+                    Ok(_) => collect_runtime_type_shape(
+                        parameter.ty(),
+                        catalog,
+                        module,
+                        &mut identities,
+                        &mut drafts,
+                        &mut visiting,
+                    )?,
+                    Err(RuntimeTypeError::CapabilityType(_)
+                    | RuntimeTypeError::CapabilityRetained { .. }) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            for ty in std::iter::once(callable.result().ty()).chain(
+                callable
+                    .borrow_relations()
+                    .iter()
+                    .map(|relation| relation.storage_type()),
+            ) {
                 collect_runtime_type_shape(
                     ty,
                     catalog,
@@ -349,20 +360,6 @@ fn collect_runtime_type_shape_inner(
 ) -> Result<(), RuntimeTypeError> {
     match ty {
         Type::Named(name, arguments) => {
-            let runtime_arguments = arguments
-                .iter()
-                .filter(|argument| !is_runtime_lifetime_argument(argument))
-                .collect::<Vec<_>>();
-            for argument in &runtime_arguments {
-                collect_runtime_type_shape(
-                    argument,
-                    catalog,
-                    module,
-                    identities,
-                    drafts,
-                    visiting,
-                )?;
-            }
             if let RuntimeTypeIdentity::Record(_) = &identity
                 && let Some(field_names) = decode_anon_record(name)
             {
@@ -387,6 +384,19 @@ fn collect_runtime_type_shape_inner(
                 return Ok(());
             }
             let RuntimeTypeIdentity::Nominal { declaration, .. } = &identity else {
+                for argument in arguments
+                    .iter()
+                    .filter(|argument| !is_runtime_lifetime_argument(argument))
+                {
+                    collect_runtime_type_shape(
+                        argument,
+                        catalog,
+                        module,
+                        identities,
+                        drafts,
+                        visiting,
+                    )?;
+                }
                 return Ok(());
             };
             let definition = module.items.iter().find_map(|item| {
@@ -401,6 +411,31 @@ fn collect_runtime_type_shape_inner(
                     declaration: Box::new(declaration.clone()),
                 });
             };
+            let nominal_parameters = witchy_syntax::ast::effective_nominal_type_def_params(definition);
+            let runtime_arguments = if nominal_parameters.len() == arguments.len() {
+                nominal_parameters
+                    .iter()
+                    .zip(arguments)
+                    .filter_map(|(parameter, argument)| {
+                        (!witchy_syntax::ast::is_lifetime_param(parameter)).then_some(argument)
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                arguments
+                    .iter()
+                    .filter(|argument| !is_runtime_lifetime_argument(argument))
+                    .collect::<Vec<_>>()
+            };
+            for argument in &runtime_arguments {
+                collect_runtime_type_shape(
+                    argument,
+                    catalog,
+                    module,
+                    identities,
+                    drafts,
+                    visiting,
+                )?;
+            }
             if definition.sealed {
                 drafts.insert(identity.clone(), RuntimeTypeShapeDraft::Sealed);
                 return Ok(());
@@ -517,10 +552,12 @@ fn collect_nested_identities(
         RuntimeTypeIdentity::Tuple(items) => items.iter().collect(),
         RuntimeTypeIdentity::Function { params, result, access, .. } => params
             .iter()
+            .filter(|parameter| !parameter.is_authority())
+            .map(RuntimeCallableParameterIdentity::identity)
             .chain(std::iter::once(result.as_ref()))
             .chain(
                 access
-                    .borrow_relations
+                    .borrow_relations()
                     .iter()
                     .map(|relation| relation.storage.as_ref()),
             )
@@ -532,11 +569,82 @@ fn collect_nested_identities(
             .iter()
             .flat_map(|variant| variant.payloads.iter())
             .collect(),
+        RuntimeTypeIdentity::Capability { .. } => Vec::new(),
     };
     for child in children {
         if identities.insert(child.clone()) {
             collect_nested_identities(child, identities);
         }
+    }
+}
+
+fn identity_contains_capability(identity: &RuntimeTypeIdentity) -> bool {
+    match identity {
+        RuntimeTypeIdentity::Capability { .. } => true,
+        RuntimeTypeIdentity::Primitive(_) => false,
+        RuntimeTypeIdentity::List(item) => identity_contains_capability(item),
+        RuntimeTypeIdentity::Tuple(items) => items.iter().any(identity_contains_capability),
+        RuntimeTypeIdentity::Function { params, result, access, .. } => {
+            params
+                .iter()
+                .any(|parameter| identity_contains_capability(parameter.identity()))
+                || identity_contains_capability(result)
+                || access
+                    .borrow_relations()
+                    .iter()
+                    .any(|relation| identity_contains_capability(&relation.storage))
+        }
+        RuntimeTypeIdentity::Nominal { arguments, .. }
+        | RuntimeTypeIdentity::Existential { arguments, .. } => {
+            arguments.iter().any(identity_contains_capability)
+        }
+        RuntimeTypeIdentity::Record(fields) => {
+            fields.iter().any(|(_, field)| identity_contains_capability(field))
+        }
+        RuntimeTypeIdentity::Union(variants) => variants
+            .iter()
+            .flat_map(|variant| &variant.payloads)
+            .any(identity_contains_capability),
+    }
+}
+
+fn validate_descriptor_identity(identity: &RuntimeTypeIdentity) -> Result<(), RuntimeTypeError> {
+    match identity {
+        RuntimeTypeIdentity::Capability { .. } => {
+            Err(RuntimeTypeError::CapabilityDescriptorIdentity)
+        }
+        RuntimeTypeIdentity::Primitive(_) => Ok(()),
+        RuntimeTypeIdentity::List(item) => validate_descriptor_identity(item),
+        RuntimeTypeIdentity::Tuple(items) => {
+            items.iter().try_for_each(validate_descriptor_identity)
+        }
+        RuntimeTypeIdentity::Function { params, result, access, .. } => {
+            for parameter in params {
+                if parameter.is_authority() {
+                    continue;
+                }
+                if identity_contains_capability(parameter.identity()) {
+                    return Err(RuntimeTypeError::CapabilityInValueCallableParameter);
+                }
+                validate_descriptor_identity(parameter.identity())?;
+            }
+            validate_descriptor_identity(result)?;
+            access
+                .borrow_relations()
+                .iter()
+                .try_for_each(|relation| validate_descriptor_identity(&relation.storage))
+        }
+        RuntimeTypeIdentity::Nominal { arguments, .. }
+        | RuntimeTypeIdentity::Existential { arguments, .. } => {
+            arguments.iter().try_for_each(validate_descriptor_identity)
+        }
+        RuntimeTypeIdentity::Record(fields) => fields
+            .iter()
+            .try_for_each(|(_, field)| validate_descriptor_identity(field)),
+        RuntimeTypeIdentity::Union(variants) => variants
+            .iter()
+            .flat_map(|variant| &variant.payloads)
+            .try_for_each(validate_descriptor_identity),
     }
 }
 
@@ -546,6 +654,8 @@ pub enum RuntimeTypeError {
     InvalidDeclarationIdentity(String),
     InvalidModuleOwner(String),
     CapabilityType(String),
+    CapabilityDescriptorIdentity,
+    CapabilityInValueCallableParameter,
     CapabilityRetained { capability: String, path: Vec<String> },
     UninspectableDynamicPayload { kind: String, path: Vec<String> },
     MissingRuntimeShape {
@@ -578,6 +688,12 @@ impl std::fmt::Display for RuntimeTypeError {
             Self::CapabilityType(name) => {
                 write!(f, "capability type `{name}` cannot have a runtime descriptor")
             }
+            Self::CapabilityDescriptorIdentity => {
+                f.write_str("capability authority cannot be a readable runtime descriptor")
+            }
+            Self::CapabilityInValueCallableParameter => f.write_str(
+                "capability authority cannot occupy a callable value-descriptor parameter",
+            ),
             Self::CapabilityRetained { capability, path } => {
                 write!(f, "capability type `{capability}` cannot convert to Dynamic")?;
                 if !path.is_empty() {
@@ -708,6 +824,33 @@ mod tests {
     }
 
     #[test]
+    fn type_derived_access_signature_cannot_claim_checked_runtime_authority() {
+        let string = Type::Named("String".to_string(), Vec::new());
+        let ty = Type::Fn(
+            vec![string.clone()],
+            Box::new(string),
+            vec![Convention::Borrow],
+        );
+        let type_only_signature = crate::access::AccessSignature::from_function_type(&ty)
+            .expect("type-only callable signature");
+        assert_eq!(
+            type_only_signature.params()[0].kind(),
+            crate::access::AccessKind::SharedBorrow,
+        );
+
+        let public_identity = RuntimeTypeIdentity::from_resolved_type(&ty, &|_, _| None)
+            .expect("public type-only runtime identity");
+        let RuntimeTypeIdentity::Function { access, .. } = public_identity else {
+            panic!("function type must produce a callable identity")
+        };
+        assert!(
+            access.is_conservative(),
+            "type-only access facts must remain conservative",
+        );
+        assert!(!access.is_checked());
+    }
+
+    #[test]
     fn canonical_anonymous_shapes_ignore_nominal_resolution() {
         let module = witchy_syntax::parser::parse_module(
             "fn f(record: .{a: Int, b: String}, event: .[Text(String) | Quit]) -> Int:\n    0\n",
@@ -797,7 +940,7 @@ mod tests {
             panic!("expected function identity")
         };
         assert_eq!(
-            access.parameters[0].qualifier_sites,
+            access.parameters()[0].qualifier_sites,
             vec![RuntimeQualifierSite {
                 path: vec![RuntimeQualifierPathStep::TypeArgument(0)],
                 qualifiers: vec![RuntimeAccessQualifier::Frozen],
@@ -835,9 +978,9 @@ mod tests {
         let RuntimeTypeIdentity::Function { access, .. } = original else {
             panic!("expected function identity")
         };
-        assert_eq!(access.borrow_relations.len(), 1);
-        assert_eq!(access.borrow_relations[0].lifetime, 0);
-        assert_eq!(access.borrow_relations[0].owners[0].parameter, 0);
+        assert_eq!(access.borrow_relations().len(), 1);
+        assert_eq!(access.borrow_relations()[0].lifetime, 0);
+        assert_eq!(access.borrow_relations()[0].owners[0].parameter, 0);
     }
 
     #[test]
@@ -862,10 +1005,10 @@ mod tests {
         else {
             panic!("expected function identity")
         };
-        assert_eq!(access.parameters[0].kind, RuntimeAccessKind::ExclusiveWriteback);
-        assert!(access.parameters[0].ownership_input);
-        assert!(access.parameters[0].writeback_output);
-        assert!(access.result.ownership_output);
+        assert_eq!(access.parameters()[0].kind, RuntimeAccessKind::ExclusiveWriteback);
+        assert!(access.parameters()[0].ownership_input);
+        assert!(access.parameters()[0].writeback_output);
+        assert!(access.result().ownership_output);
     }
 
     #[test]
@@ -885,21 +1028,21 @@ mod tests {
         let access = RuntimeCallableAccessIdentity::from_checked(signature, &|_, _| None)
             .expect("logical callable reflection");
 
-        assert_eq!(access.borrow_relations.len(), 2);
+        assert_eq!(access.borrow_relations().len(), 2);
         assert_eq!(
-            access.borrow_relations[0].output_projection,
+            access.borrow_relations()[0].output_projection,
             RuntimeLoanProjection {
                 steps: vec![RuntimeLoanProjectionStep::Field("first".into())],
             }
         );
-        assert_eq!(access.borrow_relations[0].owners[0].parameter, 0);
+        assert_eq!(access.borrow_relations()[0].owners[0].parameter, 0);
         assert_eq!(
-            access.borrow_relations[1].output_projection,
+            access.borrow_relations()[1].output_projection,
             RuntimeLoanProjection {
                 steps: vec![RuntimeLoanProjectionStep::Field("second".into())],
             }
         );
-        assert_eq!(access.borrow_relations[1].owners[0].parameter, 1);
+        assert_eq!(access.borrow_relations()[1].owners[0].parameter, 1);
     }
 
     #[test]
@@ -932,10 +1075,10 @@ mod tests {
             .declaration("reversed")
             .expect("reversed checked signature");
         let exact = catalog
-            .checked_callable_identity(pair)
+            .checked_callable_identity_with_authority(pair, typed.module())
             .expect("exact checked callable identity");
         let mismatch = catalog
-            .checked_callable_identity(reversed)
+            .checked_callable_identity_with_authority(reversed, typed.module())
             .expect("mismatched checked callable identity");
         assert_ne!(exact, mismatch, "owner-position rewiring must remain distinct");
 
@@ -972,19 +1115,84 @@ mod tests {
         let RuntimeTypeIdentity::Function { access, .. } = exact else {
             panic!("expected checked function identity")
         };
-        assert_eq!(access.authority, RuntimeAccessAuthority::CheckedFacts);
+        assert!(access.is_checked());
         assert_eq!(
-            access.borrow_relations[0].output_projection.steps,
+            access.borrow_relations()[0].output_projection.steps,
             vec![RuntimeLoanProjectionStep::Field("first".into())],
         );
-        assert_eq!(access.borrow_relations[0].owners[0].parameter, 0);
+        assert_eq!(access.borrow_relations()[0].owners[0].parameter, 0);
         let RuntimeTypeIdentity::Function { access, .. } = coarse else {
             panic!("expected conservative function identity")
         };
-        assert_eq!(access.authority, RuntimeAccessAuthority::ConservativeType);
+        assert!(access.is_conservative());
         assert_eq!(
-            access.borrow_relations[0].output_projection,
+            access.borrow_relations()[0].output_projection,
             RuntimeLoanProjection::default(),
+        );
+    }
+
+    #[test]
+    fn checked_callable_authority_is_identity_but_not_a_value_descriptor() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn announce(console: Console, text: String) -> String:\n    text\n",
+        )
+        .expect("parse authority-bearing callable fixture");
+        let typed = crate::typeck::annotate_checked(module)
+            .expect("type-check authority-bearing callable fixture");
+        let facts = crate::access::checked_facts(typed.module(), typed.table())
+            .expect("checked authority-bearing callable facts");
+
+        let catalog = RuntimeDeclarationCatalog::default();
+        let signature = facts.declaration("announce").expect("announce signature");
+        let identity = catalog
+            .checked_callable_identity_with_authority(signature, typed.module())
+            .expect("authority-bearing checked callable identity");
+        let RuntimeTypeIdentity::Function { params, .. } = &identity else {
+            panic!("expected function identity")
+        };
+        assert!(params[0].is_authority(), "Console must remain an authority parameter");
+        let capability = params[0].identity();
+        assert!(matches!(
+            capability,
+            RuntimeTypeIdentity::Capability {
+                authority: RuntimeCapabilityIdentity::Console
+            }
+        ));
+        assert!(matches!(
+            params[1].identity(),
+            RuntimeTypeIdentity::Primitive(PrimitiveType::String)
+        ));
+        assert!(!params[1].is_authority());
+
+        let plan = RuntimeTypePlan::build_with_runtime_shapes_and_checked_callables(
+            std::iter::empty::<&Type>(),
+            [signature],
+            &catalog,
+            typed.module(),
+        )
+        .expect("authority-bearing callable descriptor plan");
+        assert!(plan.id(&identity).is_some());
+        assert_eq!(plan.id(capability), None, "authority is not a readable value descriptor");
+
+        let capability = capability.clone();
+        let root_error = RuntimeTypePlan::build([capability.clone()])
+            .expect_err("capability identity cannot become a descriptor root");
+        assert_eq!(root_error, RuntimeTypeError::CapabilityDescriptorIdentity);
+
+        let RuntimeTypeIdentity::Function { result, conventions, access, .. } = identity else {
+            unreachable!("checked callable identity remains a function")
+        };
+        let forged_value = RuntimeTypeIdentity::Function {
+            params: vec![RuntimeCallableParameterIdentity::value(capability)],
+            result,
+            conventions,
+            access,
+        };
+        let value_error = RuntimeTypePlan::build([forged_value])
+            .expect_err("capability identity cannot occupy a value parameter");
+        assert_eq!(
+            value_error,
+            RuntimeTypeError::CapabilityInValueCallableParameter,
         );
     }
 
@@ -1024,7 +1232,7 @@ mod tests {
         )
         .expect("function-value reflection identity");
         assert_eq!(direct, function_value);
-        assert_eq!(direct.borrow_relations[0].owners[0].parameter, 0);
+        assert_eq!(direct.borrow_relations()[0].owners[0].parameter, 0);
     }
 
     #[test]

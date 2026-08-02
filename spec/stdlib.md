@@ -1020,6 +1020,26 @@ Public methods explicitly registered with `@dynamic`. The compiler replaces this
 
 The canonical access identity covers the receiver and every declared method parameter, including explicit capabilities, in source order.
 
+#### `fn access_borrow_relations(access: RuntimeCallableAccess) -> List(RuntimeBorrowRelation)`
+
+#### `fn borrow_relation_lifetime(relation: RuntimeBorrowRelation) -> Int`
+
+#### `fn borrow_relation_output(relation: RuntimeBorrowRelation) -> List(RuntimeLoanProjectionStep)`
+
+#### `fn borrow_relation_owners(relation: RuntimeBorrowRelation) -> List(RuntimeBorrowOwner)`
+
+#### `fn borrow_relation_storage(relation: RuntimeBorrowRelation) -> RuntimeType`
+
+#### `fn borrow_relation_storage_qualifiers(relation: RuntimeBorrowRelation) -> List(RuntimeQualifierSite)`
+
+#### `fn borrow_owner_parameter(owner: RuntimeBorrowOwner) -> Int`
+
+#### `fn borrow_owner_input(owner: RuntimeBorrowOwner) -> List(RuntimeLoanProjectionStep)`
+
+#### `fn qualifier_site_path(site: RuntimeQualifierSite) -> List(RuntimeQualifierPathStep)`
+
+#### `fn qualifier_site_qualifiers(site: RuntimeQualifierSite) -> List(RuntimeAccessQualifier)`
+
 #### `fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic, DynamicError)`
 
 Invoke only a descriptor-registered method. Arguments are checked against exact authenticated descriptors before the compiler-generated typed call.

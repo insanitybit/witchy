@@ -56,6 +56,7 @@ use crate::{codegen, interpreter, parser};
             let src = std::fs::read_to_string(f).unwrap();
             generated.push_str(&witchy_syntax::doc::render(stem, &src).expect("render"));
         }
+        let generated = crate::commands::frontend::canonical_document_eof(generated);
         let committed = std::fs::read_to_string("spec/stdlib.md").expect("read spec/stdlib.md");
         for (i, (g, c)) in generated.lines().zip(committed.lines()).enumerate() {
             assert_eq!(

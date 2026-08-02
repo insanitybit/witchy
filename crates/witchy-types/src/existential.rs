@@ -134,6 +134,7 @@ fn lower_explicit_packs_inner(
             dynamic_methods,
             runtime_catalog,
             &runtime_types,
+            typed.module(),
         )?);
         runtime_types.set_trait_relations(prepare_dynamic_trait_relations(
             &dynamic_types,
@@ -146,7 +147,11 @@ fn lower_explicit_packs_inner(
         rewrite_dynamic_module(module, table, runtime_catalog, &runtime_types)
     });
     dynamic_result?;
-    let typed = crate::typeck::annotate(module);
+    // Dynamic expansion introduces typed calls and payload decodes. Rebuild
+    // their address-keyed facts with the checked path so a malformed generated
+    // node is reported here instead of degrading the executable to an empty
+    // table and erasing exact call identity.
+    let typed = crate::typeck::annotate_checked(module).map_err(|error| error.to_string())?;
     let (requests, upcasts) = collect_requests(typed.module(), typed.table())?;
     let witnesses = witness::build_from_catalog_with_upcasts(catalog, requests, upcasts)?;
     let (module, table, result) = typed.rewrite_into_module(|table, module| {
