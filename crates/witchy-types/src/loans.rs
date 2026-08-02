@@ -31,6 +31,7 @@ use std::collections::HashMap;
 
 use witchy_syntax::ast::{Block, Convention, Expr, Function, Item, Module, Param, Stmt, Type, TypeQual, UnOp};
 
+use crate::access::AccessSignature;
 use crate::typeck::TypeError;
 
 fn terr(message: String) -> TypeError {
@@ -40,6 +41,9 @@ fn terr(message: String) -> TypeError {
 /// The output-to-input borrow relation of one function, read off its signature.
 #[derive(Clone)]
 struct BorrowSig {
+    /// RFC-0110's canonical access contract when this signature has finalized
+    /// checked types. Inferred AST holes retain the existing borrow-only fallback.
+    access: Option<AccessSignature>,
     /// `true` when the return type is a borrowed view.
     returns_view: bool,
     /// Parameter indices whose borrow lifetime matches the returned view's
@@ -410,6 +414,7 @@ fn validate_signature(f: &Function, opt: bool) -> Result<BorrowSig, TypeError> {
     };
 
     Ok(BorrowSig {
+        access: AccessSignature::from_function(f).ok(),
         returns_view: ret_life.is_some(),
         owner_params,
         conventions: f.params.iter().map(|param| param.convention).collect(),
@@ -509,6 +514,7 @@ fn borrow_sig_from_fn_type(ty: &Type) -> Option<BorrowSig> {
         params_default_conventions(params.len())
     };
     Some(BorrowSig {
+        access: AccessSignature::from_function_type(ty).ok(),
         returns_view: ret_life.is_some(),
         owner_params,
         conventions,
@@ -1161,6 +1167,17 @@ impl LoanCtx<'_> {
         source: &BorrowSig,
         expected: &BorrowSig,
     ) -> Result<(), TypeError> {
+        if let (Some(source), Some(expected)) = (&source.access, &expected.access) {
+            return source.verify_exact(expected).map_err(|mismatch| {
+                terr(format!(
+                    "{context} erases or changes its borrow/convention relation or \
+                     ownership/access contract ({mismatch}) — \
+                     function types must preserve qualifiers, ownership-state flow, borrow \
+                     owner positions, nested callable relations, and every `let`/`var`/`own` \
+                     convention"
+                ))
+            });
+        }
         if Self::same_callable_contract(source, expected) {
             return Ok(());
         }

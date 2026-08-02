@@ -71,10 +71,10 @@ pub enum OwnershipStateClass {
     GcReference,
     /// An owner-root relation, never an owning-object token for the viewed data.
     BorrowedOwnerRoot { lifetime: String },
-    /// State for a product, preserving the position of state-free fields.
-    Aggregate(Vec<Option<OwnershipStateClass>>),
-    /// A nominal or generic representation that must be refined by layout facts.
-    LayoutDependent,
+    /// A tuple, nominal, or generic representation that must be refined by
+    /// layout facts. Child requirements remain positional even though this
+    /// layer does not guess the outer physical layout.
+    LayoutDependent { children: Vec<Option<OwnershipStateClass>> },
 }
 
 /// Ownership components entering and leaving one parameter access.
@@ -173,6 +173,7 @@ impl AccessResult {
 /// The exact checked ownership/access identity of one callable.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccessSignature {
+    callable_qualifiers: Vec<AccessQualifier>,
     params: Vec<AccessParam>,
     result: AccessResult,
     borrow_relations: Vec<BorrowRelation>,
@@ -199,18 +200,22 @@ impl AccessSignature {
         let result = function
             .ret
             .clone()
-            .unwrap_or_else(|| Type::Named("Nil".to_string(), Vec::new()));
+            .ok_or(AccessSignatureError::MissingResultType)?;
         let conventions = function.params.iter().map(|param| param.convention).collect();
         Self::from_parts(params, result, conventions)
     }
 
     /// Derive the signature carried by a checked first-class function type.
     pub fn from_function_type(ty: &Type) -> Result<Self, AccessSignatureError> {
-        let Type::Fn(params, result, conventions) = ty else {
+        let callable_qualifiers = leading_qualifiers(ty);
+        let Type::Fn(params, result, conventions) = ty.unqualified() else {
             return Err(AccessSignatureError::NotFunctionType);
         };
         let conventions = normalized_conventions(params.len(), conventions)?;
-        Self::from_parts(params.clone(), result.as_ref().clone(), conventions)
+        let mut signature =
+            Self::from_parts(params.clone(), result.as_ref().clone(), conventions)?;
+        signature.callable_qualifiers = callable_qualifiers;
+        Ok(signature)
     }
 
     /// Derive a signature from finalized checked parameter and result types.
@@ -246,14 +251,7 @@ impl AccessSignature {
             let borrow_lifetimes = borrow_lifetimes(&ty);
             let state = ownership_state_class(&ty)?;
             let requires_state = matches!(kind, AccessKind::ExclusiveWriteback | AccessKind::Consuming)
-                || qualifiers.iter().any(|qualifier| {
-                    matches!(
-                        qualifier,
-                        AccessQualifier::Unique
-                            | AccessQualifier::LocalUnique
-                            | AccessQualifier::Borrow(_)
-                    )
-                });
+                || type_has_ownership_qualifier(&ty);
             let input = requires_state.then_some(state.clone()).flatten();
             let writeback = matches!(kind, AccessKind::ExclusiveWriteback)
                 .then_some(state)
@@ -273,8 +271,7 @@ impl AccessSignature {
         }
         let result_lifetimes = borrow_lifetimes(&result);
         let result_state = ownership_state_class(&result)?;
-        let returns_state = result_qualifiers.contains(&AccessQualifier::Unique)
-            || !result_lifetimes.is_empty();
+        let returns_state = type_has_ownership_qualifier(&result);
         let ownership_output = returns_state.then_some(result_state).flatten();
 
         let mut borrow_relations = Vec::with_capacity(result_lifetimes.len());
@@ -298,6 +295,7 @@ impl AccessSignature {
         }
 
         Ok(Self {
+            callable_qualifiers: Vec::new(),
             params: access_params,
             result: AccessResult {
                 ty: result,
@@ -311,6 +309,10 @@ impl AccessSignature {
 
     pub fn params(&self) -> &[AccessParam] {
         &self.params
+    }
+
+    pub fn callable_qualifiers(&self) -> &[AccessQualifier] {
+        &self.callable_qualifiers
     }
 
     pub fn result(&self) -> &AccessResult {
@@ -340,6 +342,12 @@ impl AccessSignature {
         }
 
         let mut lifetimes = LifetimeBijection::default();
+        compare_qualifiers(
+            &self.callable_qualifiers,
+            &candidate.callable_qualifiers,
+            &mut lifetimes,
+        )
+        .map_err(|kind| AccessMismatch::new(None, kind))?;
         for (position, (required, found)) in
             self.params.iter().zip(&candidate.params).enumerate()
         {
@@ -406,16 +414,13 @@ pub fn ownership_state_class(
         }
         Type::Qualified(_, inner) => ownership_state_class(inner),
         Type::RecordCompose { .. } => Err(AccessSignatureError::UnnormalizedRecordCompose),
+        Type::Tuple(fields) if fields.is_empty() => Ok(None),
         Type::Tuple(fields) => {
             let states = fields
                 .iter()
                 .map(ownership_state_class)
                 .collect::<Result<Vec<_>, _>>()?;
-            if states.iter().all(Option::is_none) {
-                Ok(None)
-            } else {
-                Ok(Some(OwnershipStateClass::Aggregate(states)))
-            }
+            Ok(Some(OwnershipStateClass::LayoutDependent { children: states }))
         }
         Type::Fn(_, _, _) | Type::Dyn(_, _) => Ok(Some(OwnershipStateClass::GcReference)),
         Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
@@ -430,9 +435,16 @@ pub fn ownership_state_class(
                     Ok(None)
                 }
             }
-            _ => Ok(Some(OwnershipStateClass::LayoutDependent)),
+            _ => Ok(Some(OwnershipStateClass::LayoutDependent {
+                children: Vec::new(),
+            })),
         },
-        Type::Named(_, _) => Ok(Some(OwnershipStateClass::LayoutDependent)),
+        Type::Named(_, arguments) => Ok(Some(OwnershipStateClass::LayoutDependent {
+            children: arguments
+                .iter()
+                .map(ownership_state_class)
+                .collect::<Result<Vec<_>, _>>()?,
+        })),
     }
 }
 
@@ -440,6 +452,7 @@ pub fn ownership_state_class(
 pub enum AccessSignatureError {
     NotFunctionType,
     MissingParameterType { position: usize },
+    MissingResultType,
     ConventionArity { params: usize, conventions: usize },
     FrozenMutableParameter { position: usize },
     MutableBorrowedView { position: usize },
@@ -456,6 +469,9 @@ impl fmt::Display for AccessSignatureError {
                 formatter,
                 "parameter {position} has no finalized checked type"
             ),
+            Self::MissingResultType => {
+                write!(formatter, "function has no finalized checked result type")
+            }
             Self::ConventionArity { params, conventions } => write!(
                 formatter,
                 "function type has {params} parameter(s) but {conventions} convention(s)"
@@ -559,6 +575,29 @@ fn leading_qualifiers(ty: &Type) -> Vec<AccessQualifier> {
         current = inner;
     }
     qualifiers
+}
+
+fn type_has_ownership_qualifier(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(
+            TypeQual::Unique | TypeQual::LocalUnique | TypeQual::Borrow(_),
+            _,
+        ) => true,
+        Type::Qualified(TypeQual::Frozen, inner) => type_has_ownership_qualifier(inner),
+        Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
+            arguments.iter().any(type_has_ownership_qualifier)
+        }
+        Type::RecordCompose { base, fields } => {
+            type_has_ownership_qualifier(base)
+                || fields
+                    .iter()
+                    .any(|(_, field)| type_has_ownership_qualifier(field))
+        }
+        // A nested callable's parameter/result ownership belongs to that
+        // callable's own access signature, not to the function value which
+        // contains it.
+        Type::Fn(_, _, _) => false,
+    }
 }
 
 fn borrow_lifetimes(ty: &Type) -> Vec<String> {
@@ -691,6 +730,28 @@ fn compare_type(
     }
 }
 
+fn compare_qualifiers(
+    required: &[AccessQualifier],
+    candidate: &[AccessQualifier],
+    lifetimes: &mut LifetimeBijection,
+) -> Result<(), AccessMismatchKind> {
+    if required.len() != candidate.len() {
+        return Err(AccessMismatchKind::Qualifier);
+    }
+    for (required, candidate) in required.iter().zip(candidate) {
+        match (required, candidate) {
+            (AccessQualifier::Borrow(required), AccessQualifier::Borrow(candidate)) => {
+                if !lifetimes.relate(required, candidate) {
+                    return Err(AccessMismatchKind::BorrowRelation);
+                }
+            }
+            _ if required == candidate => {}
+            _ => return Err(AccessMismatchKind::Qualifier),
+        }
+    }
+    Ok(())
+}
+
 fn compare_type_lists(
     required: &[Type],
     candidate: &[Type],
@@ -742,7 +803,10 @@ fn state_compatible(
             OwnershipStateClass::BorrowedOwnerRoot { lifetime: required },
             OwnershipStateClass::BorrowedOwnerRoot { lifetime: candidate },
         ) => lifetimes.matches(required, candidate),
-        (OwnershipStateClass::Aggregate(required), OwnershipStateClass::Aggregate(candidate)) => {
+        (
+            OwnershipStateClass::LayoutDependent { children: required },
+            OwnershipStateClass::LayoutDependent { children: candidate },
+        ) => {
             required.len() == candidate.len()
                 && required.iter().zip(candidate).all(|(required, candidate)| {
                     optional_state_compatible(

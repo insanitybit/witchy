@@ -1,4 +1,4 @@
-use witchy_syntax::ast::{Convention, Type, TypeQual};
+use witchy_syntax::ast::{Block, Convention, Function, Param, Type, TypeQual};
 
 use crate::access::{
     AccessKind, AccessMismatchKind, AccessQualifier, AccessSignature, AccessSignatureError,
@@ -25,6 +25,10 @@ fn signature(
     AccessSignature::from_parts(params, result, conventions).expect("valid access signature")
 }
 
+fn layout(children: Vec<Option<OwnershipStateClass>>) -> OwnershipStateClass {
+    OwnershipStateClass::LayoutDependent { children }
+}
+
 #[test]
 fn every_parameter_convention_has_a_distinct_access_and_state_flow() {
     let sig = signature(
@@ -46,15 +50,15 @@ fn every_parameter_convention_has_a_distinct_access_and_state_flow() {
     assert_eq!(sig.params()[1].ownership().input(), None);
     assert_eq!(
         sig.params()[2].ownership().input(),
-        Some(&OwnershipStateClass::LayoutDependent)
+        Some(&layout(vec![None]))
     );
     assert_eq!(
         sig.params()[2].ownership().writeback(),
-        Some(&OwnershipStateClass::LayoutDependent)
+        Some(&layout(vec![None]))
     );
     assert_eq!(
         sig.params()[3].ownership().input(),
-        Some(&OwnershipStateClass::LayoutDependent)
+        Some(&layout(vec![None]))
     );
     assert_eq!(sig.params()[3].ownership().writeback(), None);
 }
@@ -78,11 +82,11 @@ fn qualifiers_are_preserved_and_drive_ownership_requirements() {
     assert_eq!(sig.params()[2].qualifiers(), &[AccessQualifier::Frozen]);
     assert_eq!(
         sig.params()[0].ownership().input(),
-        Some(&OwnershipStateClass::LayoutDependent)
+        Some(&layout(vec![None]))
     );
     assert_eq!(
         sig.params()[1].ownership().input(),
-        Some(&OwnershipStateClass::LayoutDependent)
+        Some(&layout(vec![None]))
     );
     assert_eq!(sig.params()[2].ownership().input(), None);
 }
@@ -97,7 +101,7 @@ fn unique_results_return_representation_classed_state() {
     assert_eq!(sig.result().qualifiers(), &[AccessQualifier::Unique]);
     assert_eq!(
         sig.result().ownership_output(),
-        Some(&OwnershipStateClass::LayoutDependent)
+        Some(&layout(vec![None]))
     );
 
     let scalar = signature(
@@ -145,11 +149,11 @@ fn representation_classification_is_structural_not_container_specific() {
     assert_eq!(ownership_state_class(&named("Console")).unwrap(), None);
     assert_eq!(
         ownership_state_class(&list(named("Int"))).unwrap(),
-        Some(OwnershipStateClass::LayoutDependent)
+        Some(layout(vec![None]))
     );
     assert_eq!(
         ownership_state_class(&Type::Tuple(vec![named("Int"), named("String")])).unwrap(),
-        Some(OwnershipStateClass::Aggregate(vec![
+        Some(layout(vec![
             None,
             Some(OwnershipStateClass::LinearMemoryObject),
         ]))
@@ -169,6 +173,90 @@ fn function_type_derivation_normalizes_legacy_empty_conventions() {
             .iter()
             .all(|param| param.kind() == AccessKind::OwnedImmutable)
     );
+}
+
+#[test]
+fn from_function_requires_a_finalized_result_type() {
+    let function = Function {
+        public: false,
+        comptime_only: false,
+        attributes: Vec::new(),
+        name: "inferred".to_string(),
+        params: vec![Param {
+            name: "value".to_string(),
+            ty: Some(named("Int")),
+            convention: Convention::Let,
+            default: None,
+        }],
+        ret: None,
+        body: Block { stmts: Vec::new(), lines: Vec::new(), region: None },
+        bounds: Vec::new(),
+        is_gen: false,
+        is_async: false,
+    };
+
+    assert_eq!(
+        AccessSignature::from_function(&function),
+        Err(AccessSignatureError::MissingResultType)
+    );
+}
+
+#[test]
+fn nested_qualifiers_drive_parameter_and_result_state_flow() {
+    let borrowed = qualified(TypeQual::Borrow("a".to_string()), named("String"));
+    let unique = qualified(TypeQual::Unique, list(named("Int")));
+    let sig = signature(
+        vec![Type::Tuple(vec![borrowed.clone(), named("Int")])],
+        Type::Tuple(vec![borrowed, unique]),
+        vec![Convention::Let],
+    );
+
+    let expected_input = layout(vec![
+        Some(OwnershipStateClass::BorrowedOwnerRoot {
+            lifetime: "a".to_string(),
+        }),
+        None,
+    ]);
+    assert_eq!(sig.params()[0].ownership().input(), Some(&expected_input));
+    assert_eq!(
+        sig.result().ownership_output(),
+        Some(&layout(vec![
+            Some(OwnershipStateClass::BorrowedOwnerRoot {
+                lifetime: "a".to_string(),
+            }),
+            Some(layout(vec![None])),
+        ]))
+    );
+    assert_eq!(sig.borrow_relations()[0].owner_positions(), &[0]);
+}
+
+#[test]
+fn scalar_only_tuples_remain_layout_dependent() {
+    assert_eq!(
+        ownership_state_class(&Type::Tuple(vec![named("Int"), named("Bool")])).unwrap(),
+        Some(layout(vec![None, None]))
+    );
+    assert_eq!(ownership_state_class(&Type::Tuple(Vec::new())).unwrap(), None);
+}
+
+#[test]
+fn qualified_function_types_preserve_outer_callable_qualifiers() {
+    let plain = Type::Fn(
+        vec![named("Int")],
+        Box::new(named("Bool")),
+        vec![Convention::Let],
+    );
+    let qualified_type = qualified(TypeQual::Unique, plain.clone());
+    let qualified_sig = AccessSignature::from_function_type(&qualified_type).unwrap();
+    let plain_sig = AccessSignature::from_function_type(&plain).unwrap();
+
+    assert_eq!(
+        qualified_sig.callable_qualifiers(),
+        &[AccessQualifier::Unique]
+    );
+    let error = qualified_sig.verify_exact(&plain_sig).unwrap_err();
+    assert_eq!(error.position(), None);
+    assert_eq!(error.kind(), AccessMismatchKind::Qualifier);
 }
 
 #[test]

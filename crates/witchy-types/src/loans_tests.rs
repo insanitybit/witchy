@@ -252,6 +252,17 @@
     }
 
     #[test]
+    fn function_value_may_not_erase_an_ownership_qualifier() {
+        let src = "mode opt\n\n\
+             fn constrained(xs: unique List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn use(f: fn(List(Int)) -> Int) -> Nil:\n    return\n\n\
+             fn main():\n    use(constrained)\n";
+        let err = check_str(src).expect_err("a higher-order argument may not erase `unique`");
+        assert!(err.contains("ownership/access contract"), "{err}");
+        assert!(err.contains("Qualifier"), "{err}");
+    }
+
+    #[test]
     fn borrowed_function_types_require_opt_mode_and_bound_outputs() {
         let no_opt = "fn apply(f: fn(View(String, 'a)) -> View(String, 'a), s: String) -> String:\n    f(s)\n";
         let err = check_str(no_opt).expect_err("borrowed function type requires mode opt");
