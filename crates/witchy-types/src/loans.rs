@@ -1287,6 +1287,58 @@ fn authenticated_non_escaping_generic_read(
     )
 }
 
+/// The bundled `borrow.Owned` blanket implementation is the one authenticated
+/// generic materializer: it returns the same logical value as an owned result,
+/// without retaining any relation to the borrowed argument. Authenticate the
+/// compiler-generated callable identity from its exact generic leaf so neither
+/// a user-defined `owned` method nor a lookalike mangled suffix is trusted.
+fn authenticated_generic_materializer(
+    callee: &str,
+    index: usize,
+    access: &AccessSignature,
+    sources: &[BorrowSource],
+) -> bool {
+    if !is_std_fn(callee)
+        || index != 0
+        || access.params().len() != 1
+        || !access.borrow_relations().is_empty()
+    {
+        return false;
+    }
+
+    let Some((module, identity)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    let parameter = &access.params()[0];
+    let result = access.result();
+    let Type::Named(generic, arguments) = parameter.ty().unqualified() else {
+        return false;
+    };
+    let Some(mangled_generic) = identity
+        .strip_prefix("Owned__")
+        .and_then(|name| name.strip_suffix("__owned"))
+    else {
+        return false;
+    };
+
+    module == "borrow"
+        && mangled_generic == generic
+        && arguments.is_empty()
+        && type_has_generic_leaf(parameter.ty())
+        && parameter.kind() == AccessKind::OwnedImmutable
+        && parameter.ty() == result.ty()
+        && parameter.qualifiers().is_empty()
+        && result.qualifiers().is_empty()
+        && parameter.borrow_lifetimes().is_empty()
+        && result.borrow_lifetimes().is_empty()
+        && parameter.ownership().input().is_none()
+        && parameter.ownership().writeback().is_none()
+        && result.ownership_output().is_none()
+        && sources
+            .iter()
+            .all(|source| source.borrower_projection.steps.is_empty())
+}
+
 fn validate_nested_fn_borrows(ty: &Type, context: &str) -> Result<(), TypeError> {
     match ty {
         Type::Fn(params, ret, _) => {
@@ -2619,6 +2671,7 @@ impl LoanCtx<'_> {
             let Some(parameter) = access.params().get(index) else { continue };
             if !type_has_generic_leaf(parameter.ty())
                 || authenticated_non_escaping_generic_read(callee, index, access)
+                || authenticated_generic_materializer(callee, index, access, &sources)
             {
                 continue;
             }

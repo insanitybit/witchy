@@ -3,25 +3,26 @@
     //! rule accepts or rejects it with the documented diagnostic.
 
     use crate::{
+        access::AccessSignature,
         loans::facts,
         typeck::{check, check_str},
     };
-    use witchy_syntax::ast::{Expr, Item, Stmt};
+    use witchy_syntax::ast::{Convention, Expr, Item, Stmt, Type};
 
     use super::{
-        BorrowRelationCatalog, LoanEdgeKind, LoanProjection, LoanProjectionStep,
-        projections_overlap,
+        BorrowRelationCatalog, BorrowSource, LoanEdgeKind, LoanProjection, LoanProjectionStep,
+        authenticated_generic_materializer, projections_overlap,
     };
 
-    fn linked_normal(main_body: &str) -> Result<(), crate::typeck::TypeError> {
-        fn no_comptime(
-            _name: &str,
-            _module: &mut witchy_syntax::ast::Module,
-            _siblings: &[(String, witchy_syntax::ast::Module)],
-        ) -> Result<witchy_syntax::origin::OriginTable, String> {
-            Ok(witchy_syntax::origin::OriginTable::default())
-        }
+    fn no_comptime(
+        _name: &str,
+        _module: &mut witchy_syntax::ast::Module,
+        _siblings: &[(String, witchy_syntax::ast::Module)],
+    ) -> Result<witchy_syntax::origin::OriginTable, String> {
+        Ok(witchy_syntax::origin::OriginTable::default())
+    }
 
+    fn linked_normal(main_body: &str) -> Result<(), crate::typeck::TypeError> {
         let api = witchy_syntax::parser::parse_module(
             "mode opt\n\npub fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n",
         )
@@ -36,6 +37,13 @@
             no_comptime,
         )
         .expect("link normal caller to opt API");
+        check(&linked)
+    }
+
+    fn linked_main(source: &str) -> Result<(), crate::typeck::TypeError> {
+        let main = witchy_syntax::parser::parse_module(source).expect("parse linked main");
+        let linked = witchy_syntax::linker::link(vec![("main".into(), main)], "main", no_comptime)
+            .expect("link main with bundled std modules");
         check(&linked)
     }
 
@@ -183,6 +191,69 @@
             "    var s = \"hi\"\n    let w = borrow(s)\n    let keep = owned(w)\n    s = \"x\"\n    console.print(keep)\n    console.print(s)\n",
         ))
         .expect("materializing the view ends the loan");
+    }
+
+    #[test]
+    fn bundled_owned_materializes_a_view_before_owner_mutation() {
+        linked_main(
+            "mode opt\n\n\
+             import borrow\n\n\
+             fn view(text: let('a) String) -> View(String, 'a):\n    text\n\n\
+             fn main(console: Console):\n    var owner = \"before\"\n    let snapshot = view(owner).owned()\n    owner = \"after\"\n    console.print(snapshot)\n    console.print(owner)\n",
+        )
+        .expect("the exact bundled Owned materializer ends the view loan");
+    }
+
+    #[test]
+    fn bundled_owned_authenticates_only_a_direct_view_projection() {
+        let generic = Type::Named("a".into(), Vec::new());
+        let access = AccessSignature::from_parts(
+            vec![generic.clone()],
+            generic,
+            vec![Convention::Let],
+        )
+        .expect("derive generic identity access");
+        let direct = BorrowSource {
+            owner: "owner".into(),
+            root_type: None,
+            projection: LoanProjection::default(),
+            borrower_projection: LoanProjection::default(),
+            origin: "view".into(),
+            owner_type: Type::Named("String".into(), Vec::new()),
+            temporary: false,
+        };
+
+        assert!(authenticated_generic_materializer(
+            "borrow.Owned__a__owned",
+            0,
+            &access,
+            std::slice::from_ref(&direct),
+        ));
+
+        let shell = BorrowSource {
+            borrower_projection: LoanProjection {
+                steps: vec![LoanProjectionStep::Field("value".into())],
+            },
+            ..direct.clone()
+        };
+        assert!(!authenticated_generic_materializer(
+            "borrow.Owned__a__owned",
+            0,
+            &access,
+            &[shell],
+        ));
+        assert!(!authenticated_generic_materializer(
+            "main.Owned__a__owned",
+            0,
+            &access,
+            std::slice::from_ref(&direct),
+        ));
+        assert!(!authenticated_generic_materializer(
+            "borrow.Owned__a__owned__suffix",
+            0,
+            &access,
+            &[direct],
+        ));
     }
 
     // --- wrappers + multiple shared views (acceptance 4) --------------------
