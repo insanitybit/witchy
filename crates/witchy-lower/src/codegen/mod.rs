@@ -210,6 +210,13 @@ impl ClosureOwnershipEnvelope {
     }
 }
 
+#[derive(Clone, Copy)]
+struct LambdaContract<'a> {
+    result_ty: Option<&'a Type>,
+    access: Option<&'a witchy_types::access::AccessSignature>,
+    ownership: &'a ClosureOwnershipEnvelope,
+}
+
 type LoweredClosureArgs = (
     Vec<witchy_wir::wir::WirExpr>,
     Vec<ClosureWriteback>,
@@ -5868,9 +5875,7 @@ impl<'types> Codegen<'types> {
                 &cap_info,
                 CapMode::Env(env_struct_id),
                 signature,
-                result_ty,
-                access,
-                ownership,
+                LambdaContract { result_ty, access, ownership },
             )?;
             // `build_lambda_wir_func` names itself `__lamw{len}` from the length at
             // its START, but a NESTED lambda lowered during the build pushes to
@@ -5958,9 +5963,7 @@ impl<'types> Codegen<'types> {
                 &cap_info,
                 CapMode::Threaded,
                 signature,
-                result_ty,
-                access,
-                ownership,
+                LambdaContract { result_ty, access, ownership },
             )?;
             // Rename to the real push index (a nested lambda lowered during the build may
             // have shifted the length), mirroring `lower_lambda`.
@@ -5991,11 +5994,10 @@ impl<'types> Codegen<'types> {
         cap_info: &[CaptureInfo],
         cap_mode: CapMode,
         signature: &(Vec<Kind>, Kind),
-        result_ty: Option<&Type>,
-        access: Option<&witchy_types::access::AccessSignature>,
-        ownership: &ClosureOwnershipEnvelope,
+        contract: LambdaContract<'_>,
     ) -> Option<witchy_wir::wir::WirFunc> {
         use witchy_wir::wir::{WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
+        let LambdaContract { result_ty, access, ownership } = contract;
         let index = self.lambda_wir_funcs.len();
         let saved = self.swap_out_scope();
         self.cur_fn_var_params = params

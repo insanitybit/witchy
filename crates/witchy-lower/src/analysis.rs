@@ -3322,6 +3322,16 @@ fn merge_no_copy_env(
     merged
 }
 
+#[derive(Clone, Copy)]
+struct NoCopyInputs<'facts, 'module> {
+    module: &'module Module,
+    access: Option<&'facts witchy_types::access::CheckedAccessFacts<'module>>,
+    required: &'facts HashMap<String, Vec<usize>>,
+    unique_results: &'facts HashSet<String>,
+    summaries: &'facts Summaries,
+    loans: &'facts witchy_types::loans::LoanFacts,
+}
+
 struct NoCopyWalker<'facts, 'module> {
     function: String,
     module: &'module Module,
@@ -3339,13 +3349,16 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
     fn new(
         function: String,
         body: &Block,
-        module: &'module Module,
-        access: Option<&'facts witchy_types::access::CheckedAccessFacts<'module>>,
-        required: &'facts HashMap<String, Vec<usize>>,
-        unique_results: &'facts HashSet<String>,
-        summaries: &'facts Summaries,
-        loans: &'facts witchy_types::loans::LoanFacts,
+        inputs: NoCopyInputs<'facts, 'module>,
     ) -> Self {
+        let NoCopyInputs {
+            module,
+            access,
+            required,
+            unique_results,
+            summaries,
+            loans,
+        } = inputs;
         let mut facts = analyze(body, summaries);
         facts.merge_loan_kills(body, loans);
         Self {
@@ -3712,12 +3725,14 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 let nested = NoCopyWalker::new(
                     name,
                     body,
-                    self.module,
-                    self.access,
-                    self.required,
-                    self.unique_results,
-                    self.summaries,
-                    self.loans,
+                    NoCopyInputs {
+                        module: self.module,
+                        access: self.access,
+                        required: self.required,
+                        unique_results: self.unique_results,
+                        summaries: self.summaries,
+                        loans: self.loans,
+                    },
                 )
                 .walk_lambda(params, body, signature.as_ref());
                 self.misses.extend(nested);
@@ -3968,12 +3983,14 @@ fn module_no_copy_misses_with_access(
                 NoCopyWalker::new(
                     function.name.clone(),
                     &function.body,
-                    module,
-                    access,
-                    &required,
-                    &unique_results,
-                    &summaries,
-                    &loans,
+                    NoCopyInputs {
+                        module,
+                        access,
+                        required: &required,
+                        unique_results: &unique_results,
+                        summaries: &summaries,
+                        loans: &loans,
+                    },
                 )
                 .walk(function),
             );
