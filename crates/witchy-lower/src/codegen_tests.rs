@@ -1897,6 +1897,107 @@ fn main() -> Int:
     }
 
     #[test]
+    fn unique_packed_destination_requires_complete_constructor_returns() {
+        let complete = r#"
+mode opt
+
+type Pair packed:
+    left: Int
+    right: Int
+
+fn choose(flag: Bool, value: Int) -> unique Pair:
+    if flag:
+        Pair(value, value + 1)
+    else:
+        Pair(value + 100, value + 1)
+
+fn main() -> Int:
+    var current = choose(true, 0)
+    var total = 0
+    for i in 1..6:
+        current = choose(i % 2 == 0, i)
+        total = total + current.left + current.right
+    total
+"#;
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_destination_candidates_forwarded",
+        ];
+        let (result, counters) = run_int_with_i64_globals(complete, &names);
+        assert_eq!(result, 335);
+        assert_eq!(
+            counters["__witchy_packed_alloc_calls"],
+            1,
+            "only the initial live destination is allocated; each replacement reuses it"
+        );
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 16);
+        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 5);
+
+        let module = parse_module(complete).expect("parse complete destination returns");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("complete destination returns lower"),
+        );
+        let choose_start = wat.find("(func $choose (").expect("choose function");
+        let choose_tail = &wat[choose_start..];
+        let choose_end = choose_tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(choose_tail.len());
+        let choose = &choose_tail[..choose_end];
+        assert!(
+            choose
+                .lines()
+                .next()
+                .is_some_and(|signature| signature.contains("(param $__witchy_destination i32)")),
+            "complete constructor returns must select the destination ABI: {choose}"
+        );
+
+        let early_return = r#"
+mode opt
+
+type Pair packed:
+    left: Int
+    right: Int
+
+fn choose(flag: Bool, value: Int) -> unique Pair:
+    if flag:
+        return Pair(value, value + 1)
+    Pair(value + 100, value + 1)
+
+fn main() -> Int:
+    var pair = choose(true, 7)
+    pair = choose(false, 8)
+    pair.left + pair.right
+"#;
+        let (result, counters) = run_int_with_i64_globals(early_return, &names);
+        assert_eq!(result, 117);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 2);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 32);
+        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 0);
+
+        let module = parse_module(early_return).expect("parse early-return destination fallback");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("early-return destination fallback lowers"),
+        );
+        let choose_start = wat.find("(func $choose (").expect("early choose function");
+        let choose_tail = &wat[choose_start..];
+        let choose_end = choose_tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(choose_tail.len());
+        let choose = &choose_tail[..choose_end];
+        assert!(
+            !choose
+                .lines()
+                .next()
+                .is_some_and(|signature| signature.contains("(param $__witchy_destination i32)"))
+                && !choose.contains("local.get $__witchy_destination"),
+            "mixed early-return control flow must decline the destination ABI: {choose}"
+        );
+    }
+
+    #[test]
     fn unique_packed_result_allocates_when_the_old_value_escapes() {
         let source = r#"
 mode opt
