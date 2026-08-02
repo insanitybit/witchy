@@ -20,3 +20,6 @@ pub mod wir_helpers;
 pub mod layout;
 pub mod wir_opt;
 pub mod wir_prelude;
+
+#[cfg(test)]
+mod layout_tests;
