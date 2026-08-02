@@ -93,7 +93,12 @@ fn compiled_output(
     let mut actor = runtime
         .spawn(
             &bytes,
-            Capabilities { print: true, quiet: true, ..Default::default() },
+            Capabilities {
+                print: true,
+                print_int: true,
+                quiet: true,
+                ..Default::default()
+            },
             256,
         )
         .expect("spawn RFC-0110 access matrix");
@@ -322,27 +327,38 @@ fn main(console: Console):
     var mutual_values = []
     let mutual_result = mutual_left(mutual_values, 1)
 
-    console.print("${list.at(direct_result, 0)}:${list.length(direct_values)}:${list.at(direct_values, 0)}")
-    console.print("${list.at(method_result, 0)}:${list.length(method_values)}:${list.at(method_values, 0)}")
-    console.print("${list.at(function_value_result, 0)}:${list.length(function_value_values)}:${list.at(function_value_values, 0)}")
-    console.print("${list.at(lambda_result, 0)}:${list.length(lambda_values)}:${list.at(lambda_values, 0)}")
-    console.print("${list.at(apply_result, 0)}:${list.length(apply_values)}:${list.at(apply_values, 0)}")
-    console.print("${list.at(static_trait_result, 0)}:${list.length(static_trait_values)}:${list.at(static_trait_values, 0)}")
-    console.print("${list.at(existential_result, 0)}:${list.length(existential_values)}:${list.at(existential_values, 0)}")
-    console.print("${list.at(self_result, 0)}:${list.length(self_values)}:${list.at(self_values, 0)}")
-    console.print("${list.at(mutual_result, 0)}:${list.length(mutual_values)}:${list.at(mutual_values, 0)}")
+    print_int(list.at(direct_result, 0))
+    print_int(list.length(direct_values))
+    print_int(list.at(direct_values, 0))
+    print_int(list.at(method_result, 0))
+    print_int(list.length(method_values))
+    print_int(list.at(method_values, 0))
+    print_int(list.at(function_value_result, 0))
+    print_int(list.length(function_value_values))
+    print_int(list.at(function_value_values, 0))
+    print_int(list.at(lambda_result, 0))
+    print_int(list.length(lambda_values))
+    print_int(list.at(lambda_values, 0))
+    print_int(list.at(apply_result, 0))
+    print_int(list.length(apply_values))
+    print_int(list.at(apply_values, 0))
+    print_int(list.at(static_trait_result, 0))
+    print_int(list.length(static_trait_values))
+    print_int(list.at(static_trait_values, 0))
+    print_int(list.at(existential_result, 0))
+    print_int(list.length(existential_values))
+    print_int(list.at(existential_values, 0))
+    print_int(list.at(self_result, 0))
+    print_int(list.length(self_values))
+    print_int(list.at(self_values, 0))
+    print_int(list.at(mutual_result, 0))
+    print_int(list.length(mutual_values))
+    print_int(list.at(mutual_values, 0))
 "#;
 
-const ACCESS_CONSUMER_EXPECTED: [&str; 9] = [
-    "1:1:1",
-    "1:1:1",
-    "2:1:2",
-    "3:1:3",
-    "4:1:4",
-    "2:1:2",
-    "2:1:2",
-    "10:1:1",
-    "12:1:1",
+const ACCESS_CONSUMER_EXPECTED: [&str; 27] = [
+    "1", "1", "1", "1", "1", "1", "2", "1", "2", "3", "1", "3", "4", "1", "4",
+    "2", "1", "2", "2", "1", "2", "10", "1", "1", "12", "1", "1",
 ];
 
 const ACCESS_DIAGNOSTIC_MATRIX: &str = r#"
@@ -1300,7 +1316,7 @@ const COMBINED_ASCRIPTION_DECLARATION: &str = r#"
 mode opt
 
 fn strict(var values: unique List(Int)) -> unique List(Int):
-    values
+    [0]
 "#;
 
 #[test]
@@ -1399,7 +1415,7 @@ fn projection_source(entrypoint: &ProjectionEntrypoint, body: &str) -> String {
         "{PROJECTION_PROGRAM}\n{}\nfn main() -> Int:\n\
          \x20   var pair = Pair(1, 2)\n\
          \x20   var rows = [[1, 2]]\n\
-         \x20   let index = 0\n{}{}\n    0\n",
+         \x20   var index = 0\n{}{}\n    0\n",
         entrypoint.declarations, entrypoint.setup, body,
     )
 }
