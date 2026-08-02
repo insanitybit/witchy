@@ -123,6 +123,24 @@ mod tests {
     use super::*;
     use witchy_syntax::opt::{self, Opt, OptSet};
 
+    #[test]
+    fn ownership_and_layout_counters_default_to_zero_without_boundaries() {
+        let stats = compute(
+            "fn main(console: Console):\n    console.print(\"ok\")\n",
+        )
+        .expect("run counter baseline");
+        assert_eq!(stats.output, ["ok"]);
+        assert_eq!(stats.indirect_ownership_calls, 0);
+        assert_eq!(stats.boundary_reown_copies, 0);
+        assert_eq!(stats.ownership_token_repairs, 0);
+        assert_eq!(stats.direct_storage_var_accesses, 0);
+        assert_eq!(stats.destination_candidates_forwarded, 0);
+        assert_eq!(stats.packed_alloc_calls, 0);
+        assert_eq!(stats.packed_alloc_bytes, 0);
+        assert_eq!(stats.packed_boxed_elements, 0);
+        assert_eq!(stats.packed_reshaped_bytes, 0);
+    }
+
     // An accumulation loop: in-place push keeps it O(n); forced copy re-owns at
     // every iteration and balloons the heap to O(n^2).
     const ACC: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        list.push(xs, i)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n";
