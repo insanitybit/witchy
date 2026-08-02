@@ -296,6 +296,31 @@ validate_runnable_book() {
     WITCHY_WASM_PATH="$built" node "${node_flags[@]}" web/witchy-runtime/fixture-host.test.mjs
 }
 
+# RFC-0111's ordinary gate leg is deliberately untimed: it proves that every
+# paired Witchy/Rust case agrees with its independent result. On ARM it also
+# proves that the Rust translation units contain no packed-vector instructions;
+# other supported gate hosts report correctness-only rather than claiming
+# scalar evidence. Build the Witchy executable with the exact candidate commit
+# embedded, then make the harness authenticate that identity before it accepts
+# the results.
+rust_class_check() {
+    local head witchy_bin rust_build_dir
+    head=$(git rev-parse --verify HEAD)
+    WITCHY_BUILD_COMMIT="$head" cargo build -p witchy --quiet
+    case "$target_dir" in
+        /*)
+            witchy_bin="$target_dir/debug/witchy"
+            rust_build_dir="$target_dir/rust-class"
+            ;;
+        *)
+            witchy_bin="$PWD/$target_dir/debug/witchy"
+            rust_build_dir="$PWD/$target_dir/rust-class"
+            ;;
+    esac
+    WITCHY="$witchy_bin" WITCHY_RUST_BUILD_DIR="$rust_build_dir" \
+        ./bench/rust-class/run.sh --check
+}
+
 # nextest builds what it needs, so no separate build step; without nextest the
 # filters don't exist, so the shards require it.
 if [ -n "$shard" ]; then
@@ -688,6 +713,7 @@ wasm_pid=""
 [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
 
 run "runnable book (browser)"  validate_runnable_book
+run "Rust-class paired correctness" rust_class_check
 if [ "$full" -eq 1 ]; then
     # RFC-0023 memory-safety sweep: re-run the differential fuzzer with the checked
     # heap on, so a codegen heap bug (wrong offset, missing ensure, mis-layout) in

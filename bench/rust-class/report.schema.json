@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://witchy.dev/schemas/rfc0111-rust-class-report-v1.json",
+  "title": "RFC-0111 scalar-only Witchy/Rust benchmark report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "benchmark",
+    "git",
+    "witchy",
+    "rustc",
+    "host",
+    "rust_flags",
+    "samples",
+    "scalar_verifier",
+    "thresholds",
+    "cases",
+    "geomean_ratio",
+    "passed"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "benchmark": { "const": "rfc0111-rust-class" },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree_clean"],
+      "properties": {
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "tree_clean": { "const": true }
+      }
+    },
+    "witchy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "binary_sha256"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "binary_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "rustc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verbose_version"],
+      "properties": {
+        "verbose_version": { "type": "string", "pattern": "^rustc " }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "architecture", "cpu"],
+      "properties": {
+        "os": { "type": "string", "minLength": 1 },
+        "architecture": { "enum": ["arm64", "aarch64"] },
+        "cpu": { "type": "string", "minLength": 1 }
+      }
+    },
+    "rust_flags": {
+      "const": [
+        "--edition",
+        "2024",
+        "-C",
+        "opt-level=3",
+        "-C",
+        "codegen-units=1",
+        "-C",
+        "llvm-args=-vectorize-loops=false",
+        "-C",
+        "llvm-args=-vectorize-slp=false"
+      ]
+    },
+    "samples": { "const": 7 },
+    "scalar_verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["architecture", "scope", "status"],
+      "properties": {
+        "architecture": { "enum": ["arm64", "aarch64"] },
+        "scope": { "const": "translation-unit" },
+        "status": { "const": "verified" }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_max", "geomean_max"],
+      "properties": {
+        "case_max": { "const": 1.5 },
+        "geomean_max": { "const": 1.25 }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "result", "witchy_ns", "rust_ns", "ratio"],
+        "properties": {
+          "name": {
+            "enum": [
+              "scalar_int",
+              "scalar_float",
+              "packed_records",
+              "list_pipeline",
+              "closed_sum",
+              "generic_helpers",
+              "destination_record",
+              "recursive_values"
+            ]
+          },
+          "result": { "type": "integer" },
+          "witchy_ns": { "type": "integer", "minimum": 1 },
+          "rust_ns": { "type": "integer", "minimum": 1 },
+          "ratio": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    "geomean_ratio": { "type": "number", "exclusiveMinimum": 0 },
+    "passed": { "type": "boolean" }
+  }
+}

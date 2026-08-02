@@ -1,6 +1,6 @@
 # RFC-0110 / RFC-0111 / RFC-0112 acceptance ledger
 
-Audit baseline: `master` at `926ef307` on 2026-08-02.
+Audit baseline: `master` at `bef2fae2608576e94a2aba29a59006673d6203b7` on 2026-08-02.
 
 This ledger is the completion authority for the Rust-class `mode opt` program.
 An RFC remains `proposed` while any row is not **PROVEN** by current-master
@@ -68,7 +68,7 @@ them instead of creating parallel AST-shape or operation-name catalogs.
 | 6 | **MISSING** | Unique-result destination passing and zero-intermediate-allocation evidence do not exist. |
 | 7 | **MISSING** | Whole-graph header-free selection and differential RC-backed equivalence do not exist. |
 | 8 | **MISSING** | Fixed-layout closed sums have no complete descriptor/ABI/equality/drop/benchmark matrix. |
-| 9 | **MISSING** | The benchmark corpus has no pinned scalar-only paired Rust leg or 1.25x/1.50x gates. |
+| 9 | **PARTIAL** | The paired corpus, independent results, cross-platform authenticated correctness gate, ARM scalar-instruction verifier, and ARM-only versioned report verifier exist. A reviewed report from a pinned ARM reference machine and activation of the 1.25x/1.50x timing gate remain absent. |
 | 10 | **MISSING** | No cross-lever acceptance slice jointly covers specialized layouts under checked heap, redzones, UAF checks, parity, runnable docs, and artifact compatibility. |
 | 11 | **FAILING** | Current architecture and performance specs still state the universal-slot/confined-packed boundary rather than the proposed shipped matrix. |
 

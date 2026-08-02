@@ -1,0 +1,54 @@
+{
+  "benchmark": "rfc0111-rust-class",
+  "cases": [
+    { "name": "scalar_int", "ratio": 1, "result": 24000007, "rust_ns": 100, "witchy_ns": 100 },
+    { "name": "scalar_float", "ratio": 1, "result": 1, "rust_ns": 100, "witchy_ns": 100 },
+    { "name": "packed_records", "ratio": 1, "result": 9599879, "rust_ns": 100, "witchy_ns": 100 },
+    { "name": "list_pipeline", "ratio": 1, "result": 12000160, "rust_ns": 100, "witchy_ns": 100 },
+    { "name": "closed_sum", "ratio": 1, "result": 16833142, "rust_ns": 100, "witchy_ns": 100 },
+    { "name": "generic_helpers", "ratio": 1, "result": 9599942, "rust_ns": 100, "witchy_ns": 100 },
+    { "name": "destination_record", "ratio": 1, "result": 49999959, "rust_ns": 100, "witchy_ns": 100 },
+    { "name": "recursive_values", "ratio": 1, "result": 9999190, "rust_ns": 100, "witchy_ns": 100 }
+  ],
+  "geomean_ratio": 1,
+  "git": {
+    "commit": "1111111111111111111111111111111111111111",
+    "tree_clean": true
+  },
+  "host": {
+    "architecture": "arm64",
+    "cpu": "source-level rejection fixture",
+    "os": "Darwin"
+  },
+  "passed": true,
+  "rust_flags": [
+    "--edition",
+    "2024",
+    "-C",
+    "opt-level=3",
+    "-C",
+    "codegen-units=1",
+    "-C",
+    "llvm-args=-vectorize-loops=false",
+    "-C",
+    "llvm-args=-vectorize-slp=false"
+  ],
+  "rustc": {
+    "verbose_version": "rustc fixture"
+  },
+  "samples": 7,
+  "scalar_verifier": {
+    "architecture": "arm64",
+    "scope": "translation-unit",
+    "status": "verified"
+  },
+  "schema_version": 1,
+  "thresholds": {
+    "case_max": 1.5,
+    "geomean_max": 1.25
+  },
+  "witchy": {
+    "binary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "version": "witchy 0.1.0 (commit 1111111111111111111111111111111111111111)"
+  }
+}

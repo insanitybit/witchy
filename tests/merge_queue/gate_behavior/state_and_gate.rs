@@ -521,7 +521,15 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
     .expect("write fake cargo");
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).expect("chmod fake cargo");
     let git = bin.join("git");
-    fs::write(&git, "#!/bin/sh\nexit 0\n").expect("write fake git");
+    fs::write(
+        &git,
+        "#!/bin/sh\n\
+         case \"$*\" in\n\
+           *\"rev-parse --verify HEAD\"*) echo 1111111111111111111111111111111111111111 ;;\n\
+         esac\n\
+         exit 0\n",
+    )
+    .expect("write fake git");
     fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).expect("chmod fake git");
     let rustup = bin.join("rustup");
     fs::write(
@@ -538,7 +546,28 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
     let target = temp.path().join("target-full");
     fs::create_dir_all(target.join("debug")).expect("create fake target dir");
     let witchy = target.join("debug/witchy");
-    fs::write(&witchy, "#!/bin/sh\nexit 0\n").expect("write fake witchy");
+    fs::write(
+        &witchy,
+        "#!/bin/sh\n\
+         if [ \"$1\" = --version ]; then\n\
+           echo 'witchy 0.1.0 (commit 1111111111111111111111111111111111111111)'\n\
+           exit 0\n\
+         fi\n\
+         if [ \"$1\" = fmt ]; then exit 0; fi\n\
+         case \"$2\" in\n\
+           */scalar_int.witchy) result=24000006 ;;\n\
+           */scalar_float.witchy) result=1 ;;\n\
+           */packed_records.witchy) result=9599879 ;;\n\
+           */list_pipeline.witchy) result=12000160 ;;\n\
+           */closed_sum.witchy) result=16833142 ;;\n\
+           */generic_helpers.witchy) result=9599942 ;;\n\
+           */destination_record.witchy) result=49999959 ;;\n\
+           */recursive_values.witchy) result=9999190 ;;\n\
+           *) exit 1 ;;\n\
+         esac\n\
+         printf 'result=%s\\nbench_ns=1\\n' \"$result\"\n",
+    )
+    .expect("write fake witchy");
     fs::set_permissions(&witchy, fs::Permissions::from_mode(0o755))
         .expect("chmod fake witchy");
 
@@ -574,6 +603,7 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
             "clippy (deny warnings)",
             "wasm playground build",
             "runnable book (browser)",
+            "Rust-class paired correctness",
         ],
         "full-gate stage/timing order changed: {stdout}",
     );
