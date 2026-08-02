@@ -1240,19 +1240,51 @@ fn type_mentions_view(ty: &Type) -> bool {
     }
 }
 
-fn type_is_generic_leaf(ty: &Type) -> bool {
+fn type_has_generic_leaf(ty: &Type) -> bool {
     match ty {
         Type::Named(name, arguments) => {
-            arguments.is_empty()
+            (arguments.is_empty()
                 && !name.contains('.')
-                && name.chars().next().is_some_and(char::is_lowercase)
+                && name.chars().next().is_some_and(char::is_lowercase))
+                || arguments.iter().any(type_has_generic_leaf)
         }
-        Type::Qualified(_, inner) => type_is_generic_leaf(inner),
-        Type::Tuple(_)
-        | Type::Dyn(_, _)
-        | Type::Fn(_, _, _)
-        | Type::RecordCompose { .. } => false,
+        Type::Qualified(_, inner) => type_has_generic_leaf(inner),
+        Type::Tuple(items) | Type::Dyn(_, items) => items.iter().any(type_has_generic_leaf),
+        Type::Fn(parameters, result, _) => {
+            parameters.iter().any(type_has_generic_leaf) || type_has_generic_leaf(result)
+        }
+        Type::RecordCompose { base, fields } => {
+            type_has_generic_leaf(base)
+                || fields.iter().any(|(_, field)| type_has_generic_leaf(field))
+        }
     }
+}
+
+/// `list.length` is a compiler-owned, non-escaping read primitive. Its generic
+/// names the list element representation, not an ownership slot for the outer
+/// list view passed at this call site. Keep this exception exact: arbitrary
+/// composite generic parameters remain relation-erasing even with an owned
+/// result because their implementation may retain the argument elsewhere.
+fn authenticated_non_escaping_generic_read(
+    callee: &str,
+    index: usize,
+    access: &AccessSignature,
+) -> bool {
+    if callee != "list.length"
+        || !is_std_fn(callee)
+        || index != 0
+        || access.params().len() != 1
+        || !access.borrow_relations().is_empty()
+    {
+        return false;
+    }
+    matches!(
+        access.params()[0].ty().unqualified(),
+        Type::Named(name, arguments) if name == "List" && arguments.len() == 1
+    ) && matches!(
+        access.result().ty().unqualified(),
+        Type::Named(name, arguments) if name == "Int" && arguments.is_empty()
+    )
 }
 
 fn validate_nested_fn_borrows(ty: &Type, context: &str) -> Result<(), TypeError> {
@@ -2585,8 +2617,9 @@ impl LoanCtx<'_> {
             }
             let erases_relation = signature.access.as_ref().is_some_and(|access| {
                 access.params().get(index).is_some_and(|parameter| {
-                    type_is_generic_leaf(parameter.ty())
+                    type_has_generic_leaf(parameter.ty())
                         && parameter.borrow_lifetimes().is_empty()
+                        && !authenticated_non_escaping_generic_read(callee, index, access)
                 })
             });
             if erases_relation {

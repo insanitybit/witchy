@@ -992,8 +992,28 @@
             Err(error) => error.to_string(),
         };
         assert!(
-            error.contains("argument 2 passed to `leak`")
+            error.contains("argument 1 passed to `leak`")
+                && error.contains("owner relation from `tx`")
+                && error.contains("projection `<root>`")
+                && error.contains("parameter type erases that relation"),
+            "{error}"
+        );
+
+        let composite = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Holder('a):\n    view: View(String, 'a)\n\n\
+             fn discard(value: (a,)) -> Nil:\n    ()\n\n\
+             fn bad(input: let('a) String) -> Nil:\n    let holder = Holder(input)\n    discard((holder,))\n",
+        )
+        .expect("parse composite relation-erasing fixture");
+        let error = match facts(&composite) {
+            Ok(_) => panic!("a composite generic parameter must not hide a borrowed shell"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("argument 1 passed to `discard`")
                 && error.contains("owner relation from `input`")
+                && error.contains("projection `[0].view`")
                 && error.contains("parameter type erases that relation"),
             "{error}"
         );
