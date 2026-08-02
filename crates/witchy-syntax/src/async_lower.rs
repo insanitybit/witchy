@@ -281,15 +281,19 @@ pub(crate) fn validate_source(
     for (item_index, item) in module.items.iter().enumerate() {
         match item {
             Item::Function(function) if function.is_async => {
-                validate_async_source(function, function.name == "main", &borrowed_shells)
+                validate_async_source(function, function.name == "main", None, &borrowed_shells)
                     .map_err(|message| crate::source_check::SourceValidationError::new(
                         item_index, message,
                     ))?;
             }
             Item::Impl(definition) => {
+                let self_ty = Type::Named(
+                    definition.type_name.clone(),
+                    definition.target_args.clone(),
+                );
                 for method in &definition.methods {
                     if method.is_async {
-                        validate_async_source(method, false, &borrowed_shells)
+                        validate_async_source(method, false, Some(&self_ty), &borrowed_shells)
                             .map_err(|message| crate::source_check::SourceValidationError::new(
                                 item_index, message,
                             ))?;
@@ -305,13 +309,14 @@ pub(crate) fn validate_source(
 fn validate_async_source(
     function: &Function,
     is_entry: bool,
+    self_ty: Option<&Type>,
     borrowed_shells: &BorrowedShellCatalog,
 ) -> Result<(), String> {
     let declared_ret = function.ret.as_ref();
     if function
         .params
         .iter()
-        .filter_map(|param| param.ty.as_ref())
+        .filter_map(|param| resolved_async_parameter_type(param, self_ty))
         .any(|ty| borrowed_shells.type_is_borrowed(ty))
         || declared_ret.is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
     {
@@ -2034,12 +2039,13 @@ mod tests {
     }
 
     #[test]
-    fn lowering_rejects_a_lifetime_bearing_async_method_receiver() {
+    fn source_validation_rejects_a_lifetime_bearing_async_method_receiver() {
         let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nimpl Holder('a):\n    async fn bad(self):\n        task.done(0).await\n";
         let module = crate::parser::parse_module(source)
             .expect("parse lifetime-bearing async method receiver");
-        let error = lower_module(module)
-            .expect_err("an implicit borrowed-shell receiver cannot enter an async task");
+        let error = crate::source_check::check(module)
+            .expect_err("source validation must reject an implicit borrowed-shell receiver")
+            .to_string();
 
         assert!(error.contains("async fn `bad`"), "{error}");
         assert!(error.contains("lifetime-bearing shell"), "{error}");
