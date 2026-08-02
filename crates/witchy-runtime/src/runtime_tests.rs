@@ -1,4 +1,82 @@
     use super::*;
+    use std::borrow::Cow;
+    use wasm_encoder::{CustomSection, Module as WasmModule, Section as _};
+    use witchy_wir::layout::{LayoutBundle, LayoutInterner};
+
+    fn wasm_with_layout_payload(payload: Vec<u8>) -> Vec<u8> {
+        let mut wasm = WasmModule::new().finish();
+        CustomSection {
+            name: Cow::Borrowed(LAYOUT_SECTION),
+            data: Cow::Owned(payload),
+        }
+        .append_to(&mut wasm);
+        wasm
+    }
+
+    #[test]
+    fn artifact_layout_metadata_is_checked_before_instantiation() {
+        let empty = LayoutBundle::from_interner(&LayoutInterner::new(), [])
+            .expect("empty canonical layout bundle");
+        let valid = wasm_with_layout_payload(empty.canonical_bytes());
+        let mut runtime = Runtime::batch().expect("runtime");
+        runtime
+            .spawn(&valid, Capabilities::none(), 4)
+            .expect("a canonical bundle reaches ordinary instantiation");
+
+        let mut unknown_schema = empty.canonical_bytes();
+        unknown_schema[8..12].copy_from_slice(&2u32.to_le_bytes());
+        let error = match runtime.spawn(
+            wasm_with_layout_payload(unknown_schema),
+            Capabilities::none(),
+            4,
+        ) {
+            Ok(_) => panic!("an unknown descriptor schema must fail before instantiation"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("unsupported layout schema 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn duplicate_artifact_layout_metadata_fails_closed() {
+        let empty = LayoutBundle::from_interner(&LayoutInterner::new(), [])
+            .expect("empty canonical layout bundle");
+        let mut duplicate = wasm_with_layout_payload(empty.canonical_bytes());
+        CustomSection {
+            name: Cow::Borrowed(LAYOUT_SECTION),
+            data: Cow::Owned(empty.canonical_bytes()),
+        }
+        .append_to(&mut duplicate);
+        let mut runtime = Runtime::batch().expect("runtime");
+        let error = match runtime.spawn(duplicate, Capabilities::none(), 4) {
+            Ok(_) => panic!("duplicate descriptor metadata must fail before instantiation"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("duplicate section"), "{error}");
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn fixture_execution_validates_artifact_layout_metadata() {
+        let empty = LayoutBundle::from_interner(&LayoutInterner::new(), [])
+            .expect("empty canonical layout bundle");
+        let mut unknown_schema = empty.canonical_bytes();
+        unknown_schema[8..12].copy_from_slice(&2u32.to_le_bytes());
+        let mut runtime = Runtime::batch().expect("runtime");
+        let error = runtime
+            .run_fixtures(
+                wasm_with_layout_payload(unknown_schema),
+                witchy_testkit::FixturePlan::default(),
+                4,
+            )
+            .expect_err("fixture execution must reject an unknown layout schema");
+        assert!(
+            error.to_string().contains("unsupported layout schema 2"),
+            "{error}"
+        );
+    }
 
     const IMPORTS_PRINT: &str = r#"
         (module

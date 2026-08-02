@@ -14,10 +14,46 @@ use wasmtime::{
     bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, Linker, Memory,
     Module, Result, Store, StoreLimits, StoreLimitsBuilder,
 };
-use witchy_wir::layout::HEAP_REDZONE;
+use witchy_wir::layout::{HEAP_REDZONE, LayoutBundle};
 
 mod compiler;
 mod host;
+
+const LAYOUT_SECTION: &str = "witchy.layouts";
+
+/// Validate the canonical physical-layout graph before Wasmtime compiles or
+/// instantiates an artifact. A missing section is the explicit legacy path;
+/// once present, duplicate sections, unknown schemas, bad descriptor digests,
+/// dangling roots, and non-canonical graphs all fail closed.
+fn validate_layout_bundle_metadata(wasm: &[u8]) -> Result<()> {
+    // Wasmtime also accepts textual WAT in developer/test entry points. Text
+    // is not a distributable binary artifact and cannot carry this custom
+    // section; every binary module takes the fail-closed path below.
+    if !wasm.starts_with(b"\0asm") {
+        return Ok(());
+    }
+    let mut found = false;
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        let payload = payload
+            .map_err(|error| Error::msg(format!("invalid wasm metadata: {error}")))?;
+        let wasmparser::Payload::CustomSection(section) = payload else {
+            continue;
+        };
+        if section.name() != LAYOUT_SECTION {
+            continue;
+        }
+        if found {
+            return Err(Error::msg(format!(
+                "invalid `{LAYOUT_SECTION}` metadata: duplicate section"
+            )));
+        }
+        LayoutBundle::decode_canonical(section.data()).map_err(|error| {
+            Error::msg(format!("invalid `{LAYOUT_SECTION}` metadata: {error}"))
+        })?;
+        found = true;
+    }
+    Ok(())
+}
 
 /// An on-disk Cranelift compilation cache so re-running the same program skips
 /// recompiling its WAT (the ~3 ms compile cost). Keyed by wasm content +
@@ -153,6 +189,7 @@ fn binaryen_optimize(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 /// native-code reuse internally. `cacheable` is false on the preempt engine,
 /// whose differing config must not share artifacts.
 fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Module> {
+    validate_layout_bundle_metadata(opt_wasm)?;
     if !cacheable {
         return Module::new(engine, opt_wasm);
     }
@@ -1039,9 +1076,10 @@ impl Runtime {
         memory_pages_max: usize,
     ) -> Result<Vm> {
         let id = self.next_id;
+        let wasm = wasm.as_ref();
         // `wasm-opt` runs inside `build_module` only on an optimized-wasm cache miss;
         // every hit and miss still enters Wasmtime through safe `Module::new`.
-        let module = build_module(&self.engine, wasm.as_ref(), !self.preempt)?;
+        let module = build_module(&self.engine, wasm, !self.preempt)?;
 
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)

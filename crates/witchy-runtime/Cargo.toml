@@ -19,6 +19,7 @@ witchy-testkit = { path = "../witchy-testkit", optional = true }
 sha2 = "0.11.0"
 ed25519-dalek = "2.2.0"
 regex = "1.11"
+wasmparser = { version = "0.251", optional = true }
 # The wasmtime sandbox + its randomness (native-only).
 wasmtime = { version = "45.0.0", optional = true }
 getrandom = { version = "0.4.2", optional = true }
@@ -49,9 +50,10 @@ cap-std-ext = "5.1.2"
 [dev-dependencies]
 # Combined checked-heap/UAF tests assemble the exact WIR allocator helpers.
 witchy-wir = { path = "../witchy-wir", features = ["raw-encoder-test-api"] }
+wasm-encoder = "0.251"
 
 [features]
-native = ["dep:wasmtime", "dep:getrandom"]
+native = ["dep:wasmtime", "dep:getrandom", "dep:wasmparser"]
 test-fixtures = ["native", "dep:witchy-test-host", "dep:witchy-testkit"]
 # Exposes the scoped TLS-root registry used by the root package's hermetic
 # integration tests. Normal builds cannot add trust anchors through this API.
