@@ -11,7 +11,7 @@ use std::fmt;
 
 use witchy_cap_model::CapabilityKind;
 use witchy_syntax::ast::{
-    Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, Type,
+    BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, Type,
     TypeDef, TypeQual, Variant, effective_nominal_type_def_params,
     effective_type_def_params,
 };
@@ -3366,6 +3366,34 @@ impl<'a> AccessVerifier<'a> {
                 self.record_call(expression, &signature);
                 self.flow_from_type(signature.result().ty()).map_err(Self::signature_error)?
             }
+            Expr::Binary { op: BinOp::Coalesce, lhs, rhs } => {
+                let left = self.eval_expr(lhs, environment, return_expected)?;
+                let right = self.eval_expr(rhs, environment, return_expected)?;
+                let left = match left {
+                    AccessFlow::Named { name, mut arguments, dynamic: false }
+                        if matches!(name.rsplit('.').next(), Some("Option" | "Result"))
+                            && !arguments.is_empty() =>
+                    {
+                        arguments.remove(0)
+                    }
+                    _ => self
+                        .resolved_expression_type(lhs)
+                        .and_then(|ty| match ty.unqualified() {
+                            Type::Named(name, arguments)
+                                if matches!(name.rsplit('.').next(), Some("Option" | "Result"))
+                                    && !arguments.is_empty() =>
+                            {
+                                arguments.first().cloned()
+                            }
+                            _ => None,
+                        })
+                        .map(|ty| self.flow_from_type(&ty))
+                        .transpose()
+                        .map_err(Self::signature_error)?
+                        .unwrap_or(AccessFlow::None),
+                };
+                left.join(&right, "coalescing callable alternatives")?
+            }
             Expr::Binary { lhs, rhs, .. } => {
                 self.eval_expr(lhs, environment, return_expected)?;
                 self.eval_expr(rhs, environment, return_expected)?;
@@ -3423,20 +3451,26 @@ impl<'a> AccessVerifier<'a> {
             Expr::For { var, iter, body } => {
                 let iter_type = self.resolved_expression_type(iter);
                 let iter_flow = self.eval_expr(iter, environment, return_expected)?;
+                let checked_element = iter_type
+                    .as_ref()
+                    .and_then(|ty| match ty.unqualified() {
+                        Type::Named(_, arguments) if arguments.len() == 1 => arguments.first(),
+                        _ => None,
+                    })
+                    .map(|element| self.flow_from_type(element))
+                    .transpose()
+                    .map_err(Self::signature_error)?;
                 let element = match &iter_flow {
-                    AccessFlow::Sequence(element) => element.as_ref().clone(),
+                    AccessFlow::Sequence(element) if element.has_callable_contract() => {
+                        element.as_ref().clone()
+                    }
                     AccessFlow::Named { arguments, dynamic: false, .. }
-                        if arguments.len() == 1 => arguments[0].clone(),
-                    _ => iter_type
-                        .as_ref()
-                        .and_then(|ty| match ty.unqualified() {
-                            Type::Named(_, arguments) if arguments.len() == 1 => arguments.first(),
-                            _ => None,
-                        })
-                        .map(|element| self.flow_from_type(element))
-                        .transpose()
-                        .map_err(Self::signature_error)?
-                        .unwrap_or(AccessFlow::None),
+                        if arguments.len() == 1
+                            && arguments[0].has_callable_contract() =>
+                    {
+                        arguments[0].clone()
+                    }
+                    _ => checked_element.unwrap_or(AccessFlow::None),
                 };
                 let mut body_environment = environment.clone();
                 body_environment.insert(var.clone(), element);

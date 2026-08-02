@@ -6,6 +6,46 @@
 use super::*;
 
 impl Codegen<'_> {
+    /// Lower the `pattern` field of a checked capability-policy expression
+    /// without fabricating a cloned `Expr::Field`. Type and access facts are
+    /// keyed to the checked AST, so synthesized expression nodes must not cross
+    /// this boundary.
+    fn lower_policy_pattern(
+        &mut self,
+        policy: &Expr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
+
+        let record = self.record_type_of(policy)?;
+        let fields = self.record_fields.get(&record)?;
+        let index = fields.iter().position(|(name, _)| name == "pattern")?;
+        let kind = name_kind(fields[index].1.as_deref());
+        let value = self.lower_expr(policy)?;
+        if let Some(struct_id) = self
+            .ast_type_of_expr(policy)
+            .and_then(|ty| self.gc_struct_id_for_type(&ty))
+        {
+            return Some(W::StructGet {
+                struct_id,
+                field: index as u32,
+                base: Box::new(value),
+            });
+        }
+        Some(W::FromSlot(
+            Box::new(W::Load {
+                ptr: Box::new(W::Binary {
+                    op: witchy_wir::wir::BinOp::Add,
+                    kind: witchy_wir::wir::Kind::I32,
+                    lhs: Box::new(value),
+                    rhs: Box::new(W::ConstI32((4 + 8 * index) as i32)),
+                }),
+                kind: witchy_wir::wir::Kind::I64,
+                offset: 0,
+            }),
+            Self::wir_kind(kind),
+        ))
+    }
+
     pub(crate) fn lower_dynamic_try_decode(
         &mut self,
         call_expr: &Expr,
@@ -829,8 +869,7 @@ impl Codegen<'_> {
                     if self.collect_wir { call("exec_only", a) } else { host("exec_only_host", a) }
                 } else if matches!(self.type_table.type_of(&args[0]), Some(witchy_types::typeck::Ty::Dir(_))) {
                     self.used_dir_ops.insert("only");
-                    let pattern = Expr::Field { base: Box::new(args[1].clone()), field: "pattern".into() };
-                    let a = self.lower_args(&[&args[0], &pattern])?;
+                    let a = vec![self.lower_expr(&args[0])?, self.lower_policy_pattern(&args[1])?];
                     if self.collect_wir { call("dir_only", a) } else { host("dir_only_host", a) }
                 } else if matches!(
                     self.type_table.type_of(&args[0]),
@@ -840,8 +879,7 @@ impl Codegen<'_> {
                     if self.collect_wir { call("fetch_only", a) } else { host("fetch_only_host", a) }
                 } else {
                     self.used_net_ops.insert("restrict");
-                    let pattern = Expr::Field { base: Box::new(args[1].clone()), field: "pattern".into() };
-                    let a = self.lower_args(&[&args[0], &pattern])?;
+                    let a = vec![self.lower_expr(&args[0])?, self.lower_policy_pattern(&args[1])?];
                     if self.collect_wir { call("net_restrict", a) } else { host("net_restrict_host", a) }
                 }
             }
@@ -851,8 +889,7 @@ impl Codegen<'_> {
             }
             ("deny", 2) => {
                 self.used_net_ops.insert("deny");
-                let pattern = Expr::Field { base: Box::new(args[1].clone()), field: "pattern".into() };
-                let a = self.lower_args(&[&args[0], &pattern])?;
+                let a = vec![self.lower_expr(&args[0])?, self.lower_policy_pattern(&args[1])?];
                 if self.collect_wir { call("net_deny", a) } else { host("net_deny_host", a) }
             }
             ("connect", 2) => {

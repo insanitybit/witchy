@@ -67,7 +67,8 @@ impl<'types> Codegen<'types> {
             // implementation internally. In RFC-0087 statement form, feed that
             // value into the existing self-assignment machinery so the receiver
             // is written back instead of dropping the updated collection.
-            let rewritten = match stmt {
+            let assignment_name = match stmt {
+                Stmt::Assign { name, .. } => Some(name.as_str()),
                 Stmt::Expr(value) => {
                     let uniform_var_call = matches!(value, Expr::Call { name, .. }
                         if self.fn_conventions.get(name).is_some_and(|conventions|
@@ -75,15 +76,10 @@ impl<'types> Codegen<'types> {
                     (!uniform_var_call)
                         .then(|| analysis::direct_inplace_root(value))
                         .flatten()
-                        .map(|root| Stmt::Assign {
-                            name: root.to_string(),
-                            value: value.clone(),
-                        })
                 }
                 _ => None,
             };
             let analyzed_stmt = stmt;
-            let stmt = rewritten.as_ref().unwrap_or(stmt);
             let stmt_start = seq.len();
             self.active_loan_events = self.loan_facts.active_at(analyzed_stmt).to_vec();
             if let Some(key) = self.loan_facts.event_key(analyzed_stmt)
@@ -287,7 +283,7 @@ impl<'types> Codegen<'types> {
                     }
                     tail_is_value = false;
                 }
-                Stmt::Expr(e) => {
+                Stmt::Expr(e) if assignment_name.is_none() => {
                     let v = self.lower_expr(e)?;
                     if i == last {
                         seq.push(N::Push(v));
@@ -446,7 +442,9 @@ impl<'types> Codegen<'types> {
                 // that is NOT a self-assign shape (no in-place fast path / site
                 // accounting), a string/list state field, or a global. Those keep
                 // their bespoke legacy emission.
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { value, .. } | Stmt::Expr(value) => {
+                    let name = assignment_name?.to_string();
+                    let name = &name;
                     // (RFC-0016) In-place reuse: a confined, never-aliased list `var`
                     // reassigned to a same-length list literal OVERWRITES its existing
                     // buffer slot-by-slot instead of allocating a fresh list — so a

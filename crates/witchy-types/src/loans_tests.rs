@@ -474,6 +474,38 @@
     }
 
     #[test]
+    fn inferred_empty_callable_list_recovers_checked_iteration_contract() {
+        check_str(
+            "mode opt\n\n\
+             fn strict(xs: List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn use(f: fn(List(Int)) -> Int) -> Nil:\n    return\n\n\
+             fn append(var values: List(a), value: a) -> List(a):\n    values\n\n\
+             fn main():\n\
+             \x20   var callbacks = []\n\
+             \x20   append(callbacks, strict)\n\
+             \x20   for f in callbacks:\n        use(f)\n",
+        )
+        .expect(
+            "an initially empty list uses its finalized checked element type when iteration needs callable access",
+        );
+    }
+
+    #[test]
+    fn callable_access_contract_survives_option_and_result_coalescing() {
+        check_str(
+            "mode opt\n\n\
+             fn strict(xs: unique List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn use(f: fn(unique List(Int)) -> Int) -> Nil:\n    return\n\n\
+             fn main():\n\
+             \x20   let absent: Option(fn(unique List(Int)) -> Int) = None\n\
+             \x20   use(absent ?? strict)\n\
+             \x20   let failed: Result(fn(unique List(Int)) -> Int, String) = Err(\"no\")\n\
+             \x20   use(failed ?? strict)\n",
+        )
+        .expect("Option and Result coalescing preserve their success callable access identity");
+    }
+
+    #[test]
     fn callable_access_contract_survives_option_patterns() {
         let prefix = "fn id(x: Int) -> Int:\n    x\n\n\
                       fn use(f: fn(Int) -> Int) -> Nil:\n    return\n\n";

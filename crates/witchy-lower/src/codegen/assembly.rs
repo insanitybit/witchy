@@ -842,21 +842,26 @@ fn register_module_items(
                     }
                 }
                 cg.fn_params.insert(f.name.clone(), params);
-                let ret = f.ret.as_ref().map(|t| cg.kind_for_type(t)).unwrap_or(Kind::I32);
+                let resolved_ret = cg
+                    .access_facts
+                    .declaration(&f.name)
+                    .map(|signature| signature.result().ty())
+                    .or(f.ret.as_ref());
+                let ret = resolved_ret.map(|t| cg.kind_for_type(t)).unwrap_or(Kind::I32);
                 cg.fn_ret.insert(f.name.clone(), ret);
-                if let Some(t) = &f.ret {
+                if let Some(t) = resolved_ret {
                     cg.fn_ret_valtype.insert(f.name.clone(), ty_to_valtype(t));
                     cg.fn_ret_ty.insert(f.name.clone(), t.clone());
                 }
                 // A function returning a closure (`-> fn(...) -> RET`): record the
                 // closure's return kind so a `let f = make(...)` then `f(x)` call
                 // recovers the result at the right width.
-                if let Some(Type::Fn(_, cret, _)) = &f.ret {
+                if let Some(Type::Fn(_, cret, _)) = resolved_ret {
                     cg.fn_ret_closure_kind.insert(f.name.clone(), cg.kind_for_type(cret));
                 }
                 // A function returning a tuple: record its slot value types so a
                 // `let (a, b) = f(...)` destructures each at the right width.
-                if let Some(Type::Tuple(slots)) = &f.ret {
+                if let Some(Type::Tuple(slots)) = resolved_ret {
                     cg.fn_ret_tuple_slots
                         .insert(f.name.clone(), slots.iter().map(ty_to_valtype).collect());
                     // Per slot, the element type if the slot is `List(<scalar>)`

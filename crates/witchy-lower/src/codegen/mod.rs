@@ -2087,7 +2087,18 @@ impl<'types> Codegen<'types> {
                     .then_some(index)
                 })
                 .collect(),
-            unique_capacity_result: signature.result().ownership_output().is_some()
+            unique_capacity_result: signature
+                .result()
+                .ownership_output()
+                .is_some_and(|state| {
+                    matches!(
+                        state,
+                        witchy_types::access::OwnershipStateClass::LinearMemoryObject
+                            | witchy_types::access::OwnershipStateClass::LayoutDependent {
+                                ..
+                            }
+                    )
+                })
                 && type_is_unique_capacity_shape(signature.result().ty()),
         }
     }
@@ -3458,6 +3469,17 @@ impl<'types> Codegen<'types> {
     }
 
     fn compile_function(&mut self, f: &Function) -> Result<(), CodegenError> {
+        let access_signature = self.access_facts.declaration(&f.name).cloned();
+        let mut resolved_params = f.params.clone();
+        if let Some(signature) = &access_signature {
+            for (param, access) in resolved_params.iter_mut().zip(signature.params()) {
+                param.ty = Some(access.ty().clone());
+            }
+        }
+        let resolved_ret = access_signature
+            .as_ref()
+            .map(|signature| signature.result().ty().clone())
+            .or_else(|| f.ret.clone());
         self.locals.clear();
         self.field_caps.clear();
         self.local_records.clear();
@@ -3476,7 +3498,7 @@ impl<'types> Codegen<'types> {
         self.local_list_nesting.clear();
         self.local_fn_ret_kind.clear();
         self.local_fn_ownership.clear();
-        for p in &f.params {
+        for p in &resolved_params {
             let k = p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
             if let Some(t) = &p.ty {
@@ -3543,7 +3565,7 @@ impl<'types> Codegen<'types> {
         // Rename shadowing bindings to unique names so function-wide locals
         // don't alias (the interpreter scopes lexically; this preserves that).
         self.cur_fn_name = f.name.clone();
-        self.cur_fn_has_type_vars = f.params.iter().any(|p| {
+        self.cur_fn_has_type_vars = resolved_params.iter().any(|p| {
             matches!(&p.ty, Some(Type::Named(n, args))
                 if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.'))
                 || matches!(&p.ty, Some(Type::Named(_, args))
@@ -3559,38 +3581,35 @@ impl<'types> Codegen<'types> {
         // i32 cap param + i32 cap result, built into the WirFunc signature by
         // `assemble_wir_func`). Decided from the module summaries, so every compile
         // of this module agrees on the signature.
-        let access_envelope = self
-            .access_facts
-            .declaration(&f.name)
+        let access_envelope = access_signature
+            .as_ref()
             .map(Self::ownership_envelope_for_signature)
             .unwrap_or_default();
         self.cur_fn_own_param = self
             .summaries
             .own_abi(&f.name)
             .filter(|index| access_envelope.own_capacity_param == Some(*index))
-            .and_then(|i| f.params.get(i))
+            .and_then(|i| resolved_params.get(i))
             .map(|p| p.name.clone());
         // Result = the normal return value, then one slot per `var` parameter
         // (moved back out to the caller).
-        let ret_kind = match &f.ret {
+        let ret_kind = match &resolved_ret {
             Some(t) => self.kind_for_type(t),
             None => self.block_kind(renamed),
         };
         self.cur_fn_ret_kind = ret_kind;
-        self.cur_fn_ret_ty = f.ret.clone().or_else(|| {
+        self.cur_fn_ret_ty = resolved_ret.clone().or_else(|| {
             let Stmt::Expr(tail) = renamed.stmts.last()? else {
                 return None;
             };
             self.ast_type_of_expr(tail)
         });
         self.cur_fn_unique_ret = access_envelope.unique_capacity_result;
-        let declaration = self.access_facts.declaration(&f.name);
-        self.cur_fn_var_params = f
-            .params
+        self.cur_fn_var_params = resolved_params
             .iter()
             .enumerate()
             .filter(|(index, _)| {
-                declaration.is_some_and(|signature| {
+                access_signature.as_ref().is_some_and(|signature| {
                     signature.params().get(*index).is_some_and(|param| {
                         param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
                     })
@@ -3601,7 +3620,7 @@ impl<'types> Codegen<'types> {
         self.cur_fn_var_cap_params = access_envelope
             .var_capacity_params
             .iter()
-            .filter_map(|index| f.params.get(*index).map(|param| param.name.clone()))
+            .filter_map(|index| resolved_params.get(*index).map(|param| param.name.clone()))
             .collect();
         self.cur_fn_var = !self.cur_fn_var_params.is_empty();
 
@@ -3647,7 +3666,13 @@ impl<'types> Codegen<'types> {
             // back to WAT gracefully.
             {
                 let seq = Self::convert_block_tail(seq, block_kind, ret_kind);
-                let wf = self.assemble_wir_func(f, ret_kind, seq);
+                let wf = self.assemble_wir_func(
+                    f,
+                    &resolved_params,
+                    resolved_ret.as_ref(),
+                    ret_kind,
+                    seq,
+                );
                 self.wir_funcs.insert(f.name.clone(), wf);
             }
         }
@@ -3665,6 +3690,8 @@ impl<'types> Codegen<'types> {
     fn assemble_wir_func(
         &self,
         f: &Function,
+        params: &[Param],
+        result: Option<&Type>,
         ret_kind: Kind,
         body: witchy_wir::wir::WirSeq,
     ) -> witchy_wir::wir::WirFunc {
@@ -3673,12 +3700,11 @@ impl<'types> Codegen<'types> {
         let i32t = || WirTy::Bool;
         let i64t = || WirTy::Int;
         let unit_gc_ids = self.unit_gc_ids(
-            f.params.iter().filter_map(|param| param.ty.clone()),
-            f.ret.clone(),
+            params.iter().filter_map(|param| param.ty.clone()),
+            result.cloned(),
             &f.body,
         );
-        let mut params: Vec<WirLocal> = f
-            .params
+        let mut params: Vec<WirLocal> = params
             .iter()
             .map(|p| WirLocal {
                 name: p.name.clone(),
