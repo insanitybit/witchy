@@ -1240,6 +1240,26 @@ fn type_mentions_view(ty: &Type) -> bool {
     }
 }
 
+fn type_has_generic_leaf(ty: &Type) -> bool {
+    match ty {
+        Type::Named(name, arguments) => {
+            (arguments.is_empty()
+                && !name.contains('.')
+                && name.chars().next().is_some_and(char::is_lowercase))
+                || arguments.iter().any(type_has_generic_leaf)
+        }
+        Type::Qualified(_, inner) => type_has_generic_leaf(inner),
+        Type::Tuple(items) | Type::Dyn(_, items) => items.iter().any(type_has_generic_leaf),
+        Type::Fn(parameters, result, _) => {
+            parameters.iter().any(type_has_generic_leaf) || type_has_generic_leaf(result)
+        }
+        Type::RecordCompose { base, fields } => {
+            type_has_generic_leaf(base)
+                || fields.iter().any(|(_, field)| type_has_generic_leaf(field))
+        }
+    }
+}
+
 fn validate_nested_fn_borrows(ty: &Type, context: &str) -> Result<(), TypeError> {
     match ty {
         Type::Fn(params, ret, _) => {
@@ -1666,7 +1686,7 @@ impl LoanCtx<'_> {
             // A conflicting operation on any live loan's owner (in this statement's
             // own expressions, not counting nested blocks) is rejected.
             self.reject_conflicts(stmt, &live, &callables)?;
-            self.reject_callable_boundaries(stmt, &callables)?;
+            self.reject_callable_boundaries(stmt, &callables, &live)?;
 
             // Recurse into nested expression blocks, carrying the loans live here so
             // a conflict inside them is caught against the enclosing loans too.
@@ -2521,6 +2541,7 @@ impl LoanCtx<'_> {
         &self,
         stmt: &Stmt,
         callables: &HashMap<String, BorrowSig>,
+        live: &[Loan],
     ) -> Result<(), TypeError> {
         let mut result = Ok(());
         walk_stmt_exprs(stmt, &mut |expr| {
@@ -2538,12 +2559,13 @@ impl LoanCtx<'_> {
                 }
                 Expr::Call { name, args } => {
                     if let Some(sig) = self.sigs.get(name).or_else(|| callables.get(name)) {
-                        result = self.check_callable_arguments(name, args, sig, callables);
+                        result = self.check_callable_arguments(name, args, sig, callables, live);
                     }
                 }
                 Expr::Apply { func, args } => {
                     if let Some((name, sig)) = self.callable_expr_sig(func, callables) {
-                        result = self.check_callable_arguments(&name, args, &sig, callables);
+                        result =
+                            self.check_callable_arguments(&name, args, &sig, callables, live);
                     }
                 }
                 _ => {}
@@ -2558,7 +2580,38 @@ impl LoanCtx<'_> {
         args: &[Expr],
         signature: &BorrowSig,
         callables: &HashMap<String, BorrowSig>,
+        live: &[Loan],
     ) -> Result<(), TypeError> {
+        for (index, arg) in args.iter().enumerate() {
+            let mut sources = self.borrow_sources(arg, callables, live);
+            self.collect_alias_sources(arg, live, &mut sources);
+            if sources.is_empty() {
+                continue;
+            }
+            let relation_can_escape = signature
+                .access
+                .as_ref()
+                .is_some_and(|access| type_has_generic_leaf(access.result().ty()));
+            let preserves_relation = signature.access.as_ref().is_some_and(|access| {
+                access
+                    .params()
+                    .get(index)
+                    .is_some_and(|parameter| !parameter.borrow_lifetimes().is_empty())
+            });
+            if relation_can_escape && !preserves_relation {
+                let source = &sources[0];
+                return Err(terr(format!(
+                    "argument {} passed to `{}` carries a borrowed owner relation from `{}` \
+                     at projection `{}`, but the parameter type erases that relation; declare \
+                     the matching lifetime-bearing fixed shell/view parameter, or materialize \
+                     an owned value before the call",
+                    index + 1,
+                    short_name(callee),
+                    source.owner,
+                    projection_display(&source.borrower_projection),
+                )));
+            }
+        }
         for (index, (arg, expected)) in args.iter().zip(&signature.callable_params).enumerate() {
             let Some(expected) = expected else { continue };
             if let Some((_, source)) = self.callable_expr_sig(arg, callables) {

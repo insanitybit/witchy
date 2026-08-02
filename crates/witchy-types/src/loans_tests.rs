@@ -912,6 +912,36 @@
     }
 
     #[test]
+    fn fixed_borrowed_nominal_cannot_cross_a_relation_erasing_generic_call() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Holder('a):\n    view: View(String, 'a)\n\n\
+             fn erase(value: a) -> a:\n    value\n\n\
+             fn bad(input: let('a) String) -> Holder('a):\n    let holder = Holder(input)\n    erase(holder)\n",
+        )
+        .expect("parse relation-erasing call fixture");
+        let error = match facts(&module) {
+            Ok(_) => panic!("a generic parameter must not erase a borrowed shell relation"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("argument 1 passed to `erase`")
+                && error.contains("owner relation from `input`")
+                && error.contains("parameter type erases that relation"),
+            "{error}"
+        );
+
+        let preserving = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Holder('a):\n    view: View(String, 'a)\n\n\
+             fn inspect(holder: Holder('a)) -> Int:\n    0\n\n\
+             fn good(input: let('a) String) -> Int:\n    let holder = Holder(input)\n    inspect(holder)\n",
+        )
+        .expect("parse relation-preserving call fixture");
+        facts(&preserving).expect("an exact lifetime-bearing parameter preserves the relation");
+    }
+
+    #[test]
     fn multi_owner_companions_preserve_checked_relation_order() {
         let module = witchy_syntax::parser::parse_module(
             "mode opt\n\n\
