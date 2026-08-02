@@ -2964,7 +2964,6 @@ dependencies = [
  "foldhash 0.2.0",
  "wasmparser 0.251.0",
  "wasmtime",
- "witchy-interp",
  "witchy-syntax",
  "witchy-types",
  "witchy-wir",

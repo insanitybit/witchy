@@ -1380,18 +1380,25 @@ fn main(console: Console):
         );
     }
 
-    /// RFC-0027 declared `packed` soundness: a packed list used as a WHOLE value
-    /// in-body (not the confined `list.length`/`list.at(_).field` shape) — here
-    /// aliased to another binding — is a clean codegen COMPILE ERROR, never a silent
-    /// miscompile against the flat layout. The complement of the typeck boundary
-    /// reject: this is the in-function `reject_reason` path.
+    /// RFC-0111 extends declared packed values beyond RFC-0027's confined-only
+    /// predecessor. A whole-value alias retains the exact descriptor under
+    /// `unbox`; disabling the lever selects the boxed differential oracle.
     #[test]
-    fn declared_packed_whole_value_use_is_rejected() {
+    fn declared_packed_whole_value_alias_uses_exact_layout() {
         let src = "import list\n\ntype P packed:\n    x: Int\n\nfn main(console: Console):\n    let xs = [P(1), P(2)]\n    let ys = xs\n    console.print(\"${list.length(ys)}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
-        let r = compute(src);
+        let on = compute(src).expect("exact whole-value alias");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Unbox)));
+        let off = compute(src).expect("boxed whole-value alias oracle");
         opt::set_for_tests(None);
-        assert!(r.is_err(), "a declared-packed list used as a whole value must be rejected, got {r:?}");
+        assert_eq!(on.output, vec!["2".to_string()]);
+        assert_eq!(on.output, off.output, "layout selection must not change the value");
+        assert!(
+            on.packed_alloc_calls > 0 && off.packed_alloc_calls == 0,
+            "the enabled path must allocate an exact descriptor and the boxed oracle must not: on={} off={}",
+            on.packed_alloc_calls,
+            off.packed_alloc_calls,
+        );
     }
 
     /// RFC-0028 `for var`: a mutation of the loop element is written back into the

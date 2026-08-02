@@ -211,6 +211,7 @@
     mod sandbox_vm;
     mod wir_binary;
     mod compiler_footprint;
+    mod rfc0111_layout;
     mod example_sweeps;
     mod examples_programs;
     mod modes;

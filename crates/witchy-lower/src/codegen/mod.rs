@@ -2147,10 +2147,38 @@ impl<'types> Codegen<'types> {
     ) -> ClosureOwnershipEnvelope {
         let fact = analysis::call_ownership_fact(signature);
         ClosureOwnershipEnvelope {
-            own_capacity_param: fact.own_capacity_param(),
+            // Generic and uniform callables retain the compatibility state
+            // channel. Named exact-layout callables refine it below.
+            own_capacity_param: fact.consuming_state_param(),
             var_capacity_params: fact.var_capacity_params().to_vec(),
             unique_capacity_result: fact.unique_capacity_result(),
         }
+    }
+
+    fn ownership_envelope_for_named_signature(
+        &self,
+        name: &str,
+        signature: &witchy_types::access::AccessSignature,
+    ) -> ClosureOwnershipEnvelope {
+        let mut envelope = Self::ownership_envelope_for_signature(signature);
+        let Some(layout) = self.callable_layouts.get(name) else {
+            return envelope;
+        };
+        if envelope.own_capacity_param.is_some_and(|index| {
+            layout.parameters().get(index).is_some_and(Option::is_some)
+        }) {
+            envelope.own_capacity_param = None;
+        }
+        envelope.var_capacity_params.retain(|index| {
+            !layout
+                .parameters()
+                .get(*index)
+                .is_some_and(Option::is_some)
+        });
+        if layout.result().is_some() {
+            envelope.unique_capacity_result = false;
+        }
+        envelope
     }
 
     fn signature_has_unique_layout_result(
@@ -3650,7 +3678,7 @@ impl<'types> Codegen<'types> {
         // of this module agrees on the signature.
         let access_envelope = access_signature
             .as_ref()
-            .map(Self::ownership_envelope_for_signature)
+            .map(|signature| self.ownership_envelope_for_named_signature(&f.name, signature))
             .unwrap_or_default();
         self.cur_fn_own_param = self
             .summaries
@@ -6639,7 +6667,7 @@ impl<'types> Codegen<'types> {
         args: &[Expr],
         access: &witchy_types::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
-        let ownership = Self::ownership_envelope_for_signature(access);
+        let ownership = self.ownership_envelope_for_named_signature(name, access);
         let param_kinds: Vec<Kind> = self
             .fn_params
             .get(name)
@@ -6777,7 +6805,7 @@ impl<'types> Codegen<'types> {
         };
         let id = self.fn_destination_layouts.get(producer).copied()?;
         let access = self.call_access_signature(argument)?.clone();
-        let ownership = Self::ownership_envelope_for_signature(&access);
+        let ownership = self.ownership_envelope_for_named_signature(producer, &access);
         if !matches!(
             self.specialized_layouts.get(id)?.kind(),
             LayoutKind::ClosedSum { .. }
@@ -6809,7 +6837,7 @@ impl<'types> Codegen<'types> {
         access: &witchy_types::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
-        let ownership = Self::ownership_envelope_for_signature(access);
+        let ownership = self.ownership_envelope_for_named_signature(name, access);
         if ownership.own_capacity_param.is_some()
             || !ownership.var_capacity_params.is_empty()
         {
@@ -7137,7 +7165,7 @@ impl<'types> Codegen<'types> {
         access: &witchy_types::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
-        let ownership = Self::ownership_envelope_for_signature(access);
+        let ownership = self.ownership_envelope_for_named_signature(name, access);
         let param_kinds: Vec<Kind> = self
             .fn_params
             .get(name)

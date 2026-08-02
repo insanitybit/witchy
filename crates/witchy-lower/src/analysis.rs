@@ -135,7 +135,8 @@ impl Facts {
     }
 }
 
-/// Physical ownership channels carried by one finalized callable signature.
+/// Logical ownership state and uniform physical channels for one finalized
+/// callable signature.
 ///
 /// Checked call expressions, no-copy enforcement, accumulator discovery, and
 /// code generation all derive these axes here. This keeps an indirect call's
@@ -143,6 +144,7 @@ impl Facts {
 /// authorized the source call.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CallOwnershipFact {
+    consuming_state_param: Option<usize>,
     own_capacity_param: Option<usize>,
     var_capacity_params: Vec<usize>,
     no_copy_var_params: Vec<usize>,
@@ -150,6 +152,13 @@ pub struct CallOwnershipFact {
 }
 
 impl CallOwnershipFact {
+    /// The consuming input that carries backend-neutral physical ownership.
+    /// Layout-dependent inputs are included even when their exact direct ABI
+    /// needs no legacy trailing capacity slot.
+    pub fn consuming_state_param(&self) -> Option<usize> {
+        self.consuming_state_param
+    }
+
     pub fn own_capacity_param(&self) -> Option<usize> {
         self.own_capacity_param
     }
@@ -167,7 +176,8 @@ impl CallOwnershipFact {
     }
 
     fn argument_may_alias_out(&self, index: usize) -> bool {
-        self.own_capacity_param != Some(index) && !self.var_capacity_params.contains(&index)
+        self.consuming_state_param != Some(index)
+            && !self.var_capacity_params.contains(&index)
     }
 }
 
@@ -189,11 +199,23 @@ pub fn call_ownership_fact(
 ) -> CallOwnershipFact {
     use witchy_types::access::{AccessKind, AccessQualifier, OwnershipStateClass};
 
-    // The legacy trailing capacity token belongs only to the uniform linear
-    // List/Dict/String/Bytes ABI. `LayoutDependent` values carry ownership in
-    // their exact RFC-0111 descriptor-shaped representation (for example a
-    // packed-list header); treating that state as this i32 channel duplicates
-    // or misorders physical ownership at the call boundary.
+    let owns_physical_state = |state: &OwnershipStateClass| {
+        matches!(
+            state,
+            OwnershipStateClass::LinearMemoryObject
+                | OwnershipStateClass::LayoutDependent { .. }
+        )
+    };
+    let consuming_state_param =
+        signature.params().iter().enumerate().find_map(|(index, param)| {
+            (param.kind() == AccessKind::Consuming
+                && param.ownership().input().is_some_and(owns_physical_state))
+            .then_some(index)
+        });
+    // The backend-neutral fact above remains true for exact LayoutId values.
+    // This narrower axis records only the uniform container capacity channel;
+    // codegen decides whether a non-container consuming state needs its legacy
+    // compatibility slot after consulting the named callable layout.
     let is_legacy_capacity_state = |state: &OwnershipStateClass| {
         matches!(state, OwnershipStateClass::LinearMemoryObject)
     };
@@ -245,6 +267,7 @@ pub fn call_ownership_fact(
         })
         && type_is_unique_capacity_shape(signature.result().ty());
     CallOwnershipFact {
+        consuming_state_param,
         own_capacity_param,
         var_capacity_params,
         no_copy_var_params,

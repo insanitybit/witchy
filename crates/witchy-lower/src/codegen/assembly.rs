@@ -126,6 +126,12 @@ fn collect_specialized_layout_requests(
 }
 
 fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
+    // RFC-0111 extends the `unbox` optimization rather than creating a second
+    // always-on representation mode. With the lever disabled, declared packed
+    // values deliberately use the uniform boxed ABI as the differential oracle.
+    if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Unbox) {
+        return;
+    }
     let resolver = ModuleLayoutResolver::new(module);
     let mut requested = Vec::new();
     for item in &module.items {
@@ -1122,7 +1128,9 @@ fn register_module_items(
                     // state inputs before the hidden destination parameter.
                     let checked_access = cg.access_facts.declaration(&f.name);
                     let checked_ownership = checked_access
-                        .map(Codegen::ownership_envelope_for_signature)
+                        .map(|signature| {
+                            cg.ownership_envelope_for_named_signature(&f.name, signature)
+                        })
                         .unwrap_or_default();
                     if !f.public
                         && f.name.rsplit('.').next() != Some("main")
@@ -1510,7 +1518,8 @@ fn build_existential_adapter_funcs(
                 })
             })?;
             let name = format!("__dynw{}_{}", witness.id, slot_index);
-            let ownership = Codegen::ownership_envelope_for_signature(access);
+            let ownership =
+                cg.ownership_envelope_for_named_signature(&slot.adapter, access);
             let var_capacity_args: Vec<usize> = ownership
                 .var_capacity_params
                 .iter()

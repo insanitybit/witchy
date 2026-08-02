@@ -25,4 +25,3 @@ wasmparser = "0.251"
 
 [dev-dependencies]
 wasmtime = "45.0.0"
-witchy-interp = { path = "../witchy-interp", features = ["raw-module-test-api"] }

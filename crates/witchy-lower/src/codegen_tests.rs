@@ -176,18 +176,39 @@
             .collect()
     }
 
+    fn no_comptime_expansion(
+        _name: &str,
+        _module: &mut witchy_syntax::ast::Module,
+        _modules: &[(String, witchy_syntax::ast::Module)],
+    ) -> Result<witchy_syntax::origin::OriginTable, String> {
+        Ok(witchy_syntax::origin::OriginTable::default())
+    }
+
+    fn link_test_modules(
+        modules: Vec<(String, witchy_syntax::ast::Module)>,
+        entry: &str,
+        user_modules: &std::collections::HashSet<String>,
+    ) -> witchy_syntax::ast::Module {
+        witchy_syntax::linker::link_with_user_modules(
+            modules,
+            entry,
+            no_comptime_expansion,
+            user_modules,
+        )
+        .expect("link lowering test modules")
+    }
+
     fn link_list_app(source: &str) -> witchy_syntax::ast::Module {
         let list_module = parse_module(
             witchy_syntax::linker::bundled_source("list").expect("bundled list module"),
         )
         .expect("parse bundled list module");
         let app = parse_module(source).expect("parse list app");
-        witchy_interp::pipeline::link_with_user_modules(
+        link_test_modules(
             vec![("list".into(), list_module), ("app".into(), app)],
             "app",
             &std::collections::HashSet::from(["app".to_string()]),
         )
-        .expect("link list app")
     }
 
     #[test]
@@ -484,6 +505,25 @@ fn main() -> Int:
 "#;
         assert_eq!(run_int(source), 812);
         let module = parse_module(source).expect("parse packed own boundaries");
+        let typed = witchy_types::typeck::annotate_checked(module.clone())
+            .expect("annotate packed ownership boundary");
+        let access = witchy_types::access::checked_facts(typed.module(), typed.table())
+            .expect("checked packed ownership facts");
+        for function in ["point_score", "token_score", "point_count"] {
+            let fact = analysis::call_ownership_fact(
+                access.declaration(function).expect("declared ownership fact"),
+            );
+            assert_eq!(
+                fact.consuming_state_param(),
+                Some(0),
+                "analysis must retain the logical LayoutDependent consuming state for {function}",
+            );
+            assert_eq!(
+                fact.own_capacity_param(),
+                None,
+                "an exact LayoutDependent value is not a uniform container capacity channel",
+            );
+        }
         let wat = witchy_wir::wir::to_wat(
             &assemble_wir_module(&module)
                 .expect_lowered("packed record, sum, and list own boundaries lower exactly"),
@@ -510,7 +550,7 @@ fn main() -> Int:
     }
 
     #[test]
-    fn declared_packed_direct_boundaries_match_interpreter_and_oracle() {
+    fn declared_packed_direct_boundaries_match_pinned_oracle() {
         let source = r#"
 mode opt
 
@@ -535,12 +575,6 @@ fn main(console: Console):
     console.print("${answer()}")
 "#;
         let module = parse_module(source).expect("parse packed parity program");
-        let interpreted = witchy_interp::interpreter::run_module(
-            module.clone(),
-            ".",
-            Vec::new(),
-        )
-        .expect("interpreter runs packed parity program");
         let bytes = compile_module_binary(&module)
             .expect_lowered("compiled backend lowers packed parity program");
         let (mut store, instance, captured) = instantiate_with_print(&bytes);
@@ -551,9 +585,7 @@ fn main(console: Console):
             .unwrap();
         let compiled = captured.lock().unwrap().clone();
         let oracle = vec!["7102".to_string()];
-        assert_eq!(interpreted, oracle, "independent expected value");
         assert_eq!(compiled, oracle, "compiled expected value");
-        assert_eq!(compiled, interpreted, "interpreter/Wasm parity");
     }
 
     #[test]
@@ -582,18 +614,11 @@ fn main() -> Int:
     let points = relay([Point(2, 3), Point(7, 11)])
     score(origin()) * 100 + list.at(points, 1).x * 10 + list.at(points, 0).y
 "#).expect("parse app module");
-        let linked = witchy_interp::pipeline::link(
+        let linked = link_test_modules(
             vec![("model".into(), model), ("app".into(), app)],
             "app",
-        )
-        .expect("link packed modules");
-        let interpreted = witchy_interp::interpreter::run_module(
-            linked.clone(),
-            ".",
-            Vec::new(),
-        )
-        .expect("interpreter runs linked packed modules");
-        assert!(interpreted.is_empty(), "Int main prints only on compiled wrapper: {interpreted:?}");
+            &std::collections::HashSet::from(["model".to_string(), "app".to_string()]),
+        );
         assert_eq!(run_int_module(&linked), 5873);
     }
 
@@ -649,12 +674,11 @@ fn main() -> Int:
         + list.at(points, 2).x
         + list.at(points, 3).x
 "#).expect("parse descriptor list mutation");
-        let mutation = witchy_interp::pipeline::link_with_user_modules(
+        let mutation = link_test_modules(
             vec![("list".into(), list_module), ("app".into(), mutation_app)],
             "app",
             &std::collections::HashSet::from(["app".to_string()]),
-        )
-        .expect("link descriptor list mutation");
+        );
         let names = [
             "__witchy_packed_alloc_calls",
             "__witchy_packed_alloc_bytes",
@@ -702,8 +726,6 @@ fn main(console: Console):
     console.print("${answer()}")
 "#;
         let module = link_list_app(source);
-        let interpreted = witchy_interp::interpreter::run_module(module.clone(), ".", Vec::new())
-            .expect("interpreter runs confined packed stream");
         let names = [
             "__witchy_packed_alloc_calls",
             "__witchy_packed_alloc_bytes",
@@ -716,8 +738,7 @@ fn main(console: Console):
             .call(&mut store, ())
             .expect("run confined packed stream");
         let compiled = captured.lock().unwrap().clone();
-        assert_eq!(interpreted, vec!["36009".to_string()]);
-        assert_eq!(compiled, interpreted);
+        assert_eq!(compiled, vec!["36009".to_string()]);
         let counters: std::collections::HashMap<&str, i64> = names
             .iter()
             .map(|&name| {
@@ -851,12 +872,11 @@ fn main() -> Int:
         + list.at(alias, 0).x * 10
         + list.at(points, 1).x
 "#).expect("parse alias-dirty descriptor push");
-        let module = witchy_interp::pipeline::link_with_user_modules(
+        let module = link_test_modules(
             vec![("list".into(), list_module), ("app".into(), app)],
             "app",
             &std::collections::HashSet::from(["app".to_string()]),
-        )
-        .expect("link alias-dirty descriptor push");
+        );
         let names = [
             "__witchy_packed_alloc_calls",
             "__witchy_packed_alloc_bytes",
@@ -1021,8 +1041,6 @@ fn main(console: Console):
     console.print("${answer()}")
 "#;
         let module = parse_module(source).expect("parse confined closed sum");
-        let interpreted = witchy_interp::interpreter::run_module(module.clone(), ".", Vec::new())
-            .expect("interpreter runs confined closed sum");
         let bytes = compile_module_binary(&module)
             .expect_lowered("compiled backend lowers confined closed sum");
         let (mut store, instance, captured) = instantiate_with_print(&bytes);
@@ -1033,9 +1051,7 @@ fn main(console: Console):
             .expect("run confined closed sum");
         let compiled = captured.lock().unwrap().clone();
         let oracle = vec!["16833142".to_string()];
-        assert_eq!(interpreted, oracle, "independent expected value");
         assert_eq!(compiled, oracle, "compiled expected value");
-        assert_eq!(compiled, interpreted, "interpreter/Wasm parity");
 
         for name in [
             "__witchy_packed_alloc_calls",
@@ -1242,8 +1258,6 @@ fn main(console: Console):
     console.print("${answer()}")
 "#;
         let module = link_list_app(source);
-        let interpreted = witchy_interp::interpreter::run_module(module.clone(), ".", Vec::new())
-            .expect("interpreter runs direct list builder");
         let bytes = compile_module_binary(&module)
             .expect_lowered("compiled backend lowers direct list builder");
         let (mut store, instance, captured) = instantiate_with_print(&bytes);
@@ -1254,9 +1268,7 @@ fn main(console: Console):
             .expect("run direct list builder");
         let compiled = captured.lock().unwrap().clone();
         let oracle = vec!["24309".to_string()];
-        assert_eq!(interpreted, oracle, "independent expected value");
         assert_eq!(compiled, oracle, "compiled expected value");
-        assert_eq!(compiled, interpreted, "interpreter/Wasm parity");
 
         for name in [
             "__witchy_reowns",
@@ -1399,12 +1411,6 @@ fn main(console: Console):
     console.print("${result}")
 "#;
         let module = parse_module(source).expect("parse own-consumer alias regression");
-        let interpreted = witchy_interp::interpreter::run_module(
-            module.clone(),
-            ".",
-            Vec::new(),
-        )
-        .expect("interpreter runs own-consumer alias regression");
         let bytes = compile_module_binary(&module)
             .expect_lowered("compiled backend lowers own-consumer alias regression");
         let (mut store, instance, captured) = instantiate_with_print(&bytes);
@@ -1415,9 +1421,7 @@ fn main(console: Console):
             .expect("run own-consumer alias regression");
         let compiled = captured.lock().unwrap().clone();
         let oracle = vec!["1939".to_string()];
-        assert_eq!(interpreted, oracle, "independent expected value");
         assert_eq!(compiled, oracle, "compiled expected value");
-        assert_eq!(compiled, interpreted, "interpreter/Wasm parity");
 
         for (name, expected) in [
             ("__witchy_packed_alloc_calls", 4),
