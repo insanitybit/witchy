@@ -1,0 +1,18 @@
+mode opt
+
+type Point packed:
+    x: Int
+    y: Int
+
+fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    var points = []
+    for i in 0..200000:
+        points = list.push(points, Point(i, i * 3))
+    var total = 0
+    for point in points:
+        total = total + (point.x * 7 + point.y) % 97
+    let bench_t1 = clock.now_monotonic()
+    console.print("result=${total}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")
+

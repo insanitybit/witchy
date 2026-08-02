@@ -1,0 +1,20 @@
+mode opt
+
+type Pair packed:
+    left: Int
+    right: Int
+
+fn build(value: Int) -> unique Pair:
+    Pair(value * 7 + 3, value * 11 + 5)
+
+fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    var current = build(0)
+    var total = 0
+    for i in 1..1000000:
+        current = build(i)
+        total = total + (current.left + current.right) % 101
+    let result = total + current.left % 17
+    let bench_t1 = clock.now_monotonic()
+    console.print("result=${result}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

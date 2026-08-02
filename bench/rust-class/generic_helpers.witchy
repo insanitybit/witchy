@@ -1,0 +1,27 @@
+mode opt
+
+type Point packed:
+    x: Int
+    y: Int
+
+fn identity(value: a) -> a:
+    value
+
+fn weight(point: Point) -> Int:
+    point.x * 5 + point.y * 3
+
+fn sum_points(own points: unique List(Point)) -> Int:
+    var total = 0
+    for point in points:
+        total = total + weight(identity(point)) % 97
+    total
+
+fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    var points = []
+    for i in 0..200000:
+        points = list.push(points, Point(i, i * 2 + 1))
+    let total = sum_points(identity(points))
+    let bench_t1 = clock.now_monotonic()
+    console.print("result=${total}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

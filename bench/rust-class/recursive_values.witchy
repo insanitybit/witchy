@@ -1,0 +1,26 @@
+mode opt
+
+type Chain:
+    End
+    Node(Int, Chain)
+
+fn build(length: Int) -> unique Chain:
+    var chain = End
+    for value in 0..length:
+        chain = Node(value % 101, chain)
+    chain
+
+fn sum_from(own chain: Chain, total: Int) -> Int:
+    match chain:
+        End -> total
+        Node(value, next) -> sum_from(next, total + value)
+
+fn sum(own chain: unique Chain) -> Int:
+    sum_from(chain, 0)
+
+fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    let result = sum(build(200000))
+    let bench_t1 = clock.now_monotonic()
+    console.print("result=${result}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

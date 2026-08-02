@@ -1,0 +1,12 @@
+fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    var value = 1.0
+    var checksum = 0
+    for i in 0..1000000:
+        value = value * 1.0000001 + 0.0000003
+        if value > 1.1:
+            checksum = checksum + 1
+            value = value * 0.5
+    let bench_t1 = clock.now_monotonic()
+    console.print("result=${checksum}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")
