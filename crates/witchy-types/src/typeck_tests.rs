@@ -804,6 +804,26 @@
             "{field}"
         );
 
+        let substituted = check_str(
+            "mode opt\n\ntype Inner(a):\n    value: a\n\ntype Outer(a):\n    inner: Inner(a)\n\nfn bad(let value: let('a) Outer(Dir[Read])) -> Int:\n    0\n",
+        )
+        .expect_err("a realized generic field that stores a capability still requires a lease");
+        assert!(
+            substituted.contains("names capability `Dir` as an ordinary owner")
+                && substituted.contains("lease-bearing API"),
+            "{substituted}"
+        );
+
+        check_str(
+            "mode opt\n\ntype Callback:\n    run: fn(let Dir[Read]) -> Int\n\nfn inspect(let callback: let('a) Callback) -> Int:\n    0\n",
+        )
+        .expect("a callback signature may mention caller-supplied authority without storing it");
+
+        check_str(
+            "mode opt\n\ntype Phantom(a):\n    value: Int\n\nfn inspect(let value: let('a) Phantom(Dir[Read])) -> Int:\n    0\n",
+        )
+        .expect("an unused capability type argument does not become stored authority");
+
         check_str("fn inspect(let dir: Dir[Read]) -> Int:\n    0\n")
             .expect("an ordinary non-lifetime capability parameter remains valid");
     }
