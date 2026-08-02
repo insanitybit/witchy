@@ -7679,10 +7679,11 @@ impl<'types> Codegen<'types> {
     /// The WIR form of [`loop_watermark`]: returns the `(capture, reset)` pair as
     /// WIR nodes — `capture` saves `$heap` into a pool slot before the loop, and
     /// `reset` restores it at the end of each iteration so per-iteration arena
-    /// garbage is reclaimed. `None` when the loop body isn't arena-resettable or
-    /// the pool is exhausted (then the loop simply lowers without the reset, which
-    /// is still correct — just less memory-efficient). Bumps `wm_level`; the
-    /// caller decrements it once the body is lowered.
+    /// garbage is reclaimed. `None` when the whole body is proven allocation-free,
+    /// the body isn't arena-resettable, or the pool is exhausted. In each case the
+    /// loop lowers without a reset; the allocation-free case also avoids all
+    /// per-iteration watermark and counter traffic. Bumps `wm_level`; the caller
+    /// decrements it once the body is lowered.
     fn loop_watermark_wir(
         &mut self,
         body: &Block,
@@ -7695,6 +7696,7 @@ impl<'types> Codegen<'types> {
             || !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Region)
             || self.wm_level >= WM_POOL
             || !self.loop_arena_resettable(body)
+            || !self.summaries.block_may_allocate(body)
         {
             return None;
         }

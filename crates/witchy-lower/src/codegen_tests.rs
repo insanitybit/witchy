@@ -810,6 +810,112 @@ fn main() -> Int:
     }
 
     #[test]
+    fn allocation_free_loop_omits_region_watermark_through_nested_calls() {
+        let source = r#"
+mode opt
+
+fn leaf(value: Int) -> Int:
+    value * 7 + 3
+
+fn middle(value: Int) -> Int:
+    leaf(value)
+
+fn main() -> Int:
+    let anchor = [1]
+    var total = 0
+    for i in 0..1000:
+        total = total + middle(i) % 13
+    total + list.length(anchor) - 1
+"#;
+        let (result, counters) =
+            run_int_with_i64_globals(source, &["__witchy_region_rewind_calls"]);
+        assert_eq!(result, 5_997);
+        assert_eq!(counters["__witchy_region_rewind_calls"], 0);
+
+        let module = parse_module(source).expect("parse allocation-free loop");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("allocation-free loop lowers"),
+        );
+        let start = wat.find("(func $main").expect("main function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let main = &tail[..end];
+        assert!(main.contains("call $middle"), "nested scalar call remains direct: {main}");
+        assert!(
+            !main.contains("global.set $__witchy_region_rewind_calls"),
+            "allocation-free loop has no per-iteration reset counter: {main}"
+        );
+        assert!(
+            !main.contains("global.get $heap"),
+            "allocation-free loop has no watermark capture: {main}"
+        );
+    }
+
+    #[test]
+    fn allocating_branch_keeps_region_watermark_through_call_summary() {
+        let source = r#"
+mode opt
+
+type Cell:
+    value: Int
+
+fn maybe_cell(flag: Bool, value: Int) -> Int:
+    if flag:
+        let cell = Cell(value)
+        cell.value
+    else:
+        value
+
+fn main() -> Int:
+    var total = 0
+    for i in 0..7:
+        total = total + maybe_cell(i % 2 == 0, i)
+    total
+"#;
+        let (result, counters) =
+            run_int_with_i64_globals(source, &["__witchy_region_rewind_calls"]);
+        assert_eq!(result, 21);
+        assert_eq!(counters["__witchy_region_rewind_calls"], 7);
+
+        let module = parse_module(source).expect("parse allocating branch loop");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("allocating branch loop lowers"),
+        );
+        let start = wat.find("(func $main").expect("main function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let main = &tail[..end];
+        assert!(
+            main.contains("global.set $__witchy_region_rewind_calls"),
+            "either allocating arm preserves the loop reset: {main}"
+        );
+    }
+
+    #[test]
+    fn unknown_loop_call_keeps_region_watermark() {
+        let source = r#"
+mode opt
+
+fn main() -> Int:
+    let transform = fn(value: Int) -> Int: value + 1
+    var total = 0
+    for i in 0..5:
+        total = total + transform(i)
+    total
+"#;
+        let (result, counters) =
+            run_int_with_i64_globals(source, &["__witchy_region_rewind_calls"]);
+        assert_eq!(result, 15);
+        assert_eq!(counters["__witchy_region_rewind_calls"], 5);
+    }
+
+    #[test]
     fn declared_packed_closed_sum_rejects_variable_layout_payload_loudly() {
         let module = parse_module(r#"
 mode opt

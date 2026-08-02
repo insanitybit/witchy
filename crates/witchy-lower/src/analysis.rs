@@ -557,6 +557,9 @@ fn self_record_update<'a>(name: &str, value: &'a Expr) -> Option<&'a [(String, E
 struct FnInfo {
     convs: Vec<Convention>,
     may_alias_out: Vec<bool>,
+    /// True when some path may allocate linear-memory storage or perform
+    /// reclamation whose state a loop watermark must preserve.
+    may_allocate: bool,
     /// `Some(i)`: this function carries the own-ABI — parameter `i` is its
     /// single `own` collection parameter, the function has no `var`
     /// parameters, and the return value may alias that parameter. The
@@ -629,12 +632,47 @@ impl Summaries {
                     // immediate alias source. Other positions start at the
                     // optimistic bottom and rise through the body fixpoint.
                     may_alias_out,
+                    may_allocate: false,
                     own_abi: None,
                 },
             );
             bodies.insert(name, f);
         }
         let mut summaries = Summaries { fns };
+        // Allocation/reclamation effects use the dual fixed point from alias
+        // escape. A function has a local source (constructor, collection/string
+        // operation, unknown/indirect/host call, region) or inherits the effect
+        // from a direct user callee. Starting clean makes effect-free recursive
+        // components clean; any concrete source propagates through the component.
+        let known: HashSet<String> = bodies.keys().cloned().collect();
+        let allocation_effects: HashMap<String, (bool, HashSet<String>)> = bodies
+            .iter()
+            .map(|(name, function)| {
+                let mut scan = AllocationScan::new(&known);
+                scan.block(&function.body);
+                (name.clone(), (scan.local_effect, scan.callees))
+            })
+            .collect();
+        loop {
+            let mut changed = false;
+            for (name, (local_effect, callees)) in &allocation_effects {
+                let inherited = callees.iter().any(|callee| {
+                    summaries
+                        .fns
+                        .get(callee)
+                        .is_none_or(|info| info.may_allocate)
+                });
+                if (*local_effect || inherited)
+                    && !summaries.fns[name.as_str()].may_allocate
+                {
+                    summaries.fns.get_mut(name.as_str()).unwrap().may_allocate = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
         loop {
             let mut changed = false;
             for (name, f) in &bodies {
@@ -707,6 +745,21 @@ impl Summaries {
         self.fns.get(name).and_then(|f| f.own_abi)
     }
 
+    /// Conservative whole-block allocation/reclamation effect. Direct user
+    /// calls consult the transitive summary; every unresolved boundary is an
+    /// effect source by construction.
+    pub fn block_may_allocate(&self, body: &Block) -> bool {
+        let known: HashSet<String> = self.fns.keys().cloned().collect();
+        let mut scan = AllocationScan::new(&known);
+        scan.block(body);
+        scan.local_effect
+            || scan.callees.iter().any(|callee| {
+                self.fns
+                    .get(callee)
+                    .is_none_or(|info| info.may_allocate)
+            })
+    }
+
     /// Parameter positions written back through the uniform `var` ABI. This is
     /// the operation-independent ownership hook: callers can attach tokens from
     /// conventions without recognizing a source method name.
@@ -755,6 +808,179 @@ impl Summaries {
         match builtin_arg_liveness(name, argc) {
             Some(effects) => effects.get(idx).copied().unwrap_or(true),
             None => self.arg_live(name, idx),
+        }
+    }
+}
+
+/// Syntactic allocation/reclamation sources plus direct-user-call edges. This
+/// is intentionally default-deny: recognizing another allocation-free host or
+/// intrinsic requires an explicit proof here rather than an optimistic guess.
+struct AllocationScan<'a> {
+    known: &'a HashSet<String>,
+    local_effect: bool,
+    callees: HashSet<String>,
+}
+
+impl<'a> AllocationScan<'a> {
+    fn new(known: &'a HashSet<String>) -> Self {
+        Self {
+            known,
+            local_effect: false,
+            callees: HashSet::new(),
+        }
+    }
+
+    fn block(&mut self, block: &Block) {
+        if block.region.is_some() {
+            self.local_effect = true;
+        }
+        for statement in &block.stmts {
+            match statement {
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::LetPattern { value, .. }
+                | Stmt::Return(Some(value))
+                | Stmt::Expr(value) => self.expr(value),
+                Stmt::Yield(value) => {
+                    self.local_effect = true;
+                    self.expr(value);
+                }
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+
+    fn expr(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Var(_) => {}
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
+            | Expr::Field { base: expr, .. } => self.expr(expr),
+            Expr::Binary { op, lhs, rhs } => {
+                if matches!(op, BinOp::Concat) {
+                    self.local_effect = true;
+                }
+                self.expr(lhs);
+                self.expr(rhs);
+            }
+            Expr::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                self.expr(cond);
+                self.block(then_block);
+                if let Some(block) = else_block {
+                    self.block(block);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.expr(scrutinee);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        self.expr(guard);
+                    }
+                    self.expr(&arm.body);
+                }
+            }
+            Expr::Block(block) => self.block(block),
+            Expr::While { cond, body } => {
+                self.expr(cond);
+                self.block(body);
+            }
+            Expr::For { iter, body, .. } => {
+                self.expr(iter);
+                self.block(body);
+            }
+            Expr::WhileLet {
+                scrutinee, body, ..
+            } => {
+                self.expr(scrutinee);
+                self.block(body);
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.expr(lo);
+                self.expr(hi);
+            }
+            Expr::Index { base, index } => {
+                // Index lowering may cross a list/dict boundary. Keep the
+                // watermark until a typed, operation-specific proof exists.
+                self.local_effect = true;
+                self.expr(base);
+                self.expr(index);
+            }
+            Expr::Call { name, args } => {
+                for argument in args {
+                    self.expr(argument);
+                }
+                if self.known.contains(name) {
+                    self.callees.insert(name.clone());
+                } else {
+                    self.local_effect = true;
+                }
+            }
+            Expr::List(items)
+            | Expr::Tuple(items)
+            | Expr::Ctor { args: items, .. }
+            | Expr::AnonCtor { args: items, .. } => {
+                self.local_effect = true;
+                for item in items {
+                    self.expr(item);
+                }
+            }
+            Expr::RecordUpdate { base, fields, .. } => {
+                self.local_effect = true;
+                self.expr(base);
+                for (_, value) in fields {
+                    self.expr(value);
+                }
+            }
+            Expr::Record { fields, spread, .. } => {
+                self.local_effect = true;
+                for (_, value) in fields {
+                    self.expr(value);
+                }
+                if let Some(value) = spread {
+                    self.expr(value);
+                }
+            }
+            Expr::Lambda { body, .. } => {
+                self.local_effect = true;
+                self.block(body);
+            }
+            Expr::ExistentialPack { expr, .. } => {
+                self.local_effect = true;
+                self.expr(expr);
+            }
+            Expr::Apply { func, args } => {
+                self.local_effect = true;
+                self.expr(func);
+                for argument in args {
+                    self.expr(argument);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. }
+            | Expr::ExistentialCall { receiver, args, .. } => {
+                self.local_effect = true;
+                self.expr(receiver);
+                for argument in args {
+                    self.expr(argument);
+                }
+            }
+            Expr::LabeledCall { args, .. } => {
+                self.local_effect = true;
+                for (_, argument) in args {
+                    self.expr(argument);
+                }
+            }
+            Expr::TaggedLit { .. } => self.local_effect = true,
         }
     }
 }
