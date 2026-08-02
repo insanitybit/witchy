@@ -1343,6 +1343,7 @@ struct AccessVerifier<'a> {
     variants: HashMap<String, Vec<(String, Variant)>>,
     facts: CheckedAccessFacts<'a>,
     return_frames: Vec<Vec<AccessFlow>>,
+    expression_type_hints: HashMap<usize, Type>,
 }
 
 impl<'a> AccessVerifier<'a> {
@@ -1385,6 +1386,7 @@ impl<'a> AccessVerifier<'a> {
                 calls: HashMap::new(),
             },
             return_frames: Vec::new(),
+            expression_type_hints: HashMap::new(),
         }
     }
 
@@ -1909,10 +1911,15 @@ impl<'a> AccessVerifier<'a> {
         return_expected: &AccessFlow,
     ) -> Result<AccessFlow, AccessFlowError> {
         let mut tail = AccessFlow::None;
+        let return_hint = match return_expected {
+            AccessFlow::Callable(signature) => Some(signature.as_type()),
+            _ => None,
+        };
         for (index, statement) in block.stmts.iter().enumerate() {
             tail = match statement {
                 Stmt::Let { name, ty, value, .. } => {
-                    let actual = self.eval_expr(value, environment, return_expected)?;
+                    let actual =
+                        self.eval_expr_with_hint(value, ty.as_ref(), environment, return_expected)?;
                     let value = if let Some(ty) = ty {
                         let expected = AccessFlow::from_type(ty).map_err(Self::signature_error)?;
                         actual.verify_directed(&expected, &format!("function value `{name}`"))?;
@@ -1924,7 +1931,16 @@ impl<'a> AccessVerifier<'a> {
                     AccessFlow::None
                 }
                 Stmt::Assign { name, value } => {
-                    let actual = self.eval_expr(value, environment, return_expected)?;
+                    let hint = match environment.get(name) {
+                        Some(AccessFlow::Callable(signature)) => Some(signature.as_type()),
+                        _ => None,
+                    };
+                    let actual = self.eval_expr_with_hint(
+                        value,
+                        hint.as_ref(),
+                        environment,
+                        return_expected,
+                    )?;
                     if let Some(expected) = environment.get(name) {
                         actual.verify_directed(expected, &format!("assignment to `{name}`"))?;
                     }
@@ -1939,7 +1955,12 @@ impl<'a> AccessVerifier<'a> {
                 }
                 Stmt::Return(value) => {
                     let actual = match value {
-                        Some(value) => self.eval_expr(value, environment, return_expected)?,
+                        Some(value) => self.eval_expr_with_hint(
+                            value,
+                            return_hint.as_ref(),
+                            environment,
+                            return_expected,
+                        )?,
                         None => AccessFlow::None,
                     };
                     if let Some(frame) = self.return_frames.last_mut() {
@@ -1948,9 +1969,15 @@ impl<'a> AccessVerifier<'a> {
                     actual.verify_directed(return_expected, "returned function value")?;
                     AccessFlow::None
                 }
-                Stmt::Yield(value) | Stmt::Expr(value) => {
-                    self.eval_expr(value, environment, return_expected)?
-                }
+                Stmt::Yield(value) => self.eval_expr(value, environment, return_expected)?,
+                Stmt::Expr(value) => self.eval_expr_with_hint(
+                    value,
+                    (index + 1 == block.stmts.len())
+                        .then_some(return_hint.as_ref())
+                        .flatten(),
+                    environment,
+                    return_expected,
+                )?,
                 Stmt::Break | Stmt::Continue => AccessFlow::None,
             };
             if index + 1 != block.stmts.len() {
@@ -2111,6 +2138,24 @@ impl<'a> AccessVerifier<'a> {
             .insert(expression as *const Expr as usize, signature.clone());
     }
 
+    fn eval_expr_with_hint(
+        &mut self,
+        expression: &Expr,
+        hint: Option<&Type>,
+        environment: &mut FlowEnvironment,
+        return_expected: &AccessFlow,
+    ) -> Result<AccessFlow, AccessFlowError> {
+        let key = expression as *const Expr as usize;
+        let previous = hint.and_then(|hint| self.expression_type_hints.insert(key, hint.clone()));
+        let result = self.eval_expr(expression, environment, return_expected);
+        if let Some(previous) = previous {
+            self.expression_type_hints.insert(key, previous);
+        } else if hint.is_some() {
+            self.expression_type_hints.remove(&key);
+        }
+        result
+    }
+
     fn eval_expr(
         &mut self,
         expression: &Expr,
@@ -2130,9 +2175,25 @@ impl<'a> AccessVerifier<'a> {
                 }
             }
             Expr::List(values) => {
+                let element_hint = self
+                    .expression_type_hints
+                    .get(&(expression as *const Expr as usize))
+                    .and_then(|hint| match hint.unqualified() {
+                        Type::Named(_, arguments) if arguments.len() == 1 => {
+                            arguments.first().cloned()
+                        }
+                        _ => None,
+                    });
                 let elements = values
                     .iter()
-                    .map(|value| self.eval_expr(value, environment, return_expected))
+                    .map(|value| {
+                        self.eval_expr_with_hint(
+                            value,
+                            element_hint.as_ref(),
+                            environment,
+                            return_expected,
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 let element = elements.into_iter().try_fold(
                     AccessFlow::Unknown,
@@ -2144,24 +2205,51 @@ impl<'a> AccessVerifier<'a> {
                     AccessFlow::Sequence(Box::new(element))
                 }
             }
-            Expr::Tuple(values) => AccessFlow::product(
-                values
-                    .iter()
-                    .map(|value| self.eval_expr(value, environment, return_expected))
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
+            Expr::Tuple(values) => {
+                let field_hints = self
+                    .expression_type_hints
+                    .get(&(expression as *const Expr as usize))
+                    .and_then(|hint| match hint.unqualified() {
+                        Type::Tuple(fields) if fields.len() == values.len() => Some(fields.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                AccessFlow::product(
+                    values
+                        .iter()
+                        .enumerate()
+                        .map(|(index, value)| {
+                            self.eval_expr_with_hint(
+                                value,
+                                field_hints.get(index),
+                                environment,
+                                return_expected,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+            }
             Expr::Call { name, args } => {
-                let arguments = args
-                    .iter()
-                    .map(|argument| self.eval_expr(argument, environment, return_expected))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let positional = args.iter().collect::<Vec<_>>();
                 let signature = match environment.get(name) {
                     Some(AccessFlow::Callable(signature)) => Some(signature.clone()),
-                    _ => {
-                        let positional = args.iter().collect::<Vec<_>>();
-                        self.signature_for_named_call(name, expression, &positional)?
-                    }
+                    _ => self.signature_for_named_call(name, expression, &positional)?,
                 };
+                let arguments = args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        self.eval_expr_with_hint(
+                            argument,
+                            signature
+                                .as_ref()
+                                .and_then(|signature| signature.params().get(index))
+                                .map(AccessParam::ty),
+                            environment,
+                            return_expected,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 match signature {
                     Some(signature) => {
                         self.verify_arguments(name, &signature, &arguments)?;
@@ -2174,11 +2262,23 @@ impl<'a> AccessVerifier<'a> {
             }
             Expr::LabeledCall { name, args } => {
                 let positional = args.iter().map(|(_, argument)| argument).collect::<Vec<_>>();
+                let signature = self.signature_for_named_call(name, expression, &positional)?;
                 let arguments = positional
                     .iter()
-                    .map(|argument| self.eval_expr(argument, environment, return_expected))
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        self.eval_expr_with_hint(
+                            argument,
+                            signature
+                                .as_ref()
+                                .and_then(|signature| signature.params().get(index))
+                                .map(AccessParam::ty),
+                            environment,
+                            return_expected,
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
-                match self.signature_for_named_call(name, expression, &positional)? {
+                match signature {
                     Some(signature) => {
                         self.verify_arguments(name, &signature, &arguments)?;
                         self.record_call(expression, &signature);
@@ -2190,11 +2290,26 @@ impl<'a> AccessVerifier<'a> {
             }
             Expr::Apply { func, args } => {
                 let function = self.eval_expr(func, environment, return_expected)?;
+                let signature = match function {
+                    AccessFlow::Callable(signature) => Some(signature),
+                    _ => None,
+                };
                 let arguments = args
                     .iter()
-                    .map(|argument| self.eval_expr(argument, environment, return_expected))
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        self.eval_expr_with_hint(
+                            argument,
+                            signature
+                                .as_ref()
+                                .and_then(|signature| signature.params().get(index))
+                                .map(AccessParam::ty),
+                            environment,
+                            return_expected,
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
-                let AccessFlow::Callable(signature) = function else {
+                let Some(signature) = signature else {
                     return Ok(self.record(expression, AccessFlow::None));
                 };
                 self.verify_arguments("indirect function", &signature, &arguments)?;
@@ -2202,9 +2317,6 @@ impl<'a> AccessVerifier<'a> {
                 AccessFlow::from_type(signature.result().ty()).map_err(Self::signature_error)?
             }
             Expr::Ctor { name, args } | Expr::AnonCtor { tag: name, args } => {
-                let arguments = args.iter()
-                    .map(|argument| self.eval_expr(argument, environment, return_expected))
-                    .collect::<Result<Vec<_>, _>>()?;
                 let expression_type = self.resolved_expression_type(expression).unwrap_or_else(|| {
                     self.variants
                         .get(name)
@@ -2212,6 +2324,29 @@ impl<'a> AccessVerifier<'a> {
                         .map(|(type_name, _)| Type::Named(type_name.clone(), Vec::new()))
                         .unwrap_or_else(|| Type::Named(name.clone(), Vec::new()))
                 });
+                let field_hints = self
+                    .variant_for(name, &expression_type)
+                    .map(|(type_name, variant)| {
+                        let substitutions = self.nominal_substitutions(type_name, &expression_type);
+                        variant
+                            .fields
+                            .iter()
+                            .map(|field| Self::substitute_type(field, &substitutions))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let arguments = args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        self.eval_expr_with_hint(
+                            argument,
+                            field_hints.get(index),
+                            environment,
+                            return_expected,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 self.constructor_flow(name, &expression_type, &arguments)?
             }
             Expr::Unary { expr, .. } | Expr::Try(expr) => {
@@ -2230,9 +2365,17 @@ impl<'a> AccessVerifier<'a> {
                 }
             }
             Expr::Lambda { params, body, ret } => {
-                let resolved = self.resolved_expression_type(expression).ok_or_else(|| {
-                    AccessFlowError { message: "lambda has no finalized checked type".into() }
-                })?;
+                let resolved = self
+                    .resolved_expression_type(expression)
+                    .or_else(|| {
+                        self.expression_type_hints
+                            .get(&(expression as *const Expr as usize))
+                            .cloned()
+                    })
+                    .ok_or_else(|| AccessFlowError {
+                        message: "lambda has no finalized checked type or checked expression context"
+                            .into(),
+                    })?;
                 let conventions: Vec<Convention> =
                     params.iter().map(|parameter| parameter.convention).collect();
                 let mut signature = AccessSignature::from_resolved_parts(
@@ -2346,11 +2489,19 @@ impl<'a> AccessVerifier<'a> {
                 ..
             } => {
                 let receiver_flow = self.eval_expr(receiver, environment, return_expected)?;
+                let signature = self.existential_signature(ty, params, result, conventions)?;
                 let arguments = args
                     .iter()
-                    .map(|argument| self.eval_expr(argument, environment, return_expected))
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        self.eval_expr_with_hint(
+                            argument,
+                            signature.params().get(index + 1).map(AccessParam::ty),
+                            environment,
+                            return_expected,
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
-                let signature = self.existential_signature(ty, params, result, conventions)?;
                 if let Some(receiver_param) = signature.params().first() {
                     let expected = AccessFlow::from_type(receiver_param.ty())
                         .map_err(Self::signature_error)?;

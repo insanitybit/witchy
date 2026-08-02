@@ -501,6 +501,106 @@ fn checked_query_is_tied_to_its_exact_typed_module() {
 }
 
 #[test]
+fn generic_lambda_access_uses_checked_context_without_a_concrete_type() {
+    crate::typeck::check_str(
+        "type Step:\n    Empty\n    Item(a)\n\n\
+         type Iter:\n    Iter(fn() -> Step(a))\n\n\
+         fn empty() -> Iter(a):\n    Iter(fn(): Empty)\n\n\
+         fn accept(f: fn(Int) -> Option((a, Int))) -> Int:\n    0\n\n\
+         fn wrap(x: a) -> Int:\n    accept(fn(i: Int): if true: Some((x, i)) else: None)\n\n\
+         fn main() -> Int:\n    0\n",
+    )
+    .expect(
+        "generic lambda nodes absent from the concrete type table use checked context and verify their bodies",
+    );
+}
+
+#[test]
+fn generic_lambda_context_rejects_qualifier_and_convention_erasure() {
+    let qualifier = crate::typeck::check_str(
+        "fn accept(f: fn(unique List(Int)) -> Int) -> Int:\n    0\n\n\
+         fn generic(x: a) -> Int:\n    accept(fn(xs: List(Int)): 0)\n\n\
+         fn main() -> Int:\n    0\n",
+    )
+    .expect_err("a polymorphic lambda must not erase its checked unique parameter contract");
+    assert!(
+        qualifier.contains("ownership/access contract")
+            && qualifier.contains("Qualifier"),
+        "{qualifier}"
+    );
+
+    let convention = crate::typeck::check_str(
+        "fn accept(f: fn(own List(Int)) -> Int) -> Int:\n    0\n\n\
+         fn generic(x: a) -> Int:\n    accept(fn(xs: List(Int)): 0)\n\n\
+         fn main() -> Int:\n    0\n",
+    )
+    .expect_err("a polymorphic lambda must not erase its checked own convention");
+    assert!(
+        convention.contains("ownership/access contract")
+            || convention.contains("expected `fn(own List(Int)) -> Int`")
+                && convention.contains("found `fn(List(Int)) -> Int`"),
+        "{convention}"
+    );
+}
+
+#[test]
+fn indirect_apply_context_checks_a_generic_lambda_contract() {
+    let accepted =
+        "fn identity(f: fn(fn(List(a)) -> Int) -> Int) -> fn(fn(List(a)) -> Int) -> Int:\n    f\n\n\
+         fn generic(x: a) -> Int:\n    identity(fn(callback: fn(List(a)) -> Int): callback([x]))(fn(xs: List(a)): 0)\n\n\
+         fn main() -> Int:\n    0\n";
+    let parsed = witchy_syntax::parser::parse_module(accepted).expect("parse indirect fixture");
+    let tail = parsed
+        .items
+        .iter()
+        .find_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) if function.name == "generic" => {
+                function.body.stmts.last()
+            }
+            _ => None,
+        })
+        .expect("generic tail");
+    assert!(
+        matches!(tail, witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Apply { .. })),
+        "fixture must exercise Expr::Apply: {tail:?}"
+    );
+    crate::typeck::check_str(accepted)
+        .expect("an indirect generic lambda preserves its checked callable contract");
+
+    let erased =
+        "fn identity(f: fn(fn(unique List(a)) -> Int) -> Int) -> fn(fn(unique List(a)) -> Int) -> Int:\n    f\n\n\
+         fn generic(x: a) -> Int:\n    identity(fn(callback: fn(unique List(a)) -> Int): callback([x]))(fn(xs: List(a)): 0)\n\n\
+         fn main() -> Int:\n    0\n";
+    let error = crate::typeck::check_str(erased)
+        .expect_err("indirect application must reject generic lambda qualifier erasure");
+    assert!(
+        error.contains("ownership/access contract") && error.contains("Qualifier"),
+        "{error}"
+    );
+}
+
+#[test]
+fn tuple_context_checks_a_nested_generic_lambda_contract() {
+    let accepted =
+        "fn accept(pair: (Int, fn(List(a)) -> Int)) -> Int:\n    0\n\n\
+         fn generic(x: a) -> Int:\n    accept((0, fn(xs: List(a)): 0))\n\n\
+         fn main() -> Int:\n    0\n";
+    crate::typeck::check_str(accepted)
+        .expect("a tuple-contained generic lambda preserves its checked callable contract");
+
+    let erased =
+        "fn accept(pair: (Int, fn(unique List(a)) -> Int)) -> Int:\n    0\n\n\
+         fn generic(x: a) -> Int:\n    accept((0, fn(xs: List(a)): 0))\n\n\
+         fn main() -> Int:\n    0\n";
+    let error = crate::typeck::check_str(erased)
+        .expect_err("tuple context must reject nested generic lambda qualifier erasure");
+    assert!(
+        error.contains("ownership/access contract") && error.contains("Qualifier"),
+        "{error}"
+    );
+}
+
+#[test]
 fn build_annotation_keys_types_to_the_returned_module_allocation() {
     let module = witchy_syntax::parser::parse_module(
         "fn main() -> Int:\n    let value = 1\n    value\n",
