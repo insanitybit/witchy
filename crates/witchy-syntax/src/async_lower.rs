@@ -48,6 +48,62 @@ use crate::source_check::{AsyncLoweredModule, GeneratorsLoweredModule};
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashSet, HashSetExt as _};
 
+/// Nominal identities whose values carry a declared lifetime relation. Async
+/// lowering runs before typeck, so this deliberately records only declarations
+/// available in the current module. An imported shell remains detectable from
+/// an explicit lifetime argument in an annotation; an unannotated cross-module
+/// constructor result is left for the later whole-program loan gate.
+#[derive(Default)]
+struct BorrowedShellCatalog {
+    types: HashSet<String>,
+    constructors: HashSet<String>,
+}
+
+impl BorrowedShellCatalog {
+    fn from_module(module: &Module) -> Self {
+        let mut catalog = Self::default();
+        for item in &module.items {
+            let Item::Type(definition) = item else { continue };
+            if !definition.params.iter().any(|parameter| is_lifetime_param(parameter)) {
+                continue;
+            }
+            catalog.types.insert(definition.name.clone());
+            catalog
+                .constructors
+                .extend(definition.variants.iter().map(|variant| variant.name.clone()));
+        }
+        catalog
+    }
+
+    fn type_is_borrowed(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Qualified(TypeQual::Borrow(_), _) => true,
+            Type::Qualified(_, inner) => self.type_is_borrowed(inner),
+            Type::Named(name, arguments) => {
+                if is_lifetime_param(name) {
+                    return false;
+                }
+                self.types.contains(name)
+                    || arguments.iter().any(|argument| {
+                        matches!(argument, Type::Named(name, args)
+                            if args.is_empty() && is_lifetime_param(name))
+                            || self.type_is_borrowed(argument)
+                    })
+            }
+            Type::Tuple(items) | Type::Dyn(_, items) => {
+                items.iter().any(|item| self.type_is_borrowed(item))
+            }
+            Type::RecordCompose { base, fields } => {
+                self.type_is_borrowed(base)
+                    || fields.iter().any(|(_, field)| self.type_is_borrowed(field))
+            }
+            // A function value owns its separately quantified relation. The
+            // callable-return path below tracks what invoking it produces.
+            Type::Fn(_, _, _) => false,
+        }
+    }
+}
+
 pub fn lower(checked: GeneratorsLoweredModule) -> Result<AsyncLoweredModule, String> {
     lower_with_item_mapping(checked).map(|(module, _)| module)
 }
@@ -55,6 +111,7 @@ pub fn lower(checked: GeneratorsLoweredModule) -> Result<AsyncLoweredModule, Str
 pub(crate) fn lower_with_item_mapping(
     checked: GeneratorsLoweredModule,
 ) -> Result<(AsyncLoweredModule, Vec<Vec<usize>>), String> {
+    let borrowed_shells = BorrowedShellCatalog::from_module(checked.module());
     let view_fns: HashSet<String> = checked
         .module()
         .items
@@ -62,10 +119,14 @@ pub(crate) fn lower_with_item_mapping(
         .flat_map(|item| match item {
             Item::Function(function) => {
                 let mut names = Vec::new();
-                if function.ret.as_ref().is_some_and(type_is_borrowed_view) {
+                if function.ret.as_ref().is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)) {
                     names.push(function.name.clone());
                 }
-                if function.ret.as_ref().is_some_and(type_is_view_callable) {
+                if function
+                    .ret
+                    .as_ref()
+                    .is_some_and(|ty| type_is_view_callable(ty, &borrowed_shells))
+                {
                     names.push(format!("@callable:{}", function.name));
                 }
                 names
@@ -75,10 +136,14 @@ pub(crate) fn lower_with_item_mapping(
                 .iter()
                 .flat_map(|method| {
                     let mut names = Vec::new();
-                    if method.ret.as_ref().is_some_and(type_is_borrowed_view) {
+                    if method.ret.as_ref().is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)) {
                         names.push(format!("@method:{}", method.name));
                     }
-                    if method.ret.as_ref().is_some_and(type_is_view_callable) {
+                    if method
+                        .ret
+                        .as_ref()
+                        .is_some_and(|ty| type_is_view_callable(ty, &borrowed_shells))
+                    {
                         names.push(format!("@callable-method:{}", method.name));
                     }
                     names
@@ -101,6 +166,39 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
             (0..item_count).map(|index| vec![index]).collect(),
         ));
     }
+    let borrowed_shells = BorrowedShellCatalog::from_module(checked.module());
+    let mut known_view_fns = view_fns.clone();
+    for item in &checked.module().items {
+        match item {
+            Item::Function(function) => {
+                if function.ret.as_ref().is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)) {
+                    known_view_fns.insert(function.name.clone());
+                }
+                if function
+                    .ret
+                    .as_ref()
+                    .is_some_and(|ty| type_is_view_callable(ty, &borrowed_shells))
+                {
+                    known_view_fns.insert(format!("@callable:{}", function.name));
+                }
+            }
+            Item::Impl(definition) => {
+                for method in &definition.methods {
+                    if method.ret.as_ref().is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)) {
+                        known_view_fns.insert(format!("@method:{}", method.name));
+                    }
+                    if method
+                        .ret
+                        .as_ref()
+                        .is_some_and(|ty| type_is_view_callable(ty, &borrowed_shells))
+                    {
+                        known_view_fns.insert(format!("@callable-method:{}", method.name));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
     let module = checked.module_mut();
     let source_item_count = module.items.len();
     let mut mapping = vec![Vec::new(); source_item_count];
@@ -112,7 +210,13 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
         match item {
             Item::Function(f) if f.is_async => {
                 let is_entry = f.name == "main";
-                let (entry, mut segs) = lower_async_fn(f, is_entry, &mut counter, view_fns)?;
+                let (entry, mut segs) = lower_async_fn(
+                    f,
+                    is_entry,
+                    &mut counter,
+                    &known_view_fns,
+                    &borrowed_shells,
+                )?;
                 items.push(Item::Function(entry));
                 lifted.extend(segs.drain(..).map(|segment| (source_index, segment)));
             }
@@ -134,7 +238,8 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
                                 false,
                                 &mut counter,
                                 Some(self_ty.clone()),
-                                view_fns,
+                                &known_view_fns,
+                                &borrowed_shells,
                             )?;
                         methods.push(entry);
                         lifted.extend(segs.drain(..).map(|segment| (source_index, segment)));
@@ -172,10 +277,11 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
 pub(crate) fn validate_source(
     module: &Module,
 ) -> Result<(), crate::source_check::SourceValidationError> {
+    let borrowed_shells = BorrowedShellCatalog::from_module(module);
     for (item_index, item) in module.items.iter().enumerate() {
         match item {
             Item::Function(function) if function.is_async => {
-                validate_async_source(function, function.name == "main")
+                validate_async_source(function, function.name == "main", &borrowed_shells)
                     .map_err(|message| crate::source_check::SourceValidationError::new(
                         item_index, message,
                     ))?;
@@ -183,7 +289,7 @@ pub(crate) fn validate_source(
             Item::Impl(definition) => {
                 for method in &definition.methods {
                     if method.is_async {
-                        validate_async_source(method, false)
+                        validate_async_source(method, false, &borrowed_shells)
                             .map_err(|message| crate::source_check::SourceValidationError::new(
                                 item_index, message,
                             ))?;
@@ -196,17 +302,22 @@ pub(crate) fn validate_source(
     Ok(())
 }
 
-fn validate_async_source(function: &Function, is_entry: bool) -> Result<(), String> {
+fn validate_async_source(
+    function: &Function,
+    is_entry: bool,
+    borrowed_shells: &BorrowedShellCatalog,
+) -> Result<(), String> {
     let declared_ret = function.ret.as_ref();
     if function
         .params
         .iter()
         .filter_map(|param| param.ty.as_ref())
-        .any(type_is_borrowed_view)
-        || declared_ret.is_some_and(type_is_borrowed_view)
+        .any(|ty| borrowed_shells.type_is_borrowed(ty))
+        || declared_ret.is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
     {
         return Err(format!(
-            "async fn `{}` may not expose a borrowed-view parameter or result because its task \
+            "async fn `{}` may not expose a borrowed view or lifetime-bearing shell as a \
+             parameter or result because its task \
              can outlive the caller's loan — pass/return an owned value",
             function.name,
         ));
@@ -287,15 +398,17 @@ fn has_async(module: &Module) -> bool {
     })
 }
 
-fn type_is_borrowed_view(ty: &Type) -> bool {
-    matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
+fn type_is_view_callable(ty: &Type, borrowed_shells: &BorrowedShellCatalog) -> bool {
+    matches!(ty.unqualified(), Type::Fn(_, ret, _)
+        if borrowed_shells.type_is_borrowed(ret))
 }
 
-fn type_is_view_callable(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Fn(_, ret, _) if type_is_borrowed_view(ret))
-}
-
-fn callable_returns_view(value: &Expr, scope: &[Local], view_fns: &HashSet<String>) -> bool {
+fn callable_returns_view(
+    value: &Expr,
+    scope: &[Local],
+    view_fns: &HashSet<String>,
+    borrowed_shells: &BorrowedShellCatalog,
+) -> bool {
     match value {
         Expr::Var(name) => view_fns.contains(name)
             || scope
@@ -303,8 +416,8 @@ fn callable_returns_view(value: &Expr, scope: &[Local], view_fns: &HashSet<Strin
                 .rev()
                 .find(|local| local.name == *name)
                 .is_some_and(|local| local.returns_view),
-        Expr::As { ty, .. } => type_is_view_callable(ty),
-        Expr::Lambda { ret: Some(ret), .. } => type_is_borrowed_view(ret),
+        Expr::As { ty, .. } => type_is_view_callable(ty, borrowed_shells),
+        Expr::Lambda { ret: Some(ret), .. } => borrowed_shells.type_is_borrowed(ret),
         Expr::Call { name, .. } => view_fns.contains(&format!("@callable:{name}")),
         Expr::MethodCall { method, .. } => {
             view_fns.contains(&format!("@callable-method:{method}"))
@@ -317,6 +430,7 @@ fn result_is_borrowed_view(
     value: &Expr,
     scope: &[Local],
     view_fns: &HashSet<String>,
+    borrowed_shells: &BorrowedShellCatalog,
 ) -> bool {
     match value {
         Expr::Var(name) => scope
@@ -331,20 +445,55 @@ fn result_is_borrowed_view(
                 .find(|local| local.name == *name)
                 .is_some_and(|local| local.returns_view),
         Expr::MethodCall { method, .. } => view_fns.contains(&format!("@method:{method}")),
-        Expr::Apply { func, .. } => callable_returns_view(func, scope, view_fns),
+        Expr::Apply { func, .. } => {
+            callable_returns_view(func, scope, view_fns, borrowed_shells)
+        }
+        Expr::As { ty, .. } => borrowed_shells.type_is_borrowed(ty),
+        Expr::Ctor { name, args } => {
+            borrowed_shells.constructors.contains(name)
+                || args.iter().any(|arg| {
+                    result_is_borrowed_view(arg, scope, view_fns, borrowed_shells)
+                })
+        }
+        Expr::Record { name, fields, spread } => {
+            borrowed_shells.types.contains(name)
+                || fields.iter().any(|(_, value)| {
+                    result_is_borrowed_view(value, scope, view_fns, borrowed_shells)
+                })
+                || spread.as_ref().is_some_and(|value| {
+                    result_is_borrowed_view(value, scope, view_fns, borrowed_shells)
+                })
+        }
+        Expr::Tuple(items) | Expr::List(items) => items
+            .iter()
+            .any(|item| result_is_borrowed_view(item, scope, view_fns, borrowed_shells)),
+        Expr::RecordUpdate { base, fields, .. } => {
+            result_is_borrowed_view(base, scope, view_fns, borrowed_shells)
+                || fields.iter().any(|(_, value)| {
+                    result_is_borrowed_view(value, scope, view_fns, borrowed_shells)
+                })
+        }
         Expr::If { then_block, else_block, .. } => {
             block_tail_expr(then_block)
-                .is_some_and(|tail| result_is_borrowed_view(tail, scope, view_fns))
+                .is_some_and(|tail| {
+                    result_is_borrowed_view(tail, scope, view_fns, borrowed_shells)
+                })
                 || else_block
                     .as_ref()
                     .and_then(block_tail_expr)
-                    .is_some_and(|tail| result_is_borrowed_view(tail, scope, view_fns))
+                    .is_some_and(|tail| {
+                        result_is_borrowed_view(tail, scope, view_fns, borrowed_shells)
+                    })
         }
         Expr::Match { arms, .. } => arms
             .iter()
-            .any(|arm| result_is_borrowed_view(&arm.body, scope, view_fns)),
+            .any(|arm| {
+                result_is_borrowed_view(&arm.body, scope, view_fns, borrowed_shells)
+            }),
         Expr::Block(block) => block_tail_expr(block)
-            .is_some_and(|tail| result_is_borrowed_view(tail, scope, view_fns)),
+            .is_some_and(|tail| {
+                result_is_borrowed_view(tail, scope, view_fns, borrowed_shells)
+            }),
         _ => false,
     }
 }
@@ -367,8 +516,9 @@ struct Local {
     name: String,
     ty: Option<Type>,
     mutable: bool,
+    /// A direct view or an aggregate/nominal shell carrying a lifetime relation.
     borrowed_view: bool,
-    /// This local holds a function value whose result is a borrowed view.
+    /// This local holds a function value whose result carries a borrowed relation.
     returns_view: bool,
 }
 
@@ -395,6 +545,7 @@ struct Ctx<'a> {
     counter: &'a mut usize,
     segments: Vec<Function>,
     view_fns: &'a HashSet<String>,
+    borrowed_shells: &'a BorrowedShellCatalog,
 }
 
 #[derive(Clone, Copy)]
@@ -450,8 +601,12 @@ impl<'a> Ctx<'a> {
                         name: name.clone(),
                         ty: ty.clone(),
                         mutable: *mutable,
-                        borrowed_view: ty.as_ref().is_some_and(type_is_borrowed_view),
-                        returns_view: ty.as_ref().is_some_and(type_is_view_callable),
+                        borrowed_view: ty
+                            .as_ref()
+                            .is_some_and(|ty| self.borrowed_shells.type_is_borrowed(ty)),
+                        returns_view: ty
+                            .as_ref()
+                            .is_some_and(|ty| type_is_view_callable(ty, self.borrowed_shells)),
                     };
                     self.suspend(inner.clone(), Some(bind), cont)
                 } else {
@@ -461,10 +616,24 @@ impl<'a> Ctx<'a> {
                         name: name.clone(),
                         ty: ty.clone().or_else(|| derive_type(value)),
                         mutable: *mutable,
-                        borrowed_view: ty.as_ref().is_some_and(type_is_borrowed_view)
-                            || result_is_borrowed_view(value, scope, self.view_fns),
-                        returns_view: ty.as_ref().is_some_and(type_is_view_callable)
-                            || callable_returns_view(value, scope, self.view_fns),
+                        borrowed_view: ty
+                            .as_ref()
+                            .is_some_and(|ty| self.borrowed_shells.type_is_borrowed(ty))
+                            || result_is_borrowed_view(
+                                value,
+                                scope,
+                                self.view_fns,
+                                self.borrowed_shells,
+                            ),
+                        returns_view: ty
+                            .as_ref()
+                            .is_some_and(|ty| type_is_view_callable(ty, self.borrowed_shells))
+                            || callable_returns_view(
+                                value,
+                                scope,
+                                self.view_fns,
+                                self.borrowed_shells,
+                            ),
                     });
                     let cont2 = Continuation { scope: &scope2, ..cont };
                     Ok(prefix_stmt_at(
@@ -502,6 +671,16 @@ impl<'a> Ctx<'a> {
             }
             Stmt::LetPattern { pattern, value } => {
                 reject_await(value, &self.fname)?;
+                // Before typeck there is no field table for a pattern. If its
+                // source carries a loan relation, conservatively keep that
+                // relation on every bound value; the later typed loan gate can
+                // become more precise without this lowering accepting a shell.
+                let binds_borrowed = result_is_borrowed_view(
+                    value,
+                    scope,
+                    self.view_fns,
+                    self.borrowed_shells,
+                );
                 let mut binds = Vec::new();
                 pattern_binds(pattern, &mut binds);
                 let mut scope2 = scope.to_vec();
@@ -510,7 +689,7 @@ impl<'a> Ctx<'a> {
                         name: b.clone(),
                         ty: None,
                         mutable: false,
-                        borrowed_view: false,
+                        borrowed_view: binds_borrowed,
                         returns_view: false,
                     });
                 }
@@ -522,14 +701,30 @@ impl<'a> Ctx<'a> {
                     next_line(rest_lines, line),
                 ))
             }
-            Stmt::Assign { value, .. } => {
+            Stmt::Assign { name, value } => {
                 reject_await(value, &self.fname)?;
                 // A plain reassignment of an in-scope `var` (a mutable local or an
                 // `own` segment/loop parameter). Kept verbatim; if the var is
                 // carried across a later await / loop-back it rides a parameter.
+                let mut scope2 = scope.to_vec();
+                if let Some(local) = scope2.iter_mut().rev().find(|local| local.name == *name) {
+                    local.borrowed_view = result_is_borrowed_view(
+                        value,
+                        scope,
+                        self.view_fns,
+                        self.borrowed_shells,
+                    );
+                    local.returns_view = callable_returns_view(
+                        value,
+                        scope,
+                        self.view_fns,
+                        self.borrowed_shells,
+                    );
+                }
+                let cont2 = Continuation { scope: &scope2, ..cont };
                 Ok(prefix_stmt_at(
                     head.clone(),
-                    self.go(cont.rest, cont.rest_lines, cont.scope, cont.tail)?,
+                    self.go(cont2.rest, cont2.rest_lines, cont2.scope, cont2.tail)?,
                     line,
                     next_line(rest_lines, line),
                 ))
@@ -794,9 +989,11 @@ impl<'a> Ctx<'a> {
         let carried = live_locals(&cont_expr, scope, bind_name.as_deref());
         if let Some(view) = carried.iter().find(|local| local.borrowed_view) {
             return Err(self.err(&format!(
-                "borrowed view `{}` remains live across `await` — materialize it with \
-                 `{}.owned()` before suspension",
-                view.name, view.name,
+                "borrowed value `{}` remains live across `await` — borrowed views and \
+                 lifetime-bearing shells cannot cross suspension; materialize a direct view \
+                 with `.owned()` before building the shell, or keep the value's last use \
+                 before suspension",
+                view.name,
             )));
         }
 
@@ -1122,8 +1319,9 @@ fn lower_async_fn(
     is_entry: bool,
     counter: &mut usize,
     view_fns: &HashSet<String>,
+    borrowed_shells: &BorrowedShellCatalog,
 ) -> Result<(Function, Vec<Function>), String> {
-    lower_async_fn_with(f, is_entry, counter, None, view_fns)
+    lower_async_fn_with(f, is_entry, counter, None, view_fns, borrowed_shells)
 }
 
 /// As [`lower_async_fn`], with an optional receiver type for a method's `self`
@@ -1134,16 +1332,20 @@ fn lower_async_fn_with(
     counter: &mut usize,
     self_ty: Option<Type>,
     view_fns: &HashSet<String>,
+    borrowed_shells: &BorrowedShellCatalog,
 ) -> Result<(Function, Vec<Function>), String> {
     let declared_ret = f.ret.clone();
     if f.params
         .iter()
         .filter_map(|param| param.ty.as_ref())
-        .any(type_is_borrowed_view)
-        || declared_ret.as_ref().is_some_and(type_is_borrowed_view)
+        .any(|ty| borrowed_shells.type_is_borrowed(ty))
+        || declared_ret
+            .as_ref()
+            .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
     {
         return Err(format!(
-            "async fn `{}` may not expose a borrowed-view parameter or result because its task \
+            "async fn `{}` may not expose a borrowed view or lifetime-bearing shell as a \
+             parameter or result because its task \
              can outlive the caller's loan — pass/return an owned value",
             f.name,
         ));
@@ -1168,6 +1370,7 @@ fn lower_async_fn_with(
         counter,
         segments: Vec::new(),
         view_fns,
+        borrowed_shells,
     };
     let scope: Vec<Local> = f
         .params
@@ -1182,8 +1385,14 @@ fn lower_async_fn_with(
                 }
             }),
             mutable: p.convention.binds_mutable(),
-            borrowed_view: p.ty.as_ref().is_some_and(type_is_borrowed_view),
-            returns_view: p.ty.as_ref().is_some_and(type_is_view_callable),
+            borrowed_view: p
+                .ty
+                .as_ref()
+                .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)),
+            returns_view: p
+                .ty
+                .as_ref()
+                .is_some_and(|ty| type_is_view_callable(ty, borrowed_shells)),
         })
         .collect();
     let body_line = first_line(&f.body.lines);
@@ -1780,8 +1989,8 @@ mod tests {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse borrowed async body");
         let error = lower_module(module).expect_err("a view cannot be carried through a segment");
-        assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
-        assert!(error.contains("w.owned()"), "{error}");
+        assert!(error.contains("borrowed value `w` remains live across `await`"), "{error}");
+        assert!(error.contains("materialize a direct view with `.owned()`"), "{error}");
     }
 
     #[test]
@@ -1789,7 +1998,7 @@ mod tests {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = view\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse indirect borrowed async body");
         let error = lower_module(module).expect_err("an indirect view cannot cross a segment");
-        assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
+        assert!(error.contains("borrowed value `w` remains live across `await`"), "{error}");
     }
 
     #[test]
@@ -1797,7 +2006,7 @@ mod tests {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nfn make() -> fn(View(String, 'a)) -> View(String, 'a):\n    view\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = make()\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse returned callable");
         let error = lower_module(module).expect_err("a returned callable's view cannot cross a segment");
-        assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
+        assert!(error.contains("borrowed value `w` remains live across `await`"), "{error}");
     }
 
     #[test]
@@ -1805,7 +2014,46 @@ mod tests {
         let source = "mode opt\n\ntype Holder:\n    text: String\n\nimpl Holder:\n    fn view(self: let('a) Holder) -> View(String, 'a):\n        self.text\n\nasync fn bad(console: Console):\n    let holder = Holder(\"x\")\n    let w = holder.view()\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse method borrowed async body");
         let error = lower_module(module).expect_err("a method-returned view cannot cross a segment");
-        assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
+        assert!(error.contains("borrowed value `w` remains live across `await`"), "{error}");
+    }
+
+    #[test]
+    fn lowering_rejects_lifetime_bearing_nominal_async_signatures() {
+        let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nasync fn bad(input: (Holder('a), Int)):\n    task.done(0).await\n";
+        let module = crate::parser::parse_module(source).expect("parse borrowed nominal signature");
+        let error = lower_module(module)
+            .expect_err("a nested lifetime-bearing shell cannot enter an async task");
+
+        assert!(error.contains("lifetime-bearing shell"), "{error}");
+        assert!(error.contains("parameter or result"), "{error}");
+    }
+
+    #[test]
+    fn lowering_rejects_an_unannotated_borrowed_nominal_live_across_await() {
+        let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nasync fn bad():\n    let text = \"x\"\n    let holder = Holder(text)\n    let _ = task.done(0).await\n    let keep = holder\n";
+        let module = crate::parser::parse_module(source).expect("parse borrowed nominal local");
+        let error = lower_module(module)
+            .expect_err("a lifetime-bearing constructor result cannot cross suspension");
+
+        assert!(error.contains("borrowed value `holder` remains live across `await`"), "{error}");
+        assert!(error.contains("before building the shell"), "{error}");
+    }
+
+    #[test]
+    fn lowering_rejects_a_nested_borrowed_nominal_live_across_await() {
+        let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nasync fn bad():\n    let text = \"x\"\n    let holder = Holder(text)\n    let nested = (0, holder)\n    let _ = task.done(0).await\n    let keep = nested\n";
+        let module = crate::parser::parse_module(source).expect("parse nested borrowed nominal");
+        let error = lower_module(module)
+            .expect_err("an aggregate containing a borrowed shell cannot cross suspension");
+
+        assert!(error.contains("borrowed value `nested` remains live across `await`"), "{error}");
+    }
+
+    #[test]
+    fn lowering_allows_an_ordinary_generic_owner_across_await() {
+        let source = "type Box(a):\n    Box(a)\n\nasync fn okay():\n    let boxed = Box(\"x\")\n    let _ = task.done(0).await\n    let keep = boxed\n";
+        let module = crate::parser::parse_module(source).expect("parse ordinary generic local");
+        lower_module(module).expect("an ordinary generic owner has no borrowed lifetime relation");
     }
 
     #[test]
