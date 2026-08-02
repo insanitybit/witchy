@@ -197,6 +197,271 @@ impl Codegen<'_> {
         }
     }
 
+    /// Whether a binary equality expression belongs to the descriptor-driven
+    /// closed-sum path. This is deliberately only a routing predicate: the
+    /// lowering site still requires the operands to resolve to the exact same
+    /// `LayoutId`, and helper construction validates the operation shape against
+    /// the physical descriptor before emitting any loads.
+    pub(crate) fn has_specialized_closed_sum_equality(
+        &self,
+        lhs: &Expr,
+        rhs: &Expr,
+    ) -> bool {
+        let shape = self.eq_shape_of(lhs).or_else(|| self.eq_shape_of(rhs));
+        if shape
+            .as_ref()
+            .and_then(|shape| self.custom_eq_type_of_shape(shape))
+            .is_some()
+        {
+            return false;
+        }
+        [lhs, rhs].into_iter().any(|operand| {
+            self.specialized_layout_of_expr(operand)
+                .and_then(|id| self.specialized_layouts.get(id))
+                .is_some_and(|descriptor| matches!(descriptor.kind(), LayoutKind::ClosedSum { .. }))
+        })
+    }
+
+    fn specialized_layout_address(
+        base: witchy_wir::wir::WirExpr,
+        offset: u32,
+    ) -> witchy_wir::wir::WirExpr {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W};
+        if offset == 0 {
+            base
+        } else {
+            W::Binary {
+                op: BinOp::Add,
+                kind: Kind::I32,
+                lhs: Box::new(base),
+                rhs: Box::new(W::ConstI32(offset as i32)),
+            }
+        }
+    }
+
+    fn specialized_scalar_load(
+        base: witchy_wir::wir::WirExpr,
+        scalar: ScalarKind,
+    ) -> witchy_wir::wir::WirExpr {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W};
+        match scalar {
+            ScalarKind::Bool | ScalarKind::Tag8 => {
+                W::Load8U { ptr: Box::new(base), offset: 0 }
+            }
+            ScalarKind::Tag16 => W::Binary {
+                op: BinOp::Or,
+                kind: Kind::I32,
+                lhs: Box::new(W::Load8U { ptr: Box::new(base.clone()), offset: 0 }),
+                rhs: Box::new(W::Binary {
+                    op: BinOp::Shl,
+                    kind: Kind::I32,
+                    lhs: Box::new(W::Load8U { ptr: Box::new(base), offset: 1 }),
+                    rhs: Box::new(W::ConstI32(8)),
+                }),
+            },
+            ScalarKind::Int | ScalarKind::Duration => {
+                W::Load { ptr: Box::new(base), kind: Kind::I64, offset: 0 }
+            }
+            ScalarKind::Float => {
+                W::Load { ptr: Box::new(base), kind: Kind::F64, offset: 0 }
+            }
+            ScalarKind::U32 | ScalarKind::Tag32 => {
+                W::Load { ptr: Box::new(base), kind: Kind::I32, offset: 0 }
+            }
+        }
+    }
+
+    fn specialized_scalar_equality(
+        &self,
+        id: LayoutId,
+        a: witchy_wir::wir::WirExpr,
+        b: witchy_wir::wir::WirExpr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{BinOp, WirExpr as W};
+        let descriptor = self.specialized_layouts.get(id)?;
+        let LayoutKind::Scalar(scalar) = descriptor.kind() else { return None };
+        if descriptor.operations().equality() != &OperationShape::Scalar(*scalar)
+            || descriptor.size() != LayoutSize::Fixed(scalar.size())
+            || descriptor.alignment() != scalar.alignment()
+            || !descriptor.fields().is_empty()
+            || !descriptor.variant_layouts().is_empty()
+        {
+            return None;
+        }
+        Some(W::Binary {
+            op: BinOp::Eq,
+            kind: Self::wir_kind(Self::scalar_layout_kind(*scalar)),
+            lhs: Box::new(Self::specialized_scalar_load(a, *scalar)),
+            rhs: Box::new(Self::specialized_scalar_load(b, *scalar)),
+        })
+    }
+
+    fn specialized_layout_equality(
+        &mut self,
+        id: LayoutId,
+        a: witchy_wir::wir::WirExpr,
+        b: witchy_wir::wir::WirExpr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
+        if matches!(
+            self.specialized_layouts.get(id)?.operations().equality(),
+            OperationShape::Scalar(_)
+        ) {
+            return self.specialized_scalar_equality(id, a, b);
+        }
+        let helper = self.ensure_specialized_layout_eq_wir_helper(id)?;
+        Some(W::Call { func: helper, args: vec![a, b] })
+    }
+
+    fn specialized_equality_checks(
+        &mut self,
+        children: &[LayoutId],
+        fields: &[witchy_wir::layout::LayoutField],
+    ) -> Option<witchy_wir::wir::WirSeq> {
+        use witchy_wir::wir::{Kind, UnOp, WirExpr as W, WirNode as N};
+        if children.len() != fields.len() {
+            return None;
+        }
+        let mut checks = Vec::with_capacity(children.len());
+        for (child, field) in children.iter().zip(fields) {
+            let a = Self::specialized_layout_address(W::GetLocal("a".into()), field.offset());
+            let b = Self::specialized_layout_address(W::GetLocal("b".into()), field.offset());
+            let equal = self.specialized_layout_equality(*child, a, b)?;
+            checks.push(N::If {
+                cond: W::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(equal) },
+                then_: vec![N::Return(Some(W::ConstI32(0)))],
+                els: vec![],
+                result: None,
+            });
+        }
+        Some(checks)
+    }
+
+    /// Build equality for a validated fixed-layout descriptor. Closed sums use
+    /// the descriptor tag field and each `VariantLayout`'s physical offsets;
+    /// inline children recurse through their own equality operation shapes.
+    pub(crate) fn ensure_specialized_layout_eq_wir_helper(
+        &mut self,
+        id: LayoutId,
+    ) -> Option<String> {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
+        let name = Self::layout_helper_name("layout_eq", id, None);
+        if self.layout_wir_funcs.contains_key(&name) {
+            return Some(name);
+        }
+        let descriptor = self.specialized_layouts.get(id)?.clone();
+        let LayoutSize::Fixed(size) = descriptor.size() else { return None };
+        let mut locals = Vec::new();
+        let body = match descriptor.operations().equality().clone() {
+            OperationShape::Fields(children) => {
+                let family_matches = matches!(
+                    descriptor.kind(),
+                    LayoutKind::Tuple { fields } | LayoutKind::PackedRecord { fields }
+                        if fields == &children
+                );
+                if !family_matches
+                    || !descriptor.variant_layouts().is_empty()
+                    || !self.region_copy_fields_are_compatible(
+                        &children,
+                        descriptor.fields(),
+                        size,
+                    )
+                {
+                    return None;
+                }
+                let mut body =
+                    self.specialized_equality_checks(&children, descriptor.fields())?;
+                body.push(N::Push(W::ConstI32(1)));
+                body
+            }
+            OperationShape::Variants { tag, variants } => {
+                let family_matches = matches!(
+                    descriptor.kind(),
+                    LayoutKind::ClosedSum { variants: kind_variants }
+                        if kind_variants == &variants
+                );
+                let [tag_field] = descriptor.fields() else { return None };
+                let tag_matches = tag_field.kind() == FieldKind::Scalar(tag)
+                    && tag_field.offset() % tag.alignment() == 0
+                    && tag_field
+                        .offset()
+                        .checked_add(tag.size())
+                        .is_some_and(|end| end <= size);
+                let payloads_match = variants.len() == descriptor.variant_layouts().len()
+                    && variants
+                        .iter()
+                        .zip(descriptor.variant_layouts())
+                        .all(|(children, variant)| {
+                            self.region_copy_fields_are_compatible(
+                                children,
+                                variant.fields(),
+                                size,
+                            )
+                        });
+                if !family_matches || !tag_matches || !payloads_match {
+                    return None;
+                }
+                let tag_a = Self::specialized_scalar_load(
+                    Self::specialized_layout_address(W::GetLocal("a".into()), tag_field.offset()),
+                    tag,
+                );
+                let tag_b = Self::specialized_scalar_load(
+                    Self::specialized_layout_address(W::GetLocal("b".into()), tag_field.offset()),
+                    tag,
+                );
+                let mut body = vec![N::If {
+                    cond: W::Binary {
+                        op: BinOp::Ne,
+                        kind: Kind::I32,
+                        lhs: Box::new(tag_a.clone()),
+                        rhs: Box::new(tag_b),
+                    },
+                    then_: vec![N::Return(Some(W::ConstI32(0)))],
+                    els: vec![],
+                    result: None,
+                }, N::SetLocal { local: "tag".into(), value: tag_a }];
+                locals.push(WirLocal { name: "tag".into(), ty: WirTy::Bool });
+                for (variant_index, (children, variant)) in variants
+                    .iter()
+                    .zip(descriptor.variant_layouts())
+                    .enumerate()
+                {
+                    let mut checks = self
+                        .specialized_equality_checks(children, variant.fields())?;
+                    checks.push(N::Return(Some(W::ConstI32(1))));
+                    body.push(N::If {
+                        cond: W::Binary {
+                            op: BinOp::Eq,
+                            kind: Kind::I32,
+                            lhs: Box::new(W::GetLocal("tag".into())),
+                            rhs: Box::new(W::ConstI32(variant_index as i32)),
+                        },
+                        then_: checks,
+                        els: vec![],
+                        result: None,
+                    });
+                }
+                body.push(N::Push(W::ConstI32(0)));
+                body
+            }
+            OperationShape::Scalar(_)
+            | OperationShape::PackedElements { .. }
+            | OperationShape::None => return None,
+        };
+        self.layout_wir_funcs.insert(name.clone(), WirFunc {
+            name: name.clone(),
+            params: vec![
+                WirLocal { name: "a".into(), ty: WirTy::Bool },
+                WirLocal { name: "b".into(), ty: WirTy::Bool },
+            ],
+            ret: vec![WirTy::Bool],
+            locals,
+            body,
+            raw_body: None,
+        });
+        Some(name)
+    }
+
     /// WIR twin of [`slot_cmp`] for SCALAR slots only: the comparison of two
     /// 8-byte slots at addresses `aa`/`bb`. `None` for Str/compound shapes (whose
     /// compare would need `$str_eq` or a nested eq call) so the caller bails.

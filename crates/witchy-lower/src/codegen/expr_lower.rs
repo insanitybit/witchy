@@ -13,7 +13,12 @@ impl<'types> Codegen<'types> {
     pub(crate) fn lower_expr(&mut self, e: &Expr) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
-        if self.reject_unsupported_specialized_boundary(e) {
+        let descriptor_closed_sum_equality = matches!(
+            e,
+            Expr::Binary { op: BinOp::Eq | BinOp::NotEq, lhs, rhs }
+                if self.has_specialized_closed_sum_equality(lhs, rhs)
+        );
+        if !descriptor_closed_sum_equality && self.reject_unsupported_specialized_boundary(e) {
             return None;
         }
         Some(match e {
@@ -1620,6 +1625,38 @@ impl<'types> Codegen<'types> {
                 // be compound we either build the helper or bail the whole function
                 // (`?`) — never fall through to a bare pointer compare.
                 if self.collect_wir && matches!(op, BinOp::Eq | BinOp::NotEq) {
+                    if self.has_specialized_closed_sum_equality(lhs, rhs) {
+                        let lhs_layout = self.specialized_layout_of_expr(lhs);
+                        let rhs_layout = self.specialized_layout_of_expr(rhs);
+                        let Some(layout) = lhs_layout.filter(|layout| Some(*layout) == rhs_layout)
+                        else {
+                            self.reject_reason.get_or_insert_with(|| CodegenError {
+                                message: "descriptor-driven closed-sum equality requires both operands to have the exact same specialized LayoutId".into(),
+                            });
+                            return None;
+                        };
+                        let Some(helper) = self.ensure_specialized_layout_eq_wir_helper(layout)
+                        else {
+                            self.reject_reason.get_or_insert_with(|| CodegenError {
+                                message: format!(
+                                    "specialized closed-sum equality descriptor {} is inconsistent with its declared equality operation",
+                                    layout.to_hex(),
+                                ),
+                            });
+                            return None;
+                        };
+                        let a = self.lower_expr(lhs)?;
+                        let b = self.lower_expr(rhs)?;
+                        let equal = W::Call { func: helper, args: vec![a, b] };
+                        return Some(match op {
+                            BinOp::Eq => equal,
+                            _ => W::Unary {
+                                op: witchy_wir::wir::UnOp::Not,
+                                kind: witchy_wir::wir::Kind::I32,
+                                arg: Box::new(equal),
+                            },
+                        });
+                    }
                     if let Some(shape) = self.eq_shape_of(lhs).or_else(|| self.eq_shape_of(rhs)) {
                         if shape.is_compound() {
                             // A compound `==` MUST be structural; if the shape can't

@@ -1291,6 +1291,81 @@ fn main() -> Int:
     }
 
     #[test]
+    fn packed_closed_sum_equality_uses_descriptor_payload_offsets() {
+        let source = r#"
+mode opt
+
+type Token packed derive(PartialEq):
+    Empty
+    Pair(Bool, Int)
+    Other(Int)
+
+fn same(a: Token, b: Token) -> Bool:
+    a == b
+
+fn different(a: Token, b: Token) -> Bool:
+    a != b
+
+fn main() -> Int:
+    if same(Pair(true, 7), Pair(true, 7)) && different(Pair(false, 7), Pair(true, 7)) && !same(Pair(true, 8), Pair(true, 7)) && same(Empty, Empty) && different(Pair(true, 7), Other(7)):
+        1
+    else:
+        0
+"#;
+        assert_eq!(run_int(source), 1);
+
+        let module = parse_module(source).expect("parse packed closed-sum equality");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module)
+                .expect_lowered("packed closed-sum equality lowers from its descriptor"),
+        );
+        let start = wat
+            .find("(func $__witchy_layout_eq_")
+            .expect("descriptor equality helper");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let helper = &tail[..end];
+        assert!(helper.contains("i32.load8_u"), "the descriptor's byte tag/bool loads are used: {helper}");
+        assert!(helper.contains("i32.const 8"), "the padded Bool payload offset comes from VariantLayout: {helper}");
+        assert!(helper.contains("i32.const 16"), "the aligned Int payload offset comes from VariantLayout: {helper}");
+        assert!(helper.contains("i64.load"), "the Int child descriptor selects an i64 load: {helper}");
+        assert!(!helper.contains("i32.const 4\n"), "legacy 4+8*i enum slots are not used: {helper}");
+    }
+
+    #[test]
+    fn packed_closed_sum_equality_uses_descriptor_tag16_width() {
+        let mut source = String::from("mode opt\n\ntype Wide packed derive(PartialEq):\n");
+        for variant in 0..257 {
+            source.push_str(&format!("    V{variant}\n"));
+        }
+        source.push_str(
+            "\nfn same(a: Wide, b: Wide) -> Bool:\n    a == b\n\nfn main() -> Int:\n    if same(V256, V256): 1 else: 0\n",
+        );
+        let module = parse_module(&source).expect("parse Tag16 packed closed-sum equality");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module)
+                .expect_lowered("Tag16 packed closed-sum equality lowers from its descriptor"),
+        );
+        let start = wat
+            .find("(func $__witchy_layout_eq_")
+            .expect("descriptor Tag16 equality helper");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let helper = &tail[..end];
+        assert!(
+            helper.contains("i32.load8_u offset=1") && helper.contains("i32.shl"),
+            "Tag16 equality reconstructs the descriptor's two-byte tag: {helper}"
+        );
+        assert!(!helper.contains("i32.load\n"), "Tag16 equality does not use a legacy i32 tag load: {helper}");
+    }
+
+    #[test]
     fn escaping_packed_sum_result_keeps_the_allocating_fallback() {
         let source = r#"
 mode opt
