@@ -2526,6 +2526,40 @@ fn assemble_wir_module_with_structs_mode(
                         init: GlobalInit::I64(0),
                         export: Some("__witchy_rc_alloc_calls".into()),
                     },
+                    // (RFC-0111) Descriptor-specific counters distinguish physical
+                    // packed construction from the shared allocator's other traffic.
+                    // Direct packed boundaries do not touch these: only canonical
+                    // descriptor allocation helpers increment calls/bytes, while the
+                    // explicit zero counters make any future box/reshape adapter an
+                    // observable contract change rather than invisible fallback.
+                    WirGlobal {
+                        name: "__witchy_packed_alloc_calls".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_packed_alloc_calls".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_packed_alloc_bytes".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_packed_alloc_bytes".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_packed_boxed_elements".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_packed_boxed_elements".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_packed_reshaped_bytes".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_packed_reshaped_bytes".into()),
+                    },
                     WirGlobal {
                         name: "__witchy_bump_alloc_calls".into(),
                         kind: WK::I64,

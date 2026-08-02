@@ -4400,6 +4400,18 @@ impl<'types> Codegen<'types> {
             local: "p".into(),
             value: W::Call { func: "rc_alloc".into(), args: vec![W::ConstI32(reserve as i32)] },
         }];
+        nodes.push(Self::increment_counter("__witchy_packed_alloc_calls"));
+        nodes.push(N::SetGlobal {
+            global: "__witchy_packed_alloc_bytes".into(),
+            value: W::Binary {
+                op: WB::Add,
+                kind: WK::I64,
+                lhs: Box::new(W::GetGlobal("__witchy_packed_alloc_bytes".into())),
+                // Count descriptor payload bytes. Debug redzones are deliberately
+                // excluded so instrumentation does not change the physical metric.
+                rhs: Box::new(W::ConstI64(size as i64)),
+            },
+        });
         if checked {
             nodes.push(N::Do(W::CallHost {
                 import: "heap_register".into(),

@@ -116,6 +116,23 @@
                 },
             )
             .unwrap();
+        // Checked-heap builds register every descriptor allocation. The full
+        // runtime poisons and sweeps these redzones; lowering tests need only an
+        // authority-free sink so the instrumented module can instantiate.
+        linker
+            .func_wrap(
+                "witchy",
+                "heap_register",
+                |_: Caller<'_, T>, _start: i32, _end: i32| {},
+            )
+            .unwrap();
+        linker
+            .func_wrap(
+                "witchy",
+                "heap_frontier",
+                |_: Caller<'_, T>, _frontier: i32| {},
+            )
+            .unwrap();
     }
 
     fn import_param_counts(wasm: &[u8]) -> std::collections::BTreeMap<String, usize> {
@@ -283,6 +300,46 @@
         captured.lock().unwrap().take().expect("printed a value")
     }
 
+    fn run_int_with_i64_globals(
+        source: &str,
+        names: &[&str],
+    ) -> (i64, std::collections::BTreeMap<String, i64>) {
+        let module = parse_module(source).expect("parse counter program");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("the counter program lowers");
+        let engine = gc_wasmtime_engine();
+        let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
+        let captured = Arc::new(Mutex::new(None));
+        let mut linker = Linker::new(&engine);
+        define_abort(&mut linker);
+        let sink = Arc::clone(&captured);
+        linker
+            .func_wrap("witchy", "print_int", move |n: i64| {
+                *sink.lock().unwrap() = Some(n);
+            })
+            .unwrap();
+        let mut store = Store::new(&engine, ());
+        let instance = linker.instantiate(&mut store, &wt).expect("instantiate counter program");
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect("run counter program");
+        let mut counters = std::collections::BTreeMap::new();
+        for &name in names {
+            let value = instance
+                .get_global(&mut store, name)
+                .unwrap_or_else(|| panic!("missing counter export `{name}`"))
+                .get(&mut store);
+            let wasmtime::Val::I64(value) = value else {
+                panic!("counter export `{name}` is not i64: {value:?}");
+            };
+            counters.insert(name.to_string(), value);
+        }
+        let printed = captured.lock().unwrap().take().expect("printed a value");
+        (printed, counters)
+    }
+
     #[test]
     fn declared_packed_values_cross_direct_and_stored_boundaries() {
         let source = r#"
@@ -321,6 +378,59 @@ fn main() -> Int:
         assert!(wat.contains("__witchy_packed_list_"), "list descriptor helper: {wat}");
         assert!(wat.contains("call $relay"), "list pointer crosses the direct call: {wat}");
         assert!(wat.contains("call $score"), "record pointer crosses the direct call: {wat}");
+    }
+
+    #[test]
+    fn declared_packed_direct_boundaries_have_zero_adapter_work() {
+        let source = r#"
+mode opt
+
+type Point packed:
+    x: Int
+    y: Int
+
+fn make() -> Point:
+    Point(7, 11)
+
+fn relay(point: Point) -> Point:
+    point
+
+fn make_points() -> List(Point):
+    [Point(3, 4), Point(5, 6)]
+
+fn relay_points(points: List(Point)) -> List(Point):
+    points
+
+fn score(point: Point) -> Int:
+    point.x * 10 + point.y
+
+fn main() -> Int:
+    let points = relay_points(make_points())
+    score(relay(make())) + list.at(points, 0).x + list.at(points, 1).y
+"#;
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_packed_boxed_elements",
+            "__witchy_packed_reshaped_bytes",
+        ];
+        let (result, counters) = run_int_with_i64_globals(source, &names);
+        assert_eq!(result, 90);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 2);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 56);
+        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
+        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
+
+        let module = parse_module(source).expect("parse structural counter program");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("counter program lowers to WIR"),
+        );
+        assert!(wat.contains("call $relay"), "record crosses a direct call: {wat}");
+        assert!(wat.contains("call $relay_points"), "list crosses a direct call: {wat}");
+        assert!(!wat.contains("call $mk2"), "no legacy record/list reshape: {wat}");
+        if witchy_wir::wir_helpers::heap_check_enabled() {
+            assert!(wat.contains("call $heap_register"), "checked descriptor allocations register redzones: {wat}");
+        }
     }
 
     #[test]
