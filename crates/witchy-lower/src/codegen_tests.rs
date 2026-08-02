@@ -1027,6 +1027,32 @@ fn main() -> Int:
     }
 
     #[test]
+    fn indirect_own_capacity_round_trips_into_unique_result() {
+        let src = r#"
+mode opt
+
+fn forward(own values: unique List(Int)) -> unique List(Int):
+    move values
+
+fn main() -> Int:
+    var values = [5, 6]
+    let transfer = forward
+    var result = transfer(move values)
+    list.length(result) * 10 + list.at(result, 1)
+"#;
+        let indirect = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::ClosureElide)
+            .without(witchy_syntax::opt::Opt::DirectCall);
+        witchy_syntax::opt::set_for_tests(Some(indirect));
+        let result = run_int(src);
+        witchy_syntax::opt::set_for_tests(None);
+        assert_eq!(result, 26);
+
+        let (_, indirect_calls, _) = call_shape(src, indirect);
+        assert!(indirect_calls >= 1, "the own transfer must retain table dispatch");
+    }
+
+    #[test]
     fn compiles_nested_var_place_with_annotated_element_kind() {
         // A value-returning `var` call has a multi-result ABI. Local inference
         // must use the checker-resolved RHS type so the ordinary result and a
