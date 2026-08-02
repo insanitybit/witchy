@@ -764,6 +764,18 @@ impl Summaries {
         self.fns.get(name).is_none_or(|info| info.may_allocate)
     }
 
+    /// Can the storage passed at `idx` flow out through the call's result or
+    /// another caller-observable alias? This is deliberately separate from
+    /// [`Self::arg_leaks`]: an `own` argument kills the caller's input binding,
+    /// but the callee may still return that exact storage.
+    pub fn arg_may_alias_out(&self, name: &str, idx: usize) -> bool {
+        self.fns
+            .get(name)
+            .and_then(|info| info.may_alias_out.get(idx))
+            .copied()
+            .unwrap_or(true)
+    }
+
     /// Parameter positions written back through the uniform `var` ABI. This is
     /// the operation-independent ownership hook: callers can attach tokens from
     /// conventions without recognizing a source method name.
@@ -3115,6 +3127,26 @@ mod last_use_tests {
         assert!(
             !summaries.arg_leaks("read", 0, 1),
             "an ordinary explicit borrow remains call-scoped"
+        );
+    }
+
+    #[test]
+    fn owned_result_alias_is_distinct_from_a_live_input_alias() {
+        let module = parser::parse_module(
+            "mode opt\n\n\
+             type Token packed:\n    Skip\n    Value(Int)\n\n\
+             fn pass(own token: Token) -> Token:\n    token\n",
+        )
+        .expect("parse");
+        let summaries = Summaries::of_module(&module);
+
+        assert!(
+            !summaries.arg_leaks("pass", 0, 1),
+            "the caller's moved input binding is dead after an own call"
+        );
+        assert!(
+            summaries.arg_may_alias_out("pass", 0),
+            "the moved storage still aliases the returned value"
         );
     }
 

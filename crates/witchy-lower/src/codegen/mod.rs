@@ -6170,6 +6170,7 @@ impl<'types> Codegen<'types> {
             self.specialized_layouts.get(id)?.kind(),
             LayoutKind::ClosedSum { .. }
         ) || self.summaries.arg_leaks(consumer, index, argc)
+            || self.summaries.arg_may_alias_out(consumer, index)
             || ownership.own_capacity_param.is_some()
             || !ownership.var_capacity_params.is_empty()
         {

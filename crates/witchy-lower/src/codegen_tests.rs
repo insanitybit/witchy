@@ -792,6 +792,91 @@ fn main() -> Int:
     }
 
     #[test]
+    fn owned_consumer_result_cannot_alias_reused_destination_scratch() {
+        let source = r#"
+mode opt
+
+type Token packed:
+    Skip
+    Value(Int)
+
+fn make(value: Int) -> Token:
+    if value % 2 == 0:
+        Skip
+    else:
+        Value(value)
+
+fn pass(own token: Token) -> Token:
+    token
+
+fn score(let token: Token) -> Int:
+    match token:
+        Skip -> 9
+        Value(value) -> value
+
+fn main(console: Console):
+    var held = pass(make(1))
+    var total = 0
+    for i in 2..5:
+        let previous = held
+        held = pass(make(i))
+        total = total * 10 + score(previous)
+    let result = total * 10 + score(held)
+    console.print("${result}")
+"#;
+        let module = parse_module(source).expect("parse own-consumer alias regression");
+        let interpreted = witchy_interp::interpreter::run_module(
+            module.clone(),
+            ".",
+            Vec::new(),
+        )
+        .expect("interpreter runs own-consumer alias regression");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("compiled backend lowers own-consumer alias regression");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect("run own-consumer alias regression");
+        let compiled = captured.lock().unwrap().clone();
+        let oracle = vec!["1939".to_string()];
+        assert_eq!(interpreted, oracle, "independent expected value");
+        assert_eq!(compiled, oracle, "compiled expected value");
+        assert_eq!(compiled, interpreted, "interpreter/Wasm parity");
+
+        for (name, expected) in [
+            ("__witchy_packed_alloc_calls", 4),
+            ("__witchy_packed_alloc_bytes", 64),
+            ("__witchy_destination_candidates_forwarded", 0),
+        ] {
+            let value = instance
+                .get_global(&mut store, name)
+                .unwrap_or_else(|| panic!("missing counter export `{name}`"))
+                .get(&mut store);
+            let wasmtime::Val::I64(actual) = value else {
+                panic!("counter export `{name}` is not i64: {value:?}");
+            };
+            assert_eq!(actual, expected, "counter `{name}`");
+        }
+
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module)
+                .expect_lowered("own-consumer alias regression lowers to WIR"),
+        );
+        assert!(
+            !wat.contains("__witchy_destination_scratch_"),
+            "an own consumer that returns its argument must allocate each producer result: {wat}"
+        );
+        if witchy_wir::wir_helpers::heap_check_enabled() {
+            assert!(
+                wat.contains("call $heap_register"),
+                "each allocating fallback retains checked-heap registration: {wat}"
+            );
+        }
+    }
+
+    #[test]
     fn packed_sum_destination_preserves_nested_fixed_payloads() {
         let source = r#"
 mode opt
