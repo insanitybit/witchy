@@ -2056,6 +2056,109 @@ fn main() -> Int:
     }
 
     #[test]
+    fn composite_callable_results_register_exact_layouts_before_boundary_lowering() {
+        let direct = r#"
+mode opt
+type Point packed:
+    x: Int
+fn build(value: Int) -> (Point, Int):
+    (Point(value), value + 1)
+fn main() -> Int:
+    let pair = build(7)
+    78
+"#;
+        assert_eq!(run_int(direct), 78);
+        let direct_module = parse_module(direct).expect("parse direct composite result");
+        let direct_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&direct_module)
+                .expect_lowered("a direct composite result carries its exact tuple LayoutId"),
+        );
+        assert!(direct_wat.contains("call $build"), "exact direct tuple result: {direct_wat}");
+        assert!(
+            direct_wat.contains("__witchy_packed_record_") && !direct_wat.contains("call $mk2"),
+            "the direct composite uses its descriptor rather than the uniform tuple ABI: {direct_wat}"
+        );
+
+        let compile_indirect = |source: &str| {
+            let module = parse_module(source).expect("parse indirect composite result");
+            let indirect = witchy_syntax::opt::OptSet::default_set()
+                .without(witchy_syntax::opt::Opt::DirectCall)
+                .without(witchy_syntax::opt::Opt::ClosureElide);
+            witchy_syntax::opt::set_for_tests(Some(indirect));
+            let result = compile_module_binary(&module);
+            witchy_syntax::opt::set_for_tests(None);
+            result
+        };
+
+        let tuple_error = compile_indirect(r#"
+mode opt
+type Point packed:
+    x: Int
+fn main() -> Int:
+    let build = fn(value: Int) -> (Point, Int): (Point(value), value + 1)
+    let pair = build(9)
+    0
+"#).expect_rejected("a closure tuple result needs an exact physical signature");
+        assert!(
+            tuple_error.to_string().contains("first-class function call")
+                && tuple_error.to_string().contains("LayoutId"),
+            "tuple result cannot silently reshape: {tuple_error}"
+        );
+
+        let list_tuple_error = compile_indirect(r#"
+mode opt
+type Point packed:
+    x: Int
+fn main() -> Int:
+    let build = fn(value: Int) -> List((Point, Int)):
+        [(Point(value), value + 1)]
+    let values = build(9)
+    list.length(values)
+"#).expect_rejected("a closure list-of-composite result needs an exact signature");
+        assert!(
+            list_tuple_error.to_string().contains("first-class function call")
+                && list_tuple_error.to_string().contains("LayoutId"),
+            "list-of-tuple result cannot silently reshape: {list_tuple_error}"
+        );
+
+        let nested_list_error = compile_indirect(r#"
+mode opt
+type Point packed:
+    x: Int
+fn main() -> Int:
+    let build = fn(value: Int) -> List(List(Point)):
+        [[Point(value)]]
+    let values = build(9)
+    list.length(values)
+"#).expect_rejected("a dynamic-inline nested packed list is not representable");
+        assert!(
+            nested_list_error.to_string().contains("declared packed layout rejected")
+                && nested_list_error.to_string().contains("dynamic"),
+            "nested lists reject instead of selecting the uniform ABI: {nested_list_error}"
+        );
+
+        let nested_callable = parse_module(r#"
+mode opt
+type Point packed:
+    x: Int
+fn invoke(build: fn(Int) -> (Point, Int), value: Int) -> Int:
+    let pair = build(value)
+    0
+fn make(value: Int) -> (Point, Int):
+    (Point(value), value + 1)
+fn main() -> Int:
+    invoke(make, 9)
+"#).expect("parse nested callable result type");
+        let nested_callable_error = compile_module_binary(&nested_callable)
+            .expect_rejected("a nested fn result position needs an exact signature");
+        assert!(
+            nested_callable_error.to_string().contains("first-class function call")
+                && nested_callable_error.to_string().contains("LayoutId"),
+            "nested fn result type is registered before lowering: {nested_callable_error}"
+        );
+    }
+
+    #[test]
     fn literal_nontrapping_integer_divisors_stay_raw() {
         let module = parse_module(
             "fn main() -> Int:\n    let quotient = 9 / 3\n    quotient + (7 % 4)\n",

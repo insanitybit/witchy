@@ -9867,7 +9867,9 @@ fn scalar_record_call_candidates_block(
         let local_layout = local_types.get(name).and_then(|ty| {
             specialized_types
                 .iter()
-                .find_map(|(known, id)| (known == ty).then_some(*id))
+                .find_map(|(known, id)| {
+                    (known.unqualified() == ty.unqualified()).then_some(*id)
+                })
         });
         if local_layout == Some(producer.layout) {
             bindings.insert(name.clone(), (statement as *const Stmt) as usize);

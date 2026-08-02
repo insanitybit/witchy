@@ -81,6 +81,50 @@ fn type_requests_specialized_layout(
     }
 }
 
+/// Collect every closed physical shape nested in a checked type. Callable
+/// values have no aggregate layout themselves, but their parameter/result
+/// positions can: a lambda returning `(Point, Int)` must register that tuple
+/// before boundary rejection asks for its exact `LayoutId`. Lists and tuples
+/// recurse so an unsupported dynamic-inline composition is rejected by the
+/// canonical interner instead of silently falling back to the uniform ABI.
+fn collect_specialized_layout_requests(
+    ty: &Type,
+    resolver: &ModuleLayoutResolver<'_>,
+    requested: &mut Vec<Type>,
+) {
+    let ty = ty.unqualified();
+    if type_requests_specialized_layout(ty, resolver) {
+        requested.push(ty.clone());
+    }
+    match ty {
+        Type::Named(_, arguments) | Type::Dyn(_, arguments) => {
+            for argument in arguments {
+                collect_specialized_layout_requests(argument, resolver, requested);
+            }
+        }
+        Type::Tuple(fields) => {
+            for field in fields {
+                collect_specialized_layout_requests(field, resolver, requested);
+            }
+        }
+        Type::Fn(parameters, result, _) => {
+            for parameter in parameters {
+                collect_specialized_layout_requests(parameter, resolver, requested);
+            }
+            collect_specialized_layout_requests(result, resolver, requested);
+        }
+        Type::RecordCompose { base, fields } => {
+            collect_specialized_layout_requests(base, resolver, requested);
+            for (_, field) in fields {
+                collect_specialized_layout_requests(field, resolver, requested);
+            }
+        }
+        Type::Qualified(_, inner) => {
+            collect_specialized_layout_requests(inner, resolver, requested);
+        }
+    }
+}
+
 fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
     let resolver = ModuleLayoutResolver::new(module);
     let mut requested = Vec::new();
@@ -95,26 +139,33 @@ fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
                 requested.push(Type::Named("List".into(), vec![ty]));
             }
             Item::Function(function) => {
-                requested.extend(
-                    function
-                        .params
-                        .iter()
-                        .filter_map(|parameter| parameter.ty.clone())
-                        .filter(|ty| type_requests_specialized_layout(ty, &resolver)),
-                );
-                requested.extend(
-                    function
-                        .ret
-                        .iter()
-                        .filter(|ty| type_requests_specialized_layout(ty, &resolver))
-                        .cloned(),
-                );
+                for ty in function.params.iter().filter_map(|parameter| parameter.ty.as_ref()) {
+                    collect_specialized_layout_requests(ty, &resolver, &mut requested);
+                }
+                if let Some(ty) = &function.ret {
+                    collect_specialized_layout_requests(ty, &resolver, &mut requested);
+                }
             }
             _ => {}
         }
     }
+    // The checked table is the exact source for inferred lambda and application
+    // types. Walking every concrete entry covers closures declared only inside a
+    // body, including inferred/nested `fn(...) -> T` positions that are absent
+    // from top-level declaration syntax.
+    for ty in cg
+        .type_table
+        .concrete_types()
+        .filter_map(witchy_types::typeck::ty_to_ast)
+    {
+        collect_specialized_layout_requests(&ty, &resolver, &mut requested);
+    }
     for ty in requested {
-        if cg.specialized_type_ids.iter().any(|(known, _)| known == &ty) {
+        if cg
+            .specialized_type_ids
+            .iter()
+            .any(|(known, _)| known.unqualified() == ty.unqualified())
+        {
             continue;
         }
         match cg.specialized_layouts.intern_type(&ty, &resolver) {
@@ -135,7 +186,7 @@ fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
                 parameter.ty.as_ref().and_then(|ty| {
                     cg.specialized_type_ids
                         .iter()
-                        .find(|(known, _)| known == ty)
+                        .find(|(known, _)| known.unqualified() == ty.unqualified())
                         .map(|(_, id)| *id)
                 })
             })
@@ -143,7 +194,7 @@ fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
         let result = function.ret.as_ref().and_then(|ty| {
             cg.specialized_type_ids
                 .iter()
-                .find(|(known, _)| known == ty)
+                .find(|(known, _)| known.unqualified() == ty.unqualified())
                 .map(|(_, id)| *id)
         });
         let signature = CallableLayoutSignature::new(parameters, result);
@@ -1082,7 +1133,7 @@ fn register_module_items(
                         && let Some(id) = cg
                             .specialized_type_ids
                             .iter()
-                            .find(|(known, _)| known == t)
+                            .find(|(known, _)| known.unqualified() == t.unqualified())
                             .map(|(_, id)| *id)
                         && destination_layout_is_flat(cg, id)
                         && cg.specialized_layouts.get(id).is_some_and(|layout| {
