@@ -819,6 +819,9 @@ struct DirectListBuilderPlan {
     counter: String,
     lower: i64,
     capacity: i32,
+    data_offset: i32,
+    stride: i32,
+    packed_field_offsets: Vec<u32>,
 }
 
 /// A stable, representation-only key for an element of a GC-lowered tuple.
@@ -4387,9 +4390,7 @@ impl<'types> Codegen<'types> {
             let Some(length) = upper.checked_sub(*lower) else {
                 continue;
             };
-            // `$rc_alloc` records its byte size in a 24-bit header. Keep the
-            // exact reservation within that representable range.
-            if length <= 0 || length > ((0x00ff_ffff_i64 - 4) / 8) {
+            if length <= 0 {
                 continue;
             }
             let push = match loop_body.stmts.as_slice() {
@@ -4409,14 +4410,58 @@ impl<'types> Codegen<'types> {
             {
                 continue;
             }
-            if self.kind_of(&args[1]).is_ref()
-                || self
-                    .local_types
-                    .get(name)
-                    .and_then(|list_ty| self.specialized_layout_id(list_ty))
-                    .is_some()
-                || self.locals.get(name) != Some(&Kind::I32)
-            {
+            if self.locals.get(name) != Some(&Kind::I32) {
+                continue;
+            }
+            let specialized = self
+                .local_types
+                .get(name)
+                .and_then(|list_type| self.specialized_layout_id(list_type));
+            let shape = if let Some(list_id) = specialized {
+                let Some(list_layout) = self.specialized_layouts.get(list_id) else {
+                    continue;
+                };
+                let (
+                    HeaderLayout::PackedList { data_offset, .. },
+                    LayoutSize::Dynamic { stride, .. },
+                    LayoutKind::PackedList { element, .. },
+                ) = (list_layout.header(), list_layout.size(), list_layout.kind())
+                else {
+                    continue;
+                };
+                let Expr::Ctor { args: fields, .. } = &args[1] else {
+                    continue;
+                };
+                let Some(element_layout) = self.specialized_layouts.get(*element) else {
+                    continue;
+                };
+                let LayoutKind::PackedRecord { fields: layouts } = element_layout.kind() else {
+                    continue;
+                };
+                if self.specialized_layout_of_expr(&args[1]) != Some(*element)
+                    || fields.len() != layouts.len()
+                    || fields.iter().any(|field| self.kind_of(field).is_ref())
+                {
+                    continue;
+                }
+                (
+                    data_offset as i32,
+                    stride as i32,
+                    element_layout
+                        .fields()
+                        .iter()
+                        .map(|field| field.offset())
+                        .collect(),
+                )
+            } else {
+                if self.kind_of(&args[1]).is_ref() {
+                    continue;
+                }
+                (4, 8, Vec::new())
+            };
+            // `$rc_alloc` records its byte size in a 24-bit header. Keep the
+            // exact reservation within that representable range.
+            if length > ((0x00ff_ffff_i64 - i64::from(shape.0)) / i64::from(shape.1)) {
                 continue;
             }
             let plan = DirectListBuilderPlan {
@@ -4424,6 +4469,9 @@ impl<'types> Codegen<'types> {
                 counter: format!("__forctr_{var}"),
                 lower: *lower,
                 capacity: length as i32,
+                data_offset: shape.0,
+                stride: shape.1,
+                packed_field_offsets: shape.2,
             };
             self.direct_list_builder_lets
                 .insert((&pair[0] as *const Stmt) as usize, plan.clone());

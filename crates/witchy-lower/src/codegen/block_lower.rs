@@ -121,7 +121,7 @@ impl<'types> Codegen<'types> {
                         .cloned();
                     let mut list_builder_done = false;
                     if let Some(plan) = builder_plan {
-                        let logical_size = 4 + plan.capacity * 8;
+                        let logical_size = plan.data_offset + plan.capacity * plan.stride;
                         let reserve = logical_size
                             + if witchy_wir::wir_helpers::heap_check_enabled() {
                                 witchy_wir::layout::HEAP_REDZONE as i32
@@ -141,6 +141,26 @@ impl<'types> Codegen<'types> {
                             kind: witchy_wir::wir::Kind::I32,
                             offset: 0,
                         });
+                        if !plan.packed_field_offsets.is_empty() {
+                            seq.push(N::Store {
+                                ptr: W::GetLocal(name.clone()),
+                                value: W::ConstI32(plan.capacity),
+                                kind: witchy_wir::wir::Kind::I32,
+                                offset: 4,
+                            });
+                            seq.push(Self::increment_counter("__witchy_packed_alloc_calls"));
+                            seq.push(N::SetGlobal {
+                                global: "__witchy_packed_alloc_bytes".into(),
+                                value: W::Binary {
+                                    op: witchy_wir::wir::BinOp::Add,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(W::GetGlobal(
+                                        "__witchy_packed_alloc_bytes".into(),
+                                    )),
+                                    rhs: Box::new(W::ConstI64(i64::from(logical_size))),
+                                },
+                            });
+                        }
                         if witchy_wir::wir_helpers::heap_check_enabled() {
                             seq.push(N::Do(W::CallHost {
                                 import: "heap_register".into(),
@@ -628,8 +648,6 @@ impl<'types> Codegen<'types> {
                         )?);
                         tail_is_value = false;
                     } else if let Some((plan, element)) = direct_builder {
-                        let element_kind = self.kind_of(element);
-                        let element = self.lower_expr(element)?;
                         let logical_index = W::Convert {
                             from: witchy_wir::wir::Kind::I64,
                             to: witchy_wir::wir::Kind::I32,
@@ -647,21 +665,47 @@ impl<'types> Codegen<'types> {
                                 op: witchy_wir::wir::BinOp::Add,
                                 kind: witchy_wir::wir::Kind::I32,
                                 lhs: Box::new(W::GetLocal(name.clone())),
-                                rhs: Box::new(W::ConstI32(4)),
+                                rhs: Box::new(W::ConstI32(plan.data_offset)),
                             }),
                             rhs: Box::new(W::Binary {
                                 op: witchy_wir::wir::BinOp::Mul,
                                 kind: witchy_wir::wir::Kind::I32,
                                 lhs: Box::new(logical_index),
-                                rhs: Box::new(W::ConstI32(8)),
+                                rhs: Box::new(W::ConstI32(plan.stride)),
                             }),
                         };
-                        seq.push(N::Store {
-                            ptr: slot,
-                            value: W::ToSlot(Box::new(element), Self::wir_kind(element_kind)),
-                            kind: witchy_wir::wir::Kind::I64,
-                            offset: 0,
-                        });
+                        if plan.packed_field_offsets.is_empty() {
+                            let element_kind = self.kind_of(element);
+                            let element = self.lower_expr(element)?;
+                            seq.push(N::Store {
+                                ptr: slot,
+                                value: W::ToSlot(
+                                    Box::new(element),
+                                    Self::wir_kind(element_kind),
+                                ),
+                                kind: witchy_wir::wir::Kind::I64,
+                                offset: 0,
+                            });
+                        } else {
+                            let Expr::Ctor { args: fields, .. } = element else {
+                                return None;
+                            };
+                            if fields.len() != plan.packed_field_offsets.len() {
+                                return None;
+                            }
+                            for (field, offset) in
+                                fields.iter().zip(&plan.packed_field_offsets)
+                            {
+                                let field_kind = self.kind_of(field);
+                                let value = self.lower_expr(field)?;
+                                seq.push(N::Store {
+                                    ptr: slot.clone(),
+                                    value,
+                                    kind: Self::wir_kind(field_kind),
+                                    offset: *offset,
+                                });
+                            }
+                        }
                         inplace_sites += 1;
                         tail_is_value = false;
                     } else if let Some((callee, args, access)) = destination_call {

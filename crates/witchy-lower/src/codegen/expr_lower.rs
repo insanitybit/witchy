@@ -976,7 +976,6 @@ impl<'types> Codegen<'types> {
                     });
                 let cursor_safe = witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide)
                     && gc_reference_list.is_none()
-                    && specialized_list.is_none()
                     && matches!(iter.as_ref(), Expr::Var(name) if !block_reads_var(body, name));
                 let ptr_l = format!("__forptr_{var}");
                 let end_ptr_l = format!("__forendptr_{var}");
@@ -1080,7 +1079,11 @@ impl<'types> Codegen<'types> {
                         op: add,
                         kind: i32,
                         lhs: Box::new(W::GetLocal(advance_local)),
-                        rhs: Box::new(W::ConstI32(if cursor_safe { 8 } else { 1 })),
+                        rhs: Box::new(W::ConstI32(if cursor_safe {
+                            stride as i32
+                        } else {
+                            1
+                        })),
                     },
                 };
                 let lanes = if cursor_safe && self.loop_unroll_safe(body) { 4 } else { 1 };
@@ -1109,7 +1112,7 @@ impl<'types> Codegen<'types> {
                             op: add,
                             kind: i32,
                             lhs: Box::new(W::GetLocal(list_l.clone())),
-                            rhs: Box::new(W::ConstI32(4)),
+                            rhs: Box::new(W::ConstI32(data_offset as i32)),
                         },
                     });
                     outer.push(N::SetLocal {
@@ -1126,7 +1129,7 @@ impl<'types> Codegen<'types> {
                                     kind: i32,
                                     offset: 0,
                                 }),
-                                rhs: Box::new(W::ConstI32(8)),
+                                rhs: Box::new(W::ConstI32(stride as i32)),
                             }),
                         },
                     });

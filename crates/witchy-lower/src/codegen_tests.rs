@@ -629,6 +629,123 @@ fn main() -> Int:
     }
 
     #[test]
+    fn confined_counted_packed_list_streams_exact_storage_and_cursor() {
+        let source = r#"
+mode opt
+import list
+
+type Point packed:
+    x: Int
+    y: Int
+
+fn answer() -> Int:
+    var points = []
+    for i in 0..9:
+        list.push(points, Point(i, i * 3))
+    var total = 0
+    for point in points:
+        total = total + point.x * 7 + point.y
+    total * 100 + list.length(points)
+
+fn main(console: Console):
+    console.print("${answer()}")
+"#;
+        let module = link_list_app(source);
+        let interpreted = witchy_interp::interpreter::run_module(module.clone(), ".", Vec::new())
+            .expect("interpreter runs confined packed stream");
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_packed_boxed_elements",
+            "__witchy_packed_reshaped_bytes",
+        ];
+        let bytes = compile_module_binary(&module).expect_lowered("compile confined packed stream");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect("run confined packed stream");
+        let compiled = captured.lock().unwrap().clone();
+        assert_eq!(interpreted, vec!["36009".to_string()]);
+        assert_eq!(compiled, interpreted);
+        let counters: std::collections::HashMap<&str, i64> = names
+            .iter()
+            .map(|&name| {
+                let value = instance
+                    .get_global(&mut store, name)
+                    .unwrap_or_else(|| panic!("missing counter `{name}`"))
+                    .get(&mut store);
+                let wasmtime::Val::I64(value) = value else {
+                    panic!("counter `{name}` is not i64")
+                };
+                (name, value)
+            })
+            .collect();
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 1);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 152);
+        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
+        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
+
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("confined packed stream lowers"),
+        );
+        let start = wat.find("(func $app.answer").expect("linked answer function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let answer = &tail[..end];
+        assert_eq!(answer.matches("call $rc_alloc").count(), 1, "one exact reservation: {answer}");
+        assert!(
+            !answer.contains("call $__witchy_packed_list_push_")
+                && !answer.contains("call $__witchy_packed_record_"),
+            "the builder writes both descriptor fields directly: {answer}"
+        );
+        assert!(
+            answer.contains("local.set $__forptr_point")
+                && answer.contains("local.set $__forendptr_point")
+                && !answer.contains("local.get $__fori_point"),
+            "the packed consumer walks a stride-aware pointer cursor: {answer}"
+        );
+        if witchy_wir::wir_helpers::heap_check_enabled() {
+            assert!(answer.contains("call $heap_register"), "exact packed storage is checked: {answer}");
+        }
+
+        let deopt = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::BoundsElide);
+        witchy_syntax::opt::set_for_tests(Some(deopt));
+        let deopt_module = link_list_app(source);
+        let deopt_bytes = compile_module_binary(&deopt_module)
+            .expect_lowered("compile packed stream deopt");
+        let deopt_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&deopt_module).expect_lowered("packed stream deopt lowers"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let (mut deopt_store, deopt_instance, deopt_captured) =
+            instantiate_with_print(&deopt_bytes);
+        deopt_instance
+            .get_typed_func::<(), ()>(&mut deopt_store, "run")
+            .expect("deopt run export")
+            .call(&mut deopt_store, ())
+            .expect("run packed stream deopt");
+        assert_eq!(*deopt_captured.lock().unwrap(), vec!["36009".to_string()]);
+        let deopt_allocations = deopt_instance
+            .get_global(&mut deopt_store, "__witchy_packed_alloc_calls")
+            .expect("deopt packed allocation counter")
+            .get(&mut deopt_store);
+        let wasmtime::Val::I64(deopt_allocations) = deopt_allocations else {
+            panic!("deopt packed allocation counter is not i64")
+        };
+        assert_eq!(deopt_allocations, 1);
+        assert!(
+            deopt_wat.contains("local.get $__fori_point"),
+            "disabling bounds elision keeps indexed packed traversal: {deopt_wat}"
+        );
+    }
+
+    #[test]
     fn declared_packed_list_push_copies_at_an_alias_dirty_site() {
         let list_module = parse_module(
             witchy_syntax::linker::bundled_source("list")
