@@ -1000,6 +1000,45 @@ fn register_module_items(
                 if let Some(t) = resolved_ret {
                     cg.fn_ret_valtype.insert(f.name.clone(), ty_to_valtype(t));
                     cg.fn_ret_ty.insert(f.name.clone(), t.clone());
+                    // RFC-0111 destination ABI, deliberately narrow for the
+                    // first proof slice: a direct-tail constructor returning an
+                    // exact `unique` fixed-layout record may initialize caller-
+                    // supplied dead storage. Other return shapes keep their
+                    // ordinary allocating ABI.
+                    let checked_unique_result = cg
+                        .access_facts
+                        .declaration(&f.name)
+                        .is_some_and(|signature| {
+                            let ownership =
+                                Codegen::ownership_envelope_for_signature(signature);
+                            ownership.unique_capacity_result
+                                && ownership.own_capacity_param.is_none()
+                                && ownership.var_capacity_params.is_empty()
+                                && signature.result().qualifiers().contains(
+                                    &witchy_types::access::AccessQualifier::Unique,
+                                )
+                        });
+                    if checked_unique_result
+                        && matches!(f.body.stmts.last(), Some(Stmt::Expr(Expr::Ctor { .. })))
+                    {
+                        if let Some(id) = cg
+                            .specialized_type_ids
+                            .iter()
+                            .find(|(known, _)| known == t)
+                            .map(|(_, id)| *id)
+                        {
+                            if cg
+                                .specialized_layouts
+                                .get(id)
+                                .is_some_and(|layout| {
+                                    matches!(layout.kind(), LayoutKind::PackedRecord { .. })
+                                        && matches!(layout.size(), LayoutSize::Fixed(_))
+                                })
+                            {
+                                cg.fn_destination_layouts.insert(f.name.clone(), id);
+                            }
+                        }
+                    }
                 }
                 // A function returning a closure (`-> fn(...) -> RET`): record the
                 // closure's return kind so a `let f = make(...)` then `f(x)` call
@@ -2563,6 +2602,13 @@ fn assemble_wir_module_with_structs_mode(
                         mutable: true,
                         init: GlobalInit::I64(0),
                         export: Some("__witchy_packed_reshaped_bytes".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_destination_candidates_forwarded".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_destination_candidates_forwarded".into()),
                     },
                     WirGlobal {
                         name: "__witchy_bump_alloc_calls".into(),

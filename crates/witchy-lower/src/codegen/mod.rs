@@ -153,6 +153,7 @@ const CALL_RESULT_I64_TMP: &str = "__witchy_call_result_i64";
 const CALL_RESULT_F64_TMP: &str = "__witchy_call_result_f64";
 const CALL_RESULT_EXTERN_TMP: &str = "__witchy_call_result_extern";
 const UNIQUE_RESULT_CAP_TMP: &str = "__witchy_unique_result_cap";
+const DESTINATION_PARAM: &str = "__witchy_destination";
 
 fn assign_scratch(component: &str, level: usize) -> String {
     format!("__witchy_assign_{component}_{level}")
@@ -748,6 +749,7 @@ struct SavedScope {
     ret_ty: Option<Type>,
     ret_slot: bool,
     unique_ret: bool,
+    destination_forward_vars: HashSet<String>,
     var: bool,
     var_params: Vec<String>,
     var_cap_params: Vec<String>,
@@ -898,6 +900,9 @@ struct Codegen<'types> {
     locals: HashMap<String, Kind>,
     /// Declared return kind per function, for resolving call-result kinds.
     fn_ret: HashMap<String, Kind>,
+    /// Direct functions returning `unique` fixed-layout values accept one hidden
+    /// optional destination pointer. The LayoutId is the ABI compatibility key.
+    fn_destination_layouts: HashMap<String, LayoutId>,
     /// Function name -> the return kind of the CLOSURE it returns, for a function
     /// declared `-> fn(...) -> RET`. Lets `let f = make(...)` then `f(x)` recover
     /// the closure's result at the right width.
@@ -988,6 +993,9 @@ struct Codegen<'types> {
     /// the size-classed free-list when it is overwritten by a freshly-allocated one
     /// (`x = f(x, …)`). Per-unit, under the opt-in `rc-floor` lever.
     rc_floor_vars: HashSet<String>,
+    /// Reassigned locals whose old value never escapes as a whole. An exact
+    /// LayoutId match lets a `unique` result initialize that dead storage.
+    destination_forward_vars: HashSet<String>,
     /// (RFC-0035 step 3) `let x = list.at(xs, i)` bindings whose read was `$rc_dup`'d
     /// (the SAME per-type gate as the dup site — offset-0 element, `rc-floor` on), so `x`
     /// owns a reference and must be `$rc_drop`'d at its last use. Recording the ownership
@@ -1430,6 +1438,7 @@ impl<'types> Codegen<'types> {
             next_label: 0,
             locals: HashMap::new(),
             fn_ret: HashMap::new(),
+            fn_destination_layouts: HashMap::new(),
             fn_ret_closure_kind: HashMap::new(),
             fn_ret_tuple_slots: HashMap::new(),
             fn_ret_list_elem_tuple_slots: HashMap::new(),
@@ -1492,6 +1501,7 @@ impl<'types> Codegen<'types> {
             packed_active: HashMap::new(),
             reuse_vars: HashSet::new(),
             rc_floor_vars: HashSet::new(),
+            destination_forward_vars: HashSet::new(),
             rc_owned_bindings: HashSet::new(),
             match_scrut_depth: 0,
             facts_stack: Vec::new(),
@@ -3701,6 +3711,9 @@ impl<'types> Codegen<'types> {
         for p in &self.cur_fn_var_cap_params {
             params.push(WirLocal { name: format!("{p}__cap"), ty: i32t() });
         }
+        if self.fn_destination_layouts.contains_key(&f.name) {
+            params.push(WirLocal { name: DESTINATION_PARAM.into(), ty: i32t() });
+        }
         let mut locals: Vec<WirLocal> = Vec::new();
         let mut lets = Vec::new();
         collect_let_names(&f.body, &mut lets);
@@ -4076,6 +4089,11 @@ impl<'types> Codegen<'types> {
         self.rc_floor_vars = if !force_copy_mode()
             && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor)
         {
+            crate::escape::confined_reassigned_vars_block(body, &self.summaries)
+        } else {
+            HashSet::new()
+        };
+        self.destination_forward_vars = if !force_copy_mode() {
             crate::escape::confined_reassigned_vars_block(body, &self.summaries)
         } else {
             HashSet::new()
@@ -4550,6 +4568,75 @@ impl<'types> Codegen<'types> {
         Some(name)
     }
 
+    /// Constructor ABI used only by exact-layout destination-aware functions.
+    /// A zero destination retains the ordinary allocation path; a nonzero
+    /// destination initializes the caller-proved-dead object in place.
+    fn ensure_packed_record_destination_helper(&mut self, id: LayoutId) -> Option<String> {
+        use witchy_wir::wir::{
+            BinOp as WB, Kind as WK, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy,
+        };
+        let name = Self::layout_helper_name("packed_record_destination", id, None);
+        if self.layout_wir_funcs.contains_key(&name) {
+            return Some(name);
+        }
+        let descriptor = self.specialized_layouts.get(id)?.clone();
+        if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. }) {
+            return None;
+        }
+        let LayoutSize::Fixed(size) = descriptor.size() else {
+            return None;
+        };
+        let mut params = vec![WirLocal {
+            name: DESTINATION_PARAM.into(),
+            ty: WirTy::Bool,
+        }];
+        for (index, field) in descriptor.fields().iter().enumerate() {
+            params.push(WirLocal {
+                name: format!("f{index}"),
+                ty: Self::wir_ty_for_kind(self.layout_field_kind(field.kind())?),
+            });
+        }
+        let (allocation, _) = self.layout_alloc_nodes(size);
+        let mut body = vec![N::If {
+            cond: W::Binary {
+                op: WB::Ne,
+                kind: WK::I32,
+                lhs: Box::new(W::GetLocal(DESTINATION_PARAM.into())),
+                rhs: Box::new(W::ConstI32(0)),
+            },
+            then_: vec![N::SetLocal {
+                local: "p".into(),
+                value: W::GetLocal(DESTINATION_PARAM.into()),
+            }],
+            els: allocation,
+            result: None,
+        }];
+        for (index, field) in descriptor.fields().iter().copied().enumerate() {
+            self.push_layout_store(
+                &mut body,
+                W::GetLocal("p".into()),
+                field,
+                W::GetLocal(format!("f{index}")),
+            )?;
+        }
+        body.push(N::Push(W::GetLocal("p".into())));
+        self.layout_wir_funcs.insert(
+            name.clone(),
+            WirFunc {
+                name: name.clone(),
+                params,
+                ret: vec![WirTy::Bool],
+                locals: vec![WirLocal {
+                    name: "p".into(),
+                    ty: WirTy::Bool,
+                }],
+                body,
+                raw_body: None,
+            },
+        );
+        Some(name)
+    }
+
     fn ensure_packed_sum_ctor_helper(
         &mut self,
         id: LayoutId,
@@ -4886,7 +4973,11 @@ impl<'types> Codegen<'types> {
             LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }
                 if descriptor.fields().len() == args.len() =>
             {
-                self.ensure_packed_record_helper(id)?
+                if self.fn_destination_layouts.get(&self.cur_fn_name) == Some(&id) {
+                    self.ensure_packed_record_destination_helper(id)?
+                } else {
+                    self.ensure_packed_record_helper(id)?
+                }
             }
             LayoutKind::ClosedSum { .. } => {
                 let Expr::Ctor { name, .. } = expr else { return None };
@@ -4907,7 +4998,13 @@ impl<'types> Codegen<'types> {
             }
             _ => return None,
         };
-        let lowered = args.iter().map(|arg| self.lower_expr(arg)).collect::<Option<Vec<_>>>()?;
+        let mut lowered = args
+            .iter()
+            .map(|arg| self.lower_expr(arg))
+            .collect::<Option<Vec<_>>>()?;
+        if self.fn_destination_layouts.get(&self.cur_fn_name) == Some(&id) {
+            lowered.insert(0, witchy_wir::wir::WirExpr::GetLocal(DESTINATION_PARAM.into()));
+        }
         Some(witchy_wir::wir::WirExpr::Call { func: helper, args: lowered })
     }
 
@@ -5895,6 +5992,12 @@ impl<'types> Codegen<'types> {
         }
         if ownership.unique_capacity_result {
             use witchy_wir::wir::{WirExpr as W, WirNode as N};
+            if self.fn_destination_layouts.contains_key(name) {
+                // The checked destination candidates above exclude own/var
+                // capacity parameters, so the hidden destination follows the
+                // complete source parameter list and precedes no state inputs.
+                args_w.push(W::ConstI32(0));
+            }
             let result_kind = self.fn_ret.get(name).copied().unwrap_or(Kind::I32);
             let result_tmp = call_result_tmp(result_kind);
             return Some(W::Seq(vec![
@@ -5910,6 +6013,60 @@ impl<'types> Codegen<'types> {
             ]));
         }
         Some(witchy_wir::wir::WirExpr::Call { func: name.to_string(), args: args_w })
+    }
+
+    /// Lower a direct call that initializes a proven-dead exact-layout local.
+    /// This is intentionally separate from ordinary calls so the fallback ABI
+    /// always supplies zero and therefore allocates normally.
+    fn lower_destination_user_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        destination: witchy_wir::wir::WirExpr,
+        access: &witchy_types::access::AccessSignature,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        let ownership = Self::ownership_envelope_for_signature(access);
+        if !ownership.unique_capacity_result
+            || ownership.own_capacity_param.is_some()
+            || !ownership.var_capacity_params.is_empty()
+        {
+            return None;
+        }
+        let param_kinds: Vec<Kind> = self
+            .fn_params
+            .get(name)?
+            .iter()
+            .map(|p| {
+                p.ty.as_ref()
+                    .map(|t| self.kind_for_type(t))
+                    .unwrap_or(Kind::I32)
+            })
+            .collect();
+        let mut lowered = Vec::with_capacity(args.len() + 1);
+        for (index, arg) in args.iter().enumerate() {
+            let source_kind = self.kind_of(arg);
+            let value = self.lower_expr(arg)?;
+            lowered.push(match param_kinds.get(index) {
+                Some(&parameter_kind) => Self::wir_convert(value, source_kind, parameter_kind),
+                None => value,
+            });
+        }
+        lowered.push(destination);
+        let result_kind = self.fn_ret.get(name).copied().unwrap_or(Kind::I32);
+        let result_tmp = call_result_tmp(result_kind);
+        Some(W::Seq(vec![
+            Self::increment_counter("__witchy_destination_candidates_forwarded"),
+            N::CallStoreMulti {
+                func: name.into(),
+                args: lowered,
+                dests: vec![
+                    result_tmp.clone(),
+                    UNIQUE_RESULT_CAP_TMP.to_string(),
+                ],
+            },
+            N::Push(W::GetLocal(result_tmp)),
+        ]))
     }
 
     fn owned_argument_cap(&self, arg: &Expr) -> witchy_wir::wir::WirExpr {
@@ -7368,6 +7525,7 @@ impl<'types> Codegen<'types> {
             ret_ty: self.cur_fn_ret_ty.take(),
             ret_slot: self.cur_fn_ret_slot,
             unique_ret: self.cur_fn_unique_ret,
+            destination_forward_vars: std::mem::take(&mut self.destination_forward_vars),
             var: self.cur_fn_var,
             var_params: std::mem::take(&mut self.cur_fn_var_params),
             var_cap_params: std::mem::take(&mut self.cur_fn_var_cap_params),
@@ -7414,6 +7572,7 @@ impl<'types> Codegen<'types> {
         self.cur_fn_ret_ty = s.ret_ty;
         self.cur_fn_ret_slot = s.ret_slot;
         self.cur_fn_unique_ret = s.unique_ret;
+        self.destination_forward_vars = s.destination_forward_vars;
         self.cur_fn_var = s.var;
         self.cur_fn_var_params = s.var_params;
         self.cur_fn_var_cap_params = s.var_cap_params;

@@ -706,6 +706,110 @@ fn main() -> Int:
     }
 
     #[test]
+    fn unique_packed_result_forwards_an_exact_dead_destination() {
+        let source = r#"
+mode opt
+
+type Pair packed:
+    left: Int
+    right: Int
+
+fn build(value: Int) -> unique Pair:
+    Pair(value * 7 + 3, value * 11 + 5)
+
+fn main() -> Int:
+    var current = build(0)
+    var total = 0
+    for i in 1..1000000:
+        current = build(i)
+        total = total + (current.left + current.right) % 101
+    total + current.left % 17
+"#;
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_packed_boxed_elements",
+            "__witchy_packed_reshaped_bytes",
+            "__witchy_destination_candidates_forwarded",
+        ];
+        let (result, counters) = run_int_with_i64_globals(source, &names);
+        assert_eq!(result, 49_999_959);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 1);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 16);
+        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
+        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
+        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 999_999);
+
+        let module = parse_module(source).expect("parse destination-forwarding oracle");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("destination oracle lowers"),
+        );
+        let start = wat.find("(func $main").expect("main function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let main = &tail[..end];
+        assert!(
+            main.contains("call $build"),
+            "loop calls the destination-aware builder: {main}"
+        );
+        assert!(
+            main.contains("global.set $__witchy_destination_candidates_forwarded"),
+            "forwarded candidates are counted at the call site: {main}"
+        );
+        assert!(
+            !main.contains("call $rc_alloc"),
+            "the hot caller has no allocator call: {main}"
+        );
+        assert!(
+            !main.contains("call $__witchy_packed_record_destination_"),
+            "the constructor remains behind the direct build boundary: {main}"
+        );
+        assert!(
+            wat.contains("__witchy_packed_record_destination_"),
+            "the builder uses a descriptor-specific optional destination helper: {wat}"
+        );
+        if witchy_wir::wir_helpers::heap_check_enabled() {
+            assert!(
+                wat.contains("call $heap_register"),
+                "the zero-destination fallback remains checked: {wat}"
+            );
+        }
+    }
+
+    #[test]
+    fn unique_packed_result_allocates_when_the_old_value_escapes() {
+        let source = r#"
+mode opt
+
+type Pair packed:
+    left: Int
+    right: Int
+
+fn build(value: Int) -> unique Pair:
+    Pair(value, value + 1)
+
+fn main() -> Int:
+    var current = build(7)
+    let alias = current
+    current = build(11)
+    alias.left * 1000 + current.right
+"#;
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_destination_candidates_forwarded",
+        ];
+        let (result, counters) = run_int_with_i64_globals(source, &names);
+        assert_eq!(result, 7_012, "the alias retains the pre-assignment value");
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 2);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 32);
+        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 0);
+    }
+
+    #[test]
     fn declared_packed_closed_sum_rejects_variable_layout_payload_loudly() {
         let module = parse_module(r#"
 mode opt

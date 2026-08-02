@@ -445,14 +445,57 @@ impl<'types> Codegen<'types> {
                 Stmt::Assign { value, .. } | Stmt::Expr(value) => {
                     let name = assignment_name?.to_string();
                     let name = &name;
-                    // (RFC-0016) In-place reuse: a confined, never-aliased list `var`
-                    // reassigned to a same-length list literal OVERWRITES its existing
-                    // buffer slot-by-slot instead of allocating a fresh list — so a
-                    // build-and-drop loop stays O(1) heap. The escape oracle proved the
-                    // buffer is unaliased; we additionally require the RHS to not read
-                    // the var (else a slot could be overwritten before a later element
-                    // reads it), allocating normally for that one site otherwise.
-                    if self.collect_wir
+                    // RFC-0111 unique-result destination passing. The escape
+                    // proof says the old whole value cannot be observed after
+                    // this explicit reassignment, the exact LayoutId comparison
+                    // says caller and callee agree on every physical byte, and
+                    // the checked access signature supplies the complete physical
+                    // ownership envelope. Statement-form mutators and any call
+                    // with own/var state retain the ordinary path.
+                    let destination_call = match value {
+                        Expr::Call { name: callee, args }
+                            if self.collect_wir
+                                && matches!(analyzed_stmt, Stmt::Assign { .. })
+                                && self.destination_forward_vars.contains(name) =>
+                        {
+                            let local_layout = self
+                                .local_types
+                                .get(name)
+                                .and_then(|ty| self.specialized_layout_id(ty));
+                            let callee_layout = self.fn_destination_layouts.get(callee).copied();
+                            self.call_access_signature(value).cloned().and_then(|access| {
+                                let ownership =
+                                    Self::ownership_envelope_for_signature(&access);
+                                (local_layout.is_some()
+                                    && local_layout == callee_layout
+                                    && ownership.unique_capacity_result
+                                    && ownership.own_capacity_param.is_none()
+                                    && ownership.var_capacity_params.is_empty())
+                                    .then(|| (callee.clone(), args, access))
+                            })
+                        }
+                        _ => None,
+                    };
+                    if let Some((callee, args, access)) = destination_call {
+                        let result = self.lower_destination_user_call(
+                            &callee,
+                            args,
+                            W::GetLocal(name.clone()),
+                            &access,
+                        )?;
+                        seq.push(N::SetLocal {
+                            local: name.clone(),
+                            value: result,
+                        });
+                        tail_is_value = false;
+                        // (RFC-0016) In-place reuse: a confined, never-aliased list `var`
+                        // reassigned to a same-length list literal OVERWRITES its existing
+                        // buffer slot-by-slot instead of allocating a fresh list — so a
+                        // build-and-drop loop stays O(1) heap. The escape oracle proved the
+                        // buffer is unaliased; we additionally require the RHS to not read
+                        // the var (else a slot could be overwritten before a later element
+                        // reads it), allocating normally for that one site otherwise.
+                    } else if self.collect_wir
                         && self.reuse_vars.contains(name)
                         && matches!(value, Expr::List(_) | Expr::Ctor { .. })
                         // RFC-0111 specialized aggregates are descriptor-shaped, not
