@@ -1504,6 +1504,11 @@ fn apply_declared_contract(declared: &Type, resolved: &Type) -> Type {
             qualifier.clone(),
             Box::new(apply_declared_contract(inner, resolved)),
         ),
+        // Lifetime markers are declaration binders, not checker type holes. Keep
+        // one alpha-consistent spelling across qualifiers and nominal arguments.
+        Type::Named(name, arguments) if arguments.is_empty() && name.starts_with('\'') => {
+            declared.clone()
+        }
         Type::Named(name, arguments)
             if arguments.is_empty()
                 && !name.contains('.')

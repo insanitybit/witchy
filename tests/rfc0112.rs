@@ -2,7 +2,8 @@
 
 use witchy_syntax::ast::{Expr, Function, Item, Module, Stmt, Type};
 use witchy_types::access::{
-    AccessKind, AccessQualifier, AccessSignature, LoanProjection, LoanProjectionStep, checked_facts,
+    AccessKind, AccessQualifier, AccessSignature, LoanProjection, LoanProjectionStep,
+    OwnershipStateClass, checked_facts,
 };
 use witchy_types::{traits, typeck};
 
@@ -112,7 +113,12 @@ fn assert_holder_owner_contract(signature: &AccessSignature) {
                 .collect::<Vec<_>>(),
             [lifetime]
         );
-        assert!(parameter.ownership().input().is_none());
+        assert_eq!(
+            parameter.ownership().input(),
+            Some(&OwnershipStateClass::BorrowedOwnerRoot {
+                lifetime: lifetime.to_string()
+            })
+        );
         assert!(parameter.ownership().writeback().is_none());
     }
 
@@ -129,7 +135,12 @@ fn assert_holder_owner_contract(signature: &AccessSignature) {
             .collect::<Vec<_>>(),
         [lifetime]
     );
-    assert!(signature.result().ownership_output().is_none());
+    assert_eq!(
+        signature.result().ownership_output(),
+        Some(&OwnershipStateClass::BorrowedOwnerRoot {
+            lifetime: lifetime.to_string()
+        })
+    );
 
     assert_eq!(relation.output_projection(), &LoanProjection::default());
     assert_eq!(
@@ -262,12 +273,14 @@ fn relation_changing_callable_ascription_is_rejected() {
     let parsed = witchy_syntax::parser::parse_module(RELATION_CHANGING_ASCRIPTION)
         .expect("parse relation-changing callable ascription");
     let lowered = traits::lower_checked(parsed).expect("lower relation-changing fixture");
-    let Err(error) = typeck::annotate_checked(lowered) else {
+    let typed = typeck::annotate_checked(lowered)
+        .expect("ordinary type shape remains valid before access-identity checking");
+    let Err(error) = checked_facts(typed.module(), typed.table()) else {
         panic!("splitting one callable lifetime across owner positions must be rejected")
     };
     let diagnostic = error.to_string();
-    assert!(
-        diagnostic.contains("value disagrees") || diagnostic.contains("expected"),
-        "relation-changing ascription must fail as an exact type disagreement: {diagnostic}"
+    assert_eq!(
+        diagnostic,
+        "function value `wrong` erases or changes its ownership/access contract (parameter 1 does not preserve BorrowRelation)"
     );
 }
