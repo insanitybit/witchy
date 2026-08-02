@@ -540,6 +540,30 @@ fn generic_call_specializes_type_variables_without_erasing_access() {
 }
 
 #[test]
+fn try_propagation_preserves_nested_callable_access() {
+    crate::typeck::check_str(
+        "fn option(value: Option(fn(unique List(Int)) -> Int)) -> Option(fn(unique List(Int)) -> Int):\n    let callback = value?\n    Some(callback)\n\n\
+         fn result(value: Result(fn(unique List(Int)) -> Int, String)) -> Result(fn(unique List(Int)) -> Int, String):\n    let callback = value?\n    Ok(callback)\n\n\
+         fn replace(var values: List(a), value: a) -> List(a):\n    [value]\n\n\
+         fn preserve(callback: fn(unique List(Int)) -> Int) -> Int:\n    var callbacks = [callback]\n    replace(callbacks, callback)\n    0\n\n\
+         fn main() -> Int:\n    0\n",
+    )
+    .expect(
+        "Option and Result propagation unwrap the success callable flow, and generic writeback preserves the same nested contract",
+    );
+
+    let error = crate::typeck::check_str(
+        "fn erase(value: Option(fn(List(Int)) -> Int)) -> Option(fn(unique List(Int)) -> Int):\n    let callback = value?\n    Some(callback)\n\n\
+         fn main() -> Int:\n    0\n",
+    )
+    .expect_err("try propagation must not manufacture a stronger callable qualifier");
+    assert!(
+        error.contains("ownership/access contract") && error.contains("Qualifier"),
+        "{error}"
+    );
+}
+
+#[test]
 fn generic_lambda_context_rejects_qualifier_and_convention_erasure() {
     let qualifier = crate::typeck::check_str(
         "fn accept(f: fn(unique List(Int)) -> Int) -> Int:\n    0\n\n\
