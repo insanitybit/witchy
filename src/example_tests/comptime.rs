@@ -64,6 +64,54 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0112) A borrowed nominal declaration reaches `module_types` without
+    /// constructing a borrowed value. Explicit type and lifetime parameters keep
+    /// their source order, inferred ordinary parameters follow them, and borrowed
+    /// fields remain structured owner relations rather than rendered strings.
+    #[test]
+    fn comptime_typeinfo_preserves_nominal_lifetime_relations_on_both_backends() {
+        let src = r#"mode opt
+
+import list
+import meta
+
+type Pair(a, 'left, 'right):
+    first: View(a, 'left)
+    second: View(a, 'right)
+    metadata: b
+
+comptime:
+    for t in module_types:
+        if t.name == "Pair":
+            emit("fn generated_pair_params() -> String:")
+            emit("    \"" + list.join(t.params, ",") + "\"")
+            let first = list.at(t.fields, 0)
+            match first.type_expr:
+                meta.TBorrowed(inner, lifetime) ->
+                    emit("fn generated_first_relation() -> String:")
+                    emit("    \"" + meta.type_source(inner) + ":'" + lifetime + "\"")
+                _ -> emit("fn generated_first_relation() -> String:\n    \"not-borrowed\"")
+            let second = list.at(t.fields, 1)
+            match second.type_expr:
+                meta.TBorrowed(inner, lifetime) ->
+                    emit("fn generated_second_relation() -> String:")
+                    emit("    \"" + meta.type_source(inner) + ":'" + lifetime + "\"")
+                _ -> emit("fn generated_second_relation() -> String:\n    \"not-borrowed\"")
+
+fn main(console: Console):
+    console.print(generated_pair_params())
+    console.print(generated_first_relation())
+    console.print(generated_second_relation())
+"#;
+        let expected = ["a,'left,'right,b", "a:'left", "a:'right"];
+        assert_eq!(link_run(src), expected, "interp preserves nominal lifetime relations");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled code generated from nominal lifetime relations must agree",
+        );
+    }
+
     /// (BUG-518) Built-in derives consume the same normalized TypeInfo as
     /// comptime reflection. Alias-typed fields derive the aliased decoder, and an
     /// implicit generic record derives a parameterized `Reflect` impl with bounds.

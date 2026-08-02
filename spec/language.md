@@ -827,6 +827,41 @@ and indirect function values preserve it; assigning a function value to a type
 that erases or changes the owner positions or parameter conventions is a
 check-time error.
 
+#### Borrowed nominal declarations
+
+A nominal type declared in a `mode opt` module may bind lifetime parameters in
+the same parameter list as ordinary type parameters. Lifetime parameters carry
+a leading apostrophe and have a distinct kind from ordinary type parameters,
+even when their names otherwise have the same spelling:
+
+```witchy
+mode opt
+
+type Parser(a, 'input):
+    value: View(a, 'input)
+    offset: Int
+```
+
+Each declared lifetime must be unique and used by at least one field, and each
+lifetime used by a field must appear in the nominal type's parameter list. This
+form is available for records and single-variant positional types; a
+lifetime-parameterized multi-variant sum is not supported. Applying the type
+requires a type argument for each ordinary parameter and a lifetime argument
+for each lifetime parameter in the declared order.
+
+Compile-time reflection exposes the normalized declaration through
+`module_types`. `meta.TypeInfo.params` preserves explicit type and lifetime
+parameters in source order, including the apostrophe on lifetime parameters;
+inferred ordinary parameters follow in first-use order. A `View(a, 'input)`
+field is represented structurally as `meta.TBorrowed(meta.TNamed("a", []),
+"input")`, so generators can inspect the owner relation without parsing source
+text.
+
+Borrowed nominal types currently provide a declaration, kind, signature, and
+reflection contract only. Constructing, destructuring, projecting, updating,
+or otherwise using a value of one remains a check-time error until the runtime
+owner-root representation is available.
+
 Binding a returned view loans the corresponding owner until the view's final
 use. During that interval the owner may be read, but it may not be moved,
 reassigned, mutated, or passed to a `var`/`own` parameter, and the view may not
