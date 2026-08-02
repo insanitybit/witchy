@@ -162,7 +162,7 @@ The current boundary matrix is exact and fail-closed:
 | Closed direct generic use | Specializes by logical type, access envelope, parameter/result `LayoutId`s, and optimization schema. Packed construction, indexed traversal, mutation, direct/recursive helper calls, and return keep that physical instance; open or unsupported uses reject. |
 | Function value, lambda/closure capture, trait method, or existential witness | Rejects when the call or environment would need a specialized physical signature. |
 | Host call | Rejects today. Generated ABI metadata accepts no specialized layout until a real exact or explicitly counted marshal adapter exists. |
-| Whole-value equality | `==` and `!=` on a fixed-layout packed sum use its descriptor-selected tag width, variant child layouts, and physical payload offsets. Other specialized equality and rendering reject. |
+| Whole-value equality | Derived/default structural `==` and `!=` on a fixed-layout packed sum use its descriptor-selected tag width, variant child layouts, and physical payload offsets. Custom `PartialEq`, other specialized equality, and rendering reject. |
 | `region:` result, worker/channel transport, or another unsupported dynamic operation | Rejects rather than boxing, reshaping, or copying through the ordinary slot representation. |
 
 A direct function returning an exact `unique` packed record may have a hidden

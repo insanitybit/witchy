@@ -136,7 +136,7 @@ descriptor vocabulary:
 | Function values, lambdas/closure captures, and trait/existential calls | Reject before the legacy indirect ABI can box or reshape the value. Exact callable-layout diagnostics name the `LayoutId`; there is no packed indirect-call ABI yet. |
 | Host import boundary | ABI version 8 authenticates an accepted-`LayoutId` set against `witchy.layouts`. Every production import currently publishes an empty set, so a structured specialized crossing rejects. A future marshal must name its accepted descriptor and reshaped-byte counter. Capability references remain `externref` and can never be inline scalar fields. |
 | `region:` result, isolated worker, channel, and other unsupported dynamic boundaries | Reject rather than copying through the universal-slot path. Artifact descriptor transport does not by itself authorize packed value transport between VMs. |
-| Whole-value equality | Fixed-layout packed sums use their descriptor's equality operation, tag width, variant child layouts, and physical payload offsets. Other specialized equality and all specialized rendering remain fail-closed. |
+| Whole-value equality | Fixed-layout packed sums with derived/default structural equality use their descriptor's equality operation, tag width, variant child layouts, and physical payload offsets. Custom `PartialEq`, other specialized equality, and all specialized rendering remain fail-closed. |
 
 Destination passing is also descriptor-gated. A private direct function whose
 successful paths all construct the same fixed result may receive a hidden
@@ -159,10 +159,11 @@ the test-visible `__witchy_rc_headers_emitted` and
 `__witchy_rc_headers_elided` counters.
 
 Ordinary slot-based equality and rendering helpers are still derived from the
-checked logical type. Fixed-layout packed-sum `==`/`!=` instead consumes the
-canonical descriptor's equality operation and physical variant layout. Other
-specialized whole-value equality, rendering, region copy-out, and serialization
-remain fail-closed until those consumers are descriptor-driven.
+checked logical type. Derived/default structural `==`/`!=` on a fixed-layout
+packed sum instead consumes the canonical descriptor's equality operation and
+physical variant layout. Custom `PartialEq`, other specialized whole-value
+equality, rendering, region copy-out, and serialization remain fail-closed until
+those consumers are descriptor-driven.
 
 Migrated capability values compile to opaque `externref`s, not integer slots:
 `Dir`, `File`, `Net`, `Socket`, `Listener`, and `Secret` are host-rooted

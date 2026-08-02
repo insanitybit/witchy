@@ -248,9 +248,10 @@ are prior-art data points in the harness, not a target framing.
 
    Unsupported boundaries fail closed. Function values, lambda/closure captures,
    trait/existential calls, `region:` copy-out, workers/channels, rendering, and
-   non-sum specialized equality reject when they would need a packed ABI. Fixed-
-   layout packed-sum `==`/`!=` is descriptor-driven: tag width, variant child
-   layouts, and physical payload offsets all come from the canonical descriptor.
+   custom `PartialEq`, and non-sum specialized equality reject when they would
+   need a packed ABI. Derived/default structural `==`/`!=` on a fixed-layout
+   packed sum is descriptor-driven: tag width, variant child layouts, and physical
+   payload offsets all come from the canonical descriptor.
    Host ABI version
    8 authenticates descriptor metadata, but every production import currently has
    an empty accepted-layout set; therefore structured packed host crossings reject.

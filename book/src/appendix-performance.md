@@ -157,9 +157,10 @@ types, access envelope, parameter/result layout IDs, and optimization schema;
 packed construction, indexed traversal, mutation, and return stay on that exact
 physical instance. Function values and closures, trait/existential calls, host
 calls, `region:` results, worker/channel transport, and rendering remain outside
-the shipped matrix. Fixed-layout packed sums are the current whole-value equality
-exception: `==` and `!=` read the descriptor's tag width and variant payload
-offsets. Other specialized whole-value equality remains fail-closed.
+the shipped matrix. Fixed-layout packed sums with derived/default structural
+equality are the current whole-value equality exception: `==` and `!=` read the
+descriptor's tag width and variant payload offsets. Custom `PartialEq` and other
+specialized whole-value equality remain fail-closed.
 
 Destination reuse and header removal are narrower optimizations over the same
 descriptor. A compatible dead destination may be forwarded to a
