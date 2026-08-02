@@ -72,11 +72,18 @@ impl<'types> Codegen<'types> {
                     .get(name)
                     .cloned()
                     .or_else(|| self.closure_result_type(e));
+                let access = self.closure_access_signature(e);
+                let ownership = access
+                    .as_ref()
+                    .map(Self::ownership_envelope_for_signature)
+                    .unwrap_or_default();
                 return self.lower_lambda(
                     &params,
                     &body,
                     &signature,
                     result_ty.as_ref(),
+                    access.as_ref(),
+                    &ownership,
                 );
             }
             Expr::Unary { op, expr } => match op {
@@ -205,22 +212,7 @@ impl<'types> Codegen<'types> {
                 let mut operand_kinds = Vec::with_capacity(args.len() + 1);
                 operand_kinds.push(Kind::GcRef(EXISTENTIAL_WRAPPER_ID));
                 operand_kinds.extend(args.iter().map(|arg| self.kind_of(arg)));
-                let ownership = ClosureOwnershipEnvelope {
-                    own_capacity_param: None,
-                    var_capacity_params: operands
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, operand)| {
-                            (conventions.get(index) == Some(&Convention::Var)
-                                && self
-                                    .ast_type_of_expr(operand)
-                                    .as_ref()
-                                    .is_some_and(type_has_capacity_token))
-                            .then_some(index)
-                        })
-                        .collect(),
-                    unique_capacity_result: type_is_unique_capacity(result),
-                };
+                let ownership = self.call_ownership_envelope(e);
                 self.existential_call_level = level + 1;
                 let lowered = self.lower_closure_args(
                     &operands,
@@ -471,11 +463,18 @@ impl<'types> Codegen<'types> {
             Expr::Lambda { params, body, .. } => {
                 let signature = (self.closure_param_kinds(e), self.apply_ret_kind(e));
                 let result_ty = self.closure_result_type(e);
+                let access = self.closure_access_signature(e);
+                let ownership = access
+                    .as_ref()
+                    .map(Self::ownership_envelope_for_signature)
+                    .unwrap_or_default();
                 return self.lower_lambda(
                     params,
                     body,
                     &signature,
                     result_ty.as_ref(),
+                    access.as_ref(),
+                    &ownership,
                 );
             }
             // Call a closure value: stash the wrapper, then `call_indirect` with
@@ -494,7 +493,7 @@ impl<'types> Codegen<'types> {
                 let param_kinds = self.closure_param_kinds(func);
                 let recover_kind = self.apply_ret_kind(func);
                 let typed_abi = Self::closure_uses_typed_abi(&param_kinds, recover_kind);
-                let ownership = self.closure_ownership_envelope(func);
+                let ownership = self.call_ownership_envelope(e);
                 // (RFC-0062 tier-1) An ELIDED closure applied by name: no closure pointer to
                 // stash — thread captures (from their locals) as leading arg slots to a direct
                 // `call $__lamt{i}`.
@@ -1920,7 +1919,7 @@ impl<'types> Codegen<'types> {
                     let param_kinds = self.closure_param_kinds(&func_expr);
                     let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
                     let typed_abi = Self::closure_uses_typed_abi(&param_kinds, rk);
-                    let ownership = self.closure_ownership_envelope(&func_expr);
+                    let ownership = self.call_ownership_envelope(e);
                     let mut call_args: Vec<W> = caps
                         .iter()
                         .map(|(cn, ck)| {
@@ -1979,7 +1978,7 @@ impl<'types> Codegen<'types> {
                     let param_kinds = self.closure_param_kinds(&func_expr);
                     let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
                     let typed_abi = Self::closure_uses_typed_abi(&param_kinds, rk);
-                    let ownership = self.closure_ownership_envelope(&func_expr);
+                    let ownership = self.call_ownership_envelope(e);
                     let mut ci_args: Vec<W> = vec![W::GetLocal(name.to_string())];
                     let (arg_slots, writebacks, capacity_dests) = self.lower_closure_args(
                         args,
@@ -2064,10 +2063,20 @@ impl<'types> Codegen<'types> {
                         W::FromSlot(Box::new(call), Self::wir_kind(rk))
                     });
                 }
-                let has_var = self
-                    .fn_conventions
-                    .get(name)
-                    .is_some_and(|cs| cs.contains(&Convention::Var));
+                let call_access = self
+                    .access_facts
+                    .call_at(self.checked_module, e)
+                    .cloned()
+                    // Forwarding closure bodies are compiler-owned Calls created
+                    // after annotation. Their exact source value is a checked
+                    // declaration, so use that canonical declaration rather than
+                    // reconstructing its ABI or consulting an address-keyed row.
+                    .or_else(|| self.access_facts.declaration(name).cloned());
+                let has_var = call_access.as_ref().is_some_and(|signature| {
+                    signature.params().iter().any(|param| {
+                        param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                    })
+                });
                 // An `var` user call: the callee returns its declared value plus one
                 // result per var param (the multi-value move-out ABI). Lower to a
                 // `CallStoreMulti` that writes each var result back into the caller's
@@ -2081,7 +2090,7 @@ impl<'types> Codegen<'types> {
                         .ast_type_of_expr(e)
                         .map(|ty| self.kind_for_type(&ty))
                         .unwrap_or_else(|| self.kind_of(e));
-                    return self.lower_var_call(name, args, result_kind);
+                    return self.lower_var_call(name, args, result_kind, call_access.as_ref()?);
                 }
                 // Exactly the compiled `$name` user functions — never an
                 // intrinsic/native (those have no emitted func to call), never a
@@ -2090,7 +2099,7 @@ impl<'types> Codegen<'types> {
                     && !self.locals.contains_key(name)
                     && !self.local_fn_ret_kind.contains_key(name);
                 if is_plain_user_fn && !has_var {
-                    return self.try_lower_user_call(name, args);
+                    return self.try_lower_user_call(name, args, call_access.as_ref()?);
                 }
                 return None;
             }

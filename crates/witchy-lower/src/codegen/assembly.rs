@@ -820,19 +820,33 @@ fn register_module_items(
     for item in &module.items {
         match item {
             Item::Function(f) => {
-                cg.fn_conventions.insert(
-                    f.name.clone(),
-                    f.params.iter().map(|p| p.convention).collect(),
-                );
-                cg.fn_params.insert(f.name.clone(), f.params.clone());
+                if let Some(signature) = cg.access_facts.declaration(&f.name) {
+                    cg.fn_conventions.insert(
+                        f.name.clone(),
+                        signature
+                            .params()
+                            .iter()
+                            .map(|param| match param.kind() {
+                                witchy_types::access::AccessKind::OwnedImmutable => Convention::Let,
+                                witchy_types::access::AccessKind::SharedBorrow => Convention::Borrow,
+                                witchy_types::access::AccessKind::ExclusiveWriteback => Convention::Var,
+                                witchy_types::access::AccessKind::Consuming => Convention::Own,
+                            })
+                            .collect(),
+                    );
+                }
+                let mut params = f.params.clone();
+                if let Some(signature) = cg.access_facts.declaration(&f.name) {
+                    for (param, access) in params.iter_mut().zip(signature.params()) {
+                        param.ty = Some(access.ty().clone());
+                    }
+                }
+                cg.fn_params.insert(f.name.clone(), params);
                 let ret = f.ret.as_ref().map(|t| cg.kind_for_type(t)).unwrap_or(Kind::I32);
                 cg.fn_ret.insert(f.name.clone(), ret);
                 if let Some(t) = &f.ret {
                     cg.fn_ret_valtype.insert(f.name.clone(), ty_to_valtype(t));
                     cg.fn_ret_ty.insert(f.name.clone(), t.clone());
-                    if type_is_unique_capacity(t) {
-                        cg.fn_unique_ret.insert(f.name.clone());
-                    }
                 }
                 // A function returning a closure (`-> fn(...) -> RET`): record the
                 // closure's return kind so a `let f = make(...)` then `f(x)` call
@@ -1109,7 +1123,6 @@ fn build_existential_adapter_funcs(
     cg: &Codegen<'_>,
     witnesses: &witchy_types::witness::WitnessPlan,
 ) -> Result<(Vec<witchy_wir::wir::WirFunc>, Vec<String>), LoweringFailure> {
-    use witchy_syntax::ast::Convention;
     use witchy_wir::wir::{WirExpr as E, WirFunc, WirLocal, WirNode as N, WirTy};
 
     let index = witnesses.dispatch_index().map_err(|message| {
@@ -1131,11 +1144,31 @@ fn build_existential_adapter_funcs(
             })
         })?;
         for (slot_index, slot) in witness.slots.iter().enumerate() {
-            if slot.conventions.iter().any(|convention| {
-                    !matches!(convention, Convention::Let | Convention::Var)
+            let access = cg.access_facts.declaration(&slot.adapter).ok_or_else(|| {
+                LoweringFailure::Rejected(CodegenError {
+                    message: format!(
+                        "checked access facts omit existential adapter `{}`",
+                        slot.adapter
+                    ),
                 })
-                || (slot.receiver == Convention::Own
-                    && slot.conventions.contains(&Convention::Var))
+            })?;
+            let receiver_access = access.params().first().map(|param| param.kind());
+            let receiver_is_var = receiver_access
+                == Some(witchy_types::access::AccessKind::ExclusiveWriteback);
+            let receiver_is_own =
+                receiver_access == Some(witchy_types::access::AccessKind::Consuming);
+            let explicit_access = access.params().iter().skip(1).collect::<Vec<_>>();
+            if explicit_access.iter().any(|param| {
+                !matches!(
+                    param.kind(),
+                    witchy_types::access::AccessKind::OwnedImmutable
+                        | witchy_types::access::AccessKind::ExclusiveWriteback
+                )
+            }) || (receiver_is_own
+                && explicit_access.iter().any(|param| {
+                    param.kind()
+                        == witchy_types::access::AccessKind::ExclusiveWriteback
+                }))
             {
                 return unsupported(format!(
                     "RFC-0081 Wasm adapter for `{}`.{} with `own self` and `var` explicit parameters is not lowered yet",
@@ -1153,19 +1186,15 @@ fn build_existential_adapter_funcs(
                 })
             })?;
             let name = format!("__dynw{}_{}", witness.id, slot_index);
-            let var_capacity_args: Vec<usize> = slot
-                .params
+            let ownership = Codegen::ownership_envelope_for_signature(access);
+            let var_capacity_args: Vec<usize> = ownership
+                .var_capacity_params
                 .iter()
-                .enumerate()
-                .filter_map(|(index, ty)| {
-                    (slot.conventions.get(index) == Some(&Convention::Var)
-                        && type_has_capacity_token(ty))
-                    .then_some(index)
-                })
+                .copied()
+                .filter_map(|index| index.checked_sub(1))
                 .collect();
-            let unique_capacity_result = type_is_unique_capacity(&slot.result);
-            let receiver_capacity = slot.receiver == Convention::Var
-                && type_has_capacity_token(&witness.concrete);
+            let unique_capacity_result = ownership.unique_capacity_result;
+            let receiver_capacity = ownership.var_capacity_params.contains(&0);
             let mut params = vec![WirLocal {
                 name: "receiver".to_string(),
                 ty: WirTy::StructRef,
@@ -1215,14 +1244,17 @@ fn build_existential_adapter_funcs(
             let mut locals = Vec::new();
             let mut body = Vec::new();
             let mut ret = vec![result_ty.clone()];
-            let var_args: Vec<usize> = slot
-                .conventions
+            let var_args: Vec<usize> = explicit_access
                 .iter()
                 .enumerate()
-                .filter_map(|(index, convention)| (*convention == Convention::Var).then_some(index))
+                .filter_map(|(index, param)| {
+                    (param.kind()
+                        == witchy_types::access::AccessKind::ExclusiveWriteback)
+                    .then_some(index)
+                })
                 .collect();
-            if slot.receiver != Convention::Own
-                && (slot.receiver == Convention::Var
+            if !receiver_is_own
+                && (receiver_is_var
                     || !var_args.is_empty()
                     || unique_capacity_result)
             {
@@ -1236,7 +1268,7 @@ fn build_existential_adapter_funcs(
                     local
                 });
                 let payload_local = format!("__dynw{0}_{1}_payload", witness.id, slot_index);
-                if slot.receiver == Convention::Var {
+                if receiver_is_var {
                     locals.push(WirLocal {
                         name: payload_local.clone(),
                         ty: Codegen::wir_ty_for_kind(cg.kind_for_type(&witness.concrete)),
@@ -1273,7 +1305,7 @@ fn build_existential_adapter_funcs(
                     body.push(N::Push(E::GetLocal(local)));
                     ret.push(WirTy::Bool);
                 }
-                if slot.receiver == Convention::Var {
+                if receiver_is_var {
                     body.push(N::Push(E::StructNew {
                         struct_id: EXISTENTIAL_WRAPPER_ID,
                         args: vec![
@@ -1298,7 +1330,7 @@ fn build_existential_adapter_funcs(
                     body.push(N::Push(E::GetLocal(local)));
                     ret.push(WirTy::Bool);
                 }
-            } else if slot.receiver == Convention::Own {
+            } else if receiver_is_own {
                 // The public existential ABI consumes just the erased receiver.
                 // Its concrete own-ABI token is internal to the adapter: no
                 // existential payload is reconstructed after an owning call.
@@ -1655,6 +1687,8 @@ fn assemble_wir_module_with_structs_mode(
     flip_string_add_module(&mut module, &type_table);
     let loan_facts = witchy_types::loans::facts(&module)
         .map_err(|error| CodegenError { message: error.to_string() })?;
+    let access_facts = witchy_types::access::checked_facts(&module, &type_table)
+        .map_err(|error| CodegenError { message: error.to_string() })?;
     // Witness adapters are ordinary monomorphized impl methods, but their only
     // callers are generated after source reachability has run. Seed them before
     // the transitive walk so their own callees are emitted too.
@@ -1665,7 +1699,7 @@ fn assemble_wir_module_with_structs_mode(
         }
     }
     let reachable = reachable_functions_with(&module, &extra_roots);
-    let mut cg = Codegen::new(&type_table, loan_facts);
+    let mut cg = Codegen::new(&module, &type_table, loan_facts, access_facts);
     cg.collect_wir = true;
     register_module_items(&mut cg, &module, &reachable, &witnesses);
     cg.eq_types = eq_types;

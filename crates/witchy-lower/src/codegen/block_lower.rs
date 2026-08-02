@@ -229,12 +229,19 @@ impl<'types> Codegen<'types> {
                                 self.apply_ret_kind(value),
                             );
                             let result_ty = self.closure_result_type(value);
+                            let access = self.closure_access_signature(value);
+                            let ownership = access
+                                .as_ref()
+                                .map(Self::ownership_envelope_for_signature)
+                                .unwrap_or_default();
                             if let Some(caps) =
                                 self.lower_lambda_threaded(
                                     params,
                                     lbody,
                                     &signature,
                                     result_ty.as_ref(),
+                                    access.as_ref(),
+                                    &ownership,
                                 )
                             {
                                 self.thread_index.insert(name.clone(), caps);
@@ -254,11 +261,10 @@ impl<'types> Codegen<'types> {
                                 Expr::List(items) => items.len() as i32,
                                 _ => 0,
                             };
-                            let initial_cap = match value {
-                                Expr::Call { name, .. } if self.fn_unique_ret.contains(name) => {
-                                    W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
-                                }
-                                _ => W::ConstI32(initial_cap),
+                            let initial_cap = if self.expression_returns_unique_capacity(value) {
+                                W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
+                            } else {
+                                W::ConstI32(initial_cap)
                             };
                             seq.push(N::SetLocal {
                                 local: format!("{name}__cap"),
@@ -1196,18 +1202,13 @@ impl<'types> Codegen<'types> {
                         // exact capacity, and a direct `unique` collection result
                         // supplies the token returned by its compiled ABI.
                         if self.collect_wir && self.inplace_push.contains(name) {
-                            let cap = match value {
-                                Expr::List(items) => W::ConstI32(items.len() as i32),
-                                Expr::Call { name, .. } if self.fn_unique_ret.contains(name) => {
-                                    W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
+                            let cap = if self.expression_returns_unique_capacity(value) {
+                                W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
+                            } else {
+                                match value {
+                                    Expr::List(items) => W::ConstI32(items.len() as i32),
+                                    _ => W::ConstI32(0),
                                 }
-                                Expr::Unary { op: UnOp::Move, expr }
-                                    if matches!(expr.as_ref(), Expr::Call { name, .. }
-                                        if self.fn_unique_ret.contains(name)) =>
-                                {
-                                    W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
-                                }
-                                _ => W::ConstI32(0),
                             };
                             seq.push(N::SetLocal {
                                 local: format!("{name}__cap"),

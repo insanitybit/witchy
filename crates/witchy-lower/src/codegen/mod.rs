@@ -653,13 +653,9 @@ fn type_has_capacity_token(t: &Type) -> bool {
     }
 }
 
-fn type_is_unique_capacity(t: &Type) -> bool {
-    matches!(
-        t,
-        Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner)
-            if matches!(inner.unqualified(), Type::Named(name, _)
-                if matches!(name.as_str(), "List" | "Dict"))
-    )
+fn type_is_unique_capacity_shape(t: &Type) -> bool {
+    matches!(t.unqualified(), Type::Named(name, _)
+        if matches!(name.as_str(), "List" | "Dict"))
 }
 
 /// RC-region bias for a value stored in a universal i64 collection slot.
@@ -894,9 +890,6 @@ struct Codegen<'types> {
     locals: HashMap<String, Kind>,
     /// Declared return kind per function, for resolving call-result kinds.
     fn_ret: HashMap<String, Kind>,
-    /// Direct functions whose declared `unique` collection result carries a
-    /// trailing capacity token in the compiled multi-result ABI.
-    fn_unique_ret: HashSet<String>,
     /// Function name -> the return kind of the CLOSURE it returns, for a function
     /// declared `-> fn(...) -> RET`. Lets `let f = make(...)` then `f(x)` recover
     /// the closure's result at the right width.
@@ -1010,6 +1003,12 @@ struct Codegen<'types> {
     summaries: analysis::Summaries,
     /// RFC-0083's authoritative checked loan events for this exact typed AST.
     loan_facts: witchy_types::loans::LoanFacts,
+    /// The exact typed AST which owns every address-keyed semantic fact.
+    checked_module: &'types Module,
+    /// RFC-0110's canonical direct, indirect, closure, and witness access
+    /// contracts for `checked_module`. Physical ABI selection must consume
+    /// these facts instead of reconstructing access from surface syntax.
+    access_facts: witchy_types::access::CheckedAccessFacts<'types>,
     /// Loans active at the statement currently being lowered. `Expr::Try` uses
     /// this to release roots before its structured early return.
     active_loan_events: Vec<witchy_types::loans::LoanEvent>,
@@ -1380,8 +1379,10 @@ struct Codegen<'types> {
 
 impl<'types> Codegen<'types> {
     fn new(
+        checked_module: &'types Module,
         type_table: &'types witchy_types::typeck::TypeTable,
         loan_facts: witchy_types::loans::LoanFacts,
+        access_facts: witchy_types::access::CheckedAccessFacts<'types>,
     ) -> Self {
         Self {
             strings: Vec::new(),
@@ -1413,7 +1414,6 @@ impl<'types> Codegen<'types> {
             next_label: 0,
             locals: HashMap::new(),
             fn_ret: HashMap::new(),
-            fn_unique_ret: HashSet::new(),
             fn_ret_closure_kind: HashMap::new(),
             fn_ret_tuple_slots: HashMap::new(),
             fn_ret_list_elem_tuple_slots: HashMap::new(),
@@ -1483,6 +1483,8 @@ impl<'types> Codegen<'types> {
             drop_facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
             loan_facts,
+            checked_module,
+            access_facts,
             active_loan_events: Vec::new(),
             cur_fn_own_param: None,
             cur_fn_has_type_vars: false,
@@ -2049,89 +2051,91 @@ impl<'types> Codegen<'types> {
         Some(result.as_ref().clone())
     }
 
-    fn ownership_envelope_for_type(ty: &Type) -> ClosureOwnershipEnvelope {
-        let Type::Fn(params, result, conventions) = ty.unqualified() else {
-            return ClosureOwnershipEnvelope::default();
-        };
-        let conventions = if conventions.is_empty() {
-            vec![Convention::Let; params.len()]
-        } else {
-            conventions.clone()
-        };
+    fn ownership_envelope_for_signature(
+        signature: &witchy_types::access::AccessSignature,
+    ) -> ClosureOwnershipEnvelope {
+        use witchy_types::access::AccessKind;
+
         ClosureOwnershipEnvelope {
-            own_capacity_param: params
+            own_capacity_param: signature
+                .params()
                 .iter()
                 .enumerate()
-                .find_map(|(index, ty)| {
-                    (conventions.get(index) == Some(&Convention::Own)
-                        && type_has_capacity_token(ty))
+                .find_map(|(index, param)| {
+                    (param.kind() == AccessKind::Consuming
+                        && param.ownership().input().is_some()
+                        && type_has_capacity_token(param.ty()))
                     .then_some(index)
                 }),
-            var_capacity_params: params
+            var_capacity_params: signature
+                .params()
                 .iter()
                 .enumerate()
-                .filter_map(|(index, ty)| {
-                    (conventions.get(index) == Some(&Convention::Var)
-                        && type_has_capacity_token(ty))
+                .filter_map(|(index, param)| {
+                    (param.kind() == AccessKind::ExclusiveWriteback
+                        && param.ownership().writeback().is_some()
+                        && type_has_capacity_token(param.ty()))
                     .then_some(index)
                 })
                 .collect(),
-            unique_capacity_result: type_is_unique_capacity(result),
+            unique_capacity_result: signature.result().ownership_output().is_some()
+                && type_is_unique_capacity_shape(signature.result().ty()),
         }
     }
 
-    fn closure_ownership_envelope(&self, func: &Expr) -> ClosureOwnershipEnvelope {
-        if let Expr::Lambda { params, ret, .. } = func {
-            return ClosureOwnershipEnvelope {
-                own_capacity_param: params.iter().enumerate().find_map(|(index, param)| {
-                    (param.convention == Convention::Own
-                        && param.ty.as_ref().is_some_and(type_has_capacity_token))
-                    .then_some(index)
-                }),
-                var_capacity_params: params
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, param)| {
-                        (param.convention == Convention::Var
-                            && param.ty.as_ref().is_some_and(type_has_capacity_token))
-                        .then_some(index)
-                    })
-                    .collect(),
-                unique_capacity_result: ret.as_ref().is_some_and(type_is_unique_capacity),
-            };
+    fn ownership_envelope_for_type(ty: &Type) -> ClosureOwnershipEnvelope {
+        witchy_types::access::AccessSignature::from_function_type(ty)
+            .ok()
+            .as_ref()
+            .map(Self::ownership_envelope_for_signature)
+            .unwrap_or_default()
+    }
+
+    fn call_ownership_envelope(&self, call: &Expr) -> ClosureOwnershipEnvelope {
+        self.access_facts
+            .call_at(self.checked_module, call)
+            .or_else(|| {
+                let Expr::Call { name, .. } = call else { return None };
+                self.access_facts.declaration(name)
+            })
+            .map(Self::ownership_envelope_for_signature)
+            .unwrap_or_default()
+    }
+
+    fn expression_returns_unique_capacity(&self, expression: &Expr) -> bool {
+        match expression {
+            Expr::Unary { op: UnOp::Move, expr } => {
+                self.expression_returns_unique_capacity(expr)
+            }
+            _ => self.call_ownership_envelope(expression).unique_capacity_result,
+        }
+    }
+
+    fn closure_access_signature(
+        &self,
+        func: &Expr,
+    ) -> Option<witchy_types::access::AccessSignature> {
+        if let Some(signature) = self.access_facts.callable_at(self.checked_module, func) {
+            return Some(signature.clone());
         }
         if let Expr::Var(name) = func {
-            if let Some(envelope) = self.local_fn_ownership.get(name) {
-                return envelope.clone();
-            }
-            if let Some(params) = self.fn_params.get(name) {
-                let conventions = self
-                    .fn_conventions
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| vec![Convention::Let; params.len()]);
-                return ClosureOwnershipEnvelope {
-                    own_capacity_param: params.iter().enumerate().find_map(|(index, param)| {
-                        (conventions.get(index) == Some(&Convention::Own)
-                            && param.ty.as_ref().is_some_and(type_has_capacity_token))
-                        .then_some(index)
-                    }),
-                    var_capacity_params: params
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, param)| {
-                            (conventions.get(index) == Some(&Convention::Var)
-                                && param.ty.as_ref().is_some_and(type_has_capacity_token))
-                            .then_some(index)
-                        })
-                        .collect(),
-                    unique_capacity_result: self.fn_unique_ret.contains(name),
-                };
+            if let Some(signature) = self.access_facts.declaration(name) {
+                return Some(signature.clone());
             }
         }
         self.ast_type_of_expr(func)
             .as_ref()
-            .map(Self::ownership_envelope_for_type)
+            .and_then(|ty| witchy_types::access::AccessSignature::from_function_type(ty).ok())
+    }
+
+    fn closure_ownership_envelope(&self, func: &Expr) -> ClosureOwnershipEnvelope {
+        self.closure_access_signature(func)
+            .as_ref()
+            .map(Self::ownership_envelope_for_signature)
+            .or_else(|| {
+                let Expr::Var(name) = func else { return None };
+                self.local_fn_ownership.get(name).cloned()
+            })
             .unwrap_or_default()
     }
 
@@ -3537,9 +3541,15 @@ impl<'types> Codegen<'types> {
         // i32 cap param + i32 cap result, built into the WirFunc signature by
         // `assemble_wir_func`). Decided from the module summaries, so every compile
         // of this module agrees on the signature.
+        let access_envelope = self
+            .access_facts
+            .declaration(&f.name)
+            .map(Self::ownership_envelope_for_signature)
+            .unwrap_or_default();
         self.cur_fn_own_param = self
             .summaries
             .own_abi(&f.name)
+            .filter(|index| access_envelope.own_capacity_param == Some(*index))
             .and_then(|i| f.params.get(i))
             .map(|p| p.name.clone());
         // Result = the normal return value, then one slot per `var` parameter
@@ -3555,21 +3565,25 @@ impl<'types> Codegen<'types> {
             };
             self.ast_type_of_expr(tail)
         });
-        self.cur_fn_unique_ret = self.fn_unique_ret.contains(&f.name);
+        self.cur_fn_unique_ret = access_envelope.unique_capacity_result;
+        let declaration = self.access_facts.declaration(&f.name);
         self.cur_fn_var_params = f
             .params
             .iter()
-            .filter(|p| p.convention == Convention::Var)
-            .map(|p| p.name.clone())
-            .collect();
-        self.cur_fn_var_cap_params = f
-            .params
-            .iter()
-            .filter(|p| {
-                p.convention == Convention::Var
-                    && p.ty.as_ref().is_some_and(type_has_capacity_token)
+            .enumerate()
+            .filter(|(index, _)| {
+                declaration.is_some_and(|signature| {
+                    signature.params().get(*index).is_some_and(|param| {
+                        param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                    })
+                })
             })
-            .map(|p| p.name.clone())
+            .map(|(_, p)| p.name.clone())
+            .collect();
+        self.cur_fn_var_cap_params = access_envelope
+            .var_capacity_params
+            .iter()
+            .filter_map(|index| f.params.get(*index).map(|param| param.name.clone()))
             .collect();
         self.cur_fn_var = !self.cur_fn_var_params.is_empty();
 
@@ -3919,10 +3933,9 @@ impl<'types> Codegen<'types> {
             Expr::Var(name) if self.inplace_push.contains(name) => {
                 W::GetLocal(format!("{name}__cap"))
             }
-            Expr::Call { name, .. } if self.fn_unique_ret.contains(name) => {
+            expression if self.expression_returns_unique_capacity(expression) => {
                 W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
             }
-            Expr::Unary { op: UnOp::Move, expr } => self.return_capacity_expr(expr),
             _ => W::ConstI32(0),
         }
     }
@@ -4971,7 +4984,13 @@ impl<'types> Codegen<'types> {
     /// any argument isn't lowerable. ONLY sound from `lower_expr`'s call arm, after
     /// builtins/natives/closures have been excluded, and only for functions WITHOUT
     /// an own-ABI token or `var` writeback.
-    fn try_lower_user_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
+    fn try_lower_user_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        access: &witchy_types::access::AccessSignature,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        let ownership = Self::ownership_envelope_for_signature(access);
         let param_kinds: Vec<Kind> = self
             .fn_params
             .get(name)
@@ -4994,7 +5013,11 @@ impl<'types> Codegen<'types> {
                 None => w,
             });
         }
-        if let Some(own_index) = self.summaries.own_abi(name) {
+        if let Some(own_index) = self
+            .summaries
+            .own_abi(name)
+            .filter(|index| ownership.own_capacity_param == Some(*index))
+        {
             // (RFC-0033 R3) The callee carries the own-ABI: a trailing i32 cap
             // PARAM and an extra i32 cap RESULT. A PLAIN call (not the
             // `x = f(move x)` self-call that `self_own_call` threads) derives a
@@ -5012,7 +5035,7 @@ impl<'types> Codegen<'types> {
             let result_kind = self.fn_ret.get(name).copied().unwrap_or(Kind::I32);
             let result_tmp = call_result_tmp(result_kind);
             let mut dests = vec![result_tmp.clone()];
-            if self.fn_unique_ret.contains(name) {
+            if ownership.unique_capacity_result {
                 dests.push(UNIQUE_RESULT_CAP_TMP.to_string());
             }
             dests.push("__witchy_owncap".to_string());
@@ -5025,7 +5048,7 @@ impl<'types> Codegen<'types> {
                 N::Push(W::GetLocal(result_tmp)),
             ]));
         }
-        if self.fn_unique_ret.contains(name) {
+        if ownership.unique_capacity_result {
             use witchy_wir::wir::{WirExpr as W, WirNode as N};
             let result_kind = self.fn_ret.get(name).copied().unwrap_or(Kind::I32);
             let result_tmp = call_result_tmp(result_kind);
@@ -5271,9 +5294,10 @@ impl<'types> Codegen<'types> {
         name: &str,
         args: &[Expr],
         result_kind: Kind,
+        access: &witchy_types::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
-        let convs = self.fn_conventions.get(name).cloned()?;
+        let ownership = Self::ownership_envelope_for_signature(access);
         let param_kinds: Vec<Kind> = self
             .fn_params
             .get(name)
@@ -5287,7 +5311,9 @@ impl<'types> Codegen<'types> {
         let mut places = Vec::new();
         let mut next_coordinate = 0;
         for (i, arg) in args.iter().enumerate() {
-            let is_var = convs.get(i) == Some(&Convention::Var);
+            let is_var = access.params().get(i).is_some_and(|param| {
+                param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+            });
             let ak = if is_var {
                 param_kinds.get(i).copied().unwrap_or_else(|| self.kind_of(arg))
             } else {
@@ -5331,18 +5357,7 @@ impl<'types> Codegen<'types> {
                 None => w,
             });
         }
-        let cap_param_indices: Vec<usize> = self
-            .fn_params
-            .get(name)
-            .into_iter()
-            .flatten()
-            .enumerate()
-            .filter_map(|(index, param)| {
-                (convs.get(index) == Some(&Convention::Var)
-                    && param.ty.as_ref().is_some_and(type_has_capacity_token))
-                .then_some(index)
-            })
-            .collect();
+        let cap_param_indices = ownership.var_capacity_params.clone();
         let mut cap_dests = Vec::with_capacity(cap_param_indices.len());
         for (ordinal, index) in cap_param_indices.iter().copied().enumerate() {
             let tracked_root = match args.get(index) {
@@ -5366,7 +5381,7 @@ impl<'types> Codegen<'types> {
             return None;
         }
         let mut dests = vec![result_tmp.clone()];
-        if self.fn_unique_ret.contains(name) {
+        if ownership.unique_capacity_result {
             dests.push(UNIQUE_RESULT_CAP_TMP.to_string());
         }
         for (index, (_, kind)) in places.iter().enumerate() {
@@ -5791,6 +5806,8 @@ impl<'types> Codegen<'types> {
         body: &Block,
         signature: &(Vec<Kind>, Kind),
         result_ty: Option<&Type>,
+        access: Option<&witchy_types::access::AccessSignature>,
+        ownership: &ClosureOwnershipEnvelope,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         // Only a WIR-collecting scope lowers lambdas; otherwise bail so the
@@ -5848,6 +5865,8 @@ impl<'types> Codegen<'types> {
                 CapMode::Env(env_struct_id),
                 signature,
                 result_ty,
+                access,
+                ownership,
             )?;
             // `build_lambda_wir_func` names itself `__lamw{len}` from the length at
             // its START, but a NESTED lambda lowered during the build pushes to
@@ -5901,6 +5920,8 @@ impl<'types> Codegen<'types> {
         body: &Block,
         signature: &(Vec<Kind>, Kind),
         result_ty: Option<&Type>,
+        access: Option<&witchy_types::access::AccessSignature>,
+        ownership: &ClosureOwnershipEnvelope,
     ) -> Option<ThreadedClosure> {
         if !self.collect_wir {
             return None;
@@ -5934,6 +5955,8 @@ impl<'types> Codegen<'types> {
                 CapMode::Threaded,
                 signature,
                 result_ty,
+                access,
+                ownership,
             )?;
             // Rename to the real push index (a nested lambda lowered during the build may
             // have shifted the length), mirroring `lower_lambda`.
@@ -5965,40 +5988,48 @@ impl<'types> Codegen<'types> {
         cap_mode: CapMode,
         signature: &(Vec<Kind>, Kind),
         result_ty: Option<&Type>,
+        access: Option<&witchy_types::access::AccessSignature>,
+        ownership: &ClosureOwnershipEnvelope,
     ) -> Option<witchy_wir::wir::WirFunc> {
         use witchy_wir::wir::{WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
         let index = self.lambda_wir_funcs.len();
         let saved = self.swap_out_scope();
         self.cur_fn_var_params = params
             .iter()
-            .filter(|p| p.convention == Convention::Var)
-            .map(|p| p.name.clone())
-            .collect();
-        self.cur_fn_var_cap_params = params
-            .iter()
-            .filter(|p| {
-                p.convention == Convention::Var
-                    && p.ty.as_ref().is_some_and(type_has_capacity_token)
+            .enumerate()
+            .filter(|(index, param)| {
+                access.map_or(param.convention == Convention::Var, |signature| {
+                    signature.params().get(*index).is_some_and(|access| {
+                        access.kind()
+                            == witchy_types::access::AccessKind::ExclusiveWriteback
+                    })
+                })
             })
-            .map(|p| p.name.clone())
+            .map(|(_, p)| p.name.clone())
             .collect();
-        let lambda_own_param = params
+        self.cur_fn_var_cap_params = ownership
+            .var_capacity_params
             .iter()
-            .find(|p| {
-                p.convention == Convention::Own
-                    && p.ty.as_ref().is_some_and(type_has_capacity_token)
-            })
-            .map(|p| p.name.clone());
+            .filter_map(|index| params.get(*index).map(|param| param.name.clone()))
+            .collect();
+        let lambda_own_param = ownership
+            .own_capacity_param
+            .and_then(|index| params.get(index))
+            .map(|param| param.name.clone());
         self.cur_fn_var = !self.cur_fn_var_params.is_empty();
         // Install declared parameter shape metadata. Exact runtime kinds are
         // replaced from the checker-resolved function signature below.
-        for p in params {
+        for (index, p) in params.iter().enumerate() {
+            let resolved_type = access
+                .and_then(|signature| signature.params().get(index))
+                .map(witchy_types::access::AccessParam::ty)
+                .or(p.ty.as_ref());
             self.locals.insert(p.name.clone(), Kind::I32);
-            if let Some(t) = &p.ty {
+            if let Some(t) = resolved_type {
                 self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
                 self.local_types.insert(p.name.clone(), t.clone());
             }
-            match p.ty.as_ref().map(Type::unqualified) {
+            match resolved_type.map(Type::unqualified) {
                 Some(Type::Named(n, _)) if self.record_fields.contains_key(n) => {
                     self.local_records.insert(p.name.clone(), n.clone());
                 }
@@ -6025,10 +6056,16 @@ impl<'types> Codegen<'types> {
         for capture in cap_info {
             self.install_capture_info(capture);
         }
-        for p in params {
-            let k = p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32);
+        for (index, p) in params.iter().enumerate() {
+            let resolved_type = access
+                .and_then(|signature| signature.params().get(index))
+                .map(witchy_types::access::AccessParam::ty)
+                .or(p.ty.as_ref());
+            let k = resolved_type
+                .map(|ty| self.kind_for_type(ty))
+                .unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
-            if let Some(ty) = &p.ty
+            if let Some(ty) = resolved_type
                 && let Type::Fn(_, ret, _) = ty.unqualified()
             {
                 self.local_fn_ret_kind.insert(p.name.clone(), self.kind_for_type(ret));
@@ -6050,9 +6087,11 @@ impl<'types> Codegen<'types> {
         self.cur_fn_own_param = lambda_own_param.clone();
         self.begin_unit(body);
         self.cur_fn_ret_kind = if typed_abi { block_kind } else { Kind::I64 };
-        self.cur_fn_ret_ty = result_ty.cloned();
+        self.cur_fn_ret_ty = access
+            .map(|signature| signature.result().ty().clone())
+            .or_else(|| result_ty.cloned());
         self.cur_fn_ret_slot = !typed_abi;
-        self.cur_fn_unique_ret = result_ty.is_some_and(type_is_unique_capacity);
+        self.cur_fn_unique_ret = ownership.unique_capacity_result;
         let saved_apply = self.apply_level;
         let saved_existential_call = self.existential_call_level;
         let saved_assign = self.assign_level;

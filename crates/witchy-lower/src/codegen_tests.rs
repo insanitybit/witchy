@@ -418,6 +418,19 @@
     }
 
     #[test]
+    fn inferred_callable_lambda_param_keeps_its_checked_result_width() {
+        let module = parse_module(
+            "fn strict() -> Int:\n    0\n\n\
+             fn invoke(callback: fn(fn() -> Int) -> Int) -> Int:\n    callback(strict)\n\n\
+             fn main() -> Int:\n    invoke(fn(callback): callback())\n",
+        )
+        .expect("parse inferred callable lambda");
+
+        compile_module_binary(&module)
+            .expect_lowered("checked callable metadata keeps the nested Int result as i64");
+    }
+
+    #[test]
     fn closure_assigning_captured_var_is_rejected() {
         // By-value capture cannot propagate a write back to the outer binding, so
         // assigning a captured variable is rejected rather than diverging.
@@ -997,6 +1010,52 @@ fn main() -> Int:
             indirect_calls >= 2,
             "both first-class calls must retain table dispatch in the inverse configuration"
         );
+    }
+
+    #[test]
+    fn named_function_value_unique_result_keeps_its_capacity_result() {
+        let src = r#"
+mode opt
+
+fn build() -> unique List(Int):
+    [1, 2]
+
+fn main() -> Int:
+    let make = build
+    var xs = make()
+    list.length(xs) * 10 + list.at(xs, 1)
+"#;
+        let indirect = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::ClosureElide)
+            .without(witchy_syntax::opt::Opt::DirectCall);
+        witchy_syntax::opt::set_for_tests(Some(indirect));
+        let result = run_int(src);
+        witchy_syntax::opt::set_for_tests(None);
+        assert_eq!(result, 22);
+    }
+
+    #[test]
+    fn named_function_value_var_capacity_keeps_its_writeback_result() {
+        let src = r#"
+mode opt
+
+fn append(var xs: unique List(Int)) -> Nil:
+    xs = [1, 2, 3]
+    return
+
+fn main() -> Int:
+    var xs = [0]
+    let update = append
+    update(xs)
+    list.length(xs) * 10 + list.at(xs, 2)
+"#;
+        let indirect = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::ClosureElide)
+            .without(witchy_syntax::opt::Opt::DirectCall);
+        witchy_syntax::opt::set_for_tests(Some(indirect));
+        let result = run_int(src);
+        witchy_syntax::opt::set_for_tests(None);
+        assert_eq!(result, 33);
     }
 
     #[test]

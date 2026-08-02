@@ -3154,45 +3154,67 @@ fn no_copy_qualified_type(ty: &Type) -> bool {
 }
 
 fn callable_no_copy_contract(ty: &Option<Type>) -> Option<(Vec<usize>, bool)> {
-    let Some(Type::Fn(params, ret, conventions)) = ty.as_ref().map(Type::unqualified) else {
-        return None;
-    };
-    let required = params
+    let signature = witchy_types::access::AccessSignature::from_function_type(ty.as_ref()?).ok()?;
+    Some(no_copy_contract(&signature)).filter(|(required, unique_result)| {
+        !required.is_empty() || *unique_result
+    })
+}
+
+fn no_copy_contract(
+    signature: &witchy_types::access::AccessSignature,
+) -> (Vec<usize>, bool) {
+    use witchy_types::access::{AccessKind, AccessQualifier};
+
+    let required = signature
+        .params()
         .iter()
         .enumerate()
         .filter_map(|(index, param)| {
-            (conventions.get(index) == Some(&Convention::Var)
-                && no_copy_qualified_type(param))
+            (param.kind() == AccessKind::ExclusiveWriteback
+                && param.qualifiers().iter().any(|qualifier| {
+                    matches!(qualifier, AccessQualifier::Unique | AccessQualifier::LocalUnique)
+                }))
             .then_some(index)
         })
         .collect::<Vec<_>>();
-    let unique_result = matches!(
-        ret.as_ref(),
-        Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner)
-            if matches!(inner.unqualified(), Type::Named(name, _)
-                if matches!(name.as_str(), "List" | "Dict"))
-    );
-    (!required.is_empty() || unique_result).then_some((required, unique_result))
+    let unique_result = signature.result().ownership_output().is_some()
+        && matches!(signature.result().ty().unqualified(), Type::Named(name, _)
+            if matches!(name.as_str(), "List" | "Dict"));
+    (required, unique_result)
 }
 
-fn no_copy_requirements(module: &Module) -> HashMap<String, Vec<usize>> {
+fn no_copy_requirements(
+    module: &Module,
+    access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
+) -> HashMap<String, Vec<usize>> {
+    use witchy_types::access::AccessQualifier;
+
     module
         .items
         .iter()
         .filter_map(|item| match item {
             Item::Function(function) => {
                 let private_structural = private_structural_helper(&function.name);
-                let required: Vec<usize> = function
-                    .params
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, param)| {
-                        (no_copy_qualified(&param.ty)
-                            && (param.convention == Convention::Var
-                                || (private_structural && index == 0)))
-                            .then_some(index)
+                let signature = access
+                    .and_then(|facts| facts.declaration(&function.name).cloned())
+                    .or_else(|| {
+                        witchy_types::access::AccessSignature::from_function(function).ok()
+                    })?;
+                let mut required = no_copy_contract(&signature).0;
+                if private_structural
+                    && signature.params().first().is_some_and(|param| {
+                        param.qualifiers().iter().any(|qualifier| {
+                            matches!(
+                                qualifier,
+                                AccessQualifier::Unique | AccessQualifier::LocalUnique
+                            )
+                        })
                     })
-                    .collect();
+                    && !required.contains(&0)
+                {
+                    required.push(0);
+                }
+                required.sort_unstable();
                 (!required.is_empty()).then(|| (function.name.clone(), required))
             }
             _ => None,
@@ -3200,23 +3222,22 @@ fn no_copy_requirements(module: &Module) -> HashMap<String, Vec<usize>> {
         .collect()
 }
 
-fn unique_capacity_results(module: &Module) -> HashSet<String> {
+fn unique_capacity_results(
+    module: &Module,
+    access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
+) -> HashSet<String> {
     module
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Function(function)
-                if function.ret.as_ref().is_some_and(|ty| {
-                    matches!(
-                        ty,
-                        Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner)
-                            if matches!(inner.unqualified(), Type::Named(name, _)
-                                if matches!(name.as_str(), "List" | "Dict"))
-                    )
-                }) =>
-            {
-                Some(function.name.clone())
-            }
+            Item::Function(function) => access
+                .and_then(|facts| facts.declaration(&function.name).cloned())
+                .or_else(|| {
+                    witchy_types::access::AccessSignature::from_function(function).ok()
+                })
+                .as_ref()
+                .map(no_copy_contract)
+                .and_then(|(_, unique_result)| unique_result.then(|| function.name.clone())),
             _ => None,
         })
         .collect()
@@ -3864,13 +3885,27 @@ pub fn module_no_copy_misses(module: &Module) -> Vec<NoCopyMiss> {
     // ordinary-call AST so `d.insert(...)` and `dict.insert(d, ...)` consult one
     // signature contract instead of maintaining a method-name census here.
     let lowered = witchy_types::traits::lower(module.clone());
-    let module = &lowered;
-    let required = no_copy_requirements(module);
+    let typed = witchy_types::typeck::annotate_checked(lowered.clone()).ok();
+    let access = typed.as_ref().and_then(|typed| {
+        witchy_types::access::checked_facts(typed.module(), typed.table()).ok()
+    });
+    let module = typed
+        .as_ref()
+        .map(witchy_types::typeck::TypedModule::module)
+        .unwrap_or(&lowered);
+    module_no_copy_misses_with_access(module, access.as_ref())
+}
+
+fn module_no_copy_misses_with_access(
+    module: &Module,
+    access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
+) -> Vec<NoCopyMiss> {
+    let required = no_copy_requirements(module, access);
     if required.is_empty() {
         return Vec::new();
     }
     let summaries = Summaries::of_module(module);
-    let unique_results = unique_capacity_results(module);
+    let unique_results = unique_capacity_results(module, access);
     let loans = match witchy_types::loans::facts(module) {
         Ok(loans) => loans,
         // Type checking reports the authoritative loan error first.
