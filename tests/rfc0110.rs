@@ -53,7 +53,7 @@ const EXPECTED: [&str; 4] = ["210", "220", "230", "257"];
 fn compiled_output(
     checked: &witchy_types::pipeline::CheckedModule,
     optimizations: OptSet,
-) -> Vec<String> {
+) -> (Vec<String>, i64) {
     opt::set_for_tests(Some(optimizations));
     let bytes = codegen::compile_checked_module_binary(checked)
         .expect_lowered("compile RFC-0110 access matrix");
@@ -68,7 +68,8 @@ fn compiled_output(
         )
         .expect("spawn RFC-0110 access matrix");
     actor.run().expect("run RFC-0110 access matrix");
-    actor.output()
+    let indirect_ownership_calls = actor.indirect_ownership_calls().unwrap_or(0);
+    (actor.output(), indirect_ownership_calls)
 }
 
 #[test]
@@ -80,12 +81,16 @@ fn access_matrix_matches_independent_oracle_across_every_deopt() {
         .expect("interpret RFC-0110 access matrix");
     assert_eq!(interpreted, EXPECTED, "the independent semantic oracle changed");
 
-    let all = compiled_output(&checked, OptSet::all());
+    let (all, _) = compiled_output(&checked, OptSet::all());
     assert_eq!(all, EXPECTED, "optimized Wasm changed the access contract");
-    let none = compiled_output(&checked, OptSet::none());
+    let (none, none_indirect_calls) = compiled_output(&checked, OptSet::none());
     assert_eq!(none, EXPECTED, "forced de-opt Wasm changed the access contract");
+    assert!(
+        none_indirect_calls >= 3,
+        "the de-opt matrix must execute the function value, lambda, and trait ownership envelopes through real tables"
+    );
     for lever in Opt::ALL {
-        let actual = compiled_output(&checked, OptSet::all().without(lever));
+        let (actual, _) = compiled_output(&checked, OptSet::all().without(lever));
         assert_eq!(
             actual,
             EXPECTED,
