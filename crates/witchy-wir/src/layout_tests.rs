@@ -477,13 +477,30 @@ fn layout_bundle_rejects_unknown_versions_truncation_and_dangling_roots() {
 fn host_layout_policy_has_only_exact_counted_marshal_or_reject_outcomes() {
     let exact = LayoutId::from_bytes([1; 32]);
     let other = LayoutId::from_bytes([2; 32]);
-    let adaptable = HostLayoutPolicy::new([exact], true);
+    let adaptable = HostLayoutPolicy::new([exact]).with_marshal(other, exact);
     assert_eq!(adaptable.decide(exact), HostLayoutDecision::Exact);
-    assert_eq!(adaptable.decide(other), HostLayoutDecision::Marshal);
+    assert_eq!(
+        adaptable.decide(other),
+        HostLayoutDecision::Marshal { accepted: exact }
+    );
 
-    let strict = HostLayoutPolicy::new([exact], false);
+    let strict = HostLayoutPolicy::new([exact]);
     assert_eq!(strict.decide(exact), HostLayoutDecision::Exact);
     assert_eq!(strict.decide(other), HostLayoutDecision::Reject);
+
+    let unknown = LayoutId::from_bytes([9; 32]);
+    assert_eq!(
+        adaptable.decide(unknown),
+        HostLayoutDecision::Reject,
+        "an explicit marshal adapter never authorizes unrelated layouts"
+    );
+
+    let unaccepted_target = HostLayoutPolicy::new([exact]).with_marshal(other, unknown);
+    assert_eq!(
+        unaccepted_target.decide(other),
+        HostLayoutDecision::Reject,
+        "a marshal target must itself be an exact host-supported layout"
+    );
 }
 
 #[test]

@@ -5,7 +5,7 @@
 //! validation and fails before a boundary can observe an unknown schema,
 //! digest, dependency, or non-canonical encoding.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::{LAYOUT_SCHEMA_VERSION, LayoutError, LayoutId, LayoutInterner, LayoutKind};
@@ -149,32 +149,49 @@ impl LayoutBundle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostLayoutDecision {
     Exact,
-    Marshal,
+    Marshal { accepted: LayoutId },
     Reject,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostLayoutPolicy {
     exact: BTreeSet<LayoutId>,
-    allow_marshal: bool,
+    marshal: BTreeMap<LayoutId, LayoutId>,
 }
 
 impl HostLayoutPolicy {
-    pub fn new(
-        exact: impl IntoIterator<Item = LayoutId>,
-        allow_marshal: bool,
-    ) -> Self {
-        Self { exact: exact.into_iter().collect(), allow_marshal }
+    pub fn new(exact: impl IntoIterator<Item = LayoutId>) -> Self {
+        Self { exact: exact.into_iter().collect(), marshal: BTreeMap::new() }
+    }
+
+    /// Register one checked marshal adapter from the requested guest layout to
+    /// the descriptor the host adapter actually consumes. Unknown layouts stay
+    /// rejected; a policy cannot claim that an arbitrary descriptor is
+    /// convertible without naming the exact accepted target. The target must
+    /// also appear in this policy's exact set or the decision fails closed.
+    pub fn with_marshal(mut self, requested: LayoutId, accepted: LayoutId) -> Self {
+        self.marshal.insert(requested, accepted);
+        self
     }
 
     pub fn decide(&self, requested: LayoutId) -> HostLayoutDecision {
         if self.exact.contains(&requested) {
             HostLayoutDecision::Exact
-        } else if self.allow_marshal {
-            HostLayoutDecision::Marshal
+        } else if let Some(accepted) = self
+            .marshal
+            .get(&requested)
+            .filter(|accepted| self.exact.contains(accepted))
+        {
+            HostLayoutDecision::Marshal { accepted: *accepted }
         } else {
             HostLayoutDecision::Reject
         }
+    }
+}
+
+impl Default for HostLayoutPolicy {
+    fn default() -> Self {
+        Self::new([])
     }
 }
 

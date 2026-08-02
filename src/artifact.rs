@@ -286,10 +286,9 @@ mod tests {
         let error = layout_bundle(&unknown).expect_err("unknown schema cannot be ignored");
         assert!(error.contains("unsupported layout schema 2"), "{error}");
 
-        let policy = witchy_wir::layout::HostLayoutPolicy::new(
-            [LayoutId::from_bytes([1; 32])],
-            false,
-        );
+        let policy = witchy_wir::layout::HostLayoutPolicy::new([
+            LayoutId::from_bytes([1; 32]),
+        ]);
         assert_eq!(
             policy.decide(LayoutId::from_bytes([2; 32])),
             witchy_wir::layout::HostLayoutDecision::Reject
