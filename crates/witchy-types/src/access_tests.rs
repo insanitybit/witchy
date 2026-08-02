@@ -461,5 +461,69 @@ fn checked_query_exposes_declaration_and_exact_call_access_identities() {
             _ => None,
         })
         .expect("caller call expression");
-    assert_eq!(facts.call_at(call), Some(consume));
+    assert_eq!(facts.call_at(typed.module(), call), Some(consume));
+}
+
+#[test]
+fn checked_query_is_tied_to_its_exact_typed_module() {
+    fn caller_expression(module: &witchy_syntax::ast::Module) -> &witchy_syntax::ast::Expr {
+        module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                witchy_syntax::ast::Item::Function(function) if function.name == "caller" => {
+                    match function.body.stmts.last() {
+                        Some(witchy_syntax::ast::Stmt::Expr(expression)) => Some(expression),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .expect("caller expression")
+    }
+
+    let source = "fn id(x: Int) -> Int:\n    x\n\n\
+                  fn caller() -> Int:\n    id(1)\n\n\
+                  fn main():\n    return\n";
+    let first = witchy_syntax::parser::parse_module(source).expect("parse first module");
+    let first = crate::typeck::annotate_checked(first).expect("annotate first module");
+    let facts = checked_facts(first.module(), first.table()).expect("build first facts");
+    let first_call = caller_expression(first.module());
+    assert!(facts.call_at(first.module(), first_call).is_some());
+
+    let second = witchy_syntax::parser::parse_module(source).expect("parse second module");
+    let second = crate::typeck::annotate_checked(second).expect("annotate second module");
+    let second_call = caller_expression(second.module());
+    assert!(
+        facts.call_at(second.module(), second_call).is_none(),
+        "an address-keyed query must reject a different AST owner"
+    );
+}
+
+#[test]
+fn build_annotation_keys_types_to_the_returned_module_allocation() {
+    let module = witchy_syntax::parser::parse_module(
+        "fn main() -> Int:\n    let value = 1\n    value\n",
+    )
+    .expect("parse build module");
+    let typed = crate::typeck::annotate_checked_build(module).expect("annotate build module");
+    let tail = typed
+        .module()
+        .items
+        .iter()
+        .find_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) if function.name == "main" => {
+                match function.body.stmts.last() {
+                    Some(witchy_syntax::ast::Stmt::Expr(expression)) => Some(expression),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .expect("build tail expression");
+    assert!(
+        typed.table().type_of(tail).is_some(),
+        "the build TypeTable must address the exact returned AST"
+    );
+    assert!(typed.table().function_type("main").is_some());
 }

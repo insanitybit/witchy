@@ -457,6 +457,58 @@
     }
 
     #[test]
+    fn callable_access_contract_survives_list_iteration() {
+        check_str(
+            "mode opt\n\n\
+             fn strict(xs: unique List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn use(f: fn(unique List(Int)) -> Int) -> Nil:\n    return\n\n\
+             fn main():\n\
+             \x20   let callbacks: List(fn(unique List(Int)) -> Int) = [strict]\n\
+             \x20   for f in callbacks:\n        use(f)\n",
+        )
+        .expect("a list iterator binds the callable access identity of its element");
+    }
+
+    #[test]
+    fn callable_access_contract_survives_option_patterns() {
+        let prefix = "fn id(x: Int) -> Int:\n    x\n\n\
+                      fn use(f: fn(Int) -> Int) -> Nil:\n    return\n\n";
+        check_str(&format!(
+            "{prefix}fn main():\n\
+             \x20   let callback: Option(fn(Int) -> Int) = Some(id)\n\
+             \x20   match callback:\n\
+             \x20       Some(f) -> use(f)\n\
+             \x20       None -> return\n"
+        ))
+        .expect("a standard Option match binds its callable payload identity");
+        check_str(&format!(
+            "{prefix}fn main():\n\
+             \x20   let callback: Option(fn(Int) -> Int) = Some(id)\n\
+             \x20   while let Some(f) = callback:\n        use(f)\n"
+        ))
+        .expect("while let binds its callable payload identity");
+    }
+
+    #[test]
+    fn inferred_lambda_result_preserves_callable_access_identity() {
+        let prefix = "mode opt\n\n\
+                      fn strict(xs: unique List(Int)) -> Int:\n    list.length(xs)\n\n\
+                      fn use(f: fn(unique List(Int)) -> Int) -> Nil:\n    return\n\n";
+        check_str(&format!(
+            "{prefix}fn main():\n\
+             \x20   let make = fn(): strict\n\
+             \x20   use(make())\n"
+        ))
+        .expect("an inferred expression result retains its callable access identity");
+        check_str(&format!(
+            "{prefix}fn main():\n\
+             \x20   let make = fn():\n        return strict\n\
+             \x20   use(make())\n"
+        ))
+        .expect("an inferred explicit return retains its callable access identity");
+    }
+
+    #[test]
     fn borrowed_function_types_require_opt_mode_and_bound_outputs() {
         let no_opt = "fn apply(f: fn(View(String, 'a)) -> View(String, 'a), s: String) -> String:\n    f(s)\n";
         let err = check_str(no_opt).expect_err("borrowed function type requires mode opt");

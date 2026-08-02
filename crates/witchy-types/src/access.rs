@@ -185,6 +185,31 @@ pub struct AccessSignature {
 }
 
 impl AccessSignature {
+    fn as_type(&self) -> Type {
+        let params = self.params.iter().map(|param| param.ty.clone()).collect();
+        let conventions = self
+            .params
+            .iter()
+            .map(|param| match param.kind {
+                AccessKind::OwnedImmutable => Convention::Let,
+                AccessKind::SharedBorrow => Convention::Borrow,
+                AccessKind::ExclusiveWriteback => Convention::Var,
+                AccessKind::Consuming => Convention::Own,
+            })
+            .collect();
+        let mut ty = Type::Fn(params, Box::new(self.result.ty.clone()), conventions);
+        for qualifier in self.callable_qualifiers.iter().rev() {
+            let qualifier = match qualifier {
+                AccessQualifier::Frozen => TypeQual::Frozen,
+                AccessQualifier::Unique => TypeQual::Unique,
+                AccessQualifier::LocalUnique => TypeQual::LocalUnique,
+                AccessQualifier::Borrow(lifetime) => TypeQual::Borrow(lifetime.clone()),
+            };
+            ty = Type::Qualified(qualifier, Box::new(ty));
+        }
+        ty
+    }
+
     /// Derive the signature of a checked declaration.
     ///
     /// Checked declarations with inferred parameter types still retain `None`
@@ -1064,6 +1089,54 @@ impl AccessFlow {
         }
     }
 
+    /// Reapply the access identity carried by this flow to a finalized type
+    /// shape. Finalized checker types deliberately erase ownership qualifiers;
+    /// inferred aggregate and closure results recover them from the checked
+    /// value flow instead of silently publishing the erased shape.
+    fn materialize_type(&self, ty: &Type) -> Type {
+        match (self, ty.unqualified()) {
+            (Self::Callable(signature), Type::Fn(_, _, _)) => signature.as_type(),
+            (Self::Product(actual), Type::Tuple(expected)) if actual.len() == expected.len() => {
+                Type::Tuple(
+                    actual
+                        .iter()
+                        .zip(expected)
+                        .map(|(actual, expected)| actual.materialize_type(expected))
+                        .collect(),
+                )
+            }
+            (Self::Sequence(actual), Type::Named(name, expected)) if expected.len() == 1 => {
+                Type::Named(
+                    name.clone(),
+                    vec![actual.materialize_type(&expected[0])],
+                )
+            }
+            (
+                Self::Named { name: actual_name, arguments: actual, dynamic: false },
+                Type::Named(expected_name, expected),
+            ) if actual_name == expected_name && actual.len() == expected.len() => Type::Named(
+                expected_name.clone(),
+                actual
+                    .iter()
+                    .zip(expected)
+                    .map(|(actual, expected)| actual.materialize_type(expected))
+                    .collect(),
+            ),
+            (
+                Self::Named { name: actual_name, arguments: actual, dynamic: true },
+                Type::Dyn(expected_name, expected),
+            ) if actual_name == expected_name && actual.len() == expected.len() => Type::Dyn(
+                expected_name.clone(),
+                actual
+                    .iter()
+                    .zip(expected)
+                    .map(|(actual, expected)| actual.materialize_type(expected))
+                    .collect(),
+            ),
+            _ => ty.clone(),
+        }
+    }
+
     fn verify_exact(&self, expected: &Self, context: &str) -> Result<(), AccessFlowError> {
         if !expected.has_callable_contract() {
             return Ok(());
@@ -1192,15 +1265,22 @@ impl AccessFlow {
 /// Finalized access-signature facts keyed to the exact typed AST used to build
 /// them. The owning [`crate::typeck::TypedModule`] must remain alive while these
 /// address-keyed queries are used.
-#[derive(Default)]
-pub struct CheckedAccessFacts {
+pub struct CheckedAccessFacts<'module> {
+    owner: &'module Module,
     values: HashMap<usize, AccessFlow>,
     declarations: HashMap<String, AccessSignature>,
     calls: HashMap<usize, AccessSignature>,
 }
 
-impl CheckedAccessFacts {
-    pub fn callable_at(&self, expression: &Expr) -> Option<&AccessSignature> {
+impl CheckedAccessFacts<'_> {
+    fn owns(&self, module: &Module) -> bool {
+        std::ptr::eq(self.owner, module)
+    }
+
+    pub fn callable_at(&self, module: &Module, expression: &Expr) -> Option<&AccessSignature> {
+        if !self.owns(module) {
+            return None;
+        }
         match self.values.get(&(expression as *const Expr as usize)) {
             Some(AccessFlow::Callable(signature)) => Some(signature),
             _ => None,
@@ -1214,7 +1294,10 @@ impl CheckedAccessFacts {
 
     /// The finalized direct, indirect, or existential callable selected at one
     /// exact checked call expression.
-    pub fn call_at(&self, expression: &Expr) -> Option<&AccessSignature> {
+    pub fn call_at(&self, module: &Module, expression: &Expr) -> Option<&AccessSignature> {
+        if !self.owns(module) {
+            return None;
+        }
         self.calls.get(&(expression as *const Expr as usize))
     }
 }
@@ -1258,7 +1341,8 @@ struct AccessVerifier<'a> {
     functions: HashMap<String, Function>,
     types: HashMap<String, TypeDef>,
     variants: HashMap<String, Vec<(String, Variant)>>,
-    facts: CheckedAccessFacts,
+    facts: CheckedAccessFacts<'a>,
+    return_frames: Vec<Vec<AccessFlow>>,
 }
 
 impl<'a> AccessVerifier<'a> {
@@ -1294,11 +1378,17 @@ impl<'a> AccessVerifier<'a> {
             functions,
             types,
             variants,
-            facts: CheckedAccessFacts::default(),
+            facts: CheckedAccessFacts {
+                owner: module,
+                values: HashMap::new(),
+                declarations: HashMap::new(),
+                calls: HashMap::new(),
+            },
+            return_frames: Vec::new(),
         }
     }
 
-    fn verify(mut self) -> Result<CheckedAccessFacts, AccessFlowError> {
+    fn verify(mut self) -> Result<CheckedAccessFacts<'a>, AccessFlowError> {
         for item in &self.module.items {
             let Item::Function(function) = item else { continue };
             self.verify_function(function)?;
@@ -1581,6 +1671,73 @@ impl<'a> AccessVerifier<'a> {
             .or_else(|| (candidates.len() == 1).then(|| &candidates[0]))
     }
 
+    fn builtin_constructor_flow(
+        constructor: &str,
+        expression_type: &Type,
+        arguments: &[AccessFlow],
+    ) -> Option<AccessFlow> {
+        let Type::Named(type_name, type_arguments) = expression_type.unqualified() else {
+            return None;
+        };
+        let constructor = constructor.rsplit('.').next().unwrap_or(constructor);
+        let type_leaf = type_name.rsplit('.').next().unwrap_or(type_name);
+        let access_arguments = match (type_leaf, constructor, type_arguments.len(), arguments) {
+            ("Option", "Some", 1, [value]) => vec![value.clone()],
+            ("Option", "None", 1, []) => vec![AccessFlow::Unknown],
+            ("Result", "Ok", 2, [value]) => vec![value.clone(), AccessFlow::Unknown],
+            ("Result", "Err", 2, [error]) => vec![AccessFlow::Unknown, error.clone()],
+            _ => return None,
+        };
+        Some(AccessFlow::Named {
+            name: type_name.clone(),
+            arguments: access_arguments,
+            dynamic: false,
+        })
+    }
+
+    fn builtin_pattern_fields(
+        constructor: &str,
+        value: &AccessFlow,
+        value_type: Option<&Type>,
+    ) -> Option<Vec<(AccessFlow, Option<Type>)>> {
+        let AccessFlow::Named {
+            name: type_name,
+            arguments: access_arguments,
+            dynamic: false,
+        } = value
+        else {
+            return None;
+        };
+        let constructor = constructor.rsplit('.').next().unwrap_or(constructor);
+        let type_leaf = type_name.rsplit('.').next().unwrap_or(type_name);
+        let type_arguments = value_type.and_then(|value_type| match value_type.unqualified() {
+            Type::Named(name, arguments) if name == type_name => Some(arguments.as_slice()),
+            _ => None,
+        });
+        let field_indexes: &[usize] = match (type_leaf, constructor, access_arguments.len()) {
+            ("Option", "Some", 1) => &[0],
+            ("Option", "None", 1) => &[],
+            ("Result", "Ok", 2) => &[0],
+            ("Result", "Err", 2) => &[1],
+            _ => return None,
+        };
+        Some(
+            field_indexes
+                .iter()
+                .map(|&index| {
+                    let ty = type_arguments
+                        .and_then(|arguments| arguments.get(index))
+                        .cloned();
+                    let flow = access_arguments
+                        .get(index)
+                        .cloned()
+                        .unwrap_or(AccessFlow::Unknown);
+                    (flow, ty)
+                })
+                .collect(),
+        )
+    }
+
     fn constructor_flow(
         &self,
         constructor: &str,
@@ -1588,6 +1745,11 @@ impl<'a> AccessVerifier<'a> {
         arguments: &[AccessFlow],
     ) -> Result<AccessFlow, AccessFlowError> {
         let Some((type_name, variant)) = self.variant_for(constructor, expression_type) else {
+            if let Some(flow) =
+                Self::builtin_constructor_flow(constructor, expression_type, arguments)
+            {
+                return Ok(flow);
+            }
             return AccessFlow::from_type(expression_type).map_err(Self::signature_error);
         };
         let substitutions = self.nominal_substitutions(type_name, expression_type);
@@ -1780,6 +1942,9 @@ impl<'a> AccessVerifier<'a> {
                         Some(value) => self.eval_expr(value, environment, return_expected)?,
                         None => AccessFlow::None,
                     };
+                    if let Some(frame) = self.return_frames.last_mut() {
+                        frame.push(actual.clone());
+                    }
                     actual.verify_directed(return_expected, "returned function value")?;
                     AccessFlow::None
                 }
@@ -1833,21 +1998,27 @@ impl<'a> AccessVerifier<'a> {
             }
             Pattern::Ctor { name: constructor, args }
             | Pattern::AnonCtor { tag: constructor, args } => {
-                let Some(value_type) = value_type else { return Ok(()) };
-                let Some((type_name, variant)) = self.variant_for(constructor, value_type) else {
-                    return Ok(());
-                };
-                let substitutions = self.nominal_substitutions(type_name, value_type);
-                let access_arguments = self.nominal_access_arguments(type_name, value);
-                for (index, pattern) in args.iter().enumerate() {
-                    let Some(declared) = variant.fields.get(index) else { continue };
-                    let flow = self.flow_for_declared_type(
-                        declared,
-                        &substitutions,
-                        &access_arguments,
-                    )?;
-                    let field_type = Self::substitute_type(declared, &substitutions);
-                    self.bind_pattern(pattern, &flow, Some(&field_type), environment)?;
+                if let Some(value_type) = value_type
+                    && let Some((type_name, variant)) = self.variant_for(constructor, value_type)
+                {
+                    let substitutions = self.nominal_substitutions(type_name, value_type);
+                    let access_arguments = self.nominal_access_arguments(type_name, value);
+                    for (index, pattern) in args.iter().enumerate() {
+                        let Some(declared) = variant.fields.get(index) else { continue };
+                        let flow = self.flow_for_declared_type(
+                            declared,
+                            &substitutions,
+                            &access_arguments,
+                        )?;
+                        let field_type = Self::substitute_type(declared, &substitutions);
+                        self.bind_pattern(pattern, &flow, Some(&field_type), environment)?;
+                    }
+                } else if let Some(fields) =
+                    Self::builtin_pattern_fields(constructor, value, value_type)
+                {
+                    for (pattern, (flow, field_type)) in args.iter().zip(fields) {
+                        self.bind_pattern(pattern, &flow, field_type.as_ref(), environment)?;
+                    }
                 }
             }
             Pattern::List { elems, rest } => {
@@ -2062,11 +2233,12 @@ impl<'a> AccessVerifier<'a> {
                 let resolved = self.resolved_expression_type(expression).ok_or_else(|| {
                     AccessFlowError { message: "lambda has no finalized checked type".into() }
                 })?;
-                let conventions = params.iter().map(|parameter| parameter.convention).collect();
-                let signature = AccessSignature::from_resolved_parts(
+                let conventions: Vec<Convention> =
+                    params.iter().map(|parameter| parameter.convention).collect();
+                let mut signature = AccessSignature::from_resolved_parts(
                     params.iter().map(|parameter| parameter.ty.as_ref()).collect(),
                     ret.as_ref(),
-                    conventions,
+                    conventions.clone(),
                     &resolved,
                 )
                 .map_err(Self::signature_error)?;
@@ -2077,9 +2249,43 @@ impl<'a> AccessVerifier<'a> {
                         AccessFlow::from_type(access.ty()).map_err(Self::signature_error)?,
                     );
                 }
+                let preliminary_expected = if ret.is_none() {
+                    AccessFlow::Unknown
+                } else {
+                    AccessFlow::from_type(signature.result().ty())
+                        .map_err(Self::signature_error)?
+                };
+                self.return_frames.push(Vec::new());
+                let tail =
+                    self.eval_block(body, &mut lambda_environment, &preliminary_expected)?;
+                let mut returned = self.return_frames.pop().unwrap_or_default();
+                if ret.is_none() {
+                    if matches!(body.stmts.last(), Some(Stmt::Expr(_))) {
+                        returned.push(tail.clone());
+                    }
+                    let inferred = Self::join_flows(
+                        returned.iter().cloned(),
+                        "inferred lambda result paths",
+                    )?;
+                    let inferred_result = inferred.materialize_type(signature.result().ty());
+                    let callable_qualifiers = signature.callable_qualifiers.clone();
+                    signature = AccessSignature::from_parts(
+                        signature
+                            .params()
+                            .iter()
+                            .map(|parameter| parameter.ty().clone())
+                            .collect(),
+                        inferred_result,
+                        conventions,
+                    )
+                    .map_err(Self::signature_error)?;
+                    signature.callable_qualifiers = callable_qualifiers;
+                }
                 let expected = AccessFlow::from_type(signature.result().ty())
                     .map_err(Self::signature_error)?;
-                let tail = self.eval_block(body, &mut lambda_environment, &expected)?;
+                for returned in &returned {
+                    returned.verify_directed(&expected, "lambda return")?;
+                }
                 if matches!(body.stmts.last(), Some(Stmt::Expr(_))) {
                     tail.verify_directed(&expected, "lambda result")?;
                 }
@@ -2223,9 +2429,25 @@ impl<'a> AccessVerifier<'a> {
                 AccessFlow::None
             }
             Expr::For { var, iter, body } => {
-                self.eval_expr(iter, environment, return_expected)?;
+                let iter_type = self.resolved_expression_type(iter);
+                let iter_flow = self.eval_expr(iter, environment, return_expected)?;
+                let element = match &iter_flow {
+                    AccessFlow::Sequence(element) => element.as_ref().clone(),
+                    AccessFlow::Named { arguments, dynamic: false, .. }
+                        if arguments.len() == 1 => arguments[0].clone(),
+                    _ => iter_type
+                        .as_ref()
+                        .and_then(|ty| match ty.unqualified() {
+                            Type::Named(_, arguments) if arguments.len() == 1 => arguments.first(),
+                            _ => None,
+                        })
+                        .map(AccessFlow::from_type)
+                        .transpose()
+                        .map_err(Self::signature_error)?
+                        .unwrap_or(AccessFlow::None),
+                };
                 let mut body_environment = environment.clone();
-                body_environment.insert(var.clone(), AccessFlow::None);
+                body_environment.insert(var.clone(), element);
                 self.eval_block(body, &mut body_environment, return_expected)?;
                 AccessFlow::None
             }
@@ -2249,9 +2471,17 @@ impl<'a> AccessVerifier<'a> {
                         .unwrap_or(AccessFlow::None),
                 }
             }
-            Expr::WhileLet { scrutinee, body, .. } => {
-                self.eval_expr(scrutinee, environment, return_expected)?;
-                self.eval_block(body, &mut environment.clone(), return_expected)?;
+            Expr::WhileLet { pattern, scrutinee, body } => {
+                let scrutinee_type = self.resolved_expression_type(scrutinee);
+                let scrutinee = self.eval_expr(scrutinee, environment, return_expected)?;
+                let mut body_environment = environment.clone();
+                self.bind_pattern(
+                    pattern,
+                    &scrutinee,
+                    scrutinee_type.as_ref(),
+                    &mut body_environment,
+                )?;
+                self.eval_block(body, &mut body_environment, return_expected)?;
                 AccessFlow::None
             }
             Expr::MethodCall { receiver, args, .. } => {
@@ -2269,10 +2499,10 @@ impl<'a> AccessVerifier<'a> {
 /// Build the checked access-signature query for an already type-checked module.
 /// The supplied table is authoritative for every inferred and use-site
 /// specialized type; this pass propagates only ownership/access contracts.
-pub fn checked_facts(
-    module: &Module,
-    table: &TypeTable,
-) -> Result<CheckedAccessFacts, AccessFlowError> {
+pub fn checked_facts<'module>(
+    module: &'module Module,
+    table: &'module TypeTable,
+) -> Result<CheckedAccessFacts<'module>, AccessFlowError> {
     AccessVerifier::new(module, table).verify()
 }
 

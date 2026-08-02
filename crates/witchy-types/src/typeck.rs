@@ -7812,17 +7812,19 @@ pub fn annotate_checked(module: Module) -> Result<TypedModule, TypeError> {
 /// table still belongs to `module`. This keeps the ordinary public `main`
 /// contract strict while validating the generated entrypoint under the build
 /// capability contract.
-pub fn annotate_checked_build(module: Module) -> Result<TypedModule, TypeError> {
-    let mut checked = module.clone();
-    for item in &mut checked.items {
+pub fn annotate_checked_build(mut module: Module) -> Result<TypedModule, TypeError> {
+    let mut renamed_entry = None;
+    for (index, item) in module.items.iter_mut().enumerate() {
         if let Item::Function(function) = item
             && function.name == "main"
         {
             function.name = "build".to_string();
+            renamed_entry = Some(index);
+            break;
         }
     }
-    let table = run_check_selected(
-        &checked,
+    let mut table = run_check_selected(
+        &module,
         true,
         None,
         None,
@@ -7831,6 +7833,14 @@ pub fn annotate_checked_build(module: Module) -> Result<TypedModule, TypeError> 
         true,
     )?
         .unwrap_or_default();
+    if let Some(index) = renamed_entry {
+        if let Item::Function(function) = &mut module.items[index] {
+            function.name = "main".to_string();
+        }
+        if let Some(signature) = table.functions.remove("build") {
+            table.functions.insert("main".to_string(), signature);
+        }
+    }
     Ok(TypedModule { module, table })
 }
 
