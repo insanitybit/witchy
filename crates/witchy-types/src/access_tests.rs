@@ -605,6 +605,38 @@ fn generated_generator_lambda_uses_the_specialized_unfold_contract() {
 }
 
 #[test]
+fn earlier_argument_flow_refines_a_dependent_lambda_hint() {
+    crate::typeck::check_str(
+        "fn higher(seed: a, callback: fn(a) -> Int) -> Int:\n    callback(seed)\n\n\
+         fn strict(xs: unique List(Int)) -> Int:\n    0\n\n\
+         fn wrapper(seed: fn(unique List(Int)) -> Int) -> Int:\n    higher(seed, fn(callback): callback([1]))\n\n\
+         fn main() -> Int:\n    wrapper(strict)\n",
+    )
+    .expect(
+        "a prior argument's callable access flow specializes the callee-owned hint for a later lambda",
+    );
+
+    crate::typeck::check_str(
+        "fn reversed(callback: fn(a) -> Int, seed: a) -> Int:\n    callback(seed)\n\n\
+         fn strict(xs: unique List(Int)) -> Int:\n    0\n\n\
+         fn wrapper(seed: fn(unique List(Int)) -> Int) -> Int:\n    reversed(fn(callback: fn(unique List(Int)) -> Int): callback([1]), seed)\n\n\
+         fn main() -> Int:\n    wrapper(strict)\n",
+    )
+    .expect("an explicitly typed dependent lambda is independent of argument order");
+
+    let error = crate::typeck::check_str(
+        "fn higher(seed: a, callback: fn(a) -> Int) -> Int:\n    callback(seed)\n\n\
+         fn bad(seed: fn(unique List(Int)) -> Int) -> Int:\n    higher(seed, fn(callback: fn(List(Int)) -> Int): callback([1]))\n\n\
+         fn main() -> Int:\n    0\n",
+    )
+    .expect_err("dependent hint refinement must not overwrite an explicit caller contract");
+    assert!(
+        error.contains("ownership/access contract") && error.contains("Qualifier"),
+        "{error}"
+    );
+}
+
+#[test]
 fn try_propagation_preserves_nested_callable_access() {
     crate::typeck::check_str(
         "fn option(value: Option(fn(unique List(Int)) -> Int)) -> Option(fn(unique List(Int)) -> Int):\n    let callback = value?\n    Some(callback)\n\n\

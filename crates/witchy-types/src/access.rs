@@ -1343,6 +1343,12 @@ impl std::error::Error for AccessFlowError {}
 
 type FlowEnvironment = HashMap<String, AccessFlow>;
 
+#[derive(Clone, Copy)]
+struct CallTypeContext<'a> {
+    arguments: &'a [Option<Type>],
+    result: Option<&'a Type>,
+}
+
 struct AccessVerifier<'a> {
     module: &'a Module,
     table: &'a TypeTable,
@@ -2034,19 +2040,29 @@ impl<'a> AccessVerifier<'a> {
         result_type: Option<&Type>,
     ) -> Result<(AccessSignature, HashMap<String, Type>), AccessFlowError> {
         let mut substitutions = HashMap::new();
-        for (index, (parameter, argument)) in
-            signature.params().iter().zip(arguments).enumerate()
-        {
-            // A checked value flow retains callable qualifiers that the
-            // finalized expression type intentionally erases. Let that access
-            // identity bind the callee variable first, then use the checked
-            // type only to fill variables the flow cannot represent.
-            Self::collect_flow_substitutions(parameter.ty(), argument, &mut substitutions);
-            if let Some(actual_type) = argument_types.get(index).and_then(Option::as_ref) {
-                let actual_type = argument.materialize_type(actual_type);
+        for (index, parameter) in signature.params().iter().enumerate() {
+            if let Some(argument) = arguments.get(index) {
+                // A checked value flow retains callable qualifiers that the
+                // finalized expression type intentionally erases. Let that
+                // access identity bind the callee variable first, then use the
+                // checked type only to fill variables the flow cannot represent.
+                Self::collect_flow_substitutions(
+                    parameter.ty(),
+                    argument,
+                    &mut substitutions,
+                );
+                if let Some(actual_type) = argument_types.get(index).and_then(Option::as_ref) {
+                    let actual_type = argument.materialize_type(actual_type);
+                    Self::collect_type_substitutions(
+                        parameter.ty(),
+                        &actual_type,
+                        &mut substitutions,
+                    );
+                }
+            } else if let Some(actual_type) = argument_types.get(index).and_then(Option::as_ref) {
                 Self::collect_type_substitutions(
                     parameter.ty(),
-                    &actual_type,
+                    actual_type,
                     &mut substitutions,
                 );
             }
@@ -2067,34 +2083,43 @@ impl<'a> AccessVerifier<'a> {
         Ok((signature, substitutions))
     }
 
-    fn specialize_signature_from_checked_types(
-        &self,
-        signature: AccessSignature,
-        argument_types: &[Option<Type>],
-        result_type: Option<&Type>,
-    ) -> Result<AccessSignature, AccessFlowError> {
-        let mut substitutions = HashMap::new();
-        for (parameter, actual_type) in signature.params().iter().zip(argument_types) {
-            if let Some(actual_type) = actual_type {
-                Self::collect_type_substitutions(
-                    parameter.ty(),
-                    actual_type,
-                    &mut substitutions,
-                );
-            }
+    fn eval_arguments_with_dependent_hints(
+        &mut self,
+        expressions: &[&Expr],
+        signature: Option<&AccessSignature>,
+        prefix: &[AccessFlow],
+        types: CallTypeContext<'_>,
+        environment: &mut FlowEnvironment,
+        return_expected: &AccessFlow,
+    ) -> Result<Vec<AccessFlow>, AccessFlowError> {
+        let mut evaluated = prefix.to_vec();
+        let mut arguments = Vec::with_capacity(expressions.len());
+        for expression in expressions {
+            let parameter_index = evaluated.len();
+            let hint = signature
+                .cloned()
+                .map(|signature| {
+                    self.specialize_signature_from_flows(
+                        signature,
+                        &evaluated,
+                        types.arguments,
+                        types.result,
+                    )
+                    .map(|(signature, _)| signature)
+                })
+                .transpose()?;
+            let argument = self.eval_expr_with_hint(
+                expression,
+                hint.as_ref()
+                    .and_then(|signature| signature.params().get(parameter_index))
+                    .map(AccessParam::ty),
+                environment,
+                return_expected,
+            )?;
+            evaluated.push(argument.clone());
+            arguments.push(argument);
         }
-        if let Some(result_type) = result_type {
-            Self::collect_type_substitutions(
-                signature.result().ty(),
-                result_type,
-                &mut substitutions,
-            );
-        }
-        if substitutions.is_empty() {
-            return Ok(signature);
-        }
-        let specialized = Self::substitute_type(&signature.as_type(), &substitutions);
-        AccessSignature::from_function_type(&specialized).map_err(Self::signature_error)
+        Ok(arguments)
     }
 
     fn eval_block(
@@ -2433,35 +2458,19 @@ impl<'a> AccessVerifier<'a> {
                     .map(|argument| self.resolved_expression_type(argument))
                     .collect::<Vec<_>>();
                 let result_type = self.contextual_expression_type(expression);
-                let verification_signature = signature.clone();
-                let signature = signature
-                    .map(|signature| {
-                        self.specialize_signature_from_checked_types(
-                            signature,
-                            &argument_types,
-                            result_type.as_ref(),
-                        )
-                    })
-                    .transpose()?;
-                let arguments = args
-                    .iter()
-                    .enumerate()
-                    .map(|(index, argument)| {
-                        self.eval_expr_with_hint(
-                            argument,
-                            signature
-                                .as_ref()
-                                .and_then(|signature| signature.params().get(index))
-                                .map(AccessParam::ty),
-                            environment,
-                            return_expected,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let arguments = self.eval_arguments_with_dependent_hints(
+                    &positional,
+                    signature.as_ref(),
+                    &[],
+                    CallTypeContext {
+                        arguments: &argument_types,
+                        result: result_type.as_ref(),
+                    },
+                    environment,
+                    return_expected,
+                )?;
                 match signature {
-                    Some(_) => {
-                        let signature = verification_signature
-                            .expect("a hint signature has an access-verification source");
+                    Some(signature) => {
                         let (signature, _) = self.specialize_signature_from_flows(
                             signature,
                             &arguments,
@@ -2484,35 +2493,19 @@ impl<'a> AccessVerifier<'a> {
                     .map(|argument| self.resolved_expression_type(argument))
                     .collect::<Vec<_>>();
                 let result_type = self.contextual_expression_type(expression);
-                let verification_signature = signature.clone();
-                let signature = signature
-                    .map(|signature| {
-                        self.specialize_signature_from_checked_types(
-                            signature,
-                            &argument_types,
-                            result_type.as_ref(),
-                        )
-                    })
-                    .transpose()?;
-                let arguments = positional
-                    .iter()
-                    .enumerate()
-                    .map(|(index, argument)| {
-                        self.eval_expr_with_hint(
-                            argument,
-                            signature
-                                .as_ref()
-                                .and_then(|signature| signature.params().get(index))
-                                .map(AccessParam::ty),
-                            environment,
-                            return_expected,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let arguments = self.eval_arguments_with_dependent_hints(
+                    &positional,
+                    signature.as_ref(),
+                    &[],
+                    CallTypeContext {
+                        arguments: &argument_types,
+                        result: result_type.as_ref(),
+                    },
+                    environment,
+                    return_expected,
+                )?;
                 match signature {
-                    Some(_) => {
-                        let signature = verification_signature
-                            .expect("a hint signature has an access-verification source");
+                    Some(signature) => {
                         let (signature, _) = self.specialize_signature_from_flows(
                             signature,
                             &arguments,
@@ -2538,37 +2531,21 @@ impl<'a> AccessVerifier<'a> {
                     .map(|argument| self.resolved_expression_type(argument))
                     .collect::<Vec<_>>();
                 let result_type = self.contextual_expression_type(expression);
-                let verification_signature = signature.clone();
-                let signature = signature
-                    .map(|signature| {
-                        self.specialize_signature_from_checked_types(
-                            signature,
-                            &argument_types,
-                            result_type.as_ref(),
-                        )
-                    })
-                    .transpose()?;
-                let arguments = args
-                    .iter()
-                    .enumerate()
-                    .map(|(index, argument)| {
-                        self.eval_expr_with_hint(
-                            argument,
-                            signature
-                                .as_ref()
-                                .and_then(|signature| signature.params().get(index))
-                                .map(AccessParam::ty),
-                            environment,
-                            return_expected,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let Some(_) = signature else {
+                let positional = args.iter().collect::<Vec<_>>();
+                let arguments = self.eval_arguments_with_dependent_hints(
+                    &positional,
+                    signature.as_ref(),
+                    &[],
+                    CallTypeContext {
+                        arguments: &argument_types,
+                        result: result_type.as_ref(),
+                    },
+                    environment,
+                    return_expected,
+                )?;
+                let Some(signature) = signature else {
                     return Ok(self.record(expression, AccessFlow::None));
                 };
-                let signature = verification_signature
-                    .expect("a hint signature has an access-verification source");
-                let result_type = self.contextual_expression_type(expression);
                 let (signature, _) = self.specialize_signature_from_flows(
                     signature,
                     &arguments,
@@ -2642,12 +2619,10 @@ impl<'a> AccessVerifier<'a> {
             }
             Expr::Lambda { params, body, ret } => {
                 let resolved = self
-                    .resolved_expression_type(expression)
-                    .or_else(|| {
-                        self.expression_type_hints
-                            .get(&(expression as *const Expr as usize))
-                            .cloned()
-                    })
+                    .expression_type_hints
+                    .get(&(expression as *const Expr as usize))
+                    .cloned()
+                    .or_else(|| self.resolved_expression_type(expression))
                     .ok_or_else(|| AccessFlowError {
                         message: "lambda has no finalized checked type or checked expression context"
                             .into(),
@@ -2766,7 +2741,6 @@ impl<'a> AccessVerifier<'a> {
             } => {
                 let receiver_flow = self.eval_expr(receiver, environment, return_expected)?;
                 let signature = self.existential_signature(ty, params, result, conventions)?;
-                let verification_signature = signature.clone();
                 let mut argument_types = Vec::with_capacity(args.len() + 1);
                 argument_types.push(self.resolved_expression_type(receiver));
                 argument_types.extend(
@@ -2774,28 +2748,23 @@ impl<'a> AccessVerifier<'a> {
                         .map(|argument| self.resolved_expression_type(argument)),
                 );
                 let result_type = self.contextual_expression_type(expression);
-                let signature = self.specialize_signature_from_checked_types(
-                    signature,
-                    &argument_types,
-                    result_type.as_ref(),
+                let positional = args.iter().collect::<Vec<_>>();
+                let arguments = self.eval_arguments_with_dependent_hints(
+                    &positional,
+                    Some(&signature),
+                    std::slice::from_ref(&receiver_flow),
+                    CallTypeContext {
+                        arguments: &argument_types,
+                        result: result_type.as_ref(),
+                    },
+                    environment,
+                    return_expected,
                 )?;
-                let arguments = args
-                    .iter()
-                    .enumerate()
-                    .map(|(index, argument)| {
-                        self.eval_expr_with_hint(
-                            argument,
-                            signature.params().get(index + 1).map(AccessParam::ty),
-                            environment,
-                            return_expected,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
                 let mut all_arguments = Vec::with_capacity(arguments.len() + 1);
                 all_arguments.push(receiver_flow.clone());
                 all_arguments.extend(arguments.iter().cloned());
                 let (signature, _) = self.specialize_signature_from_flows(
-                    verification_signature,
+                    signature,
                     &all_arguments,
                     &argument_types,
                     self.contextual_expression_type(expression).as_ref(),
