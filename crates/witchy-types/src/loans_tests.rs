@@ -6,10 +6,11 @@
         loans::facts,
         typeck::{check, check_str},
     };
-    use witchy_syntax::ast::Item;
+    use witchy_syntax::ast::{Expr, Item, Stmt};
 
     use super::{
-        BorrowRelationCatalog, LoanProjection, LoanProjectionStep, projections_overlap,
+        BorrowRelationCatalog, LoanEdgeKind, LoanProjection, LoanProjectionStep,
+        projections_overlap,
     };
 
     fn linked_normal(main_body: &str) -> Result<(), crate::typeck::TypeError> {
@@ -770,6 +771,233 @@
         let cloned = open.clone();
         assert!(loan_facts.event_key(open).is_some());
         assert!(loan_facts.event_key(&cloned).is_none(), "a cloned statement has no facts");
+    }
+
+    #[test]
+    fn borrowed_shape_separates_logical_shell_projection_and_owner_root() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Pair:\n    left: String\n    right: String\n\n\
+             fn borrow(pair: let('a) Pair) -> View(Pair, 'a):\n    pair\n\n\
+             fn main(console: Console):\n    let pair = Pair(\"left\", \"right\")\n    let whole = borrow(pair)\n    let left = whole.left\n    console.print(left)\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("projection facts");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+        let binding = &main.body.stmts[2];
+        let [event] = loan_facts.opens_after(binding) else {
+            panic!("one projected loan opens")
+        };
+
+        assert_eq!(event.view, "left");
+        assert_eq!(event.owner_root().local, "pair");
+        assert_eq!(event.owner_place().root.local, "pair");
+        assert_eq!(
+            event.owner_place().projection,
+            LoanProjection { steps: vec![LoanProjectionStep::Field("left".into())] }
+        );
+        let shapes = loan_facts.borrowed_value_shapes_after(binding);
+        let [shape] = shapes.as_slice() else {
+            panic!("one logical borrowed shell opens")
+        };
+        assert_eq!(shape.shell, "left");
+        assert_eq!(shape.roots.len(), 1);
+        assert_eq!(shape.roots[0].ordinal, 0);
+        assert_eq!(shape.roots[0].root.local, "pair");
+        assert_ne!(shape.roots[0].root.local, shape.shell);
+        assert_eq!(shape.roots[0].contributions[0].place.projection, event.projection);
+    }
+
+    #[test]
+    fn borrowed_shape_coalesces_one_owner_into_one_ordered_root_companion() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             fn duplicate(text: let('a) String) \
+                 -> (View(String, 'a), View(String, 'a)):\n    (text, text)\n\n\
+             fn main(console: Console):\n    let text = \"same owner\"\n    let pair = duplicate(text)\n    console.print(pair[0])\n    console.print(pair[1])\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("aggregate owner facts");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+        let shapes = loan_facts.borrowed_value_shapes_after(&main.body.stmts[1]);
+        let [shape] = shapes.as_slice() else {
+            panic!("one borrowed tuple shell opens")
+        };
+        assert_eq!(shape.roots.len(), 1, "one owner base has one hidden companion");
+        assert_eq!(shape.roots[0].root.local, "text");
+        assert_eq!(shape.roots[0].contributions.len(), 2);
+        assert_eq!(
+            shape.roots[0].contributions[0].borrower_projection,
+            LoanProjection { steps: vec![LoanProjectionStep::Tuple(0)] }
+        );
+        assert_eq!(
+            shape.roots[0].contributions[1].borrower_projection,
+            LoanProjection { steps: vec![LoanProjectionStep::Tuple(1)] }
+        );
+    }
+
+    #[test]
+    fn branch_edges_carry_the_same_checked_owner_place_to_each_arm() {
+        let module = witchy_syntax::parser::parse_module(&opt(
+            "    let s = \"text\"\n    let w = borrow(s)\n    if true:\n        console.print(w)\n    else:\n        console.print(w)\n    console.print(w)\n",
+        ))
+        .expect("parse");
+        let loan_facts = facts(&module).expect("branch loan facts");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+        let branch = &main.body.stmts[2];
+        for kind in [LoanEdgeKind::BranchThen, LoanEdgeKind::BranchElse] {
+            let edge = loan_facts
+                .edges_from(branch)
+                .iter()
+                .find(|edge| edge.kind == kind)
+                .expect("each branch arm has an edge");
+            assert_eq!(edge.carries.len(), 1);
+            assert_eq!(edge.carries[0].owner_root().local, "s");
+            assert!(edge.closes.is_empty());
+            assert!(edge.transfers.is_empty());
+        }
+    }
+
+    #[test]
+    fn loop_back_edge_closes_a_body_local_loan_at_its_checked_last_use() {
+        let module = witchy_syntax::parser::parse_module(&opt(
+            "    let s = \"text\"\n    while false:\n        let w = borrow(s)\n        console.print(w)\n    console.print(s)\n",
+        ))
+        .expect("parse");
+        let loan_facts = facts(&module).expect("loop loan facts");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+        let Stmt::Expr(Expr::While { body, .. }) = &main.body.stmts[1] else {
+            panic!("while statement")
+        };
+        let edge = loan_facts
+            .edges_from(&body.stmts[1])
+            .iter()
+            .find(|edge| edge.kind == LoanEdgeKind::LoopBack)
+            .expect("the body tail has a loop-back edge");
+        assert_eq!(edge.to, Some(loan_facts.point(&main.body.stmts[1])));
+        assert!(edge.carries.is_empty());
+        assert_eq!(edge.closes.len(), 1);
+        assert_eq!(edge.closes[0].owner_root().local, "s");
+    }
+
+    #[test]
+    fn explicit_return_transfers_only_a_checked_borrowed_result_root() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             fn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\n\
+             fn forward(text: let('a) String) -> View(String, 'a):\n    let view = borrow(text)\n    return view\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("return transfer facts");
+        let forward = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "forward" => Some(function),
+                _ => None,
+            })
+            .expect("forward");
+        let edge = loan_facts
+            .edges_from(&forward.body.stmts[1])
+            .iter()
+            .find(|edge| edge.kind == LoanEdgeKind::Return)
+            .expect("return edge");
+        assert_eq!(edge.transfers.len(), 1);
+        assert_eq!(edge.transfers[0].view, "view");
+        assert_eq!(edge.transfers[0].owner_root().local, "text");
+        assert!(edge.closes.is_empty());
+    }
+
+    #[test]
+    fn owned_return_closes_instead_of_transferring_a_borrowed_root() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             fn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\n\
+             fn owned(text: String) -> String:\n    text\n\n\
+             fn copy(text: let('a) String) -> String:\n    let view = borrow(text)\n    return owned(view)\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("owned return facts");
+        let copy = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "copy" => Some(function),
+                _ => None,
+            })
+            .expect("copy");
+        let edge = loan_facts
+            .edges_from(&copy.body.stmts[1])
+            .iter()
+            .find(|edge| edge.kind == LoanEdgeKind::Return)
+            .expect("return edge");
+        assert!(edge.transfers.is_empty());
+        assert_eq!(edge.closes.len(), 1);
+        assert_eq!(edge.closes[0].owner_root().local, "text");
+    }
+
+    #[test]
+    fn question_mark_has_success_carry_and_failure_cleanup_edges() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             fn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\n\
+             fn risky() -> Result(Int, String):\n    Ok(1)\n\n\
+             fn run(console: Console) -> Result(Int, String):\n    let text = \"owner\"\n    let view = borrow(text)\n    let value = risky()?\n    console.print(view)\n    Ok(value)\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("propagation facts");
+        let run = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "run" => Some(function),
+                _ => None,
+            })
+            .expect("run");
+        let question = &run.body.stmts[2];
+        let propagation = loan_facts
+            .edges_from(question)
+            .iter()
+            .find(|edge| edge.kind == LoanEdgeKind::Propagate)
+            .expect("a ? expression has a failure edge");
+        assert_eq!(propagation.closes.len(), 1);
+        assert_eq!(propagation.closes[0].owner_root().local, "text");
+        assert!(propagation.transfers.is_empty());
+        let success = loan_facts
+            .edges_from(question)
+            .iter()
+            .find(|edge| edge.kind == LoanEdgeKind::Fallthrough)
+            .expect("a ? expression also has a success edge");
+        assert_eq!(success.carries.len(), 1);
+        assert_eq!(success.carries[0].owner_root().local, "text");
     }
 
     #[test]

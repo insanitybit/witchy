@@ -102,6 +102,56 @@ fn is_std_fn(name: &str) -> bool {
         .is_some_and(|(m, _)| witchy_syntax::linker::STD_MODULES.contains(&m))
 }
 
+/// The stable owner-object base that keeps borrowed storage alive.
+///
+/// `local` always names an owning root. An interior field, element, range, or
+/// view address belongs in [`LoanPlace::projection`], never in this identity.
+/// Lowering must retain/drop this base rather than reconstructing a root from a
+/// borrowed shell or a projection bias.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LoanOwnerRoot {
+    pub local: String,
+}
+
+/// One statically checked place within an owner object.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoanPlace {
+    pub root: LoanOwnerRoot,
+    pub projection: LoanProjection,
+    /// The storage reached by `projection`, not the type of the owner object.
+    pub storage_type: Type,
+}
+
+/// One logical field/range contribution carried by a hidden root companion.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoanRootContribution {
+    /// The place within the owning object that the logical view reads.
+    pub place: LoanPlace,
+    /// The field/tuple path within the borrowed shell that reads `place`.
+    pub borrower_projection: LoanProjection,
+}
+
+/// A compiler-owned root retained for a logical borrowed shell.
+///
+/// Companions are ordered by their first checked owner contribution. Multiple
+/// logical fields that borrow the same owner base share one companion, while
+/// retaining all of their projection relations in `contributions`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoanRootCompanion {
+    pub ordinal: usize,
+    pub root: LoanOwnerRoot,
+    pub contributions: Vec<LoanRootContribution>,
+}
+
+/// The runtime-independent shape of one borrowed value opened by a statement.
+/// `shell` is the logical user value; `roots` are hidden compiler-owned
+/// companions. The shell is never itself promoted to an owning root.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BorrowedValueShape {
+    pub shell: String,
+    pub roots: Vec<LoanRootCompanion>,
+}
+
 /// One checked owner loan. Lowering uses these names to invalidate ownership
 /// tokens and retain the owner while the view is live.
 #[derive(Clone, Debug, PartialEq)]
@@ -116,7 +166,64 @@ pub struct LoanEvent {
     /// Empty means the complete borrowed value depends on the owner.
     pub borrower_projection: LoanProjection,
     pub origin: String,
+    /// Type of the projected storage. This is deliberately not part of
+    /// [`LoanOwnerRoot`]: a field's storage type cannot classify or bias the
+    /// containing owner object's RC base.
     pub owner_type: Type,
+}
+
+impl LoanEvent {
+    /// The only object base that may be retained or released for this event.
+    pub fn owner_root(&self) -> LoanOwnerRoot {
+        LoanOwnerRoot { local: self.owner.clone() }
+    }
+
+    /// The checked interior place. Its projection is descriptive and may not be
+    /// used as an owning RC base.
+    pub fn owner_place(&self) -> LoanPlace {
+        LoanPlace {
+            root: self.owner_root(),
+            projection: self.projection.clone(),
+            storage_type: self.owner_type.clone(),
+        }
+    }
+}
+
+/// An edge in the checked loan control-flow graph. Points are statement-entry
+/// identities in the exact checked AST; `None` is the enclosing function exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LoanPoint(usize);
+
+/// Why control can leave a statement on one checked edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoanEdgeKind {
+    Fallthrough,
+    BranchThen,
+    BranchElse,
+    LoopEnter,
+    LoopBack,
+    LoopExit,
+    Break,
+    Continue,
+    Return,
+    Propagate,
+}
+
+/// Projection-aware loan transfer facts for one CFG edge.
+///
+/// `carries` remain live at the destination, `opens` originate at the source,
+/// `closes` are released before taking the edge, and `transfers` move hidden
+/// root companions into a returned borrowed shell. A propagation edge closes
+/// local roots; it never silently transfers them to the error/none result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoanEdgeFacts {
+    pub from: LoanPoint,
+    pub to: Option<LoanPoint>,
+    pub kind: LoanEdgeKind,
+    pub carries: Vec<LoanEvent>,
+    pub opens: Vec<LoanEvent>,
+    pub closes: Vec<LoanEvent>,
+    pub transfers: Vec<LoanEvent>,
 }
 
 fn named_return_relations(sig: &BorrowSig, params: &[Param]) -> Vec<ReturnBorrowRelation> {
@@ -144,6 +251,8 @@ pub struct LoanFacts {
     active: HashMap<usize, Vec<LoanEvent>>,
     opens_after: HashMap<usize, Vec<LoanEvent>>,
     closes_after: HashMap<usize, Vec<LoanEvent>>,
+    return_transfers: HashMap<usize, Vec<LoanEvent>>,
+    edges: HashMap<usize, Vec<LoanEdgeFacts>>,
 }
 
 fn stmt_key(stmt: &Stmt) -> usize {
@@ -155,6 +264,10 @@ fn block_key(block: &Block) -> usize {
 }
 
 impl LoanFacts {
+    pub fn point(&self, stmt: &Stmt) -> LoanPoint {
+        LoanPoint(stmt_key(stmt))
+    }
+
     pub fn active_at(&self, stmt: &Stmt) -> &[LoanEvent] {
         self.active.get(&stmt_key(stmt)).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -167,6 +280,48 @@ impl LoanFacts {
         self.closes_after.get(&stmt_key(stmt)).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    pub fn edges_from(&self, stmt: &Stmt) -> &[LoanEdgeFacts] {
+        self.edges.get(&stmt_key(stmt)).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Logical shells and their ordered, distinct owner-root companions opened
+    /// by this statement. Projection paths remain contributions beneath a root;
+    /// they are never returned as roots themselves.
+    pub fn borrowed_value_shapes_after(&self, stmt: &Stmt) -> Vec<BorrowedValueShape> {
+        let mut shapes: Vec<BorrowedValueShape> = Vec::new();
+        for event in self.opens_after(stmt) {
+            let shape = if let Some(shape) = shapes.iter_mut().find(|shape| shape.shell == event.view)
+            {
+                shape
+            } else {
+                shapes.push(BorrowedValueShape { shell: event.view.clone(), roots: Vec::new() });
+                shapes.last_mut().expect("the borrowed shape was just inserted")
+            };
+            let root = event.owner_root();
+            let companion = if let Some(companion) = shape.roots.iter_mut().find(|candidate| {
+                candidate.root == root
+            }) {
+                companion
+            } else {
+                let ordinal = shape.roots.len();
+                shape.roots.push(LoanRootCompanion {
+                    ordinal,
+                    root,
+                    contributions: Vec::new(),
+                });
+                shape.roots.last_mut().expect("the root companion was just inserted")
+            };
+            let contribution = LoanRootContribution {
+                place: event.owner_place(),
+                borrower_projection: event.borrower_projection.clone(),
+            };
+            if !companion.contributions.contains(&contribution) {
+                companion.contributions.push(contribution);
+            }
+        }
+        shapes
+    }
+
     /// Identity key for a statement that carries any lowering-relevant loan
     /// fact. Unknown/cloned statements return `None`; lowering compares the set
     /// consumed by each compile unit with the set collected from the checked AST.
@@ -177,6 +332,284 @@ impl LoanFacts {
             || self.closes_after.contains_key(&key))
             .then_some(key)
     }
+}
+
+#[derive(Clone, Copy)]
+struct LoopTargets<'a> {
+    header: &'a Stmt,
+    exit: Option<&'a Stmt>,
+}
+
+enum ControlRegion<'a> {
+    Branch {
+        then_block: &'a Block,
+        else_block: Option<&'a Block>,
+    },
+    Loop(&'a Block),
+    Block(&'a Block),
+}
+
+fn first_stmt(block: &Block) -> Option<&Stmt> {
+    block.stmts.first()
+}
+
+fn push_unique_event(events: &mut Vec<LoanEvent>, event: LoanEvent) {
+    if !events.contains(&event) {
+        events.push(event);
+    }
+}
+
+fn events_before(facts: &LoanFacts, stmt: &Stmt) -> Vec<LoanEvent> {
+    facts.active_at(stmt).to_vec()
+}
+
+fn events_after(facts: &LoanFacts, stmt: &Stmt) -> Vec<LoanEvent> {
+    let mut events = facts.active_at(stmt).to_vec();
+    for event in facts.opens_after(stmt) {
+        push_unique_event(&mut events, event.clone());
+    }
+    events.retain(|event| !facts.closes_after(stmt).contains(event));
+    events
+}
+
+fn record_edge(
+    facts: &mut LoanFacts,
+    from: &Stmt,
+    to: Option<&Stmt>,
+    kind: LoanEdgeKind,
+) {
+    let source = match kind {
+        LoanEdgeKind::BranchThen
+        | LoanEdgeKind::BranchElse
+        | LoanEdgeKind::LoopEnter
+        | LoanEdgeKind::LoopExit => events_before(facts, from),
+        _ => events_after(facts, from),
+    };
+    let destination = to.map(|stmt| facts.active_at(stmt).to_vec()).unwrap_or_default();
+    let mut carries = Vec::new();
+    let mut closes = facts.closes_after(from).to_vec();
+    for event in &source {
+        if destination.contains(event) {
+            push_unique_event(&mut carries, event.clone());
+        } else if to.is_some() {
+            push_unique_event(&mut closes, event.clone());
+        }
+    }
+    let edge = LoanEdgeFacts {
+        from: LoanPoint(stmt_key(from)),
+        to: to.map(|stmt| LoanPoint(stmt_key(stmt))),
+        kind,
+        carries,
+        opens: facts.opens_after(from).to_vec(),
+        closes,
+        transfers: Vec::new(),
+    };
+    facts.edges.entry(stmt_key(from)).or_default().push(edge);
+}
+
+fn record_return_edge(facts: &mut LoanFacts, stmt: &Stmt) {
+    let mut candidates = events_before(facts, stmt);
+    for event in facts.opens_after(stmt) {
+        push_unique_event(&mut candidates, event.clone());
+    }
+    let mut transfers = Vec::new();
+    let mut closes = Vec::new();
+    let checked_transfers = facts
+        .return_transfers
+        .get(&stmt_key(stmt))
+        .cloned()
+        .unwrap_or_default();
+    for event in candidates {
+        if checked_transfers.contains(&event) {
+            push_unique_event(&mut transfers, event);
+        } else {
+            push_unique_event(&mut closes, event);
+        }
+    }
+    let opens = facts.opens_after(stmt).to_vec();
+    facts.edges.entry(stmt_key(stmt)).or_default().push(LoanEdgeFacts {
+        from: LoanPoint(stmt_key(stmt)),
+        to: None,
+        kind: LoanEdgeKind::Return,
+        carries: Vec::new(),
+        opens,
+        closes,
+        transfers,
+    });
+}
+
+fn record_propagation_edge(facts: &mut LoanFacts, stmt: &Stmt) {
+    let closes = events_before(facts, stmt);
+    facts.edges.entry(stmt_key(stmt)).or_default().push(LoanEdgeFacts {
+        from: LoanPoint(stmt_key(stmt)),
+        to: None,
+        kind: LoanEdgeKind::Propagate,
+        carries: Vec::new(),
+        opens: Vec::new(),
+        closes,
+        transfers: Vec::new(),
+    });
+}
+
+fn statement_has_try(stmt: &Stmt) -> bool {
+    let mut stack = stmt_top_exprs(stmt);
+    while let Some(expr) = stack.pop() {
+        if matches!(expr, Expr::Try(_)) {
+            return true;
+        }
+        // This is intentionally shallow with respect to child blocks and
+        // lambdas. Their `?` exits belong to their own recursively indexed CFG,
+        // not to the statement that syntactically contains them.
+        push_shallow_children(expr, &mut stack);
+    }
+    false
+}
+
+/// Find the first control regions owned by a statement without descending into
+/// their blocks. Each child block is indexed recursively exactly once.
+fn control_regions(stmt: &Stmt) -> Vec<ControlRegion<'_>> {
+    let mut regions = Vec::new();
+    let mut stack = stmt_top_exprs(stmt);
+    while let Some(expr) = stack.pop() {
+        match expr {
+            Expr::If { then_block, else_block, cond } => {
+                regions.push(ControlRegion::Branch {
+                    then_block,
+                    else_block: else_block.as_ref(),
+                });
+                stack.push(cond);
+            }
+            Expr::While { cond, body } => {
+                regions.push(ControlRegion::Loop(body));
+                stack.push(cond);
+            }
+            Expr::For { iter, body, .. } => {
+                regions.push(ControlRegion::Loop(body));
+                stack.push(iter);
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                regions.push(ControlRegion::Loop(body));
+                stack.push(scrutinee);
+            }
+            Expr::Block(block) => regions.push(ControlRegion::Block(block)),
+            _ => push_shallow_children(expr, &mut stack),
+        }
+    }
+    regions
+}
+
+fn index_block_control_flow<'a>(
+    block: &'a Block,
+    continuation: Option<&'a Stmt>,
+    continuation_kind: LoanEdgeKind,
+    loop_targets: Option<LoopTargets<'a>>,
+    function_body: bool,
+    facts: &mut LoanFacts,
+) {
+    for (index, stmt) in block.stmts.iter().enumerate() {
+        let local_next = block.stmts.get(index + 1);
+        let next = local_next.or(continuation);
+        let last_kind = if local_next.is_some() {
+            LoanEdgeKind::Fallthrough
+        } else {
+            continuation_kind
+        };
+
+        if statement_has_try(stmt) {
+            record_propagation_edge(facts, stmt);
+        }
+
+        match stmt {
+            Stmt::Return(_) => record_return_edge(facts, stmt),
+            Stmt::Break => {
+                let target = loop_targets.and_then(|targets| targets.exit);
+                record_edge(facts, stmt, target, LoanEdgeKind::Break);
+            }
+            Stmt::Continue => {
+                let target = loop_targets.map(|targets| targets.header);
+                record_edge(facts, stmt, target, LoanEdgeKind::Continue);
+            }
+            Stmt::Expr(_) if function_body && index + 1 == block.stmts.len() => {
+                record_return_edge(facts, stmt);
+            }
+            _ => record_edge(facts, stmt, next, last_kind),
+        }
+
+        for region in control_regions(stmt) {
+            match region {
+                ControlRegion::Branch { then_block, else_block } => {
+                    record_edge(
+                        facts,
+                        stmt,
+                        first_stmt(then_block).or(next),
+                        LoanEdgeKind::BranchThen,
+                    );
+                    index_block_control_flow(
+                        then_block,
+                        next,
+                        last_kind,
+                        loop_targets,
+                        false,
+                        facts,
+                    );
+                    if let Some(else_block) = else_block {
+                        record_edge(
+                            facts,
+                            stmt,
+                            first_stmt(else_block).or(next),
+                            LoanEdgeKind::BranchElse,
+                        );
+                        index_block_control_flow(
+                            else_block,
+                            next,
+                            last_kind,
+                            loop_targets,
+                            false,
+                            facts,
+                        );
+                    } else {
+                        record_edge(facts, stmt, next, LoanEdgeKind::BranchElse);
+                    }
+                }
+                ControlRegion::Loop(body) => {
+                    record_edge(
+                        facts,
+                        stmt,
+                        Some(first_stmt(body).unwrap_or(stmt)),
+                        LoanEdgeKind::LoopEnter,
+                    );
+                    record_edge(facts, stmt, next, LoanEdgeKind::LoopExit);
+                    index_block_control_flow(
+                        body,
+                        Some(stmt),
+                        LoanEdgeKind::LoopBack,
+                        Some(LoopTargets { header: stmt, exit: next }),
+                        false,
+                        facts,
+                    );
+                }
+                ControlRegion::Block(child) => index_block_control_flow(
+                    child,
+                    next,
+                    last_kind,
+                    loop_targets,
+                    false,
+                    facts,
+                ),
+            }
+        }
+    }
+}
+
+fn index_control_flow(block: &Block, function_body: bool, facts: &mut LoanFacts) {
+    index_block_control_flow(
+        block,
+        None,
+        LoanEdgeKind::Fallthrough,
+        None,
+        function_body,
+        facts,
+    );
 }
 
 /// Validate loan semantics when the caller does not need lowering facts.
@@ -250,6 +683,7 @@ pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
             })
             .collect();
         ctx.check_block_with(&f.body, &[], &callable_params, true)?;
+        index_control_flow(&f.body, true, &mut facts);
 
         let mut lambdas = Vec::new();
         collect_lambdas(&f.body, &mut lambdas);
@@ -378,7 +812,9 @@ fn check_lambda_body(
             .and_then(|ty| borrow_sig_from_fn_type(ty, catalog))
             .map(Box::new),
     };
-    ctx.check_block_with(body, &[], &callable_params, true)
+    ctx.check_block_with(body, &[], &callable_params, true)?;
+    index_control_flow(body, true, facts);
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1018,6 +1454,21 @@ impl LoanCtx<'_> {
                 let mut sources = self.borrow_sources(value, &callables, &live);
                 self.collect_alias_sources(value, &live, &mut sources);
                 self.validate_return_sources(&sources)?;
+                for source in &sources {
+                    if let Some(loan) = live.iter().find(|loan| {
+                        loan.owner == source.owner
+                            && loan.projection == source.projection
+                            && loan.borrower_projection == source.borrower_projection
+                    }) {
+                        let event = LoanEvent::from(loan.clone());
+                        let transfers = self
+                            .facts
+                            .return_transfers
+                            .entry(stmt_key(stmt))
+                            .or_default();
+                        push_unique_event(transfers, event);
+                    }
+                }
                 if let Some(expected) = &self.return_callable
                     && let Some((_, source)) = self.callable_expr_sig(value, &callables)
                 {
