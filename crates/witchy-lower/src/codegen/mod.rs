@@ -4735,6 +4735,20 @@ impl<'types> Codegen<'types> {
         self.specialized_layout_id(&ty)
     }
 
+    fn specialized_boundary_result_layout(&self, expr: &Expr) -> Option<LayoutId> {
+        self.specialized_layout_of_expr(expr)
+            .or_else(|| {
+                self.call_access_signature(expr)
+                    .and_then(|signature| self.specialized_layout_id(signature.result().ty()))
+            })
+            .or_else(|| match expr {
+                Expr::Apply { func, .. } => self
+                    .closure_result_type(func)
+                    .and_then(|ty| self.specialized_layout_id(&ty)),
+                _ => None,
+            })
+    }
+
     fn scalar_layout_kind(kind: ScalarKind) -> Kind {
         match kind {
             ScalarKind::Int | ScalarKind::Duration => Kind::I64,
@@ -5828,6 +5842,15 @@ impl<'types> Codegen<'types> {
     fn reject_unsupported_specialized_boundary(&mut self, expr: &Expr) -> bool {
         let boundary = match expr {
             Expr::Call { name, args }
+                if self.locals.contains_key(name)
+                    && (self.specialized_boundary_result_layout(expr).is_some()
+                        || args
+                            .iter()
+                            .any(|argument| self.specialized_layout_of_expr(argument).is_some())) =>
+            {
+                Some("first-class function call".to_string())
+            }
+            Expr::Call { name, args }
                 if !self.emitted_funcs.contains(name)
                     && witchy_syntax::intrinsics::lookup(
                         witchy_syntax::intrinsics::canonical_operation_name(name),
@@ -5839,18 +5862,35 @@ impl<'types> Codegen<'types> {
             {
                 Some(format!("intrinsic `{name}`"))
             }
-            Expr::MethodCall { receiver, method, .. }
-                if self.specialized_layout_of_expr(receiver).is_some() =>
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } if self.specialized_boundary_result_layout(expr).is_some()
+                || self.specialized_layout_of_expr(receiver).is_some()
+                || args
+                    .iter()
+                    .any(|argument| self.specialized_layout_of_expr(argument).is_some()) =>
             {
                 Some(format!("method `{method}`"))
             }
-            Expr::ExistentialCall { receiver, method, .. }
-                if self.specialized_layout_of_expr(receiver).is_some() =>
+            Expr::ExistentialCall {
+                receiver,
+                method,
+                args,
+                ..
+            } if self.specialized_boundary_result_layout(expr).is_some()
+                || self.specialized_layout_of_expr(receiver).is_some()
+                || args
+                    .iter()
+                    .any(|argument| self.specialized_layout_of_expr(argument).is_some()) =>
             {
                 Some(format!("trait/existential method `{method}`"))
             }
             Expr::Apply { func, args }
-                if self.specialized_layout_of_expr(func).is_some()
+                if self.specialized_boundary_result_layout(expr).is_some()
+                    || self.specialized_layout_of_expr(func).is_some()
                     || args.iter().any(|arg| self.specialized_layout_of_expr(arg).is_some()) =>
             {
                 Some("first-class function call".to_string())

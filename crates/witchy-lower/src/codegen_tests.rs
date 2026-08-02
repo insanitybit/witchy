@@ -432,15 +432,11 @@ fn main() -> Int:
         let names = [
             "__witchy_packed_alloc_calls",
             "__witchy_packed_alloc_bytes",
-            "__witchy_packed_boxed_elements",
-            "__witchy_packed_reshaped_bytes",
         ];
         let (result, counters) = run_int_with_i64_globals(source, &names);
         assert_eq!(result, 90);
         assert_eq!(counters["__witchy_packed_alloc_calls"], 2);
         assert_eq!(counters["__witchy_packed_alloc_bytes"], 56);
-        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
-        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
 
         let module = parse_module(source).expect("parse structural counter program");
         let wat = witchy_wir::wir::to_wat(
@@ -449,9 +445,68 @@ fn main() -> Int:
         assert!(wat.contains("call $relay"), "record crosses a direct call: {wat}");
         assert!(wat.contains("call $relay_points"), "list crosses a direct call: {wat}");
         assert!(!wat.contains("call $mk2"), "no legacy record/list reshape: {wat}");
+        assert!(
+            !wat.contains("__witchy_packed_boxed_elements")
+                && !wat.contains("__witchy_packed_reshaped_bytes"),
+            "zero-only adapter counters stay absent until real adapters have increment sites: {wat}"
+        );
         if witchy_wir::wir_helpers::heap_check_enabled() {
             assert!(wat.contains("call $heap_register"), "checked descriptor allocations register redzones: {wat}");
         }
+    }
+
+    #[test]
+    fn packed_own_boundaries_use_layout_ownership_not_legacy_capacity_slots() {
+        let source = r#"
+mode opt
+
+type Point packed:
+    x: Int
+
+type Token packed:
+    Empty
+    Value(Int)
+
+fn point_score(own point: Point) -> Int:
+    point.x
+
+fn token_score(own token: Token) -> Int:
+    match token:
+        Empty -> 3
+        Value(value) -> value
+
+fn point_count(own points: List(Point)) -> Int:
+    list.length(points)
+
+fn main() -> Int:
+    point_score(Point(7)) * 100 + token_score(Value(11)) * 10
+        + point_count([Point(1), Point(2)])
+"#;
+        assert_eq!(run_int(source), 812);
+        let module = parse_module(source).expect("parse packed own boundaries");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module)
+                .expect_lowered("packed record, sum, and list own boundaries lower exactly"),
+        );
+        for function in ["point_score", "token_score", "point_count"] {
+            let start = wat
+                .find(&format!("(func ${function}"))
+                .unwrap_or_else(|| panic!("missing {function}: {wat}"));
+            let tail = &wat[start..];
+            let signature = tail.lines().next().expect("function signature line");
+            assert!(
+                !signature.contains("__witchy_owncap") && !signature.contains("__cap"),
+                "LayoutDependent own `{function}` must not use the legacy capacity ABI: {signature}"
+            );
+            assert_eq!(
+                signature.matches("(param $").count(),
+                1,
+                "the exact descriptor pointer is the complete own ABI: {signature}"
+            );
+        }
+        assert!(wat.contains("call $point_score"));
+        assert!(wat.contains("call $token_score"));
+        assert!(wat.contains("call $point_count"));
     }
 
     #[test]
@@ -603,8 +658,6 @@ fn main() -> Int:
         let names = [
             "__witchy_packed_alloc_calls",
             "__witchy_packed_alloc_bytes",
-            "__witchy_packed_boxed_elements",
-            "__witchy_packed_reshaped_bytes",
         ];
         let (result, counters) = run_int_module_with_i64_globals(&mutation, &names);
         assert_eq!(result, 4127);
@@ -613,8 +666,6 @@ fn main() -> Int:
         // fourth reuses slack: 3 descriptor allocations, 88 logical bytes.
         assert_eq!(counters["__witchy_packed_alloc_calls"], 3);
         assert_eq!(counters["__witchy_packed_alloc_bytes"], 88);
-        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
-        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
 
         let wat = witchy_wir::wir::to_wat(
             &assemble_wir_module(&mutation).expect_lowered("descriptor list mutation lowers"),
@@ -656,8 +707,6 @@ fn main(console: Console):
         let names = [
             "__witchy_packed_alloc_calls",
             "__witchy_packed_alloc_bytes",
-            "__witchy_packed_boxed_elements",
-            "__witchy_packed_reshaped_bytes",
         ];
         let bytes = compile_module_binary(&module).expect_lowered("compile confined packed stream");
         let (mut store, instance, captured) = instantiate_with_print(&bytes);
@@ -684,8 +733,6 @@ fn main(console: Console):
             .collect();
         assert_eq!(counters["__witchy_packed_alloc_calls"], 1);
         assert_eq!(counters["__witchy_packed_alloc_bytes"], 152);
-        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
-        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
 
         let wat = witchy_wir::wir::to_wat(
             &assemble_wir_module(&module).expect_lowered("confined packed stream lowers"),
@@ -709,9 +756,47 @@ fn main(console: Console):
                 && !answer.contains("local.get $__fori_point"),
             "the packed consumer walks a stride-aware pointer cursor: {answer}"
         );
+        assert_eq!(
+            answer.matches("local.set $point\n").count(),
+            4,
+            "the enabled loop-unroll lever emits four packed cursor lanes: {answer}"
+        );
         if witchy_wir::wir_helpers::heap_check_enabled() {
             assert!(answer.contains("call $heap_register"), "exact packed storage is checked: {answer}");
         }
+
+        let unroll_off = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::LoopUnroll);
+        witchy_syntax::opt::set_for_tests(Some(unroll_off));
+        let scalar_module = link_list_app(source);
+        let scalar_bytes = compile_module_binary(&scalar_module)
+            .expect_lowered("compile scalar packed cursor");
+        let scalar_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&scalar_module).expect_lowered("scalar packed cursor lowers"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let (mut scalar_store, scalar_instance, scalar_captured) =
+            instantiate_with_print(&scalar_bytes);
+        scalar_instance
+            .get_typed_func::<(), ()>(&mut scalar_store, "run")
+            .expect("scalar cursor run export")
+            .call(&mut scalar_store, ())
+            .expect("run scalar packed cursor");
+        assert_eq!(*scalar_captured.lock().unwrap(), vec!["36009".to_string()]);
+        let start = scalar_wat
+            .find("(func $app.answer")
+            .expect("scalar linked answer function");
+        let tail = &scalar_wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let scalar_answer = &tail[..end];
+        assert_eq!(
+            scalar_answer.matches("local.set $point\n").count(),
+            1,
+            "-loop-unroll emits one packed cursor lane: {scalar_answer}"
+        );
 
         let deopt = witchy_syntax::opt::OptSet::default_set()
             .without(witchy_syntax::opt::Opt::BoundsElide);
@@ -775,15 +860,11 @@ fn main() -> Int:
         let names = [
             "__witchy_packed_alloc_calls",
             "__witchy_packed_alloc_bytes",
-            "__witchy_packed_boxed_elements",
-            "__witchy_packed_reshaped_bytes",
         ];
         let (result, counters) = run_int_module_with_i64_globals(&module, &names);
         assert_eq!(result, 1212, "the alias retains the old one-element value");
         assert_eq!(counters["__witchy_packed_alloc_calls"], 2);
         assert_eq!(counters["__witchy_packed_alloc_bytes"], 56);
-        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
-        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
     }
 
     #[test]
@@ -812,8 +893,6 @@ fn main() -> Int:
         let names = [
             "__witchy_packed_alloc_calls",
             "__witchy_packed_alloc_bytes",
-            "__witchy_packed_boxed_elements",
-            "__witchy_packed_reshaped_bytes",
             "__witchy_destination_candidates_forwarded",
             "__witchy_region_rewind_calls",
         ];
@@ -821,8 +900,6 @@ fn main() -> Int:
         assert_eq!(result, 16833142);
         assert_eq!(counters["__witchy_packed_alloc_calls"], 1);
         assert_eq!(counters["__witchy_packed_alloc_bytes"], 16);
-        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
-        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
         assert_eq!(counters["__witchy_destination_candidates_forwarded"], 500_000);
         assert_eq!(counters["__witchy_region_rewind_calls"], 0);
 
@@ -1374,7 +1451,7 @@ fn main(console: Console):
     }
 
     #[test]
-    fn packed_sum_destination_preserves_nested_fixed_payloads() {
+    fn nested_packed_sum_result_declines_destination_forwarding() {
         let source = r#"
 mode opt
 
@@ -1405,16 +1482,24 @@ fn main() -> Int:
 "#;
         let names = [
             "__witchy_packed_alloc_calls",
-            "__witchy_packed_boxed_elements",
-            "__witchy_packed_reshaped_bytes",
+            "__witchy_packed_alloc_bytes",
             "__witchy_destination_candidates_forwarded",
         ];
         let (result, counters) = run_int_with_i64_globals(source, &names);
         assert_eq!(result, 66);
-        assert_eq!(counters["__witchy_packed_alloc_calls"], 3);
-        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
-        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
-        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 4);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 6);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 128);
+        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 0);
+        let module = parse_module(source).expect("parse nested destination exclusion");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module)
+                .expect_lowered("nested fixed results retain the allocating fallback"),
+        );
+        assert!(
+            !wat.contains("__witchy_destination_scratch_")
+                && !wat.contains("__witchy_packed_sum_destination_"),
+            "no destination claim is made until nested children construct in place: {wat}"
+        );
     }
 
     #[test]
@@ -1440,16 +1525,12 @@ fn main() -> Int:
         let names = [
             "__witchy_packed_alloc_calls",
             "__witchy_packed_alloc_bytes",
-            "__witchy_packed_boxed_elements",
-            "__witchy_packed_reshaped_bytes",
             "__witchy_destination_candidates_forwarded",
         ];
         let (result, counters) = run_int_with_i64_globals(source, &names);
         assert_eq!(result, 49_999_959);
         assert_eq!(counters["__witchy_packed_alloc_calls"], 0);
         assert_eq!(counters["__witchy_packed_alloc_bytes"], 0);
-        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
-        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
         assert_eq!(counters["__witchy_destination_candidates_forwarded"], 999_999);
 
         let module = parse_module(source).expect("parse destination-forwarding oracle");
@@ -1693,6 +1774,40 @@ fn main() -> Int:
             4,
             "a dynamic range retains one remainder guard per lane: {sum}"
         );
+
+        let unroll_off = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::LoopUnroll);
+        witchy_syntax::opt::set_for_tests(Some(unroll_off));
+        let deopt_result = run_int(source);
+        let deopt_module = parse_module(source).expect("parse de-opt counted-range cases");
+        let deopt_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&deopt_module)
+                .expect_lowered("de-opt counted ranges retain scalar lowering"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        assert_eq!(deopt_result, 0, "-loop-unroll preserves the oracle");
+        let start = deopt_wat.find("(func $sum").expect("de-opt sum function");
+        let tail = &deopt_wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let deopt_sum = &tail[..end];
+        assert_eq!(
+            deopt_sum.matches("local.set $i").count(),
+            1,
+            "-loop-unroll emits one scalar lane: {deopt_sum}"
+        );
+        assert_eq!(
+            deopt_sum.matches("br_if $fe").count(),
+            1,
+            "-loop-unroll emits one scalar guard: {deopt_sum}"
+        );
+
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::none()));
+        let none_result = run_int(source);
+        witchy_syntax::opt::set_for_tests(None);
+        assert_eq!(none_result, 0, "WITCHY_OPT=none disables loop unrolling");
     }
 
     #[test]
@@ -1848,9 +1963,95 @@ fn main() -> Int:
         let diagnostic = error.to_string();
         assert!(
             diagnostic.contains("declared packed layout")
-                && diagnostic.contains("function value")
+                && diagnostic.contains("first-class function call")
                 && diagnostic.contains("LayoutId"),
             "unexpected first-class diagnostic: {diagnostic}",
+        );
+    }
+
+    #[test]
+    fn scalar_input_packed_result_is_exact_only_across_direct_calls() {
+        let direct = r#"
+mode opt
+type Point packed:
+    x: Int
+    y: Int
+fn build(value: Int) -> Point:
+    Point(value + 1, value + 2)
+fn main() -> Int:
+    let point = build(40)
+    point.x * 10 + point.y
+"#;
+        assert_eq!(run_int(direct), 452);
+        let direct_module = parse_module(direct).expect("parse direct packed result");
+        let direct_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&direct_module)
+                .expect_lowered("a direct scalar-input packed result carries its LayoutId"),
+        );
+        assert!(direct_wat.contains("call $build"), "exact direct result: {direct_wat}");
+
+        let first_class = parse_module(r#"
+mode opt
+type Point packed:
+    x: Int
+fn build(value: Int) -> Point:
+    Point(value)
+fn invoke(f: fn(Int) -> Point, value: Int) -> Point:
+    f(value)
+fn main() -> Int:
+    invoke(build, 7).x
+"#).expect("parse scalar-input first-class packed result");
+        let first_class_error = compile_module_binary(&first_class)
+            .expect_rejected("a packed result needs a physical first-class signature");
+        assert!(
+            first_class_error.to_string().contains("first-class function call")
+                && first_class_error.to_string().contains("LayoutId"),
+            "exact result-only function-value rejection: {first_class_error}",
+        );
+
+        let closure = parse_module(r#"
+mode opt
+type Point packed:
+    x: Int
+fn main() -> Int:
+    let build = fn(value: Int) -> Point: Point(value)
+    build(9).x
+"#).expect("parse scalar-input closure packed result");
+        let indirect = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::DirectCall)
+            .without(witchy_syntax::opt::Opt::ClosureElide);
+        witchy_syntax::opt::set_for_tests(Some(indirect));
+        let closure_result = compile_module_binary(&closure);
+        witchy_syntax::opt::set_for_tests(None);
+        let closure_error = closure_result
+            .expect_rejected("a packed closure result needs a physical Apply signature");
+        assert!(
+            closure_error.to_string().contains("first-class function call")
+                && closure_error.to_string().contains("LayoutId"),
+            "exact result-only Apply rejection: {closure_error}",
+        );
+
+        let existential = parse_module(r#"
+mode opt
+type Point packed:
+    x: Int
+trait Maker:
+    fn make(let self, value: Int) -> Point
+type Seed:
+    Seed
+impl Maker for Seed:
+    fn make(let self, value: Int) -> Point:
+        Point(value)
+fn main() -> Int:
+    let maker: dyn Maker = Seed
+    maker.make(11).x
+"#).expect("parse existential packed result");
+        let existential_error = compile_module_binary(&existential)
+            .expect_rejected("a packed trait result needs a physical witness signature");
+        assert!(
+            existential_error.to_string().contains("trait/existential method `make`")
+                && existential_error.to_string().contains("LayoutId"),
+            "exact result-only trait rejection: {existential_error}",
         );
     }
 

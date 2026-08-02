@@ -182,6 +182,22 @@ fn destination_constructor_tail_expr(expr: &Expr) -> bool {
     }
 }
 
+fn destination_layout_is_flat(cg: &Codegen<'_>, id: LayoutId) -> bool {
+    let Some(layout) = cg.specialized_layouts.get(id) else {
+        return false;
+    };
+    layout
+        .fields()
+        .iter()
+        .all(|field| matches!(field.kind(), FieldKind::Scalar(_)))
+        && layout.variant_layouts().iter().all(|variant| {
+            variant
+                .fields()
+                .iter()
+                .all(|field| matches!(field.kind(), FieldKind::Scalar(_)))
+        })
+}
+
 fn direct_scalar_result_fields(function: &Function) -> Option<&[Expr]> {
     let [Stmt::Expr(Expr::Ctor { args, .. })] = function.body.stmts.as_slice() else {
         return None;
@@ -1068,6 +1084,7 @@ fn register_module_items(
                             .iter()
                             .find(|(known, _)| known == t)
                             .map(|(_, id)| *id)
+                        && destination_layout_is_flat(cg, id)
                         && cg.specialized_layouts.get(id).is_some_and(|layout| {
                             matches!(layout.size(), LayoutSize::Fixed(_))
                                 && (matches!(layout.kind(), LayoutKind::ClosedSum { .. })
@@ -2635,10 +2652,10 @@ fn assemble_wir_module_with_structs_mode(
                     },
                     // (RFC-0111) Descriptor-specific counters distinguish physical
                     // packed construction from the shared allocator's other traffic.
-                    // Direct packed boundaries do not touch these: only canonical
-                    // descriptor allocation helpers increment calls/bytes, while the
-                    // explicit zero counters make any future box/reshape adapter an
-                    // observable contract change rather than invisible fallback.
+                    // Direct packed boundaries do not touch these: canonical
+                    // descriptor allocation helpers increment calls and bytes.
+                    // Box/reshape metrics are not exported until such adapters
+                    // exist with real increment sites and nonzero fixtures.
                     WirGlobal {
                         name: "__witchy_packed_alloc_calls".into(),
                         kind: WK::I64,
@@ -2652,20 +2669,6 @@ fn assemble_wir_module_with_structs_mode(
                         mutable: true,
                         init: GlobalInit::I64(0),
                         export: Some("__witchy_packed_alloc_bytes".into()),
-                    },
-                    WirGlobal {
-                        name: "__witchy_packed_boxed_elements".into(),
-                        kind: WK::I64,
-                        mutable: true,
-                        init: GlobalInit::I64(0),
-                        export: Some("__witchy_packed_boxed_elements".into()),
-                    },
-                    WirGlobal {
-                        name: "__witchy_packed_reshaped_bytes".into(),
-                        kind: WK::I64,
-                        mutable: true,
-                        init: GlobalInit::I64(0),
-                        export: Some("__witchy_packed_reshaped_bytes".into()),
                     },
                     WirGlobal {
                         name: "__witchy_destination_candidates_forwarded".into(),

@@ -789,7 +789,9 @@ impl<'types> Codegen<'types> {
                         return None;
                     }
                 };
-                let unroll_safe = self.loop_unroll_safe(body);
+                let unroll_safe = witchy_syntax::opt::enabled(
+                    witchy_syntax::opt::Opt::LoopUnroll,
+                ) && self.loop_unroll_safe(body);
                 let batch_level = (unroll_safe && self.counter_batch_stack.len() < WM_POOL)
                     .then_some(self.counter_batch_stack.len());
                 if let Some(level) = batch_level {
@@ -1137,7 +1139,14 @@ impl<'types> Codegen<'types> {
                         })),
                     },
                 };
-                let lanes = if cursor_safe && self.loop_unroll_safe(body) { 4 } else { 1 };
+                let lanes = if cursor_safe
+                    && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::LoopUnroll)
+                    && self.loop_unroll_safe(body)
+                {
+                    4
+                } else {
+                    1
+                };
                 let mut loop_body: witchy_wir::wir::WirSeq = Vec::new();
                 for _ in 0..lanes {
                     // Guard every lane so the final group preserves exact list

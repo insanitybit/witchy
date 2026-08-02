@@ -163,8 +163,6 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 );
                 println!("packed_alloc_calls {}", s.packed_alloc_calls);
                 println!("packed_alloc_bytes {}", s.packed_alloc_bytes);
-                println!("packed_boxed_elements {}", s.packed_boxed_elements);
-                println!("packed_reshaped_bytes {}", s.packed_reshaped_bytes);
                 println!("region_copy_bytes {}", s.region_copy_bytes);
                 println!("rc_reused_bytes {}", s.rc_reused_bytes);
                 println!("live_cells {}", s.live_cells);

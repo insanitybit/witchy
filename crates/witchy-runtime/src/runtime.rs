@@ -843,14 +843,6 @@ impl Vm {
         self.i64_counter("__witchy_packed_alloc_bytes")
     }
 
-    pub fn packed_boxed_elements(&mut self) -> Option<i64> {
-        self.i64_counter("__witchy_packed_boxed_elements")
-    }
-
-    pub fn packed_reshaped_bytes(&mut self) -> Option<i64> {
-        self.i64_counter("__witchy_packed_reshaped_bytes")
-    }
-
     pub fn region_copy_bytes(&mut self) -> Option<i64> {
         self.instance
             .get_global(&mut self.store, "__region_copy_bytes")

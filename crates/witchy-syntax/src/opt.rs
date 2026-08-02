@@ -106,6 +106,10 @@ pub enum Opt {
     /// deny — anything the analysis cannot prove non-escaping stays boxed. Default-on
     /// after its shape, differential, and heap-check sweeps cleared the hardening bar.
     ClosureElide,
+    /// Four-lane scalar loop unrolling for proven-safe counted ranges and packed
+    /// cursor walks. Off emits one guarded scalar iteration, providing the exact
+    /// de-opt oracle for this code-size/scheduling transformation. RFC-0111.
+    LoopUnroll,
     // NOTE: the registry holds ONLY optimizations the compiler actually performs —
     // every entry must pass the differential de-opt sweep AND prove it fired
     // (RFC-0030's contract). For a MEMORY lever that proof is a `witchy stats`
@@ -120,7 +124,7 @@ pub enum Opt {
 impl Opt {
     /// Every optimization, in a stable order — drives the differential de-opt
     /// sweep and `witchy stats` reporting.
-    pub const ALL: [Opt; 12] = [
+    pub const ALL: [Opt; 13] = [
         Opt::InPlace,
         Opt::Views,
         Opt::Sroa,
@@ -133,6 +137,7 @@ impl Opt {
         Opt::DirectCall,
         Opt::BoundsElide,
         Opt::ClosureElide,
+        Opt::LoopUnroll,
     ];
 
     /// The token used in `WITCHY_OPT` and reported by `witchy stats`.
@@ -150,6 +155,7 @@ impl Opt {
             Opt::DirectCall => "direct-call",
             Opt::BoundsElide => "bounds-elide",
             Opt::ClosureElide => "closure-elide",
+            Opt::LoopUnroll => "loop-unroll",
         }
     }
 
@@ -323,6 +329,7 @@ mod tests {
             "default includes shipped opts"
         );
         assert!(d.contains(Opt::ClosureElide), "closure-elide is promoted");
+        assert!(d.contains(Opt::LoopUnroll), "loop-unroll is promoted");
         assert_eq!(d, OptSet::all(), "release == all");
     }
 
@@ -354,6 +361,7 @@ mod tests {
             "shipped opts are in release"
         );
         assert!(rel.contains(Opt::ClosureElide), "closure-elide promoted");
+        assert!(rel.contains(Opt::LoopUnroll), "loop-unroll promoted");
         // Release remains the base for per-pass bisection.
         assert!(
             !parse("release,-closure-elide")
