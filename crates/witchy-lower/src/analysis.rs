@@ -167,7 +167,7 @@ impl CallOwnershipFact {
     }
 
     fn argument_may_alias_out(&self, index: usize) -> bool {
-        self.own_capacity_param != Some(index) && !self.no_copy_var_params.contains(&index)
+        self.own_capacity_param != Some(index) && !self.var_capacity_params.contains(&index)
     }
 }
 
@@ -242,7 +242,34 @@ fn checked_call_ownership_fact(
     access: &witchy_types::access::CheckedAccessFacts<'_>,
     expression: &Expr,
 ) -> Option<CallOwnershipFact> {
-    access.call_at(module, expression).map(call_ownership_fact)
+    let signature = access.call_at(module, expression)?;
+    let mut fact = call_ownership_fact(signature);
+    // Place assignment lowers to a compiler-private, value-returning Dict
+    // helper. Its checked signature carries the exact `unique` physical input,
+    // while the source place supplies the write-back edge. Preserve that edge
+    // in this same per-call fact so accumulator, kill, and no-copy consumers do
+    // not need a second structural-call authority.
+    if matches!(expression, Expr::Call { name, .. } if private_structural_helper(name))
+        && signature.params().first().is_some_and(|param| {
+            type_has_capacity_token(param.ty())
+                && param.ownership().input().is_some()
+                && param.qualifiers().iter().any(|qualifier| {
+                    matches!(
+                        qualifier,
+                        witchy_types::access::AccessQualifier::Unique
+                            | witchy_types::access::AccessQualifier::LocalUnique
+                    )
+                })
+        })
+    {
+        if !fact.var_capacity_params.contains(&0) {
+            fact.var_capacity_params.push(0);
+        }
+        if !fact.no_copy_var_params.contains(&0) {
+            fact.no_copy_var_params.push(0);
+        }
+    }
+    Some(fact)
 }
 
 #[derive(Clone, Copy)]
@@ -3827,12 +3854,17 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     .or(legacy)
                     .unwrap_or_default();
                 let operands = args.iter().collect::<Vec<_>>();
+                let callee = if matches!(env.get(name), Some(NoCopyProof::Callable { .. })) {
+                    "indirect function".to_string()
+                } else {
+                    no_copy_display_name(name)
+                };
                 self.record_call_misses(
                     &operands,
                     &required,
                     stmt,
                     env,
-                    &no_copy_display_name(name),
+                    &callee,
                 );
                 if unique_result || no_copy_fresh(expr) {
                     NoCopyProof::Available
