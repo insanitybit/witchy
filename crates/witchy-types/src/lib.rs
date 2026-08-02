@@ -9,6 +9,7 @@
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 #![deny(unsafe_code)]
 
+pub mod access;
 pub mod loans;
 pub mod existential;
 pub mod migration;
@@ -19,3 +20,6 @@ pub mod storage;
 pub mod traits;
 pub mod typeck;
 pub mod witness;
+
+#[cfg(test)]
+mod access_tests;
