@@ -489,9 +489,21 @@ fn validate_nominal_lifetime_uses(
                 collect_parameter_lifetime_binders(parameter, &mut nested);
             }
             for parameter in parameters {
-                validate_nominal_lifetime_uses(parameter, &nested, context, false)?;
+                validate_nominal_lifetime_uses(parameter, &nested, context, true)?;
             }
-            validate_nominal_lifetime_uses(result, &nested, context, false)
+            validate_nominal_lifetime_uses(result, &nested, context, true).map_err(|error| {
+                if error.message.contains("does not declare it") {
+                    TypeError {
+                        message: format!(
+                            "{}; a nested function output lifetime requires that a function \
+                             parameter borrows with that lifetime",
+                            error.message
+                        ),
+                    }
+                } else {
+                    error
+                }
+            })
         }
     }
 }
@@ -559,7 +571,12 @@ fn reject_borrowed_nominal_containers(
             .iter()
             .try_for_each(|item| reject_borrowed_nominal_containers(item, lifetime_nominals, context)),
         ast::Type::Named(name, arguments) => {
-            let is_borrowed_shell = lifetime_nominals.contains(name);
+            // A cross-module borrowed nominal is not present in the source
+            // module's local declaration set yet. Its direct lifetime argument
+            // still identifies the shell; only an enclosing owner such as
+            // `List(Holder('a))` is a container boundary.
+            let is_borrowed_shell = lifetime_nominals.contains(name)
+                || arguments.iter().any(|argument| lifetime_argument_name(argument).is_some());
             if !is_borrowed_shell
                 && arguments
                     .iter()
@@ -600,9 +617,14 @@ fn reject_borrowed_nominal_containers(
             }
             Ok(())
         }
-        // Nested callable relations are separately quantified and do not store
-        // an outer borrowed aggregate relation.
-        ast::Type::Fn(_, _, _) => Ok(()),
+        // Nested callable relations are separately quantified, but each
+        // callable surface still has to reject borrowed aggregate containers.
+        ast::Type::Fn(parameters, result, _) => {
+            parameters.iter().try_for_each(|parameter| {
+                reject_borrowed_nominal_containers(parameter, lifetime_nominals, context)
+            })?;
+            reject_borrowed_nominal_containers(result, lifetime_nominals, context)
+        }
     }
 }
 
@@ -610,6 +632,7 @@ fn validate_callable_nominal_lifetimes(
     name: &str,
     parameters: &[ast::Param],
     result: Option<&ast::Type>,
+    lifetime_nominals: &HashSet<String>,
 ) -> Result<(), TypeError> {
     let mut lifetimes = HashSet::new();
     for parameter in parameters {
@@ -620,11 +643,15 @@ fn validate_callable_nominal_lifetimes(
     let context = format!("callable `{}`", name.rsplit('.').next().unwrap_or(name));
     for parameter in parameters {
         if let Some(ty) = &parameter.ty {
+            // Direct callable view relations retain RFC-0083's loan-specific
+            // diagnostics. Nested `fn` types recurse with strict binding above.
             validate_nominal_lifetime_uses(ty, &lifetimes, &context, false)?;
+            reject_borrowed_nominal_containers(ty, lifetime_nominals, &context)?;
         }
     }
     if let Some(result) = result {
         validate_nominal_lifetime_uses(result, &lifetimes, &context, false)?;
+        reject_borrowed_nominal_containers(result, lifetime_nominals, &context)?;
     }
     Ok(())
 }
@@ -699,6 +726,7 @@ fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError>
                 &function.name,
                 &function.params,
                 function.ret.as_ref(),
+                &lifetime_nominals,
             )?,
             Item::Trait(definition) => {
                 for method in &definition.methods {
@@ -706,6 +734,7 @@ fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError>
                         &method.name,
                         &method.params,
                         method.ret.as_ref(),
+                        &lifetime_nominals,
                     )?;
                 }
             }
@@ -715,6 +744,7 @@ fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError>
                         &method.name,
                         &method.params,
                         method.ret.as_ref(),
+                        &lifetime_nominals,
                     )?;
                 }
             }
@@ -724,6 +754,11 @@ fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError>
                     &HashSet::new(),
                     &format!("type alias `{}`", name.rsplit('.').next().unwrap_or(name)),
                     true,
+                )?;
+                reject_borrowed_nominal_containers(
+                    ty,
+                    &lifetime_nominals,
+                    &format!("type alias `{}`", name.rsplit('.').next().unwrap_or(name)),
                 )?;
             }
             Item::Const { .. } | Item::Comptime(_) => {}
@@ -2759,6 +2794,10 @@ struct Checker {
     /// type may mention the parameters, which are instantiated with the value's
     /// actual type arguments on access.
     record_fields: HashMap<String, RecordInfo>,
+    /// RFC-0112 stage-1 nominal shells. Their syntax and callable identities are
+    /// checked, but values may not yet be projected, destructured, updated, or
+    /// transported through executable calls until owner-root lowering lands.
+    borrowed_nominal_types: HashSet<String>,
     /// Sealed record capabilities (`capability X:` with named fields). Their
     /// fields are opaque: `.field` access is rejected so the only way to reach a
     /// carried capability is `match`, which the linker confines to the home
@@ -3717,6 +3756,41 @@ impl Checker {
             | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
             | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
         }
+    }
+
+    fn borrowed_nominal_name(&self, ty: &Ty) -> Option<String> {
+        let Ty::Named(name, arguments) = self.resolve(ty) else { return None };
+        let has_lifetime_argument = arguments.iter().any(|argument| {
+            matches!(self.resolve(argument), Ty::Named(lifetime, args)
+                if args.is_empty() && lifetime.starts_with('\''))
+        });
+        (self.borrowed_nominal_types.contains(&name) || has_lifetime_argument)
+            .then(|| dequalify_home(&name, &self.cur_module))
+    }
+
+    /// RFC-0112 stage 1 freezes the type-level contract before any value-level
+    /// owner-root ABI exists. Keeping this one typed guard shared by field,
+    /// pattern, update, and call paths prevents a new expression lowering from
+    /// silently treating a borrowed shell as an ordinary owning aggregate.
+    fn reject_borrowed_nominal_runtime_ty(
+        &self,
+        ty: &Ty,
+        operation: &str,
+    ) -> Result<(), TypeError> {
+        let Some(name) = self.borrowed_nominal_name(ty) else { return Ok(()) };
+        terr(format!(
+            "{operation} uses borrowed nominal type `{name}`, but RFC-0112 stage 1 preserves \
+             syntax, kinds, signatures, and reflection only. Wait for projection-aware loans \
+             and runtime owner-root lowering"
+        ))
+    }
+
+    fn reject_borrowed_nominal_container_type(
+        &self,
+        ty: &ast::Type,
+        context: &str,
+    ) -> Result<(), TypeError> {
+        reject_borrowed_nominal_containers(ty, &self.borrowed_nominal_types, context)
     }
 
     fn reject_runtime_compiler_syntax_ty(&self, t: &Ty, ctx: &str) -> Result<(), TypeError> {
@@ -4909,6 +4983,10 @@ impl Checker {
                     // It pins variables the RHS leaves open and reports
                     // disagreement at THIS line.
                     let vt = if let Some(decl) = decl {
+                        self.reject_borrowed_nominal_container_type(
+                            decl,
+                            &format!("local type ascription for `{name}`"),
+                        )?;
                         // (RFC-0025) `frozen` asserts deep immutability, so a `frozen`
                         // binding cannot also be mutable — `var x: frozen T` is a
                         // contradiction the checker rejects (the contract has teeth).
@@ -5255,6 +5333,10 @@ impl Checker {
                     for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
                         let at = self.infer_expected(arg, pty)
                             .map_err(|e| in_call_context(&display, e))?;
+                        self.reject_borrowed_nominal_runtime_ty(
+                            &at,
+                            &format!("call to function value `{display}`"),
+                        )?;
                         self.reject_var_directed_coercion(
                             &display,
                             index,
@@ -5276,12 +5358,21 @@ impl Checker {
                         )?;
                     }
                     self.enforce_function_value_conventions(name, args, &conventions)?;
+                    self.reject_borrowed_nominal_runtime_ty(
+                        ret.as_ref(),
+                        &format!("call to function value `{display}` result"),
+                    )?;
                     return Ok(*ret);
                 }
                 Ty::Var(_) => {
                     let mut argtys = Vec::new();
                     for arg in args {
-                        argtys.push(self.infer(arg)?);
+                        let arg_ty = self.infer(arg)?;
+                        self.reject_borrowed_nominal_runtime_ty(
+                            &arg_ty,
+                            &format!("call to function value `{name}`"),
+                        )?;
+                        argtys.push(arg_ty);
                     }
                     let ret = expected.cloned().unwrap_or_else(|| self.fresh());
                     self.unify(
@@ -5467,6 +5558,10 @@ impl Checker {
                 self.infer_expected(arg, param_ty)
             }
             .map_err(|e| in_call_context(&display, e))?;
+            self.reject_borrowed_nominal_runtime_ty(
+                &at,
+                &format!("call to `{display}`"),
+            )?;
             self.reject_var_directed_coercion(
                 &display,
                 index,
@@ -5601,6 +5696,10 @@ impl Checker {
         self.reject_externref_cap_aggregate_ty(&ret, &format!("call to `{call_name}`"))?;
         self.reject_structural_authority_ty(&ret, &format!("call to `{call_name}`"))?;
         self.reject_runtime_compiler_syntax_ty(&ret, &format!("call to `{call_name}`"))?;
+        self.reject_borrowed_nominal_runtime_ty(
+            &ret,
+            &format!("call to `{display}` result"),
+        )?;
         Ok(ret)
     }
 
@@ -6054,6 +6153,10 @@ impl Checker {
                 // Trait lowering resolves every method call (impl, trait
                 // bound, or static); one that survives is unresolvable.
                 let receiver_ty = self.infer(receiver)?;
+                self.reject_borrowed_nominal_runtime_ty(
+                    &receiver_ty,
+                    &format!("method call `.{method}(…)`"),
+                )?;
                 // Trait lowering resolves every valid existential call into a
                 // compiler-owned `ExistentialCall`. A dyn receiver surviving
                 // here therefore names a method outside its statically declared
@@ -6078,9 +6181,17 @@ impl Checker {
                 conventions,
                 ..
             } => {
-                self.infer(receiver)?;
+                let receiver_ty = self.infer(receiver)?;
+                self.reject_borrowed_nominal_runtime_ty(
+                    &receiver_ty,
+                    &format!("existential method call `{owner_trait}.{method}`"),
+                )?;
                 for arg in args {
-                    self.infer(arg)?;
+                    let arg_ty = self.infer(arg)?;
+                    self.reject_borrowed_nominal_runtime_ty(
+                        &arg_ty,
+                        &format!("existential method call `{owner_trait}.{method}`"),
+                    )?;
                 }
                 self.enforce_existential_conventions(
                     owner_trait,
@@ -6089,7 +6200,12 @@ impl Checker {
                     args,
                     conventions,
                 )?;
-                Ok(self.to_ty(result))
+                let result = self.to_ty(result);
+                self.reject_borrowed_nominal_runtime_ty(
+                    &result,
+                    &format!("existential method call `{owner_trait}.{method}`"),
+                )?;
+                Ok(result)
             }
             Expr::ExistentialPack { expr, ty, .. } => {
                 self.infer(expr)?;
@@ -6179,6 +6295,12 @@ impl Checker {
                 terr(format!("unbound variable `{name}`"))
             }
             Expr::Lambda { params, body, ret } => {
+                validate_callable_nominal_lifetimes(
+                    "lambda",
+                    params,
+                    ret.as_ref(),
+                    &self.borrowed_nominal_types,
+                )?;
                 // Closures capture by value, so an assignment to a captured
                 // (outer) variable cannot propagate out: the interpreter would
                 // silently mutate a private copy while the compiled backends can't
@@ -6247,6 +6369,10 @@ impl Checker {
                     }
                     for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
                         let at = self.infer_expected(arg, pty)?;
+                        self.reject_borrowed_nominal_runtime_ty(
+                            &at,
+                            "function-value application",
+                        )?;
                         self.reject_var_directed_coercion(
                             "function value",
                             index,
@@ -6264,11 +6390,20 @@ impl Checker {
                         args,
                         &conventions,
                     )?;
+                    self.reject_borrowed_nominal_runtime_ty(
+                        ret.as_ref(),
+                        "function-value application result",
+                    )?;
                     return Ok(*ret);
                 }
                 let mut argtys = Vec::new();
                 for arg in args {
-                    argtys.push(self.infer(arg)?);
+                    let arg_ty = self.infer(arg)?;
+                    self.reject_borrowed_nominal_runtime_ty(
+                        &arg_ty,
+                        "function-value application",
+                    )?;
+                    argtys.push(arg_ty);
                 }
                 let ret = self.fresh();
                 self.unify(
@@ -6298,6 +6433,10 @@ impl Checker {
                 if let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
                     let typarams = self.ctor_typarams.get(name).cloned().unwrap_or_default();
                     let (fields, result) = self.instantiate(&fields, &result, &typarams);
+                    self.reject_borrowed_nominal_runtime_ty(
+                        &result,
+                        &format!("constructor `{name}`"),
+                    )?;
                     if fields.len() != args.len() {
                         return terr(format!(
                             "constructor `{name}` takes {} field(s) but got {}",
@@ -6386,6 +6525,10 @@ impl Checker {
             }
             Expr::Field { base, field } => {
                 let bt = self.infer(base)?;
+                self.reject_borrowed_nominal_runtime_ty(
+                    &bt,
+                    &format!("field projection `.{field}`"),
+                )?;
                 let resolved = self.resolve(&bt);
                 // `pair.0` — a tuple element, by position.
                 if let Ok(i) = field.parse::<usize>() {
@@ -6439,6 +6582,7 @@ impl Checker {
             }
             Expr::RecordUpdate { name, base, fields } => {
                 let bt = self.infer(base)?;
+                self.reject_borrowed_nominal_runtime_ty(&bt, "record spread/update")?;
                 let resolved = self.resolve(&bt);
                 let (base_tyname, base_args) = match &resolved {
                     Ty::Named(n, a) => (n.clone(), a.clone()),
@@ -6536,6 +6680,7 @@ impl Checker {
                 Ok(value_ty)
             }
             Expr::As { expr: payload, ty } => {
+                self.reject_borrowed_nominal_container_type(ty, "type ascription")?;
                 let src = self.infer(payload)?;
                 let target = self.to_ty(ty);
                 // (RFC-0081) Explicit erasure `value as dyn Trait` is a legal
@@ -7004,6 +7149,9 @@ impl Checker {
     }
 
     fn check_pattern(&mut self, pat: &Pattern, expected: &Ty) -> Result<(), TypeError> {
+        if !matches!(pat, Pattern::Wildcard | Pattern::Var(_)) {
+            self.reject_borrowed_nominal_runtime_ty(expected, "pattern destructuring")?;
+        }
         match pat {
             Pattern::Wildcard => Ok(()),
             Pattern::Var(name) => {
@@ -8396,6 +8544,18 @@ fn run_check_selected(
         ctor_sigs: HashMap::new(),
         ctor_typarams: HashMap::new(),
         record_fields: HashMap::new(),
+        borrowed_nominal_types: module
+            .items
+            .iter()
+            .filter_map(|item| {
+                let Item::Type(definition) = item else { return None };
+                definition
+                    .params
+                    .iter()
+                    .any(|parameter| ast::is_lifetime_param(parameter))
+                    .then(|| definition.name.clone())
+            })
+            .collect(),
         sealed_types: HashSet::new(),
         construction_sealed_types: HashSet::new(),
         transparent_externref_brands: HashMap::new(),

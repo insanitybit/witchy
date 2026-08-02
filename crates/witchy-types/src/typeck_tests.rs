@@ -550,6 +550,124 @@
     }
 
     #[test]
+    fn borrowed_nominal_containers_reject_on_every_callable_surface() {
+        let cases = [
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holders: List(Holder('a))) -> Int:\n    0\n",
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntrait Bad:\n    fn inspect(let owner: let('a) String, let holders: List(Holder('a))) -> Int\n",
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntype Subject:\n    Subject\n\ntrait Inspect:\n    fn inspect(self) -> Int\n\nimpl Inspect for Subject:\n    fn inspect(self, let owner: let('a) String, let holders: List(Holder('a))) -> Int:\n        0\n",
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn outer() -> Int:\n    let bad = fn(let owner: let('a) String, let holders: List(Holder('a))) -> Int:\n        0\n    0\n",
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn local(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    let holders: List(Holder('a)) = [holder]\n    0\n",
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let callback: fn(View(String, 'a), List(Holder('a))) -> Int) -> Int:\n    0\n",
+        ];
+        for source in cases {
+            let error = check_str(source)
+                .expect_err("borrowed containers require descriptor/root lowering");
+            assert!(
+                error.contains("stores a borrowed nominal relation inside `List`")
+                    && error.contains("descriptor/root-lowering stage"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn borrowed_nominal_runtime_operations_reject_until_owner_root_lowering() {
+        let cases = [
+            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn bad(let owner: let('a) String, let cursor: Cursor('a)) -> Int:\n    cursor.offset\n",
+            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn bad(let owner: let('a) String, let cursor: Cursor('a)) -> Cursor('a):\n    Cursor(offset: cursor.offset + 1, ..cursor)\n",
+            "mode opt\n\ntype Holder('a):\n    Holder(View(String, 'a))\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> View(String, 'a):\n    let Holder(view) = holder\n    view\n",
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn sink(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    0\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    sink(owner, holder)\n",
+            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n\nimpl Cursor('a):\n    fn read(self) -> Int:\n        0\n\nfn bad(let owner: let('a) String, let cursor: Cursor('a)) -> Int:\n    cursor.read()\n",
+        ];
+        for source in cases {
+            let error = check_str(source)
+                .expect_err("borrowed nominal runtime operations require owner-root lowering");
+            assert!(
+                error.contains("borrowed nominal type")
+                    && error.contains("runtime owner-root lowering"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_function_output_lifetime_requires_a_nested_input_owner() {
+        let error = check_str(
+            "mode opt\n\ntype Callback:\n    Callback(fn(View(String, 'a)) -> View(String, 'b))\n",
+        )
+        .expect_err("a nested callable cannot manufacture an unrelated output lifetime");
+        assert!(
+            error.contains("uses lifetime `'b` but does not declare it")
+                || error.contains("uses lifetime `'b`") && error.contains("no parameter binds"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn imported_borrowed_nominal_container_signature_rejects_before_lowering() {
+        fn no_comptime(
+            _name: &str,
+            _module: &mut witchy_syntax::ast::Module,
+            _siblings: &[(String, witchy_syntax::ast::Module)],
+        ) -> Result<witchy_syntax::origin::OriginTable, String> {
+            Ok(witchy_syntax::origin::OriginTable::default())
+        }
+
+        let views = witchy_syntax::parser::parse_module(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n",
+        )
+        .expect("parse borrowed nominal module");
+        let main = witchy_syntax::parser::parse_module(
+            "mode opt\n\nimport views\n\nfn bad(let owner: let('a) String, let holders: List(views.Holder('a))) -> Int:\n    0\n",
+        )
+        .expect("parse imported borrowed container use");
+        let error = crate::pipeline::link_checked(
+            vec![("views".into(), views), ("main".into(), main)],
+            "main",
+            no_comptime,
+        )
+        .expect_err("cross-module borrowed containers stay behind the descriptor stage");
+        let error = error.to_string();
+        assert!(
+            error.contains("stores a borrowed nominal relation inside `List`")
+                && error.contains("descriptor/root-lowering stage"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn imported_borrowed_nominal_runtime_use_rejects_before_lowering() {
+        fn no_comptime(
+            _name: &str,
+            _module: &mut witchy_syntax::ast::Module,
+            _siblings: &[(String, witchy_syntax::ast::Module)],
+        ) -> Result<witchy_syntax::origin::OriginTable, String> {
+            Ok(witchy_syntax::origin::OriginTable::default())
+        }
+
+        let views = witchy_syntax::parser::parse_module(
+            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n",
+        )
+        .expect("parse borrowed nominal module");
+        let main = witchy_syntax::parser::parse_module(
+            "mode opt\n\nimport views\n\nfn bad(let owner: let('a) String, let cursor: views.Cursor('a)) -> Int:\n    cursor.offset\n",
+        )
+        .expect("parse imported borrowed runtime use");
+        let error = crate::pipeline::link_checked(
+            vec![("views".into(), views), ("main".into(), main)],
+            "main",
+            no_comptime,
+        )
+        .expect_err("cross-module borrowed values stay behind owner-root lowering")
+        .to_string();
+        assert!(
+            error.contains("borrowed nominal type")
+                && error.contains("runtime owner-root lowering"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn local_unique_cannot_be_a_return_type() {
         // (RFC-0026) `local unique` is valid only within the call — it cannot escape,
         // so it cannot be returned.
