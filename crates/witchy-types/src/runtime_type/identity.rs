@@ -115,12 +115,23 @@ pub struct RuntimeBorrowRelationIdentity {
     pub storage_qualifier_sites: Vec<RuntimeQualifierSite>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RuntimeAccessAuthority {
+    /// Derived from a function type without module-owned checked access facts.
+    /// Nominal owner relations are conservative roots and cannot compare equal
+    /// to checked projection facts.
+    ConservativeType,
+    /// Derived from the exact module-owned `CheckedAccessFacts` query.
+    CheckedFacts,
+}
+
 /// Canonical logical access identity retained by runtime callable descriptors.
-/// It is derived only from the checked `AccessSignature` authority. Physical
-/// offsets, flattened slots, and ownership-token representations never enter
-/// this value.
+/// Its authority distinguishes exact checked relations from conservative
+/// function-type relations. Physical offsets, flattened slots, and
+/// ownership-token representations never enter this value.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RuntimeCallableAccessIdentity {
+    pub authority: RuntimeAccessAuthority,
     pub callable_qualifiers: Vec<RuntimeAccessQualifier>,
     pub parameters: Vec<RuntimeAccessParameterIdentity>,
     pub result: RuntimeAccessResultIdentity,
@@ -161,6 +172,21 @@ impl RuntimeLifetimeNormalizer {
 impl RuntimeCallableAccessIdentity {
     pub(crate) fn from_checked(
         signature: &AccessSignature,
+        resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
+    ) -> Result<Self, RuntimeTypeError> {
+        Self::from_signature(signature, RuntimeAccessAuthority::CheckedFacts, resolve)
+    }
+
+    fn from_conservative_type(
+        signature: &AccessSignature,
+        resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
+    ) -> Result<Self, RuntimeTypeError> {
+        Self::from_signature(signature, RuntimeAccessAuthority::ConservativeType, resolve)
+    }
+
+    fn from_signature(
+        signature: &AccessSignature,
+        authority: RuntimeAccessAuthority,
         resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
     ) -> Result<Self, RuntimeTypeError> {
         let mut lifetimes = RuntimeLifetimeNormalizer::default();
@@ -211,7 +237,7 @@ impl RuntimeCallableAccessIdentity {
                 })
             })
             .collect::<Result<_, RuntimeTypeError>>()?;
-        Ok(Self { callable_qualifiers, parameters, result, borrow_relations })
+        Ok(Self { authority, callable_qualifiers, parameters, result, borrow_relations })
     }
 }
 
@@ -351,6 +377,41 @@ pub enum RuntimeTypeIdentity {
 }
 
 impl RuntimeTypeIdentity {
+    /// Construct a callable identity from the exact checked access authority.
+    /// Module/authenticated callers use this path whenever a declaration or
+    /// function-value fact is available; it cannot collide with the explicitly
+    /// conservative function-type path.
+    pub fn from_checked_callable(
+        signature: &AccessSignature,
+        resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
+    ) -> Result<Self, RuntimeTypeError> {
+        let params = signature
+            .params()
+            .iter()
+            .map(|param| Self::from_resolved_type(param.ty(), resolve))
+            .collect::<Result<_, _>>()?;
+        let result = Box::new(Self::from_resolved_type(signature.result().ty(), resolve)?);
+        let conventions = signature
+            .params()
+            .iter()
+            .map(|param| match param.kind() {
+                AccessKind::OwnedImmutable => RuntimeConvention::Let,
+                AccessKind::SharedBorrow => RuntimeConvention::Borrow,
+                AccessKind::ExclusiveWriteback => RuntimeConvention::Var,
+                AccessKind::Consuming => RuntimeConvention::Own,
+            })
+            .collect();
+        Ok(Self::Function {
+            params,
+            result,
+            conventions,
+            access: Box::new(RuntimeCallableAccessIdentity::from_checked(
+                signature,
+                resolve,
+            )?),
+        })
+    }
+
     /// Convert a fully resolved Witchy type into runtime identity.
     ///
     /// `resolve` is the sole nominal-identity authority. It receives the
@@ -400,7 +461,7 @@ impl RuntimeTypeIdentity {
                         .collect::<Result<_, _>>()?,
                     result: Box::new(Self::from_resolved_type(result, resolve)?),
                     conventions,
-                    access: Box::new(RuntimeCallableAccessIdentity::from_checked(
+                    access: Box::new(RuntimeCallableAccessIdentity::from_conservative_type(
                         &signature,
                         resolve,
                     )?),
@@ -455,7 +516,7 @@ impl RuntimeTypeIdentity {
                             name: name.clone(),
                         }
                     })?,
-                    arguments: convert_arguments(args, resolve)?,
+                    arguments: convert_runtime_arguments(args, resolve)?,
                 })
             }
         }
@@ -468,6 +529,18 @@ fn convert_arguments(
 ) -> Result<Vec<RuntimeTypeIdentity>, RuntimeTypeError> {
     args.iter()
         .map(|arg| RuntimeTypeIdentity::from_resolved_type(arg, resolve))
+        .collect()
+}
+
+fn convert_runtime_arguments(
+    args: &[Type],
+    resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
+) -> Result<Vec<RuntimeTypeIdentity>, RuntimeTypeError> {
+    args.iter()
+        .filter(|argument| {
+            !matches!(argument, Type::Named(name, arguments) if arguments.is_empty() && name.starts_with('\''))
+        })
+        .map(|argument| RuntimeTypeIdentity::from_resolved_type(argument, resolve))
         .collect()
 }
 

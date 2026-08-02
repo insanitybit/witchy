@@ -310,6 +310,18 @@ impl RuntimeDeclarationCatalog {
         })
     }
 
+    /// Resolve one callable through the authenticated declaration catalog while
+    /// retaining the exact module-owned access relation supplied by
+    /// `CheckedAccessFacts`.
+    pub fn checked_callable_identity(
+        &self,
+        signature: &crate::access::AccessSignature,
+    ) -> Result<RuntimeTypeIdentity, RuntimeTypeError> {
+        RuntimeTypeIdentity::from_checked_callable(signature, &|name, kind| {
+            self.resolve(name, kind).cloned()
+        })
+    }
+
     /// Resolve a runtime identity only after proving that its complete nominal
     /// payload graph is capability-free. The diagnostic path is expressed in
     /// declaration/field/constructor terms so a source conversion can identify
@@ -591,4 +603,3 @@ pub(super) fn instantiate_runtime_type(ty: &Type, bindings: &BTreeMap<String, Ty
         },
     }
 }
-

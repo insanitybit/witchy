@@ -27,7 +27,7 @@ pub use catalog::{
     PackageCoordinate, PackageSource, RuntimeDeclarationCatalog,
 };
 pub use identity::{
-    PrimitiveType, RuntimeAccessKind, RuntimeAccessParameterIdentity,
+    PrimitiveType, RuntimeAccessAuthority, RuntimeAccessKind, RuntimeAccessParameterIdentity,
     RuntimeAccessQualifier, RuntimeAccessResultIdentity, RuntimeBorrowOwnerIdentity,
     RuntimeBorrowRelationIdentity, RuntimeCallableAccessIdentity, RuntimeConvention,
     RuntimeLoanProjection, RuntimeLoanProjectionStep, RuntimeQualifierPathStep,
@@ -87,7 +87,9 @@ pub struct RuntimeMethodDescriptor {
     pub result: RuntimeTypeId,
     pub result_type: Type,
     pub result_display: String,
+    pub callable_identity: RuntimeTypeIdentity,
     pub access: RuntimeCallableAccessIdentity,
+    pub borrow_relation_storage_displays: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -147,6 +149,24 @@ impl RuntimeTypePlan {
         catalog: &RuntimeDeclarationCatalog,
         module: &Module,
     ) -> Result<Self, RuntimeTypeError> {
+        Self::build_with_runtime_shapes_and_checked_callables(
+            types,
+            std::iter::empty(),
+            catalog,
+            module,
+        )
+    }
+
+    /// Build an authenticated module plan while retaining exact checked
+    /// callable identities. A caller without `CheckedAccessFacts` deliberately
+    /// receives only conservative function identities from
+    /// `build_with_runtime_shapes`.
+    pub fn build_with_runtime_shapes_and_checked_callables<'a>(
+        types: impl IntoIterator<Item = &'a Type>,
+        callables: impl IntoIterator<Item = &'a crate::access::AccessSignature>,
+        catalog: &RuntimeDeclarationCatalog,
+        module: &Module,
+    ) -> Result<Self, RuntimeTypeError> {
         let mut identities = BTreeSet::new();
         let mut drafts = BTreeMap::new();
         let mut visiting = BTreeSet::new();
@@ -159,6 +179,30 @@ impl RuntimeTypePlan {
                 &mut drafts,
                 &mut visiting,
             )?;
+        }
+        for callable in callables {
+            identities.insert(catalog.checked_callable_identity(callable)?);
+            for ty in callable
+                .params()
+                .iter()
+                .map(|parameter| parameter.ty())
+                .chain(std::iter::once(callable.result().ty()))
+                .chain(
+                    callable
+                        .borrow_relations()
+                        .iter()
+                        .map(|relation| relation.storage_type()),
+                )
+            {
+                collect_runtime_type_shape(
+                    ty,
+                    catalog,
+                    module,
+                    &mut identities,
+                    &mut drafts,
+                    &mut visiting,
+                )?;
+            }
         }
         let mut plan = Self::build(identities)?;
         for (identity, draft) in drafts {
@@ -305,7 +349,11 @@ fn collect_runtime_type_shape_inner(
 ) -> Result<(), RuntimeTypeError> {
     match ty {
         Type::Named(name, arguments) => {
-            for argument in arguments {
+            let runtime_arguments = arguments
+                .iter()
+                .filter(|argument| !is_runtime_lifetime_argument(argument))
+                .collect::<Vec<_>>();
+            for argument in &runtime_arguments {
                 collect_runtime_type_shape(
                     argument,
                     catalog,
@@ -366,16 +414,16 @@ fn collect_runtime_type_shape_inner(
                 return Ok(());
             };
             let parameters = crate::typeck::type_def_params(definition);
-            if parameters.len() != arguments.len() {
+            if parameters.len() != runtime_arguments.len() {
                 return Err(RuntimeTypeError::RuntimeShapeArity {
                     name: definition.name.clone(),
                     expected: parameters.len(),
-                    actual: arguments.len(),
+                    actual: runtime_arguments.len(),
                 });
             }
             let bindings = parameters
                 .into_iter()
-                .zip(arguments.iter().cloned())
+                .zip(runtime_arguments.into_iter().cloned())
                 .collect::<BTreeMap<_, _>>();
             let mut fields = Vec::new();
             for (field_name, field_type) in variant.field_names.iter().zip(&variant.fields) {
@@ -453,6 +501,10 @@ fn collect_runtime_type_shape_inner(
         )?,
     }
     Ok(())
+}
+
+fn is_runtime_lifetime_argument(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, arguments) if arguments.is_empty() && name.starts_with('\''))
 }
 
 fn collect_nested_identities(
@@ -848,6 +900,92 @@ mod tests {
             }
         );
         assert_eq!(access.borrow_relations[1].owners[0].parameter, 1);
+    }
+
+    #[test]
+    fn checked_function_identity_retains_nominal_projections_and_owner_mismatch() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type PairView('left, 'right):\n    first: View(String, 'left)\n    second: View(String, 'right)\n\n\
+             fn pair(left: let('left) String, right: let('right) String, \
+                 pair: PairView('left, 'right)) -> PairView('left, 'right):\n    pair\n\n\
+             fn reversed(right: let('right) String, left: let('left) String, \
+                 pair: PairView('left, 'right)) -> PairView('left, 'right):\n    pair\n",
+        )
+        .expect("parse checked callable identity fixture");
+        let typed = crate::typeck::annotate_checked(module)
+            .expect("type-check checked callable identity fixture");
+        let facts = crate::access::checked_facts(typed.module(), typed.table())
+            .expect("checked callable identity facts");
+
+        let owner = ModuleLoadIdentity::new(
+            package(PackageSource::Workspace, "reflection-test", "0.0.0"),
+            ["main"],
+        )
+        .expect("test module owner");
+        let mut catalog = RuntimeDeclarationCatalog::default();
+        catalog
+            .insert_resolved("PairView", &owner, "PairView", DeclarationKind::Type)
+            .expect("authenticate PairView");
+        let pair = facts.declaration("pair").expect("pair checked signature");
+        let reversed = facts
+            .declaration("reversed")
+            .expect("reversed checked signature");
+        let exact = catalog
+            .checked_callable_identity(pair)
+            .expect("exact checked callable identity");
+        let mismatch = catalog
+            .checked_callable_identity(reversed)
+            .expect("mismatched checked callable identity");
+        assert_ne!(exact, mismatch, "owner-position rewiring must remain distinct");
+
+        let coarse_type = Type::Fn(
+            pair.params().iter().map(|parameter| parameter.ty().clone()).collect(),
+            Box::new(pair.result().ty().clone()),
+            pair.params()
+                .iter()
+                .map(|parameter| match parameter.kind() {
+                    crate::access::AccessKind::OwnedImmutable => Convention::Let,
+                    crate::access::AccessKind::SharedBorrow => Convention::Borrow,
+                    crate::access::AccessKind::ExclusiveWriteback => Convention::Var,
+                    crate::access::AccessKind::Consuming => Convention::Own,
+                })
+                .collect(),
+        );
+        let coarse = catalog
+            .type_identity(&coarse_type)
+            .expect("conservative catalog-free callable identity");
+        assert_ne!(exact, coarse, "coarse roots cannot authenticate exact relations");
+        let plan = RuntimeTypePlan::build_with_runtime_shapes_and_checked_callables(
+            std::iter::empty::<&Type>(),
+            [pair],
+            &catalog,
+            typed.module(),
+        )
+        .expect("authenticated plan with checked callable identity");
+        assert!(plan.id(&exact).is_some());
+        assert!(
+            plan.id(&coarse).is_none(),
+            "authenticated callable collection must not silently add a coarse identity",
+        );
+
+        let RuntimeTypeIdentity::Function { access, .. } = exact else {
+            panic!("expected checked function identity")
+        };
+        assert_eq!(access.authority, RuntimeAccessAuthority::CheckedFacts);
+        assert_eq!(
+            access.borrow_relations[0].output_projection.steps,
+            vec![RuntimeLoanProjectionStep::Field("first".into())],
+        );
+        assert_eq!(access.borrow_relations[0].owners[0].parameter, 0);
+        let RuntimeTypeIdentity::Function { access, .. } = coarse else {
+            panic!("expected conservative function identity")
+        };
+        assert_eq!(access.authority, RuntimeAccessAuthority::ConservativeType);
+        assert_eq!(
+            access.borrow_relations[0].output_projection,
+            RuntimeLoanProjection::default(),
+        );
     }
 
     #[test]

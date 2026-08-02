@@ -899,7 +899,7 @@ Checked runtime values (RFC-0082 Stage 1).
 
 #### `sealed type RuntimeAccessKind`
 
-Logical callable access metadata. Every position and projection names a source type or loan relation; compiler storage offsets and ownership-token representations are intentionally absent.
+Logical callable access metadata. Every position and projection names a source type or loan relation. Borrow relations expose their logical storage type and qualifier sites; compiler storage offsets and ownership-token representations are intentionally absent.
 
 - `AccessValue`
 - `AccessBorrow`
@@ -948,7 +948,7 @@ Logical callable access metadata. Every position and projection names a source t
 
 #### `sealed type RuntimeBorrowRelation`
 
-- `RuntimeBorrowRelation(Int, List(RuntimeLoanProjectionStep), List(RuntimeBorrowOwner))`
+- `RuntimeBorrowRelation(Int, List(RuntimeLoanProjectionStep), List(RuntimeBorrowOwner), RuntimeType, List(RuntimeQualifierSite))`
 
 #### `sealed type RuntimeCallableAccess`
 
@@ -4420,4 +4420,3 @@ Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_j
 #### `impl From(AssertionError) for String`
 
 - `fn from(value: AssertionError) -> Self`
-

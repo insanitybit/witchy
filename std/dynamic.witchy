@@ -17,7 +17,8 @@ sealed type RuntimeField:
     RuntimeField(String, RuntimeType)
 
 // Logical callable access metadata. Every position and projection names a
-// source type or loan relation; compiler storage offsets and ownership-token
+// source type or loan relation. Borrow relations expose their logical storage
+// type and qualifier sites; compiler storage offsets and ownership-token
 // representations are intentionally absent.
 sealed type RuntimeAccessKind:
     AccessValue
@@ -59,7 +60,7 @@ sealed type RuntimeBorrowOwner:
     RuntimeBorrowOwner(Int, List(RuntimeLoanProjectionStep))
 
 sealed type RuntimeBorrowRelation:
-    RuntimeBorrowRelation(Int, List(RuntimeLoanProjectionStep), List(RuntimeBorrowOwner))
+    RuntimeBorrowRelation(Int, List(RuntimeLoanProjectionStep), List(RuntimeBorrowOwner), RuntimeType, List(RuntimeQualifierSite))
 
 sealed type RuntimeCallableAccess:
     RuntimeCallableAccess(List(RuntimeAccessQualifier), List(RuntimeParameterAccess), RuntimeResultAccess, List(RuntimeBorrowRelation))

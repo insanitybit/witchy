@@ -15,6 +15,7 @@ use crate::runtime_type::{
     RuntimeDeclarationCatalog, RuntimeMethodArgumentDescriptor,
     RuntimeMethodCapabilityDescriptor, RuntimeMethodDescriptor,
     RuntimeMethodParameterDescriptor, RuntimeTypeError, RuntimeTypePlan, RuntimeTypeShape,
+    RuntimeTypeIdentity,
 };
 use crate::typeck::{TypeTable, TypedModule, ty_to_ast};
 use crate::witness::{self, WitnessCatalog, WitnessPlan};
@@ -119,8 +120,9 @@ fn lower_explicit_packs_inner(
         dynamic_types.push(method.result.clone());
     }
     let mut runtime_types = match runtime_catalog {
-        Some(runtime_catalog) => RuntimeTypePlan::build_with_runtime_shapes(
+        Some(runtime_catalog) => RuntimeTypePlan::build_with_runtime_shapes_and_checked_callables(
             dynamic_types.iter(),
+            dynamic_methods.iter().map(|method| &method.access),
             runtime_catalog,
             typed.module(),
         ),

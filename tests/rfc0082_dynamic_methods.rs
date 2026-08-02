@@ -290,3 +290,64 @@ fn main(console: Console):
     actor.run().expect("run logical access reflection fixture");
     assert_eq!(actor.output(), expected);
 }
+
+#[test]
+fn dynamic_method_reflection_preserves_borrow_storage_identity_and_qualifiers() {
+    let source = r#"
+mode opt
+
+import dynamic
+import list
+import reflect
+
+type Widget:
+    value: Int
+
+impl Reflect for Widget:
+    fn reflect(self) -> reflect.Mirror:
+        reflect.MNil
+
+@dynamic
+pub fn view(self: Widget, text: View(frozen String, 'source)) -> View(frozen String, 'source):
+    text
+
+fn main(console: Console):
+    let descriptor = dynamic.type_of(dynamic.dynamic(Widget(1)))
+    let method = list.at(dynamic.methods(descriptor), 0)
+    match dynamic.method_access(method):
+        dynamic.RuntimeCallableAccess(_, _, _, relations) ->
+            match list.at(relations, 0):
+                dynamic.RuntimeBorrowRelation(lifetime, output, owners, storage, storage_sites) ->
+                    console.print("relation-${lifetime}-${list.length(output)}-${dynamic.type_name(storage)}")
+                    match list.at(owners, 0):
+                        dynamic.RuntimeBorrowOwner(parameter, input) ->
+                            console.print("owner-${parameter}-${list.length(input)}")
+                    match list.at(storage_sites, 0):
+                        dynamic.RuntimeQualifierSite(path, qualifiers) ->
+                            match list.at(qualifiers, 0):
+                                dynamic.AccessFrozen -> console.print("storage-${list.length(path)}-frozen")
+                                _ -> console.print("wrong-storage-qualifier")
+"#;
+    let checked = checked(source);
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret borrow storage reflection fixture");
+    let expected = [
+        "relation-0-0-frozen String",
+        "owner-1-0",
+        "storage-0-frozen",
+    ];
+    assert_eq!(interpreted, expected);
+
+    let wasm = codegen::compile_checked_module_binary(&checked)
+        .expect_lowered("compile borrow storage reflection fixture");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(
+            &wasm,
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            256,
+        )
+        .expect("spawn borrow storage reflection fixture");
+    actor.run().expect("run borrow storage reflection fixture");
+    assert_eq!(actor.output(), expected);
+}

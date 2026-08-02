@@ -1,8 +1,6 @@
 use super::*;
 
 use crate::access::{AccessSignature, CheckedAccessFacts};
-use crate::runtime_type::RuntimeCallableAccessIdentity;
-
 #[derive(Clone, Debug)]
 pub(super) struct DynamicMethodDefinition {
     name: String,
@@ -10,7 +8,7 @@ pub(super) struct DynamicMethodDefinition {
     pub(super) receiver: Type,
     pub(super) parameters: Vec<DynamicMethodParameterDefinition>,
     pub(super) result: Type,
-    access: AccessSignature,
+    pub(super) access: AccessSignature,
 }
 
 #[derive(Clone, Debug)]
@@ -192,11 +190,25 @@ pub(super) fn prepare_dynamic_methods(
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             let result = descriptor(&method.result)?;
-            let access = RuntimeCallableAccessIdentity::from_checked(
-                &method.access,
-                &|name, kind| runtime_catalog.resolve(name, kind).cloned(),
-            )
-            .map_err(|error| error.to_string())?;
+            let callable_identity = runtime_catalog
+                .checked_callable_identity(&method.access)
+                .map_err(|error| error.to_string())?;
+            if runtime_types.id(&callable_identity).is_none() {
+                return Err(format!(
+                    "dynamic method plan lost the checked callable descriptor for `{}`",
+                    method.function,
+                ));
+            }
+            let RuntimeTypeIdentity::Function { access, .. } = &callable_identity else {
+                unreachable!("checked callable identities are functions")
+            };
+            let access = (**access).clone();
+            let borrow_relation_storage_displays = method
+                .access
+                .borrow_relations()
+                .iter()
+                .map(|relation| witchy_syntax::format::type_str(relation.storage_type()))
+                .collect();
             Ok(RuntimeMethodDescriptor {
                 receiver,
                 receiver_type: method.receiver,
@@ -206,7 +218,9 @@ pub(super) fn prepare_dynamic_methods(
                 result,
                 result_display: witchy_syntax::format::type_str(&method.result),
                 result_type: method.result,
+                callable_identity,
                 access,
+                borrow_relation_storage_displays,
             })
         })
         .collect()
@@ -910,7 +924,11 @@ fn runtime_methods_lookup(ty: Expr, runtime_types: &RuntimeTypePlan) -> Expr {
                                 })
                                 .collect(),
                         ),
-                        runtime_callable_access_expr(&method.access),
+                        runtime_callable_access_expr(
+                            &method.access,
+                            &method.borrow_relation_storage_displays,
+                            runtime_types,
+                        ),
                     ],
                 })
                 .collect();
@@ -1034,6 +1052,8 @@ fn runtime_projection_expr(projection: &crate::runtime_type::RuntimeLoanProjecti
 
 fn runtime_callable_access_expr(
     access: &crate::runtime_type::RuntimeCallableAccessIdentity,
+    storage_displays: &[String],
+    runtime_types: &RuntimeTypePlan,
 ) -> Expr {
     use crate::runtime_type::RuntimeAccessKind as Kind;
     let callable_qualifiers = Expr::List(
@@ -1090,27 +1110,44 @@ fn runtime_callable_access_expr(
         access
             .borrow_relations
             .iter()
-            .map(|relation| Expr::Ctor {
-                name: "dynamic.RuntimeBorrowRelation".into(),
-                args: vec![
-                    Expr::Int(i64::from(relation.lifetime)),
-                    runtime_projection_expr(&relation.output_projection),
-                    Expr::List(
-                        relation
-                            .owners
-                            .iter()
-                            .map(|owner| Expr::Ctor {
-                                name: "dynamic.RuntimeBorrowOwner".into(),
-                                args: vec![
-                                    Expr::Int(
-                                        i64::try_from(owner.parameter).unwrap_or(i64::MAX),
-                                    ),
-                                    runtime_projection_expr(&owner.input_projection),
-                                ],
-                            })
-                            .collect(),
-                    ),
-                ],
+            .enumerate()
+            .map(|(index, relation)| {
+                let storage = runtime_types
+                    .id(&relation.storage)
+                    .expect("runtime callable plan retains relation storage identity");
+                let storage_display = storage_displays
+                    .get(index)
+                    .expect("runtime callable storage displays align with relations");
+                Expr::Ctor {
+                    name: "dynamic.RuntimeBorrowRelation".into(),
+                    args: vec![
+                        Expr::Int(i64::from(relation.lifetime)),
+                        runtime_projection_expr(&relation.output_projection),
+                        Expr::List(
+                            relation
+                                .owners
+                                .iter()
+                                .map(|owner| Expr::Ctor {
+                                    name: "dynamic.RuntimeBorrowOwner".into(),
+                                    args: vec![
+                                        Expr::Int(
+                                            i64::try_from(owner.parameter).unwrap_or(i64::MAX),
+                                        ),
+                                        runtime_projection_expr(&owner.input_projection),
+                                    ],
+                                })
+                                .collect(),
+                        ),
+                        runtime_type_expr(storage, storage_display),
+                        Expr::List(
+                            relation
+                                .storage_qualifier_sites
+                                .iter()
+                                .map(runtime_qualifier_site_expr)
+                                .collect(),
+                        ),
+                    ],
+                }
             })
             .collect(),
     );
