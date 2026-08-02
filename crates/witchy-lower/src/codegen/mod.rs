@@ -2150,9 +2150,11 @@ impl<'types> Codegen<'types> {
                 return Some(signature.clone());
             }
         }
-        self.ast_type_of_expr(func)
-            .as_ref()
-            .and_then(|ty| witchy_types::access::AccessSignature::from_function_type(ty).ok())
+        // A type-only signature lacks the module's nominal borrow catalog and
+        // therefore carries only conservative root relations. Source callable
+        // values must use their exact checked fact; generated direct function
+        // values are covered by the declaration query above.
+        None
     }
 
     fn closure_ownership_envelope(&self, func: &Expr) -> ClosureOwnershipEnvelope {
