@@ -5,7 +5,7 @@
 //! layout ids for nominal fields. Descriptors are immutable products of that
 //! walk or of the validated canonical artifact decoder.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use witchy_syntax::ast::{effective_type_def_params, Type, TypeDef, TypeQual};
@@ -391,6 +391,7 @@ pub enum LayoutError {
     NotPackedRecord { path: LayoutPath, name: String },
     CapabilityDefinition { path: LayoutPath, name: String },
     InvalidClosedSum { path: LayoutPath, name: String },
+    InlineNominalCycle { path: LayoutPath, definition: String },
     ReferenceNotInline {
         path: LayoutPath,
         kind: ReferenceKind,
@@ -429,6 +430,9 @@ impl fmt::Display for LayoutError {
             }
             Self::InvalidClosedSum { path, name } => {
                 write!(formatter, "{path}: `{name}` is not a non-empty closed sum")
+            }
+            Self::InlineNominalCycle { path, definition } => {
+                write!(formatter, "{path}: inline layout cycle re-enters `{definition}`")
             }
             Self::ReferenceNotInline { path, kind, class } => {
                 write!(formatter, "{path}: {kind:?} is {class:?} and cannot be stored inline")
@@ -511,7 +515,7 @@ impl LayoutInterner {
         resolver: &impl ClosedTypeResolver,
     ) -> Result<LayoutId, LayoutError> {
         let path = LayoutPath::root(ty);
-        self.intern_resolved(ty, resolver, &path)
+        self.intern_resolved(ty, resolver, &path, &mut BTreeSet::new())
     }
 
     /// Decode and fully validate canonical bytes without mutating the interner.
@@ -565,16 +569,24 @@ impl LayoutInterner {
         ty: &Type,
         resolver: &impl ClosedTypeResolver,
         path: &LayoutPath,
+        active_nominals: &mut BTreeSet<String>,
     ) -> Result<LayoutId, LayoutError> {
         match ty {
             Type::Qualified(TypeQual::Borrow(_), _) => {
                 Err(reference_error(path, ReferenceKind::BorrowedView))
             }
-            Type::Qualified(_, inner) => self.intern_resolved(inner, resolver, path),
+            Type::Qualified(_, inner) => {
+                self.intern_resolved(inner, resolver, path, active_nominals)
+            }
             Type::Tuple(fields) => {
                 let mut children = Vec::with_capacity(fields.len());
                 for (index, field) in fields.iter().enumerate() {
-                    children.push(self.intern_resolved(field, resolver, &path.tuple(index))?);
+                    children.push(self.intern_resolved(
+                        field,
+                        resolver,
+                        &path.tuple(index),
+                        active_nominals,
+                    )?);
                 }
                 self.intern_kind(LayoutKind::Tuple { fields: children })
             }
@@ -617,6 +629,7 @@ impl LayoutInterner {
                             &arguments[0],
                             resolver,
                             &path.list_element(),
+                            active_nominals,
                         )?;
                         self.intern_kind(LayoutKind::PackedList { element, rc })
                     }
@@ -635,22 +648,33 @@ impl LayoutInterner {
                                 name: definition.name.clone(),
                             });
                         }
-                        let variants = instantiate_fields(definition, arguments, path)?;
-                        let variant = &definition.variants[0];
-                        let mut children = Vec::with_capacity(variants[0].len());
-                        for (index, field) in variants[0].iter().enumerate() {
-                            let field_name = variant
-                                .field_names
-                                .get(index)
-                                .cloned()
-                                .unwrap_or_else(|| index.to_string());
-                            children.push(self.intern_resolved(
-                                field,
-                                resolver,
-                                &path.field(field_name),
-                            )?);
+                        if !active_nominals.insert(definition.name.clone()) {
+                            return Err(LayoutError::InlineNominalCycle {
+                                path: path.clone(),
+                                definition: definition.name.clone(),
+                            });
                         }
-                        self.intern_kind(LayoutKind::PackedRecord { fields: children })
+                        let result = (|| {
+                            let variants = instantiate_fields(definition, arguments, path)?;
+                            let variant = &definition.variants[0];
+                            let mut children = Vec::with_capacity(variants[0].len());
+                            for (index, field) in variants[0].iter().enumerate() {
+                                let field_name = variant
+                                    .field_names
+                                    .get(index)
+                                    .cloned()
+                                    .unwrap_or_else(|| index.to_string());
+                                children.push(self.intern_resolved(
+                                    field,
+                                    resolver,
+                                    &path.field(field_name),
+                                    active_nominals,
+                                )?);
+                            }
+                            self.intern_kind(LayoutKind::PackedRecord { fields: children })
+                        })();
+                        active_nominals.remove(&definition.name);
+                        result
                     }
                     ResolvedNamed::ClosedSum(definition) => {
                         self.check_definition_identity(name, definition, path)?;
@@ -666,27 +690,38 @@ impl LayoutInterner {
                                 name: definition.name.clone(),
                             });
                         }
-                        let fields = instantiate_fields(definition, arguments, path)?;
-                        let mut variants = Vec::with_capacity(fields.len());
-                        for (variant_index, variant_fields) in fields.iter().enumerate() {
-                            let variant = &definition.variants[variant_index];
-                            let variant_path = path.variant(variant.name.clone());
-                            let mut children = Vec::with_capacity(variant_fields.len());
-                            for (field_index, field) in variant_fields.iter().enumerate() {
-                                let field_name = variant
-                                    .field_names
-                                    .get(field_index)
-                                    .cloned()
-                                    .unwrap_or_else(|| field_index.to_string());
-                                children.push(self.intern_resolved(
-                                    field,
-                                    resolver,
-                                    &variant_path.field(field_name),
-                                )?);
-                            }
-                            variants.push(children);
+                        if !active_nominals.insert(definition.name.clone()) {
+                            return Err(LayoutError::InlineNominalCycle {
+                                path: path.clone(),
+                                definition: definition.name.clone(),
+                            });
                         }
-                        self.intern_kind(LayoutKind::ClosedSum { variants })
+                        let result = (|| {
+                            let fields = instantiate_fields(definition, arguments, path)?;
+                            let mut variants = Vec::with_capacity(fields.len());
+                            for (variant_index, variant_fields) in fields.iter().enumerate() {
+                                let variant = &definition.variants[variant_index];
+                                let variant_path = path.variant(variant.name.clone());
+                                let mut children = Vec::with_capacity(variant_fields.len());
+                                for (field_index, field) in variant_fields.iter().enumerate() {
+                                    let field_name = variant
+                                        .field_names
+                                        .get(field_index)
+                                        .cloned()
+                                        .unwrap_or_else(|| field_index.to_string());
+                                    children.push(self.intern_resolved(
+                                        field,
+                                        resolver,
+                                        &variant_path.field(field_name),
+                                        active_nominals,
+                                    )?);
+                                }
+                                variants.push(children);
+                            }
+                            self.intern_kind(LayoutKind::ClosedSum { variants })
+                        })();
+                        active_nominals.remove(&definition.name);
+                        result
                     }
                 }
             }

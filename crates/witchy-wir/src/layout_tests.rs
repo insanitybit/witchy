@@ -447,3 +447,60 @@ fn dynamic_values_cannot_nest_inline() {
         Err(LayoutError::DynamicInlineField(_))
     ));
 }
+
+#[test]
+fn direct_self_cycle_rejects_at_the_closing_field_path() {
+    let definitions = [record("Node", true, vec![("next", named("Node"))])];
+    let resolver = TestResolver::with_definitions(&definitions);
+    let error = LayoutInterner::new()
+        .intern_type(&named("Node"), &resolver)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        LayoutError::InlineNominalCycle { path, definition }
+            if path.to_string() == "Node.next" && definition == "Node"
+    ));
+}
+
+#[test]
+fn mutual_cycle_rejects_at_the_canonical_definition_reentry() {
+    let definitions = [
+        record("A", true, vec![("b", named("B"))]),
+        record("B", true, vec![("a", named("A"))]),
+    ];
+    let resolver = TestResolver::with_definitions(&definitions);
+    let error = LayoutInterner::new()
+        .intern_type(&named("A"), &resolver)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        LayoutError::InlineNominalCycle { path, definition }
+            if path.to_string() == "A.b.a" && definition == "A"
+    ));
+}
+
+#[test]
+fn generic_expanding_cycle_cannot_evade_the_definition_guard() {
+    let mut definition = record(
+        "Loop",
+        true,
+        vec![(
+            "next",
+            nominal(
+                "Loop",
+                vec![Type::Tuple(vec![named("a"), named("a")])],
+            ),
+        )],
+    );
+    definition.params = vec!["a".to_owned()];
+    let definitions = [definition];
+    let resolver = TestResolver::with_definitions(&definitions);
+    let error = LayoutInterner::new()
+        .intern_type(&nominal("Loop", vec![named("Int")]), &resolver)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        LayoutError::InlineNominalCycle { path, definition }
+            if path.to_string() == "Loop.next" && definition == "Loop"
+    ));
+}
