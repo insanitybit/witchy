@@ -11,7 +11,8 @@
 
     use super::{
         BorrowRelationCatalog, BorrowSource, LoanEdgeKind, LoanProjection, LoanProjectionStep,
-        authenticated_generic_materializer, projections_overlap,
+        authenticated_borrow_escape_boundary, authenticated_generic_materializer,
+        projections_overlap,
     };
 
     fn no_comptime(
@@ -49,9 +50,9 @@
 
     /// A borrowed-view helper plus a `main` body, as a `mode opt` module. Includes
     /// LOCAL `owned`/`send` helpers so these checker tests need no std linking
-    /// (`check_str` does not resolve `import`s); the loan checker recognizes any
-    /// callee named `owned`/`send` by its bare name, exactly as it would the std
-    /// ones. The end-to-end std versions live in `src/example_tests.rs`.
+    /// (`check_str` does not resolve `import`s). A local `send` is intentionally
+    /// not an authenticated channel boundary; linked std-boundary coverage lives
+    /// below.
     fn opt(body: &str) -> String {
         format!(
             "mode opt\n\n\
@@ -644,6 +645,43 @@
     // --- escape rejection (acceptance 7) ------------------------------------
 
     #[test]
+    fn task_and_channel_escape_boundaries_require_canonical_identity() {
+        use super::BorrowEscapeBoundary::{ChannelSend, TaskSpawn};
+
+        assert_eq!(authenticated_borrow_escape_boundary("chan.send"), Some(ChannelSend));
+        assert_eq!(
+            authenticated_borrow_escape_boundary("chan.send__String"),
+            Some(ChannelSend)
+        );
+        assert_eq!(
+            authenticated_borrow_escape_boundary("task.__channel_send"),
+            Some(ChannelSend)
+        );
+        assert_eq!(authenticated_borrow_escape_boundary("chan.spawn"), Some(TaskSpawn));
+        assert_eq!(authenticated_borrow_escape_boundary("task.spawn"), Some(TaskSpawn));
+
+        for lookalike in [
+            "send",
+            "spawn",
+            "main.send",
+            "main.spawn",
+            "server.send",
+            "http.send",
+            "http.Request__send",
+            "channel.send",
+            "chan.send_later",
+            "task.respawn",
+            "other.__channel_send",
+        ] {
+            assert_eq!(
+                authenticated_borrow_escape_boundary(lookalike),
+                None,
+                "lookalike `{lookalike}` must not become an escape boundary"
+            );
+        }
+    }
+
+    #[test]
     fn view_captured_by_a_closure_is_rejected() {
         let err = check_str(&opt(
             "    var s = \"hi\"\n    let w = borrow(s)\n    let f = fn(): w\n    console.print(w)\n",
@@ -659,12 +697,19 @@
 
     #[test]
     fn view_sent_through_a_channel_is_rejected() {
-        // A `send(ch, w)` call moves the view out of this activation.
-        let err = check_str(&opt(
+        let err = linked_main(
+            "mode opt\n\nimport chan\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn bad(tx: Sender(String), input: let('a) String) -> Task(Nil):\n    let view = borrow(input)\n    chan.send(tx, view)\n\nfn main(console: Console):\n    console.print(\"done\")\n",
+        )
+        .expect_err("a view sent through the canonical channel boundary escapes its owner");
+        assert!(err.contains("escapes through a task or channel"), "{err}");
+    }
+
+    #[test]
+    fn local_send_lookalike_does_not_create_an_escape_boundary() {
+        check_str(&opt(
             "    var s = \"hi\"\n    let w = borrow(s)\n    let _ = send(s, w)\n    console.print(w)\n",
         ))
-        .expect_err("a view sent through a channel escapes its owner");
-        assert!(err.contains("escapes through a task or channel"), "{err}");
+        .expect("a local helper named `send` is not the std channel operation");
     }
 
     #[test]

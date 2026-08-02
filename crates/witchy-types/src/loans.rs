@@ -94,6 +94,41 @@ fn short_name(name: &str) -> &str {
     name.rsplit('.').next().unwrap_or(name)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BorrowEscapeBoundary {
+    ChannelSend,
+    TaskSpawn,
+}
+
+/// Authenticate the compiler-owned operation that transfers a value into a
+/// channel or another task. Linked calls carry their canonical `module.fn`
+/// identity; a `__...` suffix can only be introduced by monomorphization because
+/// source declarations containing `__` are reserved. The private channel bridge
+/// is authenticated separately by the intrinsic catalog and its caller allowlist.
+///
+/// Do not fall back to the short name here: `server.send`, `http` methods, and a
+/// user's local `send`/`spawn` helpers are ordinary calls, not escape boundaries.
+fn authenticated_borrow_escape_boundary(name: &str) -> Option<BorrowEscapeBoundary> {
+    if witchy_syntax::intrinsics::lookup(name)
+        .is_some_and(|spec| spec.id == witchy_syntax::intrinsics::IntrinsicId::ChannelSend)
+    {
+        return Some(BorrowEscapeBoundary::ChannelSend);
+    }
+
+    let (module, identity) = name.rsplit_once('.')?;
+    let is_identity = |canonical: &str| {
+        identity == canonical
+            || identity
+                .strip_prefix(canonical)
+                .is_some_and(|suffix| suffix.starts_with("__") && suffix.len() > 2)
+    };
+    match module {
+        "chan" if is_identity("send") => Some(BorrowEscapeBoundary::ChannelSend),
+        "chan" | "task" if is_identity("spawn") => Some(BorrowEscapeBoundary::TaskSpawn),
+        _ => None,
+    }
+}
+
 /// Whether a function belongs to the bundled standard library (the optimized
 /// substrate, exempt from the `mode opt` gate exactly as the linker's import rule
 /// exempts it).
@@ -2779,7 +2814,7 @@ impl LoanCtx<'_> {
                 return;
             }
             let Expr::Call { name, args } = expr else { return };
-            if !matches!(short_name(name), "send" | "spawn") {
+            if authenticated_borrow_escape_boundary(name).is_none() {
                 return;
             }
             for arg in args {
@@ -2983,11 +3018,11 @@ fn stmt_lets_view_escape(
                     escapes = true;
                 }
             }
-            // Sent through a channel or spawned into a task: any call whose name
-            // ends in `send`/`spawn` taking the view as an argument.
+            // Sent through the authenticated std channel/task boundary.
             Expr::Call { name, args } => {
-                let n = short_name(name);
-                if (n == "send" || n == "spawn") && args.iter().any(|a| expr_root(a) == Some(view)) {
+                if authenticated_borrow_escape_boundary(name).is_some()
+                    && args.iter().any(|a| expr_root(a) == Some(view))
+                {
                     escapes = true;
                 }
             }
