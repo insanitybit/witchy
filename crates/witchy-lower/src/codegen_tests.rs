@@ -1627,6 +1627,15 @@ fn main() -> Int:
             4,
             "eligible counted range has four statically emitted lanes: {main}"
         );
+        assert_eq!(
+            main.matches("br_if $fe").count(),
+            1,
+            "an exact literal lane multiple needs one group guard: {main}"
+        );
+        assert!(
+            main.contains("i64.const 4\n    i64.add\n    local.set $__forctr_i"),
+            "the exact group advances its counter once by four: {main}"
+        );
     }
 
     #[test]
@@ -1678,6 +1687,11 @@ fn main() -> Int:
             sum.matches("local.set $i").count(),
             4,
             "safe dynamic range lowers to four guarded lanes: {sum}"
+        );
+        assert_eq!(
+            sum.matches("br_if $fe").count(),
+            4,
+            "a dynamic range retains one remainder guard per lane: {sum}"
         );
     }
 

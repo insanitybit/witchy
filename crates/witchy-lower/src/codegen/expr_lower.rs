@@ -849,34 +849,45 @@ impl<'types> Codegen<'types> {
                 let exit_op = if *inclusive { witchy_wir::wir::BinOp::Gt } else { witchy_wir::wir::BinOp::Ge };
                 let lanes = if unroll_safe { 4 } else { 1 };
                 let mut loop_body: witchy_wir::wir::WirSeq = Vec::new();
-                for _ in 0..lanes {
-                    // Guard every logical iteration. This preserves empty and
-                    // reversed ranges and supplies the exact 0..3 remainder
-                    // without a speculative body evaluation.
+                let exact_literal_batches = lanes > 1
+                    && builder_plan.is_none()
+                    && !*inclusive
+                    && matches!((lo.as_ref(), hi.as_ref()), (Expr::Int(lower), Expr::Int(upper))
+                        if upper.checked_sub(*lower).is_some_and(|length|
+                            length > 0 && length % i64::from(lanes) == 0));
+                if exact_literal_batches {
+                    // A positive exclusive literal range whose length is an exact
+                    // lane multiple has no remainder. Check once per group, derive
+                    // each source counter from the group base, and advance once —
+                    // the same scalar recurrence LLVM emits for a fixed Rust range.
+                    // The one group guard is sufficient because the proof above
+                    // excludes empty/reversed ranges and partial final groups.
                     loop_body.push(N::Br {
                         target: format!("fe{id}"),
                         cond: Some(cmp(exit_op, &ctr, &end)),
                     });
-                    loop_body.push(N::SetLocal {
-                        local: var.clone(),
-                        value: W::GetLocal(ctr.clone()),
-                    });
-                    loop_body.push(N::Block {
-                        label: format!("fc{id}"),
-                        result: None,
-                        body: vec![N::Drop(W::Seq(body_seq.clone()))],
-                    });
-                    // Reclaim after each source iteration, never once per
-                    // unrolled group, so allocation/free ordering is unchanged.
-                    if let Some((_, reset)) = &wm {
-                        loop_body.extend(reset.clone());
-                    }
-                    if *inclusive {
-                        // Avoid overflowing the induction variable at i64::MAX.
-                        loop_body.push(N::Br {
-                            target: format!("fe{id}"),
-                            cond: Some(cmp(witchy_wir::wir::BinOp::Eq, &ctr, &end)),
+                    for lane in 0..lanes {
+                        let value = if lane == 0 {
+                            W::GetLocal(ctr.clone())
+                        } else {
+                            W::Binary {
+                                op: witchy_wir::wir::BinOp::Add,
+                                kind: i64k,
+                                lhs: Box::new(W::GetLocal(ctr.clone())),
+                                rhs: Box::new(W::ConstI64(i64::from(lane))),
+                            }
+                        };
+                        loop_body.push(N::SetLocal { local: var.clone(), value });
+                        loop_body.push(N::Block {
+                            label: format!("fc{id}"),
+                            result: None,
+                            body: vec![N::Drop(W::Seq(body_seq.clone()))],
                         });
+                        // Reclaim after every source iteration even though loop
+                        // control is batched, preserving allocation/free order.
+                        if let Some((_, reset)) = &wm {
+                            loop_body.extend(reset.clone());
+                        }
                     }
                     loop_body.push(N::SetLocal {
                         local: ctr.clone(),
@@ -884,9 +895,49 @@ impl<'types> Codegen<'types> {
                             op: witchy_wir::wir::BinOp::Add,
                             kind: i64k,
                             lhs: Box::new(W::GetLocal(ctr.clone())),
-                            rhs: Box::new(W::ConstI64(1)),
+                            rhs: Box::new(W::ConstI64(i64::from(lanes))),
                         },
                     });
+                } else {
+                    for _ in 0..lanes {
+                        // Guard every logical iteration. This preserves empty and
+                        // reversed ranges and supplies the exact 0..3 remainder
+                        // without a speculative body evaluation.
+                        loop_body.push(N::Br {
+                            target: format!("fe{id}"),
+                            cond: Some(cmp(exit_op, &ctr, &end)),
+                        });
+                        loop_body.push(N::SetLocal {
+                            local: var.clone(),
+                            value: W::GetLocal(ctr.clone()),
+                        });
+                        loop_body.push(N::Block {
+                            label: format!("fc{id}"),
+                            result: None,
+                            body: vec![N::Drop(W::Seq(body_seq.clone()))],
+                        });
+                        // Reclaim after each source iteration, never once per
+                        // unrolled group, so allocation/free ordering is unchanged.
+                        if let Some((_, reset)) = &wm {
+                            loop_body.extend(reset.clone());
+                        }
+                        if *inclusive {
+                            // Avoid overflowing the induction variable at i64::MAX.
+                            loop_body.push(N::Br {
+                                target: format!("fe{id}"),
+                                cond: Some(cmp(witchy_wir::wir::BinOp::Eq, &ctr, &end)),
+                            });
+                        }
+                        loop_body.push(N::SetLocal {
+                            local: ctr.clone(),
+                            value: W::Binary {
+                                op: witchy_wir::wir::BinOp::Add,
+                                kind: i64k,
+                                lhs: Box::new(W::GetLocal(ctr.clone())),
+                                rhs: Box::new(W::ConstI64(1)),
+                            },
+                        });
+                    }
                 }
                 loop_body.push(N::Br { target: format!("fl{id}"), cond: None });
                 let mut outer: witchy_wir::wir::WirSeq = vec![
