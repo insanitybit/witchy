@@ -5449,10 +5449,10 @@ impl Checker {
                     } else {
                         self.infer(e)?
                     };
-                    if i != tail && matches!(e, Expr::Var(_)) {
+                    if i != tail {
                         self.reject_borrowed_nominal_runtime_ty(
                             &ty,
-                            "bare variable expression",
+                            "non-tail expression statement",
                         )?;
                     }
                 }

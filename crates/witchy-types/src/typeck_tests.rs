@@ -633,14 +633,55 @@
         )
         .expect_err("a bare variable expression still performs runtime transport");
         assert!(
-            propagated.contains("bare variable expression")
+            propagated.contains("non-tail expression statement")
                 && propagated.contains("borrowed nominal type `Holder`")
                 && propagated.contains("runtime owner-root lowering"),
             "{propagated}"
         );
 
+        for source in [
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(flag: Bool, let owner: let('a) String, let holder: Holder('a)) -> Int:\n    if flag:\n        holder\n    else:\n        holder\n    0\n",
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(flag: Bool, let owner: let('a) String, let holder: Holder('a)) -> Int:\n    match flag:\n        true -> holder\n        false -> holder\n    0\n",
+        ] {
+            let error = check_str(source)
+                .expect_err("control flow must not hide a discarded borrowed nominal value");
+            assert!(
+                error.contains("non-tail expression statement")
+                    && error.contains("borrowed nominal type `Holder`")
+                    && error.contains("runtime owner-root lowering"),
+                "{error}"
+            );
+        }
+
+        let mut generated_block = witchy_syntax::parser::parse_module(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    holder\n    0\n",
+        )
+        .expect("parse source before generated block rewrite");
+        let function = generated_block
+            .items
+            .iter_mut()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "bad" => Some(function),
+                _ => None,
+            })
+            .expect("bad function");
+        function.body.stmts[0] = Stmt::Expr(Expr::Block(Block {
+            stmts: vec![Stmt::Expr(Expr::Var("holder".into()))],
+            lines: vec![0],
+            region: None,
+        }));
+        let error = check(&generated_block)
+            .expect_err("a generated block must not hide a discarded borrowed nominal value")
+            .to_string();
+        assert!(
+            error.contains("non-tail expression statement")
+                && error.contains("borrowed nominal type `Holder`")
+                && error.contains("runtime owner-root lowering"),
+            "{error}"
+        );
+
         check_str(
-            "mode opt\n\nfn copy(value: Int) -> Int:\n    let duplicate = if true:\n        value\n    else:\n        value\n    duplicate\n\nfn transfer(value: String) -> String:\n    move value\n\nfn inspect(let owner: let('a) String) -> Int:\n    let projected = if true:\n        owner\n    else:\n        owner\n    0\n",
+            "mode opt\n\nfn copy(value: Int) -> Int:\n    if true:\n        value\n    else:\n        value\n    let duplicate = if true:\n        value\n    else:\n        value\n    duplicate\n\nfn transfer(value: String) -> String:\n    move value\n\nfn inspect(let owner: let('a) String) -> Int:\n    if true:\n        owner\n    else:\n        owner\n    let projected = if true:\n        owner\n    else:\n        owner\n    0\n",
         )
         .expect("ordinary values and borrowed View projections retain binding and move behavior");
     }
