@@ -650,21 +650,6 @@ fn ty_to_valtype(t: &Type) -> ValType {
     }
 }
 
-/// Collection values whose hidden ownership token carries reusable capacity.
-/// This is derived from static parameter types, never from an operation name.
-fn type_has_capacity_token(t: &Type) -> bool {
-    match t {
-        Type::Named(name, _) => matches!(name.as_str(), "List" | "Dict" | "String" | "Bytes"),
-        Type::Qualified(_, inner) => type_has_capacity_token(inner),
-        _ => false,
-    }
-}
-
-fn type_is_unique_capacity_shape(t: &Type) -> bool {
-    matches!(t.unqualified(), Type::Named(name, _)
-        if matches!(name.as_str(), "List" | "Dict"))
-}
-
 /// RC-region bias for a value stored in a universal i64 collection slot.
 /// `None` is an unresolved generic shape and disables ownership-sensitive
 /// extraction; -1 is trivial/non-RC, 0 is an ordinary object base, and 4 is a
@@ -2056,50 +2041,11 @@ impl<'types> Codegen<'types> {
     fn ownership_envelope_for_signature(
         signature: &witchy_types::access::AccessSignature,
     ) -> ClosureOwnershipEnvelope {
-        use witchy_types::access::AccessKind;
-
+        let fact = analysis::call_ownership_fact(signature);
         ClosureOwnershipEnvelope {
-            own_capacity_param: signature
-                .params()
-                .iter()
-                .enumerate()
-                .find_map(|(index, param)| {
-                    (param.kind() == AccessKind::Consuming
-                        && param.ownership().input().is_some_and(|state| {
-                            matches!(
-                                state,
-                                witchy_types::access::OwnershipStateClass::LinearMemoryObject
-                                    | witchy_types::access::OwnershipStateClass::LayoutDependent {
-                                        ..
-                                    }
-                            )
-                        }))
-                    .then_some(index)
-                }),
-            var_capacity_params: signature
-                .params()
-                .iter()
-                .enumerate()
-                .filter_map(|(index, param)| {
-                    (param.kind() == AccessKind::ExclusiveWriteback
-                        && param.ownership().writeback().is_some()
-                        && type_has_capacity_token(param.ty()))
-                    .then_some(index)
-                })
-                .collect(),
-            unique_capacity_result: signature
-                .result()
-                .ownership_output()
-                .is_some_and(|state| {
-                    matches!(
-                        state,
-                        witchy_types::access::OwnershipStateClass::LinearMemoryObject
-                            | witchy_types::access::OwnershipStateClass::LayoutDependent {
-                                ..
-                            }
-                    )
-                })
-                && type_is_unique_capacity_shape(signature.result().ty()),
+            own_capacity_param: fact.own_capacity_param(),
+            var_capacity_params: fact.var_capacity_params().to_vec(),
+            unique_capacity_result: fact.unique_capacity_result(),
         }
     }
 
@@ -3995,7 +3941,12 @@ impl<'types> Codegen<'types> {
         let mut facts = if force_copy_mode() {
             analysis::Facts::default()
         } else {
-            analysis::analyze(body, &self.summaries)
+            analysis::analyze_with_access(
+                body,
+                &self.summaries,
+                self.checked_module,
+                &self.access_facts,
+            )
         };
         if !force_copy_mode() {
             facts.merge_loan_kills(body, &self.loan_facts);

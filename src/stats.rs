@@ -405,6 +405,67 @@ mod tests {
         assert_eq!(with_var.reowns, 0);
     }
 
+    fn accepted_opt_stats(source: &str, label: &str) -> Stats {
+        let linked = crate::resolve_std_only(source).unwrap_or_else(|error| {
+            panic!("resolve {label}: {error}")
+        });
+        crate::enforce_performance_modes(&linked, "main").unwrap_or_else(|error| {
+            panic!("{label} must satisfy mode opt: {error}")
+        });
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let stats = compute(source).unwrap_or_else(|error| panic!("run {label}: {error}"));
+        opt::set_for_tests(None);
+        stats
+    }
+
+    #[test]
+    fn named_function_value_var_call_forwards_capacity_without_reown() {
+        const SOURCE: &str = "mode opt\n\nimport list\n\nfn append(var xs: unique List(Int)) -> Nil:\n    xs.push(9)\n\nfn main(console: Console):\n    let append_value = append\n    var xs = [1]\n    append_value(xs)\n    console.print(\"${xs}\")\n";
+
+        let stats = accepted_opt_stats(SOURCE, "named function-value var call");
+        assert_eq!(stats.output, ["[1, 9]"]);
+        assert_eq!(stats.reowns, 0, "the exact local call fact must forward xs__cap");
+    }
+
+    #[test]
+    fn lambda_var_call_forwards_capacity_without_reown() {
+        const SOURCE: &str = "mode opt\n\nimport list\n\nfn main(console: Console):\n    let append = fn(var xs: unique List(Int)) -> Nil:\n        xs.push(9)\n    var xs = [1]\n    append(xs)\n    console.print(\"${xs}\")\n";
+
+        let stats = accepted_opt_stats(SOURCE, "lambda var call");
+        assert_eq!(stats.output, ["[1, 9]"]);
+        assert_eq!(stats.reowns, 0, "the exact lambda call fact must forward xs__cap");
+    }
+
+    #[test]
+    fn arbitrary_apply_var_call_forwards_capacity_without_reown() {
+        const SOURCE: &str = "mode opt\n\nimport list\n\nfn append(var xs: unique List(Int)) -> Nil:\n    xs.push(9)\n\nfn identity(f: fn(var unique List(Int)) -> Nil) -> fn(var unique List(Int)) -> Nil:\n    f\n\nfn main(console: Console):\n    var xs = [1]\n    identity(append)(xs)\n    console.print(\"${xs}\")\n";
+
+        let stats = accepted_opt_stats(SOURCE, "arbitrary Apply var call");
+        assert_eq!(stats.output, ["[1, 9]"]);
+        assert_eq!(stats.reowns, 0, "the exact Apply fact must forward xs__cap");
+    }
+
+    #[test]
+    fn existential_var_dispatch_forwards_capacity_without_reown() {
+        const SOURCE: &str = "mode opt\n\nimport list\n\ntrait Appender:\n    fn append(let self, var xs: unique List(Int)) -> Nil\n\ntype Step:\n    amount: Int\n\nimpl Appender for Step:\n    fn append(let self: Step, var xs: unique List(Int)) -> Nil:\n        xs.push(self.amount)\n\nfn main(console: Console):\n    let append: dyn Appender = Step(9)\n    var xs = [1]\n    append.append(xs)\n    console.print(\"${xs}\")\n";
+
+        let stats = accepted_opt_stats(SOURCE, "existential var dispatch");
+        assert_eq!(stats.output, ["[1, 9]"]);
+        assert_eq!(stats.reowns, 0, "the exact existential call fact must forward xs__cap");
+        assert_eq!(stats.indirect_ownership_calls, 1);
+    }
+
+    #[test]
+    fn existential_var_dispatch_rejects_an_aliased_capacity() {
+        const SOURCE: &str = "mode opt\n\ntrait Appender:\n    fn append(let self, var xs: unique List(Int)) -> Nil\n\ntype Step:\n    amount: Int\n\nimpl Appender for Step:\n    fn append(let self: Step, var xs: unique List(Int)) -> Nil:\n        xs.push(self.amount)\n\nfn main():\n    let append: dyn Appender = Step(9)\n    var xs = [1]\n    let alias = xs\n    append.append(xs)\n    let _ = alias\n";
+
+        let linked = crate::resolve_std_only(SOURCE).expect("resolve aliased existential call");
+        let error = crate::enforce_performance_modes(&linked, "main")
+            .expect_err("an existential var call may not receive an aliased capacity");
+        assert!(error.contains("existential dispatch"), "{error}");
+        assert!(error.contains("bound to a new name"), "{error}");
+    }
+
     #[test]
     fn unique_result_early_return_precedes_var_writeback() {
         const EARLY: &str = "mode opt\n\nimport list\n\nfn choose(var n: Int, flag: Bool) -> unique List(Int):\n    n = n + 1\n    if flag:\n        return [1, 2, 3]\n    [4, 5]\n\nfn main(console: Console):\n    var n = 0\n    var xs = choose(n, true)\n    console.print(\"${xs.pop() ?? 0}\")\n    console.print(\"${n}\")\n";

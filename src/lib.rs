@@ -233,7 +233,7 @@ pub fn enforce_performance_modes(linked: &witchy_syntax::ast::Module, entry_stem
         ));
     }
 
-    for miss in witchy_lower::analysis::module_no_copy_misses(linked) {
+    for miss in witchy_lower::analysis::try_module_no_copy_misses(linked)? {
         if !is_entry_function(&miss.function, entry_stem) {
             continue;
         }

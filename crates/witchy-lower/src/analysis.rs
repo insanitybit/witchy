@@ -135,6 +135,128 @@ impl Facts {
     }
 }
 
+/// Physical ownership channels carried by one finalized callable signature.
+///
+/// Checked call expressions, no-copy enforcement, accumulator discovery, and
+/// code generation all derive these axes here. This keeps an indirect call's
+/// hidden capacity arguments tied to the same checked access identity that
+/// authorized the source call.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CallOwnershipFact {
+    own_capacity_param: Option<usize>,
+    var_capacity_params: Vec<usize>,
+    no_copy_var_params: Vec<usize>,
+    unique_capacity_result: bool,
+}
+
+impl CallOwnershipFact {
+    pub fn own_capacity_param(&self) -> Option<usize> {
+        self.own_capacity_param
+    }
+
+    pub fn var_capacity_params(&self) -> &[usize] {
+        &self.var_capacity_params
+    }
+
+    pub fn no_copy_var_params(&self) -> &[usize] {
+        &self.no_copy_var_params
+    }
+
+    pub fn unique_capacity_result(&self) -> bool {
+        self.unique_capacity_result
+    }
+
+    fn argument_may_alias_out(&self, index: usize) -> bool {
+        self.own_capacity_param != Some(index) && !self.no_copy_var_params.contains(&index)
+    }
+}
+
+fn type_has_capacity_token(ty: &Type) -> bool {
+    match ty {
+        Type::Named(name, _) => matches!(name.as_str(), "List" | "Dict" | "String" | "Bytes"),
+        Type::Qualified(_, inner) => type_has_capacity_token(inner),
+        _ => false,
+    }
+}
+
+fn type_is_unique_capacity_shape(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, _)
+        if matches!(name.as_str(), "List" | "Dict"))
+}
+
+pub fn call_ownership_fact(
+    signature: &witchy_types::access::AccessSignature,
+) -> CallOwnershipFact {
+    use witchy_types::access::{AccessKind, AccessQualifier, OwnershipStateClass};
+
+    let owns_physical_state = |state: &OwnershipStateClass| {
+        matches!(
+            state,
+            OwnershipStateClass::LinearMemoryObject
+                | OwnershipStateClass::LayoutDependent { .. }
+        )
+    };
+    let own_capacity_param = signature.params().iter().enumerate().find_map(|(index, param)| {
+        (param.kind() == AccessKind::Consuming
+            && param.ownership().input().is_some_and(owns_physical_state))
+        .then_some(index)
+    });
+    let var_capacity_params = signature
+        .params()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            (param.kind() == AccessKind::ExclusiveWriteback
+                && param.ownership().writeback().is_some()
+                && type_has_capacity_token(param.ty()))
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let no_copy_var_params = signature
+        .params()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            (param.kind() == AccessKind::ExclusiveWriteback
+                && param.qualifiers().iter().any(|qualifier| {
+                    matches!(qualifier, AccessQualifier::Unique | AccessQualifier::LocalUnique)
+                }))
+            .then_some(index)
+        })
+        .collect();
+    let unique_capacity_result = signature
+        .result()
+        .ownership_output()
+        .is_some_and(owns_physical_state)
+        && type_is_unique_capacity_shape(signature.result().ty());
+    CallOwnershipFact {
+        own_capacity_param,
+        var_capacity_params,
+        no_copy_var_params,
+        unique_capacity_result,
+    }
+}
+
+fn checked_call_ownership_fact(
+    module: &Module,
+    access: &witchy_types::access::CheckedAccessFacts<'_>,
+    expression: &Expr,
+) -> Option<CallOwnershipFact> {
+    access.call_at(module, expression).map(call_ownership_fact)
+}
+
+#[derive(Clone, Copy)]
+struct CheckedCallContext<'facts, 'module> {
+    module: &'module Module,
+    access: &'facts witchy_types::access::CheckedAccessFacts<'module>,
+}
+
+impl CheckedCallContext<'_, '_> {
+    fn fact(&self, expression: &Expr) -> Option<CallOwnershipFact> {
+        checked_call_ownership_fact(self.module, self.access, expression)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The self-assign accumulation shapes. These define WHICH operation runs in
 // place; the analysis decides WHETHER the token is live. (Owned here so the
@@ -620,6 +742,7 @@ fn param_flows_out(body: &Block, param: &str, summaries: &Summaries) -> bool {
     let mut w = Walker {
         accs: &accs,
         summaries,
+        calls: None,
         facts: Facts::default(),
         loop_sites: HashMap::new(),
         loop_stack: Vec::new(),
@@ -638,10 +761,34 @@ fn param_flows_out(body: &Block, param: &str, summaries: &Summaries) -> bool {
 /// interiors are separate units and are only mention-scanned here, since a
 /// closure's captures alias at creation).
 pub fn analyze(body: &Block, summaries: &Summaries) -> Facts {
+    analyze_with_calls(body, summaries, None)
+}
+
+pub fn analyze_with_access(
+    body: &Block,
+    summaries: &Summaries,
+    module: &Module,
+    access: &witchy_types::access::CheckedAccessFacts<'_>,
+) -> Facts {
+    analyze_with_calls(body, summaries, Some(CheckedCallContext { module, access }))
+}
+
+fn analyze_with_calls(
+    body: &Block,
+    summaries: &Summaries,
+    calls: Option<CheckedCallContext<'_, '_>>,
+) -> Facts {
     // Pass A: accumulators + per-loop self-assign site sets (for cliffs).
     let mut accs = HashSet::new();
     let mut loop_sites: HashMap<usize, HashSet<String>> = HashMap::new();
-    collect_accumulators(body, summaries, &mut accs, &mut Vec::new(), &mut loop_sites);
+    collect_accumulators(
+        body,
+        summaries,
+        calls,
+        &mut accs,
+        &mut Vec::new(),
+        &mut loop_sites,
+    );
     if accs.is_empty() {
         return Facts::default();
     }
@@ -649,6 +796,7 @@ pub fn analyze(body: &Block, summaries: &Summaries) -> Facts {
     let mut w = Walker {
         accs: &accs,
         summaries,
+        calls,
         facts: Facts::default(),
         loop_sites,
         loop_stack: Vec::new(),
@@ -664,6 +812,7 @@ pub fn analyze(body: &Block, summaries: &Summaries) -> Facts {
 fn collect_accumulators(
     b: &Block,
     summaries: &Summaries,
+    calls: Option<CheckedCallContext<'_, '_>>,
     accs: &mut HashSet<String>,
     loop_ptrs: &mut Vec<usize>,
     loop_sites: &mut HashMap<usize, HashSet<String>>,
@@ -691,7 +840,7 @@ fn collect_accumulators(
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
             | Stmt::Yield(value) => {
-                collect_accumulators_expr(value, summaries, accs, loop_ptrs, loop_sites)
+                collect_accumulators_expr(value, summaries, calls, accs, loop_ptrs, loop_sites)
             }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -701,45 +850,46 @@ fn collect_accumulators(
 fn collect_accumulators_expr(
     e: &Expr,
     summaries: &Summaries,
+    calls: Option<CheckedCallContext<'_, '_>>,
     accs: &mut HashSet<String>,
     loop_ptrs: &mut Vec<usize>,
     loop_sites: &mut HashMap<usize, HashSet<String>>,
 ) {
     match e {
         Expr::While { cond, body } => {
-            collect_accumulators_expr(cond, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(cond, summaries, calls, accs, loop_ptrs, loop_sites);
             loop_ptrs.push(body as *const Block as usize);
-            collect_accumulators(body, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators(body, summaries, calls, accs, loop_ptrs, loop_sites);
             loop_ptrs.pop();
         }
         Expr::For { iter, body, .. } => {
-            collect_accumulators_expr(iter, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(iter, summaries, calls, accs, loop_ptrs, loop_sites);
             loop_ptrs.push(body as *const Block as usize);
-            collect_accumulators(body, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators(body, summaries, calls, accs, loop_ptrs, loop_sites);
             loop_ptrs.pop();
         }
         Expr::If { cond, then_block, else_block } => {
-            collect_accumulators_expr(cond, summaries, accs, loop_ptrs, loop_sites);
-            collect_accumulators(then_block, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(cond, summaries, calls, accs, loop_ptrs, loop_sites);
+            collect_accumulators(then_block, summaries, calls, accs, loop_ptrs, loop_sites);
             if let Some(b) = else_block {
-                collect_accumulators(b, summaries, accs, loop_ptrs, loop_sites);
+                collect_accumulators(b, summaries, calls, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::Match { scrutinee, arms } => {
-            collect_accumulators_expr(scrutinee, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(scrutinee, summaries, calls, accs, loop_ptrs, loop_sites);
             for arm in arms {
                 if let Some(g) = &arm.guard {
-                    collect_accumulators_expr(g, summaries, accs, loop_ptrs, loop_sites);
+                    collect_accumulators_expr(g, summaries, calls, accs, loop_ptrs, loop_sites);
                 }
-                collect_accumulators_expr(&arm.body, summaries, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(&arm.body, summaries, calls, accs, loop_ptrs, loop_sites);
             }
         }
-        Expr::Block(b) => collect_accumulators(b, summaries, accs, loop_ptrs, loop_sites),
+        Expr::Block(b) => collect_accumulators(b, summaries, calls, accs, loop_ptrs, loop_sites),
         // Lambda interiors are separate compile units with their own facts.
         Expr::Lambda { .. } => {}
         Expr::Binary { lhs, rhs, .. } => {
-            collect_accumulators_expr(lhs, summaries, accs, loop_ptrs, loop_sites);
-            collect_accumulators_expr(rhs, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(lhs, summaries, calls, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(rhs, summaries, calls, accs, loop_ptrs, loop_sites);
         }
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
@@ -747,23 +897,36 @@ fn collect_accumulators_expr(
         | Expr::ExistentialPack { expr, .. }
         | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => {
-            collect_accumulators_expr(expr, summaries, accs, loop_ptrs, loop_sites)
+            collect_accumulators_expr(expr, summaries, calls, accs, loop_ptrs, loop_sites)
         }
         Expr::Call { name, args } => {
-            let mut indices = summaries.var_arg_indices(name).collect::<Vec<_>>();
-            if private_structural_helper(name) && !indices.contains(&0) {
-                indices.push(0);
-            }
-            for index in indices {
-                if let Some(Expr::Var(root)) = args.get(index) {
-                    accs.insert(root.clone());
-                    for loop_ptr in loop_ptrs.iter() {
-                        loop_sites.entry(*loop_ptr).or_default().insert(root.clone());
+            if let Some(calls) = calls {
+                if let Some(fact) = calls.fact(e) {
+                    let operands = args.iter().collect::<Vec<_>>();
+                    collect_call_accumulator_roots(
+                        &operands,
+                        &fact,
+                        accs,
+                        loop_ptrs,
+                        loop_sites,
+                    );
+                }
+            } else {
+                let mut indices = summaries.var_arg_indices(name).collect::<Vec<_>>();
+                if private_structural_helper(name) && !indices.contains(&0) {
+                    indices.push(0);
+                }
+                for index in indices {
+                    if let Some(Expr::Var(root)) = args.get(index) {
+                        accs.insert(root.clone());
+                        for loop_ptr in loop_ptrs.iter() {
+                            loop_sites.entry(*loop_ptr).or_default().insert(root.clone());
+                        }
                     }
                 }
             }
             for arg in args {
-                collect_accumulators_expr(arg, summaries, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(arg, summaries, calls, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::Ctor { args, .. }
@@ -771,19 +934,29 @@ fn collect_accumulators_expr(
         | Expr::List(args)
         | Expr::Tuple(args) => {
             for a in args {
-                collect_accumulators_expr(a, summaries, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(a, summaries, calls, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::Apply { func, args } => {
-            collect_accumulators_expr(func, summaries, accs, loop_ptrs, loop_sites);
+            if let Some(fact) = calls.and_then(|calls| calls.fact(e)) {
+                let operands = args.iter().collect::<Vec<_>>();
+                collect_call_accumulator_roots(
+                    &operands,
+                    &fact,
+                    accs,
+                    loop_ptrs,
+                    loop_sites,
+                );
+            }
+            collect_accumulators_expr(func, summaries, calls, accs, loop_ptrs, loop_sites);
             for a in args {
-                collect_accumulators_expr(a, summaries, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(a, summaries, calls, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::RecordUpdate { name: _, base, fields } => {
-            collect_accumulators_expr(base, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(base, summaries, calls, accs, loop_ptrs, loop_sites);
             for (_, v) in fields {
-                collect_accumulators_expr(v, summaries, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(v, summaries, calls, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::LabeledCall { .. } => {
@@ -791,31 +964,46 @@ fn collect_accumulators_expr(
         }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
-                collect_accumulators_expr(v, summaries, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(v, summaries, calls, accs, loop_ptrs, loop_sites);
             }
             if let Some(s) = spread {
-                collect_accumulators_expr(s, summaries, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(s, summaries, calls, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::Range { lo, hi, .. } => {
-            collect_accumulators_expr(lo, summaries, accs, loop_ptrs, loop_sites);
-            collect_accumulators_expr(hi, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(lo, summaries, calls, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(hi, summaries, calls, accs, loop_ptrs, loop_sites);
         }
         Expr::Index { base, index } => {
-            collect_accumulators_expr(base, summaries, accs, loop_ptrs, loop_sites);
-            collect_accumulators_expr(index, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(base, summaries, calls, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(index, summaries, calls, accs, loop_ptrs, loop_sites);
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            collect_accumulators_expr(scrutinee, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(scrutinee, summaries, calls, accs, loop_ptrs, loop_sites);
             loop_ptrs.push(body as *const Block as usize);
-            collect_accumulators(body, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators(body, summaries, calls, accs, loop_ptrs, loop_sites);
             loop_ptrs.pop();
         }
-        Expr::MethodCall { receiver, args, .. }
-        | Expr::ExistentialCall { receiver, args, .. } => {
-            collect_accumulators_expr(receiver, summaries, accs, loop_ptrs, loop_sites);
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_accumulators_expr(receiver, summaries, calls, accs, loop_ptrs, loop_sites);
             for a in args {
-                collect_accumulators_expr(a, summaries, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(a, summaries, calls, accs, loop_ptrs, loop_sites);
+            }
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            if let Some(fact) = calls.and_then(|calls| calls.fact(e)) {
+                let operands = std::iter::once(receiver.as_ref()).chain(args).collect::<Vec<_>>();
+                collect_call_accumulator_roots(
+                    &operands,
+                    &fact,
+                    accs,
+                    loop_ptrs,
+                    loop_sites,
+                );
+            }
+            collect_accumulators_expr(receiver, summaries, calls, accs, loop_ptrs, loop_sites);
+            for a in args {
+                collect_accumulators_expr(a, summaries, calls, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::Int(_)
@@ -828,9 +1016,27 @@ fn collect_accumulators_expr(
     }
 }
 
+fn collect_call_accumulator_roots(
+    operands: &[&Expr],
+    fact: &CallOwnershipFact,
+    accs: &mut HashSet<String>,
+    loop_ptrs: &[usize],
+    loop_sites: &mut HashMap<usize, HashSet<String>>,
+) {
+    for index in fact.var_capacity_params() {
+        if let Some(Expr::Var(root)) = operands.get(*index).copied() {
+            accs.insert(root.clone());
+            for loop_ptr in loop_ptrs {
+                loop_sites.entry(*loop_ptr).or_default().insert(root.clone());
+            }
+        }
+    }
+}
+
 struct Walker<'a> {
     accs: &'a HashSet<String>,
     summaries: &'a Summaries,
+    calls: Option<CheckedCallContext<'a, 'a>>,
     facts: Facts,
     /// loop body ptr -> accumulators self-assigned inside it.
     loop_sites: HashMap<usize, HashSet<String>>,
@@ -1103,7 +1309,16 @@ impl<'a> Walker<'a> {
                         // result it is stored INTO is itself live.
                         self.scan(a, live && arg_live, reason, out);
                     }
-                } else if self.summaries.fns.contains_key(name) {
+                } else if let Some(fact) = self.calls.and_then(|calls| calls.fact(e)) {
+                    for (index, argument) in args.iter().enumerate() {
+                        self.scan(
+                            argument,
+                            fact.argument_may_alias_out(index),
+                            &format!("passed to `{name}`"),
+                            out,
+                        );
+                    }
+                } else if self.calls.is_none() && self.summaries.fns.contains_key(name) {
                     for (i, a) in args.iter().enumerate() {
                         let arg_live = self.summaries.arg_live(name, i);
                         // NOTE: `may_alias_out` covers BOTH the return value
@@ -1120,12 +1335,17 @@ impl<'a> Walker<'a> {
                     }
                 }
             }
-            // A closure call: no conventions, no summary — every argument may
-            // be retained by the closure's result.
             Expr::Apply { func, args } => {
                 self.scan(func, false, reason, out);
-                for a in args {
-                    self.scan(a, true, "passed to a function value", out);
+                let fact = self.calls.and_then(|calls| calls.fact(e));
+                for (index, argument) in args.iter().enumerate() {
+                    self.scan(
+                        argument,
+                        fact.as_ref()
+                            .is_none_or(|fact| fact.argument_may_alias_out(index)),
+                        "passed to a function value",
+                        out,
+                    );
                 }
             }
             // Structures store their members by slot (whole-alias) — live iff
@@ -1220,13 +1440,30 @@ impl<'a> Walker<'a> {
                 self.scan(base, false, reason, out);
                 self.scan(index, false, reason, out);
             }
-            Expr::MethodCall { receiver, args, .. }
-            | Expr::ExistentialCall { receiver, args, .. } => {
+            Expr::MethodCall { receiver, args, .. } => {
                 // Pre-lowered before codegen; if seen (diagnostics on the
                 // sugared form), be conservative: receiver and args live.
                 self.scan(receiver, true, reason, out);
                 for a in args {
                     self.scan(a, true, reason, out);
+                }
+            }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                let fact = self.calls.and_then(|calls| calls.fact(e));
+                self.scan(
+                    receiver,
+                    fact.as_ref().is_none_or(|fact| fact.argument_may_alias_out(0)),
+                    "passed to an existential function",
+                    out,
+                );
+                for (index, argument) in args.iter().enumerate() {
+                    self.scan(
+                        argument,
+                        fact.as_ref()
+                            .is_none_or(|fact| fact.argument_may_alias_out(index + 1)),
+                        "passed to an existential function",
+                        out,
+                    );
                 }
             }
         }
@@ -3163,24 +3400,8 @@ fn callable_no_copy_contract_type(ty: &Type) -> Option<(Vec<usize>, bool)> {
 fn no_copy_contract(
     signature: &witchy_types::access::AccessSignature,
 ) -> (Vec<usize>, bool) {
-    use witchy_types::access::{AccessKind, AccessQualifier};
-
-    let required = signature
-        .params()
-        .iter()
-        .enumerate()
-        .filter_map(|(index, param)| {
-            (param.kind() == AccessKind::ExclusiveWriteback
-                && param.qualifiers().iter().any(|qualifier| {
-                    matches!(qualifier, AccessQualifier::Unique | AccessQualifier::LocalUnique)
-                }))
-            .then_some(index)
-        })
-        .collect::<Vec<_>>();
-    let unique_result = signature.result().ownership_output().is_some()
-        && matches!(signature.result().ty().unqualified(), Type::Named(name, _)
-            if matches!(name.as_str(), "List" | "Dict"));
-    (required, unique_result)
+    let fact = call_ownership_fact(signature);
+    (fact.no_copy_var_params().to_vec(), fact.unique_capacity_result())
 }
 
 fn no_copy_requirements(
@@ -3359,7 +3580,10 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
             summaries,
             loans,
         } = inputs;
-        let mut facts = analyze(body, summaries);
+        let mut facts = access.map_or_else(
+            || analyze(body, summaries),
+            |access| analyze_with_access(body, summaries, module, access),
+        );
         facts.merge_loan_kills(body, loans);
         Self {
             function,
@@ -3580,89 +3804,37 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 for arg in args {
                     let _ = self.expr(arg, stmt, env);
                 }
-                let mut indirect_unique_result = false;
-                if let Some(NoCopyProof::Callable { required, unique_result }) =
-                    env.get(name).cloned()
-                {
-                    self.record_indirect_misses(args, &required, stmt, env);
-                    indirect_unique_result = unique_result;
-                }
-                if let Some(indices) = self.required.get(name) {
-                    let mut rebound = Vec::new();
-                    for &index in indices {
-                        let Some(arg) = args.get(index) else { continue };
-                        let root = match arg {
-                            Expr::Var(root) => root,
-                            Expr::Field { base, .. } | Expr::Index { base, .. } => {
-                                let root = expr_root(base).unwrap_or("<computed place>");
-                                self.misses.push(NoCopyMiss {
-                                    function: self.function.clone(),
-                                    callee: no_copy_display_name(name),
-                                    var: root.to_string(),
-                                    line: self.line,
-                                    reason: "a nested place has no independent ownership-capacity token"
-                                        .to_string(),
-                                });
-                                continue;
+                let checked = self.checked_call_fact(expr);
+                let legacy = self.access.is_none().then(|| {
+                    env.get(name)
+                        .and_then(|proof| match proof {
+                            NoCopyProof::Callable { required, unique_result } => {
+                                Some((required.clone(), *unique_result))
                             }
-                            _ => {
-                                self.misses.push(NoCopyMiss {
-                                    function: self.function.clone(),
-                                    callee: no_copy_display_name(name),
-                                    var: "<computed value>".to_string(),
-                                    line: self.line,
-                                    reason: "the argument is not a directly tracked mutable binding".to_string(),
-                                });
-                                continue;
-                            }
-                        };
-                        let active = self
-                            .loans
-                            .active_at(stmt)
-                            .iter()
-                            .find(|loan| loan.owner == *root);
-                        let reason = active.map(|loan| {
-                            format!("it is actively loaned to view `{}` by `{}`", loan.view, loan.origin)
-                        });
-                        let reason = reason.or_else(|| {
-                            env.get(root)
-                                .and_then(NoCopyProof::reason)
-                                .map(ToOwned::to_owned)
-                        }).or_else(|| {
-                            self.facts
-                                .kill_reason_after(stmt, root)
-                                .map(|reason| {
-                                    format!(
-                                        "this statement also shares the binding ({reason}); split the operations into separate statements so ownership at the call is explicit"
-                                    )
-                                })
-                        }).or_else(|| {
-                            (!env.contains_key(root)).then(|| {
-                                "the binding has no tracked ownership-capacity token".to_string()
+                            _ => None,
+                        })
+                        .or_else(|| {
+                            self.required.get(name).map(|required| {
+                                (required.clone(), self.unique_results.contains(name))
                             })
-                        });
-                        if let Some(reason) = reason {
-                            self.misses.push(NoCopyMiss {
-                                function: self.function.clone(),
-                                callee: no_copy_display_name(name),
-                                var: root.clone(),
-                                line: self.line,
-                                reason,
-                            });
-                        }
-                        rebound.push(root.clone());
-                    }
-                    // The checked call either updates unique storage or is rejected.
-                    // Its var write-back therefore keeps the proof available for the
-                    // next promised operation.
-                    for root in rebound {
-                        env.insert(root, NoCopyProof::Available);
-                    }
-                }
-                if indirect_unique_result
-                    || no_copy_fresh(expr)
-                    || self.unique_results.contains(name)
-                {
+                        })
+                }).flatten();
+                let (required, unique_result) = checked
+                    .as_ref()
+                    .map(|fact| {
+                        (fact.no_copy_var_params().to_vec(), fact.unique_capacity_result())
+                    })
+                    .or(legacy)
+                    .unwrap_or_default();
+                let operands = args.iter().collect::<Vec<_>>();
+                self.record_call_misses(
+                    &operands,
+                    &required,
+                    stmt,
+                    env,
+                    &no_copy_display_name(name),
+                );
+                if unique_result || no_copy_fresh(expr) {
                     NoCopyProof::Available
                 } else {
                     NoCopyProof::Unavailable(format!(
@@ -3700,21 +3872,65 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 for arg in args {
                     let _ = self.expr(arg, stmt, env);
                 }
-                if let NoCopyProof::Callable { required, unique_result } = callable {
-                    self.record_indirect_misses(args, &required, stmt, env);
-                    if unique_result {
-                        return NoCopyProof::Available;
+                let checked = self.checked_call_fact(expr);
+                let legacy = self.access.is_none().then_some(match callable {
+                    NoCopyProof::Callable { required, unique_result } => {
+                        Some((required, unique_result))
                     }
+                    _ => None,
+                }).flatten();
+                let (required, unique_result) = checked
+                    .as_ref()
+                    .map(|fact| {
+                        (fact.no_copy_var_params().to_vec(), fact.unique_capacity_result())
+                    })
+                    .or(legacy)
+                    .unwrap_or_default();
+                let operands = args.iter().collect::<Vec<_>>();
+                self.record_call_misses(
+                    &operands,
+                    &required,
+                    stmt,
+                    env,
+                    "indirect function",
+                );
+                if unique_result {
+                    return NoCopyProof::Available;
                 }
                 NoCopyProof::Unavailable("an indirect call has no declared no-copy proof".to_string())
             }
-            Expr::MethodCall { receiver, args, .. }
-            | Expr::ExistentialCall { receiver, args, .. } => {
+            Expr::MethodCall { receiver, args, .. } => {
                 let _ = self.expr(receiver, stmt, env);
                 for arg in args {
                     let _ = self.expr(arg, stmt, env);
                 }
                 NoCopyProof::Unavailable("unresolved method call".to_string())
+            }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                let _ = self.expr(receiver, stmt, env);
+                for arg in args {
+                    let _ = self.expr(arg, stmt, env);
+                }
+                let fact = self.checked_call_fact(expr);
+                let operands = std::iter::once(receiver.as_ref()).chain(args).collect::<Vec<_>>();
+                let required = fact
+                    .as_ref()
+                    .map(|fact| fact.no_copy_var_params())
+                    .unwrap_or_default();
+                self.record_call_misses(
+                    &operands,
+                    required,
+                    stmt,
+                    env,
+                    "existential dispatch",
+                );
+                if fact.is_some_and(|fact| fact.unique_capacity_result()) {
+                    NoCopyProof::Available
+                } else {
+                    NoCopyProof::Unavailable(
+                        "an existential call has no declared no-copy result".to_string(),
+                    )
+                }
             }
             Expr::Lambda { params, body, ret } => {
                 let name = format!("{}::<lambda>", self.function);
@@ -3862,22 +4078,28 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
         *env = merge_no_copy_env(&before, &[before.clone(), second]);
     }
 
-    fn record_indirect_misses(
+    fn checked_call_fact(&self, expression: &Expr) -> Option<CallOwnershipFact> {
+        self.access
+            .and_then(|access| checked_call_ownership_fact(self.module, access, expression))
+    }
+
+    fn record_call_misses(
         &mut self,
-        args: &[Expr],
+        args: &[&Expr],
         indices: &[usize],
         stmt: &Stmt,
         env: &mut HashMap<String, NoCopyProof>,
+        callee: &str,
     ) {
         for &index in indices {
-            let Some(arg) = args.get(index) else { continue };
+            let Some(arg) = args.get(index).copied() else { continue };
             let root = match arg {
                 Expr::Var(root) => root,
                 Expr::Field { base, .. } | Expr::Index { base, .. } => {
                     let root = expr_root(base).unwrap_or("<computed place>");
                     self.misses.push(NoCopyMiss {
                         function: self.function.clone(),
-                        callee: "indirect function".to_string(),
+                        callee: callee.to_string(),
                         var: root.to_string(),
                         line: self.line,
                         reason: "a nested place has no independent ownership-capacity token"
@@ -3888,7 +4110,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 _ => {
                     self.misses.push(NoCopyMiss {
                         function: self.function.clone(),
-                        callee: "indirect function".to_string(),
+                        callee: callee.to_string(),
                         var: "<computed value>".to_string(),
                         line: self.line,
                         reason: "the argument is not a directly tracked mutable binding"
@@ -3923,7 +4145,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
             if let Some(reason) = reason {
                 self.misses.push(NoCopyMiss {
                     function: self.function.clone(),
-                    callee: "indirect function".to_string(),
+                    callee: callee.to_string(),
                     var: root.clone(),
                     line: self.line,
                     reason,
@@ -3946,19 +4168,25 @@ fn expr_root(expr: &Expr) -> Option<&str> {
 /// loan facts consumed by codegen. The caller decides whether the module's mode
 /// promotes these misses to errors.
 pub fn module_no_copy_misses(module: &Module) -> Vec<NoCopyMiss> {
+    try_module_no_copy_misses(module).unwrap_or_else(|_| {
+        let lowered = witchy_types::traits::lower(module.clone());
+        module_no_copy_misses_with_access(&lowered, None)
+    })
+}
+
+/// Build no-copy diagnostics from a fully checked access graph. Performance
+/// enforcement uses this result-bearing boundary so an invalid callable
+/// contract cannot silently fall back to structural name/convention guesses.
+pub fn try_module_no_copy_misses(module: &Module) -> Result<Vec<NoCopyMiss>, String> {
     // Method syntax is resolved only by typed trait lowering. Analyze that same
     // ordinary-call AST so `d.insert(...)` and `dict.insert(d, ...)` consult one
     // signature contract instead of maintaining a method-name census here.
     let lowered = witchy_types::traits::lower(module.clone());
-    let typed = witchy_types::typeck::annotate_checked(lowered.clone()).ok();
-    let access = typed.as_ref().and_then(|typed| {
-        witchy_types::access::checked_facts(typed.module(), typed.table()).ok()
-    });
-    let module = typed
-        .as_ref()
-        .map(witchy_types::typeck::TypedModule::module)
-        .unwrap_or(&lowered);
-    module_no_copy_misses_with_access(module, access.as_ref())
+    let typed = witchy_types::typeck::annotate_checked(lowered)
+        .map_err(|error| format!("checked ownership/access analysis failed: {error}"))?;
+    let access = witchy_types::access::checked_facts(typed.module(), typed.table())
+        .map_err(|error| format!("checked ownership/access analysis failed: {error}"))?;
+    Ok(module_no_copy_misses_with_access(typed.module(), Some(&access)))
 }
 
 fn module_no_copy_misses_with_access(
@@ -4223,6 +4451,19 @@ mod no_copy_tests {
         );
         assert_eq!(found.len(), 1, "the alias must invalidate the proof: {found:?}");
         assert!(found[0].reason.contains("bound to a new name"), "{found:?}");
+    }
+
+    #[test]
+    fn checked_no_copy_boundary_does_not_suppress_access_errors() {
+        let module = parser::parse_module(
+            "mode opt\n\nfn plain(xs: List(Int)) -> Int:\n    0\n\n\
+             fn require(callback: fn(unique List(Int)) -> Int) -> Nil:\n    return\n\n\
+             fn main() -> Nil:\n    require(plain)\n    return\n",
+        )
+        .expect("parse invalid callable contract");
+        let error = try_module_no_copy_misses(&module)
+            .expect_err("checked performance analysis must retain the access error");
+        assert!(error.contains("ownership/access contract"), "{error}");
     }
 
     #[test]
