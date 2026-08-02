@@ -1904,6 +1904,108 @@ impl<'a> AccessVerifier<'a> {
         Ok(())
     }
 
+    fn collect_type_substitutions(
+        declared: &Type,
+        actual: &Type,
+        substitutions: &mut HashMap<String, Type>,
+    ) {
+        if let Type::Named(name, arguments) = declared
+            && arguments.is_empty()
+            && !name.contains('.')
+            && name.chars().next().is_some_and(char::is_lowercase)
+        {
+            substitutions.entry(name.clone()).or_insert_with(|| actual.clone());
+            return;
+        }
+        match (declared.unqualified(), actual.unqualified()) {
+            (Type::Named(declared_name, declared), Type::Named(actual_name, actual))
+            | (Type::Dyn(declared_name, declared), Type::Dyn(actual_name, actual))
+                if declared_name == actual_name && declared.len() == actual.len() =>
+            {
+                for (declared, actual) in declared.iter().zip(actual) {
+                    Self::collect_type_substitutions(declared, actual, substitutions);
+                }
+            }
+            (Type::Tuple(declared), Type::Tuple(actual)) if declared.len() == actual.len() => {
+                for (declared, actual) in declared.iter().zip(actual) {
+                    Self::collect_type_substitutions(declared, actual, substitutions);
+                }
+            }
+            (Type::Fn(declared_params, declared_result, _), Type::Fn(actual_params, actual_result, _))
+                if declared_params.len() == actual_params.len() =>
+            {
+                for (declared, actual) in declared_params.iter().zip(actual_params) {
+                    Self::collect_type_substitutions(declared, actual, substitutions);
+                }
+                Self::collect_type_substitutions(declared_result, actual_result, substitutions);
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_flow_substitutions(
+        declared: &Type,
+        actual: &AccessFlow,
+        substitutions: &mut HashMap<String, Type>,
+    ) {
+        match (declared.unqualified(), actual) {
+            (Type::Fn(_, _, _), AccessFlow::Callable(signature)) => {
+                Self::collect_type_substitutions(declared, &signature.as_type(), substitutions);
+            }
+            (Type::Tuple(declared), AccessFlow::Product(actual))
+                if declared.len() == actual.len() =>
+            {
+                for (declared, actual) in declared.iter().zip(actual) {
+                    Self::collect_flow_substitutions(declared, actual, substitutions);
+                }
+            }
+            (Type::Named(_, declared), AccessFlow::Sequence(actual)) if declared.len() == 1 => {
+                Self::collect_flow_substitutions(&declared[0], actual, substitutions);
+            }
+            (
+                Type::Named(declared_name, declared),
+                AccessFlow::Named {
+                    name: actual_name,
+                    arguments: actual,
+                    dynamic: false,
+                },
+            ) if declared_name == actual_name && declared.len() == actual.len() => {
+                for (declared, actual) in declared.iter().zip(actual) {
+                    Self::collect_flow_substitutions(declared, actual, substitutions);
+                }
+            }
+            (
+                Type::Dyn(declared_name, declared),
+                AccessFlow::Named {
+                    name: actual_name,
+                    arguments: actual,
+                    dynamic: true,
+                },
+            ) if declared_name == actual_name && declared.len() == actual.len() => {
+                for (declared, actual) in declared.iter().zip(actual) {
+                    Self::collect_flow_substitutions(declared, actual, substitutions);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn specialize_signature_from_flows(
+        &self,
+        signature: AccessSignature,
+        arguments: &[AccessFlow],
+    ) -> Result<AccessSignature, AccessFlowError> {
+        let mut substitutions = HashMap::new();
+        for (parameter, argument) in signature.params().iter().zip(arguments) {
+            Self::collect_flow_substitutions(parameter.ty(), argument, &mut substitutions);
+        }
+        if substitutions.is_empty() {
+            return Ok(signature);
+        }
+        let specialized = Self::substitute_type(&signature.as_type(), &substitutions);
+        AccessSignature::from_function_type(&specialized).map_err(Self::signature_error)
+    }
+
     fn eval_block(
         &mut self,
         block: &Block,
@@ -2252,6 +2354,8 @@ impl<'a> AccessVerifier<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 match signature {
                     Some(signature) => {
+                        let signature =
+                            self.specialize_signature_from_flows(signature, &arguments)?;
                         self.verify_arguments(name, &signature, &arguments)?;
                         self.record_call(expression, &signature);
                         AccessFlow::from_type(signature.result().ty())
@@ -2280,6 +2384,8 @@ impl<'a> AccessVerifier<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 match signature {
                     Some(signature) => {
+                        let signature =
+                            self.specialize_signature_from_flows(signature, &arguments)?;
                         self.verify_arguments(name, &signature, &arguments)?;
                         self.record_call(expression, &signature);
                         AccessFlow::from_type(signature.result().ty())
@@ -2312,6 +2418,7 @@ impl<'a> AccessVerifier<'a> {
                 let Some(signature) = signature else {
                     return Ok(self.record(expression, AccessFlow::None));
                 };
+                let signature = self.specialize_signature_from_flows(signature, &arguments)?;
                 self.verify_arguments("indirect function", &signature, &arguments)?;
                 self.record_call(expression, &signature);
                 AccessFlow::from_type(signature.result().ty()).map_err(Self::signature_error)?
@@ -2502,6 +2609,11 @@ impl<'a> AccessVerifier<'a> {
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                let mut all_arguments = Vec::with_capacity(arguments.len() + 1);
+                all_arguments.push(receiver_flow.clone());
+                all_arguments.extend(arguments.iter().cloned());
+                let signature =
+                    self.specialize_signature_from_flows(signature, &all_arguments)?;
                 if let Some(receiver_param) = signature.params().first() {
                     let expected = AccessFlow::from_type(receiver_param.ty())
                         .map_err(Self::signature_error)?;

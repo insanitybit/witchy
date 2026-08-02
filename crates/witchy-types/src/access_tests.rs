@@ -516,6 +516,30 @@ fn generic_lambda_access_uses_checked_context_without_a_concrete_type() {
 }
 
 #[test]
+fn generic_call_specializes_type_variables_without_erasing_access() {
+    crate::typeck::check_str(
+        "fn fold(xs: List(a), init: b, combine: fn(b, a) -> b) -> b:\n    init\n\n\
+         fn generic(xs: List(m), seed: m, combine: fn(m, m) -> m) -> m:\n    fold(xs, seed, combine)\n\n\
+         fn inline(xs: List(m), seed: m) -> m:\n    fold(xs, seed, fn(acc: m, item: m) -> m: acc)\n\n\
+         fn main() -> Int:\n    0\n",
+    )
+    .expect(
+        "generic call-site substitution gives alpha-equivalent callback types one access identity, including a lambda checked under the unspecialized hint",
+    );
+
+    let error = crate::typeck::check_str(
+        "fn use(f: fn(unique List(a)) -> Int) -> Int:\n    0\n\n\
+         fn generic(f: fn(List(m)) -> Int) -> Int:\n    use(f)\n\n\
+         fn main() -> Int:\n    0\n",
+    )
+    .expect_err("generic call-site substitution must preserve ownership qualifiers");
+    assert!(
+        error.contains("ownership/access contract") && error.contains("Qualifier"),
+        "{error}"
+    );
+}
+
+#[test]
 fn generic_lambda_context_rejects_qualifier_and_convention_erasure() {
     let qualifier = crate::typeck::check_str(
         "fn accept(f: fn(unique List(Int)) -> Int) -> Int:\n    0\n\n\
