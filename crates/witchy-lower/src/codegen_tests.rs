@@ -2226,6 +2226,7 @@ fn main() -> Int:
         Padded(true, 41)
     result.value
 "#,
+                "operation=fields(count=2) size=fixed(16) ownership=none",
             ),
             (
                 "packed record list",
@@ -2239,6 +2240,7 @@ fn main() -> Int:
         [Point(1, 2), Point(3, 4)]
     list.at(points, 1).y
 "#,
+                "operation=packed-elements(",
             ),
             (
                 "packed closed sum",
@@ -2254,6 +2256,7 @@ fn main() -> Int:
         Empty -> 0
         Value(_, value) -> value
 "#,
+                "operation=variants(count=2,tag=tag8) size=fixed(24) ownership=none",
             ),
             (
                 "nested packed record",
@@ -2270,10 +2273,11 @@ fn main() -> Int:
         Nested(true, Point(5, 9))
     nested.point.y
 "#,
+                "operation=fields(count=2) size=fixed(24) ownership=none",
             ),
         ];
 
-        for (name, source) in cases {
+        for (name, source, operation_detail) in cases {
             let module = parse_module(source)
                 .unwrap_or_else(|error| panic!("parse {name}: {error}"));
             let error = compile_module_binary(&module)
@@ -2284,9 +2288,17 @@ fn main() -> Int:
                     && diagnostic.contains("cannot leave `region:`")
                     && diagnostic.contains("legacy uniform-slot copy path")
                     && diagnostic.contains("descriptor-driven region copy")
-                    && diagnostic.contains("cannot be boxed or reshaped"),
+                    && diagnostic.contains("cannot be boxed or reshaped")
+                    && diagnostic.contains(operation_detail),
                 "{name}: {diagnostic}",
             );
+            if name == "packed record list" {
+                assert!(
+                    diagnostic.contains("size=dynamic(base=8,stride=16)")
+                        && diagnostic.contains("ownership=root-buffer"),
+                    "{name}: {diagnostic}",
+                );
+            }
             let layout = diagnostic
                 .split_once("LayoutId ")
                 .and_then(|(_, rest)| rest.split_once(' '))

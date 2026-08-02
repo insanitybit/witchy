@@ -353,11 +353,12 @@ impl<'types> Codegen<'types> {
                         _ => None,
                     });
                 if let Some(layout) = specialized_layout {
+                    let detail = self.specialized_region_copy_detail(layout);
                     self.reject_reason.get_or_insert_with(|| CodegenError {
                         message: format!(
                             "declared packed LayoutId {layout} cannot leave `region:` through the \
                              legacy uniform-slot copy path; descriptor-driven region copy is \
-                             required and this value cannot be boxed or reshaped"
+                             required and this value cannot be boxed or reshaped; {detail}"
                         ),
                     });
                     return None;

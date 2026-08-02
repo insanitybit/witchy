@@ -4,6 +4,7 @@
 //! slice of an incremental break-up of that file.
 
 use super::*;
+use witchy_wir::layout::{OperationShape, OwnershipPosition};
 
 fn is_generated_anon_name(name: &str) -> bool {
     name.strip_prefix("__anon")
@@ -11,6 +12,191 @@ fn is_generated_anon_name(name: &str) -> bool {
 }
 
 impl Codegen<'_> {
+    fn region_copy_fields_are_compatible(
+        &self,
+        children: &[LayoutId],
+        fields: &[witchy_wir::layout::LayoutField],
+        root_size: u32,
+    ) -> bool {
+        children.len() == fields.len()
+            && children.iter().zip(fields).all(|(child, field)| {
+                let Some(descriptor) = self.specialized_layouts.get(*child) else {
+                    return false;
+                };
+                let LayoutSize::Fixed(size) = descriptor.size() else {
+                    return false;
+                };
+                if field.offset() % descriptor.alignment() != 0
+                    || field
+                        .offset()
+                        .checked_add(size)
+                        .is_none_or(|end| end > root_size)
+                {
+                    return false;
+                }
+                match field.kind() {
+                    FieldKind::Scalar(scalar) => matches!(
+                        descriptor.kind(),
+                        LayoutKind::Scalar(actual) if *actual == scalar
+                    ),
+                    FieldKind::Inline(actual) => actual == *child,
+                }
+            })
+    }
+
+    fn region_copy_scalar_name(scalar: ScalarKind) -> &'static str {
+        match scalar {
+            ScalarKind::Bool => "bool",
+            ScalarKind::Int => "int",
+            ScalarKind::Float => "float",
+            ScalarKind::Duration => "duration",
+            ScalarKind::U32 => "u32",
+            ScalarKind::Tag8 => "tag8",
+            ScalarKind::Tag16 => "tag16",
+            ScalarKind::Tag32 => "tag32",
+        }
+    }
+
+    /// Stable, fail-closed classification for a specialized value attempting to
+    /// leave `region:`. This is intentionally diagnostic-only: it consumes the
+    /// descriptor's copy operation and verifies that operation against the
+    /// descriptor family, physical extents/alignment, and ownership metadata,
+    /// but emits no WIR memory or allocator operation.
+    pub(crate) fn specialized_region_copy_detail(&self, id: LayoutId) -> String {
+        let Some(descriptor) = self.specialized_layouts.get(id) else {
+            return "operation=unknown-layout descriptor=incompatible".into();
+        };
+        match descriptor.operations().copy() {
+            OperationShape::Fields(children) => {
+                let family_matches = matches!(
+                    descriptor.kind(),
+                    LayoutKind::Tuple { fields } | LayoutKind::PackedRecord { fields }
+                        if fields == children
+                );
+                let LayoutSize::Fixed(size) = descriptor.size() else {
+                    return format!(
+                        "operation=fields(count={}) descriptor=incompatible(size=dynamic)",
+                        children.len()
+                    );
+                };
+                let compatible = family_matches
+                    && descriptor.ownership().is_empty()
+                    && self.region_copy_fields_are_compatible(
+                        children,
+                        descriptor.fields(),
+                        size,
+                    );
+                if compatible {
+                    format!(
+                        "operation=fields(count={}) size=fixed({size}) ownership=none",
+                        children.len()
+                    )
+                } else {
+                    format!(
+                        "operation=fields(count={}) descriptor=incompatible(size=fixed({size}))",
+                        children.len()
+                    )
+                }
+            }
+            OperationShape::Variants { tag, variants } => {
+                let LayoutSize::Fixed(size) = descriptor.size() else {
+                    return format!(
+                        "operation=variants(count={},tag={}) descriptor=incompatible(size=dynamic)",
+                        variants.len(),
+                        Self::region_copy_scalar_name(*tag)
+                    );
+                };
+                let family_matches = matches!(
+                    descriptor.kind(),
+                    LayoutKind::ClosedSum { variants: kind_variants }
+                        if kind_variants == variants
+                );
+                let tag_matches = descriptor.fields().first().is_some_and(|field| {
+                    field.kind() == FieldKind::Scalar(*tag)
+                        && field.offset() % tag.alignment() == 0
+                        && field
+                            .offset()
+                            .checked_add(tag.size())
+                            .is_some_and(|end| end <= size)
+                });
+                let payloads_match = variants.len() == descriptor.variant_layouts().len()
+                    && variants
+                        .iter()
+                        .zip(descriptor.variant_layouts())
+                        .all(|(children, variant)| {
+                            self.region_copy_fields_are_compatible(
+                                children,
+                                variant.fields(),
+                                size,
+                            )
+                        });
+                let compatible = family_matches
+                    && tag_matches
+                    && payloads_match
+                    && descriptor.ownership().is_empty();
+                if compatible {
+                    format!(
+                        "operation=variants(count={},tag={}) size=fixed({size}) ownership=none",
+                        variants.len(),
+                        Self::region_copy_scalar_name(*tag)
+                    )
+                } else {
+                    format!(
+                        "operation=variants(count={},tag={}) descriptor=incompatible(size=fixed({size}))",
+                        variants.len(),
+                        Self::region_copy_scalar_name(*tag)
+                    )
+                }
+            }
+            OperationShape::PackedElements { element, stride } => {
+                let LayoutSize::Dynamic {
+                    base,
+                    stride: size_stride,
+                } = descriptor.size()
+                else {
+                    return format!(
+                        "operation=packed-elements(element={element},stride={stride}) \
+                         descriptor=incompatible(size=fixed)"
+                    );
+                };
+                let element_matches = self.specialized_layouts.get(*element).is_some_and(|child| {
+                    matches!(child.size(), LayoutSize::Fixed(size) if size <= *stride)
+                        && *stride % child.alignment() == 0
+                });
+                let family_matches = matches!(
+                    descriptor.kind(),
+                    LayoutKind::PackedList { element: kind_element, .. }
+                        if kind_element == element
+                );
+                let header_matches = matches!(
+                    descriptor.header(),
+                    HeaderLayout::PackedList { data_offset, .. } if data_offset == base
+                );
+                let compatible = family_matches
+                    && header_matches
+                    && element_matches
+                    && size_stride == *stride
+                    && descriptor.ownership() == [OwnershipPosition::RootBuffer];
+                if compatible {
+                    format!(
+                        "operation=packed-elements(element={element},stride={stride}) \
+                         size=dynamic(base={base},stride={size_stride}) ownership=root-buffer"
+                    )
+                } else {
+                    format!(
+                        "operation=packed-elements(element={element},stride={stride}) \
+                         descriptor=incompatible(size=dynamic(base={base},stride={size_stride}))"
+                    )
+                }
+            }
+            OperationShape::Scalar(scalar) => format!(
+                "operation=scalar({}) descriptor=incompatible(specialized-root)",
+                Self::region_copy_scalar_name(*scalar)
+            ),
+            OperationShape::None => "operation=none descriptor=incompatible(specialized-root)".into(),
+        }
+    }
+
     /// WIR twin of [`slot_cmp`] for SCALAR slots only: the comparison of two
     /// 8-byte slots at addresses `aa`/`bb`. `None` for Str/compound shapes (whose
     /// compare would need `$str_eq` or a nested eq call) so the caller bails.
