@@ -19,7 +19,7 @@ pub(crate) fn normalized_type_for_typeinfo(
     // Parameter identity belongs to the declaration spelling. Alias expansion
     // may reorder variables inside a field and must not reorder the nominal
     // type's positional generic arguments.
-    let parameters = crate::ast::effective_type_def_params(t);
+    let parameters = crate::ast::effective_nominal_type_def_params(t);
     let mut out = t.clone();
     for variant in &mut out.variants {
         for field in &mut variant.fields {
@@ -195,6 +195,30 @@ mod tests {
         let normalized = normalized_type_for_typeinfo(&definition, &HashMap::default())
             .expect("normalize reflected type");
         assert_eq!(normalized.params, ["a", "b"]);
+    }
+
+    #[test]
+    fn normalized_typeinfo_preserves_nominal_lifetime_kinds_and_order() {
+        let definition = parsed_type(
+            "mode opt\n\ntype Pair(a, 'left, 'right):\n    first: View(a, 'left)\n    second: View(a, 'right)\n    metadata: b\n",
+            "Pair",
+        );
+        let normalized = normalized_type_for_typeinfo(&definition, &HashMap::default())
+            .expect("normalize lifetime-bearing reflected type");
+        assert_eq!(normalized.params, ["a", "'left", "'right", "b"]);
+
+        let info = type_info_expr(&normalized);
+        let Expr::Ctor { args, .. } = info else { panic!("expected TypeInfo constructor") };
+        let Expr::List(parameters) = &args[2] else { panic!("expected parameter list") };
+        assert_eq!(
+            parameters,
+            &vec![
+                Expr::Str("a".into()),
+                Expr::Str("'left".into()),
+                Expr::Str("'right".into()),
+                Expr::Str("b".into()),
+            ]
+        );
     }
 
     #[test]

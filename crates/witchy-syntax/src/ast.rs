@@ -229,11 +229,15 @@ pub enum ImplOrigin {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeDef {
     pub name: String,
-    /// Explicit type parameters: `type Pair(m, a):` is `["m", "a"]`. They form
-    /// the parameter-order prefix; additional lowercase parameters used by fields
-    /// are appended in first-occurrence order. Explicit params matter when a
-    /// constructor omits some of them (e.g. `Done(a)` for `Step(m, a)`) because
-    /// inference cannot recover the intended position of the omitted one.
+    /// Explicit nominal parameters in source order. Ordinary type parameters are
+    /// stored bare (`a`); lifetime parameters retain their leading apostrophe
+    /// (`'a`). The spelling makes the two kinds unambiguous while preserving the
+    /// existing serialized/string representation and mixed order in
+    /// `type Pair(a, 'left, 'right):`.
+    ///
+    /// Additional lowercase type parameters used by fields are appended in
+    /// first-occurrence order by [`effective_type_def_params`]. Lifetime
+    /// parameters are always explicit and never inferred.
     pub params: Vec<String>,
     pub variants: Vec<Variant>,
     /// `type T derive(Show, Eq, Ord):` — traits whose impls the compiler
@@ -434,10 +438,44 @@ pub fn effective_type_params<'a>(
     parameters
 }
 
+/// Whether a nominal parameter spelling denotes a lifetime rather than a type.
+pub fn is_lifetime_param(parameter: &str) -> bool {
+    parameter.strip_prefix('\'').is_some_and(|name| !name.is_empty())
+}
+
+/// The bare lifetime name carried by a nominal parameter spelling.
+pub fn lifetime_param_name(parameter: &str) -> Option<&str> {
+    parameter.strip_prefix('\'').filter(|name| !name.is_empty())
+}
+
+/// Effective nominal parameters in their public declaration order. Explicit
+/// type and lifetime parameters retain their mixed order; inferred lowercase
+/// type parameters follow. This is the reflection/kind-signature authority.
+pub fn effective_nominal_type_def_params(definition: &TypeDef) -> Vec<String> {
+    let mut parameters = definition.params.clone();
+    for parameter in effective_type_params(
+        &[],
+        definition
+            .variants
+            .iter()
+            .flat_map(|variant| &variant.fields),
+    ) {
+        if !parameters.iter().any(|existing| existing == &parameter) {
+            parameters.push(parameter);
+        }
+    }
+    parameters
+}
+
 /// Effective generic parameters of an algebraic type declaration.
 pub fn effective_type_def_params(definition: &TypeDef) -> Vec<String> {
     effective_type_params(
-        &definition.params,
+        &definition
+            .params
+            .iter()
+            .filter(|parameter| !is_lifetime_param(parameter))
+            .cloned()
+            .collect::<Vec<_>>(),
         definition
             .variants
             .iter()
@@ -943,7 +981,9 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
     match t {
         Type::Qualified(_, inner) => collect_type_names(inner, out),
         Type::Named(name, args) => {
-            out.extend([name.clone()]);
+            if !is_lifetime_param(name) {
+                out.extend([name.clone()]);
+            }
             for a in args {
                 collect_type_names(a, out);
             }

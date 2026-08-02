@@ -958,6 +958,12 @@ impl<'a> Scope<'a> {
                 Ok(())
             }
             Type::Named(name, args) => {
+                // RFC-0112 symbolic lifetime arguments are not type names and
+                // therefore never receive module qualification. The nominal
+                // kind checker validates their binding before runtime lowering.
+                if args.is_empty() && crate::ast::is_lifetime_param(name) {
+                    return Ok(());
+                }
                 // `Console[Read]` / `Dir[Read]` / `File[Write]` / `Net[Connect]` carry capability
                 // RIGHTS in their arguments, not types — leave them untouched.
                 if matches!(name.as_str(), "Console" | "Dir" | "File" | "Net") {
@@ -1752,6 +1758,29 @@ mod tests {
             .collect();
         resolve(&mut modules)?;
         Ok(modules)
+    }
+
+    #[test]
+    fn nominal_lifetime_arguments_are_relations_not_resolvable_type_names() {
+        let modules = resolved_src(&[(
+            "views",
+            "mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'a)\n\npub fn keep(let parser: let('a) Parser('a)) -> Parser('a):\n    parser\n",
+        )])
+        .expect("lifetime arguments survive declaration resolution");
+        let module = &modules[0].1;
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) => Some(function),
+                _ => None,
+            })
+            .expect("keep function");
+        let Type::Named(name, arguments) = function.ret.as_ref().expect("return type") else {
+            panic!("expected borrowed nominal return")
+        };
+        assert_eq!(name, "views.Parser");
+        assert_eq!(arguments, &[Type::Named("'a".into(), Vec::new())]);
     }
 
     #[test]

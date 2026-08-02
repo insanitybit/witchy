@@ -387,33 +387,293 @@ pub fn type_def_params(t: &ast::TypeDef) -> Vec<String> {
 }
 
 fn type_def_arity(t: &ast::TypeDef) -> usize {
-    type_def_params(t).len()
+    ast::effective_nominal_type_def_params(t).len()
+}
+
+fn lifetime_argument_name(t: &ast::Type) -> Option<&str> {
+    let ast::Type::Named(name, arguments) = t else { return None };
+    arguments.is_empty().then(|| name.strip_prefix('\'')).flatten()
+}
+
+fn collect_parameter_lifetime_binders(t: &ast::Type, lifetimes: &mut HashSet<String>) {
+    match t {
+        ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), inner) => {
+            lifetimes.insert(lifetime.clone());
+            collect_parameter_lifetime_binders(inner, lifetimes);
+        }
+        ast::Type::Qualified(_, inner) => collect_parameter_lifetime_binders(inner, lifetimes),
+        ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
+            for argument in arguments {
+                collect_parameter_lifetime_binders(argument, lifetimes);
+            }
+        }
+        ast::Type::RecordCompose { base, fields } => {
+            collect_parameter_lifetime_binders(base, lifetimes);
+            for (_, field) in fields {
+                collect_parameter_lifetime_binders(field, lifetimes);
+            }
+        }
+        // A nested function type binds and validates its own relations; those
+        // names do not enter the enclosing callable's lifetime scope.
+        ast::Type::Fn(_, _, _) => {}
+    }
+}
+
+fn validate_nominal_lifetime_uses(
+    t: &ast::Type,
+    lifetimes: &HashSet<String>,
+    context: &str,
+    borrowed_qualifiers_must_be_bound: bool,
+) -> Result<(), TypeError> {
+    match t {
+        ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), inner) => {
+            if borrowed_qualifiers_must_be_bound && !lifetimes.contains(lifetime) {
+                return terr(format!(
+                    "{context} uses lifetime `'{lifetime}` but does not declare it; add \
+                     `'{lifetime}` to the nominal type parameters"
+                ));
+            }
+            validate_nominal_lifetime_uses(
+                inner,
+                lifetimes,
+                context,
+                borrowed_qualifiers_must_be_bound,
+            )
+        }
+        ast::Type::Qualified(_, inner) => validate_nominal_lifetime_uses(
+            inner,
+            lifetimes,
+            context,
+            borrowed_qualifiers_must_be_bound,
+        ),
+        ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
+            for argument in arguments {
+                if let Some(lifetime) = lifetime_argument_name(argument) {
+                    if !lifetimes.contains(lifetime) {
+                        return terr(format!(
+                            "{context} uses lifetime argument `'{lifetime}`, but no parameter \
+                             binds that lifetime"
+                        ));
+                    }
+                } else {
+                    validate_nominal_lifetime_uses(
+                        argument,
+                        lifetimes,
+                        context,
+                        borrowed_qualifiers_must_be_bound,
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        ast::Type::RecordCompose { base, fields } => {
+            validate_nominal_lifetime_uses(
+                base,
+                lifetimes,
+                context,
+                borrowed_qualifiers_must_be_bound,
+            )?;
+            for (_, field) in fields {
+                validate_nominal_lifetime_uses(
+                    field,
+                    lifetimes,
+                    context,
+                    borrowed_qualifiers_must_be_bound,
+                )?;
+            }
+            Ok(())
+        }
+        ast::Type::Fn(parameters, result, _) => {
+            let mut nested = HashSet::new();
+            for parameter in parameters {
+                collect_parameter_lifetime_binders(parameter, &mut nested);
+            }
+            for parameter in parameters {
+                validate_nominal_lifetime_uses(parameter, &nested, context, false)?;
+            }
+            validate_nominal_lifetime_uses(result, &nested, context, false)
+        }
+    }
+}
+
+fn collect_declared_lifetime_uses(t: &ast::Type, used: &mut HashSet<String>) {
+    match t {
+        ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), inner) => {
+            used.insert(lifetime.clone());
+            collect_declared_lifetime_uses(inner, used);
+        }
+        ast::Type::Qualified(_, inner) => collect_declared_lifetime_uses(inner, used),
+        ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
+            for argument in arguments {
+                if let Some(lifetime) = lifetime_argument_name(argument) {
+                    used.insert(lifetime.to_string());
+                } else {
+                    collect_declared_lifetime_uses(argument, used);
+                }
+            }
+        }
+        ast::Type::RecordCompose { base, fields } => {
+            collect_declared_lifetime_uses(base, used);
+            for (_, field) in fields {
+                collect_declared_lifetime_uses(field, used);
+            }
+        }
+        ast::Type::Fn(parameters, result, _) => {
+            for parameter in parameters {
+                collect_declared_lifetime_uses(parameter, used);
+            }
+            collect_declared_lifetime_uses(result, used);
+        }
+    }
+}
+
+fn validate_callable_nominal_lifetimes(
+    name: &str,
+    parameters: &[ast::Param],
+    result: Option<&ast::Type>,
+) -> Result<(), TypeError> {
+    let mut lifetimes = HashSet::new();
+    for parameter in parameters {
+        if let Some(ty) = &parameter.ty {
+            collect_parameter_lifetime_binders(ty, &mut lifetimes);
+        }
+    }
+    let context = format!("callable `{}`", name.rsplit('.').next().unwrap_or(name));
+    for parameter in parameters {
+        if let Some(ty) = &parameter.ty {
+            validate_nominal_lifetime_uses(ty, &lifetimes, &context, false)?;
+        }
+    }
+    if let Some(result) = result {
+        validate_nominal_lifetime_uses(result, &lifetimes, &context, false)?;
+    }
+    Ok(())
+}
+
+/// RFC-0112 stage 1: validate lifetime-bearing nominal declarations and their
+/// signature relations before any runtime representation work. Lifetimes are
+/// compile-time-only and remain restricted to fixed single-variant shells.
+fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError> {
+    let opt = module.modes.iter().any(|mode| mode == "opt");
+    for item in &module.items {
+        match item {
+            Item::Type(definition) => {
+                let declared = definition
+                    .params
+                    .iter()
+                    .filter_map(|parameter| ast::lifetime_param_name(parameter))
+                    .map(str::to_string)
+                    .collect::<HashSet<_>>();
+                if !declared.is_empty() && !opt && module.linked_entry.is_none() {
+                    return terr(format!(
+                        "type `{}` declares lifetime parameters, which are only available in a \
+                         `mode opt` module; add `mode opt` at the top of the file",
+                        definition.name.rsplit('.').next().unwrap_or(&definition.name)
+                    ));
+                }
+                if !declared.is_empty() && definition.variants.len() != 1 {
+                    return terr(format!(
+                        "borrowed nominal type `{}` has {} variants; RFC-0112's initial scope \
+                         supports named-field records and single-variant positional types only",
+                        definition.name.rsplit('.').next().unwrap_or(&definition.name),
+                        definition.variants.len()
+                    ));
+                }
+                let context = format!(
+                    "type `{}`",
+                    definition.name.rsplit('.').next().unwrap_or(&definition.name)
+                );
+                let mut used = HashSet::new();
+                for variant in &definition.variants {
+                    for field in &variant.fields {
+                        validate_nominal_lifetime_uses(field, &declared, &context, true)?;
+                        collect_declared_lifetime_uses(field, &mut used);
+                    }
+                }
+                for lifetime in &declared {
+                    if !used.contains(lifetime) {
+                        return terr(format!(
+                            "{context} declares lifetime parameter `'{lifetime}` but no field uses \
+                             it; remove the parameter or relate a borrowed field to it"
+                        ));
+                    }
+                }
+            }
+            Item::Function(function) => validate_callable_nominal_lifetimes(
+                &function.name,
+                &function.params,
+                function.ret.as_ref(),
+            )?,
+            Item::Trait(definition) => {
+                for method in &definition.methods {
+                    validate_callable_nominal_lifetimes(
+                        &method.name,
+                        &method.params,
+                        method.ret.as_ref(),
+                    )?;
+                }
+            }
+            Item::Impl(definition) => {
+                for method in &definition.methods {
+                    validate_callable_nominal_lifetimes(
+                        &method.name,
+                        &method.params,
+                        method.ret.as_ref(),
+                    )?;
+                }
+            }
+            Item::TypeAlias { name, ty, .. } => {
+                validate_nominal_lifetime_uses(
+                    ty,
+                    &HashSet::new(),
+                    &format!("type alias `{}`", name.rsplit('.').next().unwrap_or(name)),
+                    true,
+                )?;
+            }
+            Item::Const { .. } | Item::Comptime(_) => {}
+        }
+    }
+    Ok(())
 }
 
 fn validate_type(
     t: &ast::Type,
     known: &HashSet<&str>,
     arities: &HashMap<&str, usize>,
+    nominal_parameters: &HashMap<&str, Vec<String>>,
 ) -> Result<(), TypeError> {
     match t {
-        ast::Type::Qualified(_, inner) => validate_type(inner, known, arities),
+        ast::Type::Qualified(_, inner) => {
+            validate_type(inner, known, arities, nominal_parameters)
+        }
         // (RFC-0081) The dyn head is a trait name validated by its own pass;
         // only the type arguments are ordinary types.
         ast::Type::Dyn(_, args) => {
-            args.iter().try_for_each(|a| validate_type(a, known, arities))
+            args.iter()
+                .try_for_each(|a| validate_type(a, known, arities, nominal_parameters))
         }
-        ast::Type::Tuple(ts) => ts.iter().try_for_each(|x| validate_type(x, known, arities)),
+        ast::Type::Tuple(ts) => ts
+            .iter()
+            .try_for_each(|x| validate_type(x, known, arities, nominal_parameters)),
         ast::Type::RecordCompose { base, fields } => {
-            validate_type(base, known, arities)?;
+            validate_type(base, known, arities, nominal_parameters)?;
             fields
                 .iter()
-                .try_for_each(|(_, ty)| validate_type(ty, known, arities))
+                .try_for_each(|(_, ty)| validate_type(ty, known, arities, nominal_parameters))
         }
         ast::Type::Fn(params, ret, _) => {
-            params.iter().try_for_each(|p| validate_type(p, known, arities))?;
-            validate_type(ret, known, arities)
+            params
+                .iter()
+                .try_for_each(|p| validate_type(p, known, arities, nominal_parameters))?;
+            validate_type(ret, known, arities, nominal_parameters)
         }
         ast::Type::Named(n, args) => {
+            if let Some(lifetime) = lifetime_argument_name(t) {
+                return terr(format!(
+                    "lifetime `'{lifetime}` may only appear as an argument for a declared \
+                     lifetime parameter"
+                ));
+            }
             // `Dir`/`File`/`Net` carry capability *rights* markers (`Dir[Read]`,
             // `Net[Connect]`) in their arguments, not types. Validate the marker
             // vocabulary here (BUG-154) so a typo (`Dir[Reed]`, `Net[Conect]`) or
@@ -437,7 +697,47 @@ fn validate_type(
                         ));
                     }
                 }
-                args.iter().try_for_each(|a| validate_type(a, known, arities))
+                if let Some(parameters) = nominal_parameters.get(n.as_str()) {
+                    for (index, (argument, parameter)) in
+                        args.iter().zip(parameters).enumerate()
+                    {
+                        let expected_lifetime = ast::is_lifetime_param(parameter);
+                        let supplied_lifetime = lifetime_argument_name(argument);
+                        match (expected_lifetime, supplied_lifetime) {
+                            (true, None) => {
+                                return terr(format!(
+                                    "type `{n}` expects a lifetime argument for parameter \
+                                     `{parameter}` at position {}, but got ordinary type `{}`",
+                                    index + 1,
+                                    witchy_syntax::format::type_str(argument)
+                                ));
+                            }
+                            (false, Some(lifetime)) => {
+                                return terr(format!(
+                                    "lifetime argument `'{lifetime}` cannot be used for ordinary \
+                                     type parameter `{parameter}` of `{n}`"
+                                ));
+                            }
+                            (true, Some(_)) => {}
+                            (false, None) => {
+                                validate_type(argument, known, arities, nominal_parameters)?;
+                            }
+                        }
+                    }
+                    Ok(())
+                } else {
+                    for (index, argument) in args.iter().enumerate() {
+                        if let Some(lifetime) = lifetime_argument_name(argument) {
+                            return terr(format!(
+                                "lifetime argument `'{lifetime}` cannot be used in ordinary type \
+                                 position {} of `{n}`",
+                                index + 1
+                            ));
+                        }
+                        validate_type(argument, known, arities, nominal_parameters)?;
+                    }
+                    Ok(())
+                }
             } else if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.') {
                 // A lowercase, argument-less name is a generic type parameter.
                 Ok(())
@@ -582,7 +882,13 @@ fn validate_type_model(
     arities: &HashMap<&str, usize>,
     type_defs: &HashMap<&str, &ast::TypeDef>,
 ) -> Result<(), TypeError> {
-    validate_type(t, known, arities)?;
+    let nominal_parameters = type_defs
+        .iter()
+        .map(|(name, definition)| {
+            (*name, ast::effective_nominal_type_def_params(definition))
+        })
+        .collect();
+    validate_type(t, known, arities, &nominal_parameters)?;
     reject_structural_authority_type(t, type_defs)
 }
 
@@ -2648,7 +2954,13 @@ impl Checker {
         {
             return Ty::Var(self.current_typarams[name.as_str()]);
         }
-        Ty::Named(name.clone(), args.iter().map(|a| self.to_ty(a)).collect())
+        Ty::Named(
+            name.clone(),
+            args.iter()
+                .filter(|argument| lifetime_argument_name(argument).is_none())
+                .map(|a| self.to_ty(a))
+                .collect(),
+        )
     }
 
     /// Like `to_ty`, but a lowercase, argument-less type name becomes a type
@@ -2697,7 +3009,10 @@ impl Checker {
                 }
                 Ty::Named(
                     name.clone(),
-                    args.iter().map(|a| self.to_ty_generic(a, vars)).collect(),
+                    args.iter()
+                        .filter(|argument| lifetime_argument_name(argument).is_none())
+                        .map(|a| self.to_ty_generic(a, vars))
+                        .collect(),
                 )
             }
         }
@@ -7392,6 +7707,9 @@ pub fn check_linked_source_headers(
             .map_err(|error| source_error(module_name, module, error))?;
         check_unique_parameters(module)
             .map_err(|error| source_error(module_name, module, error))?;
+        check_nominal_lifetime_declarations(module).map_err(|error| {
+            witchy_syntax::source_check::SourceCheckError::new(error.message)
+        })?;
     }
     Ok(())
 }
@@ -7420,6 +7738,11 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
     // duplicates silently shadow in the checker scope and make keyword labels
     // incoherent. Validate before lowering for source-quality diagnostics.
     check_unique_parameters(module).map_err(UniquenessError::into_type_error)?;
+
+    // RFC-0112 stage 1 runs on the source declaration shape so named-field
+    // records, positional shells, and the opt-mode boundary retain precise
+    // diagnostics before generator/record lowering.
+    check_nominal_lifetime_declarations(module)?;
 
     // Lower named-field record construction (a no-op once the linker has done so,
     // but covers single-module paths like `check_str`).

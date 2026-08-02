@@ -707,14 +707,28 @@ impl Parser {
     fn type_def(&mut self, sealed: bool) -> Result<Item, ParseError> {
         self.expect(&Tok::Type)?;
         let name = self.ident()?;
-        // Optional explicit type parameters: `type Pair(a, b):`. These FIX the
-        // parameter order (needed when a constructor omits one — inference can't
-        // place the omitted param). When absent, the checker infers the params
-        // from the variant field types.
+        // Optional explicit nominal parameters: `type Pair(a, 'left, 'right):`.
+        // Type names remain bare; lifetime names retain their leading apostrophe
+        // in the AST so their distinct kinds and mixed source order survive every
+        // syntax-only transform.
         let mut params: Vec<String> = Vec::new();
         if self.eat(&Tok::LParen) {
             while !self.at(&Tok::RParen) {
-                params.push(self.ident()?);
+                match self.kind().clone() {
+                    Tok::Ident(name) => {
+                        self.advance();
+                        params.push(name);
+                    }
+                    Tok::Lifetime(name) => {
+                        self.advance();
+                        params.push(format!("'{name}"));
+                    }
+                    other => {
+                        return Err(self.error(format!(
+                            "expected a type parameter or lifetime parameter, found `{other}`"
+                        )));
+                    }
+                }
                 if !self.eat(&Tok::Comma) {
                     break;
                 }
@@ -724,6 +738,15 @@ impl Parser {
         // A type alias: `type Id = Int` or `type Pair(a) = (a, a)`. Expanded to
         // its target before later stages.
         if self.eat(&Tok::Eq) {
+            if let Some(lifetime) = params
+                .iter()
+                .find_map(|parameter| crate::ast::lifetime_param_name(parameter))
+            {
+                return Err(self.error(format!(
+                    "lifetime parameter `'{lifetime}` is only supported on a nominal type \
+                     declaration; type aliases accept ordinary type parameters only"
+                )));
+            }
             let ty = self.ty()?;
             return Ok(Item::TypeAlias { name, params, ty });
         }
@@ -1138,6 +1161,14 @@ impl Parser {
     fn ty_inner(&mut self) -> Result<Type, ParseError> {
         if self.at(&Tok::QuoteHoleStart) {
             return self.quote_type_hole();
+        }
+        // RFC-0112 symbolic lifetime arguments use the existing lifetime token.
+        // They remain a distinct AST spelling (`Named("'a", [])`) until the
+        // nominal kind checker verifies the receiving parameter is a lifetime.
+        // No runtime type is ever created for this sentinel.
+        if matches!(self.kind(), Tok::Lifetime(_)) {
+            let life = self.lifetime_name()?;
+            return Ok(Type::Named(format!("'{life}"), Vec::new()));
         }
         // Ownership/immutability qualifiers (RFC-0025/0026): `frozen T`, `unique T`,
         // `local unique T`. Contextual — only a qualifier keyword FOLLOWED BY a type

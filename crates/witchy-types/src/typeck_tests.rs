@@ -389,6 +389,116 @@
     }
 
     #[test]
+    fn borrowed_nominal_lifetime_parameters_kind_check_in_opt_mode() {
+        check_str(
+            "mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'a)\n    offset: Int\n\nfn inspect(let parser: let('a) Parser('a)) -> Int:\n    0\n",
+        )
+        .expect("named-field borrowed nominal and related signature check");
+        check_str(
+            "mode opt\n\ntype Pair(a, 'left, 'right):\n    Pair(View(a, 'left), View(a, 'right))\n\nfn inspect(let pair: let('left) Pair(Int, 'left, 'right), let owner: let('right) Int) -> Int:\n    0\n",
+        )
+        .expect("single positional borrowed nominal preserves mixed type/lifetime kinds");
+        check_str(
+            "mode opt\n\ntype SameSpelling(a, 'a):\n    first: a\n    second: View(a, 'a)\n",
+        )
+        .expect("ordinary `a` and lifetime `'a` occupy distinct kinds");
+    }
+
+    #[test]
+    fn borrowed_nominal_declaration_rejections_are_precise() {
+        let outside_opt = check_str(
+            "type Parser('a):\n    input: View(Bytes, 'a)\n",
+        )
+        .expect_err("borrowed nominal declarations require mode opt");
+        assert!(
+            outside_opt.contains("type `Parser` declares lifetime parameters")
+                && outside_opt.contains("only available in a `mode opt` module"),
+            "{outside_opt}"
+        );
+
+        let duplicate = check_str(
+            "mode opt\n\ntype Parser('a, 'a):\n    input: View(Bytes, 'a)\n",
+        )
+        .expect_err("duplicate lifetime parameters reject");
+        assert!(
+            duplicate.contains("lifetime parameter `'a` is declared more than once in type `Parser`")
+                && duplicate.contains("lifetime parameter names must be unique"),
+            "{duplicate}"
+        );
+
+        let unbound_field = check_str(
+            "mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'other)\n",
+        )
+        .expect_err("field lifetime must be declared by the nominal head");
+        assert!(
+            unbound_field.contains("type `Parser` uses lifetime `'other` but does not declare it")
+                && unbound_field.contains("add `'other` to the nominal type parameters"),
+            "{unbound_field}"
+        );
+
+        let missing_head = check_str(
+            "mode opt\n\ntype Parser:\n    input: View(Bytes, 'a)\n",
+        )
+        .expect_err("a field lifetime cannot exist without a nominal binder");
+        assert!(
+            missing_head.contains("type `Parser` uses lifetime `'a` but does not declare it"),
+            "{missing_head}"
+        );
+
+        let unused = check_str(
+            "mode opt\n\ntype Parser('a):\n    offset: Int\n",
+        )
+        .expect_err("declared lifetimes must relate a field");
+        assert!(
+            unused.contains("declares lifetime parameter `'a` but no field uses it"),
+            "{unused}"
+        );
+
+        let sum = check_str(
+            "mode opt\n\ntype MaybeParser('a):\n    Empty\n    Parser(View(Bytes, 'a))\n",
+        )
+        .expect_err("borrowed sums are outside the fixed-shell stage");
+        assert!(
+            sum.contains("borrowed nominal type `MaybeParser` has 2 variants")
+                && sum.contains("single-variant positional types only"),
+            "{sum}"
+        );
+    }
+
+    #[test]
+    fn borrowed_nominal_type_arguments_are_kind_checked_and_bound() {
+        let ordinary_slot = check_str(
+            "mode opt\n\nfn bad(let owner: let('a) Int, values: List('a)) -> Int:\n    0\n",
+        )
+        .expect_err("a lifetime cannot instantiate List's type parameter");
+        assert!(
+            ordinary_slot.contains("lifetime argument `'a` cannot be used in ordinary type position 1 of `List`")
+                || ordinary_slot.contains("lifetime argument `'a` cannot be used for ordinary type parameter"),
+            "{ordinary_slot}"
+        );
+
+        let lifetime_slot = check_str(
+            "mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'a)\n\nfn bad(parser: Parser(Int)) -> Int:\n    0\n",
+        )
+        .expect_err("an ordinary type cannot instantiate a lifetime parameter");
+        assert!(
+            lifetime_slot.contains("type `Parser` expects a lifetime argument for parameter `'a` at position 1")
+                && lifetime_slot.contains("got ordinary type `Int`"),
+            "{lifetime_slot}"
+        );
+
+        let unbound_use = check_str(
+            "mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'a)\n\nfn bad(parser: Parser('missing)) -> Int:\n    0\n",
+        )
+        .expect_err("a borrowed nominal application needs an input lifetime binder");
+        assert!(
+            unbound_use.contains("callable `bad` uses lifetime argument `'missing`")
+                && unbound_use.contains("no parameter binds that lifetime"),
+            "{unbound_use}"
+        );
+    }
+
+    #[test]
     fn local_unique_cannot_be_a_return_type() {
         // (RFC-0026) `local unique` is valid only within the call — it cannot escape,
         // so it cannot be returned.

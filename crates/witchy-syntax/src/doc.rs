@@ -841,6 +841,19 @@ mod tests {
         assert!(md.contains("A packed generic pair."), "generic derived doc: {md}");
     }
 
+    #[test]
+    fn renders_borrowed_nominal_lifetime_parameters_as_public_relations() {
+        let src = "mode opt\n\n// Two views tied to independent owners.\ntype PairView(a, 'left, 'right):\n    first: View(a, 'left)\n    second: View(a, 'right)\n";
+        let md = render("views", src).expect("borrowed nominal docs render");
+        assert!(
+            md.contains("#### `type PairView(a, 'left, 'right)`"),
+            "lifetime relations missing from declaration heading: {md}"
+        );
+        assert!(md.contains("Two views tied to independent owners."), "{md}");
+        assert!(md.contains("first: View(a, 'left)"), "borrowed field missing: {md}");
+        assert!(md.contains("second: View(a, 'right)"), "borrowed field missing: {md}");
+    }
+
     // BUG-207: RFC-0056 default values appear in the rendered signature.
     #[test]
     fn renders_default_values() {

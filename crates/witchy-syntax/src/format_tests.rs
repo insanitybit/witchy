@@ -840,6 +840,19 @@
         assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
     }
 
+    #[test]
+    fn borrowed_nominal_lifetime_parameters_round_trip_in_mixed_order() {
+        let src = "mode opt\n\ntype Pair(a, 'left, 'right) packed derive(Reflect, Show):\n    first: View(a, 'left)\n    second: View(a, 'right)\n\ntype Span('a):\n    Span(View(Bytes, 'a), Int, Int)\n\nfn keep(let left: let('left) Int, let right: let('right) Int, pair: Pair(Int, 'left, 'right)) -> Pair(Int, 'left, 'right):\n    pair\n";
+        let out = reformat(src).expect("borrowed nominal declarations round-trip");
+        assert!(
+            out.contains("type Pair(a, 'left, 'right) packed derive(Reflect, Show):"),
+            "mixed parameters/modifiers drifted: {out}"
+        );
+        assert!(out.contains("type Span('a):\n    Span(View(Bytes, 'a), Int, Int)"), "{out}");
+        assert!(out.contains("Pair(Int, 'left, 'right)"), "lifetime arguments drifted: {out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
     // ---- RFC-0081: existential trait types -------------------------------
 
     #[test]

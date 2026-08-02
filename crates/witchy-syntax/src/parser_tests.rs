@@ -1353,6 +1353,58 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
     }
 
     #[test]
+    fn borrowed_nominal_parameters_and_arguments_keep_their_kinds() {
+        let module = parse_module(
+            "mode opt\n\ntype Pair(a, 'left, 'right):\n    first: View(a, 'left)\n    second: View(a, 'right)\n\nfn keep(let left: let('left) Int, let right: let('right) Int, pair: Pair(Int, 'left, 'right)) -> Pair(Int, 'left, 'right):\n    pair\n",
+        )
+        .expect("mixed type/lifetime nominal parameters parse");
+        let Item::Type(definition) = &module.items[0] else { panic!("expected type") };
+        assert_eq!(definition.params, ["a", "'left", "'right"]);
+        let Item::Function(function) = &module.items[1] else { panic!("expected function") };
+        let expected = Type::Named(
+            "Pair".into(),
+            vec![
+                Type::Named("Int".into(), vec![]),
+                Type::Named("'left".into(), vec![]),
+                Type::Named("'right".into(), vec![]),
+            ],
+        );
+        assert_eq!(function.params[2].ty.as_ref(), Some(&expected));
+        assert_eq!(function.ret.as_ref(), Some(&expected));
+    }
+
+    #[test]
+    fn borrowed_single_variant_positional_nominal_parses() {
+        let module = parse_module(
+            "mode opt\n\ntype Span('a):\n    Span(View(Bytes, 'a), Int, Int)\n",
+        )
+        .expect("single positional borrowed nominal parses");
+        let Item::Type(definition) = &module.items[0] else { panic!("expected type") };
+        assert_eq!(definition.params, ["'a"]);
+        assert_eq!(definition.variants.len(), 1);
+        assert!(definition.variants[0].field_names.is_empty());
+    }
+
+    #[test]
+    fn borrowed_nominal_sum_parses_for_a_loud_semantic_rejection() {
+        parse_module(
+            "mode opt\n\ntype MaybeSpan('a):\n    Empty\n    Span(View(Bytes, 'a))\n",
+        )
+        .expect("the parser retains borrowed sum syntax for the type checker diagnostic");
+    }
+
+    #[test]
+    fn type_aliases_reject_lifetime_parameters_at_the_declaration() {
+        let error = parse_module("type Alias('a) = Bytes\n")
+            .expect_err("lifetime-parameterized aliases are outside RFC-0112");
+        assert!(
+            error.message.contains("only supported on a nominal type declaration")
+                && error.message.contains("type aliases accept ordinary type parameters only"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn bare_let_convention_is_not_a_view() {
         // A plain `let` parameter convention (an immutable borrow keyword) must NOT
         // be misread as the `let('a)` view type — only `let` immediately followed

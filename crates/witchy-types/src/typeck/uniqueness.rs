@@ -179,8 +179,21 @@ pub(super) fn check_unique_declarations(
                 }
             }
             Item::Type(t) => {
-                check_type_params(format!("type `{}`", bare(&t.name)), &t.params)
-                    .map_err(|error| UniquenessError::new(idx, error))?;
+                let mut seen: HashSet<&str> = HashSet::new();
+                for parameter in &t.params {
+                    if !seen.insert(parameter.as_str()) {
+                        let kind = if ast::is_lifetime_param(parameter) {
+                            "lifetime"
+                        } else {
+                            "type"
+                        };
+                        return unique_err(idx, format!(
+                            "{kind} parameter `{parameter}` is declared more than once in type `{}`; \
+                             {kind} parameter names must be unique",
+                            bare(&t.name)
+                        ));
+                    }
+                }
                 for v in &t.variants {
                     check_fields(t, v)
                         .map_err(|error| UniquenessError::new(idx, error))?;
