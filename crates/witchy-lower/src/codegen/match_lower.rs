@@ -164,6 +164,59 @@ impl Codegen<'_> {
             // (which could deref a garbage pointer for a nested ctor). Binds run in
             // the arm body only after the whole condition passes, so they're safe.
             Pattern::Ctor { name, args } => {
+                if let Some(expected) = expected
+                    && let Some(id) = self.specialized_layout_id(expected)
+                    && let Some(descriptor) = self.specialized_layouts.get(id).cloned()
+                    && matches!(descriptor.kind(), LayoutKind::ClosedSum { .. })
+                {
+                    let &(tag, nfields) = self.ctors.get(name)?;
+                    if nfields != args.len() {
+                        return None;
+                    }
+                    let variant = descriptor.variant_layouts().get(tag as usize)?.clone();
+                    if variant.fields().len() != args.len() {
+                        return None;
+                    }
+                    let field_types = self.ctor_pattern_field_types(name, Some(expected));
+                    let ptr = W::FromSlot(Box::new(value.clone()), witchy_wir::wir::Kind::I32);
+                    let mut field_conds: Vec<W> = Vec::new();
+                    let mut binds: witchy_wir::wir::WirSeq = Vec::new();
+                    for (i, (sub, field)) in
+                        args.iter().zip(variant.fields().iter().copied()).enumerate()
+                    {
+                        let natural = self.lower_layout_field_read(ptr.clone(), field)?;
+                        let kind = self.layout_field_kind(field.kind())?;
+                        let field_value = W::ToSlot(Box::new(natural), Self::wir_kind(kind));
+                        let (condition, field_binds) = self.lower_pattern(
+                            &field_value,
+                            sub,
+                            field_types.as_ref().and_then(|types| types.get(i)),
+                        )?;
+                        if !matches!(condition, W::ConstI32(1)) {
+                            field_conds.push(condition);
+                        }
+                        binds.extend(field_binds);
+                    }
+                    let tag_field = *descriptor.fields().first()?;
+                    let tag_value = self.lower_layout_field_read(ptr, tag_field)?;
+                    let tag_eq = W::Binary {
+                        op: witchy_wir::wir::BinOp::Eq,
+                        kind: witchy_wir::wir::Kind::I32,
+                        lhs: Box::new(tag_value),
+                        rhs: Box::new(W::ConstI32(tag as i32)),
+                    };
+                    let cond = if field_conds.is_empty() {
+                        tag_eq
+                    } else {
+                        W::Control(Box::new(N::If {
+                            cond: tag_eq,
+                            then_: vec![N::Push(wir_and_chain(&field_conds))],
+                            els: vec![N::Push(W::ConstI32(0))],
+                            result: Some(witchy_wir::wir::WirTy::Bool),
+                        }))
+                    };
+                    return Some((cond, binds));
+                }
                 let &(tag, nfields) = self.ctors.get(name)?;
                 if nfields != args.len() {
                     return None;

@@ -656,6 +656,73 @@ fn main() -> Int:
     }
 
     #[test]
+    fn declared_packed_closed_sum_matches_pinned_oracle_without_adapters() {
+        let source = r#"
+mode opt
+
+type Token packed:
+    Skip
+    Value(Int)
+
+fn make(i: Int) -> Token:
+    if i % 3 == 0: Skip else: Value((i * 7 + 3) % 101)
+
+fn score(token: Token) -> Int:
+    match token:
+        Skip -> 1
+        Value(value) -> value
+
+fn main() -> Int:
+    var total = 0
+    for i in 0..500000:
+        total = total + score(make(i))
+    total
+"#;
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_packed_boxed_elements",
+            "__witchy_packed_reshaped_bytes",
+        ];
+        let (result, counters) = run_int_with_i64_globals(source, &names);
+        assert_eq!(result, 16833142);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 500000);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 8_000_000);
+        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
+        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
+
+        let module = parse_module(source).expect("parse packed closed-sum oracle");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("packed closed sum lowers"),
+        );
+        assert!(wat.contains("__witchy_packed_sum_"), "variant constructors use the descriptor helper: {wat}");
+        assert!(wat.contains("call $make"), "packed sum crosses a direct result boundary: {wat}");
+        assert!(wat.contains("call $score"), "packed sum crosses a direct parameter boundary: {wat}");
+        assert!(wat.contains("i32.load8_u"), "match dispatch reads the descriptor tag width: {wat}");
+        assert!(!wat.contains("call $mk1"), "payload is never boxed into a legacy record: {wat}");
+        if witchy_wir::wir_helpers::heap_check_enabled() {
+            assert!(wat.contains("call $heap_register"), "sum allocations register checked redzones: {wat}");
+        }
+    }
+
+    #[test]
+    fn declared_packed_closed_sum_rejects_variable_layout_payload_loudly() {
+        let module = parse_module(r#"
+mode opt
+type Bad packed:
+    Empty
+    Text(String)
+fn main() -> Int:
+    0
+"#).expect("parse invalid packed closed sum");
+        let error = compile_module_binary(&module)
+            .expect_rejected("a String payload has no fixed inline descriptor");
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("packed") && diagnostic.contains("Bad"), "{diagnostic}");
+        assert!(diagnostic.contains("non-packable field"), "exact exclusion reason: {diagnostic}");
+    }
+
+    #[test]
     fn unsupported_packed_first_class_boundary_rejects_loudly() {
 
         let first_class = parse_module(r#"

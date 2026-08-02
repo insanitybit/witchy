@@ -4461,7 +4461,23 @@ impl<'types> Codegen<'types> {
             FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8) => {
                 nodes.push(N::Store8 { ptr: base, value, offset: field.offset() });
             }
-            FieldKind::Scalar(ScalarKind::Tag16) => return None,
+            FieldKind::Scalar(ScalarKind::Tag16) => {
+                nodes.push(N::Store8 {
+                    ptr: base.clone(),
+                    value: value.clone(),
+                    offset: field.offset(),
+                });
+                nodes.push(N::Store8 {
+                    ptr: base,
+                    value: W::Binary {
+                        op: witchy_wir::wir::BinOp::ShrU,
+                        kind: WK::I32,
+                        lhs: Box::new(value),
+                        rhs: Box::new(W::ConstI32(8)),
+                    },
+                    offset: field.offset().checked_add(1)?,
+                });
+            }
             FieldKind::Scalar(scalar) => {
                 nodes.push(N::Store {
                     ptr: base,
@@ -4520,6 +4536,53 @@ impl<'types> Codegen<'types> {
                 base.clone(),
                 field,
                 witchy_wir::wir::WirExpr::GetLocal(format!("f{index}")),
+            )?;
+        }
+        body.push(N::Push(base));
+        self.layout_wir_funcs.insert(name.clone(), WirFunc {
+            name: name.clone(),
+            params,
+            ret: vec![WirTy::Bool],
+            locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
+            body,
+            raw_body: None,
+        });
+        Some(name)
+    }
+
+    fn ensure_packed_sum_ctor_helper(
+        &mut self,
+        id: LayoutId,
+        tag: usize,
+    ) -> Option<String> {
+        use witchy_wir::wir::{WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
+        let name = Self::layout_helper_name("packed_sum", id, Some(tag));
+        if self.layout_wir_funcs.contains_key(&name) {
+            return Some(name);
+        }
+        let descriptor = self.specialized_layouts.get(id)?.clone();
+        let LayoutKind::ClosedSum { variants } = descriptor.kind() else { return None };
+        let variant = descriptor.variant_layouts().get(tag)?.clone();
+        if variants.get(tag)?.len() != variant.fields().len() {
+            return None;
+        }
+        let LayoutSize::Fixed(size) = descriptor.size() else { return None };
+        let tag_field = *descriptor.fields().first()?;
+        let mut params = Vec::with_capacity(variant.fields().len());
+        for (index, field) in variant.fields().iter().enumerate() {
+            params.push(WirLocal {
+                name: format!("f{index}"),
+                ty: Self::wir_ty_for_kind(self.layout_field_kind(field.kind())?),
+            });
+        }
+        let (mut body, base) = self.layout_alloc_nodes(size);
+        self.push_layout_store(&mut body, base.clone(), tag_field, W::ConstI32(tag as i32))?;
+        for (index, field) in variant.fields().iter().copied().enumerate() {
+            self.push_layout_store(
+                &mut body,
+                base.clone(),
+                field,
+                W::GetLocal(format!("f{index}")),
             )?;
         }
         body.push(N::Push(base));
@@ -4819,12 +4882,31 @@ impl<'types> Codegen<'types> {
     ) -> Option<witchy_wir::wir::WirExpr> {
         let id = self.specialized_layout_of_expr(expr)?;
         let descriptor = self.specialized_layouts.get(id)?;
-        if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. })
-            || descriptor.fields().len() != args.len()
-        {
-            return None;
-        }
-        let helper = self.ensure_packed_record_helper(id)?;
+        let helper = match descriptor.kind() {
+            LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }
+                if descriptor.fields().len() == args.len() =>
+            {
+                self.ensure_packed_record_helper(id)?
+            }
+            LayoutKind::ClosedSum { .. } => {
+                let Expr::Ctor { name, .. } = expr else { return None };
+                let (tag, arity) = self.ctors.get(name).copied()?;
+                if arity != args.len()
+                    || self
+                        .specialized_layouts
+                        .get(id)?
+                        .variant_layouts()
+                        .get(tag as usize)?
+                        .fields()
+                        .len()
+                        != args.len()
+                {
+                    return None;
+                }
+                self.ensure_packed_sum_ctor_helper(id, tag as usize)?
+            }
+            _ => return None,
+        };
         let lowered = args.iter().map(|arg| self.lower_expr(arg)).collect::<Option<Vec<_>>>()?;
         Some(witchy_wir::wir::WirExpr::Call { func: helper, args: lowered })
     }
@@ -4861,7 +4943,23 @@ impl<'types> Codegen<'types> {
             FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8) => {
                 Some(W::Load8U { ptr: Box::new(base), offset: field.offset() })
             }
-            FieldKind::Scalar(ScalarKind::Tag16) => None,
+            FieldKind::Scalar(ScalarKind::Tag16) => Some(W::Binary {
+                op: WB::Or,
+                kind: WK::I32,
+                lhs: Box::new(W::Load8U {
+                    ptr: Box::new(base.clone()),
+                    offset: field.offset(),
+                }),
+                rhs: Box::new(W::Binary {
+                    op: WB::Shl,
+                    kind: WK::I32,
+                    lhs: Box::new(W::Load8U {
+                        ptr: Box::new(base),
+                        offset: field.offset().checked_add(1)?,
+                    }),
+                    rhs: Box::new(W::ConstI32(8)),
+                }),
+            }),
             FieldKind::Scalar(scalar) => Some(W::Load {
                 ptr: Box::new(base),
                 kind: match scalar {

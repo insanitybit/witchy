@@ -49,7 +49,11 @@ impl witchy_wir::layout::ClosedTypeResolver for ModuleLayoutResolver<'_> {
                 if definition.is_capability {
                     Some(ResolvedNamed::Reference(ReferenceKind::Capability))
                 } else if definition.packed {
-                    Some(ResolvedNamed::PackedRecord(definition))
+                    if definition.variants.len() == 1 {
+                        Some(ResolvedNamed::PackedRecord(definition))
+                    } else {
+                        Some(ResolvedNamed::ClosedSum(definition))
+                    }
                 } else {
                     Some(ResolvedNamed::Reference(ReferenceKind::Owning))
                 }

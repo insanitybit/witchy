@@ -48,7 +48,7 @@ impl ClosedTypeResolver for TestResolver<'_> {
             "Console" => ResolvedNamed::Reference(ReferenceKind::Capability),
             _ => {
                 let definition = *self.definitions.get(name)?;
-                if definition.packed {
+                if definition.packed && definition.variants.len() == 1 {
                     ResolvedNamed::PackedRecord(definition)
                 } else {
                     ResolvedNamed::ClosedSum(definition)
@@ -253,7 +253,11 @@ fn packed_list_records_header_stride_ownership_and_operations() {
 
 #[test]
 fn closed_sum_uses_a_fixed_tag_and_aligned_payload_band() {
-    let definitions = [sum("Choice", &[0, 1]), sum("Wide", &[0; 257])];
+    let mut choice_definition = sum("Choice", &[0, 1]);
+    choice_definition.packed = true;
+    let mut wide_definition = sum("Wide", &[0; 257]);
+    wide_definition.packed = true;
+    let definitions = [choice_definition, wide_definition];
     let resolver = TestResolver::with_definitions(&definitions);
     let mut layouts = LayoutInterner::new();
     let choice = layouts.intern_type(&named("Choice"), &resolver).unwrap();
