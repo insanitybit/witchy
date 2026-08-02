@@ -5366,12 +5366,10 @@ impl Checker {
                     } else {
                         self.infer(value)?
                     };
-                    if matches!(value, Expr::Var(_)) {
-                        self.reject_borrowed_nominal_runtime_ty(
-                            &vt,
-                            &format!("binding/copy into `{name}`"),
-                        )?;
-                    }
+                    self.reject_borrowed_nominal_runtime_ty(
+                        &vt,
+                        &format!("binding/copy into `{name}`"),
+                    )?;
                     self.define(name.clone(), vt, *mutable);
                     ty = Ty::Unit;
                 }
@@ -5395,12 +5393,10 @@ impl Checker {
                         }
                     }
                     let vt = self.infer_expected(value, &existing)?;
-                    if matches!(value, Expr::Var(_)) {
-                        self.reject_borrowed_nominal_runtime_ty(
-                            &vt,
-                            &format!("assignment/copy into `{name}`"),
-                        )?;
-                    }
+                    self.reject_borrowed_nominal_runtime_ty(
+                        &vt,
+                        &format!("assignment/copy into `{name}`"),
+                    )?;
                     if !self.existential_coercion(&existing, &vt)?
                         && !self.record_width_conformance(&existing, &vt)?
                     {

@@ -603,6 +603,20 @@
             "{binding}"
         );
 
+        for source in [
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(flag: Bool, let owner: let('a) String, let holder: Holder('a)) -> Int:\n    let copy = if flag:\n        holder\n    else:\n        holder\n    0\n",
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(flag: Bool, let owner: let('a) String, let holder: Holder('a)) -> Int:\n    let copy = match flag:\n        true -> holder\n        false -> holder\n    0\n",
+        ] {
+            let error = check_str(source)
+                .expect_err("control flow must not hide borrowed nominal storage");
+            assert!(
+                error.contains("binding/copy into `copy`")
+                    && error.contains("borrowed nominal type `Holder`")
+                    && error.contains("runtime owner-root lowering"),
+                "{error}"
+            );
+        }
+
         let moved = check_str(
             "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    move holder\n    0\n",
         )
@@ -626,9 +640,9 @@
         );
 
         check_str(
-            "fn copy(value: Int) -> Int:\n    let duplicate = value\n    duplicate\n\nfn transfer(value: String) -> String:\n    move value\n",
+            "mode opt\n\nfn copy(value: Int) -> Int:\n    let duplicate = if true:\n        value\n    else:\n        value\n    duplicate\n\nfn transfer(value: String) -> String:\n    move value\n\nfn inspect(let owner: let('a) String) -> Int:\n    let projected = if true:\n        owner\n    else:\n        owner\n    0\n",
         )
-        .expect("ordinary values retain binding, variable-return, and move behavior");
+        .expect("ordinary values and borrowed View projections retain binding and move behavior");
     }
 
     #[test]
