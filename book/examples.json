@@ -379,6 +379,16 @@
   },
   {
     "block": 20,
+    "browser_runnable": false,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 21,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -393,7 +403,7 @@
     "runnable": true
   },
   {
-    "block": 21,
+    "block": 22,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -407,7 +417,7 @@
     "runnable": true
   },
   {
-    "block": 22,
+    "block": 23,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -421,7 +431,7 @@
     "runnable": true
   },
   {
-    "block": 23,
+    "block": 24,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -436,7 +446,7 @@
     "runnable": true
   },
   {
-    "block": 24,
+    "block": 25,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -451,7 +461,7 @@
     "runnable": true
   },
   {
-    "block": 25,
+    "block": 26,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -465,7 +475,7 @@
     "runnable": true
   },
   {
-    "block": 26,
+    "block": 27,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -479,7 +489,7 @@
     "runnable": true
   },
   {
-    "block": 27,
+    "block": 28,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -493,7 +503,7 @@
     "runnable": true
   },
   {
-    "block": 28,
+    "block": 29,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -507,7 +517,7 @@
     "runnable": true
   },
   {
-    "block": 29,
+    "block": 30,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -522,7 +532,7 @@
     "runnable": true
   },
   {
-    "block": 30,
+    "block": 31,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -536,7 +546,7 @@
     "runnable": true
   },
   {
-    "block": 31,
+    "block": 32,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -551,7 +561,7 @@
     "runnable": true
   },
   {
-    "block": 32,
+    "block": 33,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -566,7 +576,7 @@
     "runnable": true
   },
   {
-    "block": 33,
+    "block": 34,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -580,7 +590,7 @@
     "runnable": true
   },
   {
-    "block": 34,
+    "block": 35,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -594,7 +604,7 @@
     "runnable": true
   },
   {
-    "block": 35,
+    "block": 36,
     "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
@@ -607,24 +617,12 @@
     "runnable": false
   },
   {
-    "block": 36,
+    "block": 37,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [],
-    "output": [],
-    "runnable": false
-  },
-  {
-    "block": 37,
-    "browser_runnable": false,
-    "console_only": false,
-    "expect_error": false,
-    "file": "spec/language.md",
-    "footprint": [
-      "Net[Connect,Tcp]"
-    ],
     "output": [],
     "runnable": false
   },
@@ -647,6 +645,18 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
+      "Net[Connect,Tcp]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 40,
+    "browser_runnable": false,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
       "Console[Read,Write]",
       "Net[Connect,Listen,Tcp,Udp,Uds]"
     ],
@@ -654,7 +664,7 @@
     "runnable": false
   },
   {
-    "block": 40,
+    "block": 41,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -670,7 +680,7 @@
     "runnable": true
   },
   {
-    "block": 41,
+    "block": 42,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
