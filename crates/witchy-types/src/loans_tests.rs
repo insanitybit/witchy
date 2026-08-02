@@ -851,6 +851,67 @@
     }
 
     #[test]
+    fn fixed_borrowed_nominal_construction_copy_and_return_keep_the_checked_root() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\n\
+             fn forward(input: let('a) String, cursor: Cursor('a)) -> Cursor('a):\n    cursor\n\n\
+             fn main(console: Console):\n    let input = \"root\"\n    let first = make(input)\n    let copy = first\n    let next = forward(input, copy)\n    console.print(next.view)\n",
+        )
+        .expect("parse fixed borrowed nominal fixture");
+        let loan_facts = facts(&module).expect("projection-aware nominal facts");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+
+        for (statement, shell) in [
+            (&main.body.stmts[1], "first"),
+            (&main.body.stmts[2], "copy"),
+            (&main.body.stmts[3], "next"),
+        ] {
+            let shapes = loan_facts.borrowed_value_shapes_after(statement);
+            let [shape] = shapes.as_slice() else {
+                panic!("one checked borrowed shape for {shell}")
+            };
+            assert_eq!(shape.shell, shell);
+            assert_eq!(shape.roots.len(), 1);
+            assert_eq!(shape.roots[0].root.local, "input");
+            assert_eq!(
+                shape.roots[0].contributions[0].borrower_projection,
+                LoanProjection {
+                    steps: vec![LoanProjectionStep::Field("view".into())]
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_borrowed_nominal_return_cannot_relabel_an_owner_relation() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Holder('a):\n    view: View(String, 'a)\n\n\
+             fn bad(left: let('left) String, right: let('right) String) -> Holder('right):\n    Holder(left)\n",
+        )
+        .expect("parse relation mismatch fixture");
+        let error = match facts(&module) {
+            Ok(_) => panic!("the checked owner relation must reject relabeling"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("output projection `.view`")
+                && error.contains("owner `left`")
+                && error.contains("owner `right`"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn multi_owner_companions_preserve_checked_relation_order() {
         let module = witchy_syntax::parser::parse_module(
             "mode opt\n\n\
