@@ -2065,8 +2065,15 @@ impl<'types> Codegen<'types> {
                 .enumerate()
                 .find_map(|(index, param)| {
                     (param.kind() == AccessKind::Consuming
-                        && param.ownership().input().is_some()
-                        && type_has_capacity_token(param.ty()))
+                        && param.ownership().input().is_some_and(|state| {
+                            matches!(
+                                state,
+                                witchy_types::access::OwnershipStateClass::LinearMemoryObject
+                                    | witchy_types::access::OwnershipStateClass::LayoutDependent {
+                                        ..
+                                    }
+                            )
+                        }))
                     .then_some(index)
                 }),
             var_capacity_params: signature
