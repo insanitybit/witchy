@@ -2068,13 +2068,27 @@ fn assemble_wir_module_with_structs_mode(
     typed = typed.rewrite_and_reannotate(|table, module| {
         rewrite_try_ctx_module(module, table);
     });
-    let prepared = match runtime_catalog {
-        Some(runtime_catalog) => witchy_types::existential::lower_explicit_packs_with_runtime_types(
-            typed,
-            &witness_catalog,
-            runtime_catalog,
-        ),
-        None => witchy_types::existential::lower_explicit_packs(typed, &witness_catalog),
+    let prepared = match (build_entrypoint, runtime_catalog) {
+        (true, Some(runtime_catalog)) => {
+            witchy_types::existential::lower_explicit_packs_with_runtime_types_for_build(
+                typed,
+                &witness_catalog,
+                runtime_catalog,
+            )
+        }
+        (true, None) => {
+            witchy_types::existential::lower_explicit_packs_for_build(typed, &witness_catalog)
+        }
+        (false, Some(runtime_catalog)) => {
+            witchy_types::existential::lower_explicit_packs_with_runtime_types(
+                typed,
+                &witness_catalog,
+                runtime_catalog,
+            )
+        }
+        (false, None) => {
+            witchy_types::existential::lower_explicit_packs(typed, &witness_catalog)
+        }
     }
     .map_err(|message| CodegenError { message })?;
     let (mut module, type_table, witnesses) = prepared.into_parts();

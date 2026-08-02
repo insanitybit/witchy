@@ -30,6 +30,12 @@ pub struct PreparedExistentials {
     runtime_types: RuntimeTypePlan,
 }
 
+#[derive(Clone, Copy)]
+enum ReannotationPolicy {
+    Runtime,
+    BuildEntrypoint,
+}
+
 impl std::fmt::Debug for PreparedExistentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedExistentials")
@@ -75,7 +81,21 @@ pub fn lower_explicit_packs(
     typed: TypedModule,
     catalog: &WitnessCatalog,
 ) -> Result<PreparedExistentials, String> {
-    lower_explicit_packs_inner(typed, catalog, None)
+    lower_explicit_packs_inner(typed, catalog, None, ReannotationPolicy::Runtime)
+}
+
+/// Lower compiler-owned existential nodes in a build module whose checked
+/// `build(BuildOut, ...)` entrypoint has already been renamed to runtime `main`.
+pub fn lower_explicit_packs_for_build(
+    typed: TypedModule,
+    catalog: &WitnessCatalog,
+) -> Result<PreparedExistentials, String> {
+    lower_explicit_packs_inner(
+        typed,
+        catalog,
+        None,
+        ReannotationPolicy::BuildEntrypoint,
+    )
 }
 
 pub fn lower_explicit_packs_with_runtime_types(
@@ -83,13 +103,33 @@ pub fn lower_explicit_packs_with_runtime_types(
     catalog: &WitnessCatalog,
     runtime_catalog: &RuntimeDeclarationCatalog,
 ) -> Result<PreparedExistentials, String> {
-    lower_explicit_packs_inner(typed, catalog, Some(runtime_catalog))
+    lower_explicit_packs_inner(
+        typed,
+        catalog,
+        Some(runtime_catalog),
+        ReannotationPolicy::Runtime,
+    )
+}
+
+/// Runtime-type-aware counterpart of [`lower_explicit_packs_for_build`].
+pub fn lower_explicit_packs_with_runtime_types_for_build(
+    typed: TypedModule,
+    catalog: &WitnessCatalog,
+    runtime_catalog: &RuntimeDeclarationCatalog,
+) -> Result<PreparedExistentials, String> {
+    lower_explicit_packs_inner(
+        typed,
+        catalog,
+        Some(runtime_catalog),
+        ReannotationPolicy::BuildEntrypoint,
+    )
 }
 
 fn lower_explicit_packs_inner(
     typed: TypedModule,
     catalog: &WitnessCatalog,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
+    reannotation: ReannotationPolicy,
 ) -> Result<PreparedExistentials, String> {
     if typed
         .module()
@@ -151,7 +191,11 @@ fn lower_explicit_packs_inner(
     // their address-keyed facts with the checked path so a malformed generated
     // node is reported here instead of degrading the executable to an empty
     // table and erasing exact call identity.
-    let typed = crate::typeck::annotate_checked(module).map_err(|error| error.to_string())?;
+    let typed = match reannotation {
+        ReannotationPolicy::Runtime => crate::typeck::annotate_checked(module),
+        ReannotationPolicy::BuildEntrypoint => crate::typeck::annotate_checked_build(module),
+    }
+    .map_err(|error| error.to_string())?;
     let (requests, upcasts) = collect_requests(typed.module(), typed.table())?;
     let witnesses = witness::build_from_catalog_with_upcasts(catalog, requests, upcasts)?;
     let (module, table, result) = typed.rewrite_into_module(|table, module| {
@@ -619,6 +663,40 @@ fn visit_expr(
 mod tests {
     use super::*;
     use witchy_syntax::parser;
+
+    #[test]
+    fn build_reannotation_preserves_the_internal_entrypoint_authority() {
+        let module = parser::parse_module(
+            "fn main(out: BuildOut):\n    0\n",
+        )
+        .expect("parse renamed build entrypoint");
+        let catalog = WitnessCatalog::from_module(&module);
+
+        let ordinary_error = match crate::typeck::annotate_checked(module.clone()) {
+            Ok(_) => panic!("ordinary main must not acquire build authority"),
+            Err(error) => error,
+        };
+        assert!(
+            ordinary_error
+                .to_string()
+                .contains("`main` parameter `out` has type `BuildOut`"),
+            "{ordinary_error}",
+        );
+
+        let typed = crate::typeck::annotate_checked_build(module.clone())
+            .expect("check compiler-renamed build entrypoint");
+        lower_explicit_packs_for_build(typed, &catalog)
+            .expect("reannotate a build module without runtime declarations");
+
+        let typed = crate::typeck::annotate_checked_build(module)
+            .expect("check authenticated compiler-renamed build entrypoint");
+        lower_explicit_packs_with_runtime_types_for_build(
+            typed,
+            &catalog,
+            &RuntimeDeclarationCatalog::default(),
+        )
+        .expect("reannotate an authenticated build module");
+    }
 
     #[test]
     fn explicit_erasure_becomes_a_typed_compiler_owned_pack() {
