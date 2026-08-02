@@ -580,6 +580,31 @@ fn result_only_generics_use_the_contextual_call_result_access_shape() {
 }
 
 #[test]
+fn generated_generator_lambda_uses_the_specialized_unfold_contract() {
+    fn no_comptime(
+        _name: &str,
+        _module: &mut witchy_syntax::ast::Module,
+        _siblings: &[(String, witchy_syntax::ast::Module)],
+    ) -> Result<witchy_syntax::origin::OriginTable, String> {
+        Ok(witchy_syntax::origin::OriginTable::default())
+    }
+
+    let main = witchy_syntax::parser::parse_module(
+        "import iter\n\ngen fn numbers() -> Iter(Int):\n    yield 1\n\nfn main() -> Int:\n    0\n",
+    )
+    .expect("parse generator source");
+
+    crate::pipeline::link_checked(
+        vec![("main".into(), main)],
+        "main",
+        no_comptime,
+    )
+    .expect(
+        "generator lowering evaluates its synthesized iter.unfold lambda under the concrete state contract",
+    );
+}
+
+#[test]
 fn try_propagation_preserves_nested_callable_access() {
     crate::typeck::check_str(
         "fn option(value: Option(fn(unique List(Int)) -> Int)) -> Option(fn(unique List(Int)) -> Int):\n    let callback = value?\n    Some(callback)\n\n\
