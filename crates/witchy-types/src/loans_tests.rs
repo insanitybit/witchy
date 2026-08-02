@@ -856,8 +856,8 @@
             "mode opt\n\n\
              type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
              fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\n\
-             fn forward(input: let('a) String, cursor: Cursor('a)) -> Cursor('a):\n    cursor\n\n\
-             fn main(console: Console):\n    let input = \"root\"\n    let first = make(input)\n    let copy = first\n    let next = forward(input, copy)\n    console.print(next.view)\n",
+             fn forward(cursor: Cursor('a)) -> Cursor('a):\n    cursor\n\n\
+             fn main(console: Console):\n    let input = \"root\"\n    let first = make(input)\n    let copy = first\n    let next = forward(copy)\n    let actual = next.view\n    console.print(actual)\n    console.print(first.view)\n",
         )
         .expect("parse fixed borrowed nominal fixture");
         let loan_facts = facts(&module).expect("projection-aware nominal facts");
@@ -889,6 +889,55 @@
                 },
             );
         }
+
+        let actual = &main.body.stmts[4];
+        let [projection] = loan_facts.opens_after(actual) else {
+            panic!("binding next.view opens one projected loan")
+        };
+        let Stmt::Let {
+            value: Expr::Field { base, field },
+            ..
+        } = actual
+        else {
+            panic!("actual binds a fixed field projection")
+        };
+        assert!(matches!(base.as_ref(), Expr::Var(name) if name == "next"));
+        assert_eq!(field, "view");
+        assert_eq!(projection.view, "actual");
+        assert_eq!(projection.owner_root().local, "input");
+        assert_eq!(projection.projection, LoanProjection::default());
+
+        let copy = &main.body.stmts[2];
+        let simultaneous = loan_facts.active_at(&main.body.stmts[5]);
+        assert!(
+            simultaneous.iter().any(|event| event.view == "first"),
+            "the original shell remains live after the copy"
+        );
+        assert!(
+            loan_facts.opens_after(copy).iter().any(|event| event.view == "copy"),
+            "the copy opens its own logical shell"
+        );
+    }
+
+    #[test]
+    fn copied_borrowed_shell_keeps_the_original_live_for_owner_conflicts() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n\n\
+             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input)\n\n\
+             fn main(console: Console):\n    var input = \"root\"\n    let first = make(input)\n    let copy = first\n    console.print(copy.view)\n    input = \"changed\"\n    console.print(first.view)\n",
+        )
+        .expect("parse simultaneous borrowed shell fixture");
+        let error = match facts(&module) {
+            Ok(_) => panic!("the still-live original shell must retain the owner conflict"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("owner `input` is reassigned")
+                && error.contains("borrowed view `first`")
+                && (error.contains("still live") || error.contains("still \n             live")),
+            "{error}"
+        );
     }
 
     #[test]
@@ -926,6 +975,24 @@
         };
         assert!(
             error.contains("argument 1 passed to `erase`")
+                && error.contains("owner relation from `input`")
+                && error.contains("parameter type erases that relation"),
+            "{error}"
+        );
+
+        let hidden_send = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Holder('a):\n    view: View(String, 'a)\n\n\
+             fn leak(tx: Sender(a), value: a) -> Task(Nil):\n    send(tx, value)\n\n\
+             fn bad(tx: Sender(Holder('a)), input: let('a) String) -> Task(Nil):\n    let holder = Holder(input)\n    leak(tx, holder)\n",
+        )
+        .expect("parse relation-erasing send fixture");
+        let error = match facts(&hidden_send) {
+            Ok(_) => panic!("a generic send helper must not hide a borrowed shell relation"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("argument 2 passed to `leak`")
                 && error.contains("owner relation from `input`")
                 && error.contains("parameter type erases that relation"),
             "{error}"

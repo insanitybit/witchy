@@ -1240,23 +1240,18 @@ fn type_mentions_view(ty: &Type) -> bool {
     }
 }
 
-fn type_has_generic_leaf(ty: &Type) -> bool {
+fn type_is_generic_leaf(ty: &Type) -> bool {
     match ty {
         Type::Named(name, arguments) => {
-            (arguments.is_empty()
+            arguments.is_empty()
                 && !name.contains('.')
-                && name.chars().next().is_some_and(char::is_lowercase))
-                || arguments.iter().any(type_has_generic_leaf)
+                && name.chars().next().is_some_and(char::is_lowercase)
         }
-        Type::Qualified(_, inner) => type_has_generic_leaf(inner),
-        Type::Tuple(items) | Type::Dyn(_, items) => items.iter().any(type_has_generic_leaf),
-        Type::Fn(parameters, result, _) => {
-            parameters.iter().any(type_has_generic_leaf) || type_has_generic_leaf(result)
-        }
-        Type::RecordCompose { base, fields } => {
-            type_has_generic_leaf(base)
-                || fields.iter().any(|(_, field)| type_has_generic_leaf(field))
-        }
+        Type::Qualified(_, inner) => type_is_generic_leaf(inner),
+        Type::Tuple(_)
+        | Type::Dyn(_, _)
+        | Type::Fn(_, _, _)
+        | Type::RecordCompose { .. } => false,
     }
 }
 
@@ -2588,17 +2583,13 @@ impl LoanCtx<'_> {
             if sources.is_empty() {
                 continue;
             }
-            let relation_can_escape = signature
-                .access
-                .as_ref()
-                .is_some_and(|access| type_has_generic_leaf(access.result().ty()));
-            let preserves_relation = signature.access.as_ref().is_some_and(|access| {
-                access
-                    .params()
-                    .get(index)
-                    .is_some_and(|parameter| !parameter.borrow_lifetimes().is_empty())
+            let erases_relation = signature.access.as_ref().is_some_and(|access| {
+                access.params().get(index).is_some_and(|parameter| {
+                    type_is_generic_leaf(parameter.ty())
+                        && parameter.borrow_lifetimes().is_empty()
+                })
             });
-            if relation_can_escape && !preserves_relation {
+            if erases_relation {
                 let source = &sources[0];
                 return Err(terr(format!(
                     "argument {} passed to `{}` carries a borrowed owner relation from `{}` \
