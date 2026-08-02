@@ -306,7 +306,7 @@ impl Codegen<'_> {
                 visiting.remove(&key);
                 result
             }
-            EqShape::AdtInst(name, variants) => {
+            EqShape::AdtInst(_, variants) => {
                 let key = format!("adt:{}", shape.id());
                 if !visiting.insert(key.clone()) {
                     return Some(true);
