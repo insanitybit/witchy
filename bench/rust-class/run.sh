@@ -87,6 +87,20 @@ field() {
   awk -F= -v wanted="$name" '$1 == wanted { print $2; exit }'
 }
 
+expected_result() {
+  case "$1" in
+    scalar_int) printf '%s' 24000006 ;;
+    scalar_float) printf '%s' 1 ;;
+    packed_records) printf '%s' 9599879 ;;
+    list_pipeline) printf '%s' 12000160 ;;
+    closed_sum) printf '%s' 16833142 ;;
+    generic_helpers) printf '%s' 9599942 ;;
+    destination_record) printf '%s' 49999959 ;;
+    recursive_values) printf '%s' 9999190 ;;
+    *) echo "rust-class: no independent expected result for $1" >&2; return 1 ;;
+  esac
+}
+
 run_witchy() {
   "$WITCHY" sandbox "$bench_dir/$1.witchy"
 }
@@ -123,8 +137,9 @@ for case_name in "${cases[@]}"; do
   rust_output=$(run_rust "$case_name")
   witchy_result=$(printf '%s\n' "$witchy_output" | field result)
   rust_result=$(printf '%s\n' "$rust_output" | field result)
-  [ -n "$witchy_result" ] && [ "$witchy_result" = "$rust_result" ] || {
-    echo "rust-class: $case_name result mismatch: witchy=$witchy_result rust=$rust_result" >&2
+  expected=$(expected_result "$case_name")
+  [ "$witchy_result" = "$expected" ] && [ "$rust_result" = "$expected" ] || {
+    echo "rust-class: $case_name result mismatch: expected=$expected witchy=$witchy_result rust=$rust_result" >&2
     exit 1
   }
   echo "$case_name result=$witchy_result scalar_rust=verified"

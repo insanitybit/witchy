@@ -25,7 +25,8 @@ bench/rust-class/run.sh --enforce
 ```
 
 `--check` compiles both legs, verifies the Rust kernel is scalar-only, and
-compares one untimed result. `--measure` additionally prints best-of-seven warm
+compares both untimed results with a pinned independent expected value.
+`--measure` additionally prints best-of-seven warm
 kernel times and Witchy/Rust ratios. `--enforce` applies RFC-0111's completion
 thresholds: geometric mean at most 1.25x and no core case above 1.50x.
 
