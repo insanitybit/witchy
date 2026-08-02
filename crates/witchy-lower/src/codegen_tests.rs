@@ -305,7 +305,14 @@
         names: &[&str],
     ) -> (i64, std::collections::BTreeMap<String, i64>) {
         let module = parse_module(source).expect("parse counter program");
-        let bytes = compile_module_binary(&module)
+        run_int_module_with_i64_globals(&module, names)
+    }
+
+    fn run_int_module_with_i64_globals(
+        module: &witchy_syntax::ast::Module,
+        names: &[&str],
+    ) -> (i64, std::collections::BTreeMap<String, i64>) {
+        let bytes = compile_module_binary(module)
             .expect_lowered("the counter program lowers");
         let engine = gc_wasmtime_engine();
         let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
@@ -550,45 +557,106 @@ fn main() -> Int:
     }
 
     #[test]
-    fn unsupported_packed_mutation_and_first_class_boundaries_reject_loudly() {
+    fn declared_packed_list_push_preserves_layout_and_counts_growth() {
         let list_module = parse_module(
             witchy_syntax::linker::bundled_source("list")
                 .expect("bundled list module"),
         )
-        .expect("parse list mutation module");
+        .expect("parse descriptor list mutation module");
         let mutation_app = parse_module(r#"
 mode opt
 import list
 type Point packed:
     x: Int
 fn main() -> Int:
-    var points = [Point(1)]
+    var points = []
+    list.push(points, Point(1))
     list.push(points, Point(2))
-    list.length(points)
-"#).expect("parse mutation rejection");
+    list.push(points, Point(3))
+    list.push(points, Point(4))
+    list.length(points) * 1000
+        + list.at(points, 0).x * 100
+        + list.at(points, 1).x * 10
+        + list.at(points, 2).x
+        + list.at(points, 3).x
+"#).expect("parse descriptor list mutation");
         let mutation = witchy_interp::pipeline::link_with_user_modules(
             vec![("list".into(), list_module), ("app".into(), mutation_app)],
             "app",
             &std::collections::HashSet::from(["app".to_string()]),
         )
-        .expect("link mutation rejection");
-        let error = match compile_module_binary(&mutation) {
-            LoweringOutcome::Rejected(error) => error,
-            LoweringOutcome::Lowered(_) => {
-                let wir = assemble_wir_module(&mutation).expect_lowered("inspect unexpected lowering");
-                panic!("packed mutation unexpectedly lowered:\n{}", witchy_wir::wir::to_wat(&wir));
-            }
-            LoweringOutcome::Unsupported(error) => {
-                panic!("packed mutation was unsupported instead of loudly rejected: {error}")
-            }
-        };
-        let diagnostic = error.to_string();
-        assert!(
-            diagnostic.contains("declared packed layout")
-                && diagnostic.contains("list.push")
-                && diagnostic.contains("cannot box or reshape"),
-            "unexpected mutation diagnostic: {diagnostic}",
+        .expect("link descriptor list mutation");
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_packed_boxed_elements",
+            "__witchy_packed_reshaped_bytes",
+        ];
+        let (result, counters) = run_int_module_with_i64_globals(&mutation, &names);
+        assert_eq!(result, 4127);
+        // Empty buffer: 8 bytes. First push grows capacity to two (24 bytes),
+        // the second reuses slack, the third grows to six (56 bytes), and the
+        // fourth reuses slack: 3 descriptor allocations, 88 logical bytes.
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 3);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 88);
+        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
+        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
+
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&mutation).expect_lowered("descriptor list mutation lowers"),
         );
+        assert!(wat.contains("__witchy_packed_list_push_"), "descriptor push helper is reachable: {wat}");
+        assert!(wat.contains("memory.copy"), "growth copies packed bytes at descriptor stride: {wat}");
+        assert!(!wat.contains("call $list_push_cap"), "legacy slot push is absent: {wat}");
+        assert!(!wat.contains("call $mk1"), "packed elements are never boxed: {wat}");
+        if witchy_wir::wir_helpers::heap_check_enabled() {
+            assert!(wat.contains("call $heap_register"), "growth allocation registers its redzone: {wat}");
+        }
+    }
+
+    #[test]
+    fn declared_packed_list_push_copies_at_an_alias_dirty_site() {
+        let list_module = parse_module(
+            witchy_syntax::linker::bundled_source("list")
+                .expect("bundled list module"),
+        )
+        .expect("parse list module");
+        let app = parse_module(r#"
+mode opt
+import list
+type Point packed:
+    x: Int
+fn main() -> Int:
+    var points = [Point(1)]
+    let alias = points
+    list.push(points, Point(2))
+    list.length(alias) * 1000
+        + list.length(points) * 100
+        + list.at(alias, 0).x * 10
+        + list.at(points, 1).x
+"#).expect("parse alias-dirty descriptor push");
+        let module = witchy_interp::pipeline::link_with_user_modules(
+            vec![("list".into(), list_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        )
+        .expect("link alias-dirty descriptor push");
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_packed_boxed_elements",
+            "__witchy_packed_reshaped_bytes",
+        ];
+        let (result, counters) = run_int_module_with_i64_globals(&module, &names);
+        assert_eq!(result, 1212, "the alias retains the old one-element value");
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 2);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 56);
+        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
+        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
+    }
+
+    #[test]
+    fn unsupported_packed_first_class_boundary_rejects_loudly() {
 
         let first_class = parse_module(r#"
 mode opt

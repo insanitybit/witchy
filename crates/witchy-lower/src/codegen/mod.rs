@@ -4393,12 +4393,28 @@ impl<'types> Codegen<'types> {
         &self,
         size: u32,
     ) -> (Vec<witchy_wir::wir::WirNode>, witchy_wir::wir::WirExpr) {
+        self.layout_alloc_expr_nodes(witchy_wir::wir::WirExpr::ConstI32(size as i32))
+    }
+
+    fn layout_alloc_expr_nodes(
+        &self,
+        size: witchy_wir::wir::WirExpr,
+    ) -> (Vec<witchy_wir::wir::WirNode>, witchy_wir::wir::WirExpr) {
         use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W, WirNode as N};
         let checked = witchy_wir::wir_helpers::heap_check_enabled();
-        let reserve = size + if checked { witchy_wir::layout::HEAP_REDZONE as u32 } else { 0 };
+        let reserve = if checked {
+            W::Binary {
+                op: WB::Add,
+                kind: WK::I32,
+                lhs: Box::new(size.clone()),
+                rhs: Box::new(W::ConstI32(witchy_wir::layout::HEAP_REDZONE as i32)),
+            }
+        } else {
+            size.clone()
+        };
         let mut nodes = vec![N::SetLocal {
             local: "p".into(),
-            value: W::Call { func: "rc_alloc".into(), args: vec![W::ConstI32(reserve as i32)] },
+            value: W::Call { func: "rc_alloc".into(), args: vec![reserve] },
         }];
         nodes.push(Self::increment_counter("__witchy_packed_alloc_calls"));
         nodes.push(N::SetGlobal {
@@ -4409,7 +4425,11 @@ impl<'types> Codegen<'types> {
                 lhs: Box::new(W::GetGlobal("__witchy_packed_alloc_bytes".into())),
                 // Count descriptor payload bytes. Debug redzones are deliberately
                 // excluded so instrumentation does not change the physical metric.
-                rhs: Box::new(W::ConstI64(size as i64)),
+                rhs: Box::new(W::Convert {
+                    from: WK::I32,
+                    to: WK::I64,
+                    arg: Box::new(size.clone()),
+                }),
             },
         });
         if checked {
@@ -4421,7 +4441,7 @@ impl<'types> Codegen<'types> {
                         op: WB::Add,
                         kind: WK::I32,
                         lhs: Box::new(W::GetLocal("p".into())),
-                        rhs: Box::new(W::ConstI32(size as i32)),
+                        rhs: Box::new(size),
                     },
                 ],
             }));
@@ -4512,6 +4532,214 @@ impl<'types> Codegen<'types> {
             raw_body: None,
         });
         Some(name)
+    }
+
+    fn ensure_packed_list_push_helper(&mut self, id: LayoutId) -> Option<String> {
+        use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
+        let name = Self::layout_helper_name("packed_list_push", id, None);
+        if self.layout_wir_funcs.contains_key(&name) {
+            return Some(name);
+        }
+        let descriptor = self.specialized_layouts.get(id)?.clone();
+        let LayoutKind::PackedList { element, .. } = descriptor.kind() else { return None };
+        let element_descriptor = self.specialized_layouts.get(*element)?.clone();
+        let HeaderLayout::PackedList {
+            length_offset,
+            capacity_offset,
+            data_offset,
+            ..
+        } = descriptor.header() else { return None };
+        let LayoutSize::Dynamic { base, stride } = descriptor.size() else { return None };
+        let fields = element_descriptor.fields();
+        let mut params = vec![
+            WirLocal { name: "root".into(), ty: WirTy::Bool },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+        ];
+        for (index, field) in fields.iter().enumerate() {
+            params.push(WirLocal {
+                name: format!("f{index}"),
+                ty: Self::wir_ty_for_kind(self.layout_field_kind(field.kind())?),
+            });
+        }
+        let binary = |op, lhs, rhs| W::Binary {
+            op,
+            kind: WK::I32,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
+        let element_base = |root: W| {
+            binary(
+                WB::Add,
+                binary(WB::Add, root, W::ConstI32(data_offset as i32)),
+                binary(
+                    WB::Mul,
+                    W::GetLocal("len".into()),
+                    W::ConstI32(stride as i32),
+                ),
+            )
+        };
+        let mut hot = Vec::new();
+        for (index, field) in fields.iter().copied().enumerate() {
+            self.push_layout_store(
+                &mut hot,
+                element_base(W::GetLocal("root".into())),
+                field,
+                W::GetLocal(format!("f{index}")),
+            )?;
+        }
+        hot.push(N::Store {
+            ptr: W::GetLocal("root".into()),
+            value: binary(WB::Add, W::GetLocal("len".into()), W::ConstI32(1)),
+            kind: WK::I32,
+            offset: length_offset,
+        });
+        hot.push(N::SetLocal {
+            local: "out_root".into(),
+            value: W::GetLocal("root".into()),
+        });
+        hot.push(N::SetLocal {
+            local: "out_cap".into(),
+            value: W::GetLocal("cap".into()),
+        });
+
+        let mut cold = vec![
+            N::SetLocal {
+                local: "new_cap".into(),
+                value: binary(
+                    WB::Mul,
+                    binary(WB::Add, W::GetLocal("len".into()), W::ConstI32(1)),
+                    W::ConstI32(2),
+                ),
+            },
+            N::SetLocal {
+                local: "logical_size".into(),
+                value: binary(
+                    WB::Add,
+                    W::ConstI32(base as i32),
+                    binary(
+                        WB::Mul,
+                        W::GetLocal("new_cap".into()),
+                        W::ConstI32(stride as i32),
+                    ),
+                ),
+            },
+        ];
+        let (allocation, new_root) =
+            self.layout_alloc_expr_nodes(W::GetLocal("logical_size".into()));
+        cold.extend(allocation);
+        cold.push(N::SetLocal {
+            local: "new_root".into(),
+            value: new_root,
+        });
+        cold.push(N::MemoryCopy {
+            dest: binary(
+                WB::Add,
+                W::GetLocal("new_root".into()),
+                W::ConstI32(data_offset as i32),
+            ),
+            src: binary(
+                WB::Add,
+                W::GetLocal("root".into()),
+                W::ConstI32(data_offset as i32),
+            ),
+            len: binary(
+                WB::Mul,
+                W::GetLocal("len".into()),
+                W::ConstI32(stride as i32),
+            ),
+        });
+        for (index, field) in fields.iter().copied().enumerate() {
+            self.push_layout_store(
+                &mut cold,
+                element_base(W::GetLocal("new_root".into())),
+                field,
+                W::GetLocal(format!("f{index}")),
+            )?;
+        }
+        cold.push(N::Store {
+            ptr: W::GetLocal("new_root".into()),
+            value: binary(WB::Add, W::GetLocal("len".into()), W::ConstI32(1)),
+            kind: WK::I32,
+            offset: length_offset,
+        });
+        cold.push(N::Store {
+            ptr: W::GetLocal("new_root".into()),
+            value: W::GetLocal("new_cap".into()),
+            kind: WK::I32,
+            offset: capacity_offset,
+        });
+        cold.push(N::SetLocal {
+            local: "out_root".into(),
+            value: W::GetLocal("new_root".into()),
+        });
+        cold.push(N::SetLocal {
+            local: "out_cap".into(),
+            value: W::GetLocal("new_cap".into()),
+        });
+
+        let body = vec![
+            N::SetLocal {
+                local: "len".into(),
+                value: W::Load {
+                    ptr: Box::new(W::GetLocal("root".into())),
+                    kind: WK::I32,
+                    offset: length_offset,
+                },
+            },
+            N::If {
+                cond: binary(WB::Gt, W::GetLocal("cap".into()), W::GetLocal("len".into())),
+                then_: hot,
+                els: cold,
+                result: None,
+            },
+            N::Push(W::GetLocal("out_root".into())),
+            N::Push(W::GetLocal("out_cap".into())),
+        ];
+        self.layout_wir_funcs.insert(name.clone(), WirFunc {
+            name: name.clone(),
+            params,
+            ret: vec![WirTy::Bool, WirTy::Bool],
+            locals: vec![
+                WirLocal { name: "p".into(), ty: WirTy::Bool },
+                WirLocal { name: "len".into(), ty: WirTy::Bool },
+                WirLocal { name: "new_cap".into(), ty: WirTy::Bool },
+                WirLocal { name: "logical_size".into(), ty: WirTy::Bool },
+                WirLocal { name: "new_root".into(), ty: WirTy::Bool },
+                WirLocal { name: "out_root".into(), ty: WirTy::Bool },
+                WirLocal { name: "out_cap".into(), ty: WirTy::Bool },
+            ],
+            body,
+            raw_body: None,
+        });
+        Some(name)
+    }
+
+    fn lower_packed_list_push_call(
+        &mut self,
+        root: &str,
+        elem: &Expr,
+        cap: witchy_wir::wir::WirExpr,
+    ) -> Option<(String, Vec<witchy_wir::wir::WirExpr>)> {
+        let list_ty = self.local_types.get(root)?.clone();
+        let id = self.specialized_layout_id(&list_ty)?;
+        let LayoutKind::PackedList { element, .. } = self.specialized_layouts.get(id)?.kind()
+        else {
+            return None;
+        };
+        let element_descriptor = self.specialized_layouts.get(*element)?.clone();
+        let (Expr::Ctor { args: fields, .. } | Expr::Tuple(fields)) = elem else { return None };
+        if fields.len() != element_descriptor.fields().len() {
+            return None;
+        }
+        let helper = self.ensure_packed_list_push_helper(id)?;
+        let mut args = vec![witchy_wir::wir::WirExpr::GetLocal(root.into()), cap];
+        args.extend(
+            fields
+                .iter()
+                .map(|field| self.lower_expr(field))
+                .collect::<Option<Vec<_>>>()?,
+        );
+        Some((helper, args))
     }
 
     fn ensure_packed_list_helper(&mut self, id: LayoutId, count: usize) -> Option<String> {

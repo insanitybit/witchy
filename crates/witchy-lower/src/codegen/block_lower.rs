@@ -615,6 +615,54 @@ impl<'types> Codegen<'types> {
                         tail_is_value = false;
                     } else if self.collect_wir
                         && self.inplace_push.contains(name)
+                        && matches!(
+                            analysis::self_inplace_op(name, value),
+                            Some(analysis::InPlaceOp::Push(_))
+                        )
+                        && self
+                            .local_types
+                            .get(name)
+                            .and_then(|ty| self.specialized_layout_id(ty))
+                            .is_some()
+                        && !matches!(self.locals.get(name), Some(Kind::GcRef(_) | Kind::ExternRef))
+                    {
+                        let analysis::InPlaceOp::Push(elem) =
+                            analysis::self_inplace_op(name, value).expect("guarded packed push")
+                        else {
+                            unreachable!("guarded packed push shape")
+                        };
+                        // Preserve value semantics at an alias-dirty site by passing
+                        // no usable capacity token. The descriptor helper then copies
+                        // into a fresh packed buffer; a clean unique site appends into
+                        // descriptor slack when `cap > len`.
+                        let dirty = match self.facts_stack.last() {
+                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
+                                facts.is_dirty(analyzed_stmt)
+                            }
+                            _ => true,
+                        };
+                        let cap = if dirty {
+                            W::ConstI32(0)
+                        } else {
+                            W::GetLocal(format!("{name}__cap"))
+                        };
+                        let Some((helper, args)) =
+                            self.lower_packed_list_push_call(name, elem, cap)
+                        else {
+                            self.reject_reason.get_or_insert_with(|| CodegenError {
+                                message: "declared packed layout cannot cross unsupported mutation `list.push` with a non-constructor element; this boundary requires an exact RFC-0111 LayoutId adapter and cannot box or reshape".into(),
+                            });
+                            return None;
+                        };
+                        seq.push(N::CallStoreMulti {
+                            func: helper,
+                            args,
+                            dests: vec![name.clone(), format!("{name}__cap")],
+                        });
+                        inplace_sites += 1;
+                        tail_is_value = false;
+                    } else if self.collect_wir
+                        && self.inplace_push.contains(name)
                         && analysis::self_inplace_op(name, value).is_some()
                         // (RFC-0005 stage 4) A GC-lowered cap-carrying record has no
                         // linear-memory buffer to mutate in place — fall through to
