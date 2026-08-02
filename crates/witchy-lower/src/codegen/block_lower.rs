@@ -115,8 +115,17 @@ impl<'types> Codegen<'types> {
                     // into one flat inline buffer: header = element COUNT (so
                     // `list.length` is unchanged), body = every element's fields in
                     // row-major order. Reuses the checked-heap-correct `$mkN` allocator.
+                    let mut scalar_sum_done = false;
+                    if self.scalar_sum_candidates.contains(name)
+                        && let Some((layout, nodes)) =
+                            self.lower_confined_scalar_sum_binding(name, value)
+                    {
+                        seq.extend(nodes);
+                        self.scalar_sum_active.insert(name.clone(), layout);
+                        scalar_sum_done = true;
+                    }
                     let mut packed_done = false;
-                    if self.packed_candidates.contains(name) {
+                    if !scalar_sum_done && self.packed_candidates.contains(name) {
                         if let Expr::List(items) = value {
                             if let Some((rec, flat)) = self.packable_record_list(items) {
                                 // (RFC-0037 §3) Tag the flat buffer with a DISTINCT `packed:` id
@@ -131,7 +140,7 @@ impl<'types> Codegen<'types> {
                         }
                     }
                     let mut view_done = false;
-                    if !packed_done && self.view_candidates.contains(name) {
+                    if !scalar_sum_done && !packed_done && self.view_candidates.contains(name) {
                         if let Some((src, lo, hi)) = view_slice_args(value) {
                             // Elide the copy: store the source pointer and the raw
                             // lo/hi bounds (evaluated once, as the materialized slice
@@ -169,7 +178,11 @@ impl<'types> Codegen<'types> {
                         }
                     }
                     let mut sroa_done = false;
-                    if !packed_done && !view_done && self.sroa_candidates.contains(name) {
+                    if !scalar_sum_done
+                        && !packed_done
+                        && !view_done
+                        && self.sroa_candidates.contains(name)
+                    {
                         // (RFC-0005 stage 4) A cap-carrying (GC-lowered) record has
                         // reference-typed fields with no i64 slot form — never SROA
                         // it; the plain path binds it as one `GcRef` local.
@@ -212,7 +225,8 @@ impl<'types> Codegen<'types> {
                     // existing locals and are threaded to each `call $__lamt{i}` (see the call
                     // arms). Comes before the default `SetLocal` and suppresses it.
                     let mut closure_elide_done = false;
-                    if !packed_done
+                    if !scalar_sum_done
+                        && !packed_done
                         && !view_done
                         && !sroa_done
                         && self.collect_wir
@@ -245,7 +259,12 @@ impl<'types> Codegen<'types> {
                             }
                         }
                     }
-                    if !packed_done && !view_done && !sroa_done && !closure_elide_done {
+                    if !scalar_sum_done
+                        && !packed_done
+                        && !view_done
+                        && !sroa_done
+                        && !closure_elide_done
+                    {
                         let v = self.lower_expr(value)?;
                         seq.push(N::SetLocal { local: name.clone(), value: v });
                         // A fresh non-empty list literal is already uniquely owned

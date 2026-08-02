@@ -52,7 +52,7 @@ use crate::analysis::Summaries;
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
-use witchy_syntax::ast::{Block, Expr, Function, Stmt};
+use witchy_syntax::ast::{Block, Expr, Function, Pattern, Stmt};
 use witchy_syntax::intrinsics;
 
 /// Immutable locals bound to a fixed-shape aggregate (record `Ctor` or tuple)
@@ -73,6 +73,113 @@ pub(crate) fn sroa_candidates_block(body: &Block) -> HashSet<String> {
     collect_whole_uses_block(body, &mut whole);
     potential.retain(|n| !whole.contains(n));
     potential
+}
+
+/// Immutable constructor-valued locals whose only whole-value uses are direct
+/// `match` scrutinees. Codegen can keep a closed sum's tag and source-level
+/// payload arguments in scalar locals because no pointer identity crosses the
+/// match boundary. The physical-layout check remains in codegen.
+pub(crate) fn confined_match_sum_candidates_block(body: &Block) -> HashSet<String> {
+    let mut potential = HashSet::new();
+    collect_match_sum_lets(body, &mut potential);
+    if potential.is_empty() {
+        return potential;
+    }
+    let mut matched = HashSet::new();
+    let mut disqualified = HashSet::new();
+    scan_match_sum_uses_block(body, &potential, &mut matched, &mut disqualified);
+    potential.retain(|name| matched.contains(name) && !disqualified.contains(name));
+    potential
+}
+
+fn scalar_sum_value_shape(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ctor { .. } => true,
+        Expr::If {
+            then_block,
+            else_block: Some(else_block),
+            ..
+        } => scalar_sum_tail_shape(then_block) && scalar_sum_tail_shape(else_block),
+        _ => false,
+    }
+}
+
+fn scalar_sum_tail_shape(block: &Block) -> bool {
+    block.region.is_none()
+        && matches!(block.stmts.as_slice(), [Stmt::Expr(value)] if scalar_sum_value_shape(value))
+}
+
+fn collect_match_sum_lets(block: &Block, out: &mut HashSet<String>) {
+    for statement in &block.stmts {
+        if let Stmt::Let {
+            name,
+            mutable: false,
+            value,
+            ..
+        } = statement
+            && scalar_sum_value_shape(value)
+        {
+            out.insert(name.clone());
+        }
+        each_block_in_stmt(statement, &mut |inner| collect_match_sum_lets(inner, out));
+    }
+}
+
+fn scan_match_sum_uses_block(
+    block: &Block,
+    candidates: &HashSet<String>,
+    matched: &mut HashSet<String>,
+    disqualified: &mut HashSet<String>,
+) {
+    for statement in &block.stmts {
+        if let Stmt::Assign { name, .. } = statement
+            && candidates.contains(name)
+        {
+            disqualified.insert(name.clone());
+        }
+        each_expr_in_stmt(statement, &mut |expr| {
+            scan_match_sum_uses_expr(expr, candidates, matched, disqualified)
+        });
+    }
+}
+
+fn scan_match_sum_uses_expr(
+    expr: &Expr,
+    candidates: &HashSet<String>,
+    matched: &mut HashSet<String>,
+    disqualified: &mut HashSet<String>,
+) {
+    if let Expr::Match {
+        scrutinee,
+        arms,
+    } = expr
+        && let Expr::Var(name) = scrutinee.as_ref()
+        && candidates.contains(name)
+    {
+        matched.insert(name.clone());
+        if arms
+            .iter()
+            .any(|arm| !matches!(arm.pattern, Pattern::Ctor { .. } | Pattern::Wildcard))
+        {
+            disqualified.insert(name.clone());
+        }
+        for arm in arms {
+            if let Some(guard) = &arm.guard {
+                scan_match_sum_uses_expr(guard, candidates, matched, disqualified);
+            }
+            scan_match_sum_uses_expr(&arm.body, candidates, matched, disqualified);
+        }
+        return;
+    }
+    if let Expr::Var(name) = expr
+        && candidates.contains(name)
+    {
+        disqualified.insert(name.clone());
+        return;
+    }
+    each_subexpr(expr, &mut |inner| {
+        scan_match_sum_uses_expr(inner, candidates, matched, disqualified)
+    });
 }
 
 /// (RFC-0028 confined Views) Locals bound to a slice of another list — `let w =
@@ -919,6 +1026,28 @@ mod tests {
     fn tuple_field_only_is_a_candidate() {
         let f = func("fn d(a: Int) -> Int:\n    let t = (a, a)\n    t.0 + t.1\n");
         assert!(sroa_candidates(&f).contains("t"));
+    }
+
+    #[test]
+    fn constructor_local_used_only_as_match_scrutinee_is_confined() {
+        let f = func(
+            "type Token packed:\n    Skip\n    Value(Int)\nfn d(a: Int) -> Int:\n    let token = if a % 2 == 0: Skip else: Value(a)\n    match token:\n        Skip -> 1\n        Value(value) -> value\n",
+        );
+        assert!(
+            confined_match_sum_candidates_block(&f.body).contains("token"),
+            "a constructor local consumed only by direct matches is scalarizable"
+        );
+    }
+
+    #[test]
+    fn constructor_local_alias_disqualifies_match_confinement() {
+        let f = func(
+            "type Token packed:\n    Skip\n    Value(Int)\nfn d(a: Int) -> Int:\n    let token = if a % 2 == 0: Skip else: Value(a)\n    let alias = token\n    match alias:\n        Skip -> 1\n        Value(value) -> value\n",
+        );
+        assert!(
+            !confined_match_sum_candidates_block(&f.body).contains("token"),
+            "copying the whole value preserves the materialized fallback"
+        );
     }
 
     #[test]

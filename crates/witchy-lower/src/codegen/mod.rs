@@ -160,6 +160,14 @@ fn assign_scratch(component: &str, level: usize) -> String {
     format!("__witchy_assign_{component}_{level}")
 }
 
+fn scalar_sum_tag_local(name: &str) -> String {
+    format!("{name}__witchy_sum_tag")
+}
+
+fn scalar_sum_payload_local(name: &str, index: usize) -> String {
+    format!("{name}__witchy_sum_payload_{index}")
+}
+
 fn call_result_gc_tmp(struct_id: u32) -> String {
     format!("__witchy_call_result_gc_{struct_id}")
 }
@@ -757,6 +765,8 @@ struct SavedScope {
     var_cap_params: Vec<String>,
     sroa_candidates: HashSet<String>,
     sroa_active: HashMap<String, usize>,
+    scalar_sum_candidates: HashSet<String>,
+    scalar_sum_active: HashMap<String, ScalarSumLayout>,
     view_candidates: HashSet<String>,
     view_active: HashSet<String>,
     packed_candidates: HashSet<String>,
@@ -785,6 +795,12 @@ struct GcCtorLayout {
     tag: Option<u32>,
     field_base: u32,
     field_types: Vec<Type>,
+}
+
+#[derive(Clone, Copy)]
+struct ScalarSumLayout {
+    id: LayoutId,
+    max_arity: usize,
 }
 
 /// A stable, representation-only key for an element of a GC-lowered tuple.
@@ -939,6 +955,10 @@ struct Codegen<'types> {
     /// `let` precedes its uses in statement order.
     sroa_candidates: HashSet<String>,
     sroa_active: HashMap<String, usize>,
+    /// Closed-sum locals proven to be consumed only as direct match
+    /// scrutinees. Their tag and payload arguments remain in scalar locals.
+    scalar_sum_candidates: HashSet<String>,
+    scalar_sum_active: HashMap<String, ScalarSumLayout>,
     /// (RFC-0034 L3) Closure locals eligible for devirtualization in the current
     /// unit: a name bound exactly once and never reassigned (so every `f(x)` reaches
     /// the same lambda). Computed in `begin_unit` only under the `direct-call` lever.
@@ -1498,6 +1518,8 @@ impl<'types> Codegen<'types> {
             inplace_push: HashSet::new(),
             sroa_candidates: HashSet::new(),
             sroa_active: HashMap::new(),
+            scalar_sum_candidates: HashSet::new(),
+            scalar_sum_active: HashMap::new(),
             devirt_ok: HashSet::new(),
             devirt_index: HashMap::new(),
             thread_index: HashMap::new(),
@@ -3757,6 +3779,21 @@ impl<'types> Codegen<'types> {
                 locals.push(WirLocal { name: format!("{name}${i}"), ty: i64t() });
             }
         }
+        let mut scalar_sums: Vec<(&String, &ScalarSumLayout)> =
+            self.scalar_sum_active.iter().collect();
+        scalar_sums.sort_by(|left, right| left.0.cmp(right.0));
+        for (name, layout) in scalar_sums {
+            locals.push(WirLocal {
+                name: scalar_sum_tag_local(name),
+                ty: i32t(),
+            });
+            for index in 0..layout.max_arity {
+                locals.push(WirLocal {
+                    name: scalar_sum_payload_local(name, index),
+                    ty: i64t(),
+                });
+            }
+        }
         // (RFC-0028) Confined slice views: source pointer + raw lo/hi bounds, all
         // i32. (The plain `${name}` local from the loop above is then unused.)
         let mut views: Vec<&String> = self.view_active.iter().collect();
@@ -4075,6 +4112,16 @@ impl<'types> Codegen<'types> {
         };
         let nested_var_roots = nested_var_place_roots(body, &self.fn_conventions);
         self.sroa_candidates.retain(|name| !nested_var_roots.contains(name));
+        self.scalar_sum_active.clear();
+        self.scalar_sum_candidates = if !force_copy_mode()
+            && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Sroa)
+        {
+            crate::escape::confined_match_sum_candidates_block(body)
+        } else {
+            HashSet::new()
+        };
+        self.scalar_sum_candidates
+            .retain(|name| !nested_var_roots.contains(name));
         // (RFC-0028) Confined slice views: elide the `list.slice` copy for a
         // read-only window over an unmutated source. Gated on the `views` lever and
         // off in forced-copy mode (so the de-opt differential exercises the copy).
@@ -5024,6 +5071,163 @@ impl<'types> Codegen<'types> {
             .map(|arg| self.lower_expr(arg))
             .collect::<Option<Vec<_>>>()?;
         Some(witchy_wir::wir::WirExpr::Call { func: helper, args: lowered })
+    }
+
+    fn scalar_sum_layout_for_binding(
+        &self,
+        name: &str,
+        value: &Expr,
+    ) -> Option<ScalarSumLayout> {
+        let id = self
+            .local_types
+            .get(name)
+            .and_then(|ty| self.specialized_layout_id(ty))?;
+        let descriptor = self.specialized_layouts.get(id)?;
+        if !matches!(descriptor.kind(), LayoutKind::ClosedSum { .. })
+            || !matches!(descriptor.size(), LayoutSize::Fixed(_))
+            || !self.scalar_sum_value_matches_layout(id, value)
+        {
+            return None;
+        }
+        let max_arity = descriptor
+            .variant_layouts()
+            .iter()
+            .map(|variant| variant.fields().len())
+            .max()
+            .unwrap_or(0);
+        Some(ScalarSumLayout { id, max_arity })
+    }
+
+    fn scalar_sum_value_matches_layout(&self, id: LayoutId, value: &Expr) -> bool {
+        if self.specialized_layout_of_expr(value) != Some(id) {
+            return false;
+        }
+        match value {
+            Expr::Ctor { name, args } => {
+                let Some((tag, arity)) = self.ctors.get(name).copied() else {
+                    return false;
+                };
+                let Some(descriptor) = self.specialized_layouts.get(id) else {
+                    return false;
+                };
+                arity == args.len()
+                    && descriptor
+                        .variant_layouts()
+                        .get(tag as usize)
+                        .is_some_and(|variant| variant.fields().len() == args.len())
+                    && args.iter().all(|argument| !self.kind_of(argument).is_ref())
+            }
+            Expr::If {
+                then_block,
+                else_block: Some(else_block),
+                ..
+            } => {
+                self.scalar_sum_tail_matches_layout(id, then_block)
+                    && self.scalar_sum_tail_matches_layout(id, else_block)
+            }
+            _ => false,
+        }
+    }
+
+    fn scalar_sum_tail_matches_layout(&self, id: LayoutId, block: &Block) -> bool {
+        block.region.is_none()
+            && matches!(block.stmts.as_slice(), [Stmt::Expr(value)]
+                if self.scalar_sum_value_matches_layout(id, value))
+    }
+
+    fn lower_confined_scalar_sum_binding(
+        &mut self,
+        name: &str,
+        value: &Expr,
+    ) -> Option<(ScalarSumLayout, witchy_wir::wir::WirSeq)> {
+        let layout = self.scalar_sum_layout_for_binding(name, value)?;
+        let nodes = self.lower_confined_scalar_sum_value(name, layout.id, value)?;
+        Some((layout, nodes))
+    }
+
+    fn lower_confined_scalar_sum_value(
+        &mut self,
+        local: &str,
+        id: LayoutId,
+        value: &Expr,
+    ) -> Option<witchy_wir::wir::WirSeq> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        if !self.scalar_sum_value_matches_layout(id, value) {
+            return None;
+        }
+        match value {
+            Expr::Ctor { name, args } => {
+                let (tag, _) = self.ctors.get(name).copied()?;
+                let mut nodes = Vec::with_capacity(args.len() + 1);
+                for (index, argument) in args.iter().enumerate() {
+                    let kind = self.kind_of(argument);
+                    let lowered = self.lower_expr(argument)?;
+                    nodes.push(N::SetLocal {
+                        local: scalar_sum_payload_local(local, index),
+                        value: W::ToSlot(Box::new(lowered), Self::wir_kind(kind)),
+                    });
+                }
+                nodes.push(N::SetLocal {
+                    local: scalar_sum_tag_local(local),
+                    value: W::ConstI32(tag as i32),
+                });
+                Some(nodes)
+            }
+            Expr::If {
+                cond,
+                then_block,
+                else_block: Some(else_block),
+            } => {
+                let condition = self.lower_expr(cond)?;
+                let [Stmt::Expr(then_value)] = then_block.stmts.as_slice() else {
+                    return None;
+                };
+                let [Stmt::Expr(else_value)] = else_block.stmts.as_slice() else {
+                    return None;
+                };
+                Some(vec![N::If {
+                    cond: condition,
+                    then_: self.lower_confined_scalar_sum_tail(
+                        local,
+                        id,
+                        &then_block.stmts[0],
+                        then_value,
+                    )?,
+                    els: self.lower_confined_scalar_sum_tail(
+                        local,
+                        id,
+                        &else_block.stmts[0],
+                        else_value,
+                    )?,
+                    result: None,
+                }])
+            }
+            _ => None,
+        }
+    }
+
+    /// A scalarized `if` consumes its constructor tail without invoking normal
+    /// block lowering (which would materialize it). Preserve the checked AST's
+    /// per-statement loan identity and active-event context explicitly.
+    fn lower_confined_scalar_sum_tail(
+        &mut self,
+        local: &str,
+        id: LayoutId,
+        statement: &Stmt,
+        value: &Expr,
+    ) -> Option<witchy_wir::wir::WirSeq> {
+        let saved_events = std::mem::replace(
+            &mut self.active_loan_events,
+            self.loan_facts.active_at(statement).to_vec(),
+        );
+        if let Some(key) = self.loan_facts.event_key(statement)
+            && let Some((_, seen)) = self.loan_fact_stack.last_mut()
+        {
+            seen.insert(key);
+        }
+        let lowered = self.lower_confined_scalar_sum_value(local, id, value);
+        self.active_loan_events = saved_events;
+        lowered
     }
 
     fn lower_packed_destination_ctor_inline(
@@ -7397,6 +7601,21 @@ impl<'types> Codegen<'types> {
                     let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
                     locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
                 }
+                let mut scalar_sums: Vec<(&String, &ScalarSumLayout)> =
+                    self.scalar_sum_active.iter().collect();
+                scalar_sums.sort_by(|left, right| left.0.cmp(right.0));
+                for (name, layout) in scalar_sums {
+                    locals.push(WirLocal {
+                        name: scalar_sum_tag_local(name),
+                        ty: i32t(),
+                    });
+                    for index in 0..layout.max_arity {
+                        locals.push(WirLocal {
+                            name: scalar_sum_payload_local(name, index),
+                            ty: WirTy::Int,
+                        });
+                    }
+                }
                 let mut loan_roots = Vec::new();
                 if let Err(error) = collect_loan_roots(body, &self.loan_facts, &mut loan_roots) {
                     self.reject_reason.get_or_insert(error);
@@ -7744,6 +7963,8 @@ impl<'types> Codegen<'types> {
             var_cap_params: std::mem::take(&mut self.cur_fn_var_cap_params),
             sroa_candidates: std::mem::take(&mut self.sroa_candidates),
             sroa_active: std::mem::take(&mut self.sroa_active),
+            scalar_sum_candidates: std::mem::take(&mut self.scalar_sum_candidates),
+            scalar_sum_active: std::mem::take(&mut self.scalar_sum_active),
             view_candidates: std::mem::take(&mut self.view_candidates),
             view_active: std::mem::take(&mut self.view_active),
             packed_candidates: std::mem::take(&mut self.packed_candidates),
@@ -7792,6 +8013,8 @@ impl<'types> Codegen<'types> {
         self.cur_fn_var_cap_params = s.var_cap_params;
         self.sroa_candidates = s.sroa_candidates;
         self.sroa_active = s.sroa_active;
+        self.scalar_sum_candidates = s.scalar_sum_candidates;
+        self.scalar_sum_active = s.scalar_sum_active;
         self.view_candidates = s.view_candidates;
         self.view_active = s.view_active;
         self.packed_candidates = s.packed_candidates;
@@ -8000,13 +8223,20 @@ impl<'types> Codegen<'types> {
         ok
     }
 
-    /// A second, narrower allocation proof that understands an immediate
-    /// closed-sum producer is initialized into the consumer's setup scratch.
+    /// A second, narrower allocation proof that understands immediate
+    /// destination forwarding and confined closed sums scalar-replaced by WIR.
     /// It never blesses a bare constructor, collection/index boundary, unknown
     /// call, or escaping consumer.
     fn destination_allocation_free_block(&self, body: &Block) -> bool {
         body.region.is_none()
             && body.stmts.iter().all(|statement| match statement {
+                Stmt::Let { name, value, .. }
+                    if self.scalar_sum_candidates.contains(name)
+                        && self.scalar_sum_layout_for_binding(name, value).is_some()
+                        && self.scalar_sum_value_allocation_free(value) =>
+                {
+                    true
+                }
                 Stmt::Let { value, .. }
                 | Stmt::Assign { value, .. }
                 | Stmt::LetPattern { value, .. }
@@ -8015,6 +8245,33 @@ impl<'types> Codegen<'types> {
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => true,
                 Stmt::Yield(_) => false,
             })
+    }
+
+    /// Allocation behavior after removing only the outer closed-sum object.
+    /// Payload expressions still count normally: a nested packed record, list,
+    /// string operation, or allocating call keeps the loop watermark.
+    fn scalar_sum_value_allocation_free(&self, value: &Expr) -> bool {
+        match value {
+            Expr::Ctor { args, .. } => args
+                .iter()
+                .all(|argument| self.destination_allocation_free_expr(argument)),
+            Expr::If {
+                cond,
+                then_block,
+                else_block: Some(else_block),
+            } => {
+                self.destination_allocation_free_expr(cond)
+                    && self.scalar_sum_tail_allocation_free(then_block)
+                    && self.scalar_sum_tail_allocation_free(else_block)
+            }
+            _ => false,
+        }
+    }
+
+    fn scalar_sum_tail_allocation_free(&self, block: &Block) -> bool {
+        block.region.is_none()
+            && matches!(block.stmts.as_slice(), [Stmt::Expr(value)]
+                if self.scalar_sum_value_allocation_free(value))
     }
 
     fn destination_allocation_free_expr(&self, expr: &Expr) -> bool {

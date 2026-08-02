@@ -792,6 +792,179 @@ fn main() -> Int:
     }
 
     #[test]
+    fn confined_local_closed_sum_is_scalar_replaced_through_match() {
+        let source = r#"
+mode opt
+
+type Token packed:
+    Skip
+    Value(Int)
+
+fn answer() -> Int:
+    var total = 0
+    for i in 0..500000:
+        let token = if i % 3 == 0: Skip else: Value((i * 7 + 3) % 101)
+        match token:
+            Skip -> total = total + 1
+            Value(value) -> total = total + value
+    total
+
+fn main(console: Console):
+    console.print("${answer()}")
+"#;
+        let module = parse_module(source).expect("parse confined closed sum");
+        let interpreted = witchy_interp::interpreter::run_module(module.clone(), ".", Vec::new())
+            .expect("interpreter runs confined closed sum");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("compiled backend lowers confined closed sum");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect("run confined closed sum");
+        let compiled = captured.lock().unwrap().clone();
+        let oracle = vec!["16833142".to_string()];
+        assert_eq!(interpreted, oracle, "independent expected value");
+        assert_eq!(compiled, oracle, "compiled expected value");
+        assert_eq!(compiled, interpreted, "interpreter/Wasm parity");
+
+        for name in [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_destination_candidates_forwarded",
+            "__witchy_region_rewind_calls",
+        ] {
+            let value = instance
+                .get_global(&mut store, name)
+                .unwrap_or_else(|| panic!("missing counter export `{name}`"))
+                .get(&mut store);
+            let wasmtime::Val::I64(actual) = value else {
+                panic!("counter export `{name}` is not i64: {value:?}");
+            };
+            assert_eq!(actual, 0, "scalar replacement leaves `{name}` untouched");
+        }
+
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("confined closed sum lowers to WIR"),
+        );
+        let start = wat.find("(func $answer").expect("answer function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let answer = &tail[..end];
+        assert!(
+            answer.contains("$token__witchy_sum_tag")
+                && answer.contains("$token__witchy_sum_payload_0"),
+            "the sum lives in scalar tag/payload locals: {answer}"
+        );
+        assert!(
+            !answer.contains("call $__witchy_packed_sum_")
+                && !answer.contains("i32.load8_u")
+                && !answer.contains("i64.load offset=8"),
+            "the hot loop has no sum constructor helper or tag/payload loads: {answer}"
+        );
+        assert!(
+            !answer.contains("global.set $__witchy_region_rewind_calls")
+                && !answer.contains("global.set $heap"),
+            "an allocation-free scalar loop needs no region watermark: {answer}"
+        );
+    }
+
+    #[test]
+    fn aliased_local_closed_sum_keeps_materialized_fallback() {
+        let source = r#"
+mode opt
+
+type Token packed:
+    Skip
+    Value(Int)
+
+fn main() -> Int:
+    var total = 0
+    for i in 0..6:
+        let token = if i % 2 == 0: Skip else: Value(i)
+        let alias = token
+        match alias:
+            Skip -> total = total + 1
+            Value(value) -> total = total + value
+    total
+"#;
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_destination_candidates_forwarded",
+            "__witchy_region_rewind_calls",
+        ];
+        let (result, counters) = run_int_with_i64_globals(source, &names);
+        assert_eq!(result, 12);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 6);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 96);
+        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 0);
+        assert_eq!(counters["__witchy_region_rewind_calls"], 6);
+
+        let module = parse_module(source).expect("parse aliased closed sum");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("aliased closed sum lowers to WIR"),
+        );
+        assert!(
+            !wat.contains("$token__witchy_sum_tag"),
+            "a whole-value alias disqualifies scalar replacement: {wat}"
+        );
+        assert!(
+            wat.contains("call $__witchy_packed_sum_") && wat.contains("i32.load8_u"),
+            "the alias-safe fallback materializes and dispatches the sum: {wat}"
+        );
+    }
+
+    #[test]
+    fn scalar_closed_sum_with_allocating_payload_keeps_loop_watermark() {
+        let source = r#"
+mode opt
+
+type Point packed:
+    x: Int
+
+type Choice packed:
+    Empty
+    PointValue(Point)
+
+fn main() -> Int:
+    var total = 0
+    for i in 0..6:
+        let choice = if i % 2 == 0: Empty else: PointValue(Point(i))
+        match choice:
+            Empty -> total = total + 1
+            PointValue(point) -> total = total + point.x
+    total
+"#;
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_destination_candidates_forwarded",
+            "__witchy_region_rewind_calls",
+        ];
+        let (result, counters) = run_int_with_i64_globals(source, &names);
+        assert_eq!(result, 12);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 3);
+        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 0);
+        assert_eq!(counters["__witchy_region_rewind_calls"], 6);
+
+        let module = parse_module(source).expect("parse scalar sum with nested payload");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module)
+                .expect_lowered("scalar sum with nested payload lowers to WIR"),
+        );
+        assert!(wat.contains("$choice__witchy_sum_tag"), "the outer sum is scalarized: {wat}");
+        assert!(
+            wat.contains("global.set $__witchy_region_rewind_calls")
+                && wat.contains("global.set $heap"),
+            "the nested Point allocation keeps per-iteration reclamation: {wat}"
+        );
+    }
+
+    #[test]
     fn owned_consumer_result_cannot_alias_reused_destination_scratch() {
         let source = r#"
 mode opt

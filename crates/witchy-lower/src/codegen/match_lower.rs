@@ -9,6 +9,149 @@
 use super::*;
 
 impl Codegen<'_> {
+    /// Lower a match over a proven-confined fixed closed sum directly from its
+    /// scalar tag/payload locals. The producer was never materialized in linear
+    /// memory, so this path must either lower the complete match or make the
+    /// enclosing WIR function fall back.
+    fn lower_confined_scalar_sum_match(
+        &mut self,
+        local: &str,
+        layout: ScalarSumLayout,
+        arms: &[MatchArm],
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+
+        let result_kind = arms
+            .split_first()
+            .map(|(first, rest)| {
+                rest.iter().fold(self.kind_of(&first.body), |acc, arm| {
+                    promote_kind(acc, self.kind_of(&arm.body))
+                })
+            })
+            .unwrap_or(Kind::I32);
+        let expected = self.local_types.get(local).cloned();
+        let descriptor = self.specialized_layouts.get(layout.id)?.clone();
+        if !matches!(descriptor.kind(), LayoutKind::ClosedSum { .. }) {
+            return None;
+        }
+
+        let saved = self.next_label;
+        let id = self.next_label;
+        self.next_label += 1;
+        let not = |condition: W| W::Unary {
+            op: witchy_wir::wir::UnOp::Not,
+            kind: witchy_wir::wir::Kind::I32,
+            arg: Box::new(condition),
+        };
+        let mut arm_blocks: witchy_wir::wir::WirSeq = Vec::with_capacity(arms.len() + 1);
+
+        for (index, arm) in arms.iter().enumerate() {
+            let arm_label = format!("a{id}_{index}");
+            let (condition, binds) = match &arm.pattern {
+                Pattern::Wildcard => (W::ConstI32(1), vec![]),
+                Pattern::Ctor { name, args } => {
+                    let &(tag, arity) = self.ctors.get(name)?;
+                    if arity != args.len() {
+                        self.next_label = saved;
+                        return None;
+                    }
+                    match descriptor.variant_layouts().get(tag as usize) {
+                        Some(variant) if variant.fields().len() == args.len() => {}
+                        _ => {
+                            self.next_label = saved;
+                            return None;
+                        }
+                    }
+                    let field_types = self.ctor_pattern_field_types(name, expected.as_ref());
+                    let mut field_conditions = Vec::new();
+                    let mut binds = Vec::new();
+                    for (field_index, pattern) in args.iter().enumerate() {
+                        let field_value = W::GetLocal(scalar_sum_payload_local(local, field_index));
+                        let (field_condition, field_binds) = match self.lower_pattern(
+                            &field_value,
+                            pattern,
+                            field_types.as_ref().and_then(|types| types.get(field_index)),
+                        ) {
+                            Some(lowered) => lowered,
+                            None => {
+                                self.next_label = saved;
+                                return None;
+                            }
+                        };
+                        if !matches!(field_condition, W::ConstI32(1)) {
+                            field_conditions.push(field_condition);
+                        }
+                        binds.extend(field_binds);
+                    }
+                    let tag_matches = W::Binary {
+                        op: witchy_wir::wir::BinOp::Eq,
+                        kind: witchy_wir::wir::Kind::I32,
+                        lhs: Box::new(W::GetLocal(scalar_sum_tag_local(local))),
+                        rhs: Box::new(W::ConstI32(tag as i32)),
+                    };
+                    let condition = if field_conditions.is_empty() {
+                        tag_matches
+                    } else {
+                        W::Control(Box::new(N::If {
+                            cond: tag_matches,
+                            then_: vec![N::Push(wir_and_chain(&field_conditions))],
+                            els: vec![N::Push(W::ConstI32(0))],
+                            result: Some(witchy_wir::wir::WirTy::Bool),
+                        }))
+                    };
+                    (condition, binds)
+                }
+                _ => {
+                    self.next_label = saved;
+                    return None;
+                }
+            };
+
+            let mut arm_body = vec![N::Br {
+                target: arm_label.clone(),
+                cond: Some(not(condition)),
+            }];
+            arm_body.extend(binds);
+            if let Some(guard) = &arm.guard {
+                let guard = match self.lower_expr(guard) {
+                    Some(guard) => guard,
+                    None => {
+                        self.next_label = saved;
+                        return None;
+                    }
+                };
+                arm_body.push(N::Br {
+                    target: arm_label.clone(),
+                    cond: Some(not(guard)),
+                });
+            }
+            let body_kind = self.kind_of(&arm.body);
+            let body = match self.lower_expr(&arm.body) {
+                Some(body) => body,
+                None => {
+                    self.next_label = saved;
+                    return None;
+                }
+            };
+            arm_body.push(N::Push(Self::wir_convert(body, body_kind, result_kind)));
+            arm_body.push(N::Br {
+                target: format!("d{id}"),
+                cond: None,
+            });
+            arm_blocks.push(N::Block {
+                label: arm_label,
+                result: None,
+                body: arm_body,
+            });
+        }
+        arm_blocks.push(N::Unreachable);
+        Some(W::Control(Box::new(N::Block {
+            label: format!("d{id}"),
+            result: Some(Self::wir_ty_for_kind(result_kind)),
+            body: arm_blocks,
+        })))
+    }
+
     /// Lower a SCALAR pattern test against `value` (the matched value as an i64
     /// slot — `local.get $MATCH_TMP`). Returns `(cond, binds)`: an i32 condition
     /// expression and the binding nodes. `None` for non-scalar patterns
@@ -673,6 +816,11 @@ impl Codegen<'_> {
     /// on a bail.
     pub(crate) fn lower_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        if let Expr::Var(local) = scrutinee
+            && let Some(layout) = self.scalar_sum_active.get(local).copied()
+        {
+            return self.lower_confined_scalar_sum_match(local, layout, arms);
+        }
         let scrut_kind = self.kind_of(scrutinee);
         let result_kind = arms
             .split_first()
