@@ -9,6 +9,145 @@
 use super::*;
 
 impl Codegen<'_> {
+    /// Consume a pure, immediately-adjacent closed-sum constructor by selecting
+    /// its matching arm directly. The eligibility proof in `block_lower` has
+    /// already excluded guards, effects, aliases, and non-scalar payloads.
+    fn lower_fused_scalar_sum_match(
+        &mut self,
+        local: &str,
+        value: &Expr,
+        arms: &[MatchArm],
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        let result_kind = arms
+            .split_first()
+            .map(|(first, rest)| {
+                rest.iter().fold(self.kind_of(&first.body), |acc, arm| {
+                    promote_kind(acc, self.kind_of(&arm.body))
+                })
+            })
+            .unwrap_or(Kind::I32);
+        let expected = self.local_types.get(local).cloned();
+        self.lower_fused_scalar_sum_value(value, arms, expected.as_ref(), result_kind)
+    }
+
+    fn lower_fused_scalar_sum_value(
+        &mut self,
+        value: &Expr,
+        arms: &[MatchArm],
+        expected: Option<&Type>,
+        result_kind: Kind,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        match value {
+            Expr::Ctor { name, args } => {
+                let arm = arms.iter().find(|arm| {
+                    matches!(&arm.pattern, Pattern::Ctor { name: arm_name, .. }
+                        if arm_name == name)
+                })?;
+                let Pattern::Ctor { args: patterns, .. } = &arm.pattern else {
+                    return None;
+                };
+                if arm.guard.is_some() || patterns.len() != args.len() {
+                    return None;
+                }
+                let field_types = self.ctor_pattern_field_types(name, expected);
+                let mut nodes = Vec::with_capacity(args.len() + 1);
+                for (index, (argument, pattern)) in args.iter().zip(patterns).enumerate() {
+                    let argument_kind = self.kind_of(argument);
+                    let argument = self.lower_expr(argument)?;
+                    match pattern {
+                        Pattern::Var(_) => {
+                            let slot = W::ToSlot(
+                                Box::new(argument),
+                                Self::wir_kind(argument_kind),
+                            );
+                            let (condition, binds) = self.lower_pattern(
+                                &slot,
+                                pattern,
+                                field_types.as_ref().and_then(|types| types.get(index)),
+                            )?;
+                            if !matches!(condition, W::ConstI32(1)) {
+                                return None;
+                            }
+                            nodes.extend(binds);
+                        }
+                        Pattern::Wildcard => nodes.push(N::Drop(argument)),
+                        _ => return None,
+                    }
+                }
+                let body_kind = self.kind_of(&arm.body);
+                let body = self.lower_expr(&arm.body)?;
+                nodes.push(N::Push(Self::wir_convert(body, body_kind, result_kind)));
+                Some(W::Seq(nodes))
+            }
+            Expr::If {
+                cond,
+                then_block,
+                else_block: Some(else_block),
+            } => {
+                let condition = self.lower_expr(cond)?;
+                let [then_statement @ Stmt::Expr(then_value)] =
+                    then_block.stmts.as_slice()
+                else {
+                    return None;
+                };
+                let [else_statement @ Stmt::Expr(else_value)] =
+                    else_block.stmts.as_slice()
+                else {
+                    return None;
+                };
+                let then_value = self.lower_fused_scalar_sum_tail(
+                    then_statement,
+                    then_value,
+                    arms,
+                    expected,
+                    result_kind,
+                )?;
+                let else_value = self.lower_fused_scalar_sum_tail(
+                    else_statement,
+                    else_value,
+                    arms,
+                    expected,
+                    result_kind,
+                )?;
+                Some(W::Control(Box::new(N::If {
+                    cond: condition,
+                    then_: vec![N::Push(then_value)],
+                    els: vec![N::Push(else_value)],
+                    result: Some(Self::wir_ty_for_kind(result_kind)),
+                })))
+            }
+            _ => None,
+        }
+    }
+
+    fn lower_fused_scalar_sum_tail(
+        &mut self,
+        statement: &Stmt,
+        value: &Expr,
+        arms: &[MatchArm],
+        expected: Option<&Type>,
+        result_kind: Kind,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        let saved_events = std::mem::replace(
+            &mut self.active_loan_events,
+            self.loan_facts.active_at(statement).to_vec(),
+        );
+        if let Some(key) = self.loan_facts.event_key(statement)
+            && let Some((_, seen)) = self.loan_fact_stack.last_mut()
+        {
+            seen.insert(key);
+        }
+        let lowered = self.lower_fused_scalar_sum_value(
+            value,
+            arms,
+            expected,
+            result_kind,
+        );
+        self.active_loan_events = saved_events;
+        lowered
+    }
+
     /// Lower a match over a proven-confined fixed closed sum directly from its
     /// scalar tag/payload locals. The producer was never materialized in linear
     /// memory, so this path must either lower the complete match or make the
@@ -816,6 +955,11 @@ impl Codegen<'_> {
     /// on a bail.
     pub(crate) fn lower_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        if let Expr::Var(local) = scrutinee
+            && let Some(value) = self.scalar_sum_fused_values.get(local).cloned()
+        {
+            return self.lower_fused_scalar_sum_match(local, &value, arms);
+        }
         if let Expr::Var(local) = scrutinee
             && let Some(layout) = self.scalar_sum_active.get(local).copied()
         {

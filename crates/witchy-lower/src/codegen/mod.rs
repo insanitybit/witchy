@@ -767,6 +767,7 @@ struct SavedScope {
     sroa_active: HashMap<String, usize>,
     scalar_sum_candidates: HashSet<String>,
     scalar_sum_active: HashMap<String, ScalarSumLayout>,
+    scalar_sum_fused_values: HashMap<String, Expr>,
     scalar_record_call_candidates: HashMap<String, LayoutId>,
     direct_list_builder_lets: HashMap<usize, DirectListBuilderPlan>,
     direct_list_builder_loops: HashMap<usize, DirectListBuilderPlan>,
@@ -980,6 +981,10 @@ struct Codegen<'types> {
     /// scrutinees. Their tag and payload arguments remain in scalar locals.
     scalar_sum_candidates: HashSet<String>,
     scalar_sum_active: HashMap<String, ScalarSumLayout>,
+    /// Adjacent, pure closed-sum constructors whose sole match can consume the
+    /// constructor branches directly. The value is retained by AST name so the
+    /// match lowers at its original statement (and loan/source-site) boundary.
+    scalar_sum_fused_values: HashMap<String, Expr>,
     scalar_record_producers: HashMap<String, ScalarRecordProducer>,
     scalar_record_call_candidates: HashMap<String, LayoutId>,
     /// Exact-capacity, direct-store list builders proven by adjacent empty-list
@@ -1549,6 +1554,7 @@ impl<'types> Codegen<'types> {
             sroa_active: HashMap::new(),
             scalar_sum_candidates: HashSet::new(),
             scalar_sum_active: HashMap::new(),
+            scalar_sum_fused_values: HashMap::new(),
             scalar_record_producers: HashMap::new(),
             scalar_record_call_candidates: HashMap::new(),
             direct_list_builder_lets: HashMap::new(),
@@ -4216,6 +4222,7 @@ impl<'types> Codegen<'types> {
         self.scalar_record_call_candidates
             .retain(|name, _| !nested_var_roots.contains(name));
         self.scalar_sum_active.clear();
+        self.scalar_sum_fused_values.clear();
         self.scalar_sum_candidates = if !force_copy_mode()
             && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Sroa)
         {
@@ -5329,6 +5336,121 @@ impl<'types> Codegen<'types> {
             .max()
             .unwrap_or(0);
         Some(ScalarSumLayout { id, max_arity })
+    }
+
+    /// An adjacent confined sum binding and its sole match may bypass even the
+    /// scalar tag/payload representation when the constructor decision is pure.
+    /// Keep this proof deliberately smaller than general SROA: scalar arithmetic
+    /// only, exact constructor arms, no guards, and no intervening statement.
+    /// Calls, pointer-shaped locals, wildcard dispatch, and nested patterns retain
+    /// the ordinary scalarized or materialized path.
+    fn scalar_sum_fusion_layout(
+        &self,
+        name: &str,
+        value: &Expr,
+        next: Option<&Stmt>,
+    ) -> Option<ScalarSumLayout> {
+        let layout = self.scalar_sum_layout_for_binding(name, value)?;
+        let Stmt::Expr(Expr::Match { scrutinee, arms }) = next? else {
+            return None;
+        };
+        if !matches!(scrutinee.as_ref(), Expr::Var(local) if local == name)
+            || arms.is_empty()
+            || arms.iter().any(|arm| arm.guard.is_some())
+            || !self.scalar_sum_value_has_fusable_arms(value, arms)
+        {
+            return None;
+        }
+        Some(layout)
+    }
+
+    fn scalar_sum_value_has_fusable_arms(&self, value: &Expr, arms: &[MatchArm]) -> bool {
+        match value {
+            Expr::Ctor { name, args } => {
+                if !args
+                    .iter()
+                    .all(|argument| self.scalar_sum_fusion_pure_scalar(argument))
+                {
+                    return false;
+                }
+                let mut matching = arms.iter().filter(|arm| {
+                    matches!(&arm.pattern, Pattern::Ctor { name: arm_name, .. }
+                        if arm_name == name)
+                });
+                let Some(arm) = matching.next() else {
+                    return false;
+                };
+                matching.next().is_none()
+                    && matches!(&arm.pattern, Pattern::Ctor { args: patterns, .. }
+                        if patterns.len() == args.len()
+                            && patterns.iter().all(|pattern| {
+                                matches!(pattern, Pattern::Var(_) | Pattern::Wildcard)
+                            }))
+            }
+            Expr::If {
+                cond,
+                then_block,
+                else_block: Some(else_block),
+            } => {
+                self.scalar_sum_fusion_pure_scalar(cond)
+                    && self.scalar_sum_tail_has_fusable_arms(then_block, arms)
+                    && self.scalar_sum_tail_has_fusable_arms(else_block, arms)
+            }
+            _ => false,
+        }
+    }
+
+    fn scalar_sum_tail_has_fusable_arms(&self, block: &Block, arms: &[MatchArm]) -> bool {
+        block.region.is_none()
+            && matches!(block.stmts.as_slice(), [Stmt::Expr(value)]
+                if self.scalar_sum_value_has_fusable_arms(value, arms))
+    }
+
+    /// The fused value is cloned into the per-unit plan, but the loan ledger is
+    /// keyed by the checked AST's statement addresses. Account for every pure
+    /// constructor tail at plan installation while those original identities are
+    /// still in hand; the fusion proof excludes expressions that could carry an
+    /// actual loan event into the delayed match.
+    fn mark_scalar_sum_fusion_tail_loan_keys(&mut self, value: &Expr) {
+        let Expr::If {
+            then_block,
+            else_block: Some(else_block),
+            ..
+        } = value
+        else {
+            return;
+        };
+        for block in [then_block, else_block] {
+            let [statement @ Stmt::Expr(tail)] = block.stmts.as_slice() else {
+                continue;
+            };
+            if let Some(key) = self.loan_facts.event_key(statement)
+                && let Some((_, seen)) = self.loan_fact_stack.last_mut()
+            {
+                seen.insert(key);
+            }
+            self.mark_scalar_sum_fusion_tail_loan_keys(tail);
+        }
+    }
+
+    fn scalar_sum_fusion_pure_scalar(&self, value: &Expr) -> bool {
+        match value {
+            Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Bool(_) => true,
+            Expr::Var(name) => self
+                .locals
+                .get(name)
+                .is_some_and(|kind| matches!(*kind, Kind::I64 | Kind::F64)),
+            Expr::Unary { op, expr } => {
+                matches!(op, UnOp::Neg | UnOp::Not | UnOp::BitNot)
+                    && self.scalar_sum_fusion_pure_scalar(expr)
+            }
+            Expr::Binary { op, lhs, rhs } => {
+                !matches!(op, BinOp::Concat | BinOp::Coalesce)
+                    && self.scalar_sum_fusion_pure_scalar(lhs)
+                    && self.scalar_sum_fusion_pure_scalar(rhs)
+            }
+            _ => false,
+        }
     }
 
     fn scalar_sum_value_matches_layout(&self, id: LayoutId, value: &Expr) -> bool {
@@ -8246,6 +8368,7 @@ impl<'types> Codegen<'types> {
             sroa_active: std::mem::take(&mut self.sroa_active),
             scalar_sum_candidates: std::mem::take(&mut self.scalar_sum_candidates),
             scalar_sum_active: std::mem::take(&mut self.scalar_sum_active),
+            scalar_sum_fused_values: std::mem::take(&mut self.scalar_sum_fused_values),
             scalar_record_call_candidates: std::mem::take(
                 &mut self.scalar_record_call_candidates,
             ),
@@ -8302,6 +8425,7 @@ impl<'types> Codegen<'types> {
         self.sroa_active = s.sroa_active;
         self.scalar_sum_candidates = s.scalar_sum_candidates;
         self.scalar_sum_active = s.scalar_sum_active;
+        self.scalar_sum_fused_values = s.scalar_sum_fused_values;
         self.scalar_record_call_candidates = s.scalar_record_call_candidates;
         self.direct_list_builder_lets = s.direct_list_builder_lets;
         self.direct_list_builder_loops = s.direct_list_builder_loops;

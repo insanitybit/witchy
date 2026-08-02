@@ -182,14 +182,25 @@ impl<'types> Codegen<'types> {
                         list_builder_done = true;
                     }
                     let mut scalar_sum_done = false;
-                    if !list_builder_done
-                        && self.scalar_sum_candidates.contains(name)
-                        && let Some((layout, nodes)) =
+                    if !list_builder_done && self.scalar_sum_candidates.contains(name) {
+                        if self
+                            .scalar_sum_fusion_layout(name, value, block.stmts.get(i + 1))
+                            .is_some()
+                        {
+                            // The pure constructor is consumed by the immediately
+                            // following match. Delaying it preserves observable order
+                            // while letting that match branch straight to its arm.
+                            self.mark_scalar_sum_fusion_tail_loan_keys(value);
+                            self.scalar_sum_fused_values
+                                .insert(name.clone(), value.clone());
+                            scalar_sum_done = true;
+                        } else if let Some((layout, nodes)) =
                             self.lower_confined_scalar_sum_binding(name, value)
-                    {
-                        seq.extend(nodes);
-                        self.scalar_sum_active.insert(name.clone(), layout);
-                        scalar_sum_done = true;
+                        {
+                            seq.extend(nodes);
+                            self.scalar_sum_active.insert(name.clone(), layout);
+                            scalar_sum_done = true;
+                        }
                     }
                     let mut packed_done = false;
                     if !list_builder_done

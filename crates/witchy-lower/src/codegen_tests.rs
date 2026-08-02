@@ -987,9 +987,9 @@ fn main(console: Console):
             .unwrap_or(tail.len());
         let answer = &tail[..end];
         assert!(
-            answer.contains("$token__witchy_sum_tag")
-                && answer.contains("$token__witchy_sum_payload_0"),
-            "the sum lives in scalar tag/payload locals: {answer}"
+            !answer.contains("$token__witchy_sum_tag")
+                && !answer.contains("$token__witchy_sum_payload_0"),
+            "an adjacent pure constructor and match need no sum locals: {answer}"
         );
         assert!(
             !answer.contains("call $__witchy_packed_sum_")
@@ -1001,6 +1001,57 @@ fn main(console: Console):
             !answer.contains("global.set $__witchy_region_rewind_calls")
                 && !answer.contains("global.set $heap"),
             "an allocation-free scalar loop needs no region watermark: {answer}"
+        );
+
+        let deopt = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::Sroa);
+        witchy_syntax::opt::set_for_tests(Some(deopt));
+        let deopt_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("closed sum deopt lowers"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let deopt_start = deopt_wat.find("(func $answer").expect("deopt answer function");
+        let deopt_answer = &deopt_wat[deopt_start..];
+        assert!(
+            deopt_answer.contains("call $__witchy_packed_sum_")
+                && deopt_answer.contains("i32.load8_u"),
+            "disabling SROA retains the materialized constructor/match path: {deopt_answer}"
+        );
+    }
+
+    #[test]
+    fn nonadjacent_confined_closed_sum_keeps_scalar_dispatch_fallback() {
+        let source = r#"
+mode opt
+
+type Token packed:
+    Skip
+    Value(Int)
+
+fn main() -> Int:
+    var total = 0
+    for i in 0..6:
+        let token = if i % 2 == 0: Skip else: Value(i)
+        total = total + 0
+        match token:
+            Skip -> total = total + 1
+            Value(value) -> total = total + value
+    total
+"#;
+        assert_eq!(run_int(source), 12);
+
+        let module = parse_module(source).expect("parse nonadjacent closed sum");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("nonadjacent closed sum lowers to WIR"),
+        );
+        assert!(
+            wat.contains("$token__witchy_sum_tag")
+                && wat.contains("$token__witchy_sum_payload_0"),
+            "an intervening statement retains scalar tag/payload dispatch: {wat}"
+        );
+        assert!(
+            !wat.contains("call $__witchy_packed_sum_") && !wat.contains("i32.load8_u"),
+            "the fallback remains allocation-free scalar SROA: {wat}"
         );
     }
 
