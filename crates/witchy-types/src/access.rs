@@ -1107,6 +1107,56 @@ impl AccessFlow {
         }
     }
 
+    fn verify_directed(&self, expected: &Self, context: &str) -> Result<(), AccessFlowError> {
+        if !expected.has_callable_contract() {
+            return Ok(());
+        }
+        match (self, expected) {
+            (Self::Unknown, _) => Ok(()),
+            (
+                Self::Named { name: actual_name, arguments: actual, dynamic: true },
+                Self::Named { name: expected_name, arguments: expected, dynamic: true },
+            ) if actual_name == expected_name && actual.len() == expected.len() => {
+                for (actual, expected) in actual.iter().zip(expected) {
+                    actual.verify_directed(expected, context)?;
+                }
+                Ok(())
+            }
+            // Concrete-to-existential conversion and existential upcasting change
+            // nominal identity. Type checking has authenticated the witness or
+            // upcast; the target publishes its own access identity.
+            (_, Self::Named { dynamic: true, .. }) => Ok(()),
+            (Self::Product(actual), Self::Product(expected))
+                if actual.len() == expected.len() =>
+            {
+                for (actual, expected) in actual.iter().zip(expected) {
+                    actual.verify_directed(expected, context)?;
+                }
+                Ok(())
+            }
+            (Self::Sequence(actual), Self::Sequence(expected)) => {
+                actual.verify_directed(expected, context)
+            }
+            (
+                Self::Sequence(actual),
+                Self::Named { arguments, dynamic: false, .. },
+            ) if arguments.len() == 1 => actual.verify_directed(&arguments[0], context),
+            (
+                Self::Named { name: actual_name, arguments: actual, dynamic: actual_dynamic },
+                Self::Named { name: expected_name, arguments: expected, dynamic: expected_dynamic },
+            ) if actual_name == expected_name
+                && actual_dynamic == expected_dynamic
+                && actual.len() == expected.len() =>
+            {
+                for (actual, expected) in actual.iter().zip(expected) {
+                    actual.verify_directed(expected, context)?;
+                }
+                Ok(())
+            }
+            _ => self.verify_exact(expected, context),
+        }
+    }
+
     fn join(&self, other: &Self, context: &str) -> Result<Self, AccessFlowError> {
         if matches!(self, Self::Unknown) {
             return Ok(other.clone());
@@ -1208,7 +1258,6 @@ struct AccessVerifier<'a> {
     functions: HashMap<String, Function>,
     types: HashMap<String, TypeDef>,
     variants: HashMap<String, Vec<(String, Variant)>>,
-    record_fields: HashMap<(String, String), usize>,
     facts: CheckedAccessFacts,
 }
 
@@ -1239,22 +1288,12 @@ impl<'a> AccessVerifier<'a> {
                     .push((definition.name.clone(), variant.clone()));
             }
         }
-        let mut record_fields = HashMap::new();
-        for item in &module.items {
-            let Item::Type(definition) = item else { continue };
-            for variant in &definition.variants {
-                for (index, field) in variant.field_names.iter().enumerate() {
-                    record_fields.insert((definition.name.clone(), field.clone()), index);
-                }
-            }
-        }
         Self {
             module,
             table,
             functions,
             types,
             variants,
-            record_fields,
             facts: CheckedAccessFacts::default(),
         }
     }
@@ -1310,7 +1349,7 @@ impl<'a> AccessVerifier<'a> {
             .map_err(Self::signature_error)?;
         let tail = self.eval_block(&function.body, &mut environment, &expected)?;
         if matches!(function.body.stmts.last(), Some(Stmt::Expr(_))) {
-            tail.verify_exact(
+            tail.verify_directed(
                 &expected,
                 &format!("returned value from `{}`", function.name),
             )?;
@@ -1528,7 +1567,7 @@ impl<'a> AccessVerifier<'a> {
             return Ok(());
         }
         let expected = self.flow_for_declared_type(declared, substitutions, access_arguments)?;
-        actual.verify_exact(&expected, context)
+        actual.verify_directed(&expected, context)
     }
 
     fn variant_for(&self, constructor: &str, value_type: &Type) -> Option<&(String, Variant)> {
@@ -1602,6 +1641,70 @@ impl<'a> AccessVerifier<'a> {
         self.flow_for_declared_type(&variant.fields[index], &substitutions, &access_arguments)
     }
 
+    fn record_flow(
+        &mut self,
+        name: &str,
+        fields: &[(String, Expr)],
+        spread: Option<&Expr>,
+        expression_type: &Type,
+        environment: &mut FlowEnvironment,
+        return_expected: &AccessFlow,
+    ) -> Result<AccessFlow, AccessFlowError> {
+        let spread_flow = spread
+            .map(|spread| self.eval_expr(spread, environment, return_expected))
+            .transpose()?;
+        let Type::Named(type_name, _) = expression_type.unqualified() else {
+            for (_, value) in fields {
+                self.eval_expr(value, environment, return_expected)?;
+            }
+            return AccessFlow::from_type(expression_type).map_err(Self::signature_error);
+        };
+        let Some(definition) = self.types.get(type_name).cloned() else {
+            for (_, value) in fields {
+                self.eval_expr(value, environment, return_expected)?;
+            }
+            return AccessFlow::from_type(expression_type).map_err(Self::signature_error);
+        };
+        let substitutions = self.nominal_substitutions(type_name, expression_type);
+        let mut access_arguments = spread_flow
+            .as_ref()
+            .map(|flow| self.nominal_access_arguments(type_name, flow))
+            .unwrap_or_default();
+        for parameter in effective_type_def_params(&definition) {
+            access_arguments.entry(parameter).or_insert(AccessFlow::Unknown);
+        }
+        for (field, value) in fields {
+            let actual = self.eval_expr(value, environment, return_expected)?;
+            let Some(declared) = definition.variants.iter().find_map(|variant| {
+                variant
+                    .field_names
+                    .iter()
+                    .position(|found| found == field)
+                    .and_then(|index| variant.fields.get(index))
+            }) else {
+                continue;
+            };
+            self.constrain_declared_flow(
+                declared,
+                &actual,
+                &substitutions,
+                &mut access_arguments,
+                &format!("record field `{field}` of `{name}`"),
+            )?;
+        }
+        let arguments = effective_type_def_params(&definition)
+            .into_iter()
+            .map(|parameter| {
+                access_arguments.remove(&parameter).unwrap_or(AccessFlow::Unknown)
+            })
+            .collect();
+        Ok(AccessFlow::Named {
+            name: type_name.clone(),
+            arguments,
+            dynamic: false,
+        })
+    }
+
     fn existential_signature(
         &self,
         receiver: &Type,
@@ -1629,7 +1732,7 @@ impl<'a> AccessVerifier<'a> {
             arguments.iter().zip(signature.params()).enumerate()
         {
             let expected = AccessFlow::from_type(parameter.ty()).map_err(Self::signature_error)?;
-            argument.verify_exact(
+            argument.verify_directed(
                 &expected,
                 &format!("argument {} passed to `{name}`", index + 1),
             )?;
@@ -1650,7 +1753,7 @@ impl<'a> AccessVerifier<'a> {
                     let actual = self.eval_expr(value, environment, return_expected)?;
                     let value = if let Some(ty) = ty {
                         let expected = AccessFlow::from_type(ty).map_err(Self::signature_error)?;
-                        actual.verify_exact(&expected, &format!("function value `{name}`"))?;
+                        actual.verify_directed(&expected, &format!("function value `{name}`"))?;
                         expected
                     } else {
                         actual
@@ -1661,7 +1764,7 @@ impl<'a> AccessVerifier<'a> {
                 Stmt::Assign { name, value } => {
                     let actual = self.eval_expr(value, environment, return_expected)?;
                     if let Some(expected) = environment.get(name) {
-                        actual.verify_exact(expected, &format!("assignment to `{name}`"))?;
+                        actual.verify_directed(expected, &format!("assignment to `{name}`"))?;
                     }
                     environment.insert(name.clone(), actual);
                     AccessFlow::None
@@ -1677,7 +1780,7 @@ impl<'a> AccessVerifier<'a> {
                         Some(value) => self.eval_expr(value, environment, return_expected)?,
                         None => AccessFlow::None,
                     };
-                    actual.verify_exact(return_expected, "returned function value")?;
+                    actual.verify_directed(return_expected, "returned function value")?;
                     AccessFlow::None
                 }
                 Stmt::Yield(value) | Stmt::Expr(value) => {
@@ -1940,11 +2043,13 @@ impl<'a> AccessVerifier<'a> {
                 });
                 self.constructor_flow(name, &expression_type, &arguments)?
             }
-            Expr::Unary { expr, .. }
-            | Expr::Try(expr)
-            | Expr::ExistentialPack { expr, .. }
-            | Expr::ExistentialUpcast { expr, .. } => {
+            Expr::Unary { expr, .. } | Expr::Try(expr) => {
                 self.eval_expr(expr, environment, return_expected)?
+            }
+            Expr::ExistentialPack { expr, ty, .. }
+            | Expr::ExistentialUpcast { expr, ty } => {
+                self.eval_expr(expr, environment, return_expected)?;
+                AccessFlow::from_type(ty).map_err(Self::signature_error)?
             }
             Expr::Field { base, field } => {
                 let base_flow = self.eval_expr(base, environment, return_expected)?;
@@ -1976,46 +2081,53 @@ impl<'a> AccessVerifier<'a> {
                     .map_err(Self::signature_error)?;
                 let tail = self.eval_block(body, &mut lambda_environment, &expected)?;
                 if matches!(body.stmts.last(), Some(Stmt::Expr(_))) {
-                    tail.verify_exact(&expected, "lambda result")?;
+                    tail.verify_directed(&expected, "lambda result")?;
                 }
                 AccessFlow::Callable(signature)
             }
             Expr::As { expr, ty } => {
                 let actual = self.eval_expr(expr, environment, return_expected)?;
                 let expected = AccessFlow::from_type(ty).map_err(Self::signature_error)?;
-                actual.verify_exact(&expected, "function cast")?;
+                actual.verify_directed(&expected, "function cast")?;
                 expected
             }
-            Expr::RecordUpdate { base, fields, .. } => {
-                let mut flow = self.eval_expr(base, environment, return_expected)?;
+            Expr::RecordUpdate { name, base, fields } => {
                 let base_type = self.resolved_expression_type(base);
-                if let AccessFlow::Product(children) = &mut flow {
-                    for (field, value) in fields {
-                        let value = self.eval_expr(value, environment, return_expected)?;
-                        if let Some(index) = base_type.as_ref().and_then(|ty| match ty.unqualified() {
-                            Type::Named(name, _) => self
-                                .record_fields
-                                .get(&(name.clone(), field.clone()))
-                                .copied(),
-                            _ => None,
-                        }) && let Some(slot) = children.get_mut(index)
-                        {
-                            *slot = value;
-                        }
+                let Some(base_type) = base_type else {
+                    self.eval_expr(base, environment, return_expected)?;
+                    for (_, value) in fields {
+                        self.eval_expr(value, environment, return_expected)?;
                     }
-                }
-                flow
+                    return Ok(self.record(expression, AccessFlow::None));
+                };
+                let record_name = name
+                    .as_deref()
+                    .or_else(|| match base_type.unqualified() {
+                        Type::Named(name, _) => Some(name.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("record");
+                self.record_flow(
+                    record_name,
+                    fields,
+                    Some(base),
+                    &base_type,
+                    environment,
+                    return_expected,
+                )?
             }
-            Expr::Record { fields, spread, .. } => {
-                if let Some(spread) = spread {
-                    self.eval_expr(spread, environment, return_expected)?;
-                }
-                AccessFlow::product(
-                    fields
-                        .iter()
-                        .map(|(_, value)| self.eval_expr(value, environment, return_expected))
-                        .collect::<Result<Vec<_>, _>>()?,
-                )
+            Expr::Record { name, fields, spread } => {
+                let expression_type = self
+                    .resolved_expression_type(expression)
+                    .unwrap_or_else(|| Type::Named(name.clone(), Vec::new()));
+                self.record_flow(
+                    name,
+                    fields,
+                    spread.as_deref(),
+                    &expression_type,
+                    environment,
+                    return_expected,
+                )?
             }
             Expr::ExistentialCall {
                 receiver,
@@ -2036,7 +2148,7 @@ impl<'a> AccessVerifier<'a> {
                 if let Some(receiver_param) = signature.params().first() {
                     let expected = AccessFlow::from_type(receiver_param.ty())
                         .map_err(Self::signature_error)?;
-                    receiver_flow.verify_exact(
+                    receiver_flow.verify_directed(
                         &expected,
                         &format!("receiver passed to dynamic method `{method}`"),
                     )?;
@@ -2048,7 +2160,7 @@ impl<'a> AccessVerifier<'a> {
                 {
                     let expected = AccessFlow::from_type(expected.ty())
                         .map_err(Self::signature_error)?;
-                    actual.verify_exact(
+                    actual.verify_directed(
                         &expected,
                         &format!("argument {} passed to dynamic method `{method}`", index + 1),
                     )?;

@@ -337,6 +337,83 @@
     }
 
     #[test]
+    fn nominal_record_construction_cannot_erase_a_callable_access_contract() {
+        let err = check_str(
+            "mode opt\n\n\
+             type Holder:\n    f: fn(unique List(Int)) -> Int\n\n\
+             fn plain(xs: List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn main():\n    let holder: Holder = Holder(f: plain)\n    return\n",
+        )
+        .expect_err("a nominal record field must preserve its callable access contract");
+        assert!(err.contains("constructor `Holder`") && err.contains("Qualifier"), "{err}");
+    }
+
+    #[test]
+    fn nominal_record_update_cannot_erase_a_callable_access_contract() {
+        let err = check_str(
+            "mode opt\n\n\
+             type Holder:\n    f: fn(unique List(Int)) -> Int\n\n\
+             fn strict(xs: unique List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn plain(xs: List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn main():\n\
+             \x20   let initial: Holder = Holder(f: strict)\n\
+             \x20   let updated: Holder = Holder(f: plain, ..initial)\n\
+             \x20   return\n",
+        )
+        .expect_err("a nominal record update must preserve its callable access contract");
+        assert!(err.contains("record field `f`") && err.contains("Qualifier"), "{err}");
+    }
+
+    #[test]
+    fn generic_record_update_preserves_the_instantiated_callable_contract() {
+        let err = check_str(
+            "mode opt\n\n\
+             type Box(a):\n    value: a\n\n\
+             fn plain(xs: List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn corrupt(box: Box(fn(unique List(Int)) -> Int)) -> Box(fn(unique List(Int)) -> Int):\n\
+             \x20   Box(value: plain, ..box)\n\n\
+             fn main():\n    return\n",
+        )
+        .expect_err("a generic record update must retain its instantiated access identity");
+        assert!(err.contains("record field `value`") && err.contains("Qualifier"), "{err}");
+    }
+
+    #[test]
+    fn nominal_record_fields_keep_their_contract_across_order_projection_and_update() {
+        check_str(
+            "mode opt\n\n\
+             type Holder:\n    count: Int\n    f: fn(unique List(Int)) -> Int\n\n\
+             fn strict(xs: unique List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn main():\n\
+             \x20   let initial: Holder = Holder(f: strict, count: 1)\n\
+             \x20   let replaced: Holder = Holder(f: strict, ..initial)\n\
+             \x20   let untouched: Holder = Holder(count: 2, ..replaced)\n\
+             \x20   let f = untouched.f\n\
+             \x20   f([1])\n",
+        )
+        .expect("declared record fields, rather than source order, carry access identity");
+    }
+
+    #[test]
+    fn existential_pack_uses_the_authenticated_target_access_identity() {
+        check_str(
+            "mode opt\n\n\
+             trait Carrier(a):\n    fn get(let self) -> a\n\n\
+             type Holder:\n    f: fn(unique List(Int)) -> Int\n\n\
+             impl Carrier(fn(unique List(Int)) -> Int) for Holder:\n\
+             \x20   fn get(let self) -> fn(unique List(Int)) -> Int:\n        self.f\n\n\
+             fn strict(xs: unique List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn erase(value: Holder) -> dyn Carrier(fn(unique List(Int)) -> Int):\n\
+             \x20   value as dyn Carrier(fn(unique List(Int)) -> Int)\n\n\
+             fn main():\n\
+             \x20   let carrier = erase(Holder(f: strict))\n\
+             \x20   let f = carrier.get()\n\
+             \x20   f([1])\n",
+        )
+        .expect("an existential pack publishes its authenticated target access identity");
+    }
+
+    #[test]
     fn absent_and_repeated_container_values_do_not_invent_erasure() {
         check_str(
             "fn id(x: Int) -> Int:\n    x\n\n\
