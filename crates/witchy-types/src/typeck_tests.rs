@@ -784,14 +784,33 @@
 
     #[test]
     fn borrowed_views_of_capabilities_require_a_lease_model() {
-        let direct = check_str(
-            "mode opt\n\nfn bad(let dir: let('a) Dir[Read]) -> View(Dir[Read], 'a):\n    dir\n",
+        for (name, ty) in [
+            ("Console", "Console"),
+            ("Clock", "Clock"),
+            ("Rand", "Rand"),
+            ("Dir", "Dir[Read]"),
+            ("BuildOut", "BuildOut"),
+        ] {
+            let source = format!(
+                "mode opt\n\nfn bad(let value: let('a) {ty}) -> Int:\n    0\n"
+            );
+            let direct = check_str(&source)
+                .expect_err("ordinary lifetimes cannot borrow capabilities");
+            assert!(
+                direct.contains(&format!("names capability `{name}` as an ordinary owner"))
+                    && direct.contains("lease-bearing API"),
+                "{direct}"
+            );
+        }
+
+        let branded = check_str(
+            "mode opt\n\ncapability Redis from Net[Connect]\n\nfn bad(let redis: let('a) Redis) -> Int:\n    0\n",
         )
-        .expect_err("ordinary lifetimes cannot borrow host capabilities");
+        .expect_err("user-defined capabilities also require lease-bearing borrows");
         assert!(
-            direct.contains("names capability `Dir` as an ordinary owner")
-                && direct.contains("lease-bearing API"),
-            "{direct}"
+            branded.contains("names capability `Redis` as an ordinary owner")
+                && branded.contains("lease-bearing API"),
+            "{branded}"
         );
 
         let field = check_str(
@@ -805,11 +824,11 @@
         );
 
         let substituted = check_str(
-            "mode opt\n\ntype Inner(a):\n    value: a\n\ntype Outer(a):\n    inner: Inner(a)\n\nfn bad(let value: let('a) Outer(Dir[Read])) -> Int:\n    0\n",
+            "mode opt\n\ntype Inner(a):\n    value: a\n\ntype Outer(a):\n    inner: Inner(a)\n\nfn bad(let value: let('a) Outer(Console)) -> Int:\n    0\n",
         )
         .expect_err("a realized generic field that stores a capability still requires a lease");
         assert!(
-            substituted.contains("names capability `Dir` as an ordinary owner")
+            substituted.contains("names capability `Console` as an ordinary owner")
                 && substituted.contains("lease-bearing API"),
             "{substituted}"
         );

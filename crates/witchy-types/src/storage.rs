@@ -4,6 +4,7 @@
 //! elsewhere and must not redefine the classification.
 
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
+use witchy_cap_model::CapabilityKind;
 use witchy_syntax::ast::{Item, Module, Type, TypeDef};
 
 /// The reference leaf that makes a value require reference-safe storage.
@@ -112,6 +113,15 @@ impl<'a> ReferenceStorageClassifier<'a> {
             Some(ReferenceLeaf::ExternRef(cap)) => Some(cap),
             Some(ReferenceLeaf::Function | ReferenceLeaf::Existential) | None => None,
         }
+    }
+
+    /// The first capability stored by `ty`, independent of its eventual
+    /// scalar or reference representation. This is the authority counterpart
+    /// to `first_externref`: it follows aliases and only the generic parameters
+    /// an aggregate actually stores, while ignoring capability names that
+    /// appear solely in a function signature.
+    pub fn first_stored_capability(&self, ty: &Type) -> Option<String> {
+        self.classify_stored_capability(ty, &HashMap::new(), &mut HashSet::new())
     }
 
     pub fn requires_reference_storage(&self, ty: &Type) -> bool {
@@ -246,6 +256,111 @@ impl<'a> ReferenceStorageClassifier<'a> {
             .zip(args)
             .filter(|(param, _)| relevant.contains(param.as_str()))
             .find_map(|(_, arg)| self.classify(arg, bindings, seen, functions))
+    }
+
+    fn classify_stored_capability(
+        &self,
+        ty: &Type,
+        bindings: &HashMap<String, Type>,
+        seen: &mut HashSet<String>,
+    ) -> Option<String> {
+        match ty {
+            Type::Qualified(_, inner) => {
+                self.classify_stored_capability(inner, bindings, seen)
+            }
+            Type::RecordCompose { .. } => unreachable!(
+                "compiler invariant violated: structural record composition reached storage classification before records::lower normalized it"
+            ),
+            Type::Tuple(items) => items
+                .iter()
+                .find_map(|item| self.classify_stored_capability(item, bindings, seen)),
+            Type::Dyn(_, args) => args
+                .iter()
+                .find_map(|arg| self.classify_stored_capability(arg, bindings, seen)),
+            // A function value stores its closure/code identity, not values of
+            // the capability types mentioned in its signature.
+            Type::Fn(_, _, _) => None,
+            Type::Named(name, args) => {
+                if args.is_empty()
+                    && let Some(bound) = bindings.get(name)
+                {
+                    let key = format!("authority-binding:{name}");
+                    if !seen.insert(key.clone()) {
+                        return None;
+                    }
+                    let hit = self.classify_stored_capability(bound, bindings, seen);
+                    seen.remove(&key);
+                    return hit;
+                }
+
+                if let Some(kind) = CapabilityKind::from_name(name) {
+                    return Some(kind.name().to_owned());
+                }
+
+                if let Some((params, target)) = self.aliases.get(name.as_str()) {
+                    let key = format!("authority-alias:{name}");
+                    if !seen.insert(key.clone()) {
+                        return self.classify_stored_capability_args(
+                            params,
+                            args,
+                            self.alias_stored_params.get(name.as_str()),
+                            bindings,
+                            seen,
+                        );
+                    }
+                    let nested = bind(params, args, bindings);
+                    let hit = self.classify_stored_capability(target, &nested, seen);
+                    seen.remove(&key);
+                    return hit;
+                }
+
+                if let Some(def) = self.defs.get(name.as_str()) {
+                    if def.is_capability {
+                        return Some(name.clone());
+                    }
+                    let key = format!("authority-type:{name}");
+                    let params = crate::typeck::type_def_params(def);
+                    if !seen.insert(key.clone()) {
+                        return self.classify_stored_capability_args(
+                            &params,
+                            args,
+                            self.def_stored_params.get(name.as_str()),
+                            bindings,
+                            seen,
+                        );
+                    }
+                    let nested = bind(&params, args, bindings);
+                    let hit = def
+                        .variants
+                        .iter()
+                        .flat_map(|variant| variant.fields.iter())
+                        .find_map(|field| {
+                            self.classify_stored_capability(field, &nested, seen)
+                        });
+                    seen.remove(&key);
+                    return hit;
+                }
+
+                args.iter()
+                    .find_map(|arg| self.classify_stored_capability(arg, bindings, seen))
+            }
+        }
+    }
+
+    fn classify_stored_capability_args(
+        &self,
+        params: &[String],
+        args: &[Type],
+        relevant: Option<&HashSet<String>>,
+        bindings: &HashMap<String, Type>,
+        seen: &mut HashSet<String>,
+    ) -> Option<String> {
+        let relevant = relevant?;
+        params
+            .iter()
+            .zip(args)
+            .filter(|(param, _)| relevant.contains(param.as_str()))
+            .find_map(|(_, arg)| self.classify_stored_capability(arg, bindings, seen))
     }
 }
 

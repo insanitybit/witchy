@@ -1168,7 +1168,7 @@ fn reject_borrowed_capability_views(
 ) -> Result<(), TypeError> {
     match ty {
         ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), inner) => {
-            if let Some(capability) = storage.first_externref(inner) {
+            if let Some(capability) = storage.first_stored_capability(inner) {
                 return terr(format!(
                     "borrowed view `View({}, '{lifetime})` names capability `{capability}` as an \
                      ordinary owner, but host capabilities require a lease-bearing API; an \
