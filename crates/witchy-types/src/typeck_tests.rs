@@ -501,7 +501,7 @@
     #[test]
     fn borrowed_nominal_lifetime_relations_are_not_erased_by_type_unification() {
         let error = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn relabel(let left: let('left) String, let right: let('right) String, own holder: Holder('left)) -> Holder('right):\n    holder\n",
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn relabel(let left: let('left) String, let right: let('right) String, holder: Holder('left)) -> Holder('right):\n    holder\n",
         )
         .expect_err("a borrowed nominal lifetime cannot be relabeled");
         assert!(
@@ -665,6 +665,147 @@
                 && error.contains("runtime owner-root lowering"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn borrowed_nominal_runtime_guards_recurse_through_fixed_tuples() {
+        let call = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn sink(let owner: let('a) String, let pair: (Holder('a), Int)) -> Int:\n    0\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    sink(owner, (holder, 0))\n",
+        )
+        .expect_err("a fixed tuple must not hide borrowed runtime transport");
+        assert!(
+            call.contains("call to `sink`")
+                && call.contains("borrowed nominal type `Holder`")
+                && call.contains("runtime owner-root lowering"),
+            "{call}"
+        );
+
+        let destructure = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let pair: (Holder('a), Int)) -> Int:\n    let (holder, _) = pair\n    0\n",
+        )
+        .expect_err("tuple pattern destructuring must see the nested borrowed shell");
+        assert!(
+            destructure.contains("pattern destructuring")
+                && destructure.contains("borrowed nominal type `Holder`"),
+            "{destructure}"
+        );
+
+        check_str(
+            "fn sink(var left: Int, var right: Int) -> Int:\n    left + right\n\nfn main() -> Int:\n    var pair = (1, 2)\n    sink(pair.0, pair.1)\n",
+        )
+        .expect("ordinary fixed tuples retain their existing call/write-back behavior");
+    }
+
+    #[test]
+    fn borrowed_nominal_cannot_erase_into_an_owned_existential() {
+        let error = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntrait Mark:\n    fn mark(self) -> Int\n\nimpl Mark for Holder('a):\n    fn mark(self) -> Int:\n        0\n\nfn erase(let owner: let('a) String, let holder: Holder('a)) -> dyn Mark:\n    holder as dyn Mark\n",
+        )
+        .expect_err("existential packing must not erase the owner relation");
+        assert!(
+            error.contains("erasure to `dyn Mark`")
+                && error.contains("borrowed nominal type `Holder`")
+                && error.contains("runtime owner-root lowering"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn borrowed_nominal_cannot_escape_through_an_inferred_closure() {
+        let capture = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn escape(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    let f = fn():\n        holder\n    0\n",
+        )
+        .expect_err("an inferred closure must not capture a borrowed shell");
+        assert!(
+            capture.contains("closure capture `holder`")
+                && capture.contains("borrowed nominal type `Holder`")
+                && capture.contains("cannot prove this closure non-escaping"),
+            "{capture}"
+        );
+
+        let result = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn outer() -> Int:\n    let f = fn(let owner: View(String, 'a), holder: Holder('a)):\n        holder\n    0\n",
+        )
+        .expect_err("an inferred callable result must retain an explicit checked relation");
+        assert!(
+            result.contains("inferred closure result")
+                && result.contains("borrowed nominal type `Holder`"),
+            "{result}"
+        );
+
+        check_str(
+            "fn outer() -> Int:\n    let value = 7\n    let f = fn(): value\n    0\n",
+        )
+        .expect("ordinary scalar closure captures remain valid");
+    }
+
+    #[test]
+    fn borrowed_nominal_rejects_own_conventions_at_every_callable_surface() {
+        let direct = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn consume(let owner: let('a) String, own holder: Holder('a)) -> Int:\n    0\n",
+        )
+        .expect_err("own must not erase a borrowed nominal relation");
+        assert!(
+            direct.contains("callable `consume` passes borrowed relation `Holder` to `own`")
+                && direct.contains("relation-preserving `let`"),
+            "{direct}"
+        );
+
+        let nested = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(callback: fn(let View(String, 'a), own Holder('a)) -> Int) -> Int:\n    0\n",
+        )
+        .expect_err("nested callable ownership conventions must preserve relations");
+        assert!(
+            nested.contains("passes borrowed relation `Holder` to `own`")
+                && nested.contains("relation-preserving `let`"),
+            "{nested}"
+        );
+
+        check_str("fn consume(own value: String) -> Int:\n    value.length()\n")
+            .expect("own remains valid for ordinary owned values");
+    }
+
+    #[test]
+    fn callable_lifetime_binders_are_alpha_equivalent() {
+        let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn inspect(let owner: let('a) String, let holder: let('a) Holder('a)) -> Int:\n    0\n\nfn main() -> Int:\n    let same: fn(let View(String, 'a), let View(Holder('a), 'a)) -> Int = inspect\n    let renamed: fn(let View(String, 'b), let View(Holder('b), 'b)) -> Int = inspect\n    0\n";
+        check_str(source)
+            .expect("renaming a universally quantified callable lifetime preserves identity");
+
+        let different_relation = check_str(
+            "mode opt\n\ntype Pair('left, 'right):\n    first: View(String, 'left)\n    second: View(String, 'right)\n\nfn inspect(let left: let('left) String, let right: let('right) String, pair: Pair('left, 'left)) -> Int:\n    0\n\nfn main() -> Int:\n    let wrong: fn(let View(String, 'a), let View(String, 'b), Pair('a, 'b)) -> Int = inspect\n    0\n",
+        )
+        .expect_err("alpha normalization must preserve equality between relation positions");
+        assert!(
+            different_relation.contains("value disagrees")
+                || different_relation.contains("expected"),
+            "{different_relation}"
+        );
+    }
+
+    #[test]
+    fn borrowed_views_of_capabilities_require_a_lease_model() {
+        let direct = check_str(
+            "mode opt\n\nfn bad(let dir: let('a) Dir[Read]) -> View(Dir[Read], 'a):\n    dir\n",
+        )
+        .expect_err("ordinary lifetimes cannot borrow host capabilities");
+        assert!(
+            direct.contains("names capability `Dir` as an ordinary owner")
+                && direct.contains("lease-bearing API"),
+            "{direct}"
+        );
+
+        let field = check_str(
+            "mode opt\n\ntype Holder('a):\n    dir: View(Dir[Read], 'a)\n",
+        )
+        .expect_err("borrowed nominal fields cannot invent a capability lease");
+        assert!(
+            field.contains("names capability `Dir` as an ordinary owner")
+                && field.contains("ordinary lifetime cannot extend capability authority"),
+            "{field}"
+        );
+
+        check_str("fn inspect(let dir: Dir[Read]) -> Int:\n    0\n")
+            .expect("an ordinary non-lifetime capability parameter remains valid");
     }
 
     #[test]

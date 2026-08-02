@@ -209,6 +209,110 @@ impl fmt::Display for Ty {
     }
 }
 
+fn collect_callable_lifetime_markers(ty: &Ty, markers: &mut HashMap<String, String>) {
+    match ty {
+        Ty::List(element) => collect_callable_lifetime_markers(element, markers),
+        Ty::Tuple(items) | Ty::Named(_, items) | Ty::Dyn(_, items) => {
+            if let Ty::Named(name, arguments) = ty
+                && arguments.is_empty()
+                && name.starts_with('\'')
+                && !markers.contains_key(name)
+            {
+                let canonical = format!("'__witchy_bound_{}", markers.len());
+                markers.insert(name.clone(), canonical);
+                return;
+            }
+            for item in items {
+                collect_callable_lifetime_markers(item, markers);
+            }
+        }
+        // Nested function types introduce their own binders.
+        Ty::Fn(_, _, _)
+        | Ty::Int
+        | Ty::Float
+        | Ty::Duration
+        | Ty::String
+        | Ty::Bytes
+        | Ty::Msg
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::Console(_)
+        | Ty::Clock
+        | Ty::Rand
+        | Ty::Env
+        | Ty::Secret
+        | Ty::Exec
+        | Ty::Fetch
+        | Ty::Dir(_)
+        | Ty::File(_)
+        | Ty::Net(_)
+        | Ty::Socket
+        | Ty::Listener
+        | Ty::BuildOut
+        | Ty::BuildRead
+        | Ty::BuildEnv
+        | Ty::BuildNet
+        | Ty::BuildExec
+        | Ty::Var(_) => {}
+    }
+}
+
+fn normalize_callable_lifetime_markers(
+    ty: &Ty,
+    markers: &HashMap<String, String>,
+) -> Ty {
+    match ty {
+        Ty::List(element) => Ty::List(Box::new(normalize_callable_lifetime_markers(
+            element, markers,
+        ))),
+        Ty::Tuple(items) => Ty::Tuple(
+            items
+                .iter()
+                .map(|item| normalize_callable_lifetime_markers(item, markers))
+                .collect(),
+        ),
+        Ty::Named(name, arguments) => {
+            if arguments.is_empty()
+                && let Some(canonical) = markers.get(name)
+            {
+                return Ty::Named(canonical.clone(), Vec::new());
+            }
+            Ty::Named(
+                name.clone(),
+                arguments
+                    .iter()
+                    .map(|argument| normalize_callable_lifetime_markers(argument, markers))
+                    .collect(),
+            )
+        }
+        Ty::Dyn(name, arguments) => Ty::Dyn(
+            name.clone(),
+            arguments
+                .iter()
+                .map(|argument| normalize_callable_lifetime_markers(argument, markers))
+                .collect(),
+        ),
+        Ty::Fn(parameters, result, conventions) => {
+            let (parameters, result) = alpha_normalize_callable(parameters, result);
+            Ty::Fn(parameters, Box::new(result), conventions.clone())
+        }
+        other => other.clone(),
+    }
+}
+
+fn alpha_normalize_callable(parameters: &[Ty], result: &Ty) -> (Vec<Ty>, Ty) {
+    let mut markers = HashMap::new();
+    for parameter in parameters {
+        collect_callable_lifetime_markers(parameter, &mut markers);
+    }
+    let parameters = parameters
+        .iter()
+        .map(|parameter| normalize_callable_lifetime_markers(parameter, &markers))
+        .collect();
+    let result = normalize_callable_lifetime_markers(result, &markers);
+    (parameters, result)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeError {
     pub message: String,
@@ -558,6 +662,37 @@ fn type_contains_nominal_lifetime_relation(t: &ast::Type) -> bool {
     }
 }
 
+fn borrowed_nominal_relation_name<'a>(
+    t: &'a ast::Type,
+    lifetime_nominals: &HashSet<String>,
+) -> Option<&'a str> {
+    match t {
+        ast::Type::Qualified(ast::TypeQual::Borrow(_), _) => Some("View"),
+        ast::Type::Qualified(_, inner) => {
+            borrowed_nominal_relation_name(inner, lifetime_nominals)
+        }
+        ast::Type::Tuple(items) => items
+            .iter()
+            .find_map(|item| borrowed_nominal_relation_name(item, lifetime_nominals)),
+        ast::Type::Named(name, arguments) => {
+            let borrowed_shell = lifetime_nominals.contains(name)
+                || arguments.iter().any(|argument| lifetime_argument_name(argument).is_some());
+            borrowed_shell.then_some(name.as_str()).or_else(|| {
+                arguments.iter().find_map(|argument| {
+                    borrowed_nominal_relation_name(argument, lifetime_nominals)
+                })
+            })
+        }
+        ast::Type::Dyn(_, arguments) => arguments.iter().find_map(|argument| {
+            borrowed_nominal_relation_name(argument, lifetime_nominals)
+        }),
+        // A function value owns its separately quantified relation. Its own
+        // parameter conventions are validated when this traversal reaches the
+        // nested callable below.
+        ast::Type::Fn(_, _, _) | ast::Type::RecordCompose { .. } => None,
+    }
+}
+
 fn reject_borrowed_nominal_containers(
     t: &ast::Type,
     lifetime_nominals: &HashSet<String>,
@@ -619,10 +754,20 @@ fn reject_borrowed_nominal_containers(
         }
         // Nested callable relations are separately quantified, but each
         // callable surface still has to reject borrowed aggregate containers.
-        ast::Type::Fn(parameters, result, _) => {
-            parameters.iter().try_for_each(|parameter| {
-                reject_borrowed_nominal_containers(parameter, lifetime_nominals, context)
-            })?;
+        ast::Type::Fn(parameters, result, conventions) => {
+            for (index, parameter) in parameters.iter().enumerate() {
+                if conventions.get(index) == Some(&Convention::Own)
+                    && let Some(relation) =
+                        borrowed_nominal_relation_name(parameter, lifetime_nominals)
+                {
+                    return terr(format!(
+                        "{context} passes borrowed relation `{}` to `own`; borrowed values may \
+                         only cross relation-preserving `let` parameters",
+                        relation.rsplit('.').next().unwrap_or(relation)
+                    ));
+                }
+                reject_borrowed_nominal_containers(parameter, lifetime_nominals, context)?;
+            }
             reject_borrowed_nominal_containers(result, lifetime_nominals, context)
         }
     }
@@ -643,6 +788,16 @@ fn validate_callable_nominal_lifetimes(
     let context = format!("callable `{}`", name.rsplit('.').next().unwrap_or(name));
     for parameter in parameters {
         if let Some(ty) = &parameter.ty {
+            if parameter.convention == Convention::Own
+                && let Some(relation) =
+                    borrowed_nominal_relation_name(ty, lifetime_nominals)
+            {
+                return terr(format!(
+                    "{context} passes borrowed relation `{}` to `own`; borrowed values may only \
+                     cross relation-preserving `let` parameters",
+                    relation.rsplit('.').next().unwrap_or(relation)
+                ));
+            }
             // Direct callable view relations retain RFC-0083's loan-specific
             // diagnostics. Nested `fn` types recurse with strict binding above.
             validate_nominal_lifetime_uses(ty, &lifetimes, &context, false)?;
@@ -1007,6 +1162,45 @@ fn reject_structural_authority_type(
     }
 }
 
+fn reject_borrowed_capability_views(
+    ty: &ast::Type,
+    defs: &HashMap<&str, &ast::TypeDef>,
+) -> Result<(), TypeError> {
+    match ty {
+        ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), inner) => {
+            if let Some(capability) =
+                authority_taint_type(inner, defs, &mut HashSet::new())
+            {
+                return terr(format!(
+                    "borrowed view `View({}, '{lifetime})` names capability `{capability}` as an \
+                     ordinary owner, but host capabilities require a lease-bearing API; an \
+                     ordinary lifetime cannot extend capability authority",
+                    witchy_syntax::format::type_str(inner)
+                ));
+            }
+            reject_borrowed_capability_views(inner, defs)
+        }
+        ast::Type::Qualified(_, inner) => reject_borrowed_capability_views(inner, defs),
+        ast::Type::Named(_, arguments)
+        | ast::Type::Tuple(arguments)
+        | ast::Type::Dyn(_, arguments) => arguments
+            .iter()
+            .try_for_each(|argument| reject_borrowed_capability_views(argument, defs)),
+        ast::Type::RecordCompose { base, fields } => {
+            reject_borrowed_capability_views(base, defs)?;
+            fields.iter().try_for_each(|(_, field)| {
+                reject_borrowed_capability_views(field, defs)
+            })
+        }
+        ast::Type::Fn(parameters, result, _) => {
+            parameters.iter().try_for_each(|parameter| {
+                reject_borrowed_capability_views(parameter, defs)
+            })?;
+            reject_borrowed_capability_views(result, defs)
+        }
+    }
+}
+
 fn validate_type_model(
     t: &ast::Type,
     known: &HashSet<&str>,
@@ -1020,7 +1214,8 @@ fn validate_type_model(
         })
         .collect();
     validate_type(t, known, arities, &nominal_parameters)?;
-    reject_structural_authority_type(t, type_defs)
+    reject_structural_authority_type(t, type_defs)?;
+    reject_borrowed_capability_views(t, type_defs)
 }
 
 /// Reject references to undeclared types in function signatures. The
@@ -3759,13 +3954,58 @@ impl Checker {
     }
 
     fn borrowed_nominal_name(&self, ty: &Ty) -> Option<String> {
-        let Ty::Named(name, arguments) = self.resolve(ty) else { return None };
-        let has_lifetime_argument = arguments.iter().any(|argument| {
-            matches!(self.resolve(argument), Ty::Named(lifetime, args)
-                if args.is_empty() && lifetime.starts_with('\''))
-        });
-        (self.borrowed_nominal_types.contains(&name) || has_lifetime_argument)
-            .then(|| dequalify_home(&name, &self.cur_module))
+        match self.resolve(ty) {
+            Ty::List(element) => self.borrowed_nominal_name(&element),
+            Ty::Tuple(items) => items
+                .iter()
+                .find_map(|item| self.borrowed_nominal_name(item)),
+            Ty::Named(name, arguments) => {
+                let has_lifetime_argument = arguments.iter().any(|argument| {
+                    matches!(self.resolve(argument), Ty::Named(lifetime, args)
+                        if args.is_empty() && lifetime.starts_with('\''))
+                });
+                if self.borrowed_nominal_types.contains(&name) || has_lifetime_argument {
+                    Some(dequalify_home(&name, &self.cur_module))
+                } else {
+                    arguments
+                        .iter()
+                        .find_map(|argument| self.borrowed_nominal_name(argument))
+                }
+            }
+            Ty::Dyn(_, arguments) => arguments
+                .iter()
+                .find_map(|argument| self.borrowed_nominal_name(argument)),
+            // A callable carries independently quantified relations in its type;
+            // it is not itself a borrowed shell. Invocation checks its operands
+            // and results at the corresponding runtime boundary.
+            Ty::Fn(_, _, _)
+            | Ty::Int
+            | Ty::Float
+            | Ty::Duration
+            | Ty::String
+            | Ty::Bytes
+            | Ty::Msg
+            | Ty::Bool
+            | Ty::Unit
+            | Ty::Console(_)
+            | Ty::Clock
+            | Ty::Rand
+            | Ty::Env
+            | Ty::Secret
+            | Ty::Exec
+            | Ty::Fetch
+            | Ty::Dir(_)
+            | Ty::File(_)
+            | Ty::Net(_)
+            | Ty::Socket
+            | Ty::Listener
+            | Ty::BuildOut
+            | Ty::BuildRead
+            | Ty::BuildEnv
+            | Ty::BuildNet
+            | Ty::BuildExec
+            | Ty::Var(_) => None,
+        }
     }
 
     /// RFC-0112 stage 1 freezes the type-level contract before any value-level
@@ -3893,10 +4133,17 @@ impl Checker {
             (Ty::Fn(xp, xr, xc), Ty::Fn(yp, yr, yc))
                 if xp.len() == yp.len() && xc == yc =>
             {
-                for (p, q) in xp.iter().zip(yp) {
+                // Lifetime names in a function type are local universal binders,
+                // so `fn(...'a...)` and `fn(...'b...)` have the same identity
+                // when their relation positions agree. Normalize each callable
+                // independently before ordinary structural unification; nested
+                // functions normalize in their own scope.
+                let (xp, xr) = alpha_normalize_callable(xp, xr);
+                let (yp, yr) = alpha_normalize_callable(yp, yr);
+                for (p, q) in xp.iter().zip(&yp) {
                     self.unify(p, q)?;
                 }
-                self.unify(xr, yr)
+                self.unify(&xr, &yr)
             }
             _ if a == b => Ok(()),
             _ => terr(format!("expected `{a}`, found `{b}`")),
@@ -6208,7 +6455,11 @@ impl Checker {
                 Ok(result)
             }
             Expr::ExistentialPack { expr, ty, .. } => {
-                self.infer(expr)?;
+                let source = self.infer(expr)?;
+                self.reject_borrowed_nominal_runtime_ty(
+                    &source,
+                    "existential erasure",
+                )?;
                 Ok(self.to_ty(ty))
             }
             Expr::ExistentialUpcast { expr, ty } => {
@@ -6314,6 +6565,16 @@ impl Checker {
                         outer.join("`, `")
                     ));
                 }
+                for capture in scan.captures() {
+                    let Some(captured_ty) = self.lookup(&capture) else { continue };
+                    if let Some(borrowed) = self.borrowed_nominal_name(&captured_ty) {
+                        return terr(format!(
+                            "closure capture `{capture}` carries borrowed nominal type \
+                             `{borrowed}`, but RFC-0112 stage 1 cannot prove this closure \
+                             non-escaping; wait for projection-aware closure loan facts"
+                        ));
+                    }
+                }
                 self.push();
                 let param_tys: Vec<Ty> = params
                     .iter()
@@ -6350,6 +6611,14 @@ impl Checker {
                 self.pop();
                 let conventions = params.iter().map(|p| p.convention).collect();
                 let function_ty = Ty::Fn(param_tys, Box::new(lambda_ret), conventions);
+                if ret.is_none()
+                    && let Ty::Fn(_, result, _) = &function_ty
+                {
+                    self.reject_borrowed_nominal_runtime_ty(
+                        result,
+                        "inferred closure result",
+                    )?;
+                }
                 self.reject_externref_cap_aggregate_ty(&function_ty, "closure value")?;
                 Ok(function_ty)
             }
@@ -6704,6 +6973,10 @@ impl Checker {
                         self.record_existential_upcast(expr, &target, &resolved_src)?;
                         return Ok(target);
                     }
+                    self.reject_borrowed_nominal_runtime_ty(
+                        &resolved_src,
+                        &format!("erasure to `dyn {}`", existential_bare(dyn_name)),
+                    )?;
                     if let Some((cap, path)) = self.ty_capability_retention(&resolved_src) {
                         let path = if path.is_empty() {
                             String::new()
