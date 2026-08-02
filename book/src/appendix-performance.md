@@ -143,15 +143,31 @@ fn main(console: Console):
     console.print("${total}")
 ```
 
-`packed` is a layout *contract*. Its fields must be fixed-size scalars
-(`Int`/`Float`/`Bool`/`Duration`) or other `packed` types, and a packed list must
-stay a confined local — read via `list.length` and `list.at(_, i).field`. Using
-one where the flat layout cannot apply — passing or returning it whole, storing it
-in a field, comparing, rendering, or `for`-iterating it — is a clean **compile
-error** that names the position, never a silent fall-back to the boxed layout you
-declared away. The flat representation is applied by the `unbox` optimization, which is on by
-default in release builds (`WITCHY_OPT=release`); the contract (and identical
-results) hold regardless of whether it fires.
+`packed` is a layout *contract*. Its inline fields must have closed fixed-size
+layouts: scalars (`Int`/`Float`/`Bool`/`Duration`), nested packed records or
+tuples, or fixed-layout packed tags. The `unbox` optimization, on by default in
+release builds, assigns each such shape one canonical descriptor. Packed records,
+lists, packed-containing tuples, and fixed-layout sums keep that descriptor across
+direct named calls and calls linked between user modules; packed lists may also be
+traversed with `for` and updated by the supported list operations.
+
+The compiler rejects a boundary that has no exact packed ABI instead of silently
+boxing the value. Direct generic calls specialize by their concrete logical
+types, access envelope, parameter/result layout IDs, and optimization schema;
+packed construction, indexed traversal, mutation, and return stay on that exact
+physical instance. Function values and closures, trait/existential calls, host
+calls, `region:` results, worker/channel transport, and rendering remain outside
+the shipped matrix. Fixed-layout packed sums are the current whole-value equality
+exception: `==` and `!=` read the descriptor's tag width and variant payload
+offsets. Other specialized whole-value equality remains fail-closed.
+
+Destination reuse and header removal are narrower optimizations over the same
+descriptor. A compatible dead destination may be forwarded to a
+constructor-complete direct producer of a `unique` packed record; fixed sums
+support a proven nonescaping scratch. An RC header is removed only from a nonempty
+immutable local packed list whose complete module use proves that it never
+crosses, aliases, mutates, nests, or participates in a loan. The compiler retains
+allocation or the RC header whenever those proofs do not hold.
 
 ## Borrowed views (`mode opt`)
 

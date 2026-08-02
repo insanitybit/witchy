@@ -137,6 +137,50 @@ Records construct positionally (`Account("ada", 100)`) or by name; field access
 is `account.name`; the spread form `Account(balance: ..., ..acc)` makes a fresh
 record (overrides first, then `..base`).
 
+### Declared packed layouts
+
+`type P packed:` is a checked physical-layout contract for closed fixed-size
+data. Its first shipped class contains `Int`, `Float`, `Bool`, `Duration`, nested
+packed records or tuples, and fixed-layout packed sums; a reference,
+capability, open type variable, existential, String, or dynamically sized list
+cannot be an inline packed field. Logical behavior is unchanged: reflection and
+type identity do not expose offsets, padding, headers, or destination state.
+
+With the optimized compiled layout enabled, each closed packed shape has one
+versioned canonical `LayoutId`. Packed records, `List(P)`, tuples containing a
+packed component, and fixed-layout packed sums retain that descriptor through
+local construction and direct named calls, including calls linked across user
+modules. Lists use one descriptor-strided buffer; sums use the descriptor's tag
+width and aligned payload band. The source signature does not mention the
+physical pointer ABI.
+
+The current boundary matrix is exact and fail-closed:
+
+| Use | Shipped behavior |
+|---|---|
+| Direct named or linked user-module parameter/result | Exact packed record, list, packed-containing tuple, or fixed-sum layout is preserved. |
+| Closed direct generic use | Specializes by logical type, access envelope, parameter/result `LayoutId`s, and optimization schema. Packed construction, indexed traversal, mutation, direct/recursive helper calls, and return keep that physical instance; open or unsupported uses reject. |
+| Function value, lambda/closure capture, trait method, or existential witness | Rejects when the call or environment would need a specialized physical signature. |
+| Host call | Rejects today. Generated ABI metadata accepts no specialized layout until a real exact or explicitly counted marshal adapter exists. |
+| Whole-value equality | `==` and `!=` on a fixed-layout packed sum use its descriptor-selected tag width, variant child layouts, and physical payload offsets. Other specialized equality and rendering reject. |
+| `region:` result, worker/channel transport, or another unsupported dynamic operation | Rejects rather than boxing, reshaping, or copying through the ordinary slot representation. |
+
+A direct function returning an exact `unique` packed record may have a hidden
+destination only when every successful return path constructs that result and
+the checked ownership envelope has no incompatible `own`/`var` capacity state.
+The caller may forward compatible dead storage; fixed packed sums additionally
+support a proven nonescaping immediate-consumer scratch. An escaping old value,
+layout mismatch, nested allocating payload, or incomplete constructor path keeps
+the allocating call. The counters `destination_candidates_forwarded`,
+`packed_alloc_calls`, and `packed_alloc_bytes` expose which path ran.
+
+Header-free packed lists are narrower still. In `mode opt`, a nonempty immutable
+local `List(Packed)` receives an elided-header descriptor only after a
+whole-module proof excludes signatures, whole-value boundary calls/returns,
+aliases, mutation, nested scopes, dynamic wrappers, and loans for that exact
+type. All other packed lists retain the RC header. Generated modules expose exact
+emitted/elided header counters for differential tests.
+
 `Option(a)` (`Some(x)` / `None`) and `Result(a, e)` (`Ok(x)` / `Err(e)`) come
 from `import option` / `import result`.
 

@@ -227,25 +227,54 @@ are prior-art data points in the harness, not a target framing.
    covers the dict allocators and the generic `$mkN` (records/tuples/ADTs); routing
    the list/string primitive allocators through `$rc_alloc` (so their results are
    freeable too) is the remaining bounded extension.
-3b. **Packed confined record-lists** — SHIPPED (RFC-0027, packed inferred case).
-   A `let xs = [P(..), ..]` of a fixed-scalar record `P`, read only via
-   `list.length(xs)` and `list.at(xs, i).field` (the `escape` analysis proves it
-   confined), is stored as ONE flat inline buffer — `[count][f0][f1]…]` — instead
-   of an N-pointer array to N boxed records, and each `list.at(xs,i).field` lowers
-   to a direct slot load (no pointer deref). Reuses the `$mkN` allocator (no new
-   heap path). Opt-in `WITCHY_OPT=unbox`; proven by a `witchy stats` heap-drop
-   counter (10×2-field list: 4 allocations → 1) and the de-opt sweep.
-   The **declared `packed` qualifier** (`type P packed:`) also ships: it makes the
-   flat layout a layout CONTRACT rather than a silent best-effort. A `List(P)` of a
-   declared-`packed` type packs through this same confined path, and any use the flat
-   layout cannot represent — passing/returning/storing the list whole, comparing,
-   rendering, `for`-iterating, channel-sending, or flowing into a generic `List(a)` —
-   is a clean COMPILE ERROR naming the offending position (never a silent fall-back to
-   the boxed layout the programmer declared away). Packability (all fields scalar or
-   other `packed`) is enforced at check time. So `packed` guarantees "flat or a loud
-   error," confined to one function. Cross-function / host-visible packed layout (an
-   ABI that carries the flat representation across boundaries) remains future work;
-   today crossing a boundary is the loud error, not silent boxing.
+3b. **Canonical packed layouts across direct boundaries** — SHIPPED foundation
+   (RFC-0027 + RFC-0111). The `unbox` lever gives each closed declared-`packed`
+   record, packed-containing tuple, `List(Packed)`, and fixed-layout packed sum a
+   canonical versioned `LayoutId`. The descriptor fixes natural scalar widths,
+   padding, offsets, list stride/header state, and sum tag/payload bands. A packed
+   list is one `[length][capacity][inline elements...]` buffer rather than a pointer
+   array plus boxed records. Descriptor-owned allocation is measured by
+   `packed_alloc_calls` and `packed_alloc_bytes`.
+
+   Local construction, field/index access, list traversal and supported mutation,
+   and fixed-sum matching use that layout. Direct named functions and linked user
+   modules pass packed records, lists, packed-containing tuples, and sums without
+   boxing or reshaping. Closed direct generic calls additionally specialize by
+   logical type identity, RFC-0110 access envelope, exact parameter/result layout
+   IDs, and optimization schema. Their packed construction, indexed traversal,
+   mutation, direct/recursive helper calls, and return retain the selected
+   physical instance; open generic or unsupported crossings do not guess a
+   layout.
+
+   Unsupported boundaries fail closed. Function values, lambda/closure captures,
+   trait/existential calls, `region:` copy-out, workers/channels, rendering, and
+   non-sum specialized equality reject when they would need a packed ABI. Fixed-
+   layout packed-sum `==`/`!=` is descriptor-driven: tag width, variant child
+   layouts, and physical payload offsets all come from the canonical descriptor.
+   Host ABI version
+   8 authenticates descriptor metadata, but every production import currently has
+   an empty accepted-layout set; therefore structured packed host crossings reject.
+   No capability/reference field can enter packed linear-memory storage. Disabling
+   `unbox` selects the boxed differential oracle and is not evidence that a packed
+   physical path fired.
+
+   **Destination passing.** A private direct producer with a fixed descriptor and
+   constructor-complete result paths can receive a hidden destination. The shipped
+   record case requires an exact `unique` packed result and compatible dead caller
+   storage; fixed packed sums may use a proven nonescaping immediate-consumer
+   scratch. Public entry points, incompatible ownership/capacity envelopes, nested
+   allocating payloads, escaping old values, and layout mismatches allocate instead.
+   `destination_candidates_forwarded` counts actual forwarded calls; exact packed
+   allocation counts/bytes distinguish reuse from fallback.
+
+   **Header selection.** `rc-elide` may select `RcHeader::Elided` only for a
+   nonempty immutable local packed list whose exact type is absent from every
+   signature, whole-value boundary call/return, alias, mutation, nested scope,
+   dynamic wrapper, and loan in the whole module. Every other packed list keeps
+   `RcHeader::Required`.
+   Differential tests compare the header-free and RC-backed values and bytes;
+   generated modules expose `__witchy_rc_headers_emitted` and
+   `__witchy_rc_headers_elided` for exact firing evidence.
 3a. **Zero-copy confined slice views** — SHIPPED (RFC-0028, feature 3). A
    `let w = list.slice(src, lo, hi)` the same `escape` analysis proves confined
    (read only via `list.at`/`list.length`, with `src` never reassigned/mutated nor

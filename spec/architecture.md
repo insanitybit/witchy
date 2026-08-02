@@ -72,8 +72,8 @@ are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 | `witchy-test-host` | opaque fixture-session dispatch | The shared fixture host used by interpreter, Wasmtime, and browser adapters; backend adapters consume it rather than reimplementing fixture semantics. |
 | `witchy-syntax` | `lexer`, `parser`, `ast`, `format`, `origin`, + the AST-level base passes (`aliases`, `consts`, `fmt`, `async_lower`, `generators`, `optimize`, `reflect`, `derive`, `records`, `doc`, `linker`, `lambda_scan`, `build_entry`) | Source → AST (off-side layout, interpolation, duration literals; Pratt-core parser + sugar lowering), the canonical formatter, and the front-end/base layer every later stage builds on. `origin` defines the typed generated-node/span side table; `linker` combines modules into one flat module with qualified names + bundles the std library (`include_str!`). |
 | `witchy-types` | `pipeline`, `typeck`, `traits`, `runtime_type` | The checked front-end proof boundary; annotation-driven checking + HM unification (occurs-checked), capability rights, exhaustiveness; trait desugaring to plain functions + monomorphization; authenticated runtime declaration identities and closed shapes. |
-| `witchy-wir` | `wir`, `wir_opt`, `wir_prelude`, `wir_encode` | The structured IR (typed expression tree, named lexical `Block`/`Loop` labels, no relooper), the peephole pass (cancels redundant slot/kind round-trips), the precompiled runtime-helper prelude (lists/strings/dicts/crypto), and the `wasm-encoder` backend. |
-| `witchy-lower` | `codegen`, `analysis` | Lowers the checked AST to WIR (universal 8-byte value slots, per-shape structural-equality helpers, capability host imports); `analysis` is the uniqueness / cap-token pass the in-place fast paths depend on. |
+| `witchy-wir` | `layout`, `wir`, `wir_opt`, `wir_prelude`, `wir_encode` | Canonical specialized layout descriptors and transport, the structured IR (typed expression tree, named lexical `Block`/`Loop` labels, no relooper), the peephole pass, the precompiled runtime-helper prelude, and the `wasm-encoder` backend. |
+| `witchy-lower` | `codegen`, `analysis` | Lowers the checked AST to WIR, selecting ordinary slots, typed references, or canonical specialized layouts before Wasm-kind erasure; `analysis` is the uniqueness / cap-token pass the in-place and destination paths depend on. |
 | `witchy-confinement` | normalized policy plus platform providers | Target-neutral filesystem, network, Fetch-origin, and syscall-class confinement policy; Linux Landlock/seccomp enforcement consumes this policy without depending on compiler stages or Wasmtime. |
 | `witchy-runtime` | `value`, `native`, `net`, `confine`, `runtime` *(native-only)* | The runtime `Value` (shared by interpreter + host), native-function registry (FFI-as-capability), runtime adapters over shared confinement policy, and the Wasmtime sandbox (capability-gated host functions, memory caps, epoch preemption). The non-`runtime` modules are wasm-safe; `runtime` sits behind the `native` feature. |
 | `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking reference semantics — the parity ORACLE (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) — plus compile-time `comptime:` / `tag"…"` evaluation and the task-shaped checked-link service that injects the compile-time expander. |
@@ -112,12 +112,57 @@ coverage stays in the differential and property suites.
 
 ## The WASM value model
 
-Compiled witchy uses untyped 8-byte slots: every collection element, record
-field, and closure argument is an i64 slot (`to_slot`/`from_slot` convert —
-Ints live as i64, Floats bit-reinterpreted, pointers/Bools sign-extended i32).
-Because slots are untyped at runtime, type-directed code generation does the
-work types would: structural equality, for instance, derives an `EqShape` from
-the static types and generates a memoized helper function per shape.
+The compiled backend has three physical value families. Ordinary linear-memory
+collections and aggregates retain the 8-byte slot representation
+(`to_slot`/`from_slot` convert Ints, Float bits, pointers, and Bools). Concrete
+reference-bearing values use typed Wasm references as described below. A closed
+declared-`packed` record, a tuple containing a packed component, a `List` of such
+elements, or a fixed-layout packed sum instead uses its canonical RFC-0111
+`LayoutId`. The versioned descriptor fixes scalar widths, alignment, offsets,
+list stride and header state, sum tag/payload bands, ownership positions, and
+derived operation shapes before WIR encoding. Layout IDs and their canonical
+descriptor graph are embedded once in the artifact's `witchy.layouts` section;
+the runtime validates the schema, hashes, dependencies, roots, and generated host
+contracts before instantiation.
+
+The shipped specialized-boundary matrix is deliberately narrower than the
+descriptor vocabulary:
+
+| Boundary | Compiled behavior for a declared specialized value |
+|---|---|
+| Local construction, field/index access, packed-list traversal and mutation, and fixed-sum matching | Uses descriptor offsets, stride, tag width, and payload bands. No per-element record boxes are introduced. |
+| Direct named function calls and linked user-module calls | Packed records, packed lists, packed-containing tuples, and fixed-layout packed sums cross as the exact descriptor-shaped pointer ABI. Parameter/result ownership still comes from the checked RFC-0110 access envelope. |
+| Direct generic calls | Each closed instance is keyed by logical type identity, the RFC-0110 access envelope, exact parameter/result `LayoutId`s, and the optimization schema. Packed construction, indexed traversal, mutation, recursive/direct helper calls, and return retain that instance; open or unsupported crossings do not guess a layout. |
+| Function values, lambdas/closure captures, and trait/existential calls | Reject before the legacy indirect ABI can box or reshape the value. Exact callable-layout diagnostics name the `LayoutId`; there is no packed indirect-call ABI yet. |
+| Host import boundary | ABI version 8 authenticates an accepted-`LayoutId` set against `witchy.layouts`. Every production import currently publishes an empty set, so a structured specialized crossing rejects. A future marshal must name its accepted descriptor and reshaped-byte counter. Capability references remain `externref` and can never be inline scalar fields. |
+| `region:` result, isolated worker, channel, and other unsupported dynamic boundaries | Reject rather than copying through the universal-slot path. Artifact descriptor transport does not by itself authorize packed value transport between VMs. |
+| Whole-value equality | Fixed-layout packed sums use their descriptor's equality operation, tag width, variant child layouts, and physical payload offsets. Other specialized equality and all specialized rendering remain fail-closed. |
+
+Destination passing is also descriptor-gated. A private direct function whose
+successful paths all construct the same fixed result may receive a hidden
+destination. The current admitted producers are an exact `unique` packed-record
+result written into compatible dead caller storage and a fixed packed sum written
+into a proven nonescaping immediate-consumer scratch. Public entry points,
+own/`var` capacity envelopes, nested allocating payloads, incomplete constructor
+returns, escaping old values, and layout mismatches retain the allocating path.
+The observable value and write-back order do not change.
+
+RC-header elision has one conservative admitted class: in `mode opt`, with
+`unbox` and `rc-elide` enabled, a nonempty immutable local `List(Packed)` may use
+an `RcHeader::Elided` descriptor only when a whole-module scan finds no signature,
+whole-value boundary call or return, alias, mutation, nested scope, dynamic
+wrapper, or active loan for that exact list type. Every other packed list uses
+`RcHeader::Required`.
+`witchy stats` exposes `destination_candidates_forwarded`,
+`packed_alloc_calls`, and `packed_alloc_bytes`; generated modules also export
+the test-visible `__witchy_rc_headers_emitted` and
+`__witchy_rc_headers_elided` counters.
+
+Ordinary slot-based equality and rendering helpers are still derived from the
+checked logical type. Fixed-layout packed-sum `==`/`!=` instead consumes the
+canonical descriptor's equality operation and physical variant layout. Other
+specialized whole-value equality, rendering, region copy-out, and serialization
+remain fail-closed until those consumers are descriptor-driven.
 
 Migrated capability values compile to opaque `externref`s, not integer slots:
 `Dir`, `File`, `Net`, `Socket`, `Listener`, and `Secret` are host-rooted
