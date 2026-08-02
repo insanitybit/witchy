@@ -34,7 +34,7 @@ pub extern "C" fn witchy_rust_class_kernel() -> i64 {
     for i in 0..count {
         points.push(Point { x: i, y: i * 2 + 1 });
     }
-    black_box(sum_points(identity(points)))
+    black_box(sum_points(points))
 }
 
 fn main() {

@@ -21,7 +21,7 @@ fn main(console: Console, clock: Clock):
     var points = []
     for i in 0..200000:
         points = list.push(points, Point(i, i * 2 + 1))
-    let total = sum_points(identity(points))
+    let total = sum_points(points)
     let bench_t1 = clock.now_monotonic()
     console.print("result=${total}")
     console.print("bench_ns=${bench_t1 - bench_t0}")

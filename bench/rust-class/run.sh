@@ -62,16 +62,16 @@ verify_scalar_kernel() {
   }
   case "$arch" in
     arm64|aarch64)
-      if printf '%s\n' "$block" | rg -i '\b(v[0-9]+\.(16b|8h|4s|2d|8b|4h|2s)|q[0-9]+|z[0-9]+)\b' >/dev/null; then
-        echo "rust-class: vector instruction/register in measured Rust kernel $asm" >&2
-        printf '%s\n' "$block" | rg -i '\b(v[0-9]+\.(16b|8h|4s|2d|8b|4h|2s)|q[0-9]+|z[0-9]+)\b' >&2
+      if rg -i '\b(v[0-9]+\.(16b|8h|4s|2d|8b|4h|2s)|q[0-9]+|z[0-9]+)\b' "$asm" >/dev/null; then
+        echo "rust-class: vector instruction/register in measured Rust translation unit $asm" >&2
+        rg -i '\b(v[0-9]+\.(16b|8h|4s|2d|8b|4h|2s)|q[0-9]+|z[0-9]+)\b' "$asm" >&2
         return 1
       fi
       ;;
     x86_64|amd64)
-      if printf '%s\n' "$block" | rg -i '\b(ymm|zmm)[0-9]+\b|\b(v?p(add|sub|mul|and|or|xor|cmp|blend|shuf)|v?(add|sub|mul|div|min|max)(ps|pd))\b' >/dev/null; then
-        echo "rust-class: packed-vector instruction in measured Rust kernel $asm" >&2
-        printf '%s\n' "$block" | rg -i '\b(ymm|zmm)[0-9]+\b|\b(v?p(add|sub|mul|and|or|xor|cmp|blend|shuf)|v?(add|sub|mul|div|min|max)(ps|pd))\b' >&2
+      if rg -i '\b(ymm|zmm)[0-9]+\b|\b(v?p(add|sub|mul|and|or|xor|cmp|blend|shuf)|v?(add|sub|mul|div|min|max)(ps|pd))\b' "$asm" >/dev/null; then
+        echo "rust-class: packed-vector instruction in measured Rust translation unit $asm" >&2
+        rg -i '\b(ymm|zmm)[0-9]+\b|\b(v?p(add|sub|mul|and|or|xor|cmp|blend|shuf)|v?(add|sub|mul|div|min|max)(ps|pd))\b' "$asm" >&2
         return 1
       fi
       ;;

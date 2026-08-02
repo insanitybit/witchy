@@ -2,8 +2,9 @@
 
 This is the paired Witchy/Rust evidence harness required by RFC-0111. It uses
 the same algorithms and validates results before reporting time. Rust's LLVM
-loop and SLP vectorizers are disabled, and `run.sh` inspects the measured kernel
-symbol to reject packed-vector instructions.
+loop and SLP vectorizers are disabled, and `run.sh` requires the measured kernel
+symbol and rejects packed-vector instructions anywhere in its Rust translation
+unit, including out-of-line helper bodies reached by the kernel.
 
 The corpus covers every benchmark family required by RFC-0111:
 
