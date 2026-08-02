@@ -154,6 +154,17 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 println!("heap_bytes {}", s.heap_bytes);
                 println!("reowns {}", s.reowns);
                 println!("indirect_ownership_calls {}", s.indirect_ownership_calls);
+                println!("boundary_reown_copies {}", s.boundary_reown_copies);
+                println!("ownership_token_repairs {}", s.ownership_token_repairs);
+                println!("direct_storage_var_accesses {}", s.direct_storage_var_accesses);
+                println!(
+                    "destination_candidates_forwarded {}",
+                    s.destination_candidates_forwarded
+                );
+                println!("packed_alloc_calls {}", s.packed_alloc_calls);
+                println!("packed_alloc_bytes {}", s.packed_alloc_bytes);
+                println!("packed_boxed_elements {}", s.packed_boxed_elements);
+                println!("packed_reshaped_bytes {}", s.packed_reshaped_bytes);
                 println!("region_copy_bytes {}", s.region_copy_bytes);
                 println!("rc_reused_bytes {}", s.rc_reused_bytes);
                 println!("live_cells {}", s.live_cells);

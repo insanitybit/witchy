@@ -811,6 +811,46 @@ impl Vm {
             .and_then(|g| g.get(&mut self.store).i64())
     }
 
+    /// Source boundaries that repaired a missing uniqueness proof by making
+    /// the one explicit re-own copy permitted in normal mode.
+    pub fn boundary_reown_copies(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_boundary_reown_copies")
+    }
+
+    /// Ownership-state inputs reconstructed rather than forwarded from an
+    /// already checked access envelope.
+    pub fn ownership_token_repairs(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_ownership_token_repairs")
+    }
+
+    /// `var` calls lowered directly onto caller storage after all place and
+    /// overlap proofs succeeded.
+    pub fn direct_storage_var_accesses(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_direct_storage_var_accesses")
+    }
+
+    /// Unique-result sites which forwarded a caller destination selected by a
+    /// canonical RFC-0111 layout descriptor.
+    pub fn destination_candidates_forwarded(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_destination_candidates_forwarded")
+    }
+
+    pub fn packed_alloc_calls(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_packed_alloc_calls")
+    }
+
+    pub fn packed_alloc_bytes(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_packed_alloc_bytes")
+    }
+
+    pub fn packed_boxed_elements(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_packed_boxed_elements")
+    }
+
+    pub fn packed_reshaped_bytes(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_packed_reshaped_bytes")
+    }
+
     pub fn region_copy_bytes(&mut self) -> Option<i64> {
         self.instance
             .get_global(&mut self.store, "__region_copy_bytes")

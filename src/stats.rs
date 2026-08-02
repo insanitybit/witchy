@@ -30,6 +30,20 @@ pub struct Stats {
     /// RFC-0110 calls whose ownership envelope crossed a real indirect table
     /// boundary (excluding direct and devirtualized closure calls).
     pub indirect_ownership_calls: i64,
+    /// Normal-mode uniqueness repairs. An accepted opt-mode call records zero;
+    /// its paired normal-mode alias case records exactly one.
+    pub boundary_reown_copies: i64,
+    /// Ownership-state inputs reconstructed at a boundary instead of forwarded.
+    pub ownership_token_repairs: i64,
+    /// Exclusive `var` calls which operated directly on caller storage.
+    pub direct_storage_var_accesses: i64,
+    /// RFC-0111 unique-result destinations forwarded into their producer.
+    pub destination_candidates_forwarded: i64,
+    /// Descriptor-owned packed allocation and representation counters.
+    pub packed_alloc_calls: i64,
+    pub packed_alloc_bytes: i64,
+    pub packed_boxed_elements: i64,
+    pub packed_reshaped_bytes: i64,
     /// Bytes moved by `region:` copy-outs.
     pub region_copy_bytes: i64,
     /// (RFC-0016) Bytes `$rc_alloc` reused from the RC-floor free-list rather than
@@ -80,6 +94,14 @@ pub fn compute(src: &str) -> Result<Stats, String> {
         heap_bytes: vm.heap_bytes().unwrap_or(0),
         reowns: vm.reowns().unwrap_or(0),
         indirect_ownership_calls: vm.indirect_ownership_calls().unwrap_or(0),
+        boundary_reown_copies: vm.boundary_reown_copies().unwrap_or(0),
+        ownership_token_repairs: vm.ownership_token_repairs().unwrap_or(0),
+        direct_storage_var_accesses: vm.direct_storage_var_accesses().unwrap_or(0),
+        destination_candidates_forwarded: vm.destination_candidates_forwarded().unwrap_or(0),
+        packed_alloc_calls: vm.packed_alloc_calls().unwrap_or(0),
+        packed_alloc_bytes: vm.packed_alloc_bytes().unwrap_or(0),
+        packed_boxed_elements: vm.packed_boxed_elements().unwrap_or(0),
+        packed_reshaped_bytes: vm.packed_reshaped_bytes().unwrap_or(0),
         region_copy_bytes: vm.region_copy_bytes().unwrap_or(0),
         rc_reused_bytes: vm.rc_reused_bytes().unwrap_or(0),
         live_cells: vm.live_cells().unwrap_or(0),
