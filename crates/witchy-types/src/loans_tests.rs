@@ -851,6 +851,36 @@
     }
 
     #[test]
+    fn multi_owner_companions_preserve_checked_relation_order() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             fn pair(left: let('left) String, right: let('right) String) \
+                 -> (View(String, 'left), View(String, 'right)):\n    (left, right)\n\n\
+             fn main(console: Console):\n    let left = \"left\"\n    let right = \"right\"\n    let pair = pair(left, right)\n    console.print(pair[0])\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("multi-owner shape facts");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+        let shapes = loan_facts.borrowed_value_shapes_after(&main.body.stmts[2]);
+        let [shape] = shapes.as_slice() else { panic!("one tuple shell") };
+        assert_eq!(
+            shape
+                .roots
+                .iter()
+                .map(|root| (root.ordinal, root.root.local.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "left"), (1, "right")],
+        );
+    }
+
+    #[test]
     fn branch_edges_carry_the_same_checked_owner_place_to_each_arm() {
         let module = witchy_syntax::parser::parse_module(&opt(
             "    let s = \"text\"\n    let w = borrow(s)\n    if true:\n        console.print(w)\n    else:\n        console.print(w)\n    console.print(w)\n",
@@ -877,6 +907,53 @@
             assert!(edge.closes.is_empty());
             assert!(edge.transfers.is_empty());
         }
+        let kinds: Vec<LoanEdgeKind> = loan_facts
+            .edges_from(branch)
+            .iter()
+            .map(|edge| edge.kind)
+            .collect();
+        assert_eq!(kinds, vec![LoanEdgeKind::BranchThen, LoanEdgeKind::BranchElse]);
+        assert_eq!(
+            loan_facts
+                .edges_from_completion(branch)
+                .iter()
+                .map(|edge| edge.kind)
+                .collect::<Vec<_>>(),
+            vec![LoanEdgeKind::Fallthrough],
+        );
+    }
+
+    #[test]
+    fn branch_result_loan_opens_only_after_the_selected_arm_completes() {
+        let module = witchy_syntax::parser::parse_module(&opt(
+            "    let text = \"owner\"\n    let view = if true:\n        borrow(text)\n    else:\n        borrow(text)\n    console.print(view)\n",
+        ))
+        .expect("parse");
+        let loan_facts = facts(&module).expect("result binding facts");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+        let binding = &main.body.stmts[1];
+        let branch_edges = loan_facts.edges_from(binding);
+        assert_eq!(branch_edges.len(), 2, "there is no generic bypass edge");
+        assert!(branch_edges.iter().all(|edge| edge.opens.is_empty()));
+        assert!(branch_edges
+            .iter()
+            .all(|edge| edge.to != Some(loan_facts.point(&main.body.stmts[2]))));
+
+        let [completion] = loan_facts.edges_from_completion(binding) else {
+            panic!("the completed if result has one continuation edge")
+        };
+        assert_eq!(completion.kind, LoanEdgeKind::Fallthrough);
+        assert_eq!(completion.to, Some(loan_facts.point(&main.body.stmts[2])));
+        assert_eq!(completion.opens.len(), 1);
+        assert_eq!(completion.opens[0].view, "view");
+        assert_eq!(completion.opens[0].owner_root().local, "text");
     }
 
     #[test]
@@ -906,6 +983,64 @@
         assert!(edge.carries.is_empty());
         assert_eq!(edge.closes.len(), 1);
         assert_eq!(edge.closes[0].owner_root().local, "s");
+
+        let loop_stmt = &main.body.stmts[1];
+        assert_eq!(
+            loan_facts
+                .edges_from(loop_stmt)
+                .iter()
+                .map(|edge| edge.kind)
+                .collect::<Vec<_>>(),
+            vec![LoanEdgeKind::LoopEnter, LoanEdgeKind::LoopExit],
+        );
+        assert_eq!(
+            loan_facts
+                .edges_from_completion(loop_stmt)
+                .iter()
+                .map(|edge| edge.kind)
+                .collect::<Vec<_>>(),
+            vec![LoanEdgeKind::Fallthrough],
+        );
+    }
+
+    #[test]
+    fn break_and_continue_target_exact_loop_completion_and_header_points() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn breaks(console: Console):\n    while true:\n        break\n    console.print(\"done\")\n\n\
+             fn continues(console: Console):\n    while true:\n        continue\n    console.print(\"done\")\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("loop control facts");
+        let function = |name: &str| {
+            module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Function(function) if function.name == name => Some(function),
+                    _ => None,
+                })
+                .expect("function")
+        };
+
+        let breaks = function("breaks");
+        let Stmt::Expr(Expr::While { body, .. }) = &breaks.body.stmts[0] else {
+            panic!("break loop")
+        };
+        let [edge] = loan_facts.edges_from(&body.stmts[0]) else {
+            panic!("one break edge")
+        };
+        assert_eq!(edge.kind, LoanEdgeKind::Break);
+        assert_eq!(edge.to, Some(loan_facts.completion_point(&breaks.body.stmts[0])));
+
+        let continues = function("continues");
+        let Stmt::Expr(Expr::While { body, .. }) = &continues.body.stmts[0] else {
+            panic!("continue loop")
+        };
+        let [edge] = loan_facts.edges_from(&body.stmts[0]) else {
+            panic!("one continue edge")
+        };
+        assert_eq!(edge.kind, LoanEdgeKind::Continue);
+        assert_eq!(edge.to, Some(loan_facts.point(&continues.body.stmts[0])));
     }
 
     #[test]
@@ -934,6 +1069,36 @@
         assert_eq!(edge.transfers[0].view, "view");
         assert_eq!(edge.transfers[0].owner_root().local, "text");
         assert!(edge.closes.is_empty());
+    }
+
+    #[test]
+    fn direct_explicit_tail_and_call_returns_publish_checked_root_transfers() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             fn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\n\
+             fn explicit(text: let('a) String) -> View(String, 'a):\n    return text\n\n\
+             fn tail(text: let('a) String) -> View(String, 'a):\n    text\n\n\
+             fn called(text: let('a) String) -> View(String, 'a):\n    return borrow(text)\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("direct return transfer facts");
+        for name in ["explicit", "tail", "called"] {
+            let function = module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Function(function) if function.name == name => Some(function),
+                    _ => None,
+                })
+                .expect("returning function");
+            let [edge] = loan_facts.edges_from(&function.body.stmts[0]) else {
+                panic!("{name} has one return edge")
+            };
+            assert_eq!(edge.kind, LoanEdgeKind::Return, "{name}");
+            assert_eq!(edge.transfers.len(), 1, "{name}");
+            assert_eq!(edge.transfers[0].owner_root().local, "text", "{name}");
+            assert!(edge.closes.is_empty(), "{name}");
+        }
     }
 
     #[test]
@@ -998,6 +1163,35 @@
             .expect("a ? expression also has a success edge");
         assert_eq!(success.carries.len(), 1);
         assert_eq!(success.carries[0].owner_root().local, "text");
+    }
+
+    #[test]
+    fn question_mark_inside_a_lambda_does_not_escape_into_the_enclosing_cfg() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn risky() -> Result(Int, String):\n    Ok(1)\n\n\
+             fn main(console: Console):\n    let callback = fn() -> Result(Int, String):\n        let value = risky()?\n        Ok(value)\n    console.print(\"ready\")\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("lambda propagation facts");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+        let Stmt::Let { value: Expr::Lambda { body, .. }, .. } = &main.body.stmts[0] else {
+            panic!("lambda binding")
+        };
+        assert!(loan_facts
+            .edges_from(&main.body.stmts[0])
+            .iter()
+            .all(|edge| edge.kind != LoanEdgeKind::Propagate));
+        assert!(loan_facts
+            .edges_from(&body.stmts[0])
+            .iter()
+            .any(|edge| edge.kind == LoanEdgeKind::Propagate));
     }
 
     #[test]
