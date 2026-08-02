@@ -983,8 +983,8 @@
         let hidden_send = witchy_syntax::parser::parse_module(
             "mode opt\n\n\
              type Holder('a):\n    view: View(String, 'a)\n\n\
-             fn leak(tx: Sender(a), value: a) -> Task(Nil):\n    send(tx, value)\n\n\
-             fn bad(tx: Sender(Holder('a)), input: let('a) String) -> Task(Nil):\n    let holder = Holder(input)\n    leak(tx, holder)\n",
+             fn leak(value: a, tx: Sender(a)) -> Task(Nil):\n    send(tx, value)\n\n\
+             fn bad(tx: Sender(Holder('a)), input: let('a) String) -> Task(Nil):\n    let holder = Holder(input)\n    leak(holder, tx)\n",
         )
         .expect("parse relation-erasing send fixture");
         let error = match facts(&hidden_send) {
@@ -993,8 +993,8 @@
         };
         assert!(
             error.contains("argument 1 passed to `leak`")
-                && error.contains("owner relation from `tx`")
-                && error.contains("projection `<root>`")
+                && error.contains("owner relation from `input`")
+                && error.contains("projection `.view`")
                 && error.contains("parameter type erases that relation"),
             "{error}"
         );
