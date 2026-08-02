@@ -702,3 +702,41 @@ fn callable_layout_signature_preserves_exact_parameter_and_result_ids() {
         "logical arity alone cannot erase physical-layout disagreement",
     );
 }
+
+#[test]
+fn callable_layout_signature_orders_distinct_packed_list_header_layouts() {
+    use crate::layout::CallableLayoutSignature;
+
+    struct ListResolver(RcHeader);
+    impl ClosedTypeResolver for ListResolver {
+        fn resolve_named<'a>(
+            &'a self,
+            name: &str,
+            _arguments: &[Type],
+        ) -> Option<ResolvedNamed<'a>> {
+            match name {
+                "Int" => Some(ResolvedNamed::Scalar(ScalarKind::Int)),
+                "List" => Some(ResolvedNamed::PackedList { rc: self.0 }),
+                _ => None,
+            }
+        }
+    }
+
+    let list = nominal("List", vec![named("Int")]);
+    let required = LayoutInterner::new()
+        .intern_type(&list, &ListResolver(RcHeader::Required))
+        .expect("required-header list descriptor");
+    let elided = LayoutInterner::new()
+        .intern_type(&list, &ListResolver(RcHeader::Elided))
+        .expect("header-free list descriptor");
+    let required_signature =
+        CallableLayoutSignature::new(vec![Some(required)], Some(required));
+    let elided_signature = CallableLayoutSignature::new(vec![Some(elided)], Some(elided));
+
+    assert_ne!(required, elided);
+    assert_ne!(required_signature, elided_signature);
+    let mut ordered = std::collections::BTreeSet::new();
+    ordered.insert(required_signature);
+    ordered.insert(elided_signature);
+    assert_eq!(ordered.len(), 2, "layout hashes remain part of callable ordering");
+}

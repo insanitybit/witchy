@@ -287,8 +287,17 @@ impl<'types> Codegen<'types> {
                         && self
                             .call_access_signature(value)
                             .is_some_and(Self::signature_has_unique_layout_result)
-                        && let Some(nodes) =
-                            self.lower_scalar_record_call(producer, args, name, false)
+                        && let Some(nodes) = {
+                            let emitted_producer =
+                                self.generic_call_target(value, producer).to_string();
+                            self.lower_scalar_record_call(
+                                producer,
+                                &emitted_producer,
+                                args,
+                                name,
+                                false,
+                            )
+                        }
                     {
                         let count = self.scalar_record_producers[producer].field_count;
                         seq.extend(nodes);
@@ -654,8 +663,11 @@ impl<'types> Codegen<'types> {
                         _ => None,
                     };
                     if let Some((producer, args)) = scalar_record_call {
+                        let emitted_producer =
+                            self.generic_call_target(value, &producer).to_string();
                         seq.extend(self.lower_scalar_record_call(
                             &producer,
+                            &emitted_producer,
                             args,
                             name,
                             true,
@@ -723,8 +735,10 @@ impl<'types> Codegen<'types> {
                         inplace_sites += 1;
                         tail_is_value = false;
                     } else if let Some((callee, args, access)) = destination_call {
+                        let emitted_callee = self.generic_call_target(value, &callee).to_string();
                         let result = self.lower_destination_user_call(
                             &callee,
+                            &emitted_callee,
                             args,
                             W::GetLocal(name.clone()),
                             &access,
@@ -875,6 +889,7 @@ impl<'types> Codegen<'types> {
                         // ownership token as a trailing i32 arg — so thread `xs__cap`
                         // in and capture (value → xs, cap → xs__cap) via CallStoreMulti.
                         let callee = callee.to_string();
+                        let emitted_callee = self.generic_call_target(value, &callee).to_string();
                         let Expr::Call { args, .. } = value else { return None };
                         let param_kinds: Vec<Kind> = self
                             .fn_params
@@ -897,7 +912,7 @@ impl<'types> Codegen<'types> {
                         // The trailing synthetic arg: our current ownership token.
                         args_w.push(W::GetLocal(format!("{name}__cap")));
                         seq.push(N::CallStoreMulti {
-                            func: callee,
+                            func: emitted_callee,
                             args: args_w,
                             dests: vec![name.clone(), format!("{name}__cap")],
                         });

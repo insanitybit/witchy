@@ -45,6 +45,7 @@ mod expr_lower;
 mod match_lower;
 mod block_lower;
 mod header_elision;
+mod specialization;
 pub use assembly::{
     assemble_checked_optimized_wir_module, compile_checked_build_module,
     compile_checked_module_binary,
@@ -76,6 +77,7 @@ use witchy_syntax::ast::{
     Pattern, Stmt, Type, UnOp,
 };
 use witchy_types::storage::externref_cap_name;
+use specialization::{CallableSpecializationKey, GenericCallableInstances};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodegenError {
@@ -876,6 +878,15 @@ struct Codegen<'types> {
     /// Exact physical signatures for direct source callables. Ownership/access
     /// facts remain independently supplied by RFC-0110.
     callable_layouts: HashMap<String, CallableLayoutSignature>,
+    /// Physical instances and per-emitted-caller direct-call targets for
+    /// logically monomorphized generic functions.
+    generic_callable_instances: GenericCallableInstances,
+    /// Emitted function currently being compiled. This distinguishes the same
+    /// source call expression reached through two physical caller instances.
+    cur_emitted_fn_name: String,
+    /// Per-instance physical layouts for logical types in the current generic
+    /// body. These override the module-global default layout map.
+    current_specialized_type_ids: Vec<(Type, LayoutId)>,
     /// Set by `compile_module_binary` to arm WIR capture for the function being
     /// lowered. Left `false` for any scope that doesn't collect WIR, where
     /// `lower_expr`'s call arm stays inert and pays no capture/clone overhead.
@@ -1482,6 +1493,9 @@ impl<'types> Codegen<'types> {
             specialized_layouts: LayoutInterner::new(),
             specialized_type_ids: Vec::new(),
             callable_layouts: HashMap::new(),
+            generic_callable_instances: GenericCallableInstances::default(),
+            cur_emitted_fn_name: String::new(),
+            current_specialized_type_ids: Vec::new(),
             collect_wir: false,
             emitted_funcs: HashSet::new(),
             fn_conventions: HashMap::new(),
@@ -3568,6 +3582,25 @@ impl<'types> Codegen<'types> {
     }
 
     fn compile_function(&mut self, f: &Function) -> Result<(), CodegenError> {
+        self.compile_function_as(f, &f.name, None)
+    }
+
+    fn compile_function_as(
+        &mut self,
+        f: &Function,
+        emitted_name: &str,
+        specialization: Option<&CallableSpecializationKey>,
+    ) -> Result<(), CodegenError> {
+        self.with_callable_specialization(f, emitted_name, specialization, |codegen| {
+            codegen.compile_function_instance(f, emitted_name)
+        })
+    }
+
+    fn compile_function_instance(
+        &mut self,
+        f: &Function,
+        emitted_name: &str,
+    ) -> Result<(), CodegenError> {
         let access_signature = self.access_facts.declaration(&f.name).cloned();
         let mut resolved_params = f.params.clone();
         if let Some(signature) = &access_signature {
@@ -3741,6 +3774,9 @@ impl<'types> Codegen<'types> {
         // A hard rejection raised during lowering (e.g. a closure assigning a
         // captured var) aborts the whole compile with a diagnostic.
         if let Some(e) = self.reject_reason.take() {
+            // Unit fact stacks are per sequential compile invocation; this name
+            // is diagnostic context from the checked declaration, not an
+            // emitted-artifact key. Physical instances cannot collide here.
             self.abort_unit(&f.name)?;
             return Err(e);
         }
@@ -3770,14 +3806,15 @@ impl<'types> Codegen<'types> {
             // back to WAT gracefully.
             {
                 let seq = Self::convert_block_tail(seq, block_kind, ret_kind);
-                let wf = self.assemble_wir_func(
+                let mut wf = self.assemble_wir_func(
                     f,
                     &resolved_params,
                     resolved_ret.as_ref(),
                     ret_kind,
                     seq,
                 )?;
-                self.wir_funcs.insert(f.name.clone(), wf);
+                wf.name = emitted_name.to_string();
+                self.wir_funcs.insert(emitted_name.to_string(), wf);
             }
         }
         // WIR lowering is deliberately all-or-nothing. A `None` after visiting
@@ -3789,7 +3826,10 @@ impl<'types> Codegen<'types> {
         if capture_failed {
             self.abort_unit(&f.name)?;
         } else {
-            self.install_scalar_record_companion(f)?;
+            // Companions are emitted artifacts and therefore use emitted_name;
+            // finish_unit consumes only this invocation's LIFO fact frames and
+            // retains the logical name solely for diagnostics.
+            self.install_scalar_record_companion(f, emitted_name)?;
             self.finish_unit(&f.name)?;
         }
         self.cur_fn_own_param = None;
@@ -3802,7 +3842,11 @@ impl<'types> Codegen<'types> {
         format!("{name}$scalar_result")
     }
 
-    fn install_scalar_record_companion(&mut self, function: &Function) -> Result<(), CodegenError> {
+    fn install_scalar_record_companion(
+        &mut self,
+        function: &Function,
+        emitted_name: &str,
+    ) -> Result<(), CodegenError> {
         use witchy_wir::wir::{WirFunc, WirLocal, WirNode as N, WirTy};
         let Some(producer) = self.scalar_record_producers.get(&function.name).cloned() else {
             return Ok(());
@@ -3834,7 +3878,7 @@ impl<'types> Codegen<'types> {
                 ),
             })
             .collect();
-        let name = Self::scalar_record_companion_name(&function.name);
+        let name = Self::scalar_record_companion_name(emitted_name);
         self.layout_wir_funcs.insert(
             name.clone(),
             WirFunc {
@@ -4758,8 +4802,9 @@ impl<'types> Codegen<'types> {
     }
 
     fn specialized_layout_id(&self, ty: &Type) -> Option<LayoutId> {
-        self.specialized_type_ids
+        self.current_specialized_type_ids
             .iter()
+            .chain(&self.specialized_type_ids)
             .find(|(known, _)| known.unqualified() == ty.unqualified())
             .map(|(_, id)| *id)
     }
@@ -6645,6 +6690,7 @@ impl<'types> Codegen<'types> {
     fn try_lower_user_call(
         &mut self,
         name: &str,
+        emitted_name: &str,
         args: &[Expr],
         access: &witchy_types::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
@@ -6660,6 +6706,7 @@ impl<'types> Codegen<'types> {
             let transient = self.transient_destination_call(name, i, args.len(), arg);
             let w = match transient {
                 Some((producer, producer_args, id, producer_access)) => {
+                    let emitted_producer = self.generic_call_target(arg, producer).to_string();
                     let site = arg as *const Expr as usize;
                     let scratch = if let Some((scratch, known_id)) =
                         self.destination_scratch_sites.get(&site)
@@ -6680,6 +6727,7 @@ impl<'types> Codegen<'types> {
                     };
                     self.lower_destination_user_call(
                         producer,
+                        &emitted_producer,
                         producer_args,
                         witchy_wir::wir::WirExpr::GetLocal(scratch),
                         &producer_access,
@@ -6730,7 +6778,7 @@ impl<'types> Codegen<'types> {
             dests.push("__witchy_owncap".to_string());
             return Some(W::Seq(vec![
                 N::CallStoreMulti {
-                    func: name.to_string(),
+                    func: emitted_name.to_string(),
                     args: args_w,
                     dests,
                 },
@@ -6749,7 +6797,7 @@ impl<'types> Codegen<'types> {
             let result_tmp = call_result_tmp(result_kind);
             return Some(W::Seq(vec![
                 N::CallStoreMulti {
-                    func: name.to_string(),
+                    func: emitted_name.to_string(),
                     args: args_w,
                     dests: vec![
                         result_tmp.clone(),
@@ -6762,7 +6810,10 @@ impl<'types> Codegen<'types> {
         if self.fn_destination_layouts.contains_key(name) {
             args_w.push(witchy_wir::wir::WirExpr::ConstI32(0));
         }
-        Some(witchy_wir::wir::WirExpr::Call { func: name.to_string(), args: args_w })
+        Some(witchy_wir::wir::WirExpr::Call {
+            func: emitted_name.to_string(),
+            args: args_w,
+        })
     }
 
     fn transient_destination_call<'expr>(
@@ -6813,6 +6864,7 @@ impl<'types> Codegen<'types> {
     fn lower_destination_user_call(
         &mut self,
         name: &str,
+        emitted_name: &str,
         args: &[Expr],
         destination: witchy_wir::wir::WirExpr,
         access: &witchy_types::access::AccessSignature,
@@ -6851,7 +6903,7 @@ impl<'types> Codegen<'types> {
         )];
         if ownership.unique_capacity_result {
             nodes.push(N::CallStoreMulti {
-                func: name.into(),
+                func: emitted_name.into(),
                 args: lowered,
                 dests: vec![
                     result_tmp.clone(),
@@ -6861,7 +6913,7 @@ impl<'types> Codegen<'types> {
             nodes.push(N::Push(W::GetLocal(result_tmp)));
         } else {
             nodes.push(N::Push(W::Call {
-                func: name.into(),
+                func: emitted_name.into(),
                 args: lowered,
             }));
         }
@@ -6871,6 +6923,7 @@ impl<'types> Codegen<'types> {
     fn lower_scalar_record_call(
         &mut self,
         producer: &str,
+        emitted_producer: &str,
         args: &[Expr],
         destination: &str,
         count_forwarding: bool,
@@ -6907,7 +6960,7 @@ impl<'types> Codegen<'types> {
             ));
         }
         nodes.push(N::CallStoreMulti {
-            func: Self::scalar_record_companion_name(producer),
+            func: Self::scalar_record_companion_name(emitted_producer),
             args: lowered,
             dests: (0..plan.field_count)
                 .map(|index| format!("{destination}${index}"))
@@ -7141,6 +7194,7 @@ impl<'types> Codegen<'types> {
     fn lower_var_call(
         &mut self,
         name: &str,
+        emitted_name: &str,
         args: &[Expr],
         result_kind: Kind,
         access: &witchy_types::access::AccessSignature,
@@ -7237,7 +7291,11 @@ impl<'types> Codegen<'types> {
             dests.push(var_scratch("result", index, *kind));
         }
         dests.extend(cap_dests);
-        let mut seq = vec![N::CallStoreMulti { func: name.to_string(), args: args_w, dests }];
+        let mut seq = vec![N::CallStoreMulti {
+            func: emitted_name.to_string(),
+            args: args_w,
+            dests,
+        }];
         let mut groups: Vec<(String, Kind, Expr)> = Vec::new();
         let mut coordinates = Vec::new();
         for (index, (place, value_kind)) in places.iter().enumerate() {

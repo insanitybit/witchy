@@ -225,6 +225,7 @@ fn exact_verifier_rejects_nominal_projection_erasure() {
 
     let error = required.verify_exact(&erased).expect_err("projection erasure must fail");
     assert_eq!(error.kind(), AccessMismatchKind::BorrowRelation);
+    assert_ne!(required.identity_key(), erased.identity_key());
 }
 
 #[test]
@@ -250,6 +251,7 @@ fn exact_verifier_rejects_swapped_generic_nominal_projections() {
         .verify_exact(&swapped)
         .expect_err("generic field substitution must not hide a projection swap");
     assert_eq!(error.kind(), AccessMismatchKind::BorrowRelation);
+    assert_ne!(required.identity_key(), swapped.identity_key());
 }
 
 #[test]
@@ -526,6 +528,40 @@ fn exact_verifier_accepts_alpha_renamed_borrow_relations() {
 }
 
 #[test]
+fn access_identity_key_alpha_normalizes_borrow_names_but_keeps_access_kind() {
+    let required = signature(
+        vec![qualified(TypeQual::Borrow("a".to_string()), named("String"))],
+        qualified(TypeQual::Borrow("a".to_string()), named("String")),
+        vec![Convention::Borrow],
+    );
+    let renamed = signature(
+        vec![qualified(
+            TypeQual::Borrow("owner".to_string()),
+            named("String"),
+        )],
+        qualified(
+            TypeQual::Borrow("owner".to_string()),
+            named("String"),
+        ),
+        vec![Convention::Borrow],
+    );
+    let owned = signature(
+        vec![qualified(
+            TypeQual::Borrow("owner".to_string()),
+            named("String"),
+        )],
+        qualified(
+            TypeQual::Borrow("owner".to_string()),
+            named("String"),
+        ),
+        vec![Convention::Let],
+    );
+
+    assert_eq!(required.identity_key(), renamed.identity_key());
+    assert_ne!(required.identity_key(), owned.identity_key());
+}
+
+#[test]
 fn exact_verifier_alpha_renames_nominal_lifetime_markers() {
     let holder = |owner: &str| {
         Type::Named(
@@ -584,6 +620,7 @@ fn exact_verifier_alpha_renames_nominal_lifetime_markers() {
     let error = relation.verify_exact(&rewired).unwrap_err();
     assert_eq!(error.position(), Some(SignaturePosition::Parameter(2)));
     assert_eq!(error.kind(), AccessMismatchKind::BorrowRelation);
+    assert_ne!(relation.identity_key(), rewired.identity_key());
 
     let concrete = signature(
         vec![Type::Named("Box".to_string(), vec![named("Int")])],
@@ -618,18 +655,33 @@ fn nested_function_lifetimes_stay_in_the_nested_signature_scope() {
         )),
         vec![Convention::Borrow],
     );
-    let required = signature(vec![callback.clone()], callback, vec![Convention::Let]);
+    let required = signature(
+        vec![
+            qualified(TypeQual::Borrow("a".to_string()), named("String")),
+            callback,
+        ],
+        named("Int"),
+        vec![Convention::Borrow, Convention::Let],
+    );
     let renamed = signature(
-        vec![renamed_callback.clone()],
-        renamed_callback,
-        vec![Convention::Let],
+        vec![
+            qualified(TypeQual::Borrow("outer".to_string()), named("String")),
+            renamed_callback,
+        ],
+        named("Int"),
+        vec![Convention::Borrow, Convention::Let],
     );
 
     assert!(required.borrow_relations().is_empty());
-    assert!(required.params()[0].borrow_lifetimes().is_empty());
+    assert!(required.params()[1].borrow_lifetimes().is_empty());
     required
         .verify_exact(&renamed)
         .expect("nested lifetime alpha-renaming is scoped to the nested function");
+    assert_eq!(
+        required.identity_key(),
+        renamed.identity_key(),
+        "access identity uses the verifier's fresh nested callable scope"
+    );
 }
 
 #[test]
@@ -688,6 +740,7 @@ fn exact_verifier_rejects_result_owner_rewiring() {
     let error = required.verify_exact(&rewired).unwrap_err();
     assert_eq!(error.position(), Some(SignaturePosition::Result));
     assert_eq!(error.kind(), AccessMismatchKind::BorrowRelation);
+    assert_ne!(required.identity_key(), rewired.identity_key());
 }
 
 #[test]

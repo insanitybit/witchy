@@ -181,22 +181,21 @@ impl Mono<'_> {
     }
 
     fn specialize(&mut self, name: &str, type_args: Vec<Type>) -> String {
-        let type_keys = type_args
-            .iter()
-            .map(|ty| type_key(ty.unqualified()))
-            .collect::<Vec<_>>();
-        let key = (name.to_string(), type_keys.clone());
+        let identity = LogicalSpecializationIdentity::from_types(&type_args);
+        let key = (name.to_string(), identity.clone());
         if let Some(m) = self.memo.get(&key) {
             return m.clone();
         }
         // The canonical type rendering is emitted only as an identifier key; it
         // is never parsed back into a type.
-        let safe: Vec<String> = type_keys
+        let safe: Vec<String> = identity
+            .types()
             .iter()
-            .map(|key| mangle_type_key(key))
+            .map(|key| mangle_type_key(key.as_str()))
             .collect();
         let mangled = format!("{name}__{}", safe.join("__"));
         self.memo.insert(key, mangled.clone());
+        self.specializations.insert(mangled.clone(), identity);
 
         let mut f = self.templates[name].clone();
         f.name = mangled.clone();

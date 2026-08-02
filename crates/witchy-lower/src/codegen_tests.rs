@@ -911,23 +911,52 @@ type Point packed:
     x: Int
     y: Int
 
-fn identity(value: a) -> a:
-    value
-
-fn relay(values: List(a)) -> List(a):
-    identity(values)
+fn relay(first: a, second: a) -> List(a):
+    var values: List(a) = [first]
+    list.push(values, second)
+    let repeated: a = list.at(values, 0)
+    list.push(values, repeated)
+    values
 
 fn main() -> Int:
-    let points: List(Point) = relay([Point(3, 5), Point(7, 11)])
-    list.at(points, 0).x * 10 + list.at(points, 1).x
+    let points: List(Point) = relay(Point(2, 3), Point(7, 11))
+    list.length(points) * 1000
+        + list.at(points, 0).x * 100
+        + list.at(points, 1).y * 10
+        + list.at(points, 2).x
 "#;
-        assert_eq!(run_int(source), 37);
+        assert_eq!(run_int(source), 3312);
         let module = parse_module(source).expect("parse generic packed helper");
+        let (_, logical_specializations) =
+            witchy_types::traits::lower_for_wasm_with_specializations(module.clone())
+                .into_parts();
+        assert!(
+            logical_specializations
+                .values()
+                .any(|identity| identity.types().iter().any(|ty| ty.as_str() == "Point")),
+            "the generic instance retains its logical Point identity"
+        );
+
+        let unpacked = parse_module(
+            "type Point:\n    x: Int\n    y: Int\n",
+        )
+        .expect("parse logical reflection oracle");
+        assert_eq!(
+            witchy_syntax::reflect::module_type_info_exprs(&module)
+                .expect("reflect packed declaration logically"),
+            witchy_syntax::reflect::module_type_info_exprs(&unpacked)
+                .expect("reflect unpacked declaration logically"),
+            "public logical reflection never exposes the packed/header layout"
+        );
+
         let wir = assemble_wir_module(&module)
             .expect_lowered("closed generic helper specializes its packed signature");
         let wat = witchy_wir::wir::to_wat(&wir);
         assert!(wat.contains("__witchy_packed_list_"), "packed constructor retained: {wat}");
-        assert!(wat.contains("call $relay"), "specialized helper remains a direct abstraction: {wat}");
+        assert!(
+            wat.contains("call $relay__Point__phys0"),
+            "the call selects the composite physical generic instance: {wat}"
+        );
     }
 
     #[test]

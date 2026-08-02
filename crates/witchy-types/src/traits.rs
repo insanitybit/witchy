@@ -246,7 +246,7 @@ pub fn lower(module: Module) -> Module {
 /// flavor so the error reads "`Float` does not implement `Show`" at check
 /// time instead of "unknown function `show`" after lowering.
 pub fn lower_checked(module: Module) -> Result<Module, String> {
-    let (lowered, missing) = lower_with(module, false);
+    let (lowered, missing, _) = lower_with(module, false);
     match missing.into_iter().next() {
         Some(msg) => Err(msg),
         None => Ok(lowered),
@@ -260,6 +260,33 @@ pub fn lower_for_wasm(module: Module) -> Module {
     lower_with(module, true).0
 }
 
+/// Trait-lowered Wasm input plus the compiler-owned logical identity of every
+/// generated generic specialization. The physical layout phase consumes this
+/// metadata instead of reverse-engineering mangled function names.
+pub struct WasmTraitLowering {
+    module: Module,
+    generic_specializations:
+        std::collections::BTreeMap<String, LogicalSpecializationIdentity>,
+}
+
+impl WasmTraitLowering {
+    pub fn into_parts(
+        self,
+    ) -> (
+        Module,
+        std::collections::BTreeMap<String, LogicalSpecializationIdentity>,
+    ) {
+        (self.module, self.generic_specializations)
+    }
+}
+
+/// Wasm trait lowering with retained generic-instantiation identity for the
+/// RFC-0111 physical callable-specialization phase.
+pub fn lower_for_wasm_with_specializations(module: Module) -> WasmTraitLowering {
+    let (module, _, generic_specializations) = lower_with(module, true);
+    WasmTraitLowering { module, generic_specializations }
+}
+
 /// Start a mono-phase profiling timer, but ONLY when `WITCHY_DEBUG_MONO_TIMING`
 /// is set (the same gate the matching `eprintln!`s use). Returns `None`
 /// otherwise, so the timestamp is never taken on the hot path — and, crucially,
@@ -271,13 +298,20 @@ fn mono_timing_start() -> Option<std::time::Instant> {
     std::env::var_os("WITCHY_DEBUG_MONO_TIMING").map(|_| std::time::Instant::now())
 }
 
-fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
+fn lower_with(
+    module: Module,
+    mono_unbounded: bool,
+) -> (
+    Module,
+    Vec<String>,
+    std::collections::BTreeMap<String, LogicalSpecializationIdentity>,
+) {
     // Expand type aliases and inline module-level constants first (a no-op once
     // the linker has done so, but covers single-module paths like `check_str`).
     let inlined = witchy_syntax::consts::inline(module);
     let module = match witchy_syntax::aliases::resolve(inlined.clone()) {
         Ok(module) => module,
-        Err(message) => return (inlined, vec![message]),
+        Err(message) => return (inlined, vec![message], std::collections::BTreeMap::new()),
     };
     // Retain the resolved trait/impl universe while ordinary trait lowering
     // erases declarations. Existential method calls use this to resolve their
@@ -293,7 +327,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 || (mono_unbounded && !signature_type_vars(f).is_empty()))
     }) || module_needs_lowering(&module.items);
     if !needs_lowering {
-        return (module, Vec::new());
+        return (module, Vec::new(), std::collections::BTreeMap::new());
     }
 
     // method name -> owning trait(s), and each trait's full method list (for
@@ -720,6 +754,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         .collect();
     let render_available = templates.contains_key("show.render");
     let mut mono_diags: Vec<String> = Vec::new();
+    let mut generic_specializations = std::collections::BTreeMap::new();
     if !templates.is_empty() {
         // Annotate + monomorphize to a FIXPOINT (RFC-0046 §2): each round types the
         // concrete specializations the previous round generated, unlocking the
@@ -731,7 +766,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         // generated twice. The generous safety limit diagnoses polymorphic
         // specialization recursion rather than silently shipping a partial pass.
         const MAX_MONO_ROUNDS: usize = 256;
-        let mut memo: HashMap<(String, Vec<String>), String> = HashMap::new();
+        let mut memo: HashMap<(String, LogicalSpecializationIdentity), String> = HashMap::new();
         for round in 0..MAX_MONO_ROUNDS {
             let fn_sigs = build_fn_sigs(&typed.module().items);
             let ctor_infos = build_ctor_infos(&typed.module().items);
@@ -763,6 +798,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                         record_fields: &record_fields,
                         fn_sigs,
                         memo: std::mem::take(&mut memo),
+                        specializations: &mut generic_specializations,
                         generated: Vec::new(),
                         table,
                         skip_walk: &no_fallback,
@@ -934,6 +970,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             }
             d
         },
+        generic_specializations,
     )
 }
 
@@ -3011,6 +3048,223 @@ fn type_key(t: &Type) -> String {
     key
 }
 
+/// One qualifier-preserving concrete type component of a generic callable
+/// specialization. Unlike the trait/impl lookup key above, this identity keeps
+/// ownership qualifiers because they are part of a callable's checked access
+/// contract. Borrow lifetime spellings are alpha-normalized by first occurrence.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SpecializationTypeKey(String);
+
+impl SpecializationTypeKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Canonical logical identity for the concrete type arguments selected for one
+/// generic callable. A single lifetime normalizer spans every component, so
+/// relations between arguments survive while source binder names do not.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LogicalSpecializationIdentity(Vec<SpecializationTypeKey>);
+
+impl LogicalSpecializationIdentity {
+    pub fn from_types(types: &[Type]) -> Self {
+        let mut lifetimes = std::collections::BTreeMap::<String, u32>::new();
+        let keys = types
+            .iter()
+            .map(|ty| SpecializationTypeKey(specialization_type_key(ty, &mut lifetimes)))
+            .collect();
+        Self(keys)
+    }
+
+    pub fn types(&self) -> &[SpecializationTypeKey] {
+        &self.0
+    }
+}
+
+fn specialization_type_key(
+    ty: &Type,
+    lifetimes: &mut std::collections::BTreeMap<String, u32>,
+) -> String {
+    fn lifetime_id(
+        lifetimes: &mut std::collections::BTreeMap<String, u32>,
+        name: &str,
+    ) -> u32 {
+        if let Some(id) = lifetimes.get(name) {
+            return *id;
+        }
+        let id = u32::try_from(lifetimes.len())
+            .expect("a specialization cannot contain more than u32::MAX lifetime binders");
+        lifetimes.insert(name.to_string(), id);
+        id
+    }
+
+    fn render(
+        ty: &Type,
+        lifetimes: &mut std::collections::BTreeMap<String, u32>,
+        key: &mut String,
+    ) {
+        match ty {
+            Type::Qualified(qualifier, inner) => {
+                match qualifier {
+                    TypeQual::Frozen => key.push_str("qf<"),
+                    TypeQual::Unique => key.push_str("qu<"),
+                    TypeQual::LocalUnique => key.push_str("ql<"),
+                    TypeQual::Borrow(lifetime) => {
+                        let id = lifetime_id(lifetimes, lifetime);
+                        key.push_str(&format!("qb{id}<"));
+                    }
+                }
+                render(inner, lifetimes, key);
+                key.push('>');
+            }
+            Type::Named(name, arguments) => {
+                if let Some(lifetime) = witchy_syntax::ast::lifetime_param_name(name) {
+                    let id = lifetime_id(lifetimes, lifetime);
+                    key.push_str(&format!("life{id}"));
+                    return;
+                }
+                key.push_str(name);
+                if !arguments.is_empty() {
+                    key.push('<');
+                    for (index, argument) in arguments.iter().enumerate() {
+                        if index > 0 {
+                            key.push(',');
+                        }
+                        render(argument, lifetimes, key);
+                    }
+                    key.push('>');
+                }
+            }
+            Type::Dyn(name, arguments) => {
+                key.push_str("dyn ");
+                key.push_str(name);
+                if !arguments.is_empty() {
+                    key.push('<');
+                    for (index, argument) in arguments.iter().enumerate() {
+                        if index > 0 {
+                            key.push(',');
+                        }
+                        render(argument, lifetimes, key);
+                    }
+                    key.push('>');
+                }
+            }
+            Type::Tuple(items) => {
+                key.push_str(&format!("Tuple{}<", items.len()));
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        key.push(',');
+                    }
+                    render(item, lifetimes, key);
+                }
+                key.push('>');
+            }
+            Type::Fn(parameters, result, conventions) => {
+                key.push_str("fn[");
+                for position in 0..parameters.len() {
+                    key.push(match conventions.get(position).copied().unwrap_or_default() {
+                        Convention::Let => 'l',
+                        Convention::Borrow => 'b',
+                        Convention::Var => 'v',
+                        Convention::Own => 'o',
+                    });
+                }
+                key.push_str("](");
+                // A nested callable has an independent lifetime binder scope,
+                // matching access verification. Its spellings cannot capture
+                // or extend the surrounding specialization identity.
+                let mut nested_lifetimes = std::collections::BTreeMap::new();
+                for (index, parameter) in parameters.iter().enumerate() {
+                    if index > 0 {
+                        key.push(',');
+                    }
+                    render(parameter, &mut nested_lifetimes, key);
+                }
+                key.push_str(")->");
+                render(result, &mut nested_lifetimes, key);
+            }
+            Type::RecordCompose { .. } => unreachable!(
+                "compiler invariant violated: structural record composition reached generic specialization keys before records::lower normalized it"
+            ),
+        }
+    }
+
+    let mut key = String::new();
+    render(ty, lifetimes, &mut key);
+    key
+}
+
+#[cfg(test)]
+mod specialization_identity_tests {
+    use super::*;
+
+    fn named(name: &str) -> Type {
+        Type::Named(name.to_string(), Vec::new())
+    }
+
+    fn borrowed(lifetime: &str) -> Type {
+        Type::Qualified(
+            TypeQual::Borrow(lifetime.to_string()),
+            Box::new(Type::Named(
+                "ViewBox".to_string(),
+                vec![named(&format!("'{lifetime}"))],
+            )),
+        )
+    }
+
+    #[test]
+    fn specialization_identity_preserves_qualifiers() {
+        let unique = LogicalSpecializationIdentity::from_types(&[Type::Qualified(
+            TypeQual::Unique,
+            Box::new(named("Point")),
+        )]);
+        let frozen = LogicalSpecializationIdentity::from_types(&[Type::Qualified(
+            TypeQual::Frozen,
+            Box::new(named("Point")),
+        )]);
+        assert_ne!(unique, frozen);
+    }
+
+    #[test]
+    fn specialization_identity_alpha_normalizes_lifetime_relations() {
+        let original = LogicalSpecializationIdentity::from_types(&[
+            borrowed("a"),
+            borrowed("a"),
+        ]);
+        let renamed = LogicalSpecializationIdentity::from_types(&[
+            borrowed("owner"),
+            borrowed("owner"),
+        ]);
+        let split = LogicalSpecializationIdentity::from_types(&[
+            borrowed("left"),
+            borrowed("right"),
+        ]);
+        assert_eq!(original, renamed);
+        assert_ne!(original, split);
+    }
+
+    #[test]
+    fn specialization_identity_uses_fresh_nested_callable_lifetime_scopes() {
+        let nested = |outer: &str, inner: &str| {
+            vec![
+                borrowed(outer),
+                Type::Fn(
+                    vec![borrowed(inner)],
+                    Box::new(borrowed(inner)),
+                    vec![Convention::Borrow],
+                ),
+            ]
+        };
+
+        let reused_outer_spelling =
+            LogicalSpecializationIdentity::from_types(&nested("a", "a"));
+        let independently_renamed =
+            LogicalSpecializationIdentity::from_types(&nested("outer", "inner"));
+        assert_eq!(reused_outer_spelling, independently_renamed);
+    }
+}
+
 /// Encode a canonical type key into one compiler-private symbol segment without
 /// losing identity. Escaping every non-ASCII-alphanumeric byte (including `_`)
 /// keeps punctuation, module qualification, Unicode, and literal underscores
@@ -4041,7 +4295,8 @@ struct Mono<'a> {
     /// `declared_expr_type` for expressions the table has no entry for
     /// (freshly-generated specialization bodies within a round).
     fn_sigs: HashMap<String, FnSig>,
-    memo: HashMap<(String, Vec<String>), String>,
+    memo: HashMap<(String, LogicalSpecializationIdentity), String>,
+    specializations: &'a mut std::collections::BTreeMap<String, LogicalSpecializationIdentity>,
     generated: Vec<Function>,
     /// typeck's resolved types for this module instance. Generated bodies have
     /// no entries until the next fixpoint round, so declarations and typed local

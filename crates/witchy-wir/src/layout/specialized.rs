@@ -58,7 +58,7 @@ impl fmt::Display for LayoutId {
 /// before the logical signature is considered link-compatible. Ownership and
 /// access remain separate facts (RFC-0110); later first-class-call lowering can
 /// pair this value with the access signature without reconstructing either.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallableLayoutSignature {
     parameters: Vec<Option<LayoutId>>,
     result: Option<LayoutId>,

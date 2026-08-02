@@ -964,8 +964,13 @@ fn register_module_items(
     module: &Module,
     reachable: &HashSet<String>,
     witnesses: &witchy_types::witness::WitnessPlan,
-) {
+    generic_specializations: &BTreeMap<
+        String,
+        witchy_types::traits::LogicalSpecializationIdentity,
+    >,
+) -> Result<(), CodegenError> {
     register_specialized_layouts(cg, module);
+    cg.register_generic_callable_instances(generic_specializations)?;
     let existential_dispatch = witnesses
         .dispatch_index()
         .expect("witness construction assigns dense runtime IDs")
@@ -1461,6 +1466,7 @@ fn register_module_items(
             }
         }
     }
+    Ok(())
 }
 
 /// Materialize the closed witness plan as typed Wasm table functions.
@@ -2050,7 +2056,8 @@ fn assemble_wir_module_with_structs_mode(
         .into_module();
     let eq_types = eq_impl_types(&recs);
     let witness_catalog = witchy_types::witness::WitnessCatalog::from_module(&recs);
-    let mut lowered = witchy_types::traits::lower_for_wasm(recs);
+    let (mut lowered, generic_specializations) =
+        witchy_types::traits::lower_for_wasm_with_specializations(recs).into_parts();
     witchy_syntax::parser::lower_sugar_module(&mut lowered);
     alpha_rename_module(&mut lowered);
     let mut typed = if build_entrypoint {
@@ -2112,7 +2119,13 @@ fn assemble_wir_module_with_structs_mode(
     let reachable = reachable_functions_with(&module, &extra_roots);
     let mut cg = Codegen::new(&module, &type_table, loan_facts, access_facts);
     cg.collect_wir = true;
-    register_module_items(&mut cg, &module, &reachable, &witnesses);
+    register_module_items(
+        &mut cg,
+        &module,
+        &reachable,
+        &witnesses,
+        &generic_specializations,
+    )?;
     cg.eq_types = eq_types;
     cg.summaries = analysis::Summaries::of_module(&module);
 
@@ -2223,8 +2236,27 @@ fn assemble_wir_module_with_structs_mode(
                 // Compiled for its side effects: stashes a `WirFunc` in
                 // `cg.wir_funcs` iff the whole body lowered, and sets the
                 // `uses_*` import-gating flags.
-                cg.compile_function(f)?;
-                user_order.push(f.name.clone());
+                let instances = cg.generic_callable_instances.for_function(&f.name);
+                if instances.is_empty() {
+                    cg.compile_function(f)?;
+                    user_order.push(f.name.clone());
+                } else {
+                    if cg
+                        .generic_callable_instances
+                        .needs_logical_fallback(&f.name)
+                    {
+                        cg.compile_function(f)?;
+                        user_order.push(f.name.clone());
+                    }
+                    for instance in instances {
+                        cg.compile_function_as(
+                            f,
+                            &instance.emitted_name,
+                            Some(&instance.key),
+                        )?;
+                        user_order.push(instance.emitted_name);
+                    }
+                }
             }
         }
     }

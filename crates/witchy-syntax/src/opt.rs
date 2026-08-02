@@ -169,8 +169,37 @@ impl Opt {
 }
 
 /// A set of enabled optimizations (a small bitset over [`Opt`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct OptSet(u32);
+
+/// Encoding version for [`OptSchemaKey`]. The `Opt::ALL` order and bit meaning
+/// are compiler artifact identity, so any incompatible registry change bumps
+/// this version.
+pub const OPT_SCHEMA_VERSION: u32 = 1;
+
+/// Stable identity of the active optimization schema. Environment spelling is
+/// deliberately absent: equivalent `release`/`all` configurations compare equal.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub struct OptSchemaKey {
+    version: u32,
+    enabled_mask: u32,
+}
+
+impl OptSchemaKey {
+    pub fn version(self) -> u32 {
+        self.version
+    }
+
+    pub fn enabled_mask(self) -> u32 {
+        self.enabled_mask
+    }
+}
+
+impl std::fmt::Display for OptSchemaKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "v{}:{:08x}", self.version, self.enabled_mask)
+    }
+}
 
 impl OptSet {
     /// Nothing enabled — the de-opt reference oracle.
@@ -293,10 +322,21 @@ thread_local! {
 /// Is optimization `o` enabled for this compilation? Consults the thread-local
 /// test override first, then the cached `WITCHY_OPT` environment value.
 pub fn enabled(o: Opt) -> bool {
-    OVERRIDE
-        .with(Cell::get)
-        .unwrap_or_else(env_default)
-        .contains(o)
+    active_set().contains(o)
+}
+
+fn active_set() -> OptSet {
+    OVERRIDE.with(Cell::get).unwrap_or_else(env_default)
+}
+
+/// Versioned stable identity consumed by source caches and physical generic
+/// callable specialization. Reads the same thread-local/process configuration
+/// as [`enabled`].
+pub fn active_schema_key() -> OptSchemaKey {
+    OptSchemaKey {
+        version: OPT_SCHEMA_VERSION,
+        enabled_mask: active_set().0,
+    }
 }
 
 /// Override the active optimization set for in-process differential tests
@@ -406,6 +446,22 @@ mod tests {
         set_for_tests(Some(OptSet::default_set()));
         assert!(enabled(Opt::InPlace));
         set_for_tests(None);
+    }
+
+    #[test]
+    fn active_schema_key_is_versioned_and_representation_based() {
+        set_for_tests(Some(OptSet::all()));
+        let all = active_schema_key();
+        set_for_tests(Some(OptSet::default_set()));
+        let release = active_schema_key();
+        set_for_tests(Some(OptSet::none()));
+        let none = active_schema_key();
+        set_for_tests(None);
+
+        assert_eq!(all, release, "release and all are one optimization schema");
+        assert_ne!(all, none);
+        assert_eq!(all.version(), OPT_SCHEMA_VERSION);
+        assert_ne!(all.enabled_mask(), none.enabled_mask());
     }
 
     #[test]

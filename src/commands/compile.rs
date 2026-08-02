@@ -350,13 +350,7 @@ fn compiler_fingerprint() -> &'static str {
 /// since every `WITCHY_OPT` setting compiles to different wasm. Reads the same
 /// `opt::enabled` the compiler does, so a test override or the env both flow in.
 fn active_opt_key() -> String {
-    use witchy_syntax::opt::{self, Opt};
-    Opt::ALL
-        .iter()
-        .filter(|o| opt::enabled(**o))
-        .map(|o| o.name())
-        .collect::<Vec<_>>()
-        .join(",")
+    witchy_syntax::opt::active_schema_key().to_string()
 }
 
 /// The wasm for an EMBEDDED program (`witchy pm`, `coven-serve`), cached across

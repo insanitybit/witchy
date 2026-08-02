@@ -908,7 +908,25 @@ pub struct AccessSignature {
     borrow_relations: Vec<BorrowRelation>,
 }
 
+/// Encoding version for [`AccessIdentityKey`]. Increment this whenever the
+/// canonical byte representation changes.
+pub const ACCESS_IDENTITY_SCHEMA_VERSION: u32 = 1;
+
+/// Stable, alpha-normalized identity exported by the checked RFC-0110 access
+/// authority. Its bytes are intentionally opaque to lowering; consumers may
+/// compare/order/hash the identity but cannot reconstruct access facts.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AccessIdentityKey(Vec<u8>);
+
 impl AccessSignature {
+    /// Return the stable identity of this exact checked access signature.
+    /// Lifetime spellings are normalized by first occurrence across the entire
+    /// signature; access kind, qualifiers, ownership flow, and projected borrow
+    /// relations remain exact.
+    pub fn identity_key(&self) -> AccessIdentityKey {
+        AccessIdentityKey(encode_access_identity(self))
+    }
+
     fn as_type(&self) -> Type {
         let params = self.params.iter().map(|param| param.ty.clone()).collect();
         let conventions = self
@@ -1300,6 +1318,220 @@ impl AccessSignature {
                         )
                 })
     }
+}
+
+fn encode_access_identity(signature: &AccessSignature) -> Vec<u8> {
+    #[derive(Default)]
+    struct Encoder {
+        bytes: Vec<u8>,
+        lifetimes: std::collections::BTreeMap<String, u32>,
+    }
+
+    impl Encoder {
+        fn tag(&mut self, tag: u8) {
+            self.bytes.push(tag);
+        }
+
+        fn u32(&mut self, value: u32) {
+            self.bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        fn usize(&mut self, value: usize) {
+            self.u32(u32::try_from(value).expect("access identity exceeds u32::MAX items"));
+        }
+
+        fn i64(&mut self, value: i64) {
+            self.bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        fn text(&mut self, value: &str) {
+            self.usize(value.len());
+            self.bytes.extend_from_slice(value.as_bytes());
+        }
+
+        fn lifetime(&mut self, name: &str) {
+            let id = if let Some(id) = self.lifetimes.get(name) {
+                *id
+            } else {
+                let id = u32::try_from(self.lifetimes.len())
+                    .expect("access identity exceeds u32::MAX lifetime binders");
+                self.lifetimes.insert(name.to_string(), id);
+                id
+            };
+            self.u32(id);
+        }
+
+        fn qualifier(&mut self, qualifier: &AccessQualifier) {
+            match qualifier {
+                AccessQualifier::Frozen => self.tag(0),
+                AccessQualifier::Unique => self.tag(1),
+                AccessQualifier::LocalUnique => self.tag(2),
+                AccessQualifier::Borrow(lifetime) => {
+                    self.tag(3);
+                    self.lifetime(lifetime);
+                }
+            }
+        }
+
+        fn qualifiers(&mut self, qualifiers: &[AccessQualifier]) {
+            self.usize(qualifiers.len());
+            for qualifier in qualifiers {
+                self.qualifier(qualifier);
+            }
+        }
+
+        fn ty(&mut self, ty: &Type) {
+            match ty {
+                Type::Named(name, arguments) => {
+                    if let Some(lifetime) = witchy_syntax::ast::lifetime_param_name(name) {
+                        self.tag(6);
+                        self.lifetime(lifetime);
+                    } else {
+                        self.tag(0);
+                        self.text(name);
+                        self.usize(arguments.len());
+                        for argument in arguments {
+                            self.ty(argument);
+                        }
+                    }
+                }
+                Type::Tuple(items) => {
+                    self.tag(1);
+                    self.usize(items.len());
+                    for item in items {
+                        self.ty(item);
+                    }
+                }
+                Type::Fn(parameters, result, conventions) => {
+                    self.tag(2);
+                    // Nested callables bind their own lifetime namespace. This
+                    // mirrors `compare_type`: reusing an outer spelling inside
+                    // a callback does not relate the two scopes.
+                    let outer_lifetimes = std::mem::take(&mut self.lifetimes);
+                    self.usize(parameters.len());
+                    for (position, parameter) in parameters.iter().enumerate() {
+                        self.tag(match conventions.get(position).copied().unwrap_or_default() {
+                            Convention::Let => 0,
+                            Convention::Borrow => 1,
+                            Convention::Var => 2,
+                            Convention::Own => 3,
+                        });
+                        self.ty(parameter);
+                    }
+                    self.ty(result);
+                    self.lifetimes = outer_lifetimes;
+                }
+                Type::Qualified(qualifier, inner) => {
+                    self.tag(3);
+                    self.qualifier(&AccessQualifier::from(qualifier));
+                    self.ty(inner);
+                }
+                Type::Dyn(name, arguments) => {
+                    self.tag(4);
+                    self.text(name);
+                    self.usize(arguments.len());
+                    for argument in arguments {
+                        self.ty(argument);
+                    }
+                }
+                Type::RecordCompose { base, fields } => {
+                    self.tag(5);
+                    self.ty(base);
+                    self.usize(fields.len());
+                    for (name, field) in fields {
+                        self.text(name);
+                        self.ty(field);
+                    }
+                }
+            }
+        }
+
+        fn ownership_state(&mut self, state: &OwnershipStateClass) {
+            match state {
+                OwnershipStateClass::LinearMemoryObject => self.tag(0),
+                OwnershipStateClass::GcReference => self.tag(1),
+                OwnershipStateClass::BorrowedOwnerRoot { lifetime } => {
+                    self.tag(2);
+                    self.lifetime(lifetime);
+                }
+                OwnershipStateClass::LayoutDependent { children } => {
+                    self.tag(3);
+                    self.usize(children.len());
+                    for child in children {
+                        self.optional_ownership_state(child.as_ref());
+                    }
+                }
+            }
+        }
+
+        fn optional_ownership_state(&mut self, state: Option<&OwnershipStateClass>) {
+            match state {
+                Some(state) => {
+                    self.tag(1);
+                    self.ownership_state(state);
+                }
+                None => self.tag(0),
+            }
+        }
+
+        fn projection(&mut self, projection: &LoanProjection) {
+            self.usize(projection.steps.len());
+            for step in &projection.steps {
+                match step {
+                    LoanProjectionStep::Field(name) => {
+                        self.tag(0);
+                        self.text(name);
+                    }
+                    LoanProjectionStep::Tuple(position) => {
+                        self.tag(1);
+                        self.usize(*position);
+                    }
+                    LoanProjectionStep::Index(index) => {
+                        self.tag(2);
+                        self.i64(*index);
+                    }
+                    LoanProjectionStep::Range { lo, hi, inclusive } => {
+                        self.tag(3);
+                        self.i64(*lo);
+                        self.i64(*hi);
+                        self.tag(u8::from(*inclusive));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut encoder = Encoder::default();
+    encoder.u32(ACCESS_IDENTITY_SCHEMA_VERSION);
+    encoder.qualifiers(&signature.callable_qualifiers);
+    encoder.usize(signature.params.len());
+    for parameter in &signature.params {
+        encoder.tag(match parameter.kind {
+            AccessKind::OwnedImmutable => 0,
+            AccessKind::SharedBorrow => 1,
+            AccessKind::ExclusiveWriteback => 2,
+            AccessKind::Consuming => 3,
+        });
+        encoder.ty(&parameter.ty);
+        encoder.qualifiers(&parameter.qualifiers);
+        encoder.optional_ownership_state(parameter.ownership.input.as_ref());
+        encoder.optional_ownership_state(parameter.ownership.writeback.as_ref());
+    }
+    encoder.ty(&signature.result.ty);
+    encoder.qualifiers(&signature.result.qualifiers);
+    encoder.optional_ownership_state(signature.result.ownership_output.as_ref());
+    encoder.usize(signature.borrow_relations.len());
+    for relation in &signature.borrow_relations {
+        encoder.lifetime(&relation.lifetime);
+        encoder.projection(&relation.output_projection);
+        encoder.usize(relation.owners.len());
+        for owner in &relation.owners {
+            encoder.usize(owner.position);
+            encoder.projection(&owner.input_projection);
+        }
+        encoder.ty(&relation.storage_type);
+    }
+    encoder.bytes
 }
 
 fn borrow_relation_compatible(

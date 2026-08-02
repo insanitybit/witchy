@@ -2355,7 +2355,14 @@ impl<'types> Codegen<'types> {
                         .ast_type_of_expr(e)
                         .map(|ty| self.kind_for_type(&ty))
                         .unwrap_or_else(|| self.kind_of(e));
-                    return self.lower_var_call(name, args, result_kind, call_access.as_ref()?);
+                    let emitted_name = self.generic_call_target(e, name).to_string();
+                    return self.lower_var_call(
+                        name,
+                        &emitted_name,
+                        args,
+                        result_kind,
+                        call_access.as_ref()?,
+                    );
                 }
                 // Exactly the compiled `$name` user functions — never an
                 // intrinsic/native (those have no emitted func to call), never a
@@ -2364,7 +2371,13 @@ impl<'types> Codegen<'types> {
                     && !self.locals.contains_key(name)
                     && !self.local_fn_ret_kind.contains_key(name);
                 if is_plain_user_fn && !has_var {
-                    return self.try_lower_user_call(name, args, call_access.as_ref()?);
+                    let emitted_name = self.generic_call_target(e, name).to_string();
+                    return self.try_lower_user_call(
+                        name,
+                        &emitted_name,
+                        args,
+                        call_access.as_ref()?,
+                    );
                 }
                 return None;
             }
