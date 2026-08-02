@@ -146,17 +146,32 @@ impl LayoutBundle {
 /// The only three outcomes permitted at a specialized structured host
 /// boundary. `Marshal` remains explicit and countable; opt callers can reject
 /// it rather than silently changing representation.
+#[must_use = "a host layout decision must be emitted exactly, accounted as a marshal, or rejected"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostLayoutDecision {
     Exact,
-    Marshal { accepted: LayoutId },
+    Marshal {
+        accepted: LayoutId,
+        metric: HostMarshalMetric,
+    },
     Reject,
+}
+
+/// The mandatory accounting attached to a registered marshal adapter.
+///
+/// A policy cannot authorize a reshape without naming the production counter
+/// the adapter increments. The first host-boundary slice exposes only the
+/// RFC-0111 reshaped-byte metric; additional accounting must be added here
+/// before a new adapter can claim it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostMarshalMetric {
+    ReshapedBytes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostLayoutPolicy {
     exact: BTreeSet<LayoutId>,
-    marshal: BTreeMap<LayoutId, LayoutId>,
+    marshal: BTreeMap<LayoutId, (LayoutId, HostMarshalMetric)>,
 }
 
 impl HostLayoutPolicy {
@@ -164,28 +179,66 @@ impl HostLayoutPolicy {
         Self { exact: exact.into_iter().collect(), marshal: BTreeMap::new() }
     }
 
-    /// Register one checked marshal adapter from the requested guest layout to
-    /// the descriptor the host adapter actually consumes. Unknown layouts stay
-    /// rejected; a policy cannot claim that an arbitrary descriptor is
-    /// convertible without naming the exact accepted target. The target must
-    /// also appear in this policy's exact set or the decision fails closed.
-    pub fn with_marshal(mut self, requested: LayoutId, accepted: LayoutId) -> Self {
-        self.marshal.insert(requested, accepted);
+    /// Register one checked, counted marshal adapter from the requested guest
+    /// layout to the descriptor the host adapter actually consumes. Unknown
+    /// layouts stay rejected; a policy cannot claim that an arbitrary
+    /// descriptor is convertible without naming the exact accepted target and
+    /// the counter the adapter increments. The target must also appear in this
+    /// policy's exact set or the decision fails closed.
+    pub fn with_counted_marshal(
+        mut self,
+        requested: LayoutId,
+        accepted: LayoutId,
+        metric: HostMarshalMetric,
+    ) -> Self {
+        self.marshal.insert(requested, (accepted, metric));
         self
     }
 
-    pub fn decide(&self, requested: LayoutId) -> HostLayoutDecision {
+    /// Resolve a boundary only against the validated descriptor interner that
+    /// produced the WIR layout. A naked digest is not authority to select a
+    /// scalar-memory adapter: unknown IDs, including IDs fabricated for a
+    /// capability/reference shape that the interner rejects, fail closed.
+    pub fn decide(
+        &self,
+        layouts: &LayoutInterner,
+        requested: LayoutId,
+    ) -> HostLayoutDecision {
+        if !scalar_storage_layout(layouts, requested) {
+            return HostLayoutDecision::Reject;
+        }
         if self.exact.contains(&requested) {
             HostLayoutDecision::Exact
-        } else if let Some(accepted) = self
+        } else if let Some((accepted, metric)) = self
             .marshal
             .get(&requested)
-            .filter(|accepted| self.exact.contains(accepted))
+            .filter(|(accepted, _)| {
+                self.exact.contains(accepted) && scalar_storage_layout(layouts, *accepted)
+            })
         {
-            HostLayoutDecision::Marshal { accepted: *accepted }
+            HostLayoutDecision::Marshal {
+                accepted: *accepted,
+                metric: *metric,
+            }
         } else {
             HostLayoutDecision::Reject
         }
+    }
+}
+
+/// Only the closed scalar-memory descriptor family may select these adapters.
+/// Keeping this match exhaustive makes a future reference/capability layout
+/// variant a compile-time integration task instead of silently authorizing it.
+fn scalar_storage_layout(layouts: &LayoutInterner, id: LayoutId) -> bool {
+    match layouts.get(id).map(|descriptor| descriptor.kind()) {
+        Some(
+            LayoutKind::Scalar(_)
+            | LayoutKind::Tuple { .. }
+            | LayoutKind::PackedRecord { .. }
+            | LayoutKind::PackedList { .. }
+            | LayoutKind::ClosedSum { .. },
+        ) => true,
+        None => false,
     }
 }
 

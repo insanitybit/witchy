@@ -39,6 +39,8 @@ mod passes;
 mod assembly;
 mod loans;
 mod type_vars;
+mod host_layout;
+mod callable_layout;
 mod expr_lower;
 mod match_lower;
 mod block_lower;
@@ -5925,85 +5927,6 @@ impl<'types> Codegen<'types> {
         self.lower_layout_field_read(root, field)
     }
 
-    fn reject_unsupported_specialized_boundary(&mut self, expr: &Expr) -> bool {
-        let boundary = match expr {
-            Expr::Call { name, args }
-                if self.locals.contains_key(name)
-                    && (self.specialized_boundary_result_layout(expr).is_some()
-                        || args
-                            .iter()
-                            .any(|argument| self.specialized_layout_of_expr(argument).is_some())) =>
-            {
-                Some("first-class function call".to_string())
-            }
-            Expr::Call { name, args }
-                if !self.emitted_funcs.contains(name)
-                    && witchy_syntax::intrinsics::lookup(
-                        witchy_syntax::intrinsics::canonical_operation_name(name),
-                    )
-                    .is_some()
-                    && witchy_syntax::intrinsics::canonical_operation_name(name)
-                        != intrinsics::LIST_LENGTH
-                    && args.iter().any(|arg| self.specialized_layout_of_expr(arg).is_some()) =>
-            {
-                Some(format!("intrinsic `{name}`"))
-            }
-            Expr::MethodCall {
-                receiver,
-                method,
-                args,
-                ..
-            } if self.specialized_boundary_result_layout(expr).is_some()
-                || self.specialized_layout_of_expr(receiver).is_some()
-                || args
-                    .iter()
-                    .any(|argument| self.specialized_layout_of_expr(argument).is_some()) =>
-            {
-                Some(format!("method `{method}`"))
-            }
-            Expr::ExistentialCall {
-                receiver,
-                method,
-                args,
-                ..
-            } if self.specialized_boundary_result_layout(expr).is_some()
-                || self.specialized_layout_of_expr(receiver).is_some()
-                || args
-                    .iter()
-                    .any(|argument| self.specialized_layout_of_expr(argument).is_some()) =>
-            {
-                Some(format!("trait/existential method `{method}`"))
-            }
-            Expr::Apply { func, args }
-                if self.specialized_boundary_result_layout(expr).is_some()
-                    || self.specialized_layout_of_expr(func).is_some()
-                    || args.iter().any(|arg| self.specialized_layout_of_expr(arg).is_some()) =>
-            {
-                Some("first-class function call".to_string())
-            }
-            Expr::Var(name)
-                if !self.locals.contains_key(name) && self.callable_layouts.contains_key(name) =>
-            {
-                Some(format!("function value `{name}`"))
-            }
-            Expr::Binary { lhs, rhs, .. }
-                if self.specialized_layout_of_expr(lhs).is_some()
-                    || self.specialized_layout_of_expr(rhs).is_some() =>
-            {
-                Some("aggregate binary operation".to_string())
-            }
-            _ => None,
-        };
-        let Some(boundary) = boundary else { return false };
-        self.reject_reason.get_or_insert_with(|| CodegenError {
-            message: format!(
-                "declared packed layout cannot cross unsupported {boundary}; \
-                 this boundary requires an exact RFC-0111 LayoutId adapter and cannot box or reshape"
-            ),
-        });
-        true
-    }
-
     /// Bounds-checked read for a reference-backed list. The language index is
     /// i64, so validate it before narrowing to Wasm GC's i32 array index.
     fn lower_gc_function_list_at(
@@ -10271,3 +10194,6 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
 #[cfg(test)]
 #[path = "../codegen_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod host_layout_tests;

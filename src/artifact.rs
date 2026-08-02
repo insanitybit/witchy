@@ -290,7 +290,7 @@ mod tests {
             LayoutId::from_bytes([1; 32]),
         ]);
         assert_eq!(
-            policy.decide(LayoutId::from_bytes([2; 32])),
+            policy.decide(&LayoutInterner::new(), LayoutId::from_bytes([2; 32])),
             witchy_wir::layout::HostLayoutDecision::Reject
         );
     }

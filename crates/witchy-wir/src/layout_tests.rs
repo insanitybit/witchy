@@ -4,9 +4,9 @@ use witchy_syntax::ast::{Expr, Item, Module, Type, TypeDef, Variant};
 
 use crate::layout::{
     ClosedTypeResolver, FieldKind, HeaderLayout, HostLayoutDecision, HostLayoutPolicy,
-    LAYOUT_SCHEMA_VERSION, LayoutBundle, LayoutError, LayoutId, LayoutInterner, LayoutKind,
-    LayoutSize, LayoutTransportError, OperationShape, OwnershipPosition, RcHeader, ReferenceKind,
-    ResolvedNamed, ScalarKind, StorageClass,
+    HostMarshalMetric, LAYOUT_SCHEMA_VERSION, LayoutBundle, LayoutError, LayoutId,
+    LayoutInterner, LayoutKind, LayoutSize, LayoutTransportError, OperationShape,
+    OwnershipPosition, RcHeader, ReferenceKind, ResolvedNamed, ScalarKind, StorageClass,
 };
 
 struct TestResolver<'a> {
@@ -475,31 +475,68 @@ fn layout_bundle_rejects_unknown_versions_truncation_and_dangling_roots() {
 
 #[test]
 fn host_layout_policy_has_only_exact_counted_marshal_or_reject_outcomes() {
-    let exact = LayoutId::from_bytes([1; 32]);
-    let other = LayoutId::from_bytes([2; 32]);
-    let adaptable = HostLayoutPolicy::new([exact]).with_marshal(other, exact);
-    assert_eq!(adaptable.decide(exact), HostLayoutDecision::Exact);
+    let resolver = TestResolver { definitions: BTreeMap::new() };
+    let mut layouts = LayoutInterner::new();
+    let exact = layouts.intern_type(&named("Int"), &resolver).unwrap();
+    let other = layouts.intern_type(&named("Bool"), &resolver).unwrap();
+    let adaptable = HostLayoutPolicy::new([exact]).with_counted_marshal(
+        other,
+        exact,
+        HostMarshalMetric::ReshapedBytes,
+    );
+    assert_eq!(adaptable.decide(&layouts, exact), HostLayoutDecision::Exact);
     assert_eq!(
-        adaptable.decide(other),
-        HostLayoutDecision::Marshal { accepted: exact }
+        adaptable.decide(&layouts, other),
+        HostLayoutDecision::Marshal {
+            accepted: exact,
+            metric: HostMarshalMetric::ReshapedBytes,
+        }
     );
 
     let strict = HostLayoutPolicy::new([exact]);
-    assert_eq!(strict.decide(exact), HostLayoutDecision::Exact);
-    assert_eq!(strict.decide(other), HostLayoutDecision::Reject);
+    assert_eq!(strict.decide(&layouts, exact), HostLayoutDecision::Exact);
+    assert_eq!(strict.decide(&layouts, other), HostLayoutDecision::Reject);
 
     let unknown = LayoutId::from_bytes([9; 32]);
     assert_eq!(
-        adaptable.decide(unknown),
+        adaptable.decide(&layouts, unknown),
         HostLayoutDecision::Reject,
         "an explicit marshal adapter never authorizes unrelated layouts"
     );
 
-    let unaccepted_target = HostLayoutPolicy::new([exact]).with_marshal(other, unknown);
+    let unaccepted_target = HostLayoutPolicy::new([exact]).with_counted_marshal(
+        other,
+        unknown,
+        HostMarshalMetric::ReshapedBytes,
+    );
     assert_eq!(
-        unaccepted_target.decide(other),
+        unaccepted_target.decide(&layouts, other),
         HostLayoutDecision::Reject,
         "a marshal target must itself be an exact host-supported layout"
+    );
+}
+
+#[test]
+fn host_layout_policy_cannot_authorize_capability_or_reference_storage() {
+    let definitions = [record("Authority", true, vec![("console", named("Console"))])];
+    let resolver = TestResolver::with_definitions(&definitions);
+    let mut layouts = LayoutInterner::new();
+    let error = layouts.intern_type(&named("Authority"), &resolver).unwrap_err();
+    assert!(matches!(
+        error,
+        LayoutError::ReferenceNotInline {
+            kind: ReferenceKind::Capability,
+            class: StorageClass::CapabilityReference,
+            ..
+        }
+    ));
+
+    let fabricated = LayoutId::from_bytes([0xc0; 32]);
+    let policy = HostLayoutPolicy::new([fabricated]);
+    assert_eq!(
+        policy.decide(&layouts, fabricated),
+        HostLayoutDecision::Reject,
+        "a digest without a validated scalar descriptor cannot select a host adapter"
     );
 }
 
