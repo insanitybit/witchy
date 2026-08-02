@@ -389,6 +389,40 @@ mod tests {
         assert_eq!(all_return.reowns, 0);
     }
 
+    /// RFC-0110: a proper self-tail edge forwards the complete logical result
+    /// envelope. The primary unique result and the `var` value/token write-back
+    /// must all survive 50,000 transitions without a backend call stack or a
+    /// post-tail ownership repair.
+    #[test]
+    fn proper_tail_forwards_unique_result_and_var_ownership_envelope() {
+        let source = |depth| {
+            format!(
+                "mode opt\n\nimport list\n\nfn walk(var xs: unique List(Int), n: Int) -> unique List(Int):\n    if n == 0:\n        return [7]\n    xs.push(n)\n    walk(xs, n - 1)\n\nfn main(console: Console):\n    var xs = []\n    var result = walk(xs, {depth})\n    console.print(\"${{xs.length()}}\")\n    console.print(\"${{result.pop() ?? 0}}\")\n"
+            )
+        };
+        let shallow_source = source(1);
+        let deep_source = source(50000);
+
+        let linked = crate::resolve_std_only(&deep_source).expect("resolve tail ownership envelope");
+        typeck::check(&linked).expect("type-check tail ownership envelope");
+        let misses: Vec<_> = witchy_lower::analysis::module_no_copy_misses(&linked)
+            .into_iter()
+            .filter(|miss| miss.function == "main" || miss.function.ends_with(".walk"))
+            .collect();
+        assert!(misses.is_empty(), "tail ownership envelope must remain statically unique: {misses:?}");
+
+        let oracle = interp(&deep_source);
+        assert_eq!(oracle, ["50000", "7"]);
+        let shallow = compute(&shallow_source).expect("run shallow tail ownership envelope");
+        let deep = compute(&deep_source).expect("run deep tail ownership envelope");
+        assert_eq!(deep.output, oracle);
+        assert_eq!(
+            deep.reowns, shallow.reowns,
+            "additional tail transitions must not repair ownership state"
+        );
+        assert_eq!(deep.extract_copied_bytes, 0, "the returned token must remain unique");
+    }
+
     /// Heap leaves make ownership traffic observable. The unique path moves
     /// displaced values without retaining them; forced copy must retain both
     /// the returned projection and every leaf kept by the repaired container.
