@@ -2212,6 +2212,115 @@ fn main() -> Int:
     }
 
     #[test]
+    fn specialized_region_results_reject_before_uniform_slot_copy() {
+        let cases = [
+            (
+                "padded packed record",
+                r#"
+mode opt
+type Padded packed:
+    enabled: Bool
+    value: Int
+fn main() -> Int:
+    let result: Padded = region:
+        Padded(true, 41)
+    result.value
+"#,
+            ),
+            (
+                "packed record list",
+                r#"
+mode opt
+type Point packed:
+    x: Int
+    y: Int
+fn main() -> Int:
+    let points = region -> List(Point):
+        [Point(1, 2), Point(3, 4)]
+    list.at(points, 1).y
+"#,
+            ),
+            (
+                "packed closed sum",
+                r#"
+mode opt
+type Token packed:
+    Empty
+    Value(Bool, Int)
+fn main() -> Int:
+    let token = region -> Token:
+        Value(true, 7)
+    match token:
+        Empty -> 0
+        Value(_, value) -> value
+"#,
+            ),
+            (
+                "nested packed record",
+                r#"
+mode opt
+type Point packed:
+    x: Int
+    y: Int
+type Nested packed:
+    live: Bool
+    point: Point
+fn main() -> Int:
+    let nested = region -> Nested:
+        Nested(true, Point(5, 9))
+    nested.point.y
+"#,
+            ),
+        ];
+
+        for (name, source) in cases {
+            let module = parse_module(source)
+                .unwrap_or_else(|error| panic!("parse {name}: {error}"));
+            let error = compile_module_binary(&module)
+                .expect_rejected(&format!("{name} must not enter uniform-slot copy-out"));
+            let diagnostic = error.to_string();
+            assert!(
+                diagnostic.contains("declared packed LayoutId")
+                    && diagnostic.contains("cannot leave `region:`")
+                    && diagnostic.contains("legacy uniform-slot copy path")
+                    && diagnostic.contains("descriptor-driven region copy")
+                    && diagnostic.contains("cannot be boxed or reshaped"),
+                "{name}: {diagnostic}",
+            );
+            let layout = diagnostic
+                .split_once("LayoutId ")
+                .and_then(|(_, rest)| rest.split_once(' '))
+                .map(|(layout, _)| layout)
+                .expect("diagnostic carries the exact LayoutId");
+            assert_eq!(layout.len(), 64, "{name}: {diagnostic}");
+            assert!(
+                layout.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "{name}: {diagnostic}",
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_region_result_keeps_legacy_copy_path() {
+        let source = r#"
+type Point:
+    x: Int
+    y: Int
+fn main() -> Int:
+    let point = region -> Point:
+        Point(5, 7)
+    point.x + point.y
+"#;
+        assert_eq!(run_int(source), 12);
+        let module = parse_module(source).expect("parse ordinary region result");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module)
+                .expect_lowered("ordinary region copy-out remains supported"),
+        );
+        assert!(wat.contains("rcopy_rec_Point"), "ordinary region copy helper: {wat}");
+    }
+
+    #[test]
     fn declared_packed_closed_sum_rejects_variable_layout_payload_loudly() {
         let module = parse_module(r#"
 mode opt

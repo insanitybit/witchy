@@ -344,6 +344,24 @@ impl<'types> Codegen<'types> {
             // (`collect_wir == false`) fall through to `compile_region`.
             Expr::Block(b) if self.collect_wir => {
                 let ann = b.region.as_ref().and_then(|r| r.ty.clone());
+                let specialized_layout = ann
+                    .as_ref()
+                    .and_then(|ty| self.specialized_layout_id(ty))
+                    .or_else(|| self.specialized_layout_of_expr(e))
+                    .or_else(|| match b.stmts.last() {
+                        Some(Stmt::Expr(tail)) => self.specialized_layout_of_expr(tail),
+                        _ => None,
+                    });
+                if let Some(layout) = specialized_layout {
+                    self.reject_reason.get_or_insert_with(|| CodegenError {
+                        message: format!(
+                            "declared packed LayoutId {layout} cannot leave `region:` through the \
+                             legacy uniform-slot copy path; descriptor-driven region copy is \
+                             required and this value cannot be boxed or reshaped"
+                        ),
+                    });
+                    return None;
+                }
                 let shape = match &ann {
                     Some(t) => self.eq_shape_of_type(t),
                     None => match b.stmts.last() {
