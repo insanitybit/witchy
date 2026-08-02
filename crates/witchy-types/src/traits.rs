@@ -1452,6 +1452,14 @@ fn bind_typed_pattern(
     }
 }
 
+struct ResolvedExistentialSlot {
+    owner_trait: String,
+    slot: u32,
+    params: Vec<Type>,
+    result: Type,
+    conventions: Vec<Convention>,
+}
+
 struct Ctx<'a> {
     trait_methods: &'a HashMap<String, Vec<TraitMethodInfo>>,
     inherent_methods: &'a HashSet<String>,
@@ -1916,7 +1924,7 @@ impl Ctx<'_> {
         &self,
         ty: &Type,
         method: &str,
-    ) -> Result<(String, u32, Type, Vec<Convention>), String> {
+    ) -> Result<ResolvedExistentialSlot, String> {
         let Type::Dyn(root, _) = ty.unqualified() else {
             return Err("internal: existential dispatch needs a dyn receiver".to_string());
         };
@@ -1938,12 +1946,13 @@ impl Ctx<'_> {
             [(index, slot_def)] => {
                 let slot = u32::try_from(*index)
                     .map_err(|_| "existential method slot exceeds u32".to_string())?;
-                Ok((
-                    slot_def.owner_trait.clone(),
+                Ok(ResolvedExistentialSlot {
+                    owner_trait: slot_def.owner_trait.clone(),
                     slot,
-                    slot_def.result.clone(),
-                    slot_def.conventions.clone(),
-                ))
+                    params: slot_def.params.clone(),
+                    result: slot_def.result.clone(),
+                    conventions: slot_def.conventions.clone(),
+                })
             }
             [] => Err(format!(
                 "`{}` has no existential-safe method `{method}`",
@@ -2588,7 +2597,7 @@ impl Ctx<'_> {
                     // by source spelling or concrete payload type.
                     Some(ty) if matches!(ty.unqualified(), Type::Dyn(..)) => {
                         match self.existential_slot(&ty, method) {
-                            Ok((owner_trait, slot, result, conventions)) => {
+                            Ok(resolved) => {
                                 let receiver = std::mem::replace(
                                     receiver.as_mut(),
                                     Expr::Bool(false),
@@ -2597,11 +2606,12 @@ impl Ctx<'_> {
                                     receiver: Box::new(receiver),
                                     args: std::mem::take(args),
                                     ty,
-                                    owner_trait,
+                                    owner_trait: resolved.owner_trait,
                                     method: method.clone(),
-                                    slot,
-                                    result,
-                                    conventions,
+                                    slot: resolved.slot,
+                                    params: resolved.params,
+                                    result: resolved.result,
+                                    conventions: resolved.conventions,
                                 };
                             }
                             Err(message) => self.missing_impls.borrow_mut().push(message),
@@ -3339,6 +3349,7 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<String, Type>) {
             receiver,
             args,
             ty,
+            params,
             result,
             ..
         } => {
@@ -3347,6 +3358,9 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<String, Type>) {
                 subst_expr_types(a, subst);
             }
             *ty = subst_trait_params(ty, subst);
+            for param in params {
+                *param = subst_trait_params(param, subst);
+            }
             *result = subst_trait_params(result, subst);
         }
         Expr::Apply { func, args } => {
@@ -4293,6 +4307,7 @@ fn show(value: dyn Render) -> String:
             owner_trait,
             method,
             slot,
+            params,
             result,
             conventions,
             ..
@@ -4305,6 +4320,7 @@ fn show(value: dyn Render) -> String:
         assert_eq!(owner_trait, "Render");
         assert_eq!(method, "render");
         assert_eq!(*slot, 0);
+        assert!(params.is_empty());
         assert_eq!(result, &named_type("String"));
         assert_eq!(conventions, &vec![Convention::Let]);
     }

@@ -719,6 +719,10 @@ pub enum Expr {
         owner_trait: String,
         method: String,
         slot: u32,
+        /// Finalized explicit parameter types copied from the authenticated
+        /// witness slot. The receiver type is `ty`; access checking and ABI
+        /// consumers use both after trait declarations have been erased.
+        params: Vec<Type>,
         result: Type,
         /// Receiver first, followed by explicit arguments. This is copied from
         /// the static witness layout so runtime adapters preserve `let`/`var`/

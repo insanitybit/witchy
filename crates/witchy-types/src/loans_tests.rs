@@ -325,6 +325,61 @@
     }
 
     #[test]
+    fn nominal_constructor_cannot_erase_a_callable_access_contract() {
+        let err = check_str(
+            "mode opt\n\n\
+             type Holder:\n    Holder(fn(unique List(Int)) -> Int)\n\n\
+             fn plain(xs: List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn main():\n    let holder: Holder = Holder(plain)\n    return\n",
+        )
+        .expect_err("a nominal field must preserve its callable's unique parameter");
+        assert!(err.contains("constructor `Holder`") && err.contains("Qualifier"), "{err}");
+    }
+
+    #[test]
+    fn absent_and_repeated_container_values_do_not_invent_erasure() {
+        check_str(
+            "fn id(x: Int) -> Int:\n    x\n\n\
+             fn main():\n\
+             \x20   let maybe: Option(fn(Int) -> Int) = None\n\
+             \x20   let callbacks: List(fn(Int) -> Int) = [id, id]\n\
+             \x20   return\n",
+        )
+        .expect("an absent option and repeated homogeneous elements preserve static access identity");
+    }
+
+    #[test]
+    fn nominal_pattern_recovers_the_declared_callable_contract() {
+        check_str(
+            "type Holder:\n    Holder(fn(Int) -> Int)\n\n\
+             fn id(x: Int) -> Int:\n    x\n\n\
+             fn unwrap(holder: Holder) -> fn(Int) -> Int:\n\
+             \x20   match holder:\n        Holder(f) -> f\n\n\
+             fn main():\n    let f = unwrap(Holder(id))\n    return\n",
+        )
+        .expect("pattern fields use the nominal declaration rather than constructor value shape");
+    }
+
+    #[test]
+    fn dynamic_trait_call_uses_the_authenticated_callable_parameter_contract() {
+        let err = check_str(
+            "mode opt\n\n\
+             trait Invoke:\n\
+             \x20   fn apply(let self, f: fn(unique List(Int)) -> Int) -> Int\n\n\
+             type Runner:\n    Runner\n\n\
+             impl Invoke for Runner:\n\
+             \x20   fn apply(let self, f: fn(unique List(Int)) -> Int) -> Int:\n\
+             \x20       f([1])\n\n\
+             fn plain(xs: List(Int)) -> Int:\n    list.length(xs)\n\n\
+             fn main():\n\
+             \x20   let runner: dyn Invoke = Runner\n\
+             \x20   runner.apply(plain)\n",
+        )
+        .expect_err("the witness slot may not erase a callable argument's access contract");
+        assert!(err.contains("dynamic method `apply`") && err.contains("Qualifier"), "{err}");
+    }
+
+    #[test]
     fn borrowed_function_types_require_opt_mode_and_bound_outputs() {
         let no_opt = "fn apply(f: fn(View(String, 'a)) -> View(String, 'a), s: String) -> String:\n    f(s)\n";
         let err = check_str(no_opt).expect_err("borrowed function type requires mode opt");

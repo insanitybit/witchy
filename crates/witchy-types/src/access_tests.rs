@@ -2,7 +2,7 @@ use witchy_syntax::ast::{Block, Convention, Function, Param, Type, TypeQual};
 
 use crate::access::{
     AccessKind, AccessMismatchKind, AccessQualifier, AccessSignature, AccessSignatureError,
-    OwnershipStateClass, SignaturePosition, ownership_state_class,
+    OwnershipStateClass, SignaturePosition, checked_facts, ownership_state_class,
 };
 
 fn named(name: &str) -> Type {
@@ -430,4 +430,36 @@ fn malformed_checked_contracts_fail_loudly() {
             lifetime: "a".to_string()
         })
     );
+}
+
+#[test]
+fn checked_query_exposes_declaration_and_exact_call_access_identities() {
+    let module = witchy_syntax::parser::parse_module(
+        "fn consume(own xs: unique List(Int)) -> unique List(Int):\n    xs\n\n\
+         fn caller() -> unique List(Int):\n    consume([1])\n\n\
+         fn main():\n    return\n",
+    )
+    .expect("parse access query fixture");
+    let typed = crate::typeck::annotate_checked(module).expect("annotate access query fixture");
+    let facts = checked_facts(typed.module(), typed.table()).expect("build checked access facts");
+    let consume = facts.declaration("consume").expect("declaration access identity");
+    assert_eq!(consume.params()[0].kind(), AccessKind::Consuming);
+    assert!(consume.params()[0].ownership().input().is_some());
+    assert!(consume.result().ownership_output().is_some());
+
+    let call = typed
+        .module()
+        .items
+        .iter()
+        .find_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) if function.name == "caller" => {
+                match function.body.stmts.last() {
+                    Some(witchy_syntax::ast::Stmt::Expr(expression)) => Some(expression),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .expect("caller call expression");
+    assert_eq!(facts.call_at(call), Some(consume));
 }

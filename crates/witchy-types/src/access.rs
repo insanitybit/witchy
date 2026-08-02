@@ -11,7 +11,8 @@ use std::fmt;
 
 use witchy_cap_model::CapabilityKind;
 use witchy_syntax::ast::{
-    Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, Type, TypeQual,
+    Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, Type,
+    TypeDef, TypeQual, Variant, effective_type_def_params,
 };
 
 use crate::storage::externref_cap_name;
@@ -992,11 +993,30 @@ fn state_compatible(
 #[derive(Clone, Debug)]
 enum AccessFlow {
     None,
+    /// An access component which the active value does not instantiate (for
+    /// example the element of `None` or an empty list). It refines to the other
+    /// side at an ascription or control-flow join; it is never evidence that a
+    /// present callable may erase its contract.
+    Unknown,
     Callable(AccessSignature),
     Product(Vec<AccessFlow>),
+    Sequence(Box<AccessFlow>),
+    Named { name: String, arguments: Vec<AccessFlow>, dynamic: bool },
 }
 
 impl AccessFlow {
+    fn has_callable_contract(&self) -> bool {
+        match self {
+            Self::Callable(_) => true,
+            Self::Product(children) => children.iter().any(Self::has_callable_contract),
+            Self::Sequence(element) => element.has_callable_contract(),
+            Self::Named { arguments, .. } => {
+                arguments.iter().any(Self::has_callable_contract)
+            }
+            Self::None | Self::Unknown => false,
+        }
+    }
+
     fn product(children: Vec<Self>) -> Self {
         if children.iter().all(|child| matches!(child, Self::None)) {
             Self::None
@@ -1009,20 +1029,47 @@ impl AccessFlow {
         if matches!(ty.unqualified(), Type::Fn(_, _, _)) {
             return AccessSignature::from_function_type(ty).map(Self::Callable);
         }
-        let children = match ty.unqualified() {
-            Type::Tuple(children) | Type::Named(_, children) | Type::Dyn(_, children) => children,
+        match ty.unqualified() {
+            Type::Tuple(children) => {
+                let children = children
+                    .iter()
+                    .map(Self::from_type)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Self::product(children))
+            }
+            Type::Named(name, arguments) => {
+                let arguments = arguments
+                    .iter()
+                    .map(Self::from_type)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if arguments.iter().all(|argument| matches!(argument, Self::None)) {
+                    Ok(Self::None)
+                } else {
+                    Ok(Self::Named { name: name.clone(), arguments, dynamic: false })
+                }
+            }
+            Type::Dyn(name, arguments) => {
+                let arguments = arguments
+                    .iter()
+                    .map(Self::from_type)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if arguments.iter().all(|argument| matches!(argument, Self::None)) {
+                    Ok(Self::None)
+                } else {
+                    Ok(Self::Named { name: name.clone(), arguments, dynamic: true })
+                }
+            }
             Type::Qualified(_, _) => unreachable!("unqualified removes every qualifier"),
-            Type::RecordCompose { .. } | Type::Fn(_, _, _) => return Ok(Self::None),
-        };
-        let children = children
-            .iter()
-            .map(Self::from_type)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self::product(children))
+            Type::RecordCompose { .. } | Type::Fn(_, _, _) => Ok(Self::None),
+        }
     }
 
     fn verify_exact(&self, expected: &Self, context: &str) -> Result<(), AccessFlowError> {
+        if !expected.has_callable_contract() {
+            return Ok(());
+        }
         match (self, expected) {
+            (Self::Unknown, _) => Ok(()),
             (_, Self::None) => Ok(()),
             (Self::Callable(actual), Self::Callable(expected)) => actual
                 .verify_exact(expected)
@@ -1035,22 +1082,61 @@ impl AccessFlow {
                 }
                 Ok(())
             }
+            (Self::Sequence(actual), Self::Sequence(expected)) => {
+                actual.verify_exact(expected, context)
+            }
+            (
+                Self::Sequence(actual),
+                Self::Named { arguments, dynamic: false, .. },
+            ) if arguments.len() == 1 => {
+                actual.verify_exact(&arguments[0], context)
+            }
+            (
+                Self::Named { name: actual_name, arguments: actual, dynamic: actual_dynamic },
+                Self::Named { name: expected_name, arguments: expected, dynamic: expected_dynamic },
+            ) if actual_name == expected_name
+                && actual_dynamic == expected_dynamic
+                && actual.len() == expected.len() =>
+            {
+                for (actual, expected) in actual.iter().zip(expected) {
+                    actual.verify_exact(expected, context)?;
+                }
+                Ok(())
+            }
             _ => Err(AccessFlowError::missing(context)),
         }
     }
 
     fn join(&self, other: &Self, context: &str) -> Result<Self, AccessFlowError> {
+        if matches!(self, Self::Unknown) {
+            return Ok(other.clone());
+        }
+        if matches!(other, Self::Unknown) {
+            return Ok(self.clone());
+        }
+        if let (
+            Self::Named { name: left_name, arguments: left, dynamic: left_dynamic },
+            Self::Named { name: right_name, arguments: right, dynamic: right_dynamic },
+        ) = (self, other)
+            && left_name == right_name
+            && left_dynamic == right_dynamic
+            && left.len() == right.len()
+        {
+            return Ok(Self::Named {
+                name: left_name.clone(),
+                arguments: left
+                    .iter()
+                    .zip(right)
+                    .map(|(left, right)| left.join(right, context))
+                    .collect::<Result<Vec<_>, _>>()?,
+                dynamic: *left_dynamic,
+            });
+        }
         self.verify_exact(other, context)?;
         other.verify_exact(self, context)?;
         Ok(self.clone())
     }
 
-    fn project(&self, index: usize) -> Self {
-        match self {
-            Self::Product(children) => children.get(index).cloned().unwrap_or(Self::None),
-            _ => Self::None,
-        }
-    }
 }
 
 /// Finalized access-signature facts keyed to the exact typed AST used to build
@@ -1059,6 +1145,8 @@ impl AccessFlow {
 #[derive(Default)]
 pub struct CheckedAccessFacts {
     values: HashMap<usize, AccessFlow>,
+    declarations: HashMap<String, AccessSignature>,
+    calls: HashMap<usize, AccessSignature>,
 }
 
 impl CheckedAccessFacts {
@@ -1067,6 +1155,17 @@ impl CheckedAccessFacts {
             Some(AccessFlow::Callable(signature)) => Some(signature),
             _ => None,
         }
+    }
+
+    /// The finalized access identity of a checked direct declaration.
+    pub fn declaration(&self, name: &str) -> Option<&AccessSignature> {
+        self.declarations.get(name)
+    }
+
+    /// The finalized direct, indirect, or existential callable selected at one
+    /// exact checked call expression.
+    pub fn call_at(&self, expression: &Expr) -> Option<&AccessSignature> {
+        self.calls.get(&(expression as *const Expr as usize))
     }
 }
 
@@ -1107,6 +1206,8 @@ struct AccessVerifier<'a> {
     module: &'a Module,
     table: &'a TypeTable,
     functions: HashMap<String, Function>,
+    types: HashMap<String, TypeDef>,
+    variants: HashMap<String, Vec<(String, Variant)>>,
     record_fields: HashMap<(String, String), usize>,
     facts: CheckedAccessFacts,
 }
@@ -1121,6 +1222,23 @@ impl<'a> AccessVerifier<'a> {
                 _ => None,
             })
             .collect();
+        let types = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Type(definition) => Some((definition.name.clone(), definition.clone())),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
+        let mut variants = HashMap::<String, Vec<(String, Variant)>>::new();
+        for definition in types.values() {
+            for variant in &definition.variants {
+                variants
+                    .entry(variant.name.clone())
+                    .or_default()
+                    .push((definition.name.clone(), variant.clone()));
+            }
+        }
         let mut record_fields = HashMap::new();
         for item in &module.items {
             let Item::Type(definition) = item else { continue };
@@ -1130,7 +1248,15 @@ impl<'a> AccessVerifier<'a> {
                 }
             }
         }
-        Self { module, table, functions, record_fields, facts: CheckedAccessFacts::default() }
+        Self {
+            module,
+            table,
+            functions,
+            types,
+            variants,
+            record_fields,
+            facts: CheckedAccessFacts::default(),
+        }
     }
 
     fn verify(mut self) -> Result<CheckedAccessFacts, AccessFlowError> {
@@ -1170,6 +1296,9 @@ impl<'a> AccessVerifier<'a> {
         let Some(signature) = self.declaration_signature(function)? else {
             return Ok(());
         };
+        self.facts
+            .declarations
+            .insert(function.name.clone(), signature.clone());
         let mut environment = HashMap::new();
         for (parameter, access) in function.params.iter().zip(signature.params()) {
             environment.insert(
@@ -1238,6 +1367,258 @@ impl<'a> AccessVerifier<'a> {
             .map_err(Self::signature_error)
     }
 
+    fn nominal_arguments<'b>(flow: &'b AccessFlow, name: &str) -> Option<&'b [AccessFlow]> {
+        match flow {
+            AccessFlow::Named { name: found, arguments, dynamic: false } if found == name => {
+                Some(arguments)
+            }
+            _ => None,
+        }
+    }
+
+    fn substitute_type(ty: &Type, substitutions: &HashMap<String, Type>) -> Type {
+        match ty {
+            Type::Named(name, arguments) if arguments.is_empty() => substitutions
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| ty.clone()),
+            Type::Named(name, arguments) => Type::Named(
+                name.clone(),
+                arguments
+                    .iter()
+                    .map(|argument| Self::substitute_type(argument, substitutions))
+                    .collect(),
+            ),
+            Type::Dyn(name, arguments) => Type::Dyn(
+                name.clone(),
+                arguments
+                    .iter()
+                    .map(|argument| Self::substitute_type(argument, substitutions))
+                    .collect(),
+            ),
+            Type::Tuple(fields) => Type::Tuple(
+                fields
+                    .iter()
+                    .map(|field| Self::substitute_type(field, substitutions))
+                    .collect(),
+            ),
+            Type::Fn(params, result, conventions) => Type::Fn(
+                params
+                    .iter()
+                    .map(|param| Self::substitute_type(param, substitutions))
+                    .collect(),
+                Box::new(Self::substitute_type(result, substitutions)),
+                conventions.clone(),
+            ),
+            Type::Qualified(qualifier, inner) => Type::Qualified(
+                qualifier.clone(),
+                Box::new(Self::substitute_type(inner, substitutions)),
+            ),
+            Type::RecordCompose { base, fields } => Type::RecordCompose {
+                base: Box::new(Self::substitute_type(base, substitutions)),
+                fields: fields
+                    .iter()
+                    .map(|(name, field)| {
+                        (name.clone(), Self::substitute_type(field, substitutions))
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    fn nominal_substitutions(&self, name: &str, ty: &Type) -> HashMap<String, Type> {
+        let Some(definition) = self.types.get(name) else { return HashMap::new() };
+        let arguments = match ty.unqualified() {
+            Type::Named(found, arguments) if found == name => arguments,
+            _ => return HashMap::new(),
+        };
+        effective_type_def_params(definition)
+            .into_iter()
+            .zip(arguments.iter().cloned())
+            .collect()
+    }
+
+    fn flow_for_declared_type(
+        &self,
+        declared: &Type,
+        substitutions: &HashMap<String, Type>,
+        access_arguments: &HashMap<String, AccessFlow>,
+    ) -> Result<AccessFlow, AccessFlowError> {
+        if let Type::Named(name, arguments) = declared
+            && arguments.is_empty()
+            && let Some(flow) = access_arguments.get(name)
+        {
+            return Ok(flow.clone());
+        }
+        let resolved = Self::substitute_type(declared, substitutions);
+        AccessFlow::from_type(&resolved).map_err(Self::signature_error)
+    }
+
+    fn nominal_access_arguments(
+        &self,
+        name: &str,
+        flow: &AccessFlow,
+    ) -> HashMap<String, AccessFlow> {
+        let Some(definition) = self.types.get(name) else { return HashMap::new() };
+        let Some(arguments) = Self::nominal_arguments(flow, name) else {
+            return HashMap::new();
+        };
+        effective_type_def_params(definition)
+            .into_iter()
+            .zip(arguments.iter().cloned())
+            .collect()
+    }
+
+    fn constrain_declared_flow(
+        &self,
+        declared: &Type,
+        actual: &AccessFlow,
+        substitutions: &HashMap<String, Type>,
+        access_arguments: &mut HashMap<String, AccessFlow>,
+        context: &str,
+    ) -> Result<(), AccessFlowError> {
+        if let Type::Named(name, arguments) = declared
+            && arguments.is_empty()
+            && substitutions.contains_key(name)
+        {
+            let entry = access_arguments.entry(name.clone()).or_insert(AccessFlow::Unknown);
+            *entry = entry.join(actual, context)?;
+            return Ok(());
+        }
+        if let Type::Named(name, declared_arguments) = declared {
+            let actual_arguments = match actual {
+                AccessFlow::Named {
+                    name: actual_name,
+                    arguments,
+                    dynamic: false,
+                } if actual_name == name => Some(arguments.as_slice()),
+                AccessFlow::Sequence(element) if declared_arguments.len() == 1 => {
+                    Some(std::slice::from_ref(element.as_ref()))
+                }
+                _ => None,
+            };
+            if let Some(actual_arguments) = actual_arguments
+                && actual_arguments.len() == declared_arguments.len()
+            {
+                for (declared, actual) in declared_arguments.iter().zip(actual_arguments) {
+                    self.constrain_declared_flow(
+                        declared,
+                        actual,
+                        substitutions,
+                        access_arguments,
+                        context,
+                    )?;
+                }
+                return Ok(());
+            }
+        }
+        if let Type::Tuple(declared_fields) = declared
+            && let AccessFlow::Product(actual_fields) = actual
+            && declared_fields.len() == actual_fields.len()
+        {
+            for (declared, actual) in declared_fields.iter().zip(actual_fields) {
+                self.constrain_declared_flow(
+                    declared,
+                    actual,
+                    substitutions,
+                    access_arguments,
+                    context,
+                )?;
+            }
+            return Ok(());
+        }
+        let expected = self.flow_for_declared_type(declared, substitutions, access_arguments)?;
+        actual.verify_exact(&expected, context)
+    }
+
+    fn variant_for(&self, constructor: &str, value_type: &Type) -> Option<&(String, Variant)> {
+        let candidates = self.variants.get(constructor)?;
+        let owner = match value_type.unqualified() {
+            Type::Named(name, _) => Some(name),
+            _ => None,
+        };
+        owner
+            .and_then(|owner| candidates.iter().find(|(name, _)| name == owner))
+            .or_else(|| (candidates.len() == 1).then(|| &candidates[0]))
+    }
+
+    fn constructor_flow(
+        &self,
+        constructor: &str,
+        expression_type: &Type,
+        arguments: &[AccessFlow],
+    ) -> Result<AccessFlow, AccessFlowError> {
+        let Some((type_name, variant)) = self.variant_for(constructor, expression_type) else {
+            return AccessFlow::from_type(expression_type).map_err(Self::signature_error);
+        };
+        let substitutions = self.nominal_substitutions(type_name, expression_type);
+        let mut access_arguments = effective_type_def_params(&self.types[type_name])
+            .into_iter()
+            .map(|name| (name, AccessFlow::Unknown))
+            .collect::<HashMap<_, _>>();
+        for (index, (declared, actual)) in variant.fields.iter().zip(arguments).enumerate() {
+            self.constrain_declared_flow(
+                declared,
+                actual,
+                &substitutions,
+                &mut access_arguments,
+                &format!("field {} of constructor `{constructor}`", index + 1),
+            )?;
+        }
+        let arguments = effective_type_def_params(&self.types[type_name])
+            .into_iter()
+            .map(|name| access_arguments.remove(&name).unwrap_or(AccessFlow::Unknown))
+            .collect();
+        Ok(AccessFlow::Named {
+            name: type_name.clone(),
+            arguments,
+            dynamic: false,
+        })
+    }
+
+    fn field_flow(
+        &self,
+        base_type: &Type,
+        base_flow: &AccessFlow,
+        field: &str,
+    ) -> Result<AccessFlow, AccessFlowError> {
+        let Type::Named(name, _) = base_type.unqualified() else { return Ok(AccessFlow::None) };
+        let Some(definition) = self.types.get(name) else { return Ok(AccessFlow::None) };
+        let Some((variant, index)) = definition
+            .variants
+            .iter()
+            .find_map(|variant| {
+                variant
+                    .field_names
+                    .iter()
+                    .position(|found| found == field)
+                    .map(|index| (variant, index))
+            })
+        else {
+            return Ok(AccessFlow::None);
+        };
+        let substitutions = self.nominal_substitutions(name, base_type);
+        let access_arguments = self.nominal_access_arguments(name, base_flow);
+        self.flow_for_declared_type(&variant.fields[index], &substitutions, &access_arguments)
+    }
+
+    fn existential_signature(
+        &self,
+        receiver: &Type,
+        params: &[Type],
+        checked_result: &Type,
+        conventions: &[Convention],
+    ) -> Result<AccessSignature, AccessFlowError> {
+        let mut params = params.to_vec();
+        params.insert(0, receiver.clone());
+        AccessSignature::from_parts(
+            params,
+            checked_result.clone(),
+            conventions.to_vec(),
+        )
+        .map_err(Self::signature_error)
+    }
+
     fn verify_arguments(
         &self,
         name: &str,
@@ -1286,8 +1667,9 @@ impl<'a> AccessVerifier<'a> {
                     AccessFlow::None
                 }
                 Stmt::LetPattern { pattern, value } => {
+                    let value_type = self.resolved_expression_type(value);
                     let value = self.eval_expr(value, environment, return_expected)?;
-                    Self::bind_pattern(pattern, &value, environment);
+                    self.bind_pattern(pattern, &value, value_type.as_ref(), environment)?;
                     AccessFlow::None
                 }
                 Stmt::Return(value) => {
@@ -1310,29 +1692,82 @@ impl<'a> AccessVerifier<'a> {
         Ok(tail)
     }
 
-    fn bind_pattern(pattern: &Pattern, value: &AccessFlow, environment: &mut FlowEnvironment) {
+    fn bind_pattern(
+        &self,
+        pattern: &Pattern,
+        value: &AccessFlow,
+        value_type: Option<&Type>,
+        environment: &mut FlowEnvironment,
+    ) -> Result<(), AccessFlowError> {
         match pattern {
             Pattern::Var(name) if name != "_" => {
                 environment.insert(name.clone(), value.clone());
             }
-            Pattern::Ctor { args, .. }
-            | Pattern::AnonCtor { args, .. }
-            | Pattern::Tuple(args) => {
+            Pattern::Tuple(args) => {
+                let field_types = value_type.and_then(|ty| match ty.unqualified() {
+                    Type::Tuple(fields) => Some(fields.as_slice()),
+                    _ => None,
+                });
                 for (index, pattern) in args.iter().enumerate() {
-                    Self::bind_pattern(pattern, &value.project(index), environment);
+                    let flow = match value {
+                        AccessFlow::Product(children) => {
+                            children.get(index).cloned().unwrap_or(AccessFlow::None)
+                        }
+                        _ => field_types
+                            .and_then(|fields| fields.get(index))
+                            .map(AccessFlow::from_type)
+                            .transpose()
+                            .map_err(Self::signature_error)?
+                            .unwrap_or(AccessFlow::None),
+                    };
+                    self.bind_pattern(
+                        pattern,
+                        &flow,
+                        field_types.and_then(|fields| fields.get(index)),
+                        environment,
+                    )?;
+                }
+            }
+            Pattern::Ctor { name: constructor, args }
+            | Pattern::AnonCtor { tag: constructor, args } => {
+                let Some(value_type) = value_type else { return Ok(()) };
+                let Some((type_name, variant)) = self.variant_for(constructor, value_type) else {
+                    return Ok(());
+                };
+                let substitutions = self.nominal_substitutions(type_name, value_type);
+                let access_arguments = self.nominal_access_arguments(type_name, value);
+                for (index, pattern) in args.iter().enumerate() {
+                    let Some(declared) = variant.fields.get(index) else { continue };
+                    let flow = self.flow_for_declared_type(
+                        declared,
+                        &substitutions,
+                        &access_arguments,
+                    )?;
+                    let field_type = Self::substitute_type(declared, &substitutions);
+                    self.bind_pattern(pattern, &flow, Some(&field_type), environment)?;
                 }
             }
             Pattern::List { elems, rest } => {
-                for (index, pattern) in elems.iter().enumerate() {
-                    Self::bind_pattern(pattern, &value.project(index), environment);
+                let element = match value {
+                    AccessFlow::Sequence(element) => element.as_ref().clone(),
+                    AccessFlow::Named { arguments, dynamic: false, .. }
+                        if arguments.len() == 1 => arguments[0].clone(),
+                    _ => AccessFlow::Unknown,
+                };
+                let element_type = value_type.and_then(|ty| match ty.unqualified() {
+                    Type::Named(_, arguments) if arguments.len() == 1 => arguments.first(),
+                    _ => None,
+                });
+                for pattern in elems {
+                    self.bind_pattern(pattern, &element, element_type, environment)?;
                 }
                 if let Some(Some(name)) = rest {
-                    environment.insert(name.clone(), AccessFlow::None);
+                    environment.insert(name.clone(), value.clone());
                 }
             }
             Pattern::Or(alternatives) => {
                 if let Some(first) = alternatives.first() {
-                    Self::bind_pattern(first, value, environment);
+                    self.bind_pattern(first, value, value_type, environment)?;
                 }
             }
             Pattern::Wildcard
@@ -1343,17 +1778,19 @@ impl<'a> AccessVerifier<'a> {
             | Pattern::Duration(_)
             | Pattern::IntRange { .. } => {}
         }
+        Ok(())
     }
 
     fn eval_arm(
         &mut self,
         arm: &MatchArm,
         scrutinee: &AccessFlow,
+        scrutinee_type: Option<&Type>,
         environment: &FlowEnvironment,
         return_expected: &AccessFlow,
     ) -> Result<(AccessFlow, FlowEnvironment), AccessFlowError> {
         let mut environment = environment.clone();
-        Self::bind_pattern(&arm.pattern, scrutinee, &mut environment);
+        self.bind_pattern(&arm.pattern, scrutinee, scrutinee_type, &mut environment)?;
         if let Some(guard) = &arm.guard {
             self.eval_expr(guard, &mut environment, return_expected)?;
         }
@@ -1394,6 +1831,12 @@ impl<'a> AccessVerifier<'a> {
         flow
     }
 
+    fn record_call(&mut self, expression: &Expr, signature: &AccessSignature) {
+        self.facts
+            .calls
+            .insert(expression as *const Expr as usize, signature.clone());
+    }
+
     fn eval_expr(
         &mut self,
         expression: &Expr,
@@ -1412,7 +1855,22 @@ impl<'a> AccessVerifier<'a> {
                         .unwrap_or(AccessFlow::None)
                 }
             }
-            Expr::List(values) | Expr::Tuple(values) => AccessFlow::product(
+            Expr::List(values) => {
+                let elements = values
+                    .iter()
+                    .map(|value| self.eval_expr(value, environment, return_expected))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let element = elements.into_iter().try_fold(
+                    AccessFlow::Unknown,
+                    |left, right| left.join(&right, "list element access contracts"),
+                )?;
+                if matches!(element, AccessFlow::None) {
+                    AccessFlow::None
+                } else {
+                    AccessFlow::Sequence(Box::new(element))
+                }
+            }
+            Expr::Tuple(values) => AccessFlow::product(
                 values
                     .iter()
                     .map(|value| self.eval_expr(value, environment, return_expected))
@@ -1433,6 +1891,7 @@ impl<'a> AccessVerifier<'a> {
                 match signature {
                     Some(signature) => {
                         self.verify_arguments(name, &signature, &arguments)?;
+                        self.record_call(expression, &signature);
                         AccessFlow::from_type(signature.result().ty())
                             .map_err(Self::signature_error)?
                     }
@@ -1448,6 +1907,7 @@ impl<'a> AccessVerifier<'a> {
                 match self.signature_for_named_call(name, expression, &positional)? {
                     Some(signature) => {
                         self.verify_arguments(name, &signature, &arguments)?;
+                        self.record_call(expression, &signature);
                         AccessFlow::from_type(signature.result().ty())
                             .map_err(Self::signature_error)?
                     }
@@ -1464,13 +1924,22 @@ impl<'a> AccessVerifier<'a> {
                     return Ok(self.record(expression, AccessFlow::None));
                 };
                 self.verify_arguments("indirect function", &signature, &arguments)?;
+                self.record_call(expression, &signature);
                 AccessFlow::from_type(signature.result().ty()).map_err(Self::signature_error)?
             }
-            Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => AccessFlow::product(
-                args.iter()
+            Expr::Ctor { name, args } | Expr::AnonCtor { tag: name, args } => {
+                let arguments = args.iter()
                     .map(|argument| self.eval_expr(argument, environment, return_expected))
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
+                    .collect::<Result<Vec<_>, _>>()?;
+                let expression_type = self.resolved_expression_type(expression).unwrap_or_else(|| {
+                    self.variants
+                        .get(name)
+                        .and_then(|candidates| candidates.first())
+                        .map(|(type_name, _)| Type::Named(type_name.clone(), Vec::new()))
+                        .unwrap_or_else(|| Type::Named(name.clone(), Vec::new()))
+                });
+                self.constructor_flow(name, &expression_type, &arguments)?
+            }
             Expr::Unary { expr, .. }
             | Expr::Try(expr)
             | Expr::ExistentialPack { expr, .. }
@@ -1479,16 +1948,10 @@ impl<'a> AccessVerifier<'a> {
             }
             Expr::Field { base, field } => {
                 let base_flow = self.eval_expr(base, environment, return_expected)?;
-                let index = self
-                    .resolved_expression_type(base)
-                    .and_then(|ty| match ty.unqualified() {
-                        Type::Named(name, _) => self
-                            .record_fields
-                            .get(&(name.clone(), field.clone()))
-                            .copied(),
-                        _ => None,
-                    });
-                index.map_or(AccessFlow::None, |index| base_flow.project(index))
+                match self.resolved_expression_type(base) {
+                    Some(base_type) => self.field_flow(&base_type, &base_flow, field)?,
+                    None => AccessFlow::None,
+                }
             }
             Expr::Lambda { params, body, ret } => {
                 let resolved = self.resolved_expression_type(expression).ok_or_else(|| {
@@ -1554,12 +2017,44 @@ impl<'a> AccessVerifier<'a> {
                         .collect::<Result<Vec<_>, _>>()?,
                 )
             }
-            Expr::ExistentialCall { receiver, args, .. } => {
-                self.eval_expr(receiver, environment, return_expected)?;
-                for argument in args {
-                    self.eval_expr(argument, environment, return_expected)?;
+            Expr::ExistentialCall {
+                receiver,
+                args,
+                ty,
+                method,
+                params,
+                result,
+                conventions,
+                ..
+            } => {
+                let receiver_flow = self.eval_expr(receiver, environment, return_expected)?;
+                let arguments = args
+                    .iter()
+                    .map(|argument| self.eval_expr(argument, environment, return_expected))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let signature = self.existential_signature(ty, params, result, conventions)?;
+                if let Some(receiver_param) = signature.params().first() {
+                    let expected = AccessFlow::from_type(receiver_param.ty())
+                        .map_err(Self::signature_error)?;
+                    receiver_flow.verify_exact(
+                        &expected,
+                        &format!("receiver passed to dynamic method `{method}`"),
+                    )?;
                 }
-                AccessFlow::None
+                for (index, (actual, expected)) in arguments
+                    .iter()
+                    .zip(signature.params().iter().skip(1))
+                    .enumerate()
+                {
+                    let expected = AccessFlow::from_type(expected.ty())
+                        .map_err(Self::signature_error)?;
+                    actual.verify_exact(
+                        &expected,
+                        &format!("argument {} passed to dynamic method `{method}`", index + 1),
+                    )?;
+                }
+                self.record_call(expression, &signature);
+                AccessFlow::from_type(signature.result().ty()).map_err(Self::signature_error)?
             }
             Expr::Binary { lhs, rhs, .. } => {
                 self.eval_expr(lhs, environment, return_expected)?;
@@ -1587,10 +2082,19 @@ impl<'a> AccessVerifier<'a> {
                 then_flow.join(&else_flow, "if-expression branches")?
             }
             Expr::Match { scrutinee, arms } => {
+                let scrutinee_type = self.resolved_expression_type(scrutinee);
                 let scrutinee = self.eval_expr(scrutinee, environment, return_expected)?;
                 let branches = arms
                     .iter()
-                    .map(|arm| self.eval_arm(arm, &scrutinee, environment, return_expected))
+                    .map(|arm| {
+                        self.eval_arm(
+                            arm,
+                            &scrutinee,
+                            scrutinee_type.as_ref(),
+                            environment,
+                            return_expected,
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 let flows = branches.iter().map(|(flow, _)| flow.clone());
                 let branch_environments = branches
@@ -1621,9 +2125,16 @@ impl<'a> AccessVerifier<'a> {
             Expr::Index { base, index } => {
                 let base = self.eval_expr(base, environment, return_expected)?;
                 self.eval_expr(index, environment, return_expected)?;
-                match index.as_ref() {
-                    Expr::Int(index) if *index >= 0 => base.project(*index as usize),
-                    _ => AccessFlow::None,
+                match &base {
+                    AccessFlow::Sequence(element) => element.as_ref().clone(),
+                    AccessFlow::Named { arguments, dynamic: false, .. }
+                        if arguments.len() == 1 => arguments[0].clone(),
+                    _ => self
+                        .resolved_expression_type(expression)
+                        .map(|ty| AccessFlow::from_type(&ty))
+                        .transpose()
+                        .map_err(Self::signature_error)?
+                        .unwrap_or(AccessFlow::None),
                 }
             }
             Expr::WhileLet { scrutinee, body, .. } => {
