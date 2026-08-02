@@ -1295,3 +1295,195 @@ fn every_access_consumer_uses_the_checked_logical_envelope() {
         "source diagnostics leaked backend ownership names: {diagnostic}",
     );
 }
+
+const COMBINED_ASCRIPTION_DECLARATION: &str = r#"
+mode opt
+
+fn strict(var values: unique List(Int)) -> unique List(Int):
+    values
+"#;
+
+#[test]
+fn combined_access_envelope_cannot_be_erased_at_any_ascription_boundary() {
+    let checked = witchy::resolve_std_only_checked(&format!(
+        "{COMBINED_ASCRIPTION_DECLARATION}\nfn main() -> Int:\n    0\n"
+    ))
+    .expect("checked combined access-envelope declaration");
+    let typed = witchy_types::typeck::annotate_checked(checked.module().clone())
+        .expect("typed combined access-envelope declaration");
+    let facts = checked_facts(typed.module(), typed.table())
+        .expect("checked combined access-envelope facts");
+    let strict = function(typed.module(), "strict");
+    let signature = facts
+        .declaration(&strict.name)
+        .expect("combined access-envelope declaration fact");
+    assert_eq!(signature.params()[0].kind(), AccessKind::ExclusiveWriteback);
+    assert_eq!(signature.params()[0].qualifiers(), &[AccessQualifier::Unique]);
+    assert!(signature.params()[0].ownership().input().is_some());
+    assert!(signature.params()[0].ownership().writeback().is_some());
+    assert_eq!(signature.result().qualifiers(), &[AccessQualifier::Unique]);
+    assert!(signature.result().ownership_output().is_some());
+
+    let erased = "fn(var List(Int)) -> List(Int)";
+    let cases = [
+        (
+            "typed local",
+            format!(
+                "fn main():\n    let erased: {erased} = strict\n    return\n"
+            ),
+            "function value `erased`",
+        ),
+        (
+            "function cast",
+            format!(
+                "fn main():\n    let erased = strict as {erased}\n    return\n"
+            ),
+            "function cast",
+        ),
+        (
+            "higher-order argument",
+            format!(
+                "fn accept(operation: {erased}) -> Nil:\n    return\n\n\
+                 fn main():\n    accept(strict)\n"
+            ),
+            "argument 1 passed to `accept`",
+        ),
+        (
+            "returned function value",
+            format!(
+                "fn erase() -> {erased}:\n    strict\n\nfn main() -> Int:\n    0\n"
+            ),
+            "returned function value",
+        ),
+    ];
+    for (name, body, context) in cases {
+        let error = witchy::typeck::check_str(&format!(
+            "{COMBINED_ASCRIPTION_DECLARATION}\n{body}"
+        ))
+        .expect_err("the combined access envelope must not be erased");
+        assert!(
+            error.contains(context)
+                && error.contains("erases or changes its ownership/access contract")
+                && error.contains("Qualifier"),
+            "{name} produced a generic mismatch instead of the checked access rejection: {error}",
+        );
+    }
+}
+
+struct ProjectionEntrypoint {
+    name: &'static str,
+    declarations: &'static str,
+    setup: &'static str,
+    exchange: &'static str,
+    reserve: &'static str,
+}
+
+const PROJECTION_PROGRAM: &str = r#"
+mode opt
+
+type Pair:
+    left: Int
+    right: Int
+
+fn exchange(var left: Int, var right: Int) -> Int:
+    left = left + 10
+    right = right + 20
+    left + right
+
+fn reserve(var whole: Pair, var part: Int) -> Nil:
+    return
+"#;
+
+fn projection_source(entrypoint: &ProjectionEntrypoint, body: &str) -> String {
+    format!(
+        "{PROJECTION_PROGRAM}\n{}\nfn main() -> Int:\n\
+         \x20   var pair = Pair(1, 2)\n\
+         \x20   var rows = [[1, 2]]\n\
+         \x20   let index = 0\n{}{}\n    0\n",
+        entrypoint.declarations, entrypoint.setup, body,
+    )
+}
+
+#[test]
+fn checked_place_overlap_matrix_is_shared_by_every_var_call_entrypoint() {
+    let entrypoints = [
+        ProjectionEntrypoint {
+            name: "direct",
+            declarations: "",
+            setup: "",
+            exchange: "exchange",
+            reserve: "reserve",
+        },
+        ProjectionEntrypoint {
+            name: "function value",
+            declarations: "",
+            setup: "    let exchange_call = exchange\n    let reserve_call = reserve\n",
+            exchange: "exchange_call",
+            reserve: "reserve_call",
+        },
+        ProjectionEntrypoint {
+            name: "existential",
+            declarations: r#"
+trait ProjectionOps:
+    fn exchange(let self, var left: Int, var right: Int) -> Int
+    fn reserve(let self, var whole: Pair, var part: Int) -> Nil
+
+type Ops:
+    Ops
+
+impl ProjectionOps for Ops:
+    fn exchange(let self, var left: Int, var right: Int) -> Int:
+        left = left + 10
+        right = right + 20
+        left + right
+
+    fn reserve(let self, var whole: Pair, var part: Int) -> Nil:
+        return
+"#,
+            setup: "    let operation: dyn ProjectionOps = Ops\n",
+            exchange: "operation.exchange",
+            reserve: "operation.reserve",
+        },
+    ];
+
+    for entrypoint in &entrypoints {
+        let accepted = format!(
+            "    let _ = {}(pair.left, pair.right)\n\
+             \x20   let _ = {}(rows[0][0], rows[0][1])",
+            entrypoint.exchange, entrypoint.exchange,
+        );
+        witchy::resolve_std_only_checked(&projection_source(entrypoint, &accepted))
+            .unwrap_or_else(|error| panic!("{} rejected disjoint places: {error}", entrypoint.name));
+
+        let rejected = [
+            (
+                "identical field",
+                format!("    let _ = {}(pair.left, pair.left)", entrypoint.exchange),
+                "pair",
+            ),
+            (
+                "ancestor field",
+                format!("    let _ = {}(pair, pair.left)", entrypoint.reserve),
+                "pair",
+            ),
+            (
+                "dynamic index",
+                format!(
+                    "    let _ = {}(rows[0][index], rows[0][1])",
+                    entrypoint.exchange,
+                ),
+                "rows",
+            ),
+        ];
+        for (case, call, root) in rejected {
+            let error = witchy::resolve_std_only_checked(&projection_source(entrypoint, &call))
+                .expect_err("overlapping or unknown places must be rejected")
+                .to_string();
+            assert!(
+                error.contains("overlapping `var` places") && error.contains(root),
+                "{} {case} did not use the shared checked-place rejection: {error}",
+                entrypoint.name,
+            );
+        }
+    }
+}
