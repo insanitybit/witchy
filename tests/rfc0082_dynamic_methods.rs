@@ -312,30 +312,17 @@ pub fn view(self: Widget, text: View(frozen String, 'source)) -> View(frozen Str
     text
 
 fn main(console: Console):
-    let descriptor = dynamic.type_of(dynamic.dynamic(Widget(1)))
-    let method = list.at(dynamic.methods(descriptor), 0)
-    match dynamic.method_access(method):
-        dynamic.RuntimeCallableAccess(_, _, _, relations) ->
-            match list.at(relations, 0):
-                dynamic.RuntimeBorrowRelation(lifetime, output, owners, storage, storage_sites) ->
-                    console.print("relation-${lifetime}-${list.length(output)}-${dynamic.type_name(storage)}")
-                    match list.at(owners, 0):
-                        dynamic.RuntimeBorrowOwner(parameter, input) ->
-                            console.print("owner-${parameter}-${list.length(input)}")
-                    match list.at(storage_sites, 0):
-                        dynamic.RuntimeQualifierSite(path, qualifiers) ->
-                            match list.at(qualifiers, 0):
-                                dynamic.AccessFrozen -> console.print("storage-${list.length(path)}-frozen")
-                                _ -> console.print("wrong-storage-qualifier")
+    let method = list.at(dynamic.methods(dynamic.type_of(dynamic.dynamic(Widget(1)))), 0)
+    let relation = list.at(dynamic.access_borrow_relations(dynamic.method_access(method)), 0)
+    let owner = list.at(dynamic.borrow_relation_owners(relation), 0)
+    let storage_site = list.at(dynamic.borrow_relation_storage_qualifiers(relation), 0)
+    let qualifier = list.at(dynamic.qualifier_site_qualifiers(storage_site), 0)
+    console.print("relation-${dynamic.borrow_relation_lifetime(relation)}-${list.length(dynamic.borrow_relation_output(relation))}-${dynamic.type_name(dynamic.borrow_relation_storage(relation))}|owner-${dynamic.borrow_owner_parameter(owner)}-${list.length(dynamic.borrow_owner_input(owner))}|storage-${list.length(dynamic.qualifier_site_path(storage_site))}-${qualifier}")
 "#;
     let checked = checked(source);
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret borrow storage reflection fixture");
-    let expected = [
-        "relation-0-0-frozen String",
-        "owner-1-0",
-        "storage-0-frozen",
-    ];
+    let expected = ["relation-0-0-frozen String|owner-1-0|storage-0-AccessFrozen"];
     assert_eq!(interpreted, expected);
 
     let wasm = codegen::compile_checked_module_binary(&checked)

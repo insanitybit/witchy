@@ -148,6 +148,46 @@ pub fn method_access(method: RuntimeMethod) -> RuntimeCallableAccess:
     match method:
         RuntimeMethod(_, _, _, _, access) -> access
 
+pub fn access_borrow_relations(access: RuntimeCallableAccess) -> List(RuntimeBorrowRelation):
+    match access:
+        RuntimeCallableAccess(_, _, _, relations) -> relations
+
+pub fn borrow_relation_lifetime(relation: RuntimeBorrowRelation) -> Int:
+    match relation:
+        RuntimeBorrowRelation(lifetime, _, _, _, _) -> lifetime
+
+pub fn borrow_relation_output(relation: RuntimeBorrowRelation) -> List(RuntimeLoanProjectionStep):
+    match relation:
+        RuntimeBorrowRelation(_, output, _, _, _) -> output
+
+pub fn borrow_relation_owners(relation: RuntimeBorrowRelation) -> List(RuntimeBorrowOwner):
+    match relation:
+        RuntimeBorrowRelation(_, _, owners, _, _) -> owners
+
+pub fn borrow_relation_storage(relation: RuntimeBorrowRelation) -> RuntimeType:
+    match relation:
+        RuntimeBorrowRelation(_, _, _, storage, _) -> storage
+
+pub fn borrow_relation_storage_qualifiers(relation: RuntimeBorrowRelation) -> List(RuntimeQualifierSite):
+    match relation:
+        RuntimeBorrowRelation(_, _, _, _, qualifiers) -> qualifiers
+
+pub fn borrow_owner_parameter(owner: RuntimeBorrowOwner) -> Int:
+    match owner:
+        RuntimeBorrowOwner(parameter, _) -> parameter
+
+pub fn borrow_owner_input(owner: RuntimeBorrowOwner) -> List(RuntimeLoanProjectionStep):
+    match owner:
+        RuntimeBorrowOwner(_, input) -> input
+
+pub fn qualifier_site_path(site: RuntimeQualifierSite) -> List(RuntimeQualifierPathStep):
+    match site:
+        RuntimeQualifierSite(path, _) -> path
+
+pub fn qualifier_site_qualifiers(site: RuntimeQualifierSite) -> List(RuntimeAccessQualifier):
+    match site:
+        RuntimeQualifierSite(_, qualifiers) -> qualifiers
+
 // Invoke only a descriptor-registered method. Arguments are checked against
 // exact authenticated descriptors before the compiler-generated typed call.
 pub fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic, DynamicError):
