@@ -12,7 +12,8 @@ use std::fmt;
 use witchy_cap_model::CapabilityKind;
 use witchy_syntax::ast::{
     Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, Type,
-    TypeDef, TypeQual, Variant, effective_type_def_params,
+    TypeDef, TypeQual, Variant, effective_nominal_type_def_params,
+    effective_type_def_params,
 };
 
 use crate::storage::externref_cap_name;
@@ -130,7 +131,7 @@ impl BorrowRelationCatalog {
     }
 
     pub(crate) fn slots(&self, ty: &Type) -> Vec<BorrowSlot> {
-        self.slots_with(ty, &HashMap::new(), &HashMap::new(), 0)
+        self.slots_with(ty, &HashMap::new(), &HashMap::new(), &mut Vec::new())
     }
 
     fn borrow_lifetimes(&self, ty: &Type) -> Vec<String> {
@@ -142,14 +143,11 @@ impl BorrowRelationCatalog {
         ty: &Type,
         lifetimes: &HashMap<String, String>,
         types: &HashMap<String, Type>,
-        depth: usize,
+        active_nominals: &mut Vec<(String, Type)>,
     ) -> Vec<BorrowSlot> {
-        if depth > 32 {
-            return Vec::new();
-        }
         match ty {
             Type::Qualified(TypeQual::Borrow(lifetime), inner) => {
-                let nested = self.slots_with(inner, lifetimes, types, depth + 1);
+                let nested = self.slots_with(inner, lifetimes, types, active_nominals);
                 if !nested.is_empty() {
                     nested
                 } else {
@@ -159,16 +157,18 @@ impl BorrowRelationCatalog {
                             .cloned()
                             .unwrap_or_else(|| lifetime.clone()),
                         projection: LoanProjection::default(),
-                        storage_type: substitute_borrow_slot_type(inner, types, depth + 1),
+                        storage_type: substitute_borrow_slot_type(inner, types),
                     }]
                 }
             }
-            Type::Qualified(_, inner) => self.slots_with(inner, lifetimes, types, depth + 1),
+            Type::Qualified(_, inner) => {
+                self.slots_with(inner, lifetimes, types, active_nominals)
+            }
             Type::Tuple(items) => items
                 .iter()
                 .enumerate()
                 .flat_map(|(index, item)| {
-                    self.slots_with(item, lifetimes, types, depth + 1)
+                    self.slots_with(item, lifetimes, types, active_nominals)
                         .into_iter()
                         .map(move |mut slot| {
                             slot.projection = slot
@@ -182,14 +182,25 @@ impl BorrowRelationCatalog {
                 if arguments.is_empty()
                     && let Some(substituted) = types.get(name)
                 {
-                    return self.slots_with(substituted, lifetimes, types, depth + 1);
+                    let substituted = substitute_borrow_slot_type(substituted, types);
+                    if &substituted == ty {
+                        return coarse_borrow_slots(ty, lifetimes, types);
+                    }
+                    return self.slots_with(
+                        &substituted,
+                        lifetimes,
+                        types,
+                        active_nominals,
+                    );
                 }
                 let Some(definition) = self.definitions.get(name) else {
-                    return Vec::new();
+                    return coarse_borrow_slots(ty, lifetimes, types);
                 };
                 let mut nested_lifetimes = lifetimes.clone();
                 let mut nested_types = types.clone();
-                for (parameter, argument) in definition.params.iter().zip(arguments) {
+                for (parameter, argument) in
+                    effective_nominal_type_def_params(definition).iter().zip(arguments)
+                {
                     if parameter.starts_with('\'') {
                         if let Type::Named(argument, arguments) = argument
                             && arguments.is_empty()
@@ -212,14 +223,36 @@ impl BorrowRelationCatalog {
                     } else {
                         nested_types.insert(
                             parameter.clone(),
-                            substitute_borrow_slot_type(argument, types, depth + 1),
+                            substitute_borrow_slot_type(argument, types),
                         );
                     }
                 }
+                let instantiated = Type::Named(
+                    name.clone(),
+                    arguments
+                        .iter()
+                        .map(|argument| substitute_borrow_slot_type(argument, types))
+                        .collect(),
+                );
+                if active_nominals.iter().any(|(_, active)| active == &instantiated) {
+                    return Vec::new();
+                }
+                if active_nominals.iter().rev().any(|(active_name, active)| {
+                    active_name == name
+                        && type_node_count(&instantiated) >= type_node_count(active)
+                }) {
+                    // A recursive declaration which does not consume a finite
+                    // type argument cannot reveal a new finite field path. Keep
+                    // any lifetime relation visible in its instantiated
+                    // arguments as a conservative root relation and terminate.
+                    return coarse_borrow_slots(&instantiated, &nested_lifetimes, &nested_types);
+                }
+                active_nominals.push((name.clone(), instantiated));
                 let [variant] = definition.variants.as_slice() else {
+                    active_nominals.pop();
                     return Vec::new();
                 };
-                variant
+                let slots = variant
                     .fields
                     .iter()
                     .enumerate()
@@ -234,7 +267,7 @@ impl BorrowRelationCatalog {
                             field,
                             &nested_lifetimes,
                             &nested_types,
-                            depth + 1,
+                            active_nominals,
                         )
                         .into_iter()
                         .map(move |mut slot| {
@@ -242,9 +275,12 @@ impl BorrowRelationCatalog {
                             slot
                         })
                     })
-                    .collect()
+                    .collect();
+                active_nominals.pop();
+                slots
             }
-            Type::RecordCompose { .. } | Type::Fn(_, _, _) | Type::Dyn(_, _) => Vec::new(),
+            Type::Dyn(_, _) => coarse_borrow_slots(ty, lifetimes, types),
+            Type::RecordCompose { .. } | Type::Fn(_, _, _) => Vec::new(),
         }
     }
 
@@ -296,59 +332,151 @@ fn slot_lifetimes(slots: &[BorrowSlot]) -> Vec<String> {
     lifetimes
 }
 
-fn substitute_borrow_slot_type(
+/// Preserve the coarse lifetime relation available from a type alone when no
+/// declaration catalog can authenticate nominal field paths. Every discovered
+/// lifetime conservatively refers to the nominal root.
+fn coarse_borrow_slots(
+    ty: &Type,
+    substitutions: &HashMap<String, String>,
+    types: &HashMap<String, Type>,
+) -> Vec<BorrowSlot> {
+    fn collect(
+        ty: &Type,
+        substitutions: &HashMap<String, String>,
+        found: &mut Vec<String>,
+    ) {
+        match ty {
+            Type::Qualified(TypeQual::Borrow(lifetime), inner) => {
+                let lifetime = substitutions
+                    .get(lifetime)
+                    .cloned()
+                    .unwrap_or_else(|| lifetime.clone());
+                if !found.contains(&lifetime) {
+                    found.push(lifetime);
+                }
+                collect(inner, substitutions, found);
+            }
+            Type::Qualified(_, inner) => collect(inner, substitutions, found),
+            Type::Named(name, arguments) if arguments.is_empty() && name.starts_with('\'') => {
+                let lifetime = name
+                    .strip_prefix('\'')
+                    .expect("guarded lifetime marker");
+                let lifetime = substitutions
+                    .get(lifetime)
+                    .cloned()
+                    .unwrap_or_else(|| lifetime.to_string());
+                if !found.contains(&lifetime) {
+                    found.push(lifetime);
+                }
+            }
+            Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
+                for argument in arguments {
+                    collect(argument, substitutions, found);
+                }
+            }
+            Type::RecordCompose { base, fields } => {
+                collect(base, substitutions, found);
+                for (_, field) in fields {
+                    collect(field, substitutions, found);
+                }
+            }
+            Type::Fn(_, _, _) => {}
+        }
+    }
+
+    let mut lifetimes = Vec::new();
+    collect(ty, substitutions, &mut lifetimes);
+    let storage_type = substitute_borrow_slot_type(ty, types);
+    lifetimes
+        .into_iter()
+        .map(|lifetime| BorrowSlot {
+            lifetime,
+            projection: LoanProjection::default(),
+            storage_type: storage_type.clone(),
+        })
+        .collect()
+}
+
+fn type_node_count(ty: &Type) -> usize {
+    let children = match ty {
+        Type::Qualified(_, inner) => type_node_count(inner),
+        Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => arguments
+            .iter()
+            .fold(0usize, |count, argument| count.saturating_add(type_node_count(argument))),
+        Type::Fn(params, result, _) => params
+            .iter()
+            .fold(type_node_count(result), |count, parameter| {
+                count.saturating_add(type_node_count(parameter))
+            }),
+        Type::RecordCompose { base, fields } => fields
+            .iter()
+            .fold(type_node_count(base), |count, (_, field)| {
+                count.saturating_add(type_node_count(field))
+            }),
+    };
+    1usize.saturating_add(children)
+}
+
+fn substitute_borrow_slot_type(ty: &Type, substitutions: &HashMap<String, Type>) -> Type {
+    substitute_borrow_slot_type_with(ty, substitutions, &mut Vec::new())
+}
+
+fn substitute_borrow_slot_type_with(
     ty: &Type,
     substitutions: &HashMap<String, Type>,
-    depth: usize,
+    active: &mut Vec<String>,
 ) -> Type {
-    if depth > 32 {
-        return ty.clone();
-    }
     match ty {
-        Type::Named(name, arguments) if arguments.is_empty() => substitutions
-            .get(name)
-            .map(|ty| substitute_borrow_slot_type(ty, substitutions, depth + 1))
-            .unwrap_or_else(|| ty.clone()),
+        Type::Named(name, arguments) if arguments.is_empty() => {
+            let Some(substitution) = substitutions.get(name) else { return ty.clone() };
+            if active.contains(name) {
+                return ty.clone();
+            }
+            active.push(name.clone());
+            let substituted = substitute_borrow_slot_type_with(substitution, substitutions, active);
+            active.pop();
+            substituted
+        }
         Type::Named(name, arguments) => Type::Named(
             name.clone(),
             arguments
                 .iter()
-                .map(|argument| substitute_borrow_slot_type(argument, substitutions, depth + 1))
+                .map(|argument| substitute_borrow_slot_type_with(argument, substitutions, active))
                 .collect(),
         ),
         Type::Qualified(qualifier, inner) => Type::Qualified(
             qualifier.clone(),
-            Box::new(substitute_borrow_slot_type(inner, substitutions, depth + 1)),
+            Box::new(substitute_borrow_slot_type_with(inner, substitutions, active)),
         ),
         Type::Tuple(items) => Type::Tuple(
             items
                 .iter()
-                .map(|item| substitute_borrow_slot_type(item, substitutions, depth + 1))
+                .map(|item| substitute_borrow_slot_type_with(item, substitutions, active))
                 .collect(),
         ),
         Type::Fn(params, result, conventions) => Type::Fn(
             params
                 .iter()
-                .map(|param| substitute_borrow_slot_type(param, substitutions, depth + 1))
+                .map(|param| substitute_borrow_slot_type_with(param, substitutions, active))
                 .collect(),
-            Box::new(substitute_borrow_slot_type(result, substitutions, depth + 1)),
+            Box::new(substitute_borrow_slot_type_with(result, substitutions, active)),
             conventions.clone(),
         ),
         Type::Dyn(name, arguments) => Type::Dyn(
             name.clone(),
             arguments
                 .iter()
-                .map(|argument| substitute_borrow_slot_type(argument, substitutions, depth + 1))
+                .map(|argument| substitute_borrow_slot_type_with(argument, substitutions, active))
                 .collect(),
         ),
         Type::RecordCompose { base, fields } => Type::RecordCompose {
-            base: Box::new(substitute_borrow_slot_type(base, substitutions, depth + 1)),
+            base: Box::new(substitute_borrow_slot_type_with(base, substitutions, active)),
             fields: fields
                 .iter()
                 .map(|(name, field)| {
                     (
                         name.clone(),
-                        substitute_borrow_slot_type(field, substitutions, depth + 1),
+                        substitute_borrow_slot_type_with(field, substitutions, active),
                     )
                 })
                 .collect(),

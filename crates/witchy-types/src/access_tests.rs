@@ -49,6 +49,62 @@ fn catalog_signature(source: &str, function_name: &str) -> AccessSignature {
         .expect("valid catalog-backed access signature")
 }
 
+fn assert_coarse_root_relation(signature: &AccessSignature) {
+    let [relation] = signature.borrow_relations() else {
+        panic!("one coarse nominal lifetime relation must be preserved")
+    };
+    assert_eq!(relation.lifetime(), "scope");
+    assert_eq!(relation.output_projection(), &LoanProjection::default());
+    let [owner] = relation.owners() else { panic!("the input nominal must own the result") };
+    assert_eq!(owner.position(), 0);
+    assert_eq!(owner.input_projection(), &LoanProjection::default());
+}
+
+#[test]
+fn public_catalog_free_constructors_preserve_coarse_nominal_lifetime_relations() {
+    let lifetime = Type::Named("'scope".into(), Vec::new());
+    let parser = Type::Named("Parser".into(), vec![lifetime]);
+    let function_type = Type::Fn(
+        vec![parser.clone()],
+        Box::new(parser.clone()),
+        vec![Convention::Let],
+    );
+
+    assert_coarse_root_relation(
+        &AccessSignature::from_parts(
+            vec![parser.clone()],
+            parser.clone(),
+            vec![Convention::Let],
+        )
+        .expect("public from_parts keeps a conservative nominal relation"),
+    );
+    assert_coarse_root_relation(
+        &AccessSignature::from_function_type(&function_type)
+            .expect("public function-type derivation keeps a conservative nominal relation"),
+    );
+
+    let module = witchy_syntax::parser::parse_module(
+        "fn parse(value: Parser('scope)) -> Parser('scope):\n    value\n",
+    )
+    .expect("parse public constructor fixture");
+    let function = module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) => Some(function),
+            _ => None,
+        })
+        .expect("fixture function");
+    assert_coarse_root_relation(
+        &AccessSignature::from_function(function)
+            .expect("public declaration derivation keeps a conservative nominal relation"),
+    );
+    assert_coarse_root_relation(
+        &AccessSignature::from_resolved_function(function, &function_type)
+            .expect("public resolved derivation keeps a conservative nominal relation"),
+    );
+}
+
 #[test]
 fn nominal_borrow_relations_preserve_exact_input_and_output_projections() {
     let signature = catalog_signature(
@@ -76,6 +132,79 @@ fn nominal_borrow_relations_preserve_exact_input_and_output_projections() {
         &LoanProjection { steps: vec![LoanProjectionStep::Field("second".into())] }
     );
     assert_eq!(relations[1].owners()[0].position(), 1);
+}
+
+#[test]
+fn implicit_nominal_type_parameters_preserve_nested_borrow_slots() {
+    let signature = catalog_signature(
+        "mode opt\n\n\
+         type Leaf('scope):\n    value: View(String, 'scope)\n\n\
+         type Wrapper('scope):\n    item: x\n\n\
+         fn wrap(value: let('scope) String) -> Wrapper('scope, Leaf('scope)):\n    Wrapper(Leaf(value))\n",
+        "wrap",
+    );
+
+    let [relation] = signature.borrow_relations() else {
+        panic!("the implicit generic field must retain its nested borrow")
+    };
+    assert_eq!(
+        relation.output_projection(),
+        &LoanProjection {
+            steps: vec![
+                LoanProjectionStep::Field("item".into()),
+                LoanProjectionStep::Field("value".into()),
+            ],
+        }
+    );
+    assert_eq!(relation.owners()[0].position(), 0);
+}
+
+#[test]
+fn finite_nominal_chains_deeper_than_the_old_limit_preserve_relations() {
+    let depth = 64;
+    let result = format!(
+        "{}Leaf('scope){}",
+        "Wrapper(".repeat(depth),
+        ")".repeat(depth)
+    );
+    let source = format!(
+        "mode opt\n\n\
+         type Leaf('scope):\n    value: View(String, 'scope)\n\n\
+         type Wrapper(x):\n    item: x\n\n\
+         fn deep(value: let('scope) String) -> {result}:\n    value\n"
+    );
+    let signature = catalog_signature(&source, "deep");
+
+    let [relation] = signature.borrow_relations() else {
+        panic!("a valid finite nominal chain must not erase its borrow relation")
+    };
+    assert_eq!(relation.output_projection().steps.len(), depth + 1);
+    assert!(
+        relation
+            .output_projection()
+            .steps
+            .iter()
+            .take(depth)
+            .all(|step| step == &LoanProjectionStep::Field("item".into()))
+    );
+}
+
+#[test]
+fn recursive_nominal_cycles_terminate_without_erasing_direct_borrow_slots() {
+    let signature = catalog_signature(
+        "mode opt\n\n\
+         type Node('scope):\n    next: Node('scope)\n    value: View(String, 'scope)\n\n\
+         fn node(value: let('scope) String) -> Node('scope):\n    Node(value, value)\n",
+        "node",
+    );
+
+    let [relation] = signature.borrow_relations() else {
+        panic!("cycle termination must retain the direct borrowed field")
+    };
+    assert_eq!(
+        relation.output_projection(),
+        &LoanProjection { steps: vec![LoanProjectionStep::Field("value".into())] }
+    );
 }
 
 #[test]
