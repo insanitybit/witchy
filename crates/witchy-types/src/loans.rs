@@ -2615,15 +2615,19 @@ impl LoanCtx<'_> {
             if sources.is_empty() {
                 continue;
             }
-            let erases_relation = signature.access.as_ref().is_some_and(|access| {
-                access.params().get(index).is_some_and(|parameter| {
-                    type_has_generic_leaf(parameter.ty())
-                        && parameter.borrow_lifetimes().is_empty()
-                        && !authenticated_non_escaping_generic_read(callee, index, access)
-                })
-            });
-            if erases_relation {
-                let source = &sources[0];
+            let Some(access) = signature.access.as_ref() else { continue };
+            let Some(parameter) = access.params().get(index) else { continue };
+            if !type_has_generic_leaf(parameter.ty())
+                || authenticated_non_escaping_generic_read(callee, index, access)
+            {
+                continue;
+            }
+            let declared_slots = self.catalog.slots(parameter.ty());
+            if let Some(source) = sources.iter().find(|source| {
+                !declared_slots
+                    .iter()
+                    .any(|slot| slot.projection == source.borrower_projection)
+            }) {
                 return Err(terr(format!(
                     "argument {} passed to `{}` carries a borrowed owner relation from `{}` \
                      at projection `{}`, but the parameter type erases that relation; declare \

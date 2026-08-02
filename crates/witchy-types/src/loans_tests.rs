@@ -1018,6 +1018,44 @@
             "{error}"
         );
 
+        let mixed = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Holder('a):\n    view: View(String, 'a)\n\n\
+             fn extract(value: (a, let('b) String)) -> a:\n    value[0]\n\n\
+             fn bad(input: let('a) String, witness: let('b) String) -> Holder('a):\n    let holder = Holder(input)\n    extract((holder, witness))\n",
+        )
+        .expect("parse mixed relation-erasing fixture");
+        let error = match facts(&mixed) {
+            Ok(_) => panic!("an unrelated borrowed sibling must not authenticate a generic slot"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("argument 1 passed to `extract`")
+                && error.contains("owner relation from `input`")
+                && error.contains("projection `[0].view`")
+                && error.contains("parameter type erases that relation"),
+            "{error}"
+        );
+
+        let mixed_send = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Holder('a):\n    view: View(String, 'a)\n\n\
+             fn leak(value: (a, let('b) String), tx: Sender(a)) -> Task(Nil):\n    send(tx, value[0])\n\n\
+             fn bad(tx: Sender(Holder('a)), input: let('a) String, witness: let('b) String) -> Task(Nil):\n    let holder = Holder(input)\n    leak((holder, witness), tx)\n",
+        )
+        .expect("parse mixed relation-erasing send fixture");
+        let error = match facts(&mixed_send) {
+            Ok(_) => panic!("an unrelated borrowed sibling must not hide a generic send"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("argument 1 passed to `leak`")
+                && error.contains("owner relation from `input`")
+                && error.contains("projection `[0].view`")
+                && error.contains("parameter type erases that relation"),
+            "{error}"
+        );
+
         let preserving = witchy_syntax::parser::parse_module(
             "mode opt\n\n\
              type Holder('a):\n    view: View(String, 'a)\n\n\
