@@ -72,19 +72,25 @@ impl<'types> Codegen<'types> {
                     .get(name)
                     .cloned()
                     .or_else(|| self.closure_result_type(e));
-                let access = self.closure_access_signature(e);
-                let ownership = access
-                    .as_ref()
-                    .map(Self::ownership_envelope_for_signature)
-                    .unwrap_or_default();
-                return self.lower_lambda(
+                let access = self.closure_access_signature(e)?;
+                let ownership = Self::ownership_envelope_for_signature(&access);
+                let call = match body.stmts.first() {
+                    Some(Stmt::Expr(call @ Expr::Call { .. })) => call,
+                    _ => return None,
+                };
+                let call_key = call as *const Expr as usize;
+                self.synthesized_call_access.insert(call_key, access.clone());
+                let lowered = self.lower_lambda(
                     &params,
                     &body,
                     &signature,
                     result_ty.as_ref(),
-                    access.as_ref(),
+                    Some(&access),
                     &ownership,
                 );
+                let removed = self.synthesized_call_access.remove(&call_key);
+                debug_assert!(removed.is_some(), "registered forwarding call must be consumed");
+                return lowered;
             }
             Expr::Unary { op, expr } => match op {
                 // value-neutral on WASM (value semantics): lower the operand.
@@ -188,12 +194,16 @@ impl<'types> Codegen<'types> {
                 args,
                 slot,
                 result,
-                conventions,
                 ..
             } => {
+                let access = self.call_access_signature(e)?.clone();
                 if !self.collect_wir
-                    || conventions.iter().skip(1).any(|convention| {
-                        !matches!(convention, Convention::Let | Convention::Var)
+                    || access.params().iter().skip(1).any(|param| {
+                        !matches!(
+                            param.kind(),
+                            witchy_types::access::AccessKind::OwnedImmutable
+                                | witchy_types::access::AccessKind::ExclusiveWriteback
+                        )
                     })
                     || self.existential_dispatch_stride == 0
                 {
@@ -203,7 +213,7 @@ impl<'types> Codegen<'types> {
                 if level >= EXISTENTIAL_CALL_POOL {
                     return None;
                 }
-                if conventions.len() != args.len() + 1 {
+                if access.params().len() != args.len() + 1 {
                     return None;
                 }
                 let mut operands = Vec::with_capacity(args.len() + 1);
@@ -212,11 +222,11 @@ impl<'types> Codegen<'types> {
                 let mut operand_kinds = Vec::with_capacity(args.len() + 1);
                 operand_kinds.push(Kind::GcRef(EXISTENTIAL_WRAPPER_ID));
                 operand_kinds.extend(args.iter().map(|arg| self.kind_of(arg)));
-                let ownership = self.call_ownership_envelope(e);
+                let ownership = Self::ownership_envelope_for_signature(&access);
                 self.existential_call_level = level + 1;
                 let lowered = self.lower_closure_args(
                     &operands,
-                    conventions,
+                    &access,
                     &operand_kinds,
                     true,
                     &ownership,
@@ -293,7 +303,14 @@ impl<'types> Codegen<'types> {
                         true,
                     )?;
                     seq.push(N::Push(result));
-                } else if matches!(conventions.first(), Some(Convention::Let | Convention::Borrow | Convention::Own)) {
+                } else if access.params().first().is_some_and(|receiver| {
+                    matches!(
+                        receiver.kind(),
+                        witchy_types::access::AccessKind::OwnedImmutable
+                            | witchy_types::access::AccessKind::SharedBorrow
+                            | witchy_types::access::AccessKind::Consuming
+                    )
+                }) {
                     seq.push(N::Push(W::CallIndirect {
                         signature: witchy_wir::wir::ClosureSignature {
                             params: signature_params,
@@ -489,11 +506,15 @@ impl<'types> Codegen<'types> {
                 if level >= APPLY_POOL {
                     return None;
                 }
-                let conventions = self.closure_conventions(func);
-                let param_kinds = self.closure_param_kinds(func);
-                let recover_kind = self.apply_ret_kind(func);
+                let access = self.call_access_signature(e)?.clone();
+                let param_kinds = access
+                    .params()
+                    .iter()
+                    .map(|param| self.kind_for_type(param.ty()))
+                    .collect::<Vec<_>>();
+                let recover_kind = self.kind_for_type(access.result().ty());
                 let typed_abi = Self::closure_uses_typed_abi(&param_kinds, recover_kind);
-                let ownership = self.call_ownership_envelope(e);
+                let ownership = Self::ownership_envelope_for_signature(&access);
                 // (RFC-0062 tier-1) An ELIDED closure applied by name: no closure pointer to
                 // stash — thread captures (from their locals) as leading arg slots to a direct
                 // `call $__lamt{i}`.
@@ -513,7 +534,7 @@ impl<'types> Codegen<'types> {
                             .collect();
                         let (arg_slots, writebacks, capacity_dests) = self.lower_closure_args(
                             args,
-                            &conventions,
+                            &access,
                             &param_kinds,
                             typed_abi,
                             &ownership,
@@ -555,7 +576,7 @@ impl<'types> Codegen<'types> {
                 self.apply_level = level + 1;
                 let (arg_slots, writebacks, capacity_dests) = self.lower_closure_args(
                     args,
-                    &conventions,
+                    &access,
                     &param_kinds,
                     typed_abi,
                     &ownership,
@@ -1914,12 +1935,15 @@ impl<'types> Codegen<'types> {
                 // the value args, to a direct `call $__lamt{i}`. Checked BEFORE the boxed
                 // closure paths.
                 if let Some((idx, caps)) = self.thread_index.get(name).cloned() {
-                    let func_expr = Expr::Var(name.to_string());
-                    let conventions = self.closure_conventions(&func_expr);
-                    let param_kinds = self.closure_param_kinds(&func_expr);
-                    let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
+                    let access = self.call_access_signature(e)?.clone();
+                    let param_kinds = access
+                        .params()
+                        .iter()
+                        .map(|param| self.kind_for_type(param.ty()))
+                        .collect::<Vec<_>>();
+                    let rk = self.kind_for_type(access.result().ty());
                     let typed_abi = Self::closure_uses_typed_abi(&param_kinds, rk);
-                    let ownership = self.call_ownership_envelope(e);
+                    let ownership = Self::ownership_envelope_for_signature(&access);
                     let mut call_args: Vec<W> = caps
                         .iter()
                         .map(|(cn, ck)| {
@@ -1933,7 +1957,7 @@ impl<'types> Codegen<'types> {
                         .collect();
                     let (arg_slots, writebacks, capacity_dests) = self.lower_closure_args(
                         args,
-                        &conventions,
+                        &access,
                         &param_kinds,
                         typed_abi,
                         &ownership,
@@ -1973,16 +1997,19 @@ impl<'types> Codegen<'types> {
                 // no scratch stash is needed.
                 if self.locals.contains_key(name) {
                     let n = args.len();
-                    let func_expr = Expr::Var(name.to_string());
-                    let conventions = self.closure_conventions(&func_expr);
-                    let param_kinds = self.closure_param_kinds(&func_expr);
-                    let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
+                    let access = self.call_access_signature(e)?.clone();
+                    let param_kinds = access
+                        .params()
+                        .iter()
+                        .map(|param| self.kind_for_type(param.ty()))
+                        .collect::<Vec<_>>();
+                    let rk = self.kind_for_type(access.result().ty());
                     let typed_abi = Self::closure_uses_typed_abi(&param_kinds, rk);
-                    let ownership = self.call_ownership_envelope(e);
+                    let ownership = Self::ownership_envelope_for_signature(&access);
                     let mut ci_args: Vec<W> = vec![W::GetLocal(name.to_string())];
                     let (arg_slots, writebacks, capacity_dests) = self.lower_closure_args(
                         args,
-                        &conventions,
+                        &access,
                         &param_kinds,
                         typed_abi,
                         &ownership,
@@ -2063,15 +2090,7 @@ impl<'types> Codegen<'types> {
                         W::FromSlot(Box::new(call), Self::wir_kind(rk))
                     });
                 }
-                let call_access = self
-                    .access_facts
-                    .call_at(self.checked_module, e)
-                    .cloned()
-                    // Forwarding closure bodies are compiler-owned Calls created
-                    // after annotation. Their exact source value is a checked
-                    // declaration, so use that canonical declaration rather than
-                    // reconstructing its ABI or consulting an address-keyed row.
-                    .or_else(|| self.access_facts.declaration(name).cloned());
+                let call_access = self.call_access_signature(e).cloned();
                 let has_var = call_access.as_ref().is_some_and(|signature| {
                     signature.params().iter().any(|param| {
                         param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback

@@ -3153,8 +3153,8 @@ fn no_copy_qualified_type(ty: &Type) -> bool {
     )
 }
 
-fn callable_no_copy_contract(ty: &Option<Type>) -> Option<(Vec<usize>, bool)> {
-    let signature = witchy_types::access::AccessSignature::from_function_type(ty.as_ref()?).ok()?;
+fn callable_no_copy_contract_type(ty: &Type) -> Option<(Vec<usize>, bool)> {
+    let signature = witchy_types::access::AccessSignature::from_function_type(ty).ok()?;
     Some(no_copy_contract(&signature)).filter(|(required, unique_result)| {
         !required.is_empty() || *unique_result
     })
@@ -3322,30 +3322,36 @@ fn merge_no_copy_env(
     merged
 }
 
-struct NoCopyWalker<'a> {
+struct NoCopyWalker<'facts, 'module> {
     function: String,
-    required: &'a HashMap<String, Vec<usize>>,
-    unique_results: &'a HashSet<String>,
-    summaries: &'a Summaries,
+    module: &'module Module,
+    access: Option<&'facts witchy_types::access::CheckedAccessFacts<'module>>,
+    required: &'facts HashMap<String, Vec<usize>>,
+    unique_results: &'facts HashSet<String>,
+    summaries: &'facts Summaries,
     facts: Facts,
-    loans: &'a witchy_types::loans::LoanFacts,
+    loans: &'facts witchy_types::loans::LoanFacts,
     misses: Vec<NoCopyMiss>,
     line: u32,
 }
 
-impl<'a> NoCopyWalker<'a> {
+impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
     fn new(
         function: String,
         body: &Block,
-        required: &'a HashMap<String, Vec<usize>>,
-        unique_results: &'a HashSet<String>,
-        summaries: &'a Summaries,
-        loans: &'a witchy_types::loans::LoanFacts,
+        module: &'module Module,
+        access: Option<&'facts witchy_types::access::CheckedAccessFacts<'module>>,
+        required: &'facts HashMap<String, Vec<usize>>,
+        unique_results: &'facts HashSet<String>,
+        summaries: &'facts Summaries,
+        loans: &'facts witchy_types::loans::LoanFacts,
     ) -> Self {
         let mut facts = analyze(body, summaries);
         facts.merge_loan_kills(body, loans);
         Self {
             function,
+            module,
+            access,
             required,
             unique_results,
             summaries,
@@ -3358,12 +3364,26 @@ impl<'a> NoCopyWalker<'a> {
 
     fn walk(mut self, function: &witchy_syntax::ast::Function) -> Vec<NoCopyMiss> {
         let own_cap_param = self.summaries.own_abi(&function.name);
-        self.walk_body(&function.params, &function.body, own_cap_param);
+        let signature = self.access.and_then(|facts| facts.declaration(&function.name)).cloned();
+        self.walk_body(&function.params, &function.body, own_cap_param, signature.as_ref());
         self.misses
     }
 
-    fn walk_lambda(mut self, params: &[witchy_syntax::ast::Param], body: &Block) -> Vec<NoCopyMiss> {
-        self.walk_body(params, body, None);
+    fn walk_lambda(
+        mut self,
+        params: &[witchy_syntax::ast::Param],
+        body: &Block,
+        signature: Option<&witchy_types::access::AccessSignature>,
+    ) -> Vec<NoCopyMiss> {
+        let own_cap_param = signature.and_then(|signature| {
+            signature.params().iter().enumerate().find_map(|(index, param)| {
+                (param.kind() == witchy_types::access::AccessKind::Consuming
+                    && param.ownership().input().is_some()
+                    && no_copy_qualified_type(param.ty()))
+                .then_some(index)
+            })
+        });
+        self.walk_body(params, body, own_cap_param, signature);
         self.misses
     }
 
@@ -3372,26 +3392,43 @@ impl<'a> NoCopyWalker<'a> {
         params: &[witchy_syntax::ast::Param],
         body: &Block,
         own_cap_param: Option<usize>,
+        signature: Option<&witchy_types::access::AccessSignature>,
     ) {
         let mut env = HashMap::new();
         for (index, param) in params.iter().enumerate() {
-            if let Some((required, unique_result)) = callable_no_copy_contract(&param.ty) {
+            let resolved = signature.and_then(|signature| signature.params().get(index));
+            let param_type = resolved
+                .map(witchy_types::access::AccessParam::ty)
+                .or(param.ty.as_ref());
+            if let Some((required, unique_result)) =
+                param_type.and_then(callable_no_copy_contract_type)
+            {
                 env.insert(
                     param.name.clone(),
                     NoCopyProof::Callable { required, unique_result },
                 );
                 continue;
             }
-            let carries_cap = param.convention == Convention::Var
-                || (param.convention == Convention::Own && own_cap_param == Some(index));
-            let proof = if no_copy_qualified(&param.ty) && carries_cap {
+            let access_kind = resolved
+                .map(witchy_types::access::AccessParam::kind)
+                .unwrap_or_else(|| witchy_types::access::AccessKind::from(param.convention));
+            let convention = match access_kind {
+                witchy_types::access::AccessKind::OwnedImmutable => Convention::Let,
+                witchy_types::access::AccessKind::SharedBorrow => Convention::Borrow,
+                witchy_types::access::AccessKind::ExclusiveWriteback => Convention::Var,
+                witchy_types::access::AccessKind::Consuming => Convention::Own,
+            };
+            let qualified = param_type.is_some_and(no_copy_qualified_type);
+            let carries_cap = convention == Convention::Var
+                || (convention == Convention::Own && own_cap_param == Some(index));
+            let proof = if qualified && carries_cap {
                 NoCopyProof::Available
             } else {
-                let reason = if no_copy_qualified(&param.ty) {
+                let reason = if qualified {
                     format!(
                         "parameter `{}` is unique, but its `{}` convention does not carry a capacity token into this function",
                         param.name,
-                        match param.convention {
+                        match convention {
                             Convention::Let => "default let",
                             Convention::Borrow => "let",
                             Convention::Own => "own",
@@ -3668,32 +3705,45 @@ impl<'a> NoCopyWalker<'a> {
             }
             Expr::Lambda { params, body, ret } => {
                 let name = format!("{}::<lambda>", self.function);
+                let signature = self
+                    .access
+                    .and_then(|facts| facts.callable_at(self.module, expr))
+                    .cloned();
                 let nested = NoCopyWalker::new(
                     name,
                     body,
+                    self.module,
+                    self.access,
                     self.required,
                     self.unique_results,
                     self.summaries,
                     self.loans,
                 )
-                .walk_lambda(params, body);
+                .walk_lambda(params, body, signature.as_ref());
                 self.misses.extend(nested);
-                let required = params
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, param)| {
-                        (param.convention == Convention::Var && no_copy_qualified(&param.ty))
-                            .then_some(index)
-                    })
-                    .collect::<Vec<_>>();
-                let unique_result = ret.as_ref().is_some_and(|ty| {
-                    matches!(
-                        ty,
-                        Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner)
-                            if matches!(inner.unqualified(), Type::Named(name, _)
-                                if matches!(name.as_str(), "List" | "Dict"))
-                    )
-                });
+                let (required, unique_result) = signature
+                    .as_ref()
+                    .map(no_copy_contract)
+                    .unwrap_or_else(|| {
+                        let required = params
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, param)| {
+                                (param.convention == Convention::Var
+                                    && no_copy_qualified(&param.ty))
+                                .then_some(index)
+                            })
+                            .collect::<Vec<_>>();
+                        let unique_result = ret.as_ref().is_some_and(|ty| {
+                            matches!(
+                                ty,
+                                Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner)
+                                    if matches!(inner.unqualified(), Type::Named(name, _)
+                                        if matches!(name.as_str(), "List" | "Dict"))
+                            )
+                        });
+                        (required, unique_result)
+                    });
                 if required.is_empty() && !unique_result {
                     NoCopyProof::Unavailable("a closure value is shared".to_string())
                 } else {
@@ -3918,6 +3968,8 @@ fn module_no_copy_misses_with_access(
                 NoCopyWalker::new(
                     function.name.clone(),
                     &function.body,
+                    module,
+                    access,
                     &required,
                     &unique_results,
                     &summaries,
@@ -4164,6 +4216,19 @@ mod no_copy_tests {
         );
         assert_eq!(found.len(), 1, "the lambda miss must remain visible: {found:?}");
         assert!(found[0].function.starts_with("main::<lambda>"), "{found:?}");
+    }
+
+    #[test]
+    fn inferred_lambda_var_uses_its_checked_unique_contract() {
+        let found = misses(
+            "mode opt\n\nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn invoke(f: fn(var unique List(Int)) -> Nil) -> Nil:\n    var xs = [1]\n    f(xs)\n    return\n\
+             \nfn main() -> Nil:\n    invoke(fn(var xs): take(xs))\n    return\n",
+        );
+        assert!(
+            found.is_empty(),
+            "the checked lambda signature carries its inferred unique var capacity: {found:?}"
+        );
     }
 
     #[test]

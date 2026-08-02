@@ -1009,6 +1009,10 @@ struct Codegen<'types> {
     /// contracts for `checked_module`. Physical ABI selection must consume
     /// these facts instead of reconstructing access from surface syntax.
     access_facts: witchy_types::access::CheckedAccessFacts<'types>,
+    /// Exact access rows for the tiny compiler-owned forwarding calls created
+    /// after type annotation. Source calls must be present in `access_facts`;
+    /// only an address explicitly registered here may use a declaration row.
+    synthesized_call_access: HashMap<usize, witchy_types::access::AccessSignature>,
     /// Loans active at the statement currently being lowered. `Expr::Try` uses
     /// this to release roots before its structured early return.
     active_loan_events: Vec<witchy_types::loans::LoanEvent>,
@@ -1485,6 +1489,7 @@ impl<'types> Codegen<'types> {
             loan_facts,
             checked_module,
             access_facts,
+            synthesized_call_access: HashMap::new(),
             active_loan_events: Vec::new(),
             cur_fn_own_param: None,
             cur_fn_has_type_vars: false,
@@ -2018,16 +2023,6 @@ impl<'types> Codegen<'types> {
         self.closure_ret_kind_of(func).unwrap_or(Kind::I32)
     }
 
-    fn closure_conventions(&self, func: &Expr) -> Vec<Convention> {
-        let Some(ty) = self.ast_type_of_expr(func) else {
-            return Vec::new();
-        };
-        match ty.unqualified() {
-            Type::Fn(_, _, conventions) => conventions.clone(),
-            _ => Vec::new(),
-        }
-    }
-
     fn closure_param_kinds(&self, func: &Expr) -> Vec<Kind> {
         let Some(ty) = self.ast_type_of_expr(func) else {
             return Vec::new();
@@ -2091,13 +2086,20 @@ impl<'types> Codegen<'types> {
             .unwrap_or_default()
     }
 
-    fn call_ownership_envelope(&self, call: &Expr) -> ClosureOwnershipEnvelope {
+    fn call_access_signature(
+        &self,
+        call: &Expr,
+    ) -> Option<&witchy_types::access::AccessSignature> {
         self.access_facts
             .call_at(self.checked_module, call)
             .or_else(|| {
-                let Expr::Call { name, .. } = call else { return None };
-                self.access_facts.declaration(name)
+                self.synthesized_call_access
+                    .get(&(call as *const Expr as usize))
             })
+    }
+
+    fn call_ownership_envelope(&self, call: &Expr) -> ClosureOwnershipEnvelope {
+        self.call_access_signature(call)
             .map(Self::ownership_envelope_for_signature)
             .unwrap_or_default()
     }
@@ -2214,7 +2216,7 @@ impl<'types> Codegen<'types> {
     fn lower_closure_args(
         &mut self,
         args: &[Expr],
-        conventions: &[Convention],
+        access: &witchy_types::access::AccessSignature,
         param_kinds: &[Kind],
         typed_abi: bool,
         ownership: &ClosureOwnershipEnvelope,
@@ -2224,7 +2226,9 @@ impl<'types> Codegen<'types> {
         let mut writebacks = Vec::new();
         let mut next_coordinate = 0;
         for (index, arg) in args.iter().enumerate() {
-            let is_var = conventions.get(index) == Some(&Convention::Var);
+            let is_var = access.params().get(index).is_some_and(|param| {
+                param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+            });
             let kind = if is_var {
                 param_kinds.get(index).copied().unwrap_or_else(|| self.kind_of(arg))
             } else {
