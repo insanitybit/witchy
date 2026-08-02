@@ -102,7 +102,13 @@ fn lower_explicit_packs_inner(
         );
     }
     let typed = crate::record_projection::lower_explicit_projections(typed)?;
-    let dynamic_methods = collect_dynamic_method_definitions(typed.module(), runtime_catalog)?;
+    let access_facts = crate::access::checked_facts(typed.module(), typed.table())
+        .map_err(|error| error.to_string())?;
+    let dynamic_methods = collect_dynamic_method_definitions(
+        typed.module(),
+        runtime_catalog,
+        &access_facts,
+    )?;
     let mut dynamic_types = collect_dynamic_types(typed.module(), typed.table(), runtime_catalog)?;
     for method in &dynamic_methods {
         dynamic_types.push(method.receiver.clone());

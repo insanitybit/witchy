@@ -27,7 +27,11 @@ pub use catalog::{
     PackageCoordinate, PackageSource, RuntimeDeclarationCatalog,
 };
 pub use identity::{
-    PrimitiveType, RuntimeConvention, RuntimeTypeIdentity, UnionVariantIdentity,
+    PrimitiveType, RuntimeAccessKind, RuntimeAccessParameterIdentity,
+    RuntimeAccessQualifier, RuntimeAccessResultIdentity, RuntimeBorrowOwnerIdentity,
+    RuntimeBorrowRelationIdentity, RuntimeCallableAccessIdentity, RuntimeConvention,
+    RuntimeLoanProjection, RuntimeLoanProjectionStep, RuntimeQualifierPathStep,
+    RuntimeQualifierSite, RuntimeTypeIdentity, UnionVariantIdentity,
 };
 
 use catalog::instantiate_runtime_type;
@@ -83,6 +87,7 @@ pub struct RuntimeMethodDescriptor {
     pub result: RuntimeTypeId,
     pub result_type: Type,
     pub result_display: String,
+    pub access: RuntimeCallableAccessIdentity,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -250,7 +255,9 @@ fn collect_runtime_type_shape(
     drafts: &mut BTreeMap<RuntimeTypeIdentity, RuntimeTypeShapeDraft>,
     visiting: &mut BTreeSet<DeclarationIdentity>,
 ) -> Result<(), RuntimeTypeError> {
-    if let Type::Qualified(_, inner) = ty {
+    if let Type::Qualified(_, inner) = ty
+        && !matches!(ty.unqualified(), Type::Fn(..))
+    {
         return collect_runtime_type_shape(inner, catalog, module, identities, drafts, visiting);
     }
     let identity = catalog.type_identity(ty)?;
@@ -435,7 +442,15 @@ fn collect_runtime_type_shape_inner(
                 )?;
             }
         }
-        Type::Qualified(_, _) => unreachable!("qualified types are stripped above"),
+        Type::Qualified(_, inner) => collect_runtime_type_shape_inner(
+            inner,
+            identity,
+            catalog,
+            module,
+            identities,
+            drafts,
+            visiting,
+        )?,
     }
     Ok(())
 }
@@ -448,9 +463,16 @@ fn collect_nested_identities(
         RuntimeTypeIdentity::Primitive(_) => Vec::new(),
         RuntimeTypeIdentity::List(item) => vec![item],
         RuntimeTypeIdentity::Tuple(items) => items.iter().collect(),
-        RuntimeTypeIdentity::Function { params, result, .. } => {
-            params.iter().chain(std::iter::once(result.as_ref())).collect()
-        }
+        RuntimeTypeIdentity::Function { params, result, access, .. } => params
+            .iter()
+            .chain(std::iter::once(result.as_ref()))
+            .chain(
+                access
+                    .borrow_relations
+                    .iter()
+                    .map(|relation| relation.storage.as_ref()),
+            )
+            .collect(),
         RuntimeTypeIdentity::Nominal { arguments, .. }
         | RuntimeTypeIdentity::Existential { arguments, .. } => arguments.iter().collect(),
         RuntimeTypeIdentity::Record(fields) => fields.iter().map(|(_, ty)| ty).collect(),
@@ -488,6 +510,7 @@ pub enum RuntimeTypeError {
     ConflictingDeclaration { kind: DeclarationKind, name: String },
     UnresolvedDeclaration { kind: DeclarationKind, name: String },
     ConventionArity { params: usize, conventions: usize },
+    MalformedAccessSignature(String),
     MalformedStructuralType(String),
     TooManyDescriptors,
 }
@@ -498,6 +521,7 @@ impl std::fmt::Display for RuntimeTypeError {
             Self::InvalidPackageCoordinate(message)
             | Self::InvalidDeclarationIdentity(message)
             | Self::InvalidModuleOwner(message)
+            | Self::MalformedAccessSignature(message)
             | Self::MalformedStructuralType(message) => f.write_str(message),
             Self::CapabilityType(name) => {
                 write!(f, "capability type `{name}` cannot have a runtime descriptor")
@@ -673,6 +697,196 @@ mod tests {
         let owned = RuntimeTypeIdentity::from_resolved_type(&owned, &|_, _| None)
             .expect("owned function identity");
         assert_ne!(borrowed, owned);
+    }
+
+    #[test]
+    fn qualified_callable_and_nested_qualifier_contracts_do_not_collide() {
+        let string = Type::Named("String".to_string(), Vec::new());
+        let list = |item| Type::Named("List".to_string(), vec![item]);
+        let callable = |parameter| {
+            Type::Fn(
+                vec![parameter],
+                Box::new(Type::Tuple(Vec::new())),
+                vec![Convention::Let],
+            )
+        };
+
+        let plain = callable(list(string.clone()));
+        let qualified_callable = Type::Qualified(
+            witchy_syntax::ast::TypeQual::Unique,
+            Box::new(plain.clone()),
+        );
+        let qualified_argument = callable(list(Type::Qualified(
+            witchy_syntax::ast::TypeQual::Frozen,
+            Box::new(string),
+        )));
+
+        let identity = |ty: &Type| {
+            RuntimeTypeIdentity::from_resolved_type(ty, &|_, _| None)
+                .expect("closed callable runtime identity")
+        };
+        assert_ne!(identity(&plain), identity(&qualified_callable));
+        assert_ne!(identity(&plain), identity(&qualified_argument));
+
+        let empty = witchy_syntax::parser::parse_module("").expect("empty module");
+        let plan = RuntimeTypePlan::build_with_runtime_shapes(
+            [&plain, &qualified_callable],
+            &RuntimeDeclarationCatalog::default(),
+            &empty,
+        )
+        .expect("qualified callable descriptor plan");
+        assert_ne!(
+            plan.id(&identity(&plain)),
+            plan.id(&identity(&qualified_callable)),
+            "descriptor planning must not strip the callable qualifier",
+        );
+
+        let RuntimeTypeIdentity::Function { access, .. } = identity(&qualified_argument) else {
+            panic!("expected function identity")
+        };
+        assert_eq!(
+            access.parameters[0].qualifier_sites,
+            vec![RuntimeQualifierSite {
+                path: vec![RuntimeQualifierPathStep::TypeArgument(0)],
+                qualifiers: vec![RuntimeAccessQualifier::Frozen],
+            }]
+        );
+    }
+
+    #[test]
+    fn callable_lifetime_names_normalize_but_owner_relations_do_not_collide() {
+        let string = Type::Named("String".to_string(), Vec::new());
+        let view = |lifetime: &str| {
+            Type::Qualified(
+                witchy_syntax::ast::TypeQual::Borrow(lifetime.to_string()),
+                Box::new(string.clone()),
+            )
+        };
+        let signature = |left: &str, right: &str, result: &str| {
+            Type::Fn(
+                vec![view(left), view(right)],
+                Box::new(view(result)),
+                vec![Convention::Borrow, Convention::Borrow],
+            )
+        };
+        let identity = |ty: &Type| {
+            RuntimeTypeIdentity::from_resolved_type(ty, &|_, _| None)
+                .expect("borrowed callable runtime identity")
+        };
+
+        let original = identity(&signature("left", "right", "left"));
+        let renamed = identity(&signature("a", "b", "a"));
+        let swapped = identity(&signature("left", "right", "right"));
+        assert_eq!(original, renamed, "alpha-renaming is not runtime identity");
+        assert_ne!(original, swapped, "the result owner position is runtime identity");
+
+        let RuntimeTypeIdentity::Function { access, .. } = original else {
+            panic!("expected function identity")
+        };
+        assert_eq!(access.borrow_relations.len(), 1);
+        assert_eq!(access.borrow_relations[0].lifetime, 0);
+        assert_eq!(access.borrow_relations[0].owners[0].parameter, 0);
+    }
+
+    #[test]
+    fn callable_access_identity_retains_writeback_and_ownership_outputs() {
+        let string = Type::Named("String".to_string(), Vec::new());
+        let parameter = Type::Qualified(
+            witchy_syntax::ast::TypeQual::Unique,
+            Box::new(string.clone()),
+        );
+        let result = Type::Qualified(
+            witchy_syntax::ast::TypeQual::Unique,
+            Box::new(string),
+        );
+        let ty = Type::Fn(
+            vec![parameter],
+            Box::new(result),
+            vec![Convention::Var],
+        );
+        let RuntimeTypeIdentity::Function { access, .. } =
+            RuntimeTypeIdentity::from_resolved_type(&ty, &|_, _| None)
+                .expect("writeback callable identity")
+        else {
+            panic!("expected function identity")
+        };
+        assert_eq!(access.parameters[0].kind, RuntimeAccessKind::ExclusiveWriteback);
+        assert!(access.parameters[0].ownership_input);
+        assert!(access.parameters[0].writeback_output);
+        assert!(access.result.ownership_output);
+    }
+
+    #[test]
+    fn checked_callable_reflection_retains_nominal_projection_relations() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type PairView('left, 'right):\n    first: View(String, 'left)\n    second: View(String, 'right)\n\n\
+             fn pair(left: let('left) String, right: let('right) String, \
+                 pair: PairView('left, 'right)) -> PairView('left, 'right):\n    pair\n",
+        )
+        .expect("parse projected relation fixture");
+        let typed = crate::typeck::annotate_checked(module)
+            .expect("type-check projected relation fixture");
+        let facts = crate::access::checked_facts(typed.module(), typed.table())
+            .expect("checked access facts");
+        let signature = facts.declaration("pair").expect("pair access signature");
+        let access = RuntimeCallableAccessIdentity::from_checked(signature, &|_, _| None)
+            .expect("logical callable reflection");
+
+        assert_eq!(access.borrow_relations.len(), 2);
+        assert_eq!(
+            access.borrow_relations[0].output_projection,
+            RuntimeLoanProjection {
+                steps: vec![RuntimeLoanProjectionStep::Field("first".into())],
+            }
+        );
+        assert_eq!(access.borrow_relations[0].owners[0].parameter, 0);
+        assert_eq!(
+            access.borrow_relations[1].output_projection,
+            RuntimeLoanProjection {
+                steps: vec![RuntimeLoanProjectionStep::Field("second".into())],
+            }
+        );
+        assert_eq!(access.borrow_relations[1].owners[0].parameter, 1);
+    }
+
+    #[test]
+    fn direct_and_function_value_reflection_share_checked_access_identity() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             fn keep(text: let('source) String) -> View(String, 'source):\n    text\n\n\
+             fn main() -> Int:\n    let callback = keep\n    0\n",
+        )
+        .expect("parse direct/function-value fixture");
+        let typed = crate::typeck::annotate_checked(module)
+            .expect("type-check direct/function-value fixture");
+        let facts = crate::access::checked_facts(typed.module(), typed.table())
+            .expect("checked access facts");
+        let direct = facts.declaration("keep").expect("direct signature");
+        let function_value = typed
+            .module()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => {
+                    function.body.stmts.iter().find_map(|statement| match statement {
+                        witchy_syntax::ast::Stmt::Let { name, value, .. }
+                            if name == "callback" => facts.callable_at(typed.module(), value),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .expect("function-value signature");
+        let direct = RuntimeCallableAccessIdentity::from_checked(direct, &|_, _| None)
+            .expect("direct reflection identity");
+        let function_value = RuntimeCallableAccessIdentity::from_checked(
+            function_value,
+            &|_, _| None,
+        )
+        .expect("function-value reflection identity");
+        assert_eq!(direct, function_value);
+        assert_eq!(direct.borrow_relations[0].owners[0].parameter, 0);
     }
 
     #[test]

@@ -221,3 +221,72 @@ fn main(console: Console):
     actor.run().expect("run compiled dynamic trait fixture");
     assert_eq!(actor.output(), expected);
 }
+
+#[test]
+fn dynamic_method_reflection_preserves_logical_access_identity() {
+    let source = r#"
+import dynamic
+import list
+import reflect
+
+type Widget:
+    value: Int
+
+impl Reflect for Widget:
+    fn reflect(self) -> reflect.Mirror:
+        reflect.MNil
+
+@dynamic
+pub fn rewrite(self: Widget, label: String, suffix: unique String) -> unique Widget:
+    Widget(self.value + label.char_count() + suffix.char_count())
+
+fn main(console: Console):
+    let descriptor = dynamic.type_of(dynamic.dynamic(Widget(1)))
+    let method = list.at(dynamic.methods(descriptor), 0)
+    match dynamic.method_access(method):
+        dynamic.RuntimeCallableAccess(callable, parameters, result, relations) ->
+            console.print("shape-${list.length(callable)}-${list.length(parameters)}-${list.length(relations)}")
+            match list.at(parameters, 1):
+                dynamic.RuntimeParameterAccess(dynamic.AccessValue, sites, input, writeback) ->
+                    console.print("value-${list.length(sites)}-${input}-${writeback}")
+                _ -> console.print("wrong-value")
+            match list.at(parameters, 2):
+                dynamic.RuntimeParameterAccess(dynamic.AccessValue, sites, input, writeback) ->
+                    match list.at(sites, 0):
+                        dynamic.RuntimeQualifierSite(path, qualifiers) ->
+                            match list.at(qualifiers, 0):
+                                dynamic.AccessUnique -> console.print("unique-${list.length(path)}-${input}-${writeback}")
+                                _ -> console.print("wrong-unique-qualifier")
+                _ -> console.print("wrong-unique")
+            match result:
+                dynamic.RuntimeResultAccess(sites, output) ->
+                    match list.at(sites, 0):
+                        dynamic.RuntimeQualifierSite(path, qualifiers) ->
+                            match list.at(qualifiers, 0):
+                                dynamic.AccessUnique -> console.print("result-${list.length(path)}-${output}")
+                                _ -> console.print("wrong-result-qualifier")
+"#;
+    let checked = checked(source);
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret logical access reflection fixture");
+    let expected = [
+        "shape-0-3-0",
+        "value-0-false-false",
+        "unique-0-true-false",
+        "result-0-true",
+    ];
+    assert_eq!(interpreted, expected);
+
+    let wasm = codegen::compile_checked_module_binary(&checked)
+        .expect_lowered("compile logical access reflection fixture");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(
+            &wasm,
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            256,
+        )
+        .expect("spawn logical access reflection fixture");
+    actor.run().expect("run logical access reflection fixture");
+    assert_eq!(actor.output(), expected);
+}

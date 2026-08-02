@@ -2,6 +2,10 @@ use super::*;
 
 use witchy_syntax::ast::Convention;
 
+use crate::access::{
+    AccessKind, AccessQualifier, AccessSignature, LoanProjection, LoanProjectionStep,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PrimitiveType {
     Int,
@@ -19,6 +23,290 @@ pub enum RuntimeConvention {
     Borrow,
     Var,
     Own,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RuntimeAccessKind {
+    OwnedImmutable,
+    SharedBorrow,
+    ExclusiveWriteback,
+    Consuming,
+}
+
+impl From<AccessKind> for RuntimeAccessKind {
+    fn from(value: AccessKind) -> Self {
+        match value {
+            AccessKind::OwnedImmutable => Self::OwnedImmutable,
+            AccessKind::SharedBorrow => Self::SharedBorrow,
+            AccessKind::ExclusiveWriteback => Self::ExclusiveWriteback,
+            AccessKind::Consuming => Self::Consuming,
+        }
+    }
+}
+
+/// One logical route to a qualifier inside a callable parameter or result.
+/// These are source-type positions, never physical layout offsets.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RuntimeQualifierPathStep {
+    TypeArgument(usize),
+    TupleItem(usize),
+    FunctionParameter(usize),
+    FunctionResult,
+    ExistentialArgument(usize),
+    RecordBase,
+    RecordField(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RuntimeAccessQualifier {
+    Frozen,
+    Unique,
+    LocalUnique,
+    /// Canonical callable-local lifetime number. Source lifetime spelling is
+    /// deliberately not part of runtime identity.
+    Borrow(u32),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeQualifierSite {
+    pub path: Vec<RuntimeQualifierPathStep>,
+    pub qualifiers: Vec<RuntimeAccessQualifier>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RuntimeLoanProjectionStep {
+    Field(String),
+    Tuple(usize),
+    Index(i64),
+    Range { lo: i64, hi: i64, inclusive: bool },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeLoanProjection {
+    pub steps: Vec<RuntimeLoanProjectionStep>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeAccessParameterIdentity {
+    pub kind: RuntimeAccessKind,
+    pub qualifier_sites: Vec<RuntimeQualifierSite>,
+    pub ownership_input: bool,
+    pub writeback_output: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeAccessResultIdentity {
+    pub qualifier_sites: Vec<RuntimeQualifierSite>,
+    pub ownership_output: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeBorrowOwnerIdentity {
+    pub parameter: usize,
+    pub input_projection: RuntimeLoanProjection,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeBorrowRelationIdentity {
+    pub lifetime: u32,
+    pub output_projection: RuntimeLoanProjection,
+    pub owners: Vec<RuntimeBorrowOwnerIdentity>,
+    pub storage: Box<RuntimeTypeIdentity>,
+    pub storage_qualifier_sites: Vec<RuntimeQualifierSite>,
+}
+
+/// Canonical logical access identity retained by runtime callable descriptors.
+/// It is derived only from the checked `AccessSignature` authority. Physical
+/// offsets, flattened slots, and ownership-token representations never enter
+/// this value.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeCallableAccessIdentity {
+    pub callable_qualifiers: Vec<RuntimeAccessQualifier>,
+    pub parameters: Vec<RuntimeAccessParameterIdentity>,
+    pub result: RuntimeAccessResultIdentity,
+    pub borrow_relations: Vec<RuntimeBorrowRelationIdentity>,
+}
+
+#[derive(Default)]
+struct RuntimeLifetimeNormalizer {
+    by_name: BTreeMap<String, u32>,
+}
+
+impl RuntimeLifetimeNormalizer {
+    fn id(&mut self, name: &str) -> Result<u32, RuntimeTypeError> {
+        if let Some(id) = self.by_name.get(name) {
+            return Ok(*id);
+        }
+        let id = u32::try_from(self.by_name.len())
+            .map_err(|_| RuntimeTypeError::TooManyDescriptors)?;
+        self.by_name.insert(name.to_string(), id);
+        Ok(id)
+    }
+
+    fn qualifier(
+        &mut self,
+        qualifier: &AccessQualifier,
+    ) -> Result<RuntimeAccessQualifier, RuntimeTypeError> {
+        Ok(match qualifier {
+            AccessQualifier::Frozen => RuntimeAccessQualifier::Frozen,
+            AccessQualifier::Unique => RuntimeAccessQualifier::Unique,
+            AccessQualifier::LocalUnique => RuntimeAccessQualifier::LocalUnique,
+            AccessQualifier::Borrow(lifetime) => {
+                RuntimeAccessQualifier::Borrow(self.id(lifetime)?)
+            }
+        })
+    }
+}
+
+impl RuntimeCallableAccessIdentity {
+    pub(crate) fn from_checked(
+        signature: &AccessSignature,
+        resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
+    ) -> Result<Self, RuntimeTypeError> {
+        let mut lifetimes = RuntimeLifetimeNormalizer::default();
+        let callable_qualifiers = signature
+            .callable_qualifiers()
+            .iter()
+            .map(|qualifier| lifetimes.qualifier(qualifier))
+            .collect::<Result<_, _>>()?;
+        let parameters = signature
+            .params()
+            .iter()
+            .map(|parameter| {
+                Ok(RuntimeAccessParameterIdentity {
+                    kind: parameter.kind().into(),
+                    qualifier_sites: qualifier_sites(parameter.ty(), &mut lifetimes)?,
+                    ownership_input: parameter.ownership().input().is_some(),
+                    writeback_output: parameter.ownership().writeback().is_some(),
+                })
+            })
+            .collect::<Result<_, RuntimeTypeError>>()?;
+        let result = RuntimeAccessResultIdentity {
+            qualifier_sites: qualifier_sites(signature.result().ty(), &mut lifetimes)?,
+            ownership_output: signature.result().ownership_output().is_some(),
+        };
+        let borrow_relations = signature
+            .borrow_relations()
+            .iter()
+            .map(|relation| {
+                Ok(RuntimeBorrowRelationIdentity {
+                    lifetime: lifetimes.id(relation.lifetime())?,
+                    output_projection: runtime_projection(relation.output_projection()),
+                    owners: relation
+                        .owners()
+                        .iter()
+                        .map(|owner| RuntimeBorrowOwnerIdentity {
+                            parameter: owner.position(),
+                            input_projection: runtime_projection(owner.input_projection()),
+                        })
+                        .collect(),
+                    storage: Box::new(RuntimeTypeIdentity::from_resolved_type(
+                        relation.storage_type(),
+                        resolve,
+                    )?),
+                    storage_qualifier_sites: qualifier_sites(
+                        relation.storage_type(),
+                        &mut lifetimes,
+                    )?,
+                })
+            })
+            .collect::<Result<_, RuntimeTypeError>>()?;
+        Ok(Self { callable_qualifiers, parameters, result, borrow_relations })
+    }
+}
+
+fn qualifier_sites(
+    ty: &Type,
+    lifetimes: &mut RuntimeLifetimeNormalizer,
+) -> Result<Vec<RuntimeQualifierSite>, RuntimeTypeError> {
+    fn visit(
+        ty: &Type,
+        path: &mut Vec<RuntimeQualifierPathStep>,
+        lifetimes: &mut RuntimeLifetimeNormalizer,
+        sites: &mut Vec<RuntimeQualifierSite>,
+    ) -> Result<(), RuntimeTypeError> {
+        let mut current = ty;
+        let mut qualifiers = Vec::new();
+        while let Type::Qualified(qualifier, inner) = current {
+            qualifiers.push(lifetimes.qualifier(&AccessQualifier::from(qualifier))?);
+            current = inner;
+        }
+        if !qualifiers.is_empty() {
+            sites.push(RuntimeQualifierSite { path: path.clone(), qualifiers });
+        }
+        match current {
+            Type::Named(_, arguments) => {
+                for (index, argument) in arguments.iter().enumerate() {
+                    path.push(RuntimeQualifierPathStep::TypeArgument(index));
+                    visit(argument, path, lifetimes, sites)?;
+                    path.pop();
+                }
+            }
+            Type::Tuple(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    path.push(RuntimeQualifierPathStep::TupleItem(index));
+                    visit(item, path, lifetimes, sites)?;
+                    path.pop();
+                }
+            }
+            Type::Fn(parameters, result, _) => {
+                for (index, parameter) in parameters.iter().enumerate() {
+                    path.push(RuntimeQualifierPathStep::FunctionParameter(index));
+                    visit(parameter, path, lifetimes, sites)?;
+                    path.pop();
+                }
+                path.push(RuntimeQualifierPathStep::FunctionResult);
+                visit(result, path, lifetimes, sites)?;
+                path.pop();
+            }
+            Type::Dyn(_, arguments) => {
+                for (index, argument) in arguments.iter().enumerate() {
+                    path.push(RuntimeQualifierPathStep::ExistentialArgument(index));
+                    visit(argument, path, lifetimes, sites)?;
+                    path.pop();
+                }
+            }
+            Type::RecordCompose { base, fields } => {
+                path.push(RuntimeQualifierPathStep::RecordBase);
+                visit(base, path, lifetimes, sites)?;
+                path.pop();
+                for (name, field) in fields {
+                    path.push(RuntimeQualifierPathStep::RecordField(name.clone()));
+                    visit(field, path, lifetimes, sites)?;
+                    path.pop();
+                }
+            }
+            Type::Qualified(_, _) => unreachable!("qualifiers peeled above"),
+        }
+        Ok(())
+    }
+
+    let mut sites = Vec::new();
+    visit(ty, &mut Vec::new(), lifetimes, &mut sites)?;
+    Ok(sites)
+}
+
+fn runtime_projection(projection: &LoanProjection) -> RuntimeLoanProjection {
+    RuntimeLoanProjection {
+        steps: projection
+            .steps
+            .iter()
+            .map(|step| match step {
+                LoanProjectionStep::Field(name) => {
+                    RuntimeLoanProjectionStep::Field(name.clone())
+                }
+                LoanProjectionStep::Tuple(index) => RuntimeLoanProjectionStep::Tuple(*index),
+                LoanProjectionStep::Index(index) => RuntimeLoanProjectionStep::Index(*index),
+                LoanProjectionStep::Range { lo, hi, inclusive } => {
+                    RuntimeLoanProjectionStep::Range {
+                        lo: *lo,
+                        hi: *hi,
+                        inclusive: *inclusive,
+                    }
+                }
+            })
+            .collect(),
+    }
 }
 
 impl From<Convention> for RuntimeConvention {
@@ -48,6 +336,7 @@ pub enum RuntimeTypeIdentity {
         params: Vec<Self>,
         result: Box<Self>,
         conventions: Vec<RuntimeConvention>,
+        access: Box<RuntimeCallableAccessIdentity>,
     },
     Nominal {
         declaration: DeclarationIdentity,
@@ -72,7 +361,9 @@ impl RuntimeTypeIdentity {
         resolve: &impl Fn(&str, DeclarationKind) -> Option<DeclarationIdentity>,
     ) -> Result<Self, RuntimeTypeError> {
         match ty {
-            Type::Qualified(_, inner) => Self::from_resolved_type(inner, resolve),
+            Type::Qualified(_, inner) if !matches!(ty.unqualified(), Type::Fn(..)) => {
+                Self::from_resolved_type(inner, resolve)
+            }
             Type::RecordCompose { .. } => Err(RuntimeTypeError::MalformedStructuralType(
                 "compiler invariant violated: structural record composition reached runtime type identity before records::lower normalized it"
                     .to_string(),
@@ -84,7 +375,13 @@ impl RuntimeTypeIdentity {
                     .map(|item| Self::from_resolved_type(item, resolve))
                     .collect::<Result<_, _>>()?,
             )),
-            Type::Fn(params, result, conventions) => {
+            Type::Fn(..) | Type::Qualified(_, _) => {
+                let signature = AccessSignature::from_function_type(ty).map_err(|error| {
+                    RuntimeTypeError::MalformedAccessSignature(error.to_string())
+                })?;
+                let Type::Fn(params, result, conventions) = ty.unqualified() else {
+                    unreachable!("qualified callable guarded above")
+                };
                 if !conventions.is_empty() && conventions.len() != params.len() {
                     return Err(RuntimeTypeError::ConventionArity {
                         params: params.len(),
@@ -103,6 +400,10 @@ impl RuntimeTypeIdentity {
                         .collect::<Result<_, _>>()?,
                     result: Box::new(Self::from_resolved_type(result, resolve)?),
                     conventions,
+                    access: Box::new(RuntimeCallableAccessIdentity::from_checked(
+                        &signature,
+                        resolve,
+                    )?),
                 })
             }
             Type::Dyn(name, args) => Ok(Self::Existential {
@@ -260,4 +561,3 @@ fn fixed_width(text: &str, at: &mut usize, width: usize) -> Option<usize> {
     *at = end;
     part.parse().ok()
 }
-

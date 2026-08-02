@@ -897,9 +897,66 @@ Checked runtime values (RFC-0082 Stage 1).
 
 - `RuntimeField(String, RuntimeType)`
 
+#### `sealed type RuntimeAccessKind`
+
+Logical callable access metadata. Every position and projection names a source type or loan relation; compiler storage offsets and ownership-token representations are intentionally absent.
+
+- `AccessValue`
+- `AccessBorrow`
+- `AccessVar`
+- `AccessOwn`
+
+#### `sealed type RuntimeAccessQualifier`
+
+- `AccessFrozen`
+- `AccessUnique`
+- `AccessLocalUnique`
+- `AccessView(Int)`
+
+#### `sealed type RuntimeQualifierPathStep`
+
+- `AccessTypeArgument(Int)`
+- `AccessTupleItem(Int)`
+- `AccessFunctionParameter(Int)`
+- `AccessFunctionResult`
+- `AccessExistentialArgument(Int)`
+- `AccessRecordBase`
+- `AccessRecordField(String)`
+
+#### `sealed type RuntimeQualifierSite`
+
+- `RuntimeQualifierSite(List(RuntimeQualifierPathStep), List(RuntimeAccessQualifier))`
+
+#### `sealed type RuntimeParameterAccess`
+
+- `RuntimeParameterAccess(RuntimeAccessKind, List(RuntimeQualifierSite), Bool, Bool)`
+
+#### `sealed type RuntimeResultAccess`
+
+- `RuntimeResultAccess(List(RuntimeQualifierSite), Bool)`
+
+#### `sealed type RuntimeLoanProjectionStep`
+
+- `AccessField(String)`
+- `AccessTuple(Int)`
+- `AccessIndex(Int)`
+- `AccessRange(Int, Int, Bool)`
+
+#### `sealed type RuntimeBorrowOwner`
+
+- `RuntimeBorrowOwner(Int, List(RuntimeLoanProjectionStep))`
+
+#### `sealed type RuntimeBorrowRelation`
+
+- `RuntimeBorrowRelation(Int, List(RuntimeLoanProjectionStep), List(RuntimeBorrowOwner))`
+
+#### `sealed type RuntimeCallableAccess`
+
+- `RuntimeCallableAccess(List(RuntimeAccessQualifier), List(RuntimeParameterAccess), RuntimeResultAccess, List(RuntimeBorrowRelation))`
+
 #### `sealed type RuntimeMethod`
 
-- `RuntimeMethod(String, List(RuntimeType), RuntimeType, List(String))`
+- `RuntimeMethod(String, List(RuntimeType), RuntimeType, List(String), RuntimeCallableAccess)`
 
 #### `sealed type DynamicFieldStatus`
 
@@ -958,6 +1015,10 @@ Public methods explicitly registered with `@dynamic`. The compiler replaces this
 #### `fn method_result(method: RuntimeMethod) -> RuntimeType`
 
 #### `fn method_capabilities(method: RuntimeMethod) -> List(String)`
+
+#### `fn method_access(method: RuntimeMethod) -> RuntimeCallableAccess`
+
+The canonical access identity covers the receiver and every declared method parameter, including explicit capabilities, in source order.
 
 #### `fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic, DynamicError)`
 

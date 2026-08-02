@@ -1,5 +1,8 @@
 use super::*;
 
+use crate::access::{AccessSignature, CheckedAccessFacts};
+use crate::runtime_type::RuntimeCallableAccessIdentity;
+
 #[derive(Clone, Debug)]
 pub(super) struct DynamicMethodDefinition {
     name: String,
@@ -7,6 +10,7 @@ pub(super) struct DynamicMethodDefinition {
     pub(super) receiver: Type,
     pub(super) parameters: Vec<DynamicMethodParameterDefinition>,
     pub(super) result: Type,
+    access: AccessSignature,
 }
 
 #[derive(Clone, Debug)]
@@ -18,6 +22,7 @@ pub(super) enum DynamicMethodParameterDefinition {
 pub(super) fn collect_dynamic_method_definitions(
     module: &Module,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
+    access_facts: &CheckedAccessFacts<'_>,
 ) -> Result<Vec<DynamicMethodDefinition>, String> {
     let functions = module.items.iter().filter_map(|item| match item {
         Item::Function(function) if function.attributes.iter().any(|attr| attr == "dynamic") => {
@@ -116,6 +121,12 @@ pub(super) fn collect_dynamic_method_definitions(
             .next()
             .unwrap_or(&function.name)
             .to_string();
+        let access = access_facts.declaration(&function.name).cloned().ok_or_else(|| {
+            format!(
+                "@dynamic function `{}` lost its checked access signature",
+                function.name,
+            )
+        })?;
         let receiver_identity = runtime_catalog
             .type_identity(&receiver)
             .map_err(|error| error.to_string())?;
@@ -131,6 +142,7 @@ pub(super) fn collect_dynamic_method_definitions(
             receiver,
             parameters,
             result,
+            access,
         });
     }
     Ok(methods)
@@ -180,6 +192,11 @@ pub(super) fn prepare_dynamic_methods(
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             let result = descriptor(&method.result)?;
+            let access = RuntimeCallableAccessIdentity::from_checked(
+                &method.access,
+                &|name, kind| runtime_catalog.resolve(name, kind).cloned(),
+            )
+            .map_err(|error| error.to_string())?;
             Ok(RuntimeMethodDescriptor {
                 receiver,
                 receiver_type: method.receiver,
@@ -189,6 +206,7 @@ pub(super) fn prepare_dynamic_methods(
                 result,
                 result_display: witchy_syntax::format::type_str(&method.result),
                 result_type: method.result,
+                access,
             })
         })
         .collect()
@@ -892,6 +910,7 @@ fn runtime_methods_lookup(ty: Expr, runtime_types: &RuntimeTypePlan) -> Expr {
                                 })
                                 .collect(),
                         ),
+                        runtime_callable_access_expr(&method.access),
                     ],
                 })
                 .collect();
@@ -926,6 +945,178 @@ fn runtime_methods_lookup(ty: Expr, runtime_types: &RuntimeTypePlan) -> Expr {
                 arms: descriptor_arms,
             },
         }],
+    }
+}
+
+fn runtime_access_qualifier_expr(qualifier: &crate::runtime_type::RuntimeAccessQualifier) -> Expr {
+    use crate::runtime_type::RuntimeAccessQualifier as Qualifier;
+    let (name, args) = match qualifier {
+        Qualifier::Frozen => ("dynamic.AccessFrozen", Vec::new()),
+        Qualifier::Unique => ("dynamic.AccessUnique", Vec::new()),
+        Qualifier::LocalUnique => ("dynamic.AccessLocalUnique", Vec::new()),
+        Qualifier::Borrow(lifetime) => (
+            "dynamic.AccessView",
+            vec![Expr::Int(i64::from(*lifetime))],
+        ),
+    };
+    Expr::Ctor { name: name.into(), args }
+}
+
+fn runtime_qualifier_path_step_expr(
+    step: &crate::runtime_type::RuntimeQualifierPathStep,
+) -> Expr {
+    use crate::runtime_type::RuntimeQualifierPathStep as Step;
+    let index = |index: usize| Expr::Int(i64::try_from(index).unwrap_or(i64::MAX));
+    let (name, args) = match step {
+        Step::TypeArgument(at) => ("dynamic.AccessTypeArgument", vec![index(*at)]),
+        Step::TupleItem(at) => ("dynamic.AccessTupleItem", vec![index(*at)]),
+        Step::FunctionParameter(at) => {
+            ("dynamic.AccessFunctionParameter", vec![index(*at)])
+        }
+        Step::FunctionResult => ("dynamic.AccessFunctionResult", Vec::new()),
+        Step::ExistentialArgument(at) => {
+            ("dynamic.AccessExistentialArgument", vec![index(*at)])
+        }
+        Step::RecordBase => ("dynamic.AccessRecordBase", Vec::new()),
+        Step::RecordField(field) => {
+            ("dynamic.AccessRecordField", vec![Expr::Str(field.clone())])
+        }
+    };
+    Expr::Ctor { name: name.into(), args }
+}
+
+fn runtime_qualifier_site_expr(site: &crate::runtime_type::RuntimeQualifierSite) -> Expr {
+    Expr::Ctor {
+        name: "dynamic.RuntimeQualifierSite".into(),
+        args: vec![
+            Expr::List(
+                site.path
+                    .iter()
+                    .map(runtime_qualifier_path_step_expr)
+                    .collect(),
+            ),
+            Expr::List(
+                site.qualifiers
+                    .iter()
+                    .map(runtime_access_qualifier_expr)
+                    .collect(),
+            ),
+        ],
+    }
+}
+
+fn runtime_loan_projection_step_expr(
+    step: &crate::runtime_type::RuntimeLoanProjectionStep,
+) -> Expr {
+    use crate::runtime_type::RuntimeLoanProjectionStep as Step;
+    let index = |index: usize| Expr::Int(i64::try_from(index).unwrap_or(i64::MAX));
+    let (name, args) = match step {
+        Step::Field(field) => ("dynamic.AccessField", vec![Expr::Str(field.clone())]),
+        Step::Tuple(at) => ("dynamic.AccessTuple", vec![index(*at)]),
+        Step::Index(at) => ("dynamic.AccessIndex", vec![Expr::Int(*at)]),
+        Step::Range { lo, hi, inclusive } => (
+            "dynamic.AccessRange",
+            vec![Expr::Int(*lo), Expr::Int(*hi), Expr::Bool(*inclusive)],
+        ),
+    };
+    Expr::Ctor { name: name.into(), args }
+}
+
+fn runtime_projection_expr(projection: &crate::runtime_type::RuntimeLoanProjection) -> Expr {
+    Expr::List(
+        projection
+            .steps
+            .iter()
+            .map(runtime_loan_projection_step_expr)
+            .collect(),
+    )
+}
+
+fn runtime_callable_access_expr(
+    access: &crate::runtime_type::RuntimeCallableAccessIdentity,
+) -> Expr {
+    use crate::runtime_type::RuntimeAccessKind as Kind;
+    let callable_qualifiers = Expr::List(
+        access
+            .callable_qualifiers
+            .iter()
+            .map(runtime_access_qualifier_expr)
+            .collect(),
+    );
+    let parameters = Expr::List(
+        access
+            .parameters
+            .iter()
+            .map(|parameter| {
+                let kind = match parameter.kind {
+                    Kind::OwnedImmutable => "dynamic.AccessValue",
+                    Kind::SharedBorrow => "dynamic.AccessBorrow",
+                    Kind::ExclusiveWriteback => "dynamic.AccessVar",
+                    Kind::Consuming => "dynamic.AccessOwn",
+                };
+                Expr::Ctor {
+                    name: "dynamic.RuntimeParameterAccess".into(),
+                    args: vec![
+                        Expr::Ctor { name: kind.into(), args: Vec::new() },
+                        Expr::List(
+                            parameter
+                                .qualifier_sites
+                                .iter()
+                                .map(runtime_qualifier_site_expr)
+                                .collect(),
+                        ),
+                        Expr::Bool(parameter.ownership_input),
+                        Expr::Bool(parameter.writeback_output),
+                    ],
+                }
+            })
+            .collect(),
+    );
+    let result = Expr::Ctor {
+        name: "dynamic.RuntimeResultAccess".into(),
+        args: vec![
+            Expr::List(
+                access
+                    .result
+                    .qualifier_sites
+                    .iter()
+                    .map(runtime_qualifier_site_expr)
+                    .collect(),
+            ),
+            Expr::Bool(access.result.ownership_output),
+        ],
+    };
+    let relations = Expr::List(
+        access
+            .borrow_relations
+            .iter()
+            .map(|relation| Expr::Ctor {
+                name: "dynamic.RuntimeBorrowRelation".into(),
+                args: vec![
+                    Expr::Int(i64::from(relation.lifetime)),
+                    runtime_projection_expr(&relation.output_projection),
+                    Expr::List(
+                        relation
+                            .owners
+                            .iter()
+                            .map(|owner| Expr::Ctor {
+                                name: "dynamic.RuntimeBorrowOwner".into(),
+                                args: vec![
+                                    Expr::Int(
+                                        i64::try_from(owner.parameter).unwrap_or(i64::MAX),
+                                    ),
+                                    runtime_projection_expr(&owner.input_projection),
+                                ],
+                            })
+                            .collect(),
+                    ),
+                ],
+            })
+            .collect(),
+    );
+    Expr::Ctor {
+        name: "dynamic.RuntimeCallableAccess".into(),
+        args: vec![callable_qualifiers, parameters, result, relations],
     }
 }
 
@@ -1387,4 +1578,3 @@ fn runtime_field_status_lookup(
         }],
     }
 }
-
