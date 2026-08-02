@@ -257,6 +257,73 @@
     }
 
     #[test]
+    fn lowers_mutual_forwarded_ownership_envelopes_to_one_dispatcher() {
+        let member = |name: &str, target: &str| WirFunc {
+            name: name.into(),
+            params: vec![
+                WirLocal { name: "state".into(), ty: WirTy::Bool },
+                WirLocal { name: "n".into(), ty: WirTy::Int },
+                WirLocal { name: "state__cap".into(), ty: WirTy::Bool },
+            ],
+            ret: vec![WirTy::Bool, WirTy::Bool],
+            locals: vec![
+                WirLocal { name: "result".into(), ty: WirTy::Bool },
+                WirLocal { name: "result_cap".into(), ty: WirTy::Bool },
+            ],
+            body: vec![
+                WirNode::Push(WirExpr::Seq(vec![
+                    WirNode::CallStoreMulti {
+                        func: target.into(),
+                        args: vec![
+                            WirExpr::GetLocal("state".into()),
+                            WirExpr::Binary {
+                                op: BinOp::Sub,
+                                kind: Kind::I64,
+                                lhs: Box::new(WirExpr::GetLocal("n".into())),
+                                rhs: Box::new(WirExpr::ConstI64(1)),
+                            },
+                            WirExpr::GetLocal("state__cap".into()),
+                        ],
+                        dests: vec!["result".into(), "result_cap".into()],
+                    },
+                    WirNode::Push(WirExpr::GetLocal("result".into())),
+                ])),
+                WirNode::Push(WirExpr::GetLocal("result_cap".into())),
+            ],
+            raw_body: None,
+        };
+        let mut module = module_with(member("even", "odd"));
+        module.funcs.push(member("odd", "even"));
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 2);
+        let dispatcher = module
+            .funcs
+            .iter()
+            .find(|function| function.name.starts_with("__witchy_tail_envelope_scc_"))
+            .expect("one multi-result ownership-envelope dispatcher");
+        assert_eq!(dispatcher.ret, [WirTy::Bool, WirTy::Bool]);
+        assert!(
+            dispatcher.body.iter().any(|node| matches!(node, WirNode::Block { body, .. }
+                if body.iter().any(|node| matches!(node, WirNode::Loop { .. })))),
+            "the mutual ownership continuation must be one resultless loop"
+        );
+        let mut residual = HashSet::new();
+        collect_function_tail_calls(&dispatcher.body, &mut residual);
+        assert!(
+            !residual.contains(&TailCallee::Direct("even".into()))
+                && !residual.contains(&TailCallee::Direct("odd".into())),
+            "the dispatcher must contain no recursive backend edge: {residual:?}"
+        );
+        for wrapper in module.funcs.iter().filter(|function| function.name == "even" || function.name == "odd") {
+            assert!(matches!(wrapper.body.first(), Some(WirNode::CallStoreMulti { func, dests, .. })
+                if func == &dispatcher.name && dests.len() == 2));
+        }
+        let binary = crate::wir_encode::encode(&module, &[]);
+        wasmparser::validate(&binary)
+            .expect("mutual ownership-envelope dispatcher must remain valid wasm");
+    }
+
+    #[test]
     fn lowers_mutual_tail_component_to_one_dispatcher_and_abi_wrappers() {
         let member = |name: &str, target: &str| WirFunc {
             name: name.into(),
