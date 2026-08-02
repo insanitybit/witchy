@@ -8,17 +8,18 @@ use super::*;
 
 struct ModuleLayoutResolver<'a> {
     definitions: BTreeMap<&'a str, &'a witchy_syntax::ast::TypeDef>,
+    header_free_lists: Vec<Type>,
 }
 
 impl<'a> ModuleLayoutResolver<'a> {
-    fn new(module: &'a Module) -> Self {
+    fn new(module: &'a Module, header_free_lists: Vec<Type>) -> Self {
         let mut definitions = BTreeMap::new();
         for item in &module.items {
             if let Item::Type(definition) = item {
                 definitions.insert(definition.name.as_str(), definition);
             }
         }
-        Self { definitions }
+        Self { definitions, header_free_lists }
     }
 
     fn definition(&self, name: &str) -> Option<&'a witchy_syntax::ast::TypeDef> {
@@ -35,7 +36,7 @@ impl witchy_wir::layout::ClosedTypeResolver for ModuleLayoutResolver<'_> {
     fn resolve_named<'a>(
         &'a self,
         name: &str,
-        _arguments: &[Type],
+        arguments: &[Type],
     ) -> Option<witchy_wir::layout::ResolvedNamed<'a>> {
         use witchy_wir::layout::{RcHeader, ReferenceKind, ResolvedNamed, ScalarKind};
         match name {
@@ -43,7 +44,19 @@ impl witchy_wir::layout::ClosedTypeResolver for ModuleLayoutResolver<'_> {
             "Int" => Some(ResolvedNamed::Scalar(ScalarKind::Int)),
             "Float" => Some(ResolvedNamed::Scalar(ScalarKind::Float)),
             "Duration" => Some(ResolvedNamed::Scalar(ScalarKind::Duration)),
-            "List" => Some(ResolvedNamed::PackedList { rc: RcHeader::Required }),
+            "List" => {
+                let list = Type::Named(name.to_string(), arguments.to_vec());
+                let rc = if self
+                    .header_free_lists
+                    .iter()
+                    .any(|known| known.unqualified() == list.unqualified())
+                {
+                    RcHeader::Elided
+                } else {
+                    RcHeader::Required
+                };
+                Some(ResolvedNamed::PackedList { rc })
+            }
             _ => {
                 let definition = self.definition(name)?;
                 if definition.is_capability {
@@ -132,7 +145,12 @@ fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
     if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Unbox) {
         return;
     }
-    let resolver = ModuleLayoutResolver::new(module);
+    let header_free_lists = header_elision::proven_header_free_lists(
+        module,
+        cg.type_table,
+        &cg.loan_facts,
+    );
+    let resolver = ModuleLayoutResolver::new(module, header_free_lists);
     let mut requested = Vec::new();
     for item in &module.items {
         match item {
@@ -1790,6 +1808,39 @@ fn encoded_binary_outcome(
     }
 }
 
+fn append_layout_bundle(mut wasm: Vec<u8>, bundle: &witchy_wir::layout::LayoutBundle) -> Vec<u8> {
+    const SECTION_NAME: &[u8] = b"witchy.layouts";
+    fn push_u32_leb(bytes: &mut Vec<u8>, mut value: u32) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            bytes.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    let data = bundle.canonical_bytes();
+    let mut payload = Vec::with_capacity(SECTION_NAME.len() + data.len() + 5);
+    push_u32_leb(
+        &mut payload,
+        u32::try_from(SECTION_NAME.len()).expect("layout section name fits u32"),
+    );
+    payload.extend_from_slice(SECTION_NAME);
+    payload.extend_from_slice(&data);
+    wasm.push(0);
+    push_u32_leb(
+        &mut wasm,
+        u32::try_from(payload.len()).expect("validated layout bundle payload fits u32"),
+    );
+    wasm.extend_from_slice(&payload);
+    wasm
+}
+
 #[cfg(any(test, feature = "raw-module-test-api"))]
 fn assemble_optimized_wir_with_structs(
     module: &Module,
@@ -1798,6 +1849,7 @@ fn assemble_optimized_wir_with_structs(
         witchy_wir::wir::WirModule,
         Vec<witchy_wir::wir::WirStructDef>,
         Vec<witchy_wir::wir::WirArrayDef>,
+        witchy_wir::layout::LayoutBundle,
     ),
     LoweringFailure,
 > {
@@ -1813,14 +1865,15 @@ fn assemble_optimized_wir_with_structs_mode(
         witchy_wir::wir::WirModule,
         Vec<witchy_wir::wir::WirStructDef>,
         Vec<witchy_wir::wir::WirArrayDef>,
+        witchy_wir::layout::LayoutBundle,
     ),
     LoweringFailure,
 > {
-    let (mut wir_module, gc_structs, gc_arrays) =
+    let (mut wir_module, gc_structs, gc_arrays, layouts) =
         assemble_wir_module_with_structs_mode(module, build_entrypoint, runtime_catalog)?;
     witchy_wir::wir_opt::lower_direct_tail_calls(&mut wir_module);
     witchy_wir::wir_opt::optimize(&mut wir_module);
-    Ok((wir_module, gc_structs, gc_arrays))
+    Ok((wir_module, gc_structs, gc_arrays, layouts))
 }
 
 /// Compile a module straight to a wasm **binary** via WIR + `wir_encode::encode`.
@@ -1848,7 +1901,7 @@ fn compile_module_binary_mode(
     build_entrypoint: bool,
     runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,
 ) -> LoweringOutcome<Vec<u8>> {
-    let (wir_module, gc_structs, gc_arrays) =
+    let (wir_module, gc_structs, gc_arrays, layouts) =
         match assemble_optimized_wir_with_structs_mode(
             module,
             build_entrypoint,
@@ -1893,7 +1946,16 @@ fn compile_module_binary_mode(
             }
             LoweringOutcome::Rejected(error)
         }
-        outcome => outcome,
+        LoweringOutcome::Lowered(bytes) => {
+            let bytes = append_layout_bundle(bytes, &layouts);
+            match wasmparser::validate(&bytes) {
+                Ok(_) => LoweringOutcome::Lowered(bytes),
+                Err(error) => LoweringOutcome::Rejected(CodegenError {
+                    message: format!("layout-annotated Wasm failed validation: {error}"),
+                }),
+            }
+        }
+        LoweringOutcome::Unsupported(reason) => LoweringOutcome::Unsupported(reason),
     }
 }
 
@@ -1904,7 +1966,7 @@ fn compile_module_binary_mode(
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::WirModule> {
     match assemble_wir_module_with_structs(module) {
-        Ok((module, gc_structs, gc_arrays)) => {
+        Ok((module, gc_structs, gc_arrays, _)) => {
             validated_module_outcome(module, &gc_structs, &gc_arrays)
         }
         Err(failure) => public_outcome(Err(failure)),
@@ -1923,7 +1985,7 @@ pub fn assemble_checked_optimized_wir_module(
         false,
         runtime_catalog.as_ref(),
     ) {
-        Ok((module, gc_structs, gc_arrays)) => {
+        Ok((module, gc_structs, gc_arrays, _)) => {
             validated_module_outcome(module, &gc_structs, &gc_arrays)
         }
         Err(failure) => public_outcome(Err(failure)),
@@ -1935,7 +1997,7 @@ pub fn assemble_optimized_wir_module(
     module: &Module,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
     match assemble_optimized_wir_with_structs(module) {
-        Ok((module, gc_structs, gc_arrays)) => {
+        Ok((module, gc_structs, gc_arrays, _)) => {
             validated_module_outcome(module, &gc_structs, &gc_arrays)
         }
         Err(failure) => public_outcome(Err(failure)),
@@ -1950,6 +2012,7 @@ fn assemble_wir_module_with_structs(
         witchy_wir::wir::WirModule,
         Vec<witchy_wir::wir::WirStructDef>,
         Vec<witchy_wir::wir::WirArrayDef>,
+        witchy_wir::layout::LayoutBundle,
     ),
     LoweringFailure,
 > {
@@ -1965,6 +2028,7 @@ fn assemble_wir_module_with_structs_mode(
         witchy_wir::wir::WirModule,
         Vec<witchy_wir::wir::WirStructDef>,
         Vec<witchy_wir::wir::WirArrayDef>,
+        witchy_wir::layout::LayoutBundle,
     ),
     LoweringFailure,
 > {
@@ -2731,6 +2795,20 @@ fn assemble_wir_module_with_structs_mode(
                         export: Some("__witchy_packed_alloc_bytes".into()),
                     },
                     WirGlobal {
+                        name: "__witchy_rc_headers_emitted".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_rc_headers_emitted".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_rc_headers_elided".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_rc_headers_elided".into()),
+                    },
+                    WirGlobal {
                         name: "__witchy_destination_candidates_forwarded".into(),
                         kind: WK::I64,
                         mutable: true,
@@ -2897,6 +2975,25 @@ fn assemble_wir_module_with_structs_mode(
                 .collect();
             let gc_structs = cg.gc_structs.clone();
             let gc_arrays = cg.gc_arrays.clone();
+            let layout_roots = cg
+                .specialized_type_ids
+                .iter()
+                .map(|(_, id)| *id)
+                .chain(cg.callable_layouts.values().flat_map(|signature| {
+                    signature
+                        .parameters()
+                        .iter()
+                        .copied()
+                        .flatten()
+                        .chain(signature.result())
+                }));
+            let layout_bundle = witchy_wir::layout::LayoutBundle::from_interner(
+                &cg.specialized_layouts,
+                layout_roots,
+            )
+            .map_err(|error| CodegenError {
+                message: format!("specialized layout bundle rejected: {error}"),
+            })?;
             return Ok((WirModule {
                 imports: pruned_imports,
                 funcs: pruned_funcs,
@@ -2941,7 +3038,7 @@ fn assemble_wir_module_with_structs_mode(
                     }
                     exports
                 },
-            }, gc_structs, gc_arrays));
+            }, gc_structs, gc_arrays, layout_bundle));
         }
 
         // Otherwise the program reaches a prelude helper not yet migrated to a

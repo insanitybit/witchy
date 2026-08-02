@@ -382,6 +382,286 @@
         (printed, counters)
     }
 
+    fn run_int_with_layout_metrics(
+        source: &str,
+    ) -> (i64, std::collections::BTreeMap<String, i64>, i32) {
+        let module = parse_module(source).expect("parse layout metric program");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("the layout metric program lowers");
+        let engine = gc_wasmtime_engine();
+        let wt = WtModule::new(&engine, &bytes).expect("valid layout metric wasm");
+        let captured = Arc::new(Mutex::new(None));
+        let mut linker = Linker::new(&engine);
+        define_abort(&mut linker);
+        let sink = Arc::clone(&captured);
+        linker
+            .func_wrap("witchy", "print_int", move |n: i64| {
+                *sink.lock().unwrap() = Some(n);
+            })
+            .unwrap();
+        let mut store = Store::new(&engine, ());
+        let instance = linker.instantiate(&mut store, &wt).expect("instantiate layout metrics");
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect("run layout metric program");
+        let mut counters = std::collections::BTreeMap::new();
+        for name in [
+            "__witchy_rc_headers_emitted",
+            "__witchy_rc_headers_elided",
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_rc_alloc_calls",
+            "__witchy_bump_alloc_calls",
+        ] {
+            let value = instance
+                .get_global(&mut store, name)
+                .unwrap_or_else(|| panic!("missing layout counter `{name}`"))
+                .get(&mut store);
+            let wasmtime::Val::I64(value) = value else {
+                panic!("layout counter `{name}` is not i64: {value:?}");
+            };
+            counters.insert(name.to_string(), value);
+        }
+        let heap = instance
+            .get_global(&mut store, "__heap")
+            .expect("heap export")
+            .get(&mut store);
+        let wasmtime::Val::I32(heap) = heap else {
+            panic!("heap export is not i32: {heap:?}");
+        };
+        let printed = captured.lock().unwrap().take().expect("printed a value");
+        (printed, counters, heap)
+    }
+
+    #[test]
+    fn proven_unique_packed_list_elides_exactly_one_rc_header() {
+        let source = r#"
+mode opt
+
+type Point packed:
+    x: Int
+    y: Int
+
+fn main() -> Int:
+    let points = [Point(2, 3), Point(5, 7)]
+    points[0].x * 10 + points[0].y + points[1].x * 10 + points[1].y
+"#;
+        let release = witchy_syntax::opt::OptSet::default_set();
+        witchy_syntax::opt::set_for_tests(Some(release));
+        let optimized = run_int_with_layout_metrics(source);
+
+        witchy_syntax::opt::set_for_tests(Some(
+            release.without(witchy_syntax::opt::Opt::RcElide),
+        ));
+        let rc_backed = run_int_with_layout_metrics(source);
+
+        witchy_syntax::opt::set_for_tests(Some(
+            release.without(witchy_syntax::opt::Opt::RcFloor),
+        ));
+        let rc_floor_off = run_int_with_layout_metrics(source);
+
+        witchy_syntax::opt::set_for_tests(Some(
+            release.without(witchy_syntax::opt::Opt::Unbox),
+        ));
+        let unbox_off = run_int_with_layout_metrics(source);
+
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::none()));
+        let none = run_int_with_layout_metrics(source);
+        witchy_syntax::opt::set_for_tests(None);
+
+        for (label, run) in [
+            ("release", &optimized),
+            ("-rc-elide", &rc_backed),
+            ("-rc-floor", &rc_floor_off),
+            ("-unbox", &unbox_off),
+            ("none", &none),
+        ] {
+            assert_eq!(run.0, 80, "value parity under {label}");
+        }
+        assert_eq!(optimized.1["__witchy_rc_headers_emitted"], 0);
+        assert_eq!(optimized.1["__witchy_rc_headers_elided"], 1);
+        assert_eq!(optimized.1["__witchy_packed_alloc_calls"], 1);
+        assert_eq!(optimized.1["__witchy_rc_alloc_calls"], 0);
+        assert_eq!(rc_backed.1["__witchy_rc_headers_emitted"], 1);
+        assert_eq!(rc_backed.1["__witchy_rc_headers_elided"], 0);
+        assert_eq!(rc_backed.1["__witchy_packed_alloc_calls"], 1);
+        assert_eq!(rc_backed.1["__witchy_rc_alloc_calls"], 1);
+        assert_eq!(rc_floor_off.1["__witchy_rc_headers_emitted"], 0);
+        assert_eq!(rc_floor_off.1["__witchy_rc_headers_elided"], 1);
+        assert_eq!(rc_floor_off.1["__witchy_rc_alloc_calls"], 0);
+        assert_eq!(rc_floor_off.2, optimized.2, "drop-floor deopt keeps header-free bytes");
+        assert_eq!(rc_backed.2 - optimized.2, 8, "one physical [rc,size] header");
+        assert_eq!(
+            optimized.1["__witchy_packed_alloc_bytes"],
+            rc_backed.1["__witchy_packed_alloc_bytes"],
+            "descriptor payload bytes stay identical",
+        );
+        for deopt in [&unbox_off, &none] {
+            assert_eq!(deopt.1["__witchy_rc_headers_emitted"], 0);
+            assert_eq!(deopt.1["__witchy_rc_headers_elided"], 0);
+        }
+    }
+
+    #[test]
+    fn header_elision_falls_back_at_ownership_and_domain_boundaries() {
+        let cases = [
+            (
+                "call-return",
+                r#"
+mode opt
+type Point packed:
+    x: Int
+fn relay(points: List(Point)) -> List(Point):
+    points
+fn main() -> Int:
+    let points = relay([Point(4), Point(9)])
+    var total = 0
+    for point in points:
+        total = total + point.x
+    total
+"#,
+                13,
+            ),
+            (
+                "alias",
+                r#"
+mode opt
+type Point packed:
+    x: Int
+fn main() -> Int:
+    let points = [Point(4), Point(9)]
+    let alias = points
+    var total = 0
+    for point in alias:
+        total = total + point.x
+    total
+"#,
+                13,
+            ),
+            (
+                "normal-storage",
+                r#"
+mode opt
+type Point packed:
+    x: Int
+type Holder:
+    points: List(Point)
+fn main() -> Int:
+    let points = [Point(4), Point(9)]
+    let holder = Holder(points)
+    13
+"#,
+                13,
+            ),
+            (
+                "nested-constructor",
+                r#"
+mode opt
+type Point packed:
+    x: Int
+fn main() -> Int:
+    let points = if true: [Point(4), Point(9)] else: [Point(0)]
+    var total = 0
+    for point in points:
+        total = total + point.x
+    total
+"#,
+                13,
+            ),
+            (
+                "borrow-root-and-lifetime",
+                r#"
+mode opt
+type Point packed:
+    x: Int
+fn view(points: let('a) List(Point)) -> View(List(Point), 'a):
+    points
+fn main() -> Int:
+    let points = [Point(4), Point(9)]
+    let borrowed = view(points)
+    var total = 0
+    for point in borrowed:
+        total = total + point.x
+    total
+"#,
+                13,
+            ),
+        ];
+        let release = witchy_syntax::opt::OptSet::default_set();
+        for (label, source, expected) in cases {
+            witchy_syntax::opt::set_for_tests(Some(release));
+            let (value, counters, _) = run_int_with_layout_metrics(source);
+            witchy_syntax::opt::set_for_tests(None);
+            assert_eq!(value, expected, "fallback value for {label}");
+            assert_eq!(counters["__witchy_rc_headers_elided"], 0, "{label}");
+            assert!(counters["__witchy_rc_headers_emitted"] > 0, "{label}: {counters:?}");
+        }
+    }
+
+    #[test]
+    fn compiled_packed_callable_carries_one_canonical_layout_bundle() {
+        let source = r#"
+mode opt
+type Point packed:
+    x: Int
+fn relay(points: List(Point)) -> List(Point):
+    points
+fn main() -> Int:
+    let points = relay([Point(4)])
+    4
+"#;
+        let module = parse_module(source).expect("parse layout bundle program");
+        let bytes = compile_module_binary(&module).expect_lowered("compile layout bundle program");
+        let sections = wasmparser::Parser::new(0)
+            .parse_all(&bytes)
+            .filter_map(|payload| match payload.expect("valid bundled Wasm") {
+                wasmparser::Payload::CustomSection(section)
+                    if section.name() == "witchy.layouts" =>
+                {
+                    Some(section.data().to_vec())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sections.len(), 1, "new binaries carry exactly one layout section");
+        let (bundle, interner) = witchy_wir::layout::LayoutBundle::decode_canonical(&sections[0])
+            .expect("compiler emits a canonical, dependency-complete bundle");
+        let callable_list = bundle
+            .roots()
+            .iter()
+            .copied()
+            .find(|id| {
+                interner
+                    .get(*id)
+                    .is_some_and(|descriptor| matches!(descriptor.kind(), witchy_wir::layout::LayoutKind::PackedList { .. }))
+            })
+            .expect("relay's exact packed List(Point) callable layout is a root");
+        assert!(interner.get(callable_list).is_some());
+
+        let scalar = parse_module("fn main() -> Int:\n    1\n")
+            .expect("parse scalar layout bundle program");
+        let scalar_bytes =
+            compile_module_binary(&scalar).expect_lowered("compile empty layout bundle program");
+        let scalar_sections = wasmparser::Parser::new(0)
+            .parse_all(&scalar_bytes)
+            .filter_map(|payload| match payload.expect("valid scalar Wasm") {
+                wasmparser::Payload::CustomSection(section)
+                    if section.name() == "witchy.layouts" =>
+                {
+                    Some(section.data().to_vec())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(scalar_sections.len(), 1, "scalar binaries carry one empty bundle");
+        let (empty, _) = witchy_wir::layout::LayoutBundle::decode_canonical(&scalar_sections[0])
+            .expect("empty bundle is canonical");
+        assert!(empty.roots().is_empty());
+        assert_eq!(empty.descriptors().count(), 0);
+    }
+
     #[test]
     fn declared_packed_values_cross_direct_and_stored_boundaries() {
         let source = r#"

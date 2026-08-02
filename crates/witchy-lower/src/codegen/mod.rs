@@ -42,6 +42,7 @@ mod type_vars;
 mod expr_lower;
 mod match_lower;
 mod block_lower;
+mod header_elision;
 pub use assembly::{
     assemble_checked_optimized_wir_module, compile_checked_build_module,
     compile_checked_module_binary,
@@ -60,7 +61,7 @@ use witchy_syntax::lambda_scan::{collect_pattern_vars, scan_lambda};
 use witchy_syntax::intrinsics;
 use witchy_wir::layout::{
     type_tag_of, CallableLayoutSignature, FieldKind, HeaderLayout,
-    LayoutId, LayoutInterner, LayoutKind, LayoutSize, ScalarKind, DATA_BASE,
+    LayoutId, LayoutInterner, LayoutKind, LayoutSize, RcHeader, ScalarKind, DATA_BASE,
 };
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
@@ -823,6 +824,7 @@ struct DirectListBuilderPlan {
     data_offset: i32,
     stride: i32,
     packed_field_offsets: Vec<u32>,
+    rc_header: RcHeader,
 }
 
 /// A stable, representation-only key for an element of a GC-lowered tuple.
@@ -4470,7 +4472,7 @@ impl<'types> Codegen<'types> {
                     continue;
                 };
                 let (
-                    HeaderLayout::PackedList { data_offset, .. },
+                    HeaderLayout::PackedList { rc, data_offset, .. },
                     LayoutSize::Dynamic { stride, .. },
                     LayoutKind::PackedList { element, .. },
                 ) = (list_layout.header(), list_layout.size(), list_layout.kind())
@@ -4500,12 +4502,13 @@ impl<'types> Codegen<'types> {
                         .iter()
                         .map(|field| field.offset())
                         .collect(),
+                    rc,
                 )
             } else {
                 if self.kind_of(&args[1]).is_ref() {
                     continue;
                 }
-                (4, 8, Vec::new())
+                (4, 8, Vec::new(), RcHeader::Required)
             };
             // `$rc_alloc` records its byte size in a 24-bit header. Keep the
             // exact reservation within that representable range.
@@ -4520,6 +4523,7 @@ impl<'types> Codegen<'types> {
                 data_offset: shape.0,
                 stride: shape.1,
                 packed_field_offsets: shape.2,
+                rc_header: shape.3,
             };
             self.direct_list_builder_lets
                 .insert((&pair[0] as *const Stmt) as usize, plan.clone());
@@ -4758,6 +4762,18 @@ impl<'types> Codegen<'types> {
             .map(|(_, id)| *id)
     }
 
+    fn local_has_elided_rc_header(&self, name: &str) -> bool {
+        let Some(descriptor) = self
+            .local_types
+            .get(name)
+            .and_then(|ty| self.specialized_layout_id(ty))
+            .and_then(|id| self.specialized_layouts.get(id))
+        else {
+            return false;
+        };
+        matches!(descriptor.header(), HeaderLayout::PackedList { rc: RcHeader::Elided, .. })
+    }
+
     fn specialized_layout_of_expr(&self, expr: &Expr) -> Option<LayoutId> {
         let ty = self.ast_type_of_expr(expr)?;
         self.specialized_layout_id(&ty)
@@ -4807,20 +4823,46 @@ impl<'types> Codegen<'types> {
         &self,
         size: u32,
     ) -> (Vec<witchy_wir::wir::WirNode>, witchy_wir::wir::WirExpr) {
-        self.layout_alloc_expr_nodes(witchy_wir::wir::WirExpr::ConstI32(size as i32))
+        self.layout_alloc_expr_nodes_into_with_header(
+            witchy_wir::wir::WirExpr::ConstI32(size as i32),
+            "p",
+            None,
+        )
     }
 
-    fn layout_alloc_expr_nodes(
+    fn layout_alloc_nodes_with_header(
+        &self,
+        size: u32,
+        rc: RcHeader,
+    ) -> (Vec<witchy_wir::wir::WirNode>, witchy_wir::wir::WirExpr) {
+        self.layout_alloc_expr_nodes_into_with_header(
+            witchy_wir::wir::WirExpr::ConstI32(size as i32),
+            "p",
+            Some(rc),
+        )
+    }
+
+    fn layout_alloc_expr_nodes_with_header(
         &self,
         size: witchy_wir::wir::WirExpr,
+        rc: RcHeader,
     ) -> (Vec<witchy_wir::wir::WirNode>, witchy_wir::wir::WirExpr) {
-        self.layout_alloc_expr_nodes_into(size, "p")
+        self.layout_alloc_expr_nodes_into_with_header(size, "p", Some(rc))
     }
 
     fn layout_alloc_expr_nodes_into(
         &self,
         size: witchy_wir::wir::WirExpr,
         local: &str,
+    ) -> (Vec<witchy_wir::wir::WirNode>, witchy_wir::wir::WirExpr) {
+        self.layout_alloc_expr_nodes_into_with_header(size, local, None)
+    }
+
+    fn layout_alloc_expr_nodes_into_with_header(
+        &self,
+        size: witchy_wir::wir::WirExpr,
+        local: &str,
+        rc: Option<RcHeader>,
     ) -> (Vec<witchy_wir::wir::WirNode>, witchy_wir::wir::WirExpr) {
         use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W, WirNode as N};
         let checked = witchy_wir::wir_helpers::heap_check_enabled();
@@ -4836,8 +4878,20 @@ impl<'types> Codegen<'types> {
         };
         let mut nodes = vec![N::SetLocal {
             local: local.into(),
-            value: W::Call { func: "rc_alloc".into(), args: vec![reserve] },
+            value: W::Call {
+                func: match rc {
+                    Some(RcHeader::Elided) => "bump_alloc".into(),
+                    Some(RcHeader::Required) | None => "rc_alloc".into(),
+                },
+                args: vec![reserve],
+            },
         }];
+        if let Some(rc) = rc {
+            nodes.push(Self::increment_counter(match rc {
+                RcHeader::Required => "__witchy_rc_headers_emitted",
+                RcHeader::Elided => "__witchy_rc_headers_elided",
+            }));
+        }
         nodes.push(Self::increment_counter("__witchy_packed_alloc_calls"));
         nodes.push(N::SetGlobal {
             global: "__witchy_packed_alloc_bytes".into(),
@@ -5058,6 +5112,7 @@ impl<'types> Codegen<'types> {
         let LayoutKind::PackedList { element, .. } = descriptor.kind() else { return None };
         let element_descriptor = self.specialized_layouts.get(*element)?.clone();
         let HeaderLayout::PackedList {
+            rc,
             length_offset,
             capacity_offset,
             data_offset,
@@ -5138,8 +5193,10 @@ impl<'types> Codegen<'types> {
                 ),
             },
         ];
-        let (allocation, new_root) =
-            self.layout_alloc_expr_nodes(W::GetLocal("logical_size".into()));
+        let (allocation, new_root) = self.layout_alloc_expr_nodes_with_header(
+            W::GetLocal("logical_size".into()),
+            rc,
+        );
         cold.extend(allocation);
         cold.push(N::SetLocal {
             local: "new_root".into(),
@@ -5267,6 +5324,7 @@ impl<'types> Codegen<'types> {
         let element = *element;
         let element_descriptor = self.specialized_layouts.get(element)?.clone();
         let HeaderLayout::PackedList {
+            rc,
             length_offset,
             capacity_offset,
             data_offset,
@@ -5285,7 +5343,7 @@ impl<'types> Codegen<'types> {
                 });
             }
         }
-        let (mut body, root) = self.layout_alloc_nodes(size);
+        let (mut body, root) = self.layout_alloc_nodes_with_header(size, rc);
         body.push(N::Store {
             ptr: root.clone(),
             value: W::ConstI32(count as i32),

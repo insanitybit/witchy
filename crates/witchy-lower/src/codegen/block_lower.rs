@@ -131,7 +131,10 @@ impl<'types> Codegen<'types> {
                         seq.push(N::SetLocal {
                             local: name.clone(),
                             value: W::Call {
-                                func: "rc_alloc".into(),
+                                func: match plan.rc_header {
+                                    RcHeader::Required => "rc_alloc".into(),
+                                    RcHeader::Elided => "bump_alloc".into(),
+                                },
                                 args: vec![W::ConstI32(reserve)],
                             },
                         });
@@ -149,6 +152,10 @@ impl<'types> Codegen<'types> {
                                 offset: 4,
                             });
                             seq.push(Self::increment_counter("__witchy_packed_alloc_calls"));
+                            seq.push(Self::increment_counter(match plan.rc_header {
+                                RcHeader::Required => "__witchy_rc_headers_emitted",
+                                RcHeader::Elided => "__witchy_rc_headers_elided",
+                            }));
                             seq.push(N::SetGlobal {
                                 global: "__witchy_packed_alloc_bytes".into(),
                                 value: W::Binary {
@@ -1649,6 +1656,9 @@ impl<'types> Codegen<'types> {
                     .map(|d| d.drops_after(stmt).to_vec())
                     .unwrap_or_default();
                 for d in &drops {
+                    if self.local_has_elided_rc_header(&d.name) {
+                        continue;
+                    }
                     let region = if d.offset == 0 {
                         W::GetLocal(d.name.clone())
                     } else {
@@ -1679,6 +1689,7 @@ impl<'types> Codegen<'types> {
                 for name in &read_drops {
                     if self.rc_owned_bindings.contains(name)
                         && matches!(self.locals.get(name), Some(&Kind::I32))
+                        && !self.local_has_elided_rc_header(name)
                     {
                         seq.push(N::Do(W::Call {
                             func: "rc_drop".into(),
