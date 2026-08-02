@@ -2408,6 +2408,17 @@ fn assemble_wir_module_with_structs_mode(
             } else {
                 Vec::new()
             };
+            // RFC-0110: state-bearing calls that retain real table dispatch.
+            // This global is independent of linear-memory use: a scalar `var`
+            // write-back can still exercise the access envelope in a heap-free
+            // module. Direct and devirtualized calls do not increment it.
+            pruned_globals.push(WirGlobal {
+                name: "__witchy_indirect_ownership_calls".into(),
+                kind: WK::I64,
+                mutable: true,
+                init: GlobalInit::I64(0),
+                export: Some("__witchy_indirect_ownership_calls".into()),
+            });
             if cg.uses_diagnostic_sites {
                 pruned_globals.push(WirGlobal {
                     name: "__witchy_diagnostic_site".into(),

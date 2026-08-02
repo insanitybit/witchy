@@ -2336,9 +2336,24 @@ impl<'types> Codegen<'types> {
         writebacks: Vec<ClosureWriteback>,
         result_kind: Kind,
         typed_abi: bool,
+        count_indirect_ownership: bool,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
-        let mut seq = vec![call];
+        let mut seq = Vec::new();
+        if count_indirect_ownership {
+            seq.push(N::SetGlobal {
+                global: "__witchy_indirect_ownership_calls".to_string(),
+                value: W::Binary {
+                    op: witchy_wir::wir::BinOp::Add,
+                    kind: witchy_wir::wir::Kind::I64,
+                    lhs: Box::new(W::GetGlobal(
+                        "__witchy_indirect_ownership_calls".to_string(),
+                    )),
+                    rhs: Box::new(W::ConstI64(1)),
+                },
+            });
+        }
+        seq.push(call);
         if !typed_abi {
             for (index, (_, kind, scratch)) in writebacks.iter().enumerate() {
                 seq.push(N::SetLocal {

@@ -803,6 +803,14 @@ impl Vm {
             .and_then(|g| g.get(&mut self.store).i64())
     }
 
+    /// RFC-0110 state-bearing calls that executed through a typed indirect
+    /// table signature. Direct and devirtualized calls are deliberately absent.
+    pub fn indirect_ownership_calls(&mut self) -> Option<i64> {
+        self.instance
+            .get_global(&mut self.store, "__witchy_indirect_ownership_calls")
+            .and_then(|g| g.get(&mut self.store).i64())
+    }
+
     pub fn region_copy_bytes(&mut self) -> Option<i64> {
         self.instance
             .get_global(&mut self.store, "__region_copy_bytes")

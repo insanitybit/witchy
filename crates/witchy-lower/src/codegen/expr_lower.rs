@@ -293,8 +293,13 @@ impl<'types> Codegen<'types> {
                         index: table_index,
                         dests,
                     };
-                    let result =
-                        self.finish_closure_multi_call(call, writebacks, result_kind, true)?;
+                    let result = self.finish_closure_multi_call(
+                        call,
+                        writebacks,
+                        result_kind,
+                        true,
+                        true,
+                    )?;
                     seq.push(N::Push(result));
                 } else if matches!(conventions.first(), Some(Convention::Let | Convention::Borrow | Convention::Own)) {
                     seq.push(N::Push(W::CallIndirect {
@@ -541,6 +546,7 @@ impl<'types> Codegen<'types> {
                             writebacks,
                             recover_kind,
                             typed_abi,
+                            false,
                         );
                     }
                 }
@@ -578,6 +584,10 @@ impl<'types> Codegen<'types> {
                         typed_abi,
                         &ownership,
                     );
+                    let indirect_ownership = !matches!(
+                        func.as_ref(),
+                        Expr::Var(fname) if self.devirt_index.contains_key(fname)
+                    );
                     let call = match func.as_ref() {
                         Expr::Var(fname) if self.devirt_index.contains_key(fname) => {
                             N::CallStoreMulti {
@@ -602,6 +612,7 @@ impl<'types> Codegen<'types> {
                         writebacks,
                         recover_kind,
                         typed_abi,
+                        indirect_ownership,
                     )?;
                     return Some(W::Seq(vec![N::SetLocal { local: tmp, value: fcode }, N::Push(result)]));
                 }
@@ -1949,7 +1960,13 @@ impl<'types> Codegen<'types> {
                         args: call_args,
                         dests,
                     };
-                    return self.finish_closure_multi_call(call, writebacks, rk, typed_abi);
+                    return self.finish_closure_multi_call(
+                        call,
+                        writebacks,
+                        rk,
+                        typed_abi,
+                        false,
+                    );
                 }
                 // A closure-typed local `f(x)`: pass the wrapper as the implicit
                 // environment, then signature-shaped args, and call indirectly on
@@ -1994,6 +2011,7 @@ impl<'types> Codegen<'types> {
                             typed_abi,
                             &ownership,
                         );
+                        let indirect_ownership = !self.devirt_index.contains_key(name);
                         let call = if let Some(&idx) = self.devirt_index.get(name) {
                             N::CallStoreMulti {
                                 func: format!("__lamw{idx}"),
@@ -2017,6 +2035,7 @@ impl<'types> Codegen<'types> {
                             writebacks,
                             rk,
                             typed_abi,
+                            indirect_ownership,
                         );
                     }
                     let call = if let Some(&idx) = self.devirt_index.get(name) {

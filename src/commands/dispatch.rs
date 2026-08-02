@@ -153,6 +153,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             Ok(s) => {
                 println!("heap_bytes {}", s.heap_bytes);
                 println!("reowns {}", s.reowns);
+                println!("indirect_ownership_calls {}", s.indirect_ownership_calls);
                 println!("region_copy_bytes {}", s.region_copy_bytes);
                 println!("rc_reused_bytes {}", s.rc_reused_bytes);
                 println!("live_cells {}", s.live_cells);

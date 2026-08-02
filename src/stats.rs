@@ -27,6 +27,9 @@ pub struct Stats {
     /// Accumulation sites that entered with a zero ownership token — each copies.
     /// Small on a clean in-place run; ~one-per-iteration under `WITCHY_OPT=-inplace`.
     pub reowns: i64,
+    /// RFC-0110 calls whose ownership envelope crossed a real indirect table
+    /// boundary (excluding direct and devirtualized closure calls).
+    pub indirect_ownership_calls: i64,
     /// Bytes moved by `region:` copy-outs.
     pub region_copy_bytes: i64,
     /// (RFC-0016) Bytes `$rc_alloc` reused from the RC-floor free-list rather than
@@ -76,6 +79,7 @@ pub fn compute(src: &str) -> Result<Stats, String> {
         output: vm.output(),
         heap_bytes: vm.heap_bytes().unwrap_or(0),
         reowns: vm.reowns().unwrap_or(0),
+        indirect_ownership_calls: vm.indirect_ownership_calls().unwrap_or(0),
         region_copy_bytes: vm.region_copy_bytes().unwrap_or(0),
         rc_reused_bytes: vm.rc_reused_bytes().unwrap_or(0),
         live_cells: vm.live_cells().unwrap_or(0),
@@ -336,6 +340,11 @@ mod tests {
         const NORMAL_INDIRECT: &str = "fn build() -> unique List(Int):\n    [1, 2]\n\nfn invoke(f: fn() -> unique List(Int)) -> List(Int):\n    f()\n\nfn main(console: Console):\n    let xs = invoke(build)\n    console.print(\"${list.length(xs)}\")\n";
         let indirect = compute(NORMAL_INDIRECT).expect("normal-mode first-class unique result");
         assert_eq!(indirect.output, ["2"], "discarding the hidden token preserves values");
+        assert_eq!(
+            indirect.indirect_ownership_calls,
+            1,
+            "the unique-result state must cross one real indirect table call"
+        );
 
         const ASSIGNED: &str = "mode opt\n\nimport list\n\nfn build() -> unique List(Int):\n    [1, 2, 3]\n\nfn main(console: Console):\n    var xs = [0]\n    xs = build()\n    console.print(\"${xs.pop() ?? 0}\")\n";
         let assigned = compute(ASSIGNED).expect("assigned unique-result extraction");
