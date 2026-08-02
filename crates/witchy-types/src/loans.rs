@@ -195,7 +195,7 @@ impl BorrowCatalog {
                             .cloned()
                             .unwrap_or_else(|| lifetime.clone()),
                         projection: LoanProjection::default(),
-                        storage_type: (**inner).clone(),
+                        storage_type: substitute_slot_type(inner, types, depth + 1),
                     }]
                 }
             }

@@ -948,7 +948,8 @@
             "mode opt\n\n\
              type Leaf('leaf):\n    view: View(String, 'leaf)\n\n\
              type Wrapper(a, 'scope):\n    item: a\n\n\
-             type Envelope(a, 'scope):\n    inner: Wrapper(a, 'scope)\n",
+             type Envelope(a, 'scope):\n    inner: Wrapper(a, 'scope)\n\n\
+             type GenericView(a, 'scope):\n    view: View(a, 'scope)\n",
         )
         .expect("borrowed generic declarations parse");
         let catalog = BorrowCatalog::from_module(&module);
@@ -974,6 +975,21 @@
         );
         assert_eq!(
             slots[0].storage_type,
+            witchy_syntax::ast::Type::Named("String".into(), Vec::new())
+        );
+
+        let direct = witchy_syntax::ast::Type::Named(
+            "GenericView".into(),
+            vec![
+                witchy_syntax::ast::Type::Named("String".into(), Vec::new()),
+                witchy_syntax::ast::Type::Named("'owner".into(), Vec::new()),
+            ],
+        );
+        let direct_slots = catalog.slots(&direct);
+        assert_eq!(direct_slots.len(), 1);
+        assert_eq!(direct_slots[0].lifetime, "owner");
+        assert_eq!(
+            direct_slots[0].storage_type,
             witchy_syntax::ast::Type::Named("String".into(), Vec::new())
         );
     }
