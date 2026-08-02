@@ -808,9 +808,18 @@ impl<'types> Codegen<'types> {
                 if let Some(p) = &elide_pair {
                     self.elide_index_list.push(p.clone());
                 }
+                let builder_plan = self
+                    .direct_list_builder_loops
+                    .get(&((e as *const Expr) as usize))
+                    .cloned();
+                let saved_builder = std::mem::replace(
+                    &mut self.active_direct_list_builder,
+                    builder_plan.clone(),
+                );
                 self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
+                self.active_direct_list_builder = saved_builder;
                 let batch_used = if batch_level.is_some() {
                     self.counter_batch_stack.pop();
                     self.counter_batch_used.pop().unwrap_or((false, false))
@@ -906,6 +915,14 @@ impl<'types> Codegen<'types> {
                     result: None,
                     body: vec![N::Loop { label: format!("fl{id}"), body: loop_body }],
                 });
+                if let Some(plan) = &builder_plan {
+                    outer.push(N::Store {
+                        ptr: W::GetLocal(plan.list.clone()),
+                        value: W::ConstI32(plan.capacity),
+                        kind: witchy_wir::wir::Kind::I32,
+                        offset: 0,
+                    });
+                }
                 if let Some(level) = batch_level {
                     if batch_used.0 {
                         outer.push(Self::commit_counter_batch(
@@ -943,6 +960,26 @@ impl<'types> Codegen<'types> {
                     self.local_records.insert(var.clone(), elem);
                 }
                 let elem_kind = self.iter_elem_kind(iter);
+                let gc_reference_list = self
+                    .ast_type_of_expr(iter)
+                    .as_ref()
+                    .and_then(|ty| self.gc_reference_list_layout(ty));
+                let specialized_list = self
+                    .specialized_layout_of_expr(iter)
+                    .and_then(|id| self.specialized_layouts.get(id))
+                    .and_then(|descriptor| match (descriptor.header(), descriptor.size()) {
+                        (
+                            HeaderLayout::PackedList { data_offset, .. },
+                            LayoutSize::Dynamic { stride, .. },
+                        ) => Some((data_offset, stride)),
+                        _ => None,
+                    });
+                let cursor_safe = witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide)
+                    && gc_reference_list.is_none()
+                    && specialized_list.is_none()
+                    && matches!(iter.as_ref(), Expr::Var(name) if !block_reads_var(body, name));
+                let ptr_l = format!("__forptr_{var}");
+                let end_ptr_l = format!("__forendptr_{var}");
                 // Watermark AFTER the list is built (`iter_w`), so the list and its
                 // elements live below the reset point and survive each iteration.
                 let wm = self.loop_watermark_wir(body);
@@ -961,55 +998,54 @@ impl<'types> Codegen<'types> {
                 };
                 let i32 = witchy_wir::wir::Kind::I32;
                 let add = witchy_wir::wir::BinOp::Add;
-                let gc_reference_list = self
-                    .ast_type_of_expr(iter)
-                    .as_ref()
-                    .and_then(|ty| self.gc_reference_list_layout(ty));
-                let specialized_list = self
-                    .specialized_layout_of_expr(iter)
-                    .and_then(|id| self.specialized_layouts.get(id))
-                    .and_then(|descriptor| match (descriptor.header(), descriptor.size()) {
-                        (
-                            HeaderLayout::PackedList { data_offset, .. },
-                            LayoutSize::Dynamic { stride, .. },
-                        ) => Some((data_offset, stride)),
-                        _ => None,
-                    });
                 // idx >= list.len  ->  br_if $fe
                 let exit = N::Br {
                     target: format!("fe{id}"),
-                    cond: Some(W::Binary {
-                        op: witchy_wir::wir::BinOp::Ge,
-                        kind: i32,
-                        lhs: Box::new(W::GetLocal(idx_l.clone())),
-                        rhs: Box::new(if gc_reference_list.is_some() {
-                            W::ArrayLen(Box::new(W::GetLocal(list_l.clone())))
-                        } else {
-                            W::Load {
-                                ptr: Box::new(W::GetLocal(list_l.clone())),
-                                kind: i32,
-                                offset: 0,
-                            }
-                        }),
+                    cond: Some(if cursor_safe {
+                        W::Binary {
+                            op: witchy_wir::wir::BinOp::GeU,
+                            kind: i32,
+                            lhs: Box::new(W::GetLocal(ptr_l.clone())),
+                            rhs: Box::new(W::GetLocal(end_ptr_l.clone())),
+                        }
+                    } else {
+                        W::Binary {
+                            op: witchy_wir::wir::BinOp::Ge,
+                            kind: i32,
+                            lhs: Box::new(W::GetLocal(idx_l.clone())),
+                            rhs: Box::new(if gc_reference_list.is_some() {
+                                W::ArrayLen(Box::new(W::GetLocal(list_l.clone())))
+                            } else {
+                                W::Load {
+                                    ptr: Box::new(W::GetLocal(list_l.clone())),
+                                    kind: i32,
+                                    offset: 0,
+                                }
+                            }),
+                        }
                     }),
                 };
                 // var = from_slot( load( (list+4) + idx*8 ) )
                 let (data_offset, stride) = specialized_list.unwrap_or((4, 8));
-                let elem_addr = W::Binary {
-                    op: add,
-                    kind: i32,
-                    lhs: Box::new(W::Binary {
+                let elem_addr = if cursor_safe {
+                    W::GetLocal(ptr_l.clone())
+                } else {
+                    W::Binary {
                         op: add,
                         kind: i32,
-                        lhs: Box::new(W::GetLocal(list_l.clone())),
-                        rhs: Box::new(W::ConstI32(data_offset as i32)),
-                    }),
-                    rhs: Box::new(W::Binary {
-                        op: witchy_wir::wir::BinOp::Mul,
-                        kind: i32,
-                        lhs: Box::new(W::GetLocal(idx_l.clone())),
-                        rhs: Box::new(W::ConstI32(stride as i32)),
-                    }),
+                        lhs: Box::new(W::Binary {
+                            op: add,
+                            kind: i32,
+                            lhs: Box::new(W::GetLocal(list_l.clone())),
+                            rhs: Box::new(W::ConstI32(data_offset as i32)),
+                        }),
+                        rhs: Box::new(W::Binary {
+                            op: witchy_wir::wir::BinOp::Mul,
+                            kind: i32,
+                            lhs: Box::new(W::GetLocal(idx_l.clone())),
+                            rhs: Box::new(W::ConstI32(stride as i32)),
+                        }),
+                    }
                 };
                 let bind = N::SetLocal {
                     local: var.clone(),
@@ -1037,26 +1073,66 @@ impl<'types> Codegen<'types> {
                     result: None,
                     body: vec![N::Drop(W::Seq(body_seq))],
                 };
+                let advance_local = if cursor_safe { ptr_l.clone() } else { idx_l.clone() };
                 let advance = N::SetLocal {
-                    local: idx_l.clone(),
+                    local: advance_local.clone(),
                     value: W::Binary {
                         op: add,
                         kind: i32,
-                        lhs: Box::new(W::GetLocal(idx_l.clone())),
-                        rhs: Box::new(W::ConstI32(1)),
+                        lhs: Box::new(W::GetLocal(advance_local)),
+                        rhs: Box::new(W::ConstI32(if cursor_safe { 8 } else { 1 })),
                     },
                 };
-                let mut loop_body: witchy_wir::wir::WirSeq = vec![exit, bind, body_block];
-                // reclaim per-iteration arena garbage before advancing the index.
-                if let Some((_, reset)) = &wm {
-                    loop_body.extend(reset.clone());
+                let lanes = if cursor_safe && self.loop_unroll_safe(body) { 4 } else { 1 };
+                let mut loop_body: witchy_wir::wir::WirSeq = Vec::new();
+                for _ in 0..lanes {
+                    // Guard every lane so the final group preserves exact list
+                    // lengths without a speculative element load.
+                    loop_body.push(exit.clone());
+                    loop_body.push(bind.clone());
+                    loop_body.push(body_block.clone());
+                    // Reclaim after each source iteration, not once per group.
+                    if let Some((_, reset)) = &wm {
+                        loop_body.extend(reset.clone());
+                    }
+                    loop_body.push(advance.clone());
                 }
-                loop_body.push(advance);
                 loop_body.push(N::Br { target: format!("fl{id}"), cond: None });
-                let mut outer: witchy_wir::wir::WirSeq = vec![
-                    N::SetLocal { local: list_l, value: iter_w },
-                    N::SetLocal { local: idx_l, value: W::ConstI32(0) },
-                ];
+                let mut outer: witchy_wir::wir::WirSeq = vec![N::SetLocal {
+                    local: list_l.clone(),
+                    value: iter_w,
+                }];
+                if cursor_safe {
+                    outer.push(N::SetLocal {
+                        local: ptr_l.clone(),
+                        value: W::Binary {
+                            op: add,
+                            kind: i32,
+                            lhs: Box::new(W::GetLocal(list_l.clone())),
+                            rhs: Box::new(W::ConstI32(4)),
+                        },
+                    });
+                    outer.push(N::SetLocal {
+                        local: end_ptr_l,
+                        value: W::Binary {
+                            op: add,
+                            kind: i32,
+                            lhs: Box::new(W::GetLocal(ptr_l)),
+                            rhs: Box::new(W::Binary {
+                                op: witchy_wir::wir::BinOp::Mul,
+                                kind: i32,
+                                lhs: Box::new(W::Load {
+                                    ptr: Box::new(W::GetLocal(list_l)),
+                                    kind: i32,
+                                    offset: 0,
+                                }),
+                                rhs: Box::new(W::ConstI32(8)),
+                            }),
+                        },
+                    });
+                } else {
+                    outer.push(N::SetLocal { local: idx_l, value: W::ConstI32(0) });
+                }
                 if let Some((capture, _)) = &wm {
                     outer.push(capture.clone());
                 }

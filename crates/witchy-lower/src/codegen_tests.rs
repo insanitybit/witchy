@@ -176,6 +176,20 @@
             .collect()
     }
 
+    fn link_list_app(source: &str) -> witchy_syntax::ast::Module {
+        let list_module = parse_module(
+            witchy_syntax::linker::bundled_source("list").expect("bundled list module"),
+        )
+        .expect("parse bundled list module");
+        let app = parse_module(source).expect("parse list app");
+        witchy_interp::pipeline::link_with_user_modules(
+            vec![("list".into(), list_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        )
+        .expect("link list app")
+    }
+
     #[test]
     fn public_lowering_outcome_distinguishes_success_and_rejection() {
         let lowered = parse_module("fn main() -> Int:\n    1\n").expect("parse lowered module");
@@ -961,6 +975,148 @@ fn main() -> Int:
             wat.contains("global.set $__witchy_region_rewind_calls")
                 && wat.contains("global.set $heap"),
             "the nested Point allocation keeps per-iteration reclamation: {wat}"
+        );
+    }
+
+    #[test]
+    fn confined_literal_counted_list_builder_reserves_and_stores_directly() {
+        let source = r#"
+mode opt
+import list
+
+fn answer() -> Int:
+    var values = []
+    for i in 5..14:
+        list.push(values, i * 3)
+    var total = 0
+    for value in values:
+        total = total + value
+    total * 100 + list.length(values)
+
+fn main(console: Console):
+    console.print("${answer()}")
+"#;
+        let module = link_list_app(source);
+        let interpreted = witchy_interp::interpreter::run_module(module.clone(), ".", Vec::new())
+            .expect("interpreter runs direct list builder");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("compiled backend lowers direct list builder");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect("run direct list builder");
+        let compiled = captured.lock().unwrap().clone();
+        let oracle = vec!["24309".to_string()];
+        assert_eq!(interpreted, oracle, "independent expected value");
+        assert_eq!(compiled, oracle, "compiled expected value");
+        assert_eq!(compiled, interpreted, "interpreter/Wasm parity");
+
+        for name in [
+            "__witchy_reowns",
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_region_rewind_calls",
+        ] {
+            let value = instance
+                .get_global(&mut store, name)
+                .unwrap_or_else(|| panic!("missing counter export `{name}`"))
+                .get(&mut store);
+            let wasmtime::Val::I64(actual) = value else {
+                panic!("counter export `{name}` is not i64: {value:?}");
+            };
+            assert_eq!(actual, 0, "direct builder leaves `{name}` untouched");
+        }
+
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("direct list builder lowers to WIR"),
+        );
+        let start = wat.find("(func $app.answer").expect("linked answer function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let answer = &tail[..end];
+        assert_eq!(answer.matches("call $rc_alloc").count(), 1, "one exact reservation: {answer}");
+        assert!(
+            !answer.contains("call $mk0") && !answer.contains("call $list_push_cap"),
+            "the direct builder has neither empty allocation nor growth helper: {answer}"
+        );
+        assert!(
+            answer.contains("i64.store") && answer.contains("i32.store"),
+            "the loop writes scalar slots and commits the final length: {answer}"
+        );
+        assert!(
+            answer.contains("local.set $__forptr_value")
+                && answer.contains("local.set $__forendptr_value")
+                && !answer.contains("local.get $__fori_value"),
+            "the read-only consumer walks a hoisted pointer/end pair: {answer}"
+        );
+        assert_eq!(
+            answer.matches("local.set $value\n").count(),
+            4,
+            "the scalar pointer loop is unrolled four-wide with guarded lanes: {answer}"
+        );
+        if witchy_wir::wir_helpers::heap_check_enabled() {
+            assert!(answer.contains("call $heap_register"), "the exact reservation is checked: {answer}");
+        }
+    }
+
+    #[test]
+    fn aliased_list_builder_keeps_growth_fallback() {
+        let source = r#"
+mode opt
+import list
+
+fn main() -> Int:
+    var values = []
+    let alias = values
+    for i in 0..4:
+        list.push(values, i + 1)
+    list.length(alias) * 100 + list.length(values) * 10 + list.at(values, 3)
+"#;
+        let names = [
+            "__witchy_reowns",
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+        ];
+        let module = link_list_app(source);
+        let (result, counters) = run_int_module_with_i64_globals(&module, &names);
+        assert_eq!(result, 44);
+        assert_eq!(counters["__witchy_reowns"], 1);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 0);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 0);
+
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("aliased list builder lowers to WIR"),
+        );
+        assert!(wat.contains("call $mk0") && wat.contains("call $list_push_cap"), "fallback grows normally: {wat}");
+    }
+
+    #[test]
+    fn list_iteration_that_reads_its_source_keeps_indexed_fallback() {
+        let source = r#"
+mode opt
+
+fn main() -> Int:
+    let values = [1, 2, 3]
+    var total = 0
+    for value in values:
+        total = total + value + list.length(values)
+    total
+"#;
+        assert_eq!(run_int(source), 15);
+        let module = parse_module(source).expect("parse source-reading list iteration");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module)
+                .expect_lowered("source-reading list iteration lowers to WIR"),
+        );
+        assert!(
+            wat.contains("local.get $__fori_value")
+                && !wat.contains("local.set $__forendptr_value"),
+            "an observable source read keeps indexed iteration: {wat}"
         );
     }
 

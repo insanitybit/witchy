@@ -115,8 +115,55 @@ impl<'types> Codegen<'types> {
                     // into one flat inline buffer: header = element COUNT (so
                     // `list.length` is unchanged), body = every element's fields in
                     // row-major order. Reuses the checked-heap-correct `$mkN` allocator.
+                    let builder_plan = self
+                        .direct_list_builder_lets
+                        .get(&((analyzed_stmt as *const Stmt) as usize))
+                        .cloned();
+                    let mut list_builder_done = false;
+                    if let Some(plan) = builder_plan {
+                        let logical_size = 4 + plan.capacity * 8;
+                        let reserve = logical_size
+                            + if witchy_wir::wir_helpers::heap_check_enabled() {
+                                witchy_wir::layout::HEAP_REDZONE as i32
+                            } else {
+                                0
+                            };
+                        seq.push(N::SetLocal {
+                            local: name.clone(),
+                            value: W::Call {
+                                func: "rc_alloc".into(),
+                                args: vec![W::ConstI32(reserve)],
+                            },
+                        });
+                        seq.push(N::Store {
+                            ptr: W::GetLocal(name.clone()),
+                            value: W::ConstI32(0),
+                            kind: witchy_wir::wir::Kind::I32,
+                            offset: 0,
+                        });
+                        if witchy_wir::wir_helpers::heap_check_enabled() {
+                            seq.push(N::Do(W::CallHost {
+                                import: "heap_register".into(),
+                                args: vec![
+                                    W::GetLocal(name.clone()),
+                                    W::Binary {
+                                        op: witchy_wir::wir::BinOp::Add,
+                                        kind: witchy_wir::wir::Kind::I32,
+                                        lhs: Box::new(W::GetLocal(name.clone())),
+                                        rhs: Box::new(W::ConstI32(logical_size)),
+                                    },
+                                ],
+                            }));
+                        }
+                        seq.push(N::SetLocal {
+                            local: format!("{name}__cap"),
+                            value: W::ConstI32(plan.capacity),
+                        });
+                        list_builder_done = true;
+                    }
                     let mut scalar_sum_done = false;
-                    if self.scalar_sum_candidates.contains(name)
+                    if !list_builder_done
+                        && self.scalar_sum_candidates.contains(name)
                         && let Some((layout, nodes)) =
                             self.lower_confined_scalar_sum_binding(name, value)
                     {
@@ -125,7 +172,10 @@ impl<'types> Codegen<'types> {
                         scalar_sum_done = true;
                     }
                     let mut packed_done = false;
-                    if !scalar_sum_done && self.packed_candidates.contains(name) {
+                    if !list_builder_done
+                        && !scalar_sum_done
+                        && self.packed_candidates.contains(name)
+                    {
                         if let Expr::List(items) = value {
                             if let Some((rec, flat)) = self.packable_record_list(items) {
                                 // (RFC-0037 §3) Tag the flat buffer with a DISTINCT `packed:` id
@@ -140,7 +190,11 @@ impl<'types> Codegen<'types> {
                         }
                     }
                     let mut view_done = false;
-                    if !scalar_sum_done && !packed_done && self.view_candidates.contains(name) {
+                    if !list_builder_done
+                        && !scalar_sum_done
+                        && !packed_done
+                        && self.view_candidates.contains(name)
+                    {
                         if let Some((src, lo, hi)) = view_slice_args(value) {
                             // Elide the copy: store the source pointer and the raw
                             // lo/hi bounds (evaluated once, as the materialized slice
@@ -178,7 +232,8 @@ impl<'types> Codegen<'types> {
                         }
                     }
                     let mut sroa_done = false;
-                    if !scalar_sum_done
+                    if !list_builder_done
+                        && !scalar_sum_done
                         && !packed_done
                         && !view_done
                         && self.sroa_candidates.contains(name)
@@ -225,7 +280,8 @@ impl<'types> Codegen<'types> {
                     // existing locals and are threaded to each `call $__lamt{i}` (see the call
                     // arms). Comes before the default `SetLocal` and suppresses it.
                     let mut closure_elide_done = false;
-                    if !scalar_sum_done
+                    if !list_builder_done
+                        && !scalar_sum_done
                         && !packed_done
                         && !view_done
                         && !sroa_done
@@ -259,7 +315,8 @@ impl<'types> Codegen<'types> {
                             }
                         }
                     }
-                    if !scalar_sum_done
+                    if !list_builder_done
+                        && !scalar_sum_done
                         && !packed_done
                         && !view_done
                         && !sroa_done
@@ -464,6 +521,20 @@ impl<'types> Codegen<'types> {
                 Stmt::Assign { value, .. } | Stmt::Expr(value) => {
                     let name = assignment_name?.to_string();
                     let name = &name;
+                    let direct_builder = matches!(analyzed_stmt, Stmt::Assign { .. })
+                        .then(|| {
+                            self.active_direct_list_builder
+                                .as_ref()
+                                .filter(|plan| plan.list == *name)
+                                .cloned()
+                                .and_then(|plan| match analysis::self_inplace_op(name, value) {
+                                    Some(analysis::InPlaceOp::Push(element)) => {
+                                        Some((plan, element))
+                                    }
+                                    _ => None,
+                                })
+                        })
+                        .flatten();
                     // RFC-0111 unique-result destination passing. The escape
                     // proof says the old whole value cannot be observed after
                     // this explicit reassignment, the exact LayoutId comparison
@@ -495,7 +566,44 @@ impl<'types> Codegen<'types> {
                         }
                         _ => None,
                     };
-                    if let Some((callee, args, access)) = destination_call {
+                    if let Some((plan, element)) = direct_builder {
+                        let element_kind = self.kind_of(element);
+                        let element = self.lower_expr(element)?;
+                        let logical_index = W::Convert {
+                            from: witchy_wir::wir::Kind::I64,
+                            to: witchy_wir::wir::Kind::I32,
+                            arg: Box::new(W::Binary {
+                                op: witchy_wir::wir::BinOp::Sub,
+                                kind: witchy_wir::wir::Kind::I64,
+                                lhs: Box::new(W::GetLocal(plan.counter)),
+                                rhs: Box::new(W::ConstI64(plan.lower)),
+                            }),
+                        };
+                        let slot = W::Binary {
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: witchy_wir::wir::Kind::I32,
+                            lhs: Box::new(W::Binary {
+                                op: witchy_wir::wir::BinOp::Add,
+                                kind: witchy_wir::wir::Kind::I32,
+                                lhs: Box::new(W::GetLocal(name.clone())),
+                                rhs: Box::new(W::ConstI32(4)),
+                            }),
+                            rhs: Box::new(W::Binary {
+                                op: witchy_wir::wir::BinOp::Mul,
+                                kind: witchy_wir::wir::Kind::I32,
+                                lhs: Box::new(logical_index),
+                                rhs: Box::new(W::ConstI32(8)),
+                            }),
+                        };
+                        seq.push(N::Store {
+                            ptr: slot,
+                            value: W::ToSlot(Box::new(element), Self::wir_kind(element_kind)),
+                            kind: witchy_wir::wir::Kind::I64,
+                            offset: 0,
+                        });
+                        inplace_sites += 1;
+                        tail_is_value = false;
+                    } else if let Some((callee, args, access)) = destination_call {
                         let result = self.lower_destination_user_call(
                             &callee,
                             args,

@@ -767,6 +767,9 @@ struct SavedScope {
     sroa_active: HashMap<String, usize>,
     scalar_sum_candidates: HashSet<String>,
     scalar_sum_active: HashMap<String, ScalarSumLayout>,
+    direct_list_builder_lets: HashMap<usize, DirectListBuilderPlan>,
+    direct_list_builder_loops: HashMap<usize, DirectListBuilderPlan>,
+    active_direct_list_builder: Option<DirectListBuilderPlan>,
     view_candidates: HashSet<String>,
     view_active: HashSet<String>,
     packed_candidates: HashSet<String>,
@@ -801,6 +804,14 @@ struct GcCtorLayout {
 struct ScalarSumLayout {
     id: LayoutId,
     max_arity: usize,
+}
+
+#[derive(Clone)]
+struct DirectListBuilderPlan {
+    list: String,
+    counter: String,
+    lower: i64,
+    capacity: i32,
 }
 
 /// A stable, representation-only key for an element of a GC-lowered tuple.
@@ -959,6 +970,12 @@ struct Codegen<'types> {
     /// scrutinees. Their tag and payload arguments remain in scalar locals.
     scalar_sum_candidates: HashSet<String>,
     scalar_sum_active: HashMap<String, ScalarSumLayout>,
+    /// Exact-capacity, direct-store list builders proven by adjacent empty-list
+    /// bindings and literal counted loops. AST identities prevent a later loop
+    /// over the same binding from inheriting the builder privilege.
+    direct_list_builder_lets: HashMap<usize, DirectListBuilderPlan>,
+    direct_list_builder_loops: HashMap<usize, DirectListBuilderPlan>,
+    active_direct_list_builder: Option<DirectListBuilderPlan>,
     /// (RFC-0034 L3) Closure locals eligible for devirtualization in the current
     /// unit: a name bound exactly once and never reassigned (so every `f(x)` reaches
     /// the same lambda). Computed in `begin_unit` only under the `direct-call` lever.
@@ -1520,6 +1537,9 @@ impl<'types> Codegen<'types> {
             sroa_active: HashMap::new(),
             scalar_sum_candidates: HashSet::new(),
             scalar_sum_active: HashMap::new(),
+            direct_list_builder_lets: HashMap::new(),
+            direct_list_builder_loops: HashMap::new(),
+            active_direct_list_builder: None,
             devirt_ok: HashSet::new(),
             devirt_index: HashMap::new(),
             thread_index: HashMap::new(),
@@ -3287,6 +3307,8 @@ impl<'types> Codegen<'types> {
                     },
                 );
                 self.locals.insert(format!("__fori_{var}"), Kind::I32);
+                self.locals.insert(format!("__forptr_{var}"), Kind::I32);
+                self.locals.insert(format!("__forendptr_{var}"), Kind::I32);
                 self.locals.insert(var.clone(), self.iter_elem_kind(iter));
                 // Keep the full element type, not only its Wasm kind. A loop
                 // variable holding a higher-order function needs its exact
@@ -4095,6 +4117,7 @@ impl<'types> Codegen<'types> {
         if !force_copy_mode() {
             self.inplace_push.extend(self.cur_fn_var_cap_params.iter().cloned());
         }
+        self.install_direct_list_builder_plans(body);
         // (RFC-0033 R2) `(var, field)` pairs whose list buffer is never aliased and may
         // be grown in place. Consumed only inside the in-place RecordUpdate arm, which is
         // itself gated on the InPlace opt, so no separate de-opt lever is needed.
@@ -4245,6 +4268,91 @@ impl<'types> Codegen<'types> {
         };
         self.drop_facts_stack.push(drops);
         self.facts_stack.push((facts, 0, 0));
+    }
+
+    /// Recognize only the closed builder shape
+    /// `var xs = []; for i in LO..<HI>: list.push(xs, scalar)` where the binding
+    /// and loop are adjacent, bounds are non-empty exclusive integer literals,
+    /// and uniqueness already proved `xs` has no observable alias. Two AST-keyed
+    /// maps keep the reservation and direct-store privileges pinned to those exact
+    /// statements; a later loop over the same local is never conflated with it.
+    fn install_direct_list_builder_plans(&mut self, body: &Block) {
+        self.direct_list_builder_lets.clear();
+        self.direct_list_builder_loops.clear();
+        self.active_direct_list_builder = None;
+        for pair in body.stmts.windows(2) {
+            let Stmt::Let {
+                name,
+                value: Expr::List(items),
+                ..
+            } = &pair[0]
+            else {
+                continue;
+            };
+            if !items.is_empty() || !self.inplace_push.contains(name) {
+                continue;
+            }
+            let Stmt::Expr(loop_expr @ Expr::For { var, iter, body: loop_body }) = &pair[1]
+            else {
+                continue;
+            };
+            let Expr::Range {
+                lo,
+                hi,
+                inclusive: false,
+            } = iter.as_ref()
+            else {
+                continue;
+            };
+            let (Expr::Int(lower), Expr::Int(upper)) = (lo.as_ref(), hi.as_ref()) else {
+                continue;
+            };
+            let Some(length) = upper.checked_sub(*lower) else {
+                continue;
+            };
+            // `$rc_alloc` records its byte size in a 24-bit header. Keep the
+            // exact reservation within that representable range.
+            if length <= 0 || length > ((0x00ff_ffff_i64 - 4) / 8) {
+                continue;
+            }
+            let push = match loop_body.stmts.as_slice() {
+                [Stmt::Expr(push)] => push,
+                [Stmt::Assign { name: target, value }] if target == name => value,
+                _ => continue,
+            };
+            let Expr::Call { args, .. } = push else {
+                continue;
+            };
+            if args.len() != 2
+                || !matches!(
+                    analysis::self_inplace_op(name, push),
+                    Some(analysis::InPlaceOp::Push(_))
+                )
+                || expr_reads_var(&args[1], name)
+            {
+                continue;
+            }
+            if self.kind_of(&args[1]).is_ref()
+                || self
+                    .local_types
+                    .get(name)
+                    .and_then(|list_ty| self.specialized_layout_id(list_ty))
+                    .is_some()
+                || self.locals.get(name) != Some(&Kind::I32)
+            {
+                continue;
+            }
+            let plan = DirectListBuilderPlan {
+                list: name.clone(),
+                counter: format!("__forctr_{var}"),
+                lower: *lower,
+                capacity: length as i32,
+            };
+            self.direct_list_builder_lets
+                .insert((&pair[0] as *const Stmt) as usize, plan.clone());
+            self.direct_list_builder_loops
+                .insert((loop_expr as *const Expr) as usize, plan);
+        }
     }
 
     /// End a compile unit, asserting every analysis entry was consumed — a
@@ -7965,6 +8073,9 @@ impl<'types> Codegen<'types> {
             sroa_active: std::mem::take(&mut self.sroa_active),
             scalar_sum_candidates: std::mem::take(&mut self.scalar_sum_candidates),
             scalar_sum_active: std::mem::take(&mut self.scalar_sum_active),
+            direct_list_builder_lets: std::mem::take(&mut self.direct_list_builder_lets),
+            direct_list_builder_loops: std::mem::take(&mut self.direct_list_builder_loops),
+            active_direct_list_builder: self.active_direct_list_builder.take(),
             view_candidates: std::mem::take(&mut self.view_candidates),
             view_active: std::mem::take(&mut self.view_active),
             packed_candidates: std::mem::take(&mut self.packed_candidates),
@@ -8015,6 +8126,9 @@ impl<'types> Codegen<'types> {
         self.sroa_active = s.sroa_active;
         self.scalar_sum_candidates = s.scalar_sum_candidates;
         self.scalar_sum_active = s.scalar_sum_active;
+        self.direct_list_builder_lets = s.direct_list_builder_lets;
+        self.direct_list_builder_loops = s.direct_list_builder_loops;
+        self.active_direct_list_builder = s.active_direct_list_builder;
         self.view_candidates = s.view_candidates;
         self.view_active = s.view_active;
         self.packed_candidates = s.packed_candidates;
@@ -9394,6 +9508,18 @@ fn expr_reads_var(e: &Expr, name: &str) -> bool {
     }
 }
 
+fn block_reads_var(block: &Block, name: &str) -> bool {
+    block.stmts.iter().any(|statement| match statement {
+        Stmt::Assign { name: target, value } => target == name || expr_reads_var(value, name),
+        Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Yield(value)
+        | Stmt::Expr(value) => expr_reads_var(value, name),
+        Stmt::Return(None) | Stmt::Break | Stmt::Continue => false,
+    })
+}
+
 /// The `(source, lo, hi)` of a `list.slice(source, lo, hi)` call — the binding a
 /// confined slice view elides — or `None` for any other expression.
 fn view_slice_args(e: &Expr) -> Option<(&Expr, &Expr, &Expr)> {
@@ -9473,6 +9599,8 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
             } else {
                 out.push(format!("__forlist_{var}"));
                 out.push(format!("__fori_{var}"));
+                out.push(format!("__forptr_{var}"));
+                out.push(format!("__forendptr_{var}"));
             }
             collect_let_names_expr(iter, out);
             collect_let_names(body, out);
