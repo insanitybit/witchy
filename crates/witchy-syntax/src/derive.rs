@@ -69,6 +69,33 @@ fn builtin_derive_on_fieldless_type(d: &str) -> bool {
     )
 }
 
+fn reject_borrowed_nominal_runtime_derives(
+    definition: &TypeDef,
+    derives: &[String],
+) -> Result<(), String> {
+    if !definition.params.iter().any(|parameter| is_lifetime_param(parameter)) {
+        return Ok(());
+    }
+    if derives.iter().any(|derive| derive == "Reflect") {
+        return Err(format!(
+            "type `{}`: derive(Reflect) would expose a lifetime-bearing borrowed shell as a \
+             runtime value. Compile-time TypeInfo reflection remains available through \
+             `module_types`, but borrowed values cannot be reflected or serialized in \
+             RFC-0112 stage 1",
+            definition.name,
+        ));
+    }
+    if derives.iter().any(|derive| derive == "Deserialize") {
+        return Err(format!(
+            "type `{}`: derive(Deserialize) cannot reconstruct a lifetime-bearing borrowed \
+             shell without an authenticated owner relation. Decode into an owned companion \
+             type instead",
+            definition.name,
+        ));
+    }
+    Ok(())
+}
+
 fn is_item_syntax_type(ty: &Type) -> bool {
     matches!(ty, Type::Named(name, args) if args.is_empty() && (name == "ItemSyntax" || name == "meta.ItemSyntax"))
 }
@@ -124,6 +151,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
         // CONSUME the annotation: this pass runs at every pipeline entry
         // (records::lower is called per stage) and must be idempotent.
         let derives = std::mem::take(&mut t.derives);
+        reject_borrowed_nominal_runtime_derives(t, &derives)?;
         if t.variants.is_empty() {
             if let Some(d) = derives.iter().find(|d| builtin_derive_on_fieldless_type(d)) {
                 return Err(format!(
@@ -351,4 +379,46 @@ fn derive_items_via_comptime(generator: &str, t: &TypeDef) -> Item {
         lines: vec![0],
         region: None,
     })
+}
+
+#[cfg(test)]
+mod borrowed_nominal_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_nominal_reflect_derive_preserves_typeinfo_only() {
+        let mut module = crate::parser::parse_module(
+            "mode opt\n\nimport reflect\n\ntype Holder('a) derive(Reflect):\n    view: View(String, 'a)\n",
+        )
+        .expect("parse borrowed Reflect derive");
+        let error = expand(&mut module).expect_err("runtime reflection must reject a borrowed shell");
+
+        assert!(error.contains("derive(Reflect)"), "{error}");
+        assert!(error.contains("Compile-time TypeInfo reflection remains available"), "{error}");
+        assert!(error.contains("module_types"), "{error}");
+    }
+
+    #[test]
+    fn borrowed_nominal_deserialize_derive_requires_an_owned_companion() {
+        let mut module = crate::parser::parse_module(
+            "mode opt\n\nimport json\n\ntype Holder('a) derive(Deserialize):\n    view: View(String, 'a)\n",
+        )
+        .expect("parse borrowed Deserialize derive");
+        let error = expand(&mut module)
+            .expect_err("deserialization must not invent a borrowed owner relation");
+
+        assert!(error.contains("derive(Deserialize)"), "{error}");
+        assert!(error.contains("authenticated owner relation"), "{error}");
+        assert!(error.contains("owned companion type"), "{error}");
+    }
+
+    #[test]
+    fn ordinary_generic_reflect_derive_is_unchanged() {
+        let mut module = crate::parser::parse_module(
+            "import reflect\n\ntype Box(a) derive(Reflect):\n    Box(a)\n",
+        )
+        .expect("parse ordinary generic Reflect derive");
+
+        expand(&mut module).expect("an ordinary type parameter is not a lifetime relation");
+    }
 }
