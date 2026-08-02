@@ -1324,6 +1324,16 @@ fn lower_async_fn(
     lower_async_fn_with(f, is_entry, counter, None, view_fns, borrowed_shells)
 }
 
+fn resolved_async_parameter_type<'a>(
+    parameter: &'a Param,
+    self_ty: Option<&'a Type>,
+) -> Option<&'a Type> {
+    parameter
+        .ty
+        .as_ref()
+        .or_else(|| if parameter.name == "self" { self_ty } else { None })
+}
+
 /// As [`lower_async_fn`], with an optional receiver type for a method's `self`
 /// (so a carried `self` keeps its type when it becomes a segment parameter).
 fn lower_async_fn_with(
@@ -1337,7 +1347,7 @@ fn lower_async_fn_with(
     let declared_ret = f.ret.clone();
     if f.params
         .iter()
-        .filter_map(|param| param.ty.as_ref())
+        .filter_map(|param| resolved_async_parameter_type(param, self_ty.as_ref()))
         .any(|ty| borrowed_shells.type_is_borrowed(ty))
         || declared_ret
             .as_ref()
@@ -1375,24 +1385,19 @@ fn lower_async_fn_with(
     let scope: Vec<Local> = f
         .params
         .iter()
-        .map(|p| Local {
-            name: p.name.clone(),
-            ty: p.ty.clone().or_else(|| {
-                if p.name == "self" {
-                    self_ty.clone()
-                } else {
-                    None
-                }
-            }),
-            mutable: p.convention.binds_mutable(),
-            borrowed_view: p
-                .ty
-                .as_ref()
-                .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)),
-            returns_view: p
-                .ty
-                .as_ref()
-                .is_some_and(|ty| type_is_view_callable(ty, borrowed_shells)),
+        .map(|p| {
+            let ty = resolved_async_parameter_type(p, self_ty.as_ref()).cloned();
+            Local {
+                name: p.name.clone(),
+                borrowed_view: ty
+                    .as_ref()
+                    .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)),
+                returns_view: ty
+                    .as_ref()
+                    .is_some_and(|ty| type_is_view_callable(ty, borrowed_shells)),
+                ty,
+                mutable: p.convention.binds_mutable(),
+            }
         })
         .collect();
     let body_line = first_line(&f.body.lines);
@@ -2024,6 +2029,19 @@ mod tests {
         let error = lower_module(module)
             .expect_err("a nested lifetime-bearing shell cannot enter an async task");
 
+        assert!(error.contains("lifetime-bearing shell"), "{error}");
+        assert!(error.contains("parameter or result"), "{error}");
+    }
+
+    #[test]
+    fn lowering_rejects_a_lifetime_bearing_async_method_receiver() {
+        let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nimpl Holder('a):\n    async fn bad(self):\n        task.done(0).await\n";
+        let module = crate::parser::parse_module(source)
+            .expect("parse lifetime-bearing async method receiver");
+        let error = lower_module(module)
+            .expect_err("an implicit borrowed-shell receiver cannot enter an async task");
+
+        assert!(error.contains("async fn `bad`"), "{error}");
         assert!(error.contains("lifetime-bearing shell"), "{error}");
         assert!(error.contains("parameter or result"), "{error}");
     }
