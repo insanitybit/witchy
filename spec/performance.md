@@ -51,29 +51,30 @@ call ABI:
 - empty pop and missing removal allocate, copy, retain, and drop nothing.
 
 These are ownership-dependent guarantees, not unconditional source-level
-complexities. Their public `var` receivers are typed `unique`: normal mode uses
-the copy-correct fallback when that proof misses, while `mode opt` rejects the
-call and reports the statement that aliased, moved, or loaned the owner. Fresh
-storage, a direct call returning a `unique` collection, and `var` parameters
-typed `unique` / `local unique` satisfy the contract; an active [RFC-0083](../rfcs/0083-opt-mode-lifetimes.md) loan
-never does. A direct `unique` result carries its capacity token as part of the
-compiled result ABI. Fresh list/dict tails and direct `unique` calls establish
-that token; control-flow results spell an explicit `return` on each reachable
-branch. The verifier consumes the same statement-identity capacity-token kills
-and loan facts as compiled lowering, after typed method resolution, so
-method/module spelling and discarded/used results are one contract.
-
-The first-class call ABI does not yet carry collection capacity tokens. Calling
-a function value whose `var unique` parameter promises no-copy extraction, or
-feeding its `unique` collection result into such an operation, is therefore
-rejected in `mode opt` with that ABI limitation rather than silently taking the
-normal-mode copy path.
+complexities. Their public `var` receivers are typed `unique`: `mode opt`
+rejects a missing proof and reports the statement that aliased, moved, or loaned
+the owner. Normal mode remains value-correct through operation-level
+copy-on-write when storage is shared. Fresh storage, a typed call returning a
+`unique` collection, and `var` parameters typed `unique` / `local unique`
+satisfy the contract; an active [RFC-0083](../rfcs/0083-opt-mode-lifetimes.md) loan
+never does. A typed `unique` result carries its capacity token as part of the
+compiled result envelope. Fresh list/dict tails and typed `unique` calls
+establish that token; control-flow results spell an explicit `return` on each
+reachable branch. Direct calls, typed function values, typed lambdas, and
+existential witness adapters transport the same ordinary result, `var`
+write-back, and ownership state. The verifier consumes the same
+statement-identity capacity-token kills and loan facts as compiled lowering,
+after typed method resolution, so method/module spelling and discarded/used
+results are one contract.
 
 `WITCHY_OPT=-inplace` selects the copy-correct differential oracle. `witchy
 stats` exposes `extract_searches`,
 `extract_key_comparisons`, `extract_copied_bytes`, `extract_retains`, and
 `extract_drops` so the no-copy and single-search claims are deterministic test
-facts rather than timing inferences.
+facts rather than timing inferences. `indirect_ownership_calls` counts the
+state-bearing calls that actually retain typed table dispatch. `reowns` counts
+operation-level copy-on-write entries; it is not a count of repairs at source
+call boundaries.
 
 ## Functional-in-place state kernels
 

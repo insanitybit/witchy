@@ -72,13 +72,16 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
   and reclaimer call counts used to verify the guarantee.
 - **Update and extract.** `xs.pop()`, `d.insert(k, v)`, and `d.remove(k)` carry
     the collection token through the general `var` ABI while returning the old
-    leaf independently. A unique `pop` moves the leaf without a spine copy;
+    leaf independently. Direct calls, typed function values, typed lambdas, and
+    existential trait witnesses transport the same result, write-back value,
+    and ownership state. A unique `pop` moves the leaf without a spine copy;
     dictionary insert/remove perform one semantic lookup. Shared roots use
     copy-on-write in normal mode. Their receivers are declared `unique`, so
     `mode opt` rejects an aliased or actively loaned owner instead of taking the
     copy; the diagnostic points to the ownership-loss reason. The `witchy stats`
     extraction counters make searches, copied bytes, retains, and drops directly
-    inspectable.
+    inspectable, while `indirect_ownership_calls` identifies state-bearing calls
+    that retained typed table dispatch.
 - **Dict hash index.** Dicts carry a hidden open-addressing index; lookups,
   `has`, `get_or`, and upserts are O(1) while iteration order stays
   insertion order.

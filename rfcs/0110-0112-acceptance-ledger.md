@@ -1,6 +1,6 @@
 # RFC-0110 / RFC-0111 / RFC-0112 acceptance ledger
 
-Audit baseline: `master` at `0ebee91d` on 2026-08-01.
+Audit baseline: `master` at `926ef307` on 2026-08-02.
 
 This ledger is the completion authority for the Rust-class `mode opt` program.
 An RFC remains `proposed` while any row is not **PROVEN** by current-master
@@ -45,16 +45,16 @@ them instead of creating parallel AST-shape or operation-name catalogs.
 
 | # | Status | Current evidence / exact gap |
 | ---: | --- | --- |
-| 1 | **PARTIAL** | Existing AST function types preserve conventions and borrow qualifiers, while `loans.rs` derives output-owner positions. No single checked access-signature value currently serves type checking, witnesses, closure tables, WIR, and tail lowering. |
-| 2 | **PARTIAL** | `crates/witchy-lower/src/analysis.rs` checks selected no-copy contracts, but normal-mode one-copy repair and every call-shape source-facing enforcement are absent. |
-| 3 | **FAILING** | `analysis.rs` explicitly reports that the first-class call ABI cannot carry a unique result ownership-capacity token. |
-| 4 | **PARTIAL** | RFC-0083 callable checks reject several lifetime-erasing ascriptions, and convention type identity exists. One verifier does not yet cover conventions, uniqueness, write-back ownership output, and lifetime relations together. |
-| 5 | **PARTIAL** | RFC-0087 place capture and overlap checks cover nested `var` places. The unique/access proof does not yet consume one canonical place/overlap result across every call shape. |
+| 1 | **PARTIAL** | `witchy-types::access` publishes one checked access signature consumed by call analysis, closure and witness lowering, and reflection. Complete coverage of every named tail-dispatch and diagnostic consumer remains unaudited. |
+| 2 | **PARTIAL** | Opt-mode analysis enforces supported `var unique` / `own unique` call shapes, but general source-boundary enforcement and the required normal-mode one-copy repair are absent. |
+| 3 | **PARTIAL** | Typed function values, lambdas, and existential witnesses carry `var unique` collection value/capacity state, and indirect `own unique` transfer has focused evidence. The complete indirect-call and return matrix is not yet acceptance-proven. |
+| 4 | **PARTIAL** | Checked callable identity preserves conventions, uniqueness qualifiers, write-back ownership output, and RFC-0083 owner relations, with focused erasure rejections. Complete ascription coverage across every callable shape remains unaudited. |
+| 5 | **PARTIAL** | Canonical checked-place facts retain fixed field/index paths, and nested scalar `var` places have overlap and backend write-back evidence. General unique-place proof does not yet consume those paths across every call shape. |
 | 6 | **PARTIAL** | Move-in/write-back semantics and selected in-place self-assignment paths ship. A general direct-storage `var` lowering with the six RFC proofs does not. |
-| 7 | **PARTIAL** | Proper-tail lowering exists, but it does not model or verify the complete ownership/write-back envelope. |
-| 8 | **MISSING** | No checked direct/indirect/trait/closure/place matrix runs interpreter, optimized Wasm, full de-opt, single-lever de-opt, and an independent expected oracle. |
-| 9 | **PARTIAL** | `__witchy_reowns` supplies one existing counter. Boundary repair, ownership-token repair, direct-storage access, indirect-envelope, and destination-forward counters are incomplete. |
-| 10 | **MISSING** | The spec, callable reflection, diagnostics, and runnable book do not describe a shipped uniform access ABI. |
+| 7 | **PARTIAL** | Proper self-tail lowering forwards unique results with `var` value/capacity write-back through a loop, including deep runtime evidence. The complete tail-dispatcher scope is not yet acceptance-proven. |
+| 8 | **PARTIAL** | `tests/rfc0110.rs` runs direct, function-value, lambda, existential-witness, fixed-place, and self-tail cases through the interpreter, optimized Wasm, full de-opt, every single-lever de-opt, and an independent oracle. The paired normal-repair cases required by the RFC are absent. |
+| 9 | **PARTIAL** | Indirect ownership-envelope calls and destination forwarding have real counters. Boundary re-own, ownership-token repair, and direct-storage access counters are still placeholders; `__witchy_reowns` measures operation-level copy-on-write instead. |
+| 10 | **PARTIAL** | The language and performance specs, callable reflection, diagnostics, and book describe the shipped typed callable envelope. They cannot yet document the unimplemented normal repair, direct-storage lowering, or missing counter proofs as shipped. |
 
 ## RFC-0111 acceptance criteria
 

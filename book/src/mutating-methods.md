@@ -65,6 +65,15 @@ fn main(console: Console):
     console.print("${old ?? 0} ${removed ?? 0}")
 ```
 
+Those channels are one typed callable envelope. Direct calls, typed function
+values, typed lambdas, and existential trait witnesses preserve the ordinary
+result, every `var` write-back, and the associated collection ownership state.
+A mutable record field or fixed-index element is also a valid write-back place:
+the compiler captures its root and fixed path, stages the returned value, and
+then rebuilds the root. This place rule preserves value semantics; a nested
+collection still needs its own uniqueness proof before `mode opt` grants a
+no-copy contract.
+
 For `Dict.insert` and `Dict.remove`, one key search supplies both the returned
 old value and the repair location. When the compiler proves the container has
 one owner, it moves the old leaf out and repairs that storage directly;

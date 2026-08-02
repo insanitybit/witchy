@@ -792,19 +792,23 @@ fn main(console: Console):
 
 The qualifiers do not change values or representation, but they can strengthen
 the performance contract. For a `var` parameter typed `unique` or `local unique`,
-normal mode takes the copy-correct fallback when the caller's ownership proof is
-missing. In `mode opt`, the same miss is a compile error naming the alias, move,
-or loan that invalidated the proof. `List.pop`, `Dict.insert`, and `Dict.remove`
-use this rule for their no-container-copy guarantee. See
+`mode opt` rejects a missing ownership proof and names the alias, move, or loan
+that invalidated it. Normal mode remains value-correct through the collection's
+copy-on-write fallback when storage is shared. `List.pop`, `Dict.insert`, and
+`Dict.remove` use this rule for their no-container-copy guarantee. See
 [performance.md](performance.md).
 
-A direct function result typed `unique List` or `unique Dict` carries the
-producer's hidden capacity token into the receiving binding. Each reachable
-return must establish that token from fresh list/dict storage or another direct
-`unique` collection result. A control-flow tail uses explicit `return` in each
-branch so each path carries its own token. A first-class function call whose
-`var unique` parameter would require that token is currently rejected in `mode
-opt`; normal mode remains copy-correct.
+A callable that returns a `unique List` or `unique Dict` carries the producer's
+hidden capacity state into the receiving binding. The same logical envelope is
+used by direct calls, typed function values, typed lambdas, and existential
+trait witnesses: the ordinary result, each `var` write-back, and their ownership
+state cross the call together. Each reachable return must establish the state
+from fresh list/dict storage or another typed `unique` collection result. A
+proper self-tail accepted by the ownership-envelope lowering forwards that
+complete envelope through its loop. Callable type identity also preserves
+parameter conventions, uniqueness qualifiers, write-back ownership outputs,
+and borrowed-view owner relations; an ascription that erases those contracts is
+rejected.
 
 ### Borrowed views
 
