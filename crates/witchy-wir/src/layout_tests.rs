@@ -3,9 +3,10 @@ use std::collections::BTreeMap;
 use witchy_syntax::ast::{Expr, Item, Module, Type, TypeDef, Variant};
 
 use crate::layout::{
-    ClosedTypeResolver, FieldKind, HeaderLayout, LAYOUT_SCHEMA_VERSION, LayoutError, LayoutId,
-    LayoutInterner, LayoutKind, LayoutSize, OperationShape, OwnershipPosition, RcHeader,
-    ReferenceKind, ResolvedNamed, ScalarKind, StorageClass,
+    ClosedTypeResolver, FieldKind, HeaderLayout, HostLayoutDecision, HostLayoutPolicy,
+    LAYOUT_SCHEMA_VERSION, LayoutBundle, LayoutError, LayoutId, LayoutInterner, LayoutKind,
+    LayoutSize, LayoutTransportError, OperationShape, OwnershipPosition, RcHeader, ReferenceKind,
+    ResolvedNamed, ScalarKind, StorageClass,
 };
 
 struct TestResolver<'a> {
@@ -405,6 +406,80 @@ fn canonical_decoder_rejects_truncation_trailing_schema_and_hash_attacks() {
         layouts.decode_canonical(&forged_alignment),
         Err(LayoutError::DescriptorInvariant(_))
     ));
+}
+
+#[test]
+fn layout_bundle_round_trips_a_dependency_ordered_closed_graph() {
+    let definitions = [record(
+        "Point",
+        true,
+        vec![("x", named("Int")), ("enabled", named("Bool"))],
+    )];
+    let resolver = TestResolver::with_definitions(&definitions);
+    let mut layouts = LayoutInterner::new();
+    let point = layouts.intern_type(&named("Point"), &resolver).unwrap();
+    let pair = layouts
+        .intern_type(&Type::Tuple(vec![named("Point"), named("Int")]), &resolver)
+        .unwrap();
+
+    let bundle = LayoutBundle::from_interner(&layouts, [pair, point, pair]).unwrap();
+    let mut expected_roots = vec![point, pair];
+    expected_roots.sort_unstable();
+    expected_roots.dedup();
+    assert_eq!(bundle.roots(), expected_roots);
+    let encoded = bundle.canonical_bytes();
+    let (decoded, imported) = LayoutBundle::decode_canonical(&encoded).unwrap();
+    assert_eq!(decoded, bundle);
+    assert!(imported.get(point).is_some());
+    assert!(imported.get(pair).is_some());
+    assert_eq!(decoded.descriptors().count(), layouts.len());
+}
+
+#[test]
+fn layout_bundle_rejects_unknown_versions_truncation_and_dangling_roots() {
+    let resolver = TestResolver { definitions: BTreeMap::new() };
+    let mut layouts = LayoutInterner::new();
+    let int = layouts.intern_type(&named("Int"), &resolver).unwrap();
+    let bundle = LayoutBundle::from_interner(&layouts, [int]).unwrap();
+    let bytes = bundle.canonical_bytes();
+
+    assert!(matches!(
+        LayoutBundle::decode_canonical(&bytes[..bytes.len() - 1]),
+        Err(LayoutTransportError::Invalid("truncated layout bundle"))
+    ));
+    let mut wrong_bundle = bytes.clone();
+    wrong_bundle[4..8].copy_from_slice(&2u32.to_le_bytes());
+    assert_eq!(
+        LayoutBundle::decode_canonical(&wrong_bundle).unwrap_err(),
+        LayoutTransportError::UnsupportedBundleVersion(2)
+    );
+    let mut wrong_schema = bytes.clone();
+    wrong_schema[8..12].copy_from_slice(&2u32.to_le_bytes());
+    assert_eq!(
+        LayoutBundle::decode_canonical(&wrong_schema).unwrap_err(),
+        LayoutTransportError::UnsupportedLayoutSchema(2)
+    );
+
+    let mut dangling = LayoutBundle::from_interner(&layouts, []).unwrap().canonical_bytes();
+    dangling[16..20].copy_from_slice(&1u32.to_le_bytes());
+    dangling.extend_from_slice(LayoutId::from_bytes([9; 32]).as_bytes());
+    assert!(matches!(
+        LayoutBundle::decode_canonical(&dangling),
+        Err(LayoutTransportError::UnknownRoot(_))
+    ));
+}
+
+#[test]
+fn host_layout_policy_has_only_exact_counted_marshal_or_reject_outcomes() {
+    let exact = LayoutId::from_bytes([1; 32]);
+    let other = LayoutId::from_bytes([2; 32]);
+    let adaptable = HostLayoutPolicy::new([exact], true);
+    assert_eq!(adaptable.decide(exact), HostLayoutDecision::Exact);
+    assert_eq!(adaptable.decide(other), HostLayoutDecision::Marshal);
+
+    let strict = HostLayoutPolicy::new([exact], false);
+    assert_eq!(strict.decide(exact), HostLayoutDecision::Exact);
+    assert_eq!(strict.decide(other), HostLayoutDecision::Reject);
 }
 
 #[test]

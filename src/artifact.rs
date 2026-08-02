@@ -6,9 +6,11 @@ use wasm_encoder::{CustomSection, Section as _};
 
 use witchy_syntax::ast;
 use witchy_caps::capabilities;
+use witchy_wir::layout::{LayoutBundle, LayoutInterner};
 
 const LAUNCH_SECTION: &str = "witchy.launch";
 const LAUNCH_VERSION: u8 = 1;
+const LAYOUT_SECTION: &str = "witchy.layouts";
 
 const CAP_TAGS: [(&str, u8); 11] = [
     ("Console", 0),
@@ -83,6 +85,49 @@ pub fn launch_contract_payload(wasm: &[u8]) -> Result<Option<&[u8]>, String> {
     Ok(found)
 }
 
+/// Append a validated canonical descriptor graph to a distributable module.
+/// The bundle is the exact transport used by workers and structured host
+/// adapters; the artifact layer never rebuilds a layout from a source name.
+pub fn embed_layout_bundle(mut wasm: Vec<u8>, bundle: &LayoutBundle) -> Vec<u8> {
+    CustomSection {
+        name: Cow::Borrowed(LAYOUT_SECTION),
+        data: Cow::Owned(bundle.canonical_bytes()),
+    }
+    .append_to(&mut wasm);
+    wasm
+}
+
+/// Read and fully validate an artifact's specialized layout graph. Unknown
+/// schemas, invalid digests, missing children, duplicates, and dangling roots
+/// fail before callers can instantiate the module or select a host adapter.
+pub fn layout_bundle(
+    wasm: &[u8],
+) -> Result<Option<(LayoutBundle, LayoutInterner)>, String> {
+    layout_bundle_payload(wasm)?
+        .map(LayoutBundle::decode_canonical)
+        .transpose()
+        .map_err(|error| invalid_layout_contract(&error.to_string()))
+}
+
+/// Return the exact encoded layout payload after checking section uniqueness.
+/// Descriptor validation remains in [`layout_bundle`] so trusted packaging can
+/// digest the original bytes without inventing another encoding.
+pub fn layout_bundle_payload(wasm: &[u8]) -> Result<Option<&[u8]>, String> {
+    let mut found = None;
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        let payload = payload.map_err(|error| invalid_layout_contract(&error.to_string()))?;
+        let wasmparser::Payload::CustomSection(section) = payload else { continue };
+        if section.name() != LAYOUT_SECTION {
+            continue;
+        }
+        if found.is_some() {
+            return Err(invalid_layout_contract("duplicate section"));
+        }
+        found = Some(section.data());
+    }
+    Ok(found)
+}
+
 fn cap_tag(name: &str) -> Option<u8> {
     CAP_TAGS.iter().find_map(|(cap, tag)| (*cap == name).then_some(*tag))
 }
@@ -145,10 +190,34 @@ fn invalid_contract(detail: &str) -> String {
     format!("invalid `{LAUNCH_SECTION}` metadata: {detail}")
 }
 
+fn invalid_layout_contract(detail: &str) -> String {
+    format!("invalid `{LAYOUT_SECTION}` metadata: {detail}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use wasm_encoder::Module;
+    use witchy_syntax::ast::Type;
+    use witchy_wir::layout::{
+        ClosedTypeResolver, LayoutId, ResolvedNamed, ScalarKind,
+    };
+
+    struct ScalarResolver;
+
+    impl ClosedTypeResolver for ScalarResolver {
+        fn resolve_named<'a>(
+            &'a self,
+            name: &str,
+            arguments: &[Type],
+        ) -> Option<ResolvedNamed<'a>> {
+            if name == "Int" && arguments.is_empty() {
+                Some(ResolvedNamed::Scalar(ScalarKind::Int))
+            } else {
+                None
+            }
+        }
+    }
 
     #[test]
     fn launch_contract_round_trips_capabilities_and_rights() {
@@ -179,5 +248,51 @@ mod tests {
         .append_to(&mut wasm);
         let error = launch_contract(&wasm).expect_err("unknown metadata cannot be ignored");
         assert!(error.contains("unsupported version"), "{error}");
+    }
+
+    #[test]
+    fn layout_bundle_round_trips_through_artifact_metadata() {
+        let mut layouts = LayoutInterner::new();
+        let int = layouts
+            .intern_type(&Type::Named("Int".to_owned(), Vec::new()), &ScalarResolver)
+            .unwrap();
+        let bundle = LayoutBundle::from_interner(&layouts, [int]).unwrap();
+        let wasm = embed_layout_bundle(Module::new().finish(), &bundle);
+        wasmparser::validate(&wasm).expect("layout metadata keeps the module valid");
+
+        let payload = layout_bundle_payload(&wasm).unwrap().expect("layout section");
+        assert_eq!(payload, bundle.canonical_bytes());
+        let (decoded, imported) = layout_bundle(&wasm).unwrap().expect("layout bundle");
+        assert_eq!(decoded, bundle);
+        assert!(imported.get(int).is_some());
+    }
+
+    #[test]
+    fn duplicate_or_unknown_layout_metadata_fails_closed() {
+        let empty = LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap();
+        let wasm = embed_layout_bundle(Module::new().finish(), &empty);
+        let duplicate = embed_layout_bundle(wasm, &empty);
+        let error = layout_bundle(&duplicate).expect_err("duplicate metadata cannot be ignored");
+        assert!(error.contains("duplicate section"), "{error}");
+
+        let mut unknown = Module::new().finish();
+        let mut payload = empty.canonical_bytes();
+        payload[8..12].copy_from_slice(&2u32.to_le_bytes());
+        CustomSection {
+            name: Cow::Borrowed(LAYOUT_SECTION),
+            data: Cow::Owned(payload),
+        }
+        .append_to(&mut unknown);
+        let error = layout_bundle(&unknown).expect_err("unknown schema cannot be ignored");
+        assert!(error.contains("unsupported layout schema 2"), "{error}");
+
+        let policy = witchy_wir::layout::HostLayoutPolicy::new(
+            [LayoutId::from_bytes([1; 32])],
+            false,
+        );
+        assert_eq!(
+            policy.decide(LayoutId::from_bytes([2; 32])),
+            witchy_wir::layout::HostLayoutDecision::Reject
+        );
     }
 }

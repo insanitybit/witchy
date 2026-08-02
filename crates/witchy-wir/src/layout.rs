@@ -5,8 +5,10 @@
 //! sanitizer instrumentation cannot silently drift across crates.
 
 mod specialized;
+mod transport;
 
 pub use specialized::*;
+pub use transport::*;
 
 /// First guest-data byte. The compiled backend leaves the low address range
 /// reserved for null/sentinel values and starts static data here.
