@@ -8,7 +8,7 @@
     };
     use witchy_syntax::ast::Item;
 
-    use super::{LoanProjection, LoanProjectionStep, projections_overlap};
+    use super::{BorrowCatalog, LoanProjection, LoanProjectionStep, projections_overlap};
 
     fn linked_normal(main_body: &str) -> Result<(), crate::typeck::TypeError> {
         fn no_comptime(
@@ -940,4 +940,40 @@
         assert!(!projections_overlap(&empty, &empty));
         assert!(!projections_overlap(&empty, &point));
         assert!(!projections_overlap(&empty_inclusive, &point));
+    }
+
+    #[test]
+    fn generic_nominal_fields_preserve_nested_borrow_slots() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Leaf('leaf):\n    view: View(String, 'leaf)\n\n\
+             type Wrapper(a, 'scope):\n    item: a\n\n\
+             type Envelope(a, 'scope):\n    inner: Wrapper(a, 'scope)\n",
+        )
+        .expect("borrowed generic declarations parse");
+        let catalog = BorrowCatalog::from_module(&module);
+        let lifetime = witchy_syntax::ast::Type::Named("'owner".into(), Vec::new());
+        let leaf = witchy_syntax::ast::Type::Named("Leaf".into(), vec![lifetime.clone()]);
+        let wrapper = witchy_syntax::ast::Type::Named(
+            "Envelope".into(),
+            vec![leaf, lifetime],
+        );
+
+        let slots = catalog.slots(&wrapper);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].lifetime, "owner");
+        assert_eq!(
+            slots[0].projection,
+            LoanProjection {
+                steps: vec![
+                    LoanProjectionStep::Field("inner".into()),
+                    LoanProjectionStep::Field("item".into()),
+                    LoanProjectionStep::Field("view".into()),
+                ],
+            }
+        );
+        assert_eq!(
+            slots[0].storage_type,
+            witchy_syntax::ast::Type::Named("String".into(), Vec::new())
+        );
     }
