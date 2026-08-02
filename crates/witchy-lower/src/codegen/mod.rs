@@ -4187,11 +4187,7 @@ impl<'types> Codegen<'types> {
 
     fn loan_root(event: &witchy_types::loans::LoanEvent) -> Option<LoanRoot> {
         let owner = event.owner_root();
-        let bias = owner
-            .direct_storage_type
-            .as_ref()
-            .map(rc_leaf_bias)
-            .unwrap_or(Some(0))?;
+        let bias = rc_leaf_bias(owner.direct_storage_type.as_ref()?)?;
         if bias < 0 {
             return None;
         }

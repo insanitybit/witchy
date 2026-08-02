@@ -418,6 +418,25 @@
             "mode opt\n\ntype Holder:\n    values: Dict(Int, Int)\n\nfn view(values: let('a) Dict(Int, Int)) -> View(Dict(Int, Int), 'a):\n    values\n\nfn count(holder: Holder) -> Int:\n    let v = view(holder.values)\n    dict.length(v)\n\nfn main() -> Int:\n    count(Holder(dict.new()))\n",
         )
         .expect("parse");
+        let typed = witchy_types::typeck::annotate_checked(module.clone())
+            .expect("annotate Holder root fixture");
+        let checked_facts = witchy_types::loans::facts_with_types(typed.module(), typed.table())
+            .expect("checked Holder loan facts");
+        let checked_count = typed
+            .module()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "count" => Some(function),
+                _ => None,
+            })
+            .expect("checked count function");
+        let checked_root = checked_facts.opens_after(&checked_count.body.stmts[0])[0].owner_root();
+        assert_eq!(
+            checked_root.direct_storage_type,
+            Some(Type::Named("Holder".into(), vec![])),
+            "the caller's checked root type must beat the callee's projected Dict storage type",
+        );
         let wir = assemble_wir_module(&module)
             .expect_lowered("projected Dict argument lowers to WIR");
         let wat = witchy_wir::wir::to_wat(&wir);
@@ -431,6 +450,63 @@
         assert!(
             !before[owner..].contains("i32.const 4"),
             "the callee's Dict type must not bias the projected argument's Holder base: {count}",
+        );
+    }
+
+    #[test]
+    fn projected_place_from_a_direct_dict_root_keeps_the_dict_layout_bias() {
+        use witchy_types::loans::{
+            LoanEvent, LoanOwnerRoot, LoanPlace, LoanProjection, LoanProjectionStep,
+        };
+        use witchy_wir::wir::{
+            WirExpr as W, WirFunc, WirLocal, WirModule, WirNode as N, WirTy,
+        };
+
+        let int = Type::Named("Int".into(), vec![]);
+        let event = LoanEvent::from_checked_place(
+            "v".into(),
+            LoanPlace {
+                root: LoanOwnerRoot {
+                    local: "values".into(),
+                    direct_storage_type: Some(Type::Named(
+                        "Dict".into(),
+                        vec![int.clone(), int.clone()],
+                    )),
+                },
+                projection: LoanProjection {
+                    steps: vec![LoanProjectionStep::Index(0)],
+                },
+                storage_type: int,
+            },
+            LoanProjection::default(),
+            "view".into(),
+        );
+        assert!(!event.projection.steps.is_empty(), "the checked place is projected");
+        let root = Codegen::loan_root(&event).expect("a direct Dict root is retainable");
+        let root_local = root.local.clone();
+        let module = WirModule {
+            imports: vec![],
+            funcs: vec![WirFunc {
+                name: "projected_dict_root".into(),
+                params: vec![WirLocal { name: "values".into(), ty: WirTy::Bool }],
+                ret: vec![WirTy::Int],
+                locals: vec![WirLocal { name: root_local.clone(), ty: WirTy::Bool }],
+                body: vec![
+                    N::SetLocal { local: root_local, value: Codegen::loan_region(&root) },
+                    N::Push(W::ConstI64(0)),
+                ],
+                raw_body: None,
+            }],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![],
+        };
+        let wat = witchy_wir::wir::to_wat(&module);
+        assert!(
+            wat.contains("local.get $values\n    i32.const 4\n    i32.sub"),
+            "a projection must not erase the direct Dict root's -4 base bias: {wat}",
         );
     }
 

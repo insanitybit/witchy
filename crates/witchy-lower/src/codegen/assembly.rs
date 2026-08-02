@@ -1690,7 +1690,7 @@ fn assemble_wir_module_with_structs_mode(
     // been consumed. No public API can use unrestricted `&mut Module` access
     // while claiming that the address-keyed type proof remains valid.
     flip_string_add_module(&mut module, &type_table);
-    let loan_facts = witchy_types::loans::facts(&module)
+    let loan_facts = witchy_types::loans::facts_with_types(&module, &type_table)
         .map_err(|error| CodegenError { message: error.to_string() })?;
     let access_facts = witchy_types::access::checked_facts(&module, &type_table)
         .map_err(|error| CodegenError { message: error.to_string() })?;

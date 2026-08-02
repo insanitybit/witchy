@@ -35,7 +35,7 @@ use witchy_syntax::ast::{
 
 pub use crate::access::{LoanProjection, LoanProjectionStep};
 use crate::access::{AccessKind, AccessSignature, BorrowRelation, BorrowRelationCatalog};
-use crate::typeck::TypeError;
+use crate::typeck::{TypeError, TypeTable, ty_to_ast};
 
 fn terr(message: String) -> TypeError {
     TypeError { message }
@@ -112,8 +112,8 @@ fn is_std_fn(name: &str) -> bool {
 pub struct LoanOwnerRoot {
     pub local: String,
     /// Checked type of the owner local's own pointer representation. `None`
-    /// means the projected argument's root local already contains the enclosing
-    /// object's base pointer.
+    /// means no exact root-layout proof was available to the caller publishing
+    /// these facts; lowering must not infer one from projected storage.
     /// This is intentionally the root type (for example `Holder`), never the
     /// projected storage type (`Holder.values: Dict`), so an interior layout
     /// cannot impose its bias on the containing owner.
@@ -181,6 +181,27 @@ pub struct LoanEvent {
 }
 
 impl LoanEvent {
+    /// Construct one event from the checker-owned root/place split. Backend
+    /// adapters use this boundary to preserve the root's own checked layout
+    /// independently of the projected storage type.
+    pub fn from_checked_place(
+        view: String,
+        place: LoanPlace,
+        borrower_projection: LoanProjection,
+        origin: String,
+    ) -> Self {
+        let owner = place.root.local.clone();
+        Self {
+            view,
+            owner,
+            projection: place.projection,
+            borrower_projection,
+            origin,
+            owner_type: place.storage_type,
+            owner_root: place.root,
+        }
+    }
+
     /// The only object base that may be retained or released for this event.
     pub fn owner_root(&self) -> LoanOwnerRoot {
         self.owner_root.clone()
@@ -787,6 +808,22 @@ pub(crate) fn check(module: &Module) -> Result<(), TypeError> {
 
 /// Validate every function and return the exact events consumed by lowering.
 pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
+    facts_impl(module, None)
+}
+
+/// Validate every function and retain exact checked root-local types for
+/// lowering. The table must belong to this exact module allocation.
+pub fn facts_with_types(
+    module: &Module,
+    type_table: &TypeTable,
+) -> Result<LoanFacts, TypeError> {
+    facts_impl(module, Some(type_table))
+}
+
+fn facts_impl(
+    module: &Module,
+    type_table: Option<&TypeTable>,
+) -> Result<LoanFacts, TypeError> {
     let catalog = BorrowRelationCatalog::from_module(module);
     let mut sigs: HashMap<String, BorrowSig> = HashMap::new();
 
@@ -803,6 +840,7 @@ pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
         let Item::Function(f) = item else { continue };
         let mut ctx = LoanCtx {
             sigs: &sigs,
+            type_table,
             fn_name: &f.name,
             facts: &mut facts,
             catalog: &catalog,
@@ -863,7 +901,7 @@ pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
                 ret,
                 &format!("lambda {} in {}", index + 1, short_name(&f.name)),
                 is_opt_function(&f.name, &module.modes),
-                LoanEnvironment { sigs: &sigs, catalog: &catalog },
+                LoanEnvironment { sigs: &sigs, catalog: &catalog, type_table },
                 &mut facts,
             )?;
         }
@@ -880,7 +918,7 @@ fn check_lambda_body(
     environment: LoanEnvironment<'_>,
     facts: &mut LoanFacts,
 ) -> Result<(), TypeError> {
-    let LoanEnvironment { sigs, catalog } = environment;
+    let LoanEnvironment { sigs, catalog, type_table } = environment;
     let forwarded = forwarding_lambda_sig(params, body, sigs);
     let forwarded = forwarded.as_ref();
     let explicitly_uses_view = params
@@ -954,6 +992,7 @@ fn check_lambda_body(
         .collect();
     let mut ctx = LoanCtx {
         sigs,
+        type_table,
         fn_name: name,
         facts,
         catalog,
@@ -993,6 +1032,7 @@ fn check_lambda_body(
 struct LoanEnvironment<'a> {
     sigs: &'a HashMap<String, BorrowSig>,
     catalog: &'a BorrowRelationCatalog,
+    type_table: Option<&'a TypeTable>,
 }
 
 /// Recover the typed contract of a pure forwarding lambda. The linker represents
@@ -1258,8 +1298,8 @@ struct Loan {
     view: String,
     /// The owner local whose storage the view borrows.
     owner: String,
-    /// Checked type of the owner local itself. `None` means the argument was a
-    /// projection and its root local is already the containing object base.
+    /// Checked type of the owner local itself. `None` means this untyped facts
+    /// consumer did not provide the exact checked expression table.
     root_type: Option<Type>,
     /// The owner-relative storage region borrowed by this view.
     projection: LoanProjection,
@@ -1338,6 +1378,16 @@ fn expr_root(expr: &Expr) -> Option<&str> {
         Expr::Var(name) => Some(name),
         Expr::Field { base, .. } => expr_root(base),
         Expr::Index { base, .. } => expr_root(base),
+        _ => None,
+    }
+}
+
+fn expr_root_node(expr: &Expr) -> Option<&Expr> {
+    match expr {
+        Expr::Var(_) => Some(expr),
+        Expr::Field { base, .. } | Expr::Index { base, .. } | Expr::As { expr: base, .. } => {
+            expr_root_node(base)
+        }
         _ => None,
     }
 }
@@ -1558,6 +1608,7 @@ fn pattern_bindings(
 
 struct LoanCtx<'a> {
     sigs: &'a HashMap<String, BorrowSig>,
+    type_table: Option<&'a TypeTable>,
     catalog: &'a BorrowRelationCatalog,
     fn_name: &'a str,
     facts: &'a mut LoanFacts,
@@ -1577,6 +1628,11 @@ struct LoanCtx<'a> {
 }
 
 impl LoanCtx<'_> {
+    fn checked_root_type(&self, place: &Expr) -> Option<Type> {
+        let root = expr_root_node(place)?;
+        self.type_table?.type_of(root).and_then(ty_to_ast)
+    }
+
     /// Check a block's linear statement sequence.
     ///
     /// `inherited` loans come from an enclosing block and are treated as live for
@@ -2094,12 +2150,14 @@ impl LoanCtx<'_> {
                     {
                         sources.push(BorrowSource {
                             owner: root.to_string(),
-                            root_type: argument_projection.steps.is_empty().then(|| {
-                                sig.owner_params
-                                    .iter()
-                                    .find(|(position, _)| *position == owner.position())
-                                    .map(|(_, ty)| ty.clone())
-                                    .unwrap_or_else(|| relation.storage_type().clone())
+                            root_type: self.checked_root_type(arg).or_else(|| {
+                                argument_projection.steps.is_empty().then(|| {
+                                    sig.owner_params
+                                        .iter()
+                                        .find(|(position, _)| *position == owner.position())
+                                        .map(|(_, ty)| ty.clone())
+                                        .unwrap_or_else(|| relation.storage_type().clone())
+                                })
                             }),
                             projection: argument_projection.extended(owner.input_projection()),
                             borrower_projection: LoanProjection::default(),
