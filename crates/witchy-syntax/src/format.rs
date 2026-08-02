@@ -1366,6 +1366,21 @@ fn expr(e: &Expr) -> String {
                 .collect();
             format!("{name}({})", parts.join(", "))
         }
+        Expr::LabeledMethodCall { receiver, method, args } => {
+            let parts: Vec<String> = args
+                .iter()
+                .map(|(label, v)| match label {
+                    Some(l) => format!("{l}: {}", expr(v)),
+                    None => expr(v),
+                })
+                .collect();
+            format!(
+                "{}.{}({})",
+                operand(receiver, POSTFIX_PREC, false),
+                method,
+                parts.join(", ")
+            )
+        }
         Expr::MethodCall { receiver, method, args } => {
             format!("{}.{method}({})", operand(receiver, POSTFIX_PREC, false), comma(args))
         }
@@ -2398,6 +2413,12 @@ fn rewrite_cap_method_expr(e: &mut Expr) {
             }
         }
         Expr::LabeledCall { args, .. } => {
+            for (_, arg) in args {
+                rewrite_cap_method_expr(arg);
+            }
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            rewrite_cap_method_expr(receiver);
             for (_, arg) in args {
                 rewrite_cap_method_expr(arg);
             }

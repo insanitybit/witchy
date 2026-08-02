@@ -111,6 +111,12 @@ fn rewrite_try_from_expr(
                 rewrite_try_from_expr(arg, dst_err, conversions, table);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            rewrite_try_from_expr(receiver, dst_err, conversions, table);
+            for (_, arg) in args {
+                rewrite_try_from_expr(arg, dst_err, conversions, table);
+            }
+        }
         Expr::ExistentialCall { receiver, args, .. } => {
             rewrite_try_from_expr(receiver, dst_err, conversions, table);
             for arg in args {

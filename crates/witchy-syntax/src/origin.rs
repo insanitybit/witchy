@@ -515,7 +515,18 @@ fn record_expr(table: &mut OriginTable, module: &str, item: u32, path: &[u32], e
         Expr::List(values) | Expr::Tuple(values) => for value in values { record_expr_child(table, module, item, path, &mut next, value, origin); },
         Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => for arg in args { record_expr_child(table, module, item, path, &mut next, arg, origin); },
         Expr::LabeledCall { args, .. } => for (_, arg) in args { record_expr_child(table, module, item, path, &mut next, arg, origin); },
-        Expr::MethodCall { receiver, args, .. } => { record_expr_child(table, module, item, path, &mut next, receiver, origin); for arg in args { record_expr_child(table, module, item, path, &mut next, arg, origin); } }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            record_expr_child(table, module, item, path, &mut next, receiver, origin);
+            for (_, arg) in args {
+                record_expr_child(table, module, item, path, &mut next, arg, origin);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            record_expr_child(table, module, item, path, &mut next, receiver, origin);
+            for arg in args {
+                record_expr_child(table, module, item, path, &mut next, arg, origin);
+            }
+        }
         Expr::Apply { func, args } => { record_expr_child(table, module, item, path, &mut next, func, origin); for arg in args { record_expr_child(table, module, item, path, &mut next, arg, origin); } }
         Expr::Unary { expr, .. } | Expr::Try(expr) => record_expr_child(table, module, item, path, &mut next, expr, origin),
         Expr::Field { base, .. } => record_expr_child(table, module, item, path, &mut next, base, origin),

@@ -386,6 +386,9 @@ fn check_expr(
         | Expr::AnonCtor { args: items, .. } => items.iter().all(ordinary),
         Expr::Call { args, .. } => args.iter().all(ordinary),
         Expr::LabeledCall { args, .. } => args.iter().all(|(_, argument)| ordinary(argument)),
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            ordinary(receiver) && args.iter().all(|(_, argument)| ordinary(argument))
+        }
         Expr::MethodCall { receiver, args, .. } => {
             ordinary(receiver) && args.iter().all(ordinary)
         }

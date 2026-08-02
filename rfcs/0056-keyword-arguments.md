@@ -297,12 +297,10 @@ Shipped as designed, with the three review gaps resolved:
    reorder. Constant defaults are spliced directly (no temp — a constant has no
    effect and no order). Covered by `keyword_args_source_order_backends_agree`.
 
-2. **Method-call labels EXCLUDED in v1.** Only DIRECT free/module calls (a
-   statically-known callee at the link layer) carry labels. A label on a UFCS
-   method call is a **parse error** (the callee resolves later, by receiver type
-   in `traits.rs`, so there is no declaration to bind against yet). A label
-   through a function *value* (`Apply`) is likewise rejected. Rule 4's
-   "post-resolution method labels" is therefore deferred to a later RFC.
+2. **Method-call labels were EXCLUDED in v1.** RFC-0056 shipped with the
+   restriction to direct/free calls, and method calls were deferred. A follow-on
+   RFC (RFC-0113) now lifts that restriction by rewriting `LabeledMethodCall`
+   after UFCS resolution; function-value calls remain positional-only.
 
 3. **`var` + default = compile error** (parse time): a `var` writes back to a
    caller variable, so an omitted argument has nothing to write to. `own` +
@@ -327,7 +325,7 @@ same pass. Both backends only ever see positional `Call`s (and the temp-binding
 `Block`), so parity is by construction — a `LabeledCall` reaching a backend is a
 loud `unreachable!`, never silent divergence.
 
-**Scope punts (v1).** (a) Method-call and value-call forms get neither labels nor
+**Scope punts (v1).** (a) Function-value calls still get neither labels nor
 default-omission — a defaulted std function must be called as `module.f(x)` (or
 `f(x)`), not `x.f()`, to omit a default. (b) A type error inside a labeled
 argument still reports the positional call the desugar produced (the label→span

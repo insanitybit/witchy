@@ -9070,6 +9070,7 @@ impl<'types> Codegen<'types> {
             | Expr::MethodCall { .. }
             | Expr::ExistentialCall { .. }
             | Expr::LabeledCall { .. }
+            | Expr::LabeledMethodCall { .. }
             | Expr::TaggedLit { .. } => false,
         }
     }
@@ -9108,6 +9109,7 @@ impl<'types> Codegen<'types> {
             | Expr::MethodCall { .. }
             | Expr::ExistentialCall { .. }
             | Expr::LabeledCall { .. }
+            | Expr::LabeledMethodCall { .. }
             | Expr::While { .. }
             | Expr::For { .. }
             | Expr::WhileLet { .. }
@@ -9327,6 +9329,7 @@ impl<'types> Codegen<'types> {
             }
             Expr::Index { .. }
             | Expr::WhileLet { .. }
+            | Expr::LabeledMethodCall { .. }
             | Expr::MethodCall { .. }
             | Expr::Record { .. }
             | Expr::LabeledCall { .. }
@@ -9986,17 +9989,23 @@ fn nested_var_place_roots(
             Expr::Lambda { body, .. } | Expr::Block(body) => {
                 scan_block(body, conventions, roots)
             }
-            Expr::ExistentialCall { receiver, args, .. } => {
-                scan_expr(receiver, conventions, roots);
-                for argument in args {
-                    scan_expr(argument, conventions, roots);
-                }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            scan_expr(receiver, conventions, roots);
+            for argument in args {
+                scan_expr(argument, conventions, roots);
             }
-            Expr::MethodCall { .. }
-            | Expr::Record { .. }
-            | Expr::LabeledCall { .. }
-            | Expr::Int(_)
-            | Expr::Duration(_)
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            scan_expr(receiver, conventions, roots);
+            for (_, argument) in args {
+                scan_expr(argument, conventions, roots);
+            }
+        }
+        Expr::MethodCall { .. }
+        | Expr::Record { .. }
+        | Expr::LabeledCall { .. }
+        | Expr::Int(_)
+        | Expr::Duration(_)
             | Expr::Float(_)
             | Expr::Str(_)
             | Expr::Bool(_)
@@ -10344,7 +10353,8 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         | Expr::WhileLet { .. }
         | Expr::MethodCall { .. }
         | Expr::Record { .. }
-        | Expr::LabeledCall { .. } => {
+        | Expr::LabeledCall { .. }
+        | Expr::LabeledMethodCall { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::ExistentialCall { receiver, args, .. } => {

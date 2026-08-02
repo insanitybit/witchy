@@ -168,6 +168,10 @@ impl<'a> ExistentialCheck<'a> {
             Expr::LabeledCall { args, .. } => {
                 args.iter().try_for_each(|(_, arg)| self.visit_expr(arg))
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                self.visit_expr(receiver)?;
+                args.iter().try_for_each(|(_, arg)| self.visit_expr(arg))
+            }
             Expr::MethodCall { receiver, args, .. } => {
                 self.visit_expr(receiver)?;
                 args.iter().try_for_each(|arg| self.visit_expr(arg))

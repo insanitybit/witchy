@@ -98,7 +98,7 @@ impl Renamer {
             | Expr::WhileLet { .. }
             | Expr::MethodCall { .. }
             | Expr::Record { .. }
-            | Expr::LabeledCall { .. } => {
+            | Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
                 unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
             }
             Expr::ExistentialCall { receiver, args, .. } => {
@@ -340,6 +340,12 @@ pub(crate) fn flip_string_add_module(m: &mut Module, table: &witchy_types::typec
                 walk_expr(base, table);
                 walk_expr(index, table);
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                walk_expr(receiver, table);
+                for (_, a) in args {
+                    walk_expr(a, table);
+                }
+            }
             Expr::LabeledCall { .. } => {
                 unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
             }
@@ -512,6 +518,12 @@ pub(crate) fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typec
             Expr::Index { base, index } => {
                 walk_expr(base, table, changed);
                 walk_expr(index, table, changed);
+            }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                walk_expr(receiver, table, changed);
+                for (_, a) in args {
+                    walk_expr(a, table, changed);
+                }
             }
             Expr::LabeledCall { .. } => {
                 unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")

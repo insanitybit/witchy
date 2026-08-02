@@ -1034,6 +1034,13 @@ impl<'a> AllocationScan<'a> {
                     self.expr(argument);
                 }
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                self.local_effect = true;
+                self.expr(receiver);
+                for (_, argument) in args {
+                    self.expr(argument);
+                }
+            }
             Expr::TaggedLit { .. } => self.local_effect = true,
         }
     }
@@ -1266,7 +1273,7 @@ fn collect_accumulators_expr(
                 collect_accumulators_expr(v, summaries, calls, accs, loop_ptrs, loop_sites);
             }
         }
-        Expr::LabeledCall { .. } => {
+        Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
             unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
@@ -1674,7 +1681,7 @@ impl<'a> Walker<'a> {
                     self.scan(a, live, "stored into a constructor", out);
                 }
             }
-            Expr::LabeledCall { .. } => {
+            Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
                 unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
             }
             Expr::Record { fields, spread, .. } => {
@@ -1870,7 +1877,7 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
                     expr(v, accs, out);
                 }
             }
-            Expr::LabeledCall { .. } => {
+            Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
                 unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
             }
             Expr::Record { fields, spread, .. } => {
@@ -2036,7 +2043,7 @@ fn collect_candidates_in_expr(e: &Expr, out: &mut HashSet<(String, String)>) {
                 collect_candidates_in_expr(v, out);
             }
         }
-        Expr::LabeledCall { .. } => {
+        Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
             unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
@@ -2126,7 +2133,7 @@ fn field_escapes_expr(e: &Expr, var: &str, field: &str) -> bool {
             field_escapes_expr(base, var, field)
                 || fields.iter().any(|(_, v)| field_escapes_expr(v, var, field))
         }
-        Expr::LabeledCall { .. } => {
+        Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
             unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
@@ -2250,7 +2257,7 @@ fn collect_moved_accs(e: &Expr, accs: &HashSet<String>, out: &mut Vec<String>) {
                 collect_moved_accs(v, accs, out);
             }
         }
-        Expr::LabeledCall { .. } => {
+        Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
             unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
@@ -2601,7 +2608,7 @@ fn rc_lets_expr(e: &Expr, confined: bool, out: &mut HashSet<String>) {
             rc_lets_expr(base, confined, out);
             fields.iter().for_each(|(_, v)| rc_lets_expr(v, confined, out));
         }
-        Expr::LabeledCall { .. } => {
+        Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
             unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
@@ -2759,7 +2766,7 @@ fn each_value_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
             f(base);
             fields.iter().for_each(|(_, v)| f(v));
         }
-        Expr::LabeledCall { .. } => {
+        Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
             unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
@@ -2874,7 +2881,7 @@ fn expr_read_count(e: &Expr, name: &str) -> usize {
                 n += expr_read_count(v, name);
             }
         }
-        Expr::LabeledCall { .. } => {
+        Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
             unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
@@ -3021,7 +3028,7 @@ fn each_block_in_expr(e: &Expr, f: &mut impl FnMut(&Block)) {
             each_block_in_expr(base, f);
             fields.iter().for_each(|(_, v)| each_block_in_expr(v, f));
         }
-        Expr::LabeledCall { .. } => {
+        Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
             unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
@@ -3447,7 +3454,7 @@ impl<'a> FipChecker<'a> {
                 }
                 self.miss("aggregate construction allocates inside the FIP kernel")
             }
-            Expr::LabeledCall { args, .. } => {
+            Expr::LabeledCall { args, .. } | Expr::LabeledMethodCall { args, .. } => {
                 for (_, arg) in args {
                     self.value(arg);
                 }
@@ -3553,6 +3560,9 @@ fn fip_expr_calls(expr: &Expr, function: &str) -> bool {
         }
         Expr::LabeledCall { name, args } => {
             name == function || args.iter().any(|(_, arg)| fip_expr_calls(arg, function))
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            fip_expr_calls(receiver, function) || args.iter().any(|(_, arg)| fip_expr_calls(arg, function))
         }
         Expr::MethodCall { receiver, args, .. }
         | Expr::ExistentialCall { receiver, args, .. } => {
@@ -4396,7 +4406,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 }
                 NoCopyProof::Unavailable("record values do not carry collection capacity".to_string())
             }
-            Expr::LabeledCall { .. } => {
+            Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => {
                 unreachable!("labeled calls are resolved before performance-mode analysis")
             }
             Expr::Int(_)

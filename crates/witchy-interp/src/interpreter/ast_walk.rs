@@ -36,6 +36,13 @@ pub(super) fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
                 idents_in_expr(a, f);
             }
         }
+        Expr::LabeledMethodCall { receiver, method, args } => {
+            f(method);
+            idents_in_expr(receiver, f);
+            for (_, a) in args {
+                idents_in_expr(a, f);
+            }
+        }
         Expr::MethodCall { receiver, method, args } => {
             f(method);
             idents_in_expr(receiver, f);

@@ -389,6 +389,13 @@ pub(super) fn check_unique_parameters(
                 }
                 Ok(())
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                check_expr(receiver)?;
+                for (_, arg) in args {
+                    check_expr(arg)?;
+                }
+                Ok(())
+            }
             Expr::MethodCall { receiver, args, .. } => {
                 check_expr(receiver)?;
                 for arg in args {

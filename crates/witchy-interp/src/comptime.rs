@@ -697,6 +697,12 @@ fn stamp_expr(e: &mut Expr, line: u32) {
                 stamp_expr(v, line);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            stamp_expr(receiver, line);
+            for (_, v) in args {
+                stamp_expr(v, line);
+            }
+        }
         Expr::RecordUpdate { name: _, base, fields } => {
             stamp_expr(base, line);
             for (_, v) in fields {

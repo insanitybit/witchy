@@ -269,6 +269,12 @@ fn visit_place_expr(expression: &Expr, visitor: &mut impl FnMut(&Expr)) {
                 visit_place_expr(argument, visitor);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            visit_place_expr(receiver, visitor);
+            for (_, argument) in args {
+                visit_place_expr(argument, visitor);
+            }
+        }
         Expr::ExistentialCall { receiver, args, .. } => {
             visit_place_expr(receiver, visitor);
             for argument in args {
@@ -3620,6 +3626,17 @@ impl<'a> AccessVerifier<'a> {
                     }
                     None => AccessFlow::None,
                 }
+            }
+            Expr::LabeledMethodCall {
+                receiver,
+                args,
+                ..
+            } => {
+                self.eval_expr(receiver, environment, return_expected)?;
+                for (_, argument) in args {
+                    self.eval_expr(argument, environment, return_expected)?;
+                }
+                AccessFlow::None
             }
             Expr::Apply { func, args } => {
                 let function = self.eval_expr(func, environment, return_expected)?;

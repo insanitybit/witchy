@@ -113,6 +113,12 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
                 fv_expr(a, s);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            fv_expr(receiver, s);
+            for (_, a) in args {
+                fv_expr(a, s);
+            }
+        }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
                 fv_expr(v, s);

@@ -1601,6 +1601,12 @@ fn fv_expr(e: &Expr, bound: &HashSet<String>, seen: &mut HashSet<String>, out: &
                 fv_expr(a, bound, seen, out);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            fv_expr(receiver, bound, seen, out);
+            for (_, a) in args {
+                fv_expr(a, bound, seen, out);
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             fv_expr(receiver, bound, seen, out);
             for a in args {
@@ -1805,6 +1811,10 @@ fn contains_await(e: &Expr) -> bool {
         Expr::Call { args, .. } | Expr::Ctor { args, .. }
         | Expr::AnonCtor { args, .. } => args.iter().any(contains_await),
         Expr::LabeledCall { args, .. } => args.iter().any(|(_, a)| contains_await(a)),
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            contains_await(receiver)
+                || args.iter().any(|(_, a)| contains_await(a))
+        }
         Expr::MethodCall { receiver, args, .. } => {
             contains_await(receiver) || args.iter().any(contains_await)
         }

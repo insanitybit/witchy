@@ -106,6 +106,10 @@ fn collect_loan_event_keys_expr(
         Expr::LabeledCall { args, .. } => {
             args.iter().for_each(|(_, arg)| collect_loan_event_keys_expr(arg, facts, out));
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            collect_loan_event_keys_expr(receiver, facts, out);
+            args.iter().for_each(|(_, arg)| collect_loan_event_keys_expr(arg, facts, out));
+        }
         Expr::MethodCall { receiver, args, .. }
         | Expr::ExistentialCall { receiver, args, .. } => {
             collect_loan_event_keys_expr(receiver, facts, out);
@@ -190,6 +194,12 @@ fn collect_loan_roots_expr(
             }
         }
         Expr::LabeledCall { args, .. } => {
+            for (_, arg) in args {
+                collect_loan_roots_expr(arg, facts, out)?;
+            }
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            collect_loan_roots_expr(receiver, facts, out)?;
             for (_, arg) in args {
                 collect_loan_roots_expr(arg, facts, out)?;
             }

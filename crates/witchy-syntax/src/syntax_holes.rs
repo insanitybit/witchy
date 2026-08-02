@@ -391,6 +391,11 @@ fn substitute_expr(
                 substitute_expr(value, holes, types, patterns)?;
             }
         }
+        Expr::LabeledMethodCall { args, .. } => {
+            for (_, value) in args {
+                substitute_expr(value, holes, types, patterns)?;
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             substitute_expr(receiver, holes, types, patterns)?;
             for arg in args {

@@ -195,6 +195,12 @@ fn lower_expr(e: &mut Expr, orders: &Orders, lenient: bool) -> Result<(), String
                 lower_expr(a, orders, lenient)?;
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            lower_expr(receiver, orders, lenient)?;
+            for (_, a) in args {
+                lower_expr(a, orders, lenient)?;
+            }
+        }
         Expr::Apply { func, args } => {
             lower_expr(func, orders, lenient)?;
             for a in args {

@@ -1350,17 +1350,32 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     }
                     Ok(())
                 }
-                Expr::LabeledCall { args, .. } => {
-                    for (_, arg) in args {
-                        validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    }
-                    Ok(())
+            Expr::LabeledCall { args, .. } => {
+                for (_, arg) in args {
+                    validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
                 }
-                Expr::MethodCall { receiver, args, .. } => {
-                    validate_expr_types(receiver, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    for arg in args {
-                        validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    }
+                Ok(())
+            }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                validate_expr_types(
+                    receiver,
+                    known,
+                    arities,
+                    type_defs,
+                    storage,
+                    ctx,
+                    in_ctx,
+                )?;
+                for (_, arg) in args {
+                    validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
+                }
+                Ok(())
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                validate_expr_types(receiver, known, arities, type_defs, storage, ctx, in_ctx)?;
+                for arg in args {
+                    validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
+                }
                     Ok(())
                 }
                 Expr::ExistentialCall {
@@ -6384,6 +6399,12 @@ impl Checker {
                     self.collect_var_writebacks_in_expr(argument, out);
                 }
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                self.collect_var_writebacks_in_expr(receiver, out);
+                for (_, argument) in args {
+                    self.collect_var_writebacks_in_expr(argument, out);
+                }
+            }
             Expr::Ctor { args, .. }
             | Expr::AnonCtor { args, .. }
             | Expr::List(args)
@@ -6680,6 +6701,11 @@ impl Checker {
             // `witchy_syntax::keyword_args` at the link layer, before type-checking.
             Expr::LabeledCall { .. } => {
                 unreachable!("Expr::LabeledCall is lowered by witchy_syntax::keyword_args before typeck")
+            }
+            Expr::LabeledMethodCall { .. } => {
+                unreachable!(
+                    "Expr::LabeledMethodCall is lowered by witchy_syntax::keyword_args before typeck"
+                )
             }
             // `while let` lowers to a `while true` over a match; type that.
             Expr::WhileLet { pattern, scrutinee, body } => {

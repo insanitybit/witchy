@@ -392,6 +392,12 @@ fn rewrite_expr(
                 rewrite_expr(argument, table, witnesses)?;
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            rewrite_expr(receiver, table, witnesses)?;
+            for (_, argument) in args {
+                rewrite_expr(argument, table, witnesses)?;
+            }
+        }
         Expr::Apply { func, args } => {
             rewrite_expr(func, table, witnesses)?;
             for argument in args {
@@ -577,6 +583,12 @@ fn visit_expr(
             }
         }
         Expr::LabeledCall { args, .. } => {
+            for (_, argument) in args {
+                visit_expr(argument, visitor)?;
+            }
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            visit_expr(receiver, visitor)?;
             for (_, argument) in args {
                 visit_expr(argument, visitor)?;
             }

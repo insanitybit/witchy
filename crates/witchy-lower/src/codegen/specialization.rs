@@ -476,6 +476,12 @@ fn visit_call_expr<'a>(expression: &'a Expr, visitor: &mut impl FnMut(&'a Expr))
                 visit_call_expr(argument, visitor);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            visit_call_expr(receiver, visitor);
+            for (_, argument) in args {
+                visit_call_expr(argument, visitor);
+            }
+        }
         Expr::Apply { func, args } => {
             visit_call_expr(func, visitor);
             for argument in args {

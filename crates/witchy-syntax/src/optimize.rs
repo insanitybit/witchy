@@ -131,6 +131,12 @@ fn opt_expr(e: &mut Expr, consts: &mut Consts) {
             opt_expr(receiver, consts);
             args.iter_mut().for_each(|a| opt_expr(a, consts));
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            opt_expr(receiver, consts);
+            for (_, arg) in args {
+                opt_expr(arg, consts);
+            }
+        }
         Expr::Apply { func, args } => {
             opt_expr(func, consts);
             args.iter_mut().for_each(|a| opt_expr(a, consts));

@@ -390,6 +390,12 @@ fn walk_children(
                 recur(a)?;
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            recur(receiver)?;
+            for (_, a) in args {
+                recur(a)?;
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             recur(receiver)?;
             for a in args {
@@ -1177,6 +1183,12 @@ fn substitute_holes_children(
             }
         }
         Expr::LabeledCall { args, .. } => {
+            for (_, a) in args {
+                substitute_holes(a, holes, where_)?;
+            }
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            substitute_holes(receiver, holes, where_)?;
             for (_, a) in args {
                 substitute_holes(a, holes, where_)?;
             }

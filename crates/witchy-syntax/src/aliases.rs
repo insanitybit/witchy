@@ -660,6 +660,12 @@ fn resolve_in_expr_with_origin(
                 resolve_in_expr_with_origin(a, map, resolve_call_site_head, shapes)?;
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            resolve_in_expr_with_origin(receiver, map, resolve_call_site_head, shapes)?;
+            for (_, a) in args {
+                resolve_in_expr_with_origin(a, map, resolve_call_site_head, shapes)?;
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             resolve_in_expr_with_origin(receiver, map, resolve_call_site_head, shapes)?;
             for a in args {

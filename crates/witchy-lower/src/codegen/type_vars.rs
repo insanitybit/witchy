@@ -174,6 +174,10 @@ impl DevirtScan {
             Expr::LabeledCall { args, .. } => {
                 args.iter().for_each(|(_, a)| self.walk_expr(a))
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                self.walk_expr(receiver);
+                args.iter().for_each(|(_, a)| self.walk_expr(a))
+            }
             Expr::MethodCall { receiver, args, .. } => {
                 self.walk_expr(receiver);
                 args.iter().for_each(|a| self.walk_expr(a));
@@ -328,7 +332,8 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         | Expr::WhileLet { .. }
         | Expr::MethodCall { .. }
         | Expr::Record { .. }
-        | Expr::LabeledCall { .. } => {
+        | Expr::LabeledCall { .. }
+        | Expr::LabeledMethodCall { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::ExistentialCall { receiver, args, .. } => {

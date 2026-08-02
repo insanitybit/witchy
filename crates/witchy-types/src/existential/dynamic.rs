@@ -494,6 +494,12 @@ fn rewrite_dynamic_expr(
                 rewrite_dynamic_expr(argument, module, table, runtime_catalog, runtime_types)?;
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            rewrite_dynamic_expr(receiver, module, table, runtime_catalog, runtime_types)?;
+            for (_, argument) in args {
+                rewrite_dynamic_expr(argument, module, table, runtime_catalog, runtime_types)?;
+            }
+        }
         Expr::MethodCall { receiver, args, .. }
         | Expr::ExistentialCall { receiver, args, .. } => {
             rewrite_dynamic_expr(receiver, module, table, runtime_catalog, runtime_types)?;

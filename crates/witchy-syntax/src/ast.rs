@@ -700,9 +700,18 @@ pub enum Expr {
     /// splicing any defaults — into a positional `Call` (optionally wrapped in a
     /// temp-binding `Block`), so labels never reach typeck or either backend
     /// (parity by construction). Labels are a property of the *declaration*, not of
-    /// a function value: only calls with a statically-known callee may carry them
-    /// (method calls and value calls may not — the parser rejects those).
+    /// a function value: only calls with a statically-known callee (or method
+    /// calls, once UFCS resolution assigns one) may carry them.
     LabeledCall { name: String, args: Vec<(Option<String>, Expr)> },
+    /// (RFC-0113) A method call whose arguments carry keyword labels:
+    /// `value.method(label: arg, ...)`. Labels bind against the resolved method
+    /// declaration's non-receiver parameters, and are rewritten once trait/UFCS
+    /// resolution chooses the concrete callee.
+    LabeledMethodCall {
+        receiver: Box<Expr>,
+        method: String,
+        args: Vec<(Option<String>, Expr)>,
+    },
     /// `receiver.method(args)` — UFCS method-call sugar for `method(receiver,
     /// args)`. Kept as a node (rather than flattened at parse time) so the
     /// formatter can print it back; every other consumer lowers it via

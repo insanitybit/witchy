@@ -2779,6 +2779,13 @@ impl<'a> BrowserPolicyAnalyzer<'a> {
                 }
                 Ok(BrowserAuthorityValue::Unknown)
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                self.expression(owner, receiver, environment, ordinal)?;
+                for (_, argument) in args {
+                    self.expression(owner, argument, environment, ordinal)?;
+                }
+                Ok(BrowserAuthorityValue::Unknown)
+            }
             Expr::Int(_)
             | Expr::Float(_)
             | Expr::Duration(_)
@@ -4590,6 +4597,12 @@ fn rewrite_expr_interactive(
                 rewrite_expr_interactive(argument, owner, ordinal)?;
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            rewrite_expr_interactive(receiver, owner, ordinal)?;
+            for (_, argument) in args {
+                rewrite_expr_interactive(argument, owner, ordinal)?;
+            }
+        }
         Expr::MethodCall { receiver, args, .. }
         | Expr::ExistentialCall { receiver, args, .. } => {
             rewrite_expr_interactive(receiver, owner, ordinal)?;
@@ -4750,6 +4763,12 @@ fn visit_expr(
                 visit_expr(argument, visitor)?;
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            visit_expr(receiver, visitor)?;
+            for (_, argument) in args {
+                visit_expr(argument, visitor)?;
+            }
+        }
         Expr::MethodCall { receiver, args, .. }
         | Expr::ExistentialCall { receiver, args, .. } => {
             visit_expr(receiver, visitor)?;
@@ -4876,6 +4895,12 @@ fn visit_expr_mut(
             }
         }
         Expr::LabeledCall { args, .. } => {
+            for (_, argument) in args {
+                visit_expr_mut(argument, visitor)?;
+            }
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            visit_expr_mut(receiver, visitor)?;
             for (_, argument) in args {
                 visit_expr_mut(argument, visitor)?;
             }

@@ -25,38 +25,54 @@
 //!     capture) and order-free (a constant has no effects).
 //!
 //! Labels and defaults are properties of the *declaration*, never of a function
-//! type or value: a call through a value (`Apply`) or a method call is
-//! positional-only, and the parser never produces a `LabeledCall` for those.
+//! type or value: a call through a value (`Apply`) remains positional-only.
+//! UFCS method labels are represented as `LabeledMethodCall` and rewritten after
+//! the concrete method declaration is resolved.
 
 use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
-use foldhash::{HashMap, HashMapExt as _};
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 type Params = HashMap<String, Vec<Param>>;
 
 /// Rewrite every labeled/defaulted direct call in the merged module.
 pub fn resolve(module: &mut Module) -> Result<(), String> {
-    let params: Params = module
-        .items
-        .iter()
-        .filter_map(|it| match it {
-            Item::Function(f) => Some((f.name.clone(), f.params.clone())),
-            _ => None,
-        })
-        .collect();
-    let mut r = Resolver { params, counter: 0 };
+    let mut params: Params = HashMap::new();
+    let mut types: HashSet<String> = HashSet::new();
+    for item in &module.items {
+        match item {
+            Item::Type(definition) => {
+                types.insert(definition.name.clone());
+            }
+            Item::Function(f) => {
+                params.insert(f.name.clone(), f.params.clone());
+            }
+            Item::Impl(im) => {
+                for method in &im.methods {
+                    params.insert(format!("{}.{}", im.type_name, method.name.clone()), method.params.clone());
+                }
+            }
+            Item::Trait(t) => {
+                for method in &t.methods {
+                    params.insert(format!("{}.{}", t.name, method.name.clone()), method.params.clone());
+                }
+            }
+            Item::TypeAlias { .. } | Item::Comptime(_) | Item::Const { .. } => {}
+        }
+    }
+    let mut r = Resolver { params, types, counter: 0, locals: HashMap::new() };
     for item in &mut module.items {
         match item {
-            Item::Function(f) => r.block(&mut f.body)?,
+            Item::Function(f) => r.block_function_like(&f.params, &mut f.body)?,
             Item::Impl(im) => {
                 for meth in &mut im.methods {
-                    r.block(&mut meth.body)?;
+                    r.block_function_like(&meth.params, &mut meth.body)?;
                 }
             }
             Item::Trait(t) => {
                 for ms in &mut t.methods {
                     if let Some(body) = &mut ms.default {
-                        r.block(body)?;
+                        r.block_function_like(&ms.params, body)?;
                     }
                 }
             }
@@ -69,23 +85,89 @@ pub fn resolve(module: &mut Module) -> Result<(), String> {
 
 struct Resolver {
     params: Params,
+    types: HashSet<String>,
     counter: u32,
+    locals: HashMap<String, String>,
+}
+
+fn nominal_type_name(ty: &Type) -> Option<&str> {
+    match ty {
+        Type::Named(name, _) => Some(name.as_str()),
+        _ => None,
+    }
 }
 
 impl Resolver {
     fn block(&mut self, b: &mut Block) -> Result<(), String> {
+        let mut bound: Vec<(String, Option<String>)> = Vec::new();
         for stmt in &mut b.stmts {
             match stmt {
-                Stmt::Let { value, .. }
-                | Stmt::LetPattern { value, .. }
-                | Stmt::Assign { value, .. }
+                Stmt::Let { name, value, .. } => {
+                    self.expr(value)?;
+                    let ty = self.expr_nominal_type(value);
+                    self.bind_local(name.clone(), ty, &mut bound);
+                }
+                Stmt::Assign { value, .. } => {
+                    self.expr(value)?;
+                }
+                Stmt::LetPattern { value, .. }
                 | Stmt::Expr(value)
                 | Stmt::Yield(value)
                 | Stmt::Return(Some(value)) => self.expr(value)?,
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             }
         }
+        for (name, old) in bound.drain(..).rev() {
+            match old {
+                Some(ty) => self.locals.insert(name, ty),
+                None => self.locals.remove(&name),
+            };
+        }
         Ok(())
+    }
+
+    fn block_function_like(&mut self, params: &[Param], body: &mut Block) -> Result<(), String> {
+        let saved = std::mem::take(&mut self.locals);
+        for p in params {
+            if let Some(ty) = p.ty.as_ref().and_then(nominal_type_name) {
+                self.locals.insert(p.name.clone(), ty.to_string());
+            }
+        }
+        let out = self.block(body);
+        self.locals = saved;
+        out
+    }
+
+    fn bind_local(&mut self, name: String, ty: Option<String>, scope: &mut Vec<(String, Option<String>)>) {
+        let old = if let Some(ty) = ty {
+            self.locals.insert(name.clone(), ty)
+        } else {
+            self.locals.remove(&name)
+        };
+        scope.push((name, old));
+    }
+
+    fn expr_nominal_type(&self, e: &Expr) -> Option<String> {
+        match e {
+            Expr::Var(name) => self.locals.get(name).cloned(),
+            Expr::Call { name, .. } => self
+                .types
+                .get(name)
+                .map(std::string::ToString::to_string),
+            Expr::List(_) => Some("List".to_string()),
+            Expr::Int(_) => Some("Int".to_string()),
+            Expr::Float(_) => Some("Float".to_string()),
+            Expr::Duration(_) => Some("Duration".to_string()),
+            Expr::Str(_) => Some("String".to_string()),
+            Expr::Bool(_) => Some("Bool".to_string()),
+            Expr::Ctor { name, .. } => Some(name.clone()),
+            Expr::Field { base, .. } => self.expr_nominal_type(base),
+            Expr::TaggedLit { tag, .. } => self
+                .types
+                .contains(tag)
+                .then_some(tag.to_string()),
+            _ => None,
+        }
     }
 
     fn expr(&mut self, e: &mut Expr) -> Result<(), String> {
@@ -98,7 +180,52 @@ impl Resolver {
                 }
                 let name = std::mem::take(name);
                 let args = std::mem::take(args);
-                *e = self.rewrite_labeled(name, args)?;
+                *e = self.rewrite_labeled(name, args, false)?;
+            }
+            Expr::LabeledMethodCall { receiver, method, args } => {
+                self.expr(receiver)?;
+                let receiver_type = self.expr_nominal_type(receiver);
+                let receiver = std::mem::replace(receiver, Box::new(Expr::Var(String::new())));
+                let method = std::mem::take(method);
+                let args = std::mem::take(args);
+                let callee = self.resolve_method_for_labels(&method, receiver_type.as_deref())?;
+                match self.rewrite_labeled(callee, args, true)? {
+                    Expr::Call { args, .. } => {
+                        *e = Expr::MethodCall {
+                            receiver,
+                            method,
+                            args,
+                        };
+                    }
+                    Expr::Block(mut block) => {
+                        let Some(Stmt::Expr(expr)) = block.stmts.last_mut() else {
+                            return Err(
+                                "internal error: labeled method rewrite produced an empty block"
+                                    .to_string(),
+                            );
+                        };
+                        let Expr::Call { args, .. } = std::mem::replace(
+                            expr,
+                            Expr::Var(String::new()),
+                        ) else {
+                            return Err(
+                                "internal error: labeled method rewrite did not end in a call"
+                                    .to_string(),
+                            );
+                        };
+                        *expr = Expr::MethodCall {
+                            receiver,
+                            method,
+                            args,
+                        };
+                        *e = Expr::Block(block);
+                    }
+                    other => {
+                        return Err(format!(
+                            "internal error: rewrite_labeled unexpectedly returned {other:?} for method call"
+                        ));
+                    }
+                }
             }
             Expr::Call { name, args } => {
                 for a in args.iter_mut() {
@@ -196,6 +323,76 @@ impl Resolver {
         Ok(())
     }
 
+    fn resolve_method_for_labels(&self, method: &str, receiver: Option<&str>) -> Result<String, String> {
+        let mut candidates: Vec<String> = self
+            .params
+            .keys()
+            .filter_map(|name| {
+                let (_, base) = name.rsplit_once('.')?;
+                if base == method {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if let Some(receiver_type) = receiver {
+            // Prefer a method whose owner is exactly the receiver type
+            // (`String.substring`) over a module free function that merely takes
+            // the receiver as its first parameter (`string.substring(s: String,
+            // ...)`). The linker aliases module functions into the method
+            // namespace, so both can match a receiver; the nominal owner is the
+            // one the user wrote `value.method(...)` against.
+            let exact_owner: Vec<String> = candidates
+                .iter()
+                .filter(|name| {
+                    name.rsplit_once('.').is_some_and(|(owner, _)| owner == receiver_type)
+                })
+                .cloned()
+                .collect();
+            match exact_owner.as_slice() {
+                [only] => return Ok(only.clone()),
+                [_, ..] => {
+                    let mut sorted = exact_owner;
+                    sorted.sort();
+                    return Ok(sorted.remove(0));
+                }
+                [] => {}
+            }
+            let by_receiver: Vec<String> = candidates
+                .iter()
+                .filter(|name| {
+                    let Some(params) = self.params.get(*name) else {
+                        return false;
+                    };
+                    let Some(first) = params.first().and_then(|p| p.ty.as_ref()) else {
+                        return false;
+                    };
+                    nominal_type_name(first) == Some(receiver_type)
+                })
+                .cloned()
+                .collect();
+            match by_receiver.as_slice() {
+                [only] => return Ok(only.clone()),
+                [] => {}
+                _ => return Err(format!(
+                    "`{method}` is ambiguous for keyword arguments; resolve it to a single method first"
+                )),
+            }
+        }
+        candidates.sort();
+        match candidates.as_slice() {
+            [only] => Ok(only.clone()),
+            [] => Err(format!(
+                "labels need the callee's declaration — `{method}` is not a function \
+                 (a builtin or a value has no parameter names to label)"
+            )),
+            _ => Err(format!(
+                "`{method}` is ambiguous for keyword arguments; resolve it to a single method first"
+            )),
+        }
+    }
+
     /// Splice closed-constant defaults for the omitted trailing parameters of a
     /// plain positional call. A no-op unless the callee is a known function with
     /// fewer arguments than parameters and every missing parameter has a default
@@ -222,13 +419,18 @@ impl Resolver {
         &mut self,
         name: String,
         args: Vec<(Option<String>, Expr)>,
+        is_method: bool,
     ) -> Result<Expr, String> {
-        let Some(params) = self.params.get(&name).cloned() else {
+        let Some(stored) = self.params.get(&name) else {
             return Err(format!(
                 "labels need the callee's declaration — `{name}` is not a direct function \
                  (a builtin or a value has no parameter names to label)"
             ));
         };
+        let mut params = stored.clone();
+        if is_method && params.first().is_some_and(|p| p.name == "self") {
+            params.remove(0);
+        }
         let n = params.len();
         let mut filled = vec![false; n];
         // Each written argument paired with its DECLARED index, in source order.

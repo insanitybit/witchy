@@ -532,6 +532,12 @@ impl Mono<'_> {
                     self.walk_expr(a, scope);
                 }
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                self.walk_expr(receiver, scope);
+                for (_, a) in args.iter_mut() {
+                    self.walk_expr(a, scope);
+                }
+            }
             Expr::Record { fields, spread, .. } => {
                 for (_, v) in fields.iter_mut() {
                     self.walk_expr(v, scope);

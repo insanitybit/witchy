@@ -444,6 +444,12 @@ fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
                 collect_refs_expr(a, out);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            collect_refs_expr(receiver, out);
+            for (_, a) in args {
+                collect_refs_expr(a, out);
+            }
+        }
         Expr::Var(name) => {
             out.insert(name.clone());
         }

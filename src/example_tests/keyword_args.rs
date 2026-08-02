@@ -100,17 +100,31 @@ use crate::{parser, typeck};
         );
     }
 
-    /// (RFC-0056 v1) Keyword labels are excluded on UFCS method calls — the method
-    /// callee resolves later (by receiver type, in traits.rs), so labels have no
-    /// declaration to bind against yet. Rejected at parse time.
+    /// (RFC-0113) UFCS method-call labels are now resolved against the concrete
+    /// method declaration after receiver resolution and rewritten to positional args.
     #[test]
-    fn keyword_args_method_label_is_error() {
-        let src = "fn main(console: Console):\n    let s = \"hello\"\n    console.print(s.substring(start: 1))\n";
-        let err = parser::parse_module(src).expect_err("method-call label must be rejected");
-        assert!(
-            format!("{err:?}").contains("not supported on method calls"),
-            "{err:?}"
-        );
+    fn keyword_args_method_label_rewrite_backends_agree() {
+        let src = "type Boxy:\n    base: Int\n\nimpl Boxy:\n    fn sum(self, a: Int, b: Int = 2) -> Int:\n        self.base + a + b\n\nfn main(console: Console):\n    let b = Boxy(10)\n    console.print(\"${b.sum(a: 5)}\")\n    console.print(\"${b.sum(b: 7, a: 8)}\")\n";
+        let expected = ["17", "25"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// (RFC-0113) Labeled method arguments still validate declaration names and
+    /// arity after receiver resolution.
+    #[test]
+    fn keyword_args_method_label_invalid_binding_is_link_error() {
+        let src = "type Boxy:\n    base: Int\n\nimpl Boxy:\n    fn sum(self, a: Int, b: Int) -> Int:\n        self.base + a + b\n\nfn main(console: Console):\n    let b = Boxy(10)\n    console.print(\"${b.sum(a: 5, x: 6)}\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let err = crate::pipeline::link(vec![("main".into(), module)], "main")
+            .expect_err("unknown method label must fail link");
+        assert!(format!("{err}").contains("has no parameter `x`"), "{err}");
+
+        let src = "type Boxy:\n    base: Int\n\nimpl Boxy:\n    fn sum(self, a: Int, b: Int) -> Int:\n        self.base + a + b\n\nfn main(console: Console):\n    let b = Boxy(10)\n    console.print(\"${b.sum(a: 5)}\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let err = crate::pipeline::link(vec![("main".into(), module)], "main")
+            .expect_err("missing method argument should fail link");
+        assert!(format!("{err}").contains("missing argument `b`"), "{err}");
     }
 
     /// (RFC-0056) A missing argument with no default is a link error naming the

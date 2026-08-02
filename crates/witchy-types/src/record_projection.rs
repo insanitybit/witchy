@@ -128,6 +128,12 @@ fn rewrite_expr(
                 rewritten += rewrite_expr(argument, table, counter)?;
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            rewritten += rewrite_expr(receiver, table, counter)?;
+            for (_, argument) in args {
+                rewritten += rewrite_expr(argument, table, counter)?;
+            }
+        }
         Expr::LabeledCall { args, .. } => {
             for (_, argument) in args {
                 rewritten += rewrite_expr(argument, table, counter)?;

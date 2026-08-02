@@ -1748,6 +1748,7 @@ fn local_expr_type(
         Expr::AnonCtor { .. }
         | Expr::LabeledCall { .. }
         | Expr::MethodCall { .. }
+        | Expr::LabeledMethodCall { .. }
         | Expr::If { .. }
         | Expr::Match { .. }
         | Expr::Block(_)
@@ -2372,6 +2373,12 @@ impl Ctx<'_> {
                     self.rewrite_expr(a, scope);
                 }
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                self.rewrite_expr(receiver, scope);
+                for (_, a) in args.iter_mut() {
+                    self.rewrite_expr(a, scope);
+                }
+            }
             Expr::Record { fields, spread, .. } => {
                 for (_, v) in fields.iter_mut() {
                     self.rewrite_expr(v, scope);
@@ -2923,6 +2930,9 @@ fn expr_needs_lowering(e: &Expr) -> bool {
             args.iter().any(expr_needs_lowering)
         }
         Expr::LabeledCall { args, .. } => args.iter().any(|(_, a)| expr_needs_lowering(a)),
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            expr_needs_lowering(receiver) || args.iter().any(|(_, a)| expr_needs_lowering(a))
+        }
         Expr::Apply { func, args } => {
             expr_needs_lowering(func) || args.iter().any(expr_needs_lowering)
         }
@@ -3602,6 +3612,12 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<String, Type>) {
                 subst_expr_types(a, subst);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            subst_expr_types(receiver, subst);
+            for (_, a) in args {
+                subst_expr_types(a, subst);
+            }
+        }
         Expr::ExistentialCall {
             receiver,
             args,
@@ -3769,6 +3785,12 @@ fn collect_function_refs(f: &Function, out: &mut HashSet<String>) {
             Expr::MethodCall { receiver, args, .. } => {
                 walk(receiver, locals, out);
                 for a in args {
+                    walk(a, locals, out);
+                }
+            }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                walk(receiver, locals, out);
+                for (_, a) in args {
                     walk(a, locals, out);
                 }
             }
@@ -4005,6 +4027,12 @@ fn rename_calls_block(
                         *name = to.clone();
                     }
                 }
+                for (_, a) in args {
+                    walk_expr(a, scope, ctx);
+                }
+            }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                walk_expr(receiver, scope, ctx);
                 for (_, a) in args {
                     walk_expr(a, scope, ctx);
                 }

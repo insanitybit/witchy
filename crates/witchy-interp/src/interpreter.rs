@@ -1951,6 +1951,11 @@ impl Interpreter {
             Expr::LabeledCall { name, .. } => {
                 unreachable!("unresolved labeled call `{name}` reached the interpreter")
             }
+            // (RFC-0113) Resolved to a positional `MethodCall`/`Block` by
+            // `witchy_syntax::keyword_args` at the link layer, before evaluation.
+            Expr::LabeledMethodCall { method, .. } => {
+                unreachable!("unresolved labeled method call `.{method}` reached the interpreter")
+            }
             Expr::Int(n) | Expr::Duration(n) => Ok(Value::Int(*n)),
             Expr::Float(x) => Ok(Value::Float(*x)),
             Expr::Str(s) => Ok(Value::str(s.as_str())),

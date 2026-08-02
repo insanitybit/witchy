@@ -3266,6 +3266,12 @@ fn walk_expr<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
             args.iter().for_each(|a| walk_expr(a, f))
         }
         Expr::LabeledCall { args, .. } => args.iter().for_each(|(_, a)| walk_expr(a, f)),
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            walk_expr(receiver, f);
+            for (_, argument) in args {
+                walk_expr(argument, f);
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             walk_expr(receiver, f);
             args.iter().for_each(|a| walk_expr(a, f));

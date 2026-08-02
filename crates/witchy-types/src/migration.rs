@@ -385,6 +385,12 @@ fn walk_expr(
                 walk_expr(arg, function, line, nested_position, signatures, mutable, census);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            walk_expr(receiver, function, line, nested_position, signatures, mutable, census);
+            for (_, arg) in args {
+                walk_expr(arg, function, line, nested_position, signatures, mutable, census);
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             walk_expr(receiver, function, line, nested_position, signatures, mutable, census);
             for arg in args {
@@ -553,6 +559,12 @@ fn find_call(expr: &Expr, visit: &mut impl FnMut(&str)) {
             }
         }
         Expr::LabeledCall { args, .. } => {
+            for (_, value) in args {
+                find_call(value, visit);
+            }
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            find_call(receiver, visit);
             for (_, value) in args {
                 find_call(value, visit);
             }

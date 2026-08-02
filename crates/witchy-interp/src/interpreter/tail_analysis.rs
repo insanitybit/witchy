@@ -146,6 +146,12 @@ fn collect_nested_returns_expr(expr: &Expr, out: &mut FxHashSet<String>) {
                 collect_nested_returns_expr(arg, out);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            collect_nested_returns_expr(receiver, out);
+            for (_, arg) in args {
+                collect_nested_returns_expr(arg, out);
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             collect_nested_returns_expr(receiver, out);
             for arg in args {

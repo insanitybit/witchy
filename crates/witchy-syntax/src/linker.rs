@@ -1289,6 +1289,12 @@ fn reclassify_expr_members(
                 reclassify_expr_members(argument, imports, bound);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            reclassify_expr_members(receiver, imports, bound);
+            for (_, argument) in args {
+                reclassify_expr_members(argument, imports, bound);
+            }
+        }
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
         | Expr::AnonCtor { args, .. }
@@ -2341,6 +2347,12 @@ fn resolve_in_expr(
                 resolve_in_expr(a, sig, by_base, vars);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            resolve_in_expr(receiver, sig, by_base, vars);
+            for (_, a) in args.iter_mut() {
+                resolve_in_expr(a, sig, by_base, vars);
+            }
+        }
         Expr::Apply { func, args } => {
             resolve_in_expr(func, sig, by_base, vars);
             for a in args.iter_mut() {
@@ -2815,6 +2827,12 @@ fn rewrite_expr(
                 rewrite_expr(a, context, line)?;
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            rewrite_expr(receiver, context, line)?;
+            for (_, a) in args {
+                rewrite_expr(a, context, line)?;
+            }
+        }
         Expr::WhileLet { pattern, scrutinee, body } => {
             rewrite_expr(scrutinee, context, line)?;
             let mut nested_bound = bound.clone();
@@ -3124,6 +3142,12 @@ fn seal_expr(
         Expr::MethodCall { receiver, args, .. } => {
             seal_expr(receiver, sealed, home, allow_test_sealed_type_construction)?;
             for a in args {
+                seal_expr(a, sealed, home, allow_test_sealed_type_construction)?;
+            }
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            seal_expr(receiver, sealed, home, allow_test_sealed_type_construction)?;
+            for (_, a) in args {
                 seal_expr(a, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
@@ -3718,6 +3742,12 @@ fn check_reserved_expr(
             }
         }
         Expr::LabeledCall { args, .. } => {
+            for (_, arg) in args {
+                check_reserved_expr(module_name, arg, line, generated_anon_types)?;
+            }
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            check_reserved_expr(module_name, receiver, line, generated_anon_types)?;
             for (_, arg) in args {
                 check_reserved_expr(module_name, arg, line, generated_anon_types)?;
             }

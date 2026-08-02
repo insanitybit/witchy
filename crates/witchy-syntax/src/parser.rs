@@ -1902,22 +1902,22 @@ impl Parser {
                         // `method(receiver, args)` (the method name resolves to a
                         // same-module or imported function in the linker). Kept as
                         // a node so the formatter can print it back. Method callees
-                        // resolve LATER (traits.rs), so keyword labels are excluded
-                        // here in v1 (RFC-0056): a label on one is a compile error.
+                        // resolve LATER (traits.rs). Keyword labels are now kept
+                        // as `LabeledMethodCall` and rewritten after UFCS resolution.
                         receiver => {
                             if args.iter().any(|(l, _)| l.is_some()) {
-                                return Err(self.error(format!(
-                                    "keyword labels are not supported on method calls yet \
-                                     (RFC-0056 v1): `{member}` is resolved by the receiver's \
-                                     type after linking. Write it as a direct call, e.g. \
-                                     `module.{member}(...)`, to label its arguments"
-                                )));
+                                e = Expr::LabeledMethodCall {
+                                    receiver: Box::new(receiver),
+                                    method: member,
+                                    args,
+                                };
+                            } else {
+                                e = Expr::MethodCall {
+                                    receiver: Box::new(receiver),
+                                    method: member,
+                                    args: unlabel(args),
+                                };
                             }
-                            e = Expr::MethodCall {
-                                receiver: Box::new(receiver),
-                                method: member,
-                                args: unlabel(args),
-                            };
                         }
                     }
                 } else {
@@ -3283,6 +3283,12 @@ impl Parser {
                     Self::collect_quote_expr_holes(x, holes);
                 }
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                Self::collect_quote_expr_holes(receiver, holes);
+                for (_, x) in args {
+                    Self::collect_quote_expr_holes(x, holes);
+                }
+            }
             Expr::Apply { func, args } => {
                 Self::collect_quote_expr_holes(func, holes);
                 for x in args {
@@ -3642,13 +3648,13 @@ impl Parser {
         }
     }
 
-    /// Parse a call's argument list, allowing RFC-0056 keyword labels: an
+    /// Parse a call's argument list, allowing keyword labels: an
     /// argument is either positional (`expr`) or labeled (`ident: expr`). A
     /// positional argument after a labeled one is a parse error (rule 2: positional
     /// prefix, labeled suffix). The caller decides whether labels are meaningful
-    /// for the callee shape (direct call vs value/method call). `ident: expr` is
-    /// unambiguous inside call parens: lambdas begin with `fn`, there is no ternary
-    /// or slice colon, and dict/record colons live in braces / `.{…}`.
+    /// for the callee shape (direct call vs method call vs value call). `ident:
+    /// expr` is unambiguous inside call parens: lambdas begin with `fn`, there is no
+    /// ternary or slice colon, and dict/record colons live in braces / `.{…}`.
     fn call_args_labeled(&mut self) -> Result<Vec<(Option<String>, Expr)>, ParseError> {
         self.expect(&Tok::LParen)?;
         let mut args: Vec<(Option<String>, Expr)> = Vec::new();
@@ -4595,6 +4601,12 @@ fn lower_sugar_expr(e: &mut Expr) {
                 lower_sugar_expr(a);
             }
             *e = desugar_method((**receiver).clone(), method.clone(), std::mem::take(args));
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            lower_sugar_expr(receiver);
+            for (_, a) in args.iter_mut() {
+                lower_sugar_expr(a);
+            }
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
         | Expr::Var(_) | Expr::TaggedLit { .. } => {}

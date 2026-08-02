@@ -1514,6 +1514,12 @@ impl<'a> Scope<'a> {
                     self.resolve_expr(a)?;
                 }
             }
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                self.resolve_expr(receiver)?;
+                for (_, a) in args {
+                    self.resolve_expr(a)?;
+                }
+            }
             Expr::Apply { func, args } => {
                 if let Expr::Var(name) = func.as_ref()
                     && let Some(target) = crate::linker::call_site_expr_target(name)
@@ -2190,6 +2196,12 @@ fn resolve_residual_expr(
             }
         }
         Expr::LabeledCall { args, .. } => {
+            for (_, a) in args {
+                resolve_residual_expr(a, by_suffix)?;
+            }
+        }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            resolve_residual_expr(receiver, by_suffix)?;
             for (_, a) in args {
                 resolve_residual_expr(a, by_suffix)?;
             }

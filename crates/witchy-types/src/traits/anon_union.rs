@@ -238,6 +238,12 @@ fn collect_anon_union_heads_expr(expr: &Expr, out: &mut HashMap<String, usize>) 
                 collect_anon_union_heads_expr(item, out);
             }
         }
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            collect_anon_union_heads_expr(receiver, out);
+            for (_, arg) in args {
+                collect_anon_union_heads_expr(arg, out);
+            }
+        }
         Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {
             for arg in args {
                 collect_anon_union_heads_expr(arg, out);
