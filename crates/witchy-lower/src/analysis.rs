@@ -3125,8 +3125,7 @@ enum NoCopyProof {
     Available,
     Unavailable(String),
     /// A first-class callable whose listed parameters promise no-copy var
-    /// update-and-extract. The current indirect ABI does not carry capacity
-    /// tokens, so invoking one is diagnosed rather than silently copying.
+    /// update-and-extract, plus whether its result returns ownership state.
     Callable { required: Vec<usize>, unique_result: bool },
 }
 
@@ -3402,6 +3401,19 @@ impl<'a> NoCopyWalker<'a> {
             match stmt {
                 Stmt::Let { name, value, .. } => {
                     let proof = self.expr(value, stmt, env);
+                    // The general uniqueness facts only track roots that the
+                    // syntax exposes as direct accumulator call operands. A
+                    // first-class no-copy call hides that shape behind a local
+                    // callable, so invalidate an available proof here as well
+                    // when a plain binding creates a live whole-value alias.
+                    if let Expr::Var(root) = value
+                        && matches!(env.get(root), Some(NoCopyProof::Available))
+                    {
+                        env.insert(
+                            root.clone(),
+                            NoCopyProof::Unavailable("bound to a new name".to_string()),
+                        );
+                    }
                     shadowed.entry(name.clone()).or_insert_with(|| env.get(name).cloned());
                     env.insert(name.clone(), proof);
                 }
@@ -3501,7 +3513,7 @@ impl<'a> NoCopyWalker<'a> {
                 if let Some(NoCopyProof::Callable { required, unique_result }) =
                     env.get(name).cloned()
                 {
-                    self.record_indirect_misses(args, &required);
+                    self.record_indirect_misses(args, &required, stmt, env);
                     indirect_unique_result = unique_result;
                 }
                 if let Some(indices) = self.required.get(name) {
@@ -3576,12 +3588,10 @@ impl<'a> NoCopyWalker<'a> {
                         env.insert(root, NoCopyProof::Available);
                     }
                 }
-                if indirect_unique_result {
-                    NoCopyProof::Unavailable(
-                        "the first-class call ABI does not carry a unique result's ownership-capacity token"
-                            .to_string(),
-                    )
-                } else if no_copy_fresh(expr) || self.unique_results.contains(name) {
+                if indirect_unique_result
+                    || no_copy_fresh(expr)
+                    || self.unique_results.contains(name)
+                {
                     NoCopyProof::Available
                 } else {
                     NoCopyProof::Unavailable(format!(
@@ -3620,12 +3630,9 @@ impl<'a> NoCopyWalker<'a> {
                     let _ = self.expr(arg, stmt, env);
                 }
                 if let NoCopyProof::Callable { required, unique_result } = callable {
-                    self.record_indirect_misses(args, &required);
+                    self.record_indirect_misses(args, &required, stmt, env);
                     if unique_result {
-                        return NoCopyProof::Unavailable(
-                            "the first-class call ABI does not carry a unique result's ownership-capacity token"
-                                .to_string(),
-                        );
+                        return NoCopyProof::Available;
                     }
                 }
                 NoCopyProof::Unavailable("an indirect call has no declared no-copy proof".to_string())
@@ -3769,18 +3776,74 @@ impl<'a> NoCopyWalker<'a> {
         *env = merge_no_copy_env(&before, &[before.clone(), second]);
     }
 
-    fn record_indirect_misses(&mut self, args: &[Expr], indices: &[usize]) {
+    fn record_indirect_misses(
+        &mut self,
+        args: &[Expr],
+        indices: &[usize],
+        stmt: &Stmt,
+        env: &mut HashMap<String, NoCopyProof>,
+    ) {
         for &index in indices {
             let Some(arg) = args.get(index) else { continue };
-            let root = expr_root(arg).unwrap_or("<computed value>");
-            self.misses.push(NoCopyMiss {
-                function: self.function.clone(),
-                callee: "indirect function".to_string(),
-                var: root.to_string(),
-                line: self.line,
-                reason: "the first-class call ABI does not carry an ownership-capacity token"
-                    .to_string(),
-            });
+            let root = match arg {
+                Expr::Var(root) => root,
+                Expr::Field { base, .. } | Expr::Index { base, .. } => {
+                    let root = expr_root(base).unwrap_or("<computed place>");
+                    self.misses.push(NoCopyMiss {
+                        function: self.function.clone(),
+                        callee: "indirect function".to_string(),
+                        var: root.to_string(),
+                        line: self.line,
+                        reason: "a nested place has no independent ownership-capacity token"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                _ => {
+                    self.misses.push(NoCopyMiss {
+                        function: self.function.clone(),
+                        callee: "indirect function".to_string(),
+                        var: "<computed value>".to_string(),
+                        line: self.line,
+                        reason: "the argument is not a directly tracked mutable binding"
+                            .to_string(),
+                    });
+                    continue;
+                }
+            };
+            let reason = self
+                .loans
+                .active_at(stmt)
+                .iter()
+                .find(|loan| loan.owner == *root)
+                .map(|loan| {
+                    format!(
+                        "it is actively loaned to view `{}` by `{}`",
+                        loan.view, loan.origin
+                    )
+                })
+                .or_else(|| env.get(root).and_then(NoCopyProof::reason).map(ToOwned::to_owned))
+                .or_else(|| {
+                    self.facts.kill_reason_after(stmt, root).map(|reason| {
+                        format!(
+                            "this statement also shares the binding ({reason}); split the operations into separate statements so ownership at the call is explicit"
+                        )
+                    })
+                })
+                .or_else(|| {
+                    (!env.contains_key(root))
+                        .then(|| "the binding has no tracked ownership-capacity token".to_string())
+                });
+            if let Some(reason) = reason {
+                self.misses.push(NoCopyMiss {
+                    function: self.function.clone(),
+                    callee: "indirect function".to_string(),
+                    var: root.clone(),
+                    line: self.line,
+                    reason,
+                });
+            }
+            env.insert(root.clone(), NoCopyProof::Available);
         }
     }
 }
@@ -4040,13 +4103,22 @@ mod no_copy_tests {
     }
 
     #[test]
-    fn indirect_no_copy_call_rejects_until_the_abi_carries_capacity() {
+    fn indirect_no_copy_call_preserves_capacity_proof() {
         let found = misses(
             "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
              \nfn indirect() -> Nil:\n    var xs = [1]\n    let f = take\n    f(xs)\n    return\n",
         );
-        assert_eq!(found.len(), 1, "the indirect ABI cannot honor the promise: {found:?}");
-        assert!(found[0].reason.contains("first-class call ABI"), "{found:?}");
+        assert!(found.is_empty(), "the indirect ABI carries the proof: {found:?}");
+    }
+
+    #[test]
+    fn indirect_no_copy_call_still_rejects_an_alias() {
+        let found = misses(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn indirect() -> Nil:\n    var xs = [1]\n    let f = take\n    let alias = xs\n    f(xs)\n    let _ = alias\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "the alias must invalidate the proof: {found:?}");
+        assert!(found[0].reason.contains("bound to a new name"), "{found:?}");
     }
 
     #[test]
@@ -4089,14 +4161,13 @@ mod no_copy_tests {
     }
 
     #[test]
-    fn indirect_unique_result_does_not_claim_a_token_the_abi_dropped() {
+    fn indirect_unique_result_supplies_the_next_no_copy_proof() {
         let found = misses(
             "fn build() -> unique List(Int):\n    [1]\n\
              \nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\
              \nfn indirect() -> Nil:\n    let f = build\n    var xs = f()\n    take(xs)\n    return\n",
         );
-        assert_eq!(found.len(), 1, "the later no-copy call must reject: {found:?}");
-        assert!(found[0].reason.contains("unique result"), "{found:?}");
+        assert!(found.is_empty(), "the indirect result carries ownership state: {found:?}");
     }
 
     #[test]

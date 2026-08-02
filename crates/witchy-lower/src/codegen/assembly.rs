@@ -1153,6 +1153,19 @@ fn build_existential_adapter_funcs(
                 })
             })?;
             let name = format!("__dynw{}_{}", witness.id, slot_index);
+            let var_capacity_args: Vec<usize> = slot
+                .params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, ty)| {
+                    (slot.conventions.get(index) == Some(&Convention::Var)
+                        && type_has_capacity_token(ty))
+                    .then_some(index)
+                })
+                .collect();
+            let unique_capacity_result = type_is_unique_capacity(&slot.result);
+            let receiver_capacity = slot.receiver == Convention::Var
+                && type_has_capacity_token(&witness.concrete);
             let mut params = vec![WirLocal {
                 name: "receiver".to_string(),
                 ty: WirTy::StructRef,
@@ -1161,6 +1174,12 @@ fn build_existential_adapter_funcs(
                 params.push(WirLocal {
                     name: format!("arg{argument_index}"),
                     ty: Codegen::wir_ty_for_kind(cg.kind_for_type(ty)),
+                });
+            }
+            for index in &var_capacity_args {
+                params.push(WirLocal {
+                    name: format!("arg{index}__cap"),
+                    ty: WirTy::Bool,
                 });
             }
             let wrapped = E::RefCast {
@@ -1184,6 +1203,14 @@ fn build_existential_adapter_funcs(
             args.extend((0..slot.params.len()).map(|argument_index| {
                 E::GetLocal(format!("arg{argument_index}"))
             }));
+            if receiver_capacity {
+                args.push(E::ConstI32(0));
+            }
+            args.extend(
+                var_capacity_args
+                    .iter()
+                    .map(|index| E::GetLocal(format!("arg{index}__cap"))),
+            );
             let result_ty = Codegen::wir_ty_for_kind(cg.kind_for_type(&slot.result));
             let mut locals = Vec::new();
             let mut body = Vec::new();
@@ -1194,10 +1221,20 @@ fn build_existential_adapter_funcs(
                 .enumerate()
                 .filter_map(|(index, convention)| (*convention == Convention::Var).then_some(index))
                 .collect();
-            if slot.receiver == Convention::Var || !var_args.is_empty() {
+            if slot.receiver != Convention::Own
+                && (slot.receiver == Convention::Var
+                    || !var_args.is_empty()
+                    || unique_capacity_result)
+            {
                 let result_local = format!("__dynw{0}_{1}_result", witness.id, slot_index);
                 locals.push(WirLocal { name: result_local.clone(), ty: result_ty });
                 let mut dests = vec![result_local.clone()];
+                let unique_cap_local = unique_capacity_result.then(|| {
+                    let local = format!("__dynw{0}_{1}_unique_cap", witness.id, slot_index);
+                    locals.push(WirLocal { name: local.clone(), ty: WirTy::Bool });
+                    dests.push(local.clone());
+                    local
+                });
                 let payload_local = format!("__dynw{0}_{1}_payload", witness.id, slot_index);
                 if slot.receiver == Convention::Var {
                     locals.push(WirLocal {
@@ -1214,12 +1251,28 @@ fn build_existential_adapter_funcs(
                     dests.push(local.clone());
                     var_locals.push((local, ty));
                 }
+                if receiver_capacity {
+                    let local = format!("__dynw{0}_{1}_receiver_cap", witness.id, slot_index);
+                    locals.push(WirLocal { name: local.clone(), ty: WirTy::Bool });
+                    dests.push(local);
+                }
+                let mut cap_locals = Vec::new();
+                for index in &var_capacity_args {
+                    let local = format!("__dynw{0}_{1}_arg{index}_cap", witness.id, slot_index);
+                    locals.push(WirLocal { name: local.clone(), ty: WirTy::Bool });
+                    dests.push(local.clone());
+                    cap_locals.push(local);
+                }
                 body.push(N::CallStoreMulti {
                     func: slot.adapter.clone(),
                     args,
                     dests,
                 });
                 body.push(N::Push(E::GetLocal(result_local)));
+                if let Some(local) = unique_cap_local {
+                    body.push(N::Push(E::GetLocal(local)));
+                    ret.push(WirTy::Bool);
+                }
                 if slot.receiver == Convention::Var {
                     body.push(N::Push(E::StructNew {
                         struct_id: EXISTENTIAL_WRAPPER_ID,
@@ -1241,21 +1294,43 @@ fn build_existential_adapter_funcs(
                     body.push(N::Push(E::GetLocal(local)));
                     ret.push(ty);
                 }
+                for local in cap_locals {
+                    body.push(N::Push(E::GetLocal(local)));
+                    ret.push(WirTy::Bool);
+                }
             } else if slot.receiver == Convention::Own {
                 // The public existential ABI consumes just the erased receiver.
                 // Its concrete own-ABI token is internal to the adapter: no
                 // existential payload is reconstructed after an owning call.
-                if cg.summaries.own_abi(&slot.adapter).is_some() {
+                let has_own_state = cg.summaries.own_abi(&slot.adapter).is_some();
+                if has_own_state || unique_capacity_result {
                     let result_local = format!("__dynw{0}_{1}_result", witness.id, slot_index);
                     locals.push(WirLocal { name: result_local.clone(), ty: result_ty });
-                    args.push(E::ConstI32(0));
+                    let mut dests = vec![result_local.clone()];
+                    let unique_cap_local = unique_capacity_result.then(|| {
+                        let local = format!("__dynw{0}_{1}_unique_cap", witness.id, slot_index);
+                        locals.push(WirLocal { name: local.clone(), ty: WirTy::Bool });
+                        dests.push(local.clone());
+                        local
+                    });
+                    if has_own_state {
+                        args.push(E::ConstI32(0));
+                        locals.push(WirLocal {
+                            name: "__dynw_owncap".to_string(),
+                            ty: WirTy::Bool,
+                        });
+                        dests.push("__dynw_owncap".to_string());
+                    }
                     body.push(N::CallStoreMulti {
                         func: slot.adapter.clone(),
                         args,
-                        dests: vec![result_local.clone(), "__dynw_owncap".to_string()],
+                        dests,
                     });
                     body.push(N::Push(E::GetLocal(result_local)));
-                    locals.push(WirLocal { name: "__dynw_owncap".to_string(), ty: WirTy::Bool });
+                    if let Some(local) = unique_cap_local {
+                        body.push(N::Push(E::GetLocal(local)));
+                        ret.push(WirTy::Bool);
+                    }
                 } else {
                     body.push(N::Push(E::Call { func: slot.adapter.clone(), args }));
                 }

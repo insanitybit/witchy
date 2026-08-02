@@ -205,11 +205,32 @@ impl<'types> Codegen<'types> {
                 let mut operand_kinds = Vec::with_capacity(args.len() + 1);
                 operand_kinds.push(Kind::GcRef(EXISTENTIAL_WRAPPER_ID));
                 operand_kinds.extend(args.iter().map(|arg| self.kind_of(arg)));
+                let ownership = ClosureOwnershipEnvelope {
+                    own_capacity_param: None,
+                    var_capacity_params: operands
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, operand)| {
+                            (conventions.get(index) == Some(&Convention::Var)
+                                && self
+                                    .ast_type_of_expr(operand)
+                                    .as_ref()
+                                    .is_some_and(type_has_capacity_token))
+                            .then_some(index)
+                        })
+                        .collect(),
+                    unique_capacity_result: type_is_unique_capacity(result),
+                };
                 self.existential_call_level = level + 1;
-                let lowered =
-                    self.lower_closure_args(&operands, conventions, &operand_kinds, true);
+                let lowered = self.lower_closure_args(
+                    &operands,
+                    conventions,
+                    &operand_kinds,
+                    true,
+                    &ownership,
+                );
                 self.existential_call_level = level;
-                let (mut lowered_operands, writebacks) = lowered?;
+                let (mut lowered_operands, writebacks, capacity_dests) = lowered?;
                 let receiver_value = lowered_operands.remove(0);
                 let receiver_tmp = existential_call_scratch(level);
                 let result_kind = self.kind_for_type(result);
@@ -217,6 +238,12 @@ impl<'types> Codegen<'types> {
                 call_args.extend(lowered_operands);
                 let mut signature_params = vec![witchy_wir::wir::Kind::StructRef];
                 signature_params.extend(args.iter().map(|arg| Self::wir_kind(self.kind_of(arg))));
+                signature_params.extend(
+                    ownership
+                        .var_capacity_params
+                        .iter()
+                        .map(|_| witchy_wir::wir::Kind::I32),
+                );
                 let witness_id = W::StructGet {
                     struct_id: EXISTENTIAL_WRAPPER_ID,
                     field: 1,
@@ -234,17 +261,29 @@ impl<'types> Codegen<'types> {
                     rhs: Box::new(W::ConstI32(i32::try_from(*slot).ok()?)),
                 };
                 let mut seq = vec![N::SetLocal { local: receiver_tmp, value: receiver_value }];
-                if !writebacks.is_empty() {
+                if !writebacks.is_empty() || ownership.has_state() {
                     let mut results = vec![Self::wir_kind(result_kind)];
-                    let mut dests = vec![call_result_tmp(result_kind)];
+                    if ownership.unique_capacity_result {
+                        results.push(witchy_wir::wir::Kind::I32);
+                    }
                     results.extend(
                         writebacks
                             .iter()
                             .map(|(_, kind, _)| Self::wir_kind(*kind)),
                     );
-                    dests.extend(writebacks.iter().enumerate().map(
-                        |(index, (_, kind, _))| var_scratch("result", index, *kind),
-                    ));
+                    results.extend(
+                        ownership
+                            .var_capacity_params
+                            .iter()
+                            .map(|_| witchy_wir::wir::Kind::I32),
+                    );
+                    let dests = Self::closure_call_dests(
+                        result_kind,
+                        true,
+                        &writebacks,
+                        &capacity_dests,
+                        &ownership,
+                    );
                     let call = N::CallIndirectStoreMulti {
                         signature: witchy_wir::wir::ClosureSignature {
                             params: signature_params,
@@ -450,6 +489,7 @@ impl<'types> Codegen<'types> {
                 let param_kinds = self.closure_param_kinds(func);
                 let recover_kind = self.apply_ret_kind(func);
                 let typed_abi = Self::closure_uses_typed_abi(&param_kinds, recover_kind);
+                let ownership = self.closure_ownership_envelope(func);
                 // (RFC-0062 tier-1) An ELIDED closure applied by name: no closure pointer to
                 // stash — thread captures (from their locals) as leading arg slots to a direct
                 // `call $__lamt{i}`.
@@ -467,11 +507,16 @@ impl<'types> Codegen<'types> {
                                 }
                             })
                             .collect();
-                        let (arg_slots, writebacks) =
-                            self.lower_closure_args(args, &conventions, &param_kinds, typed_abi)?;
+                        let (arg_slots, writebacks, capacity_dests) = self.lower_closure_args(
+                            args,
+                            &conventions,
+                            &param_kinds,
+                            typed_abi,
+                            &ownership,
+                        )?;
                         call_args.extend(arg_slots);
                         self.apply_level = level;
-                        if writebacks.is_empty() {
+                        if writebacks.is_empty() && !ownership.has_state() {
                             let call = W::Call { func: format!("__lamt{idx}"), args: call_args };
                             return Some(if typed_abi {
                                 call
@@ -479,18 +524,13 @@ impl<'types> Codegen<'types> {
                                 W::FromSlot(Box::new(call), Self::wir_kind(recover_kind))
                             });
                         }
-                        let mut dests = vec![if typed_abi {
-                            call_result_tmp(recover_kind)
-                        } else {
-                            MATCH_TMP.to_string()
-                        }];
-                        dests.extend(writebacks.iter().enumerate().map(|(index, (_, kind, scratch))| {
-                            if typed_abi {
-                                var_scratch("result", index, *kind)
-                            } else {
-                                scratch.clone()
-                            }
-                        }));
+                        let dests = Self::closure_call_dests(
+                            recover_kind,
+                            typed_abi,
+                            &writebacks,
+                            &capacity_dests,
+                            &ownership,
+                        );
                         let call = N::CallStoreMulti {
                             func: format!("__lamt{idx}"),
                             args: call_args,
@@ -508,8 +548,13 @@ impl<'types> Codegen<'types> {
                 let tmp = format!("__witchy_call_{level}");
                 let fcode = self.lower_expr(func)?;
                 self.apply_level = level + 1;
-                let (arg_slots, writebacks) =
-                    self.lower_closure_args(args, &conventions, &param_kinds, typed_abi)?;
+                let (arg_slots, writebacks, capacity_dests) = self.lower_closure_args(
+                    args,
+                    &conventions,
+                    &param_kinds,
+                    typed_abi,
+                    &ownership,
+                )?;
                 self.apply_level = level;
                 self.clos_arities.insert(n);
                 let mut ci_args = vec![W::GetLocal(tmp.clone())];
@@ -517,25 +562,21 @@ impl<'types> Codegen<'types> {
                 // (RFC-0034 L3) Devirtualize an apply whose callee is a single-bound,
                 // never-reassigned closure var: a direct `call $__lamw{i}` (env stays
                 // the stashed closure pointer), skipping the runtime code-index load.
-                if !writebacks.is_empty() {
-                    let mut dests = vec![if typed_abi {
-                        call_result_tmp(recover_kind)
-                    } else {
-                        MATCH_TMP.to_string()
-                    }];
-                    dests.extend(writebacks.iter().enumerate().map(|(index, (_, kind, scratch))| {
-                        if typed_abi {
-                            var_scratch("result", index, *kind)
-                        } else {
-                            scratch.clone()
-                        }
-                    }));
+                if !writebacks.is_empty() || ownership.has_state() {
+                    let dests = Self::closure_call_dests(
+                        recover_kind,
+                        typed_abi,
+                        &writebacks,
+                        &capacity_dests,
+                        &ownership,
+                    );
                     let signature = Self::closure_signature(
                         n,
                         &param_kinds,
                         recover_kind,
                         &writebacks,
                         typed_abi,
+                        &ownership,
                     );
                     let call = match func.as_ref() {
                         Expr::Var(fname) if self.devirt_index.contains_key(fname) => {
@@ -576,6 +617,7 @@ impl<'types> Codegen<'types> {
                             recover_kind,
                             &[],
                             typed_abi,
+                            &ownership,
                         ),
                         args: ci_args,
                         index: Box::new(W::StructGet {
@@ -1867,6 +1909,7 @@ impl<'types> Codegen<'types> {
                     let param_kinds = self.closure_param_kinds(&func_expr);
                     let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
                     let typed_abi = Self::closure_uses_typed_abi(&param_kinds, rk);
+                    let ownership = self.closure_ownership_envelope(&func_expr);
                     let mut call_args: Vec<W> = caps
                         .iter()
                         .map(|(cn, ck)| {
@@ -1878,10 +1921,15 @@ impl<'types> Codegen<'types> {
                             }
                         })
                         .collect();
-                    let (arg_slots, writebacks) =
-                        self.lower_closure_args(args, &conventions, &param_kinds, typed_abi)?;
+                    let (arg_slots, writebacks, capacity_dests) = self.lower_closure_args(
+                        args,
+                        &conventions,
+                        &param_kinds,
+                        typed_abi,
+                        &ownership,
+                    )?;
                     call_args.extend(arg_slots);
-                    if writebacks.is_empty() {
+                    if writebacks.is_empty() && !ownership.has_state() {
                         let call = W::Call { func: format!("__lamt{idx}"), args: call_args };
                         return Some(if typed_abi {
                             call
@@ -1889,18 +1937,13 @@ impl<'types> Codegen<'types> {
                             W::FromSlot(Box::new(call), Self::wir_kind(rk))
                         });
                     }
-                    let mut dests = vec![if typed_abi {
-                        call_result_tmp(rk)
-                    } else {
-                        MATCH_TMP.to_string()
-                    }];
-                    dests.extend(writebacks.iter().enumerate().map(|(index, (_, kind, scratch))| {
-                        if typed_abi {
-                            var_scratch("result", index, *kind)
-                        } else {
-                            scratch.clone()
-                        }
-                    }));
+                    let dests = Self::closure_call_dests(
+                        rk,
+                        typed_abi,
+                        &writebacks,
+                        &capacity_dests,
+                        &ownership,
+                    );
                     let call = N::CallStoreMulti {
                         func: format!("__lamt{idx}"),
                         args: call_args,
@@ -1919,9 +1962,15 @@ impl<'types> Codegen<'types> {
                     let param_kinds = self.closure_param_kinds(&func_expr);
                     let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
                     let typed_abi = Self::closure_uses_typed_abi(&param_kinds, rk);
+                    let ownership = self.closure_ownership_envelope(&func_expr);
                     let mut ci_args: Vec<W> = vec![W::GetLocal(name.to_string())];
-                    let (arg_slots, writebacks) =
-                        self.lower_closure_args(args, &conventions, &param_kinds, typed_abi)?;
+                    let (arg_slots, writebacks, capacity_dests) = self.lower_closure_args(
+                        args,
+                        &conventions,
+                        &param_kinds,
+                        typed_abi,
+                        &ownership,
+                    )?;
                     ci_args.extend(arg_slots);
                     self.clos_arities.insert(n);
                     // (RFC-0034 L3) Devirtualize when `name` is a single-bound, never-
@@ -1929,25 +1978,21 @@ impl<'types> Codegen<'types> {
                     // $__lamw{i}` — same env (the closure pointer) and args, just
                     // skipping the runtime code-index load — which also lets the
                     // Binaryen pass inline the lambda body into the caller.
-                    if !writebacks.is_empty() {
-                        let mut dests = vec![if typed_abi {
-                            call_result_tmp(rk)
-                        } else {
-                            MATCH_TMP.to_string()
-                        }];
-                        dests.extend(writebacks.iter().enumerate().map(|(index, (_, kind, scratch))| {
-                            if typed_abi {
-                                var_scratch("result", index, *kind)
-                            } else {
-                                scratch.clone()
-                            }
-                        }));
+                    if !writebacks.is_empty() || ownership.has_state() {
+                        let dests = Self::closure_call_dests(
+                            rk,
+                            typed_abi,
+                            &writebacks,
+                            &capacity_dests,
+                            &ownership,
+                        );
                         let signature = Self::closure_signature(
                             n,
                             &param_kinds,
                             rk,
                             &writebacks,
                             typed_abi,
+                            &ownership,
                         );
                         let call = if let Some(&idx) = self.devirt_index.get(name) {
                             N::CallStoreMulti {
@@ -1984,6 +2029,7 @@ impl<'types> Codegen<'types> {
                                 rk,
                                 &[],
                                 typed_abi,
+                                &ownership,
                             ),
                             args: ci_args,
                             index: Box::new(W::StructGet {

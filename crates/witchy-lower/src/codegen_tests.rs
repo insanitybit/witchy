@@ -884,6 +884,32 @@ fn main() -> Int:
     }
 
     #[test]
+    fn existential_unique_result_and_var_capacity_round_trip() {
+        let src = r#"
+mode opt
+
+trait Lists:
+    fn revise(let self, var values: unique List(Int)) -> unique List(Int)
+
+type Box:
+    Box(Int)
+
+impl Lists for Box:
+    fn revise(let self, var values: unique List(Int)) -> unique List(Int):
+        values = [2, 3, 4]
+        match self:
+            Box(base) -> [base, base + 1]
+
+fn main() -> Int:
+    let item: dyn Lists = Box(7)
+    var values = [1]
+    var result = item.revise(values)
+    list.length(values) * 100 + list.at(values, 2) * 10 + list.at(result, 1)
+"#;
+        assert_eq!(run_int(src), 348);
+    }
+
+    #[test]
     fn existential_var_receiver_and_argument_commit_in_one_table_result() {
         let src = r#"
 trait Counter:
@@ -937,6 +963,67 @@ fn main() -> Int:
     (apply_it(A(dbl), 5) + apply_it(B(dbl), 10))
 "#;
         assert_eq!(run_int(src), 30);
+    }
+
+    #[test]
+    fn indirect_unique_result_and_var_capacity_round_trip() {
+        let src = r#"
+mode opt
+
+fn build() -> unique List(Int):
+    [1, 2]
+
+fn append(var xs: unique List(Int)) -> Nil:
+    xs = [1, 2, 3]
+    return
+
+fn main() -> Int:
+    let make = build
+    var xs = make()
+    let update = append
+    update(xs)
+    list.length(xs) * 10 + list.at(xs, 2)
+"#;
+        let indirect = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::ClosureElide)
+            .without(witchy_syntax::opt::Opt::DirectCall);
+        witchy_syntax::opt::set_for_tests(Some(indirect));
+        let result = run_int(src);
+        witchy_syntax::opt::set_for_tests(None);
+        assert_eq!(result, 33);
+
+        let (_, indirect_calls, _) = call_shape(src, indirect);
+        assert!(
+            indirect_calls >= 2,
+            "both first-class calls must retain table dispatch in the inverse configuration"
+        );
+    }
+
+    #[test]
+    fn lambda_literal_ownership_envelope_round_trips() {
+        let src = r#"
+mode opt
+
+fn main() -> Int:
+    let make = fn() -> unique List(Int):
+        [4]
+    var xs = make()
+    let update = fn(var ys: unique List(Int)) -> Nil:
+        ys = [4, 5]
+        return
+    update(xs)
+    list.length(xs) * 10 + list.at(xs, 1)
+"#;
+        let indirect = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::ClosureElide)
+            .without(witchy_syntax::opt::Opt::DirectCall);
+        witchy_syntax::opt::set_for_tests(Some(indirect));
+        let result = run_int(src);
+        witchy_syntax::opt::set_for_tests(None);
+        assert_eq!(result, 25);
+
+        let (_, indirect_calls, _) = call_shape(src, indirect);
+        assert!(indirect_calls >= 2, "both lambda calls must keep table dispatch");
     }
 
     #[test]

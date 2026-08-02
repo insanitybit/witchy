@@ -194,7 +194,27 @@ enum CodegenPlace {
 }
 
 type ClosureWriteback = (CodegenPlace, Kind, String);
-type LoweredClosureArgs = (Vec<witchy_wir::wir::WirExpr>, Vec<ClosureWriteback>);
+
+#[derive(Clone, Debug, Default)]
+struct ClosureOwnershipEnvelope {
+    own_capacity_param: Option<usize>,
+    var_capacity_params: Vec<usize>,
+    unique_capacity_result: bool,
+}
+
+impl ClosureOwnershipEnvelope {
+    fn has_state(&self) -> bool {
+        self.unique_capacity_result
+            || self.own_capacity_param.is_some()
+            || !self.var_capacity_params.is_empty()
+    }
+}
+
+type LoweredClosureArgs = (
+    Vec<witchy_wir::wir::WirExpr>,
+    Vec<ClosureWriteback>,
+    Vec<String>,
+);
 
 /// One captured variable plus every local refinement lowering may consult in
 /// the lifted body. Capture metadata is copied deliberately; it must not arrive
@@ -218,6 +238,7 @@ struct CaptureInfo {
     list_elem_list_vt: Option<ValType>,
     list_nesting: Option<(usize, NestBottom)>,
     fn_ret_kind: Option<Kind>,
+    fn_ownership: Option<ClosureOwnershipEnvelope>,
 }
 
 /// (RFC-0062) A tier-1 elided closure: its lifted THREADED body index (a `$__lamt{i}`
@@ -731,6 +752,7 @@ struct SavedScope {
     list_elem_list_vt: HashMap<String, ValType>,
     list_nesting: HashMap<String, (usize, NestBottom)>,
     fn_ret_kind: HashMap<String, Kind>,
+    fn_ownership: HashMap<String, ClosureOwnershipEnvelope>,
     ret: Kind,
     ret_ty: Option<Type>,
     ret_slot: bool,
@@ -1260,6 +1282,11 @@ struct Codegen<'types> {
     /// closure call `f(x)` recovers the result at the right width (an `Int`-
     /// returning closure as i64, not the generic i32).
     local_fn_ret_kind: HashMap<String, Kind>,
+    /// Ownership-sensitive ABI facts for local function values. The checker
+    /// type table can erase a result qualifier while resolving a bare function
+    /// name, so these facts are captured when the value is bound and carried
+    /// independently of the scalar call signature.
+    local_fn_ownership: HashMap<String, ClosureOwnershipEnvelope>,
     /// Whether the current function has any `var` parameters.
     cur_fn_var: bool,
     /// The current function's `var` parameter names, in declaration order. An
@@ -1428,6 +1455,7 @@ impl<'types> Codegen<'types> {
             cur_fn_ret_slot: false,
             cur_fn_unique_ret: false,
             local_fn_ret_kind: HashMap::new(),
+            local_fn_ownership: HashMap::new(),
             cur_fn_var: false,
             cur_fn_var_params: Vec::new(),
             cur_fn_var_cap_params: Vec::new(),
@@ -1989,6 +2017,9 @@ impl<'types> Codegen<'types> {
     }
 
     fn closure_conventions(&self, func: &Expr) -> Vec<Convention> {
+        if let Expr::Lambda { params, .. } = func {
+            return params.iter().map(|param| param.convention).collect();
+        }
         let Some(ty) = self.ast_type_of_expr(func) else {
             return Vec::new();
         };
@@ -1999,6 +2030,14 @@ impl<'types> Codegen<'types> {
     }
 
     fn closure_param_kinds(&self, func: &Expr) -> Vec<Kind> {
+        if let Expr::Lambda { params, .. } = func {
+            return params
+                .iter()
+                .map(|param| {
+                    param.ty.as_ref().map(|ty| self.kind_for_type(ty)).unwrap_or(Kind::I32)
+                })
+                .collect();
+        }
         let Some(ty) = self.ast_type_of_expr(func) else {
             return Vec::new();
         };
@@ -2009,11 +2048,102 @@ impl<'types> Codegen<'types> {
     }
 
     fn closure_result_type(&self, func: &Expr) -> Option<Type> {
+        if let Expr::Lambda { ret, .. } = func
+            && let Some(result) = ret
+        {
+            return Some(result.clone());
+        }
         let ty = self.ast_type_of_expr(func)?;
         let Type::Fn(_, result, _) = ty.unqualified() else {
             return None;
         };
         Some(result.as_ref().clone())
+    }
+
+    fn ownership_envelope_for_type(ty: &Type) -> ClosureOwnershipEnvelope {
+        let Type::Fn(params, result, conventions) = ty.unqualified() else {
+            return ClosureOwnershipEnvelope::default();
+        };
+        let conventions = if conventions.is_empty() {
+            vec![Convention::Let; params.len()]
+        } else {
+            conventions.clone()
+        };
+        ClosureOwnershipEnvelope {
+            own_capacity_param: params
+                .iter()
+                .enumerate()
+                .find_map(|(index, ty)| {
+                    (conventions.get(index) == Some(&Convention::Own)
+                        && type_has_capacity_token(ty))
+                    .then_some(index)
+                }),
+            var_capacity_params: params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, ty)| {
+                    (conventions.get(index) == Some(&Convention::Var)
+                        && type_has_capacity_token(ty))
+                    .then_some(index)
+                })
+                .collect(),
+            unique_capacity_result: type_is_unique_capacity(result),
+        }
+    }
+
+    fn closure_ownership_envelope(&self, func: &Expr) -> ClosureOwnershipEnvelope {
+        if let Expr::Lambda { params, ret, .. } = func {
+            return ClosureOwnershipEnvelope {
+                own_capacity_param: params.iter().enumerate().find_map(|(index, param)| {
+                    (param.convention == Convention::Own
+                        && param.ty.as_ref().is_some_and(type_has_capacity_token))
+                    .then_some(index)
+                }),
+                var_capacity_params: params
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, param)| {
+                        (param.convention == Convention::Var
+                            && param.ty.as_ref().is_some_and(type_has_capacity_token))
+                        .then_some(index)
+                    })
+                    .collect(),
+                unique_capacity_result: ret.as_ref().is_some_and(type_is_unique_capacity),
+            };
+        }
+        if let Expr::Var(name) = func {
+            if let Some(envelope) = self.local_fn_ownership.get(name) {
+                return envelope.clone();
+            }
+            if let Some(params) = self.fn_params.get(name) {
+                let conventions = self
+                    .fn_conventions
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| vec![Convention::Let; params.len()]);
+                return ClosureOwnershipEnvelope {
+                    own_capacity_param: params.iter().enumerate().find_map(|(index, param)| {
+                        (conventions.get(index) == Some(&Convention::Own)
+                            && param.ty.as_ref().is_some_and(type_has_capacity_token))
+                        .then_some(index)
+                    }),
+                    var_capacity_params: params
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, param)| {
+                            (conventions.get(index) == Some(&Convention::Var)
+                                && param.ty.as_ref().is_some_and(type_has_capacity_token))
+                            .then_some(index)
+                        })
+                        .collect(),
+                    unique_capacity_result: self.fn_unique_ret.contains(name),
+                };
+            }
+        }
+        self.ast_type_of_expr(func)
+            .as_ref()
+            .map(Self::ownership_envelope_for_type)
+            .unwrap_or_default()
     }
 
     fn closure_uses_typed_abi(param_kinds: &[Kind], result_kind: Kind) -> bool {
@@ -2029,17 +2159,58 @@ impl<'types> Codegen<'types> {
         result_kind: Kind,
         writebacks: &[ClosureWriteback],
         typed_abi: bool,
+        ownership: &ClosureOwnershipEnvelope,
     ) -> witchy_wir::wir::ClosureSignature {
-        if !typed_abi {
+        if !typed_abi && !ownership.has_state() {
             return witchy_wir::wir::gc_slot_closure_signature(
                 arity,
                 1 + writebacks.len(),
             );
         }
         let mut params = vec![witchy_wir::wir::Kind::GcRef(CLOSURE_WRAPPER_ID)];
-        params.extend(param_kinds.iter().copied().map(Self::wir_kind));
-        let mut results = vec![Self::wir_kind(result_kind)];
-        results.extend(writebacks.iter().map(|(_, kind, _)| Self::wir_kind(*kind)));
+        params.extend(param_kinds.iter().copied().map(|kind| {
+            if typed_abi {
+                Self::wir_kind(kind)
+            } else {
+                witchy_wir::wir::Kind::I64
+            }
+        }));
+        params.extend(
+            ownership
+                .own_capacity_param
+                .iter()
+                .map(|_| witchy_wir::wir::Kind::I32),
+        );
+        params.extend(
+            ownership
+                .var_capacity_params
+                .iter()
+                .map(|_| witchy_wir::wir::Kind::I32),
+        );
+        let mut results = vec![if typed_abi {
+            Self::wir_kind(result_kind)
+        } else {
+            witchy_wir::wir::Kind::I64
+        }];
+        if ownership.unique_capacity_result {
+            results.push(witchy_wir::wir::Kind::I32);
+        }
+        results.extend(writebacks.iter().map(|(_, kind, _)| {
+            if typed_abi {
+                Self::wir_kind(*kind)
+            } else {
+                witchy_wir::wir::Kind::I64
+            }
+        }));
+        results.extend(
+            ownership
+                .var_capacity_params
+                .iter()
+                .map(|_| witchy_wir::wir::Kind::I32),
+        );
+        if ownership.own_capacity_param.is_some() {
+            results.push(witchy_wir::wir::Kind::I32);
+        }
         witchy_wir::wir::ClosureSignature { params, results }
     }
 
@@ -2053,6 +2224,7 @@ impl<'types> Codegen<'types> {
         conventions: &[Convention],
         param_kinds: &[Kind],
         typed_abi: bool,
+        ownership: &ClosureOwnershipEnvelope,
     ) -> Option<LoweredClosureArgs> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let mut slots = Vec::with_capacity(args.len());
@@ -2103,7 +2275,59 @@ impl<'types> Codegen<'types> {
                 W::ToSlot(Box::new(value), Self::wir_kind(kind))
             });
         }
-        Some((slots, writebacks))
+        let mut capacity_dests = Vec::with_capacity(ownership.var_capacity_params.len());
+        for (ordinal, index) in ownership.var_capacity_params.iter().copied().enumerate() {
+            let tracked_root = match args.get(index) {
+                Some(Expr::Var(root)) if self.inplace_push.contains(root) => Some(root),
+                _ => None,
+            };
+            slots.push(match tracked_root {
+                Some(root) => W::GetLocal(format!("{root}__cap")),
+                None => W::ConstI32(0),
+            });
+            capacity_dests.push(match tracked_root {
+                Some(root) => format!("{root}__cap"),
+                None => var_scratch("cap", ordinal, Kind::I32),
+            });
+        }
+        if let Some(index) = ownership.own_capacity_param {
+            let capacity = args
+                .get(index)
+                .map(|arg| self.owned_argument_cap(arg))
+                .unwrap_or(W::ConstI32(0));
+            let insert_at = slots.len() - ownership.var_capacity_params.len();
+            slots.insert(insert_at, capacity);
+        }
+        Some((slots, writebacks, capacity_dests))
+    }
+
+    fn closure_call_dests(
+        result_kind: Kind,
+        typed_abi: bool,
+        writebacks: &[ClosureWriteback],
+        capacity_dests: &[String],
+        ownership: &ClosureOwnershipEnvelope,
+    ) -> Vec<String> {
+        let mut dests = vec![if typed_abi {
+            call_result_tmp(result_kind)
+        } else {
+            MATCH_TMP.to_string()
+        }];
+        if ownership.unique_capacity_result {
+            dests.push(UNIQUE_RESULT_CAP_TMP.to_string());
+        }
+        dests.extend(writebacks.iter().enumerate().map(|(index, (_, kind, scratch))| {
+            if typed_abi {
+                var_scratch("result", index, *kind)
+            } else {
+                scratch.clone()
+            }
+        }));
+        dests.extend(capacity_dests.iter().cloned());
+        if ownership.own_capacity_param.is_some() {
+            dests.push("__witchy_owncap".to_string());
+        }
+        dests
     }
 
     fn finish_closure_multi_call(
@@ -2654,6 +2878,10 @@ impl<'types> Codegen<'types> {
                     self.locals.insert(name.clone(), self.kind_for_type(ty));
                     if let Type::Fn(_, ret, _) = ty.unqualified() {
                         self.local_fn_ret_kind.insert(name.clone(), self.kind_for_type(ret));
+                        let envelope = Self::ownership_envelope_for_type(ty);
+                        if envelope.has_state() {
+                            self.local_fn_ownership.insert(name.clone(), envelope);
+                        }
                     }
                 }
             }
@@ -2719,6 +2947,7 @@ impl<'types> Codegen<'types> {
                     // `let ok = match f() { Some(n) -> n ... }` would type `ok` as
                     // i32 (n not yet known to be i64) while the match emits i64.
                     self.infer_locals_expr(value);
+                    let fn_ownership = self.closure_ownership_envelope(value);
                     // The legacy shape inference cannot recover generic `?`
                     // payloads or an elided result from a value-returning `var`
                     // call. Use the authoritative table for those two shapes;
@@ -2782,6 +3011,11 @@ impl<'types> Codegen<'types> {
                     // `let f = make(...)` then `f(x)` recovers the result width.
                     if let Some(rk) = self.closure_ret_kind_of(value) {
                         self.local_fn_ret_kind.insert(name.clone(), rk);
+                    }
+                    if fn_ownership.has_state() {
+                        self.local_fn_ownership.insert(name.clone(), fn_ownership);
+                    } else {
+                        self.local_fn_ownership.remove(name);
                     }
                     // A binding to a tuple literal records its element slot value
                     // types, so a later `let (a, b) = name` types `a`/`b` (and
@@ -3018,6 +3252,10 @@ impl<'types> Codegen<'types> {
                     if let Type::Fn(_, ret, _) = element.unqualified() {
                         self.local_fn_ret_kind
                             .insert(var.clone(), self.kind_for_type(ret));
+                        let envelope = Self::ownership_envelope_for_type(element);
+                        if envelope.has_state() {
+                            self.local_fn_ownership.insert(var.clone(), envelope);
+                        }
                     }
                 }
                 // The loop variable's value type is the iterated list's element
@@ -3211,6 +3449,7 @@ impl<'types> Codegen<'types> {
         self.local_list_elem_list_valtype.clear();
         self.local_list_nesting.clear();
         self.local_fn_ret_kind.clear();
+        self.local_fn_ownership.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
@@ -3220,8 +3459,14 @@ impl<'types> Codegen<'types> {
             }
             // A function-typed parameter (`f: fn(...) -> RET`): remember RET's kind
             // so a closure call `f(x)` recovers the result at the right width.
-            if let Some(Type::Fn(_, ret, _)) = &p.ty {
+            if let Some(ty) = &p.ty
+                && let Type::Fn(_, ret, _) = ty.unqualified()
+            {
                 self.local_fn_ret_kind.insert(p.name.clone(), self.kind_for_type(ret));
+                let envelope = Self::ownership_envelope_for_type(ty);
+                if envelope.has_state() {
+                    self.local_fn_ownership.insert(p.name.clone(), envelope);
+                }
             }
             // A nested-list parameter (`m: List(List(Int))`): record its
             // `(depth, scalar)` so `at(at(m, i), j)` recovers an Int as i64.
@@ -5479,6 +5724,7 @@ impl<'types> Codegen<'types> {
                 };
                 Some(self.kind_for_type(result))
             }),
+            fn_ownership: self.local_fn_ownership.get(name).cloned(),
         }
     }
 
@@ -5528,7 +5774,10 @@ impl<'types> Codegen<'types> {
             self.local_list_nesting.insert(name.clone(), value.clone());
         }
         if let Some(value) = capture.fn_ret_kind {
-            self.local_fn_ret_kind.insert(name, value);
+            self.local_fn_ret_kind.insert(name.clone(), value);
+        }
+        if let Some(value) = &capture.fn_ownership {
+            self.local_fn_ownership.insert(name, value.clone());
         }
     }
 
@@ -5721,7 +5970,21 @@ impl<'types> Codegen<'types> {
             .filter(|p| p.convention == Convention::Var)
             .map(|p| p.name.clone())
             .collect();
-        self.cur_fn_var_cap_params.clear();
+        self.cur_fn_var_cap_params = params
+            .iter()
+            .filter(|p| {
+                p.convention == Convention::Var
+                    && p.ty.as_ref().is_some_and(type_has_capacity_token)
+            })
+            .map(|p| p.name.clone())
+            .collect();
+        let lambda_own_param = params
+            .iter()
+            .find(|p| {
+                p.convention == Convention::Own
+                    && p.ty.as_ref().is_some_and(type_has_capacity_token)
+            })
+            .map(|p| p.name.clone());
         self.cur_fn_var = !self.cur_fn_var_params.is_empty();
         // Install declared parameter shape metadata. Exact runtime kinds are
         // replaced from the checker-resolved function signature below.
@@ -5729,6 +5992,7 @@ impl<'types> Codegen<'types> {
             self.locals.insert(p.name.clone(), Kind::I32);
             if let Some(t) = &p.ty {
                 self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
+                self.local_types.insert(p.name.clone(), t.clone());
             }
             match p.ty.as_ref().map(Type::unqualified) {
                 Some(Type::Named(n, _)) if self.record_fields.contains_key(n) => {
@@ -5760,8 +6024,14 @@ impl<'types> Codegen<'types> {
         for p in params {
             let k = p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
-            if let Some(Type::Fn(_, ret, _)) = &p.ty {
+            if let Some(ty) = &p.ty
+                && let Type::Fn(_, ret, _) = ty.unqualified()
+            {
                 self.local_fn_ret_kind.insert(p.name.clone(), self.kind_for_type(ret));
+                let envelope = Self::ownership_envelope_for_type(ty);
+                if envelope.has_state() {
+                    self.local_fn_ownership.insert(p.name.clone(), envelope);
+                }
             }
         }
         self.infer_locals(body);
@@ -5773,11 +6043,12 @@ impl<'types> Codegen<'types> {
         let typed_abi = Self::closure_uses_typed_abi(param_kinds, block_kind);
         let saved_inplace = std::mem::take(&mut self.inplace_push);
         let saved_own = self.cur_fn_own_param.take();
+        self.cur_fn_own_param = lambda_own_param.clone();
         self.begin_unit(body);
         self.cur_fn_ret_kind = if typed_abi { block_kind } else { Kind::I64 };
         self.cur_fn_ret_ty = result_ty.cloned();
         self.cur_fn_ret_slot = !typed_abi;
-        self.cur_fn_unique_ret = false;
+        self.cur_fn_unique_ret = result_ty.is_some_and(type_is_unique_capacity);
         let saved_apply = self.apply_level;
         let saved_existential_call = self.existential_call_level;
         let saved_assign = self.assign_level;
@@ -5792,6 +6063,31 @@ impl<'types> Codegen<'types> {
         // set, so the cap-shadow `${v}__cap` locals below are declared for the
         // lambda's accumulators, not the enclosing function's.
         let lambda_inplace = self.inplace_push.clone();
+        let lambda_tail_capacity = self.cur_fn_unique_ret.then(|| {
+            body.stmts
+                .last()
+                .and_then(|stmt| match stmt {
+                    Stmt::Expr(expr) => Some(self.return_capacity_expr(expr)),
+                    _ => None,
+                })
+                .unwrap_or(W::ConstI32(0))
+        });
+        let lambda_own_tail_capacity = lambda_own_param.as_ref().map(|own| {
+            match body.stmts.last() {
+                Some(Stmt::Expr(Expr::Var(value))) if value == own => {
+                    W::GetLocal(format!("{own}__cap"))
+                }
+                Some(Stmt::Expr(Expr::Unary { op: UnOp::Move, expr }))
+                    if matches!(expr.as_ref(), Expr::Var(value) if value == own) =>
+                {
+                    W::GetLocal(format!("{own}__cap"))
+                }
+                Some(Stmt::Expr(Expr::Call { .. })) => {
+                    W::GetLocal("__witchy_owncap".to_string())
+                }
+                _ => W::ConstI32(0),
+            }
+        });
         self.apply_level = saved_apply;
         self.existential_call_level = saved_existential_call;
         self.assign_level = saved_assign;
@@ -5848,6 +6144,18 @@ impl<'types> Codegen<'types> {
                         },
                     });
                 }
+                if let Some(p) = &lambda_own_param {
+                    func_params.push(WirLocal {
+                        name: format!("{p}__cap"),
+                        ty: i32t(),
+                    });
+                }
+                for p in &self.cur_fn_var_cap_params {
+                    func_params.push(WirLocal {
+                        name: format!("{p}__cap"),
+                        ty: i32t(),
+                    });
+                }
                 let mut locals: Vec<WirLocal> = Vec::new();
                 for p in params {
                     let k = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
@@ -5877,6 +6185,11 @@ impl<'types> Codegen<'types> {
                 let mut cap_vars: Vec<&String> = lambda_inplace.iter().collect();
                 cap_vars.sort();
                 for v in cap_vars {
+                    if self.cur_fn_var_cap_params.contains(v)
+                        || lambda_own_param.as_ref() == Some(v)
+                    {
+                        continue;
+                    }
                     locals.push(WirLocal { name: format!("{v}__cap"), ty: i32t() });
                 }
                 // (RFC-0033 R2) field-buffer capacity tokens for in-place field-path pushes.
@@ -6052,17 +6365,41 @@ impl<'types> Codegen<'types> {
                 // Body, with the declared result and every `var` final value emitted
                 // in the closure signature's selected representation.
                 let mut seq = seq;
-                if !typed_abi && let Some(N::Push(v)) = seq.pop() {
-                    seq.push(N::Push(W::ToSlot(Box::new(v), Self::wir_kind(block_kind))));
-                }
-                for name in &self.cur_fn_var_params {
-                    let kind = self.locals.get(name).copied().unwrap_or(Kind::I32);
-                    let value = W::GetLocal(name.clone());
-                    seq.push(N::Push(if typed_abi {
-                        value
-                    } else {
-                        W::ToSlot(Box::new(value), Self::wir_kind(kind))
-                    }));
+                // An explicit terminal return already emitted the complete
+                // multi-result tuple and a bare WIR return. Appending only the
+                // var/cap suffix afterward leaves a partial function-end stack
+                // and makes validation expect the missing primary result.
+                let terminal_return = matches!(body.stmts.last(), Some(Stmt::Return(_)));
+                if !terminal_return {
+                    if !typed_abi && let Some(N::Push(v)) = seq.pop() {
+                        seq.push(N::Push(W::ToSlot(Box::new(v), Self::wir_kind(block_kind))));
+                    }
+                    if self.cur_fn_unique_ret {
+                        seq.push(N::Push(
+                            lambda_tail_capacity
+                                .clone()
+                                .unwrap_or(W::ConstI32(0)),
+                        ));
+                    }
+                    for name in &self.cur_fn_var_params {
+                        let kind = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                        let value = W::GetLocal(name.clone());
+                        seq.push(N::Push(if typed_abi {
+                            value
+                        } else {
+                            W::ToSlot(Box::new(value), Self::wir_kind(kind))
+                        }));
+                    }
+                    for name in &self.cur_fn_var_cap_params {
+                        seq.push(N::Push(W::GetLocal(format!("{name}__cap"))));
+                    }
+                    if lambda_own_param.is_some() {
+                        seq.push(N::Push(
+                            lambda_own_tail_capacity
+                                .clone()
+                                .unwrap_or(W::ConstI32(0)),
+                        ));
+                    }
                 }
                 nodes.extend(seq);
                 let name = match cap_mode {
@@ -6073,15 +6410,36 @@ impl<'types> Codegen<'types> {
                     name,
                     params: func_params,
                     ret: if typed_abi {
-                        std::iter::once(Self::wir_ty_for_kind(block_kind))
-                            .chain(self.cur_fn_var_params.iter().map(|name| {
+                        {
+                            let mut ret = vec![Self::wir_ty_for_kind(block_kind)];
+                            if self.cur_fn_unique_ret {
+                                ret.push(i32t());
+                            }
+                            ret.extend(self.cur_fn_var_params.iter().map(|name| {
                                 Self::wir_ty_for_kind(
                                     self.locals.get(name).copied().unwrap_or(Kind::I32),
                                 )
-                            }))
-                            .collect()
+                            }));
+                            ret.extend(self.cur_fn_var_cap_params.iter().map(|_| i32t()));
+                            if lambda_own_param.is_some() {
+                                ret.push(i32t());
+                            }
+                            ret
+                        }
                     } else {
-                        vec![WirTy::Int; 1 + self.cur_fn_var_params.len()]
+                        let mut ret = vec![WirTy::Int];
+                        if self.cur_fn_unique_ret {
+                            ret.push(i32t());
+                        }
+                        ret.extend(std::iter::repeat_n(
+                            WirTy::Int,
+                            self.cur_fn_var_params.len(),
+                        ));
+                        ret.extend(self.cur_fn_var_cap_params.iter().map(|_| i32t()));
+                        if lambda_own_param.is_some() {
+                            ret.push(i32t());
+                        }
+                        ret
                     },
                     locals,
                     body: nodes,
@@ -6116,6 +6474,7 @@ impl<'types> Codegen<'types> {
             list_elem_list_vt: std::mem::take(&mut self.local_list_elem_list_valtype),
             list_nesting: std::mem::take(&mut self.local_list_nesting),
             fn_ret_kind: std::mem::take(&mut self.local_fn_ret_kind),
+            fn_ownership: std::mem::take(&mut self.local_fn_ownership),
             ret: self.cur_fn_ret_kind,
             ret_ty: self.cur_fn_ret_ty.take(),
             ret_slot: self.cur_fn_ret_slot,
@@ -6161,6 +6520,7 @@ impl<'types> Codegen<'types> {
         self.local_list_elem_list_valtype = s.list_elem_list_vt;
         self.local_list_nesting = s.list_nesting;
         self.local_fn_ret_kind = s.fn_ret_kind;
+        self.local_fn_ownership = s.fn_ownership;
         self.cur_fn_ret_kind = s.ret;
         self.cur_fn_ret_ty = s.ret_ty;
         self.cur_fn_ret_slot = s.ret_slot;
