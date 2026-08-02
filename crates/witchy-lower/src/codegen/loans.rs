@@ -1,6 +1,9 @@
 //! Loan-root and loan-event collection: free functions that walk a function
-//! body's AST alongside the type-checker's `LoanFacts` to gather the borrow
-//! roots to declare and the loan-event keys to assert. Split out of
+//! body's AST alongside the type-checker's `LoanFacts` to gather the exact
+//! owner-object roots to declare and the loan-event keys to assert. Root
+//! extraction goes through `Codegen::loan_root`, which consumes the checked
+//! `LoanOwnerRoot`; this walker never reconstructs ownership from a logical
+//! view local or projected storage type. Split out of
 //! `codegen/mod.rs` as an incremental break-up of that file; these are free
 //! functions over the AST with only static `Codegen`/`LoanRoot` references.
 

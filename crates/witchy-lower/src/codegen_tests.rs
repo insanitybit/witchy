@@ -359,7 +359,7 @@
     }
 
     #[test]
-    fn nested_dict_view_roots_the_returned_subplace_layout() {
+    fn nested_dict_view_roots_the_owner_object_base_not_the_projected_pointer() {
         let module = parse_module(
             "mode opt\n\ntype Holder:\n    values: Dict(Int, Int)\n\nfn view(holder: let('a) Holder) -> View(Dict(Int, Int), 'a):\n    holder.values\n\nfn count(holder: Holder) -> Int:\n    let v = view(holder)\n    dict.length(v)\n\nfn main() -> Int:\n    count(Holder(dict.new()))\n",
         )
@@ -373,16 +373,100 @@
         let count = &tail[..end];
         let root = count.find("local.set $__loan_root_v__holder").expect("root assignment");
         let before = &count[..root];
+        let owner = before
+            .rfind("    local.get $holder\n")
+            .filter(|owner| {
+                before.rfind("    local.get $v\n").is_none_or(|view| *owner > view)
+            })
+            .expect("the retained root must come from Holder, never the projected Dict view");
         assert!(
-            before.rfind("local.get $v").is_some_and(|view| {
-                before.rfind("local.get $holder").is_none_or(|owner| view > owner)
-            }),
-            "the Dict -4 bias must apply to the returned view pointer, not Holder: {count}",
+            !before[owner..].contains("i32.const 4"),
+            "a projected Dict bias must not be applied to the containing Holder root: {count}",
         );
+    }
+
+    #[test]
+    fn direct_dict_view_roots_the_dict_owner_with_its_own_layout_bias() {
+        let module = parse_module(
+            "mode opt\n\nfn view(values: let('a) Dict(Int, Int)) -> View(Dict(Int, Int), 'a):\n    values\n\nfn count(values: Dict(Int, Int)) -> Int:\n    let v = view(values)\n    dict.length(v)\n\nfn main() -> Int:\n    count(dict.new())\n",
+        )
+        .expect("parse");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("direct Dict view lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $count").expect("count function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let count = &tail[..end];
+        let root = count.find("local.set $__loan_root_v__values").expect("root assignment");
+        let before = &count[..root];
+        let owner = before
+            .rfind("    local.get $values\n")
+            .filter(|owner| {
+                before.rfind("    local.get $v\n").is_none_or(|view| *owner > view)
+            })
+            .expect("the direct owner, not the returned view, supplies the retained root");
         assert!(
-            before[root.saturating_sub(180)..].contains("i32.const 4"),
-            "the returned Dict layout, not the Holder parameter layout, selects the root bias: {count}",
+            before[owner..].contains("i32.const 4"),
+            "the direct Dict owner's own pointer representation supplies its -4 base bias: {count}",
         );
+    }
+
+    #[test]
+    fn projected_dict_argument_keeps_the_containing_owner_base() {
+        let module = parse_module(
+            "mode opt\n\ntype Holder:\n    values: Dict(Int, Int)\n\nfn view(values: let('a) Dict(Int, Int)) -> View(Dict(Int, Int), 'a):\n    values\n\nfn count(holder: Holder) -> Int:\n    let v = view(holder.values)\n    dict.length(v)\n\nfn main() -> Int:\n    count(Holder(dict.new()))\n",
+        )
+        .expect("parse");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("projected Dict argument lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $count").expect("count function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let count = &tail[..end];
+        let root = count.find("local.set $__loan_root_v__holder").expect("root assignment");
+        let before = &count[..root];
+        let owner = before.rfind("    local.get $holder\n").expect("owner base");
+        assert!(
+            !before[owner..].contains("i32.const 4"),
+            "the callee's Dict type must not bias the projected argument's Holder base: {count}",
+        );
+    }
+
+    fn assert_partial_capture_reaches_wir_fallback(source: &str) {
+        let module = parse_module(source).expect("parse partial-capture fallback fixture");
+        let unsupported = compile_module_binary(&module)
+            .expect_unsupported("partial WIR capture must remain a fallback, not an identity error");
+        assert!(
+            unsupported.message.contains("reachable functions do not fully lower to WIR"),
+            "the whole-unit fallback must survive partial loan-fact consumption: {unsupported}",
+        );
+    }
+
+    fn beyond_wir_assignment_scratch_pool() -> String {
+        (0..=SCRUT_POOL).fold("values".to_string(), |value, _| {
+            format!("list.__set_at({value}, 0, 0)")
+        })
+    }
+
+    #[test]
+    fn flat_partial_capture_balances_unit_facts_before_fallback() {
+        // Arbitrarily deep nested updates are valid and handled by the fallback
+        // backend. Exceed the WIR sink's fixed scratch pool before the tail so
+        // its walk consumes a strict prefix of the statement identities.
+        let update = beyond_wir_assignment_scratch_pool();
+        assert_partial_capture_reaches_wir_fallback(&format!(
+            "mode opt\n\nfn main() -> Int:\n    let values = [0]\n    let updated = {update}\n    0\n"
+        ));
+    }
+
+    #[test]
+    fn nested_partial_capture_balances_unit_facts_before_fallback() {
+        let update = beyond_wir_assignment_scratch_pool();
+        assert_partial_capture_reaches_wir_fallback(&format!(
+            "mode opt\n\nfn main() -> Int:\n    let values = [0]\n    let updated = if true:\n        {update}\n    else:\n        values\n    0\n"
+        ));
     }
 
     #[test]

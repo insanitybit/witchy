@@ -108,9 +108,16 @@ fn is_std_fn(name: &str) -> bool {
 /// view address belongs in [`LoanPlace::projection`], never in this identity.
 /// Lowering must retain/drop this base rather than reconstructing a root from a
 /// borrowed shell or a projection bias.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LoanOwnerRoot {
     pub local: String,
+    /// Checked type of the owner local's own pointer representation. `None`
+    /// means the projected argument's root local already contains the enclosing
+    /// object's base pointer.
+    /// This is intentionally the root type (for example `Holder`), never the
+    /// projected storage type (`Holder.values: Dict`), so an interior layout
+    /// cannot impose its bias on the containing owner.
+    pub direct_storage_type: Option<Type>,
 }
 
 /// One statically checked place within an owner object.
@@ -324,9 +331,11 @@ impl LoanFacts {
                 shapes.last_mut().expect("the borrowed shape was just inserted")
             };
             let root = event.owner_root();
-            let companion = if let Some(companion) = shape.roots.iter_mut().find(|candidate| {
-                candidate.root == root
-            }) {
+            let companion = if let Some(companion) = shape
+                .roots
+                .iter_mut()
+                .find(|candidate| candidate.root.local == root.local)
+            {
                 companion
             } else {
                 let ordinal = shape.roots.len();
@@ -817,6 +826,7 @@ pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
                             .into_iter()
                             .map(|slot| BorrowSource {
                                 owner: param.name.clone(),
+                                root_type: Some(ty.clone()),
                                 projection: slot.projection.clone(),
                                 borrower_projection: slot.projection,
                                 origin: f.name.clone(),
@@ -929,6 +939,9 @@ fn check_lambda_body(
                     .into_iter()
                     .map(|slot| BorrowSource {
                         owner: param.name.clone(),
+                        root_type: Some(
+                            param.ty.as_ref().expect("borrowed parameter type").clone(),
+                        ),
                         projection: slot.projection.clone(),
                         borrower_projection: slot.projection,
                         origin: name.to_string(),
@@ -1245,6 +1258,9 @@ struct Loan {
     view: String,
     /// The owner local whose storage the view borrows.
     owner: String,
+    /// Checked type of the owner local itself. `None` means the argument was a
+    /// projection and its root local is already the containing object base.
+    root_type: Option<Type>,
     /// The owner-relative storage region borrowed by this view.
     projection: LoanProjection,
     /// The part of an aggregate view whose use depends on this owner. Empty for
@@ -1259,6 +1275,7 @@ struct Loan {
 #[derive(Clone)]
 struct BorrowSource {
     owner: String,
+    root_type: Option<Type>,
     projection: LoanProjection,
     borrower_projection: LoanProjection,
     origin: String,
@@ -1268,6 +1285,7 @@ struct BorrowSource {
 
 fn same_source(left: &BorrowSource, right: &BorrowSource) -> bool {
     left.owner == right.owner
+        && left.root_type == right.root_type
         && left.projection == right.projection
         && left.borrower_projection == right.borrower_projection
         && left.origin == right.origin
@@ -1628,7 +1646,10 @@ impl LoanCtx<'_> {
                             borrower_projection: source.borrower_projection.clone(),
                             origin: source.origin.clone(),
                             owner_type: source.owner_type.clone(),
-                            owner_root: LoanOwnerRoot { local: source.owner.clone() },
+                            owner_root: LoanOwnerRoot {
+                                local: source.owner.clone(),
+                                direct_storage_type: source.root_type.clone(),
+                            },
                         }
                     };
                     let transfers = self
@@ -1668,6 +1689,7 @@ impl LoanCtx<'_> {
                     let loan = Loan {
                         view: name.clone(),
                         owner: owner.owner,
+                        root_type: owner.root_type,
                         projection: owner.projection,
                         borrower_projection: owner.borrower_projection,
                         origin: owner.origin,
@@ -1716,6 +1738,7 @@ impl LoanCtx<'_> {
                         let loan = Loan {
                             view: name.clone(),
                             owner: source.owner,
+                            root_type: source.root_type,
                             projection: source.projection,
                             borrower_projection: source.borrower_projection,
                             origin: source.origin,
@@ -1812,6 +1835,7 @@ impl LoanCtx<'_> {
                     }) {
                         out.push(BorrowSource {
                             owner: loan.owner.clone(),
+                            root_type: loan.root_type.clone(),
                             projection: loan.projection.clone(),
                             borrower_projection: loan.borrower_projection.clone(),
                             origin: loan.origin.clone(),
@@ -2070,6 +2094,13 @@ impl LoanCtx<'_> {
                     {
                         sources.push(BorrowSource {
                             owner: root.to_string(),
+                            root_type: argument_projection.steps.is_empty().then(|| {
+                                sig.owner_params
+                                    .iter()
+                                    .find(|(position, _)| *position == owner.position())
+                                    .map(|(_, ty)| ty.clone())
+                                    .unwrap_or_else(|| relation.storage_type().clone())
+                            }),
                             projection: argument_projection.extended(owner.input_projection()),
                             borrower_projection: LoanProjection::default(),
                             origin: callee.to_string(),
@@ -2094,6 +2125,7 @@ impl LoanCtx<'_> {
                 if sources.is_empty() {
                     sources.push(BorrowSource {
                         owner: String::new(),
+                        root_type: Some(relation.storage_type().clone()),
                         projection: LoanProjection::default(),
                         borrower_projection: relation.output_projection().clone(),
                         origin: callee.to_string(),
@@ -2701,7 +2733,10 @@ impl LoanCtx<'_> {
 
 impl From<Loan> for LoanEvent {
     fn from(loan: Loan) -> Self {
-        let owner_root = LoanOwnerRoot { local: loan.owner.clone() };
+        let owner_root = LoanOwnerRoot {
+            local: loan.owner.clone(),
+            direct_storage_type: loan.root_type.clone(),
+        };
         Self {
             view: loan.view,
             owner: loan.owner,

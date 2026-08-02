@@ -3588,13 +3588,16 @@ impl<'types> Codegen<'types> {
         // A hard rejection raised during lowering (e.g. a closure assigning a
         // captured var) aborts the whole compile with a diagnostic.
         if let Some(e) = self.reject_reason.take() {
+            self.abort_unit(&f.name)?;
             return Err(e);
         }
         let block_kind = self.block_kind(renamed);
         // If the whole body lowered to WIR and the function uses neither the
         // var move-out ABI nor the own-cap ABI (the binary sink models neither
         // yet), keep a `WirFunc` so `compile_module_binary` can encode it.
-        if let Some(seq) = self.captured_seq.take() {
+        let captured_seq = self.captured_seq.take();
+        let capture_failed = self.collect_wir && captured_seq.is_none();
+        if let Some(seq) = captured_seq {
             // The whole function lowered + captured (binary path). lower_block
             // deferred facts consumption to here (it is invoked many times per
             // compile, so consuming there over-counts); consume the unit's facts
@@ -3624,7 +3627,17 @@ impl<'types> Codegen<'types> {
                 self.wir_funcs.insert(f.name.clone(), wf);
             }
         }
-        self.finish_unit(&f.name)?;
+        // WIR lowering is deliberately all-or-nothing. A `None` after visiting
+        // part of the function means the binary sink will report the function
+        // as unsupported and the caller may select its fallback backend. The
+        // visited loan/uniqueness identities are therefore not a completed
+        // compilation and must not be checked as though they were. Successful
+        // WIR capture (and the legacy path) retain the strict identity check.
+        if capture_failed {
+            self.abort_unit(&f.name)?;
+        } else {
+            self.finish_unit(&f.name)?;
+        }
         self.cur_fn_own_param = None;
         self.cur_fn_var_cap_params.clear();
         self.cur_fn_unique_ret = false;
@@ -4132,6 +4145,26 @@ impl<'types> Codegen<'types> {
         Ok(())
     }
 
+    /// Balance a compile unit whose whole-unit WIR capture failed.
+    ///
+    /// Partial WIR walks may consume only a prefix of the checked facts before
+    /// discovering a valid construct that this sink does not support. Those
+    /// facts were not used to emit a function, so only the stack balance is
+    /// required here; [`Self::finish_unit`] remains the strict path for every
+    /// function or lambda that was actually captured.
+    fn abort_unit(&mut self, unit: &str) -> Result<(), CodegenError> {
+        if self.drop_facts_stack.pop().is_none() {
+            return cerr(format!("internal: unbalanced drop-fact unit in `{unit}`"));
+        }
+        if self.loan_fact_stack.pop().is_none() {
+            return cerr(format!("internal: unbalanced loan-fact unit in `{unit}`"));
+        }
+        if self.facts_stack.pop().is_none() {
+            return cerr(format!("internal: unbalanced analysis unit in `{unit}`"));
+        }
+        Ok(())
+    }
+
     /// The ownership-token kills to emit AFTER a statement (zeroing the cap
     /// of every accumulator the statement may have whole-aliased).
     fn take_kills(&mut self, stmt: &Stmt) -> String {
@@ -4153,13 +4186,18 @@ impl<'types> Codegen<'types> {
     }
 
     fn loan_root(event: &witchy_types::loans::LoanEvent) -> Option<LoanRoot> {
-        let bias = rc_leaf_bias(&event.owner_type)?;
+        let owner = event.owner_root();
+        let bias = owner
+            .direct_storage_type
+            .as_ref()
+            .map(rc_leaf_bias)
+            .unwrap_or(Some(0))?;
         if bias < 0 {
             return None;
         }
         Some(LoanRoot {
-            local: format!("__loan_root_{}__{}", event.view, event.owner),
-            value: event.view.clone(),
+            local: format!("__loan_root_{}__{}", event.view, owner.local),
+            value: owner.local,
             bias,
         })
     }
@@ -6127,7 +6165,11 @@ impl<'types> Codegen<'types> {
         self.existential_call_level = saved_existential_call;
         self.assign_level = saved_assign;
         self.wm_level = saved_wm;
-        let fin = self.finish_unit("lambda");
+        let fin = if self.collect_wir && body_res.is_none() {
+            self.abort_unit("lambda")
+        } else {
+            self.finish_unit("lambda")
+        };
         self.inplace_push = saved_inplace;
         self.cur_fn_own_param = saved_own;
 
