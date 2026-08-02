@@ -29,7 +29,10 @@
 
 use std::collections::HashMap;
 
-use witchy_syntax::ast::{Block, Convention, Expr, Function, Item, Module, Param, Stmt, Type, TypeQual, UnOp};
+use witchy_syntax::ast::{
+    Block, Convention, Expr, Function, Item, Module, Param, Pattern, Stmt, Type, TypeDef, TypeQual,
+    UnOp,
+};
 
 use crate::typeck::TypeError;
 
@@ -46,13 +49,170 @@ struct BorrowSig {
     /// lifetime — the owners a call's result loans. Empty when the return is not
     /// a view (or, after signature validation, never empty when it is).
     owner_params: Vec<(usize, Type)>,
+    /// Exact output-slot to input-slot relations for fixed borrowed values.
+    relations: Vec<BorrowRelation>,
     conventions: Vec<Convention>,
-    /// The runtime storage type of the returned view. This can differ from the
-    /// owner parameter type (`Record -> View(Bytes, 'a)`) and therefore governs
-    /// the compiled root's refcount-header layout.
-    view_type: Option<Type>,
     callable_params: Vec<Option<Box<BorrowSig>>>,
     callable_return: Option<Box<BorrowSig>>,
+}
+
+#[derive(Clone)]
+struct BorrowRelation {
+    output_projection: LoanProjection,
+    owners: Vec<OwnerPosition>,
+    storage_type: Type,
+}
+
+#[derive(Clone)]
+struct OwnerPosition {
+    index: usize,
+    input_projection: LoanProjection,
+}
+
+#[derive(Clone)]
+struct BorrowSlot {
+    lifetime: String,
+    projection: LoanProjection,
+    storage_type: Type,
+}
+
+#[derive(Default)]
+struct BorrowCatalog {
+    definitions: HashMap<String, TypeDef>,
+    constructors: HashMap<String, String>,
+}
+
+impl BorrowCatalog {
+    fn from_module(module: &Module) -> Self {
+        let mut catalog = Self::default();
+        for item in &module.items {
+            let Item::Type(definition) = item else { continue };
+            catalog.definitions.insert(definition.name.clone(), definition.clone());
+            for variant in &definition.variants {
+                catalog
+                    .constructors
+                    .insert(variant.name.clone(), definition.name.clone());
+            }
+        }
+        catalog
+    }
+
+    fn slots(&self, ty: &Type) -> Vec<BorrowSlot> {
+        self.slots_with(ty, &HashMap::new(), 0)
+    }
+
+    fn slots_with(
+        &self,
+        ty: &Type,
+        lifetimes: &HashMap<String, String>,
+        depth: usize,
+    ) -> Vec<BorrowSlot> {
+        if depth > 32 {
+            return Vec::new();
+        }
+        match ty {
+            Type::Qualified(TypeQual::Borrow(lifetime), inner) => {
+                let nested = self.slots_with(inner, lifetimes, depth + 1);
+                if !nested.is_empty() {
+                    nested
+                } else {
+                    vec![BorrowSlot {
+                        lifetime: lifetimes
+                            .get(lifetime)
+                            .cloned()
+                            .unwrap_or_else(|| lifetime.clone()),
+                        projection: LoanProjection::default(),
+                        storage_type: (**inner).clone(),
+                    }]
+                }
+            }
+            Type::Qualified(_, inner) => self.slots_with(inner, lifetimes, depth + 1),
+            Type::Tuple(items) => items
+                .iter()
+                .enumerate()
+                .flat_map(|(index, item)| {
+                    self.slots_with(item, lifetimes, depth + 1)
+                        .into_iter()
+                        .map(move |mut slot| {
+                            slot.projection = slot
+                                .projection
+                                .prefixed(LoanProjectionStep::Tuple(index));
+                            slot
+                        })
+                })
+                .collect(),
+            Type::Named(name, args) => {
+                let Some(definition) = self.definitions.get(name) else {
+                    return Vec::new();
+                };
+                let mut nested_lifetimes = lifetimes.clone();
+                for (parameter, argument) in definition.params.iter().zip(args) {
+                    if !parameter.starts_with('\'') {
+                        continue;
+                    }
+                    if let Type::Named(argument, arguments) = argument
+                        && arguments.is_empty()
+                        && argument.starts_with('\'')
+                    {
+                        nested_lifetimes.insert(
+                            parameter.clone(),
+                            lifetimes
+                                .get(argument)
+                                .cloned()
+                                .unwrap_or_else(|| argument.clone()),
+                        );
+                    }
+                }
+                let [variant] = definition.variants.as_slice() else {
+                    return Vec::new();
+                };
+                variant
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(index, field)| {
+                        let step = variant
+                            .field_names
+                            .get(index)
+                            .cloned()
+                            .map(LoanProjectionStep::Field)
+                            .unwrap_or(LoanProjectionStep::Tuple(index));
+                        self.slots_with(field, &nested_lifetimes, depth + 1)
+                            .into_iter()
+                            .map(move |mut slot| {
+                                slot.projection = slot.projection.prefixed(step.clone());
+                                slot
+                            })
+                    })
+                    .collect()
+            }
+            Type::RecordCompose { .. } | Type::Fn(_, _, _) | Type::Dyn(_, _) => Vec::new(),
+        }
+    }
+
+    fn borrowed_constructor(&self, constructor: &str) -> bool {
+        self.constructors
+            .get(constructor)
+            .and_then(|name| self.definitions.get(name))
+            .is_some_and(|definition| definition.params.iter().any(|param| param.starts_with('\'')))
+    }
+
+    fn borrowed_record(&self, name: &str) -> bool {
+        self.definitions
+            .get(name)
+            .is_some_and(|definition| definition.params.iter().any(|param| param.starts_with('\'')))
+    }
+
+    fn constructor_step(&self, constructor: &str, index: usize) -> LoanProjectionStep {
+        self.constructors
+            .get(constructor)
+            .and_then(|name| self.definitions.get(name))
+            .and_then(|definition| definition.variants.iter().find(|variant| variant.name == constructor))
+            .and_then(|variant| variant.field_names.get(index))
+            .cloned()
+            .map(LoanProjectionStep::Field)
+            .unwrap_or(LoanProjectionStep::Tuple(index))
+    }
 }
 
 /// The borrow qualifier's lifetime name on a parameter/return type, if any.
@@ -97,8 +257,47 @@ fn is_std_fn(name: &str) -> bool {
 pub struct LoanEvent {
     pub view: String,
     pub owner: String,
+    /// The statically known region of `owner` reached by this view. An empty
+    /// projection borrows the whole owner. Lowering must retain `owner`; this
+    /// descriptor is never an owning RC base.
+    pub projection: LoanProjection,
+    /// The fixed field/tuple slot of `view` whose reads depend on this owner.
+    /// Empty means the complete borrowed value depends on the owner.
+    pub borrower_projection: LoanProjection,
     pub origin: String,
     pub owner_type: Type,
+}
+
+/// One statically checked step from an owner root to borrowed storage.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LoanProjectionStep {
+    Field(String),
+    Tuple(usize),
+    Index(i64),
+    Range { lo: i64, hi: i64, inclusive: bool },
+}
+
+/// A projection is relative to [`LoanEvent::owner`]. Empty means the whole
+/// owner. Only fixed paths reach lowering; dynamic indices are rejected before
+/// a persistent loan can be opened.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LoanProjection {
+    pub steps: Vec<LoanProjectionStep>,
+}
+
+impl LoanProjection {
+    fn extended(&self, suffix: &Self) -> Self {
+        let mut steps = self.steps.clone();
+        steps.extend(suffix.steps.iter().cloned());
+        Self { steps }
+    }
+
+    fn prefixed(&self, step: LoanProjectionStep) -> Self {
+        let mut steps = Vec::with_capacity(self.steps.len() + 1);
+        steps.push(step);
+        steps.extend(self.steps.iter().cloned());
+        Self { steps }
+    }
 }
 
 /// Authoritative events keyed by statement identity in the checked module.
@@ -149,12 +348,13 @@ pub(crate) fn check(module: &Module) -> Result<(), TypeError> {
 
 /// Validate every function and return the exact events consumed by lowering.
 pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
+    let catalog = BorrowCatalog::from_module(module);
     let mut sigs: HashMap<String, BorrowSig> = HashMap::new();
 
     // Pass 1: validate signatures and record each function's borrow relation.
     for item in &module.items {
         let Item::Function(f) = item else { continue };
-        let sig = validate_signature(f, is_opt_function(&f.name, &module.modes))?;
+        let sig = validate_signature(f, is_opt_function(&f.name, &module.modes), &catalog)?;
         sigs.insert(f.name.clone(), sig);
     }
 
@@ -166,6 +366,7 @@ pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
             sigs: &sigs,
             fn_name: &f.name,
             facts: &mut facts,
+            catalog: &catalog,
             returns_view: sigs.get(&f.name).is_some_and(|sig| sig.returns_view),
             return_owners: sigs
                 .get(&f.name)
@@ -182,15 +383,23 @@ pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
                 .iter()
                 .filter_map(|param| {
                     let ty = param.ty.as_ref()?;
-                    let owner_type = view_storage_type(ty)?;
+                    let slots = catalog.slots(ty);
+                    if slots.is_empty() {
+                        return None;
+                    }
                     Some((
                         param.name.clone(),
-                        BorrowSource {
-                            owner: param.name.clone(),
-                            origin: f.name.clone(),
-                            owner_type,
-                            temporary: false,
-                        },
+                        slots
+                            .into_iter()
+                            .map(|slot| BorrowSource {
+                                owner: param.name.clone(),
+                                projection: slot.projection.clone(),
+                                borrower_projection: slot.projection,
+                                origin: f.name.clone(),
+                                owner_type: slot.storage_type,
+                                temporary: false,
+                            })
+                            .collect(),
                     ))
                 })
                 .collect(),
@@ -214,7 +423,7 @@ pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
                 ret,
                 &format!("lambda {} in {}", index + 1, short_name(&f.name)),
                 is_opt_function(&f.name, &module.modes),
-                &sigs,
+                LoanEnvironment { sigs: &sigs, catalog: &catalog },
                 &mut facts,
             )?;
         }
@@ -228,9 +437,10 @@ fn check_lambda_body(
     ret: Option<&Type>,
     name: &str,
     opt: bool,
-    sigs: &HashMap<String, BorrowSig>,
+    environment: LoanEnvironment<'_>,
     facts: &mut LoanFacts,
 ) -> Result<(), TypeError> {
+    let LoanEnvironment { sigs, catalog } = environment;
     let forwarded = forwarding_lambda_sig(params, body, sigs);
     let forwarded = forwarded.as_ref();
     let explicitly_uses_view = params
@@ -278,15 +488,23 @@ fn check_lambda_body(
     let input_borrows = params
         .iter()
         .filter_map(|param| {
-            let owner_type = view_storage_type(param.ty.as_ref()?)?;
+            let slots = catalog.slots(param.ty.as_ref()?);
+            if slots.is_empty() {
+                return None;
+            }
             Some((
                 param.name.clone(),
-                BorrowSource {
-                    owner: param.name.clone(),
-                    origin: name.to_string(),
-                    owner_type,
-                    temporary: false,
-                },
+                slots
+                    .into_iter()
+                    .map(|slot| BorrowSource {
+                        owner: param.name.clone(),
+                        projection: slot.projection.clone(),
+                        borrower_projection: slot.projection,
+                        origin: name.to_string(),
+                        owner_type: slot.storage_type,
+                        temporary: false,
+                    })
+                    .collect(),
             ))
         })
         .collect();
@@ -294,6 +512,7 @@ fn check_lambda_body(
         sigs,
         fn_name: name,
         facts,
+        catalog,
         returns_view: ret_life.is_some() || forwarded.is_some_and(|sig| sig.returns_view),
         return_owners,
         block_results: HashMap::new(),
@@ -301,6 +520,12 @@ fn check_lambda_body(
         return_callable: ret.and_then(borrow_sig_from_fn_type).map(Box::new),
     };
     ctx.check_block_with(body, &[], &callable_params, true)
+}
+
+#[derive(Clone, Copy)]
+struct LoanEnvironment<'a> {
+    sigs: &'a HashMap<String, BorrowSig>,
+    catalog: &'a BorrowCatalog,
 }
 
 /// Recover the typed contract of a pure forwarding lambda. The linker represents
@@ -342,24 +567,33 @@ fn collect_lambdas<'a>(
 }
 
 /// Validate one function's view syntax and compute its borrow relation.
-fn validate_signature(f: &Function, opt: bool) -> Result<BorrowSig, TypeError> {
-    // Input lifetimes declared by borrowed parameters: name -> param indices.
-    let mut input_lifetimes: HashMap<&str, Vec<usize>> = HashMap::new();
+fn validate_signature(
+    f: &Function,
+    opt: bool,
+    catalog: &BorrowCatalog,
+) -> Result<BorrowSig, TypeError> {
+    // Input lifetimes declared by direct views or fixed borrowed aggregate
+    // slots: name -> exact parameter/slot positions.
+    let mut input_lifetimes: HashMap<String, Vec<OwnerPosition>> = HashMap::new();
     let mut uses_view = false;
     for (i, p) in f.params.iter().enumerate() {
         if let Some(ty) = &p.ty {
             validate_nested_fn_borrows(ty, &f.name)?;
-            uses_view |= type_mentions_view(ty);
-            if let Some(life) = view_lifetime(ty) {
-                input_lifetimes.entry(life).or_default().push(i);
+            let slots = catalog.slots(ty);
+            uses_view |= type_mentions_view(ty) || !slots.is_empty();
+            for slot in slots {
+                input_lifetimes
+                    .entry(slot.lifetime)
+                    .or_default()
+                    .push(OwnerPosition { index: i, input_projection: slot.projection });
             }
         }
     }
+    let return_slots = f.ret.as_ref().map(|ret| catalog.slots(ret)).unwrap_or_default();
     if let Some(ret) = &f.ret {
         validate_nested_fn_borrows(ret, &f.name)?;
-        uses_view |= type_mentions_view(ret);
+        uses_view |= type_mentions_view(ret) || !return_slots.is_empty();
     }
-    let ret_life = f.ret.as_ref().and_then(|t| view_lifetime(t));
 
     // Views are a `mode opt`-only surface (RFC-0083). The bundled std is the
     // optimized substrate and is exempt, matching the linker's import rule.
@@ -375,7 +609,8 @@ fn validate_signature(f: &Function, opt: bool) -> Result<BorrowSig, TypeError> {
     // A borrowed parameter must not carry a mutable convention: a view is
     // read-only, so `var`/`own` on it is a contradiction.
     for p in &f.params {
-        if p.ty.as_ref().is_some_and(|t| view_lifetime(t).is_some()) && p.convention.binds_mutable()
+        if p.ty.as_ref().is_some_and(|ty| !catalog.slots(ty).is_empty())
+            && p.convention.binds_mutable()
         {
             return Err(terr(format!(
                 "parameter `{}` of `{}` is a borrowed view (read-only) but its convention \
@@ -386,34 +621,37 @@ fn validate_signature(f: &Function, opt: bool) -> Result<BorrowSig, TypeError> {
         }
     }
 
-    // Every returned view lifetime must be bound by an input view of the same
-    // name: an output borrow cannot come from nowhere (it would dangle).
-    let owner_params = if let Some(life) = ret_life {
-        match input_lifetimes.get(life) {
-            Some(idxs) => idxs
-                .iter()
-                .filter_map(|&idx| {
-                    f.params.get(idx)?.ty.as_ref().map(|ty| (idx, ty.clone()))
-                })
-                .collect(),
-            None => {
-                return Err(terr(format!(
-                    "`{}` returns a view with lifetime `'{life}`, but no parameter borrows \
-                     with that lifetime — an output view must borrow from an input. Write \
-                     the corresponding parameter as `let('{life}) T`, or return an owned value",
-                    short_name(&f.name)
-                )));
-            }
+    let mut relations = Vec::new();
+    for slot in return_slots {
+        let Some(owners) = input_lifetimes.get(&slot.lifetime) else {
+            return Err(terr(format!(
+                "`{}` returns borrowed storage with lifetime `'{}`, but no parameter borrows \
+                 with that lifetime — an output borrow must come from an input owner",
+                short_name(&f.name),
+                slot.lifetime,
+            )));
+        };
+        relations.push(BorrowRelation {
+            output_projection: slot.projection,
+            owners: owners.clone(),
+            storage_type: slot.storage_type,
+        });
+    }
+    let mut owner_params = Vec::new();
+    for owner in relations.iter().flat_map(|relation| &relation.owners) {
+        if owner_params.iter().any(|(index, _)| *index == owner.index) {
+            continue;
         }
-    } else {
-        Vec::new()
-    };
+        if let Some(ty) = f.params.get(owner.index).and_then(|param| param.ty.clone()) {
+            owner_params.push((owner.index, ty));
+        }
+    }
 
     Ok(BorrowSig {
-        returns_view: ret_life.is_some(),
+        returns_view: !relations.is_empty(),
         owner_params,
+        relations,
         conventions: f.params.iter().map(|param| param.convention).collect(),
-        view_type: f.ret.as_ref().and_then(view_storage_type),
         callable_params: f
             .params
             .iter()
@@ -493,7 +731,7 @@ fn borrow_sig_from_fn_type(ty: &Type) -> Option<BorrowSig> {
         return None;
     };
     let ret_life = view_lifetime(ret);
-    let owner_params = ret_life
+    let owner_params: Vec<(usize, Type)> = ret_life
         .map(|life| {
             params
                 .iter()
@@ -510,9 +748,22 @@ fn borrow_sig_from_fn_type(ty: &Type) -> Option<BorrowSig> {
     };
     Some(BorrowSig {
         returns_view: ret_life.is_some(),
+        relations: ret_life
+            .map(|_| BorrowRelation {
+                output_projection: LoanProjection::default(),
+                owners: owner_params
+                    .iter()
+                    .map(|(index, _)| OwnerPosition {
+                        index: *index,
+                        input_projection: LoanProjection::default(),
+                    })
+                    .collect(),
+                storage_type: view_storage_type(ret).expect("borrowed function result storage"),
+            })
+            .into_iter()
+            .collect(),
         owner_params,
         conventions,
-        view_type: view_storage_type(ret),
         callable_params: params
             .iter()
             .map(|param| borrow_sig_from_fn_type(param).map(Box::new))
@@ -528,6 +779,11 @@ struct Loan {
     view: String,
     /// The owner local whose storage the view borrows.
     owner: String,
+    /// The owner-relative storage region borrowed by this view.
+    projection: LoanProjection,
+    /// The part of an aggregate view whose use depends on this owner. Empty for
+    /// an ordinary direct view; fixed aggregates use field/tuple paths.
+    borrower_projection: LoanProjection,
     /// Callee whose return type created this loan (for diagnostics).
     origin: String,
     owner_type: Type,
@@ -537,9 +793,49 @@ struct Loan {
 #[derive(Clone)]
 struct BorrowSource {
     owner: String,
+    projection: LoanProjection,
+    borrower_projection: LoanProjection,
     origin: String,
     owner_type: Type,
     temporary: bool,
+}
+
+fn same_source(left: &BorrowSource, right: &BorrowSource) -> bool {
+    left.owner == right.owner
+        && left.projection == right.projection
+        && left.borrower_projection == right.borrower_projection
+        && left.origin == right.origin
+}
+
+fn strip_projection_prefix(
+    projection: &LoanProjection,
+    prefix: &LoanProjection,
+) -> Option<LoanProjection> {
+    if prefix.steps.len() > projection.steps.len()
+        || !projection
+            .steps
+            .iter()
+            .zip(&prefix.steps)
+            .all(|(left, right)| projection_steps_equal(left, right))
+    {
+        return None;
+    }
+    Some(LoanProjection { steps: projection.steps[prefix.steps.len()..].to_vec() })
+}
+
+/// Restrict one aggregate owner contribution to `requested`, which is relative
+/// to the borrower. Projecting inside an ordinary view composes the remainder
+/// onto the owner path; projecting a fixed aggregate selects and re-roots only
+/// the owner contributions beneath that field/tuple slot.
+fn project_source(mut source: BorrowSource, requested: &LoanProjection) -> Option<BorrowSource> {
+    if let Some(remainder) = strip_projection_prefix(requested, &source.borrower_projection) {
+        source.projection = source.projection.extended(&remainder);
+        source.borrower_projection = LoanProjection::default();
+        return Some(source);
+    }
+    let remainder = strip_projection_prefix(&source.borrower_projection, requested)?;
+    source.borrower_projection = remainder;
+    Some(source)
 }
 
 /// The tail expression of a block — the value it evaluates to — if its last
@@ -562,8 +858,217 @@ fn expr_root(expr: &Expr) -> Option<&str> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PlaceProjection {
+    Fixed(LoanProjection),
+    Dynamic,
+}
+
+fn fixed_range(index: &Expr) -> Option<LoanProjectionStep> {
+    let Expr::Range { lo, hi, inclusive } = index else { return None };
+    let (Expr::Int(lo), Expr::Int(hi)) = (lo.as_ref(), hi.as_ref()) else {
+        return None;
+    };
+    Some(LoanProjectionStep::Range { lo: *lo, hi: *hi, inclusive: *inclusive })
+}
+
+/// Extract a root and a checked projection. A dynamic index is retained as an
+/// explicit failure state so callers never silently widen a persisted interior
+/// view into a whole-owner fact.
+fn expr_place(expr: &Expr) -> Option<(&str, PlaceProjection)> {
+    fn walk<'a>(
+        expr: &'a Expr,
+        steps: &mut Vec<LoanProjectionStep>,
+    ) -> Option<(&'a str, bool)> {
+        match expr {
+            Expr::Var(name) => Some((name, false)),
+            Expr::Field { base, field } => {
+                let (root, dynamic) = walk(base, steps)?;
+                steps.push(LoanProjectionStep::Field(field.clone()));
+                Some((root, dynamic))
+            }
+            Expr::Index { base, index } => {
+                let (root, mut dynamic) = walk(base, steps)?;
+                match index.as_ref() {
+                    Expr::Int(value) => steps.push(LoanProjectionStep::Index(*value)),
+                    range @ Expr::Range { .. } => {
+                        if let Some(range) = fixed_range(range) {
+                            steps.push(range);
+                        } else {
+                            dynamic = true;
+                        }
+                    }
+                    _ => dynamic = true,
+                }
+                Some((root, dynamic))
+            }
+            Expr::As { expr, .. } => walk(expr, steps),
+            _ => None,
+        }
+    }
+
+    let mut steps = Vec::new();
+    let (root, dynamic) = walk(expr, &mut steps)?;
+    let projection = if dynamic {
+        PlaceProjection::Dynamic
+    } else {
+        PlaceProjection::Fixed(LoanProjection { steps })
+    };
+    Some((root, projection))
+}
+
+fn projection_steps_equal(left: &LoanProjectionStep, right: &LoanProjectionStep) -> bool {
+    left == right
+        || match (left, right) {
+            (LoanProjectionStep::Tuple(left), LoanProjectionStep::Index(right)) => {
+                *left as i64 == *right
+            }
+            (LoanProjectionStep::Index(left), LoanProjectionStep::Tuple(right)) => {
+                *left == *right as i64
+            }
+            _ => false,
+        }
+}
+
+fn fixed_interval(step: &LoanProjectionStep) -> Option<(i128, i128)> {
+    match step {
+        LoanProjectionStep::Index(value) => {
+            let lo = i128::from(*value);
+            Some((lo, lo + 1))
+        }
+        LoanProjectionStep::Tuple(value) => {
+            let lo = *value as i128;
+            Some((lo, lo + 1))
+        }
+        LoanProjectionStep::Range { lo, hi, inclusive } => {
+            let lo = i128::from(*lo);
+            let mut hi = i128::from(*hi);
+            if *inclusive {
+                hi += 1;
+            }
+            Some((lo, hi.max(lo)))
+        }
+        LoanProjectionStep::Field(_) => None,
+    }
+}
+
+fn projection_steps_overlap(left: &LoanProjectionStep, right: &LoanProjectionStep) -> bool {
+    if projection_steps_equal(left, right) {
+        return true;
+    }
+    match (left, right) {
+        (LoanProjectionStep::Field(left), LoanProjectionStep::Field(right)) => left == right,
+        _ => match (fixed_interval(left), fixed_interval(right)) {
+            (Some((left_lo, left_hi)), Some((right_lo, right_hi))) => {
+                left_lo < right_hi && right_lo < left_hi
+            }
+            _ => true,
+        },
+    }
+}
+
+fn projections_overlap(left: &LoanProjection, right: &LoanProjection) -> bool {
+    for (left, right) in left.steps.iter().zip(&right.steps) {
+        if !projection_steps_overlap(left, right) {
+            return false;
+        }
+    }
+    true
+}
+
+fn place_overlaps(place: PlaceProjection, borrowed: &LoanProjection) -> bool {
+    match place {
+        PlaceProjection::Fixed(projection) => projections_overlap(&projection, borrowed),
+        PlaceProjection::Dynamic => true,
+    }
+}
+
+fn index_projection(index: &Expr) -> Option<LoanProjectionStep> {
+    match index {
+        Expr::Int(value) => Some(LoanProjectionStep::Index(*value)),
+        range @ Expr::Range { .. } => fixed_range(range),
+        _ => None,
+    }
+}
+
+/// Recover the write region from the parser's place-assignment desugaring.
+/// Unknown shapes conservatively write the whole assigned root.
+fn assignment_write_projections(name: &str, value: &Expr) -> Vec<LoanProjection> {
+    match value {
+        Expr::RecordUpdate { base, fields, .. } if expr_root(base) == Some(name) => fields
+            .iter()
+            .map(|(field, _)| LoanProjection {
+                steps: vec![LoanProjectionStep::Field(field.clone())],
+            })
+            .collect(),
+        Expr::MethodCall { receiver, method, args }
+            if method == "__set_at" && expr_root(receiver) == Some(name) =>
+        {
+            args.first()
+                .and_then(index_projection)
+                .map(|step| vec![LoanProjection { steps: vec![step] }])
+                .unwrap_or_else(|| vec![LoanProjection::default()])
+        }
+        Expr::Call { name: callee, args }
+            if callee.ends_with("__set_at") && args.first().and_then(expr_root) == Some(name) =>
+        {
+            args.get(1)
+                .and_then(index_projection)
+                .map(|step| vec![LoanProjection { steps: vec![step] }])
+                .unwrap_or_else(|| vec![LoanProjection::default()])
+        }
+        _ => vec![LoanProjection::default()],
+    }
+}
+
+fn pattern_bindings(
+    pattern: &Pattern,
+    catalog: &BorrowCatalog,
+    projection: &LoanProjection,
+    out: &mut Vec<(String, LoanProjection)>,
+) {
+    match pattern {
+        Pattern::Var(name) if name != "_" => out.push((name.clone(), projection.clone())),
+        Pattern::Tuple(items) => {
+            for (index, item) in items.iter().enumerate() {
+                pattern_bindings(
+                    item,
+                    catalog,
+                    &projection.extended(&LoanProjection {
+                        steps: vec![LoanProjectionStep::Tuple(index)],
+                    }),
+                    out,
+                );
+            }
+        }
+        Pattern::Ctor { name, args } if catalog.borrowed_constructor(name) => {
+            for (index, arg) in args.iter().enumerate() {
+                pattern_bindings(
+                    arg,
+                    catalog,
+                    &projection.extended(&LoanProjection {
+                        steps: vec![catalog.constructor_step(name, index)],
+                    }),
+                    out,
+                );
+            }
+        }
+        Pattern::Wildcard | Pattern::Var(_) => {}
+        Pattern::Ctor { .. }
+        | Pattern::AnonCtor { .. }
+        | Pattern::List { .. }
+        | Pattern::Or(_)
+        | Pattern::Int(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_)
+        | Pattern::Duration(_)
+        | Pattern::IntRange { .. } => {}
+    }
+}
+
 struct LoanCtx<'a> {
     sigs: &'a HashMap<String, BorrowSig>,
+    catalog: &'a BorrowCatalog,
     fn_name: &'a str,
     facts: &'a mut LoanFacts,
     returns_view: bool,
@@ -575,7 +1080,7 @@ struct LoanCtx<'a> {
     /// Borrowed function parameters are provenance roots too. Recording all of
     /// them lets body checking reject returning a `'b` input under a declared
     /// `'a` result relation.
-    input_borrows: HashMap<String, BorrowSource>,
+    input_borrows: HashMap<String, Vec<BorrowSource>>,
     return_callable: Option<Box<BorrowSig>>,
 }
 
@@ -646,11 +1151,8 @@ impl LoanCtx<'_> {
             // `if`/`match`/block whose branches return views) opens a loan per
             // distinct owner it borrows.
             if let Stmt::Let { name, ty, value, mutable } = stmt {
-                if projection_of_live_view(value, &live) {
-                    return Err(terr(format!(
-                        "in `{}`: a projection of a borrowed view cannot be persisted because its +                         storage layout is not carried by the alias — materialize the view with +                         `.owned()` before projecting it",
-                        short_name(self.fn_name),
-                    )));
+                if self.has_dynamic_borrow_projection(value, &callables, &live) {
+                    return Err(self.dynamic_projection());
                 }
                 let mut sources = self.borrow_sources(value, &callables, &live);
                 self.collect_alias_sources(value, &live, &mut sources);
@@ -667,6 +1169,8 @@ impl LoanCtx<'_> {
                     let loan = Loan {
                         view: name.clone(),
                         owner: owner.owner,
+                        projection: owner.projection,
+                        borrower_projection: owner.borrower_projection,
                         origin: owner.origin,
                         owner_type: owner.owner_type,
                     };
@@ -692,6 +1196,50 @@ impl LoanCtx<'_> {
                     callables.insert(name.clone(), sig);
                 } else {
                     callables.remove(name);
+                }
+            } else if let Stmt::LetPattern { pattern, value } = stmt {
+                if self.has_dynamic_borrow_projection(value, &callables, &live) {
+                    return Err(self.dynamic_projection());
+                }
+                let mut sources = self.borrow_sources(value, &callables, &live);
+                self.collect_alias_sources(value, &live, &mut sources);
+                let mut bindings = Vec::new();
+                pattern_bindings(pattern, self.catalog, &LoanProjection::default(), &mut bindings);
+                for (name, projection) in bindings {
+                    for source in sources
+                        .iter()
+                        .cloned()
+                        .filter_map(|source| project_source(source, &projection))
+                    {
+                        if source.temporary {
+                            return Err(self.temporary_owner(&source.origin));
+                        }
+                        let loan = Loan {
+                            view: name.clone(),
+                            owner: source.owner,
+                            projection: source.projection,
+                            borrower_projection: source.borrower_projection,
+                            origin: source.origin,
+                            owner_type: source.owner_type,
+                        };
+                        let event = LoanEvent::from(loan.clone());
+                        self.facts
+                            .opens_after
+                            .entry(stmt_key(stmt))
+                            .or_default()
+                            .push(event.clone());
+                        let close_idx = block.stmts[idx + 1..]
+                            .iter()
+                            .rposition(|statement| stmt_mentions(statement, &loan.view))
+                            .map(|offset| idx + 1 + offset)
+                            .unwrap_or(idx);
+                        self.facts
+                            .closes_after
+                            .entry(stmt_key(&block.stmts[close_idx]))
+                            .or_default()
+                            .push(event);
+                        local.push(loan);
+                    }
                 }
             } else if let Stmt::Assign { name, value } = stmt {
                 let mut sources = self.borrow_sources(value, &callables, &live);
@@ -749,19 +1297,24 @@ impl LoanCtx<'_> {
     fn collect_alias_sources(&self, value: &Expr, live: &[Loan], out: &mut Vec<BorrowSource>) {
         match value {
             Expr::Var(name) => {
-                if let Some(source) = self.input_borrows.get(name)
-                    && !out.iter().any(|existing| {
-                        existing.owner == source.owner && existing.origin == source.origin
-                    })
-                {
-                    out.push(source.clone());
+                if let Some(sources) = self.input_borrows.get(name) {
+                    for source in sources {
+                        if !out.iter().any(|existing| same_source(existing, source)) {
+                            out.push(source.clone());
+                        }
+                    }
                 }
                 for loan in live.iter().filter(|loan| loan.view == *name) {
                     if !out.iter().any(|source| {
-                        source.owner == loan.owner && source.origin == loan.origin
+                        source.owner == loan.owner
+                            && source.projection == loan.projection
+                            && source.borrower_projection == loan.borrower_projection
+                            && source.origin == loan.origin
                     }) {
                         out.push(BorrowSource {
                             owner: loan.owner.clone(),
+                            projection: loan.projection.clone(),
+                            borrower_projection: loan.borrower_projection.clone(),
                             origin: loan.origin.clone(),
                             owner_type: loan.owner_type.clone(),
                             temporary: false,
@@ -787,8 +1340,17 @@ impl LoanCtx<'_> {
                     self.collect_alias_sources(tail, live, out);
                 }
             }
-            Expr::Field { base, .. } | Expr::Index { base, .. } => {
-                self.collect_alias_sources(base, live, out);
+            Expr::Field { .. } | Expr::Index { .. } => {
+                let Some((root, PlaceProjection::Fixed(requested))) = expr_place(value) else {
+                    return;
+                };
+                let mut root_sources = Vec::new();
+                self.collect_alias_sources(&Expr::Var(root.to_string()), live, &mut root_sources);
+                for source in root_sources {
+                    if let Some(projected) = project_source(source, &requested) {
+                        self.push_source(projected, out);
+                    }
+                }
             }
             _ => {}
         }
@@ -849,7 +1411,87 @@ impl LoanCtx<'_> {
                 }
             }
             Expr::Block(block) => self.collect_block_result(block, callables, live, out),
+            Expr::Tuple(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    self.collect_aggregate_slot(
+                        item,
+                        LoanProjectionStep::Tuple(index),
+                        callables,
+                        live,
+                        out,
+                    );
+                }
+            }
+            Expr::Ctor { name, args } if self.catalog.borrowed_constructor(name) => {
+                for (index, arg) in args.iter().enumerate() {
+                    self.collect_aggregate_slot(
+                        arg,
+                        self.catalog.constructor_step(name, index),
+                        callables,
+                        live,
+                        out,
+                    );
+                }
+            }
+            Expr::Record { name, fields, .. } if self.catalog.borrowed_record(name) => {
+                for (field, value) in fields {
+                    self.collect_aggregate_slot(
+                        value,
+                        LoanProjectionStep::Field(field.clone()),
+                        callables,
+                        live,
+                        out,
+                    );
+                }
+            }
+            Expr::Field { base, field } => self.collect_projected_result(
+                base,
+                LoanProjectionStep::Field(field.clone()),
+                callables,
+                live,
+                out,
+            ),
+            Expr::Index { base, index } => {
+                if let Some(step) = index_projection(index) {
+                    self.collect_projected_result(base, step, callables, live, out);
+                }
+            }
+            Expr::As { expr, .. } => self.collect_view_owners(expr, callables, live, out),
             _ => {}
+        }
+    }
+
+    fn collect_aggregate_slot(
+        &self,
+        value: &Expr,
+        step: LoanProjectionStep,
+        callables: &HashMap<String, BorrowSig>,
+        live: &[Loan],
+        out: &mut Vec<BorrowSource>,
+    ) {
+        let mut sources = self.borrow_sources(value, callables, live);
+        self.collect_alias_sources(value, live, &mut sources);
+        for mut source in sources {
+            source.borrower_projection = source.borrower_projection.prefixed(step.clone());
+            self.push_source(source, out);
+        }
+    }
+
+    fn collect_projected_result(
+        &self,
+        base: &Expr,
+        step: LoanProjectionStep,
+        callables: &HashMap<String, BorrowSig>,
+        live: &[Loan],
+        out: &mut Vec<BorrowSource>,
+    ) {
+        let mut sources = self.borrow_sources(base, callables, live);
+        self.collect_alias_sources(base, live, &mut sources);
+        let requested = LoanProjection { steps: vec![step] };
+        for source in sources {
+            if let Some(source) = project_source(source, &requested) {
+                self.push_source(source, out);
+            }
         }
     }
 
@@ -862,7 +1504,7 @@ impl LoanCtx<'_> {
     ) {
         if let Some(sources) = self.block_results.get(&block_key(block)) {
             for source in sources {
-                if !out.iter().any(|existing| existing.owner == source.owner) {
+                if !out.iter().any(|existing| same_source(existing, source)) {
                     out.push(source.clone());
                 }
             }
@@ -883,59 +1525,54 @@ impl LoanCtx<'_> {
         if !sig.returns_view {
             return; // an owned result (e.g. `view.owned()`) borrows nothing
         }
-        for (i, _) in &sig.owner_params {
-            let Some(arg) = args.get(*i) else { continue };
-            if let Some(root) = expr_root(arg) {
-                let aliases: Vec<&Loan> =
-                    live.iter().filter(|loan| loan.view == root).collect();
-                if aliases.is_empty() {
-                    self.push_source(
-                        BorrowSource {
+        for relation in &sig.relations {
+            for owner in &relation.owners {
+                let Some(arg) = args.get(owner.index) else { continue };
+                let mut sources = Vec::new();
+                self.collect_alias_sources(arg, live, &mut sources);
+                if sources.is_empty() {
+                    if let Some((root, PlaceProjection::Fixed(argument_projection))) =
+                        expr_place(arg)
+                    {
+                        sources.push(BorrowSource {
                             owner: root.to_string(),
+                            projection: argument_projection.extended(&owner.input_projection),
+                            borrower_projection: LoanProjection::default(),
                             origin: callee.to_string(),
-                            owner_type: sig.view_type.clone().expect("view result type"),
+                            owner_type: relation.storage_type.clone(),
                             temporary: false,
-                        },
-                        out,
-                    );
-                } else {
-                    for alias in aliases {
-                        self.push_source(
-                            BorrowSource {
-                                owner: alias.owner.clone(),
-                                origin: callee.to_string(),
-                                owner_type: sig.view_type.clone().expect("view result type"),
-                                temporary: false,
-                            },
-                            out,
-                        );
+                        });
+                    } else {
+                        self.collect_view_owners(arg, callables, live, &mut sources);
                     }
+                } else {
+                    sources = sources
+                        .into_iter()
+                        .filter_map(|source| project_source(source, &owner.input_projection))
+                        .collect();
                 }
-            } else {
-                // The borrowed argument is itself a view expression (e.g.
-                // `outer(borrow(s))`); its own result owners are this
-                // binding's owners, keeping the outer callee as the origin.
-                let mut inner = Vec::new();
-                self.collect_view_owners(arg, callables, live, &mut inner);
-                if inner.is_empty() {
-                    inner.push(BorrowSource {
+                if sources.is_empty() {
+                    sources.push(BorrowSource {
                         owner: String::new(),
+                        projection: LoanProjection::default(),
+                        borrower_projection: relation.output_projection.clone(),
                         origin: callee.to_string(),
-                        owner_type: sig.view_type.clone().expect("view result type"),
+                        owner_type: relation.storage_type.clone(),
                         temporary: true,
                     });
                 }
-                for mut src in inner {
-                    src.origin = callee.to_string();
-                    src.owner_type = sig.view_type.clone().expect("view result type");
-                    self.push_source(src, out);
+                for mut source in sources {
+                    source.borrower_projection = relation.output_projection.clone();
+                    source.origin = callee.to_string();
+                    source.owner_type = relation.storage_type.clone();
+                    self.push_source(source, out);
                 }
             }
         }
     }
 
     fn push_source(&self, source: BorrowSource, out: &mut Vec<BorrowSource>) {
-        if !out.iter().any(|existing| existing.owner == source.owner) {
+        if !out.iter().any(|existing| same_source(existing, &source)) {
             out.push(source);
         }
     }
@@ -955,6 +1592,56 @@ impl LoanCtx<'_> {
              view in an immutable `let` binding, or materialize it with `.owned()` first",
             short_name(self.fn_name),
         ))
+    }
+
+    fn dynamic_projection(&self) -> TypeError {
+        terr(format!(
+            "in `{}`: a borrowed projection with a dynamic index cannot be persisted — \
+             use a fixed field/index/range, shorten the view to this expression, or \
+             materialize it with `.owned()` first",
+            short_name(self.fn_name),
+        ))
+    }
+
+    fn has_dynamic_borrow_projection(
+        &self,
+        value: &Expr,
+        callables: &HashMap<String, BorrowSig>,
+        live: &[Loan],
+    ) -> bool {
+        let mut dynamic = false;
+        walk_expr(value, &mut |expr| {
+            if dynamic {
+                return;
+            }
+            match expr {
+                Expr::Field { .. } | Expr::Index { .. } => {
+                    let Some((root, projection)) = expr_place(expr) else { return };
+                    if matches!(projection, PlaceProjection::Dynamic)
+                        && (self.input_borrows.contains_key(root)
+                            || live.iter().any(|loan| loan.view == root))
+                    {
+                        dynamic = true;
+                    }
+                }
+                Expr::Call { name, args } => {
+                    let Some(sig) = self.sigs.get(name).or_else(|| callables.get(name)) else {
+                        return;
+                    };
+                    if sig.returns_view
+                        && sig.owner_params.iter().any(|(index, _)| {
+                            args.get(*index).is_some_and(|arg| {
+                                matches!(expr_place(arg), Some((_, PlaceProjection::Dynamic)))
+                            })
+                        })
+                    {
+                        dynamic = true;
+                    }
+                }
+                _ => {}
+            }
+        });
+        dynamic
     }
 
     fn aggregate_view_storage(&self, origin: &str) -> TypeError {
@@ -978,14 +1665,28 @@ impl LoanCtx<'_> {
             sources.into_iter().next()
         };
         match value {
-            Expr::List(items) | Expr::Tuple(items) => items
+            Expr::List(items) => items
                 .iter()
                 .find_map(&mut inspect)
                 .or_else(|| items.iter().find_map(|item| self.aggregate_borrow_source(item, callables, live))),
+            Expr::Tuple(items) => items
+                .iter()
+                .find_map(|item| self.aggregate_borrow_source(item, callables, live)),
+            Expr::Ctor { name, args } if self.catalog.borrowed_constructor(name) => args
+                .iter()
+                .find_map(|arg| self.aggregate_borrow_source(arg, callables, live)),
             Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => args
                 .iter()
                 .find_map(&mut inspect)
                 .or_else(|| args.iter().find_map(|arg| self.aggregate_borrow_source(arg, callables, live))),
+            Expr::Record { name, fields, spread } if self.catalog.borrowed_record(name) => fields
+                .iter()
+                .find_map(|(_, field)| self.aggregate_borrow_source(field, callables, live))
+                .or_else(|| {
+                    spread
+                        .as_deref()
+                        .and_then(|base| self.aggregate_borrow_source(base, callables, live))
+                }),
             Expr::Record { fields, spread, .. } => fields
                 .iter()
                 .find_map(|(_, field)| inspect(field))
@@ -1259,8 +1960,12 @@ impl LoanCtx<'_> {
         }
         for loan in open {
             // Reassigning the owner place invalidates every view of it.
-            if let Stmt::Assign { name, .. } = stmt {
-                if name == &loan.owner {
+            if let Stmt::Assign { name, value } = stmt {
+                if name == &loan.owner
+                    && assignment_write_projections(name, value)
+                        .iter()
+                        .any(|write| projections_overlap(write, &loan.projection))
+                {
                     return Err(self.conflict(loan, "reassigned"));
                 }
             }
@@ -1277,7 +1982,7 @@ impl LoanCtx<'_> {
             // The view escaping through a closure/task/channel while its loan is
             // live requires materialization (the owner may not outlive the view's
             // new home). Detect the view captured by a lambda or sent/spawned.
-            if stmt_lets_view_escape(stmt, &loan.view) {
+            if stmt_lets_view_escape(stmt, &loan.view, self.catalog) {
                 return Err(self.escape(loan));
             }
         }
@@ -1333,8 +2038,10 @@ impl LoanCtx<'_> {
             }
             // `move owner`
             if let Expr::Unary { op: UnOp::Move, expr } = e {
-                if let Some(root) = expr_root(expr) {
-                    if let Some(loan) = open.iter().find(|l| l.owner == root) {
+                if let Some((root, projection)) = expr_place(expr) {
+                    if let Some(loan) = open.iter().find(|loan| {
+                        loan.owner == root && place_overlaps(projection.clone(), &loan.projection)
+                    }) {
                         result = Err(self.conflict(loan, "moved (`move`)"));
                     }
                 }
@@ -1346,8 +2053,11 @@ impl LoanCtx<'_> {
                         if !conv.binds_mutable() {
                             continue;
                         }
-                        if let Some(root) = expr_root(arg) {
-                            if let Some(loan) = open.iter().find(|l| l.owner == root) {
+                        if let Some((root, projection)) = expr_place(arg) {
+                            if let Some(loan) = open.iter().find(|loan| {
+                                loan.owner == root
+                                    && place_overlaps(projection.clone(), &loan.projection)
+                            }) {
                                 let kind = if *conv == Convention::Var { "`var`" } else { "`own`" };
                                 result = Err(self.conflict(
                                     loan,
@@ -1365,8 +2075,11 @@ impl LoanCtx<'_> {
                     if !conv.binds_mutable() {
                         continue;
                     }
-                    if let Some(root) = expr_root(arg)
-                        && let Some(loan) = open.iter().find(|loan| loan.owner == root)
+                    if let Some((root, projection)) = expr_place(arg)
+                        && let Some(loan) = open.iter().find(|loan| {
+                            loan.owner == root
+                                && place_overlaps(projection.clone(), &loan.projection)
+                        })
                     {
                         let kind = if *conv == Convention::Var { "`var`" } else { "`own`" };
                         result = Err(self.conflict(
@@ -1448,6 +2161,8 @@ impl From<Loan> for LoanEvent {
         Self {
             view: loan.view,
             owner: loan.owner,
+            projection: loan.projection,
+            borrower_projection: loan.borrower_projection,
             origin: loan.origin,
             owner_type: loan.owner_type,
         }
@@ -1473,7 +2188,7 @@ fn stmt_mentions(stmt: &Stmt, name: &str) -> bool {
 
 /// Whether a statement lets the given view escape via a closure capture, a
 /// channel send, or a task spawn while the view is live.
-fn stmt_lets_view_escape(stmt: &Stmt, view: &str) -> bool {
+fn stmt_lets_view_escape(stmt: &Stmt, view: &str, catalog: &BorrowCatalog) -> bool {
     match stmt {
         Stmt::Assign { value, .. }
             if expr_mentions_var(value, view) && !expr_materializes_view(value, view) =>
@@ -1503,16 +2218,18 @@ fn stmt_lets_view_escape(stmt: &Stmt, view: &str) -> bool {
             // An owned aggregate would let the view outlive this local loan.
             // Temporary or not, requiring `.owned()` keeps one uniform rule and
             // avoids smuggling a view through a tuple/record/list constructor.
-            Expr::List(items) | Expr::Tuple(items) => {
+            Expr::List(items) => {
                 if items.iter().any(|item| expr_result_is_var(item, view)) {
                     escapes = true;
                 }
             }
+            Expr::Ctor { name, .. } if catalog.borrowed_constructor(name) => {}
             Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
                 if args.iter().any(|arg| expr_result_is_var(arg, view)) {
                     escapes = true;
                 }
             }
+            Expr::Record { name, .. } if catalog.borrowed_record(name) => {}
             Expr::Record { fields, spread, .. } => {
                 if fields.iter().any(|(_, value)| expr_result_is_var(value, view))
                     || spread.as_ref().is_some_and(|value| expr_result_is_var(value, view))
@@ -1557,16 +2274,6 @@ fn expr_materializes_view(expr: &Expr, view: &str) -> bool {
         Expr::Call { name, args } => {
             is_owned(name) && args.first().and_then(expr_root) == Some(view)
         }
-        _ => false,
-    }
-}
-
-fn projection_of_live_view(expr: &Expr, live: &[Loan]) -> bool {
-    match expr {
-        Expr::Field { base, .. } | Expr::Index { base, .. } => {
-            expr_root(base).is_some_and(|root| live.iter().any(|loan| loan.view == root))
-        }
-        Expr::As { expr, .. } => projection_of_live_view(expr, live),
         _ => false,
     }
 }

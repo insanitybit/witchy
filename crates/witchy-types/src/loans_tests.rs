@@ -8,6 +8,8 @@
     };
     use witchy_syntax::ast::Item;
 
+    use super::{LoanProjection, LoanProjectionStep};
+
     fn linked_normal(main_body: &str) -> Result<(), crate::typeck::TypeError> {
         fn no_comptime(
             _name: &str,
@@ -586,10 +588,10 @@
         assert!(direct.contains("mutable binding `slot`"), "{direct}");
 
         let destructured = check_str(&opt(
-            "    var s = \"hi\"\n    let (w, n) = (borrow(s), 0)\n    s = \"changed\"\n    console.print(\"done\")\n",
+            "    var s = \"hi\"\n    let (w, n) = (borrow(s), 0)\n    s = \"changed\"\n    console.print(w)\n",
         ))
-        .expect_err("destructuring may not hide a borrowed view");
-        assert!(destructured.contains("owned aggregate"), "{destructured}");
+        .expect_err("destructuring transfers the borrowed tuple slot's owner loan");
+        assert!(destructured.contains("reassigned"), "{destructured}");
 
         let nested = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn keep(xs: List(String)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    let text = \"hi\"\n    let n = keep([borrow(text)])\n    console.print(\"done\")\n";
         let err = check_str(nested).expect_err("a call argument may not hide a view in an aggregate");
@@ -734,4 +736,168 @@
         let cloned = open.clone();
         assert!(loan_facts.event_key(open).is_some());
         assert!(loan_facts.event_key(&cloned).is_none(), "a cloned statement has no facts");
+    }
+
+    #[test]
+    fn persisted_projection_keeps_the_original_root_and_fixed_path() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Pair:\n    left: String\n    right: String\n\n\
+             fn borrow(pair: let('a) Pair) -> View(Pair, 'a):\n    pair\n\n\
+             fn main(console: Console):\n    var pair = Pair(\"left\", \"right\")\n    let whole = borrow(pair)\n    let left = whole.left\n    console.print(left)\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("a fixed projection may be persisted");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+
+        let [event] = loan_facts.opens_after(&main.body.stmts[2]) else {
+            panic!("the projected binding opens exactly one loan")
+        };
+        assert_eq!(event.owner, "pair");
+        assert_eq!(
+            event.projection,
+            LoanProjection { steps: vec![LoanProjectionStep::Field("left".into())] }
+        );
+    }
+
+    #[test]
+    fn projection_conflicts_are_field_sensitive() {
+        let source = |field: &str| {
+            format!(
+                "mode opt\n\n\
+                 type Pair:\n    left: String\n    right: String\n\n\
+                 fn borrow(pair: let('a) Pair) -> View(Pair, 'a):\n    pair\n\n\
+                 fn main(console: Console):\n    var pair = Pair(\"left\", \"right\")\n    let whole = borrow(pair)\n    let left = whole.left\n    pair.{field} = \"changed\"\n    console.print(left)\n"
+            )
+        };
+
+        check_str(&source("right")).expect("a disjoint fixed field may be reassigned");
+        let error = check_str(&source("left"))
+            .expect_err("the borrowed fixed field may not be reassigned while live");
+        assert!(error.contains("owner `pair` is reassigned"), "{error}");
+    }
+
+    #[test]
+    fn fixed_ranges_are_facts_and_dynamic_projections_do_not_persist() {
+        let parse = |projection: &str| {
+            witchy_syntax::parser::parse_module(&format!(
+                "mode opt\n\n\
+                 fn borrow(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\n\
+                 fn main(console: Console):\n    let xs = [1, 2, 3]\n    let whole = borrow(xs)\n    let window = whole[{projection}]\n    console.print(\"done\")\n"
+            ))
+            .expect("parse")
+        };
+
+        let fixed = parse("0..2");
+        let loan_facts = facts(&fixed).expect("a fixed range may be persisted");
+        let main = fixed
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+        assert_eq!(
+            loan_facts.opens_after(&main.body.stmts[2])[0].projection,
+            LoanProjection {
+                steps: vec![LoanProjectionStep::Range { lo: 0, hi: 2, inclusive: false }]
+            }
+        );
+
+        let dynamic = parse("console.hash()");
+        let error = match facts(&dynamic) {
+            Ok(_) => panic!("a dynamic borrowed projection stays rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("dynamic index cannot be persisted"), "{error}");
+
+        let mutation = |index: i64| {
+            witchy_syntax::parser::parse_module(&format!(
+                "mode opt\n\n\
+                 fn borrow(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\n\
+                 fn main(console: Console):\n    var xs = [1, 2, 3]\n    let whole = borrow(xs)\n    let window = whole[0..2]\n    xs[{index}] = 9\n    console.print(\"${{window}}\")\n"
+            ))
+            .expect("parse")
+        };
+        facts(&mutation(2)).expect("a fixed index outside the borrowed range is disjoint");
+        let error = match facts(&mutation(1)) {
+            Ok(_) => panic!("an index inside the borrowed range must conflict"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("owner `xs` is reassigned"), "{error}");
+    }
+
+    #[test]
+    fn fixed_tuple_owner_sets_select_the_projected_owner() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             fn pair(left: let('left) String, right: let('right) String) \
+                 -> (View(String, 'left), View(String, 'right)):\n    (left, right)\n\n\
+             fn main(console: Console):\n    var left = \"left\"\n    var right = \"right\"\n    let both = pair(left, right)\n    let first = both[0]\n    right = \"changed\"\n    console.print(first)\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("a disjoint tuple owner may be reassigned");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+
+        let mut opened = loan_facts.opens_after(&main.body.stmts[2]).to_vec();
+        opened.sort_by(|left, right| left.owner.cmp(&right.owner));
+        assert_eq!(opened.len(), 2);
+        assert_eq!(opened[0].owner, "left");
+        assert_eq!(
+            opened[0].borrower_projection,
+            LoanProjection { steps: vec![LoanProjectionStep::Tuple(0)] }
+        );
+        assert_eq!(opened[1].owner, "right");
+        assert_eq!(
+            opened[1].borrower_projection,
+            LoanProjection { steps: vec![LoanProjectionStep::Tuple(1)] }
+        );
+
+        let [first] = loan_facts.opens_after(&main.body.stmts[3]) else {
+            panic!("projecting tuple slot zero selects exactly one owner")
+        };
+        assert_eq!(first.owner, "left");
+        assert!(first.borrower_projection.steps.is_empty());
+    }
+
+    #[test]
+    fn fixed_borrowed_nominal_owner_sets_propagate_through_calls_and_fields() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type PairView('left, 'right):\n    first: View(String, 'left)\n    second: View(String, 'right)\n\n\
+             fn pair(left: let('left) String, right: let('right) String) \
+                 -> PairView('left, 'right):\n    PairView(left, right)\n\n\
+             fn main(console: Console):\n    var left = \"left\"\n    var right = \"right\"\n    let both = pair(left, right)\n    let first = both.first\n    right = \"changed\"\n    console.print(first)\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("fixed nominal fields preserve exact owner sets");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+
+        let [first] = loan_facts.opens_after(&main.body.stmts[3]) else {
+            panic!("projecting the first borrowed field selects one owner")
+        };
+        assert_eq!(first.owner, "left");
+        assert!(first.borrower_projection.steps.is_empty());
     }
