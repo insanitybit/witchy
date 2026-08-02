@@ -877,6 +877,20 @@ fn compare_type(
         (Type::Qualified(_, _), _) | (_, Type::Qualified(_, _)) => {
             Err(AccessMismatchKind::Qualifier)
         }
+        (Type::Named(left, left_args), Type::Named(right, right_args))
+            if left_args.is_empty()
+                && right_args.is_empty()
+                && left.starts_with('\'')
+                && right.starts_with('\'') =>
+        {
+            let left = left.strip_prefix('\'').expect("guarded lifetime marker");
+            let right = right.strip_prefix('\'').expect("guarded lifetime marker");
+            if lifetimes.relate(left, right) {
+                Ok(())
+            } else {
+                Err(AccessMismatchKind::BorrowRelation)
+            }
+        }
         (Type::Named(left_name, left_args), Type::Named(right_name, right_args))
         | (Type::Dyn(left_name, left_args), Type::Dyn(right_name, right_args)) => {
             if left_name != right_name || left_args.len() != right_args.len() {

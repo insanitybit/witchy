@@ -289,6 +289,81 @@ fn exact_verifier_accepts_alpha_renamed_borrow_relations() {
 }
 
 #[test]
+fn exact_verifier_alpha_renames_nominal_lifetime_markers() {
+    let holder = |owner: &str| {
+        Type::Named(
+            "Holder".to_string(),
+            vec![named(&format!("'{owner}"))],
+        )
+    };
+    let required = signature(
+        vec![
+            qualified(TypeQual::Borrow("a".to_string()), named("String")),
+            qualified(TypeQual::Borrow("a".to_string()), holder("a")),
+        ],
+        named("Int"),
+        vec![Convention::Borrow; 2],
+    );
+    let renamed = signature(
+        vec![
+            qualified(TypeQual::Borrow("owner".to_string()), named("String")),
+            qualified(TypeQual::Borrow("owner".to_string()), holder("owner")),
+        ],
+        named("Int"),
+        vec![Convention::Borrow; 2],
+    );
+
+    required
+        .verify_exact(&renamed)
+        .expect("nominal lifetime arguments follow the established alpha mapping");
+    renamed
+        .verify_exact(&required)
+        .expect("nominal lifetime alpha-equivalence is symmetric");
+
+    let pair = |left: &str, right: &str| {
+        Type::Named(
+            "Pair".to_string(),
+            vec![named(&format!("'{left}")), named(&format!("'{right}"))],
+        )
+    };
+    let relation = signature(
+        vec![
+            qualified(TypeQual::Borrow("left".to_string()), named("String")),
+            qualified(TypeQual::Borrow("right".to_string()), named("String")),
+            pair("left", "left"),
+        ],
+        named("Int"),
+        vec![Convention::Borrow, Convention::Borrow, Convention::Let],
+    );
+    let rewired = signature(
+        vec![
+            qualified(TypeQual::Borrow("x".to_string()), named("String")),
+            qualified(TypeQual::Borrow("y".to_string()), named("String")),
+            pair("x", "y"),
+        ],
+        named("Int"),
+        vec![Convention::Borrow, Convention::Borrow, Convention::Let],
+    );
+    let error = relation.verify_exact(&rewired).unwrap_err();
+    assert_eq!(error.position(), Some(SignaturePosition::Parameter(2)));
+    assert_eq!(error.kind(), AccessMismatchKind::BorrowRelation);
+
+    let concrete = signature(
+        vec![Type::Named("Box".to_string(), vec![named("Int")])],
+        named("Int"),
+        vec![Convention::Let],
+    );
+    let different = signature(
+        vec![Type::Named("Box".to_string(), vec![named("String")])],
+        named("Int"),
+        vec![Convention::Let],
+    );
+    let error = concrete.verify_exact(&different).unwrap_err();
+    assert_eq!(error.position(), Some(SignaturePosition::Parameter(0)));
+    assert_eq!(error.kind(), AccessMismatchKind::TypeShape);
+}
+
+#[test]
 fn nested_function_lifetimes_stay_in_the_nested_signature_scope() {
     let callback = Type::Fn(
         vec![qualified(TypeQual::Borrow("a".to_string()), named("String"))],
