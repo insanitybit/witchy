@@ -62,6 +62,300 @@ impl From<&TypeQual> for AccessQualifier {
     }
 }
 
+/// One statically checked step from an owner root to borrowed storage.
+///
+/// This representation is shared by access signatures and loan facts so a
+/// callable cannot preserve lifetime names while erasing the field, tuple, or
+/// fixed-range relation those lifetimes govern.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LoanProjectionStep {
+    Field(String),
+    Tuple(usize),
+    Index(i64),
+    Range { lo: i64, hi: i64, inclusive: bool },
+}
+
+/// A fixed projection relative to an owning root. Empty means the whole value.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LoanProjection {
+    pub steps: Vec<LoanProjectionStep>,
+}
+
+impl LoanProjection {
+    pub(crate) fn extended(&self, suffix: &Self) -> Self {
+        let mut steps = self.steps.clone();
+        steps.extend(suffix.steps.iter().cloned());
+        Self { steps }
+    }
+
+    pub(crate) fn prefixed(&self, step: LoanProjectionStep) -> Self {
+        let mut steps = Vec::with_capacity(self.steps.len() + 1);
+        steps.push(step);
+        steps.extend(self.steps.iter().cloned());
+        Self { steps }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct BorrowSlot {
+    pub(crate) lifetime: String,
+    pub(crate) projection: LoanProjection,
+    pub(crate) storage_type: Type,
+}
+
+/// Nominal declarations needed to derive exact borrowed slots from checked
+/// types. The catalog is the single relation authority shared by access-flow
+/// verification and the loan checker.
+#[derive(Clone, Default)]
+pub(crate) struct BorrowRelationCatalog {
+    definitions: HashMap<String, TypeDef>,
+    constructors: HashMap<String, String>,
+}
+
+impl BorrowRelationCatalog {
+    pub(crate) fn from_module(module: &Module) -> Self {
+        let mut catalog = Self::default();
+        for item in &module.items {
+            let Item::Type(definition) = item else { continue };
+            catalog
+                .definitions
+                .insert(definition.name.clone(), definition.clone());
+            for variant in &definition.variants {
+                catalog
+                    .constructors
+                    .insert(variant.name.clone(), definition.name.clone());
+            }
+        }
+        catalog
+    }
+
+    pub(crate) fn slots(&self, ty: &Type) -> Vec<BorrowSlot> {
+        self.slots_with(ty, &HashMap::new(), &HashMap::new(), 0)
+    }
+
+    fn borrow_lifetimes(&self, ty: &Type) -> Vec<String> {
+        slot_lifetimes(&self.slots(ty))
+    }
+
+    fn slots_with(
+        &self,
+        ty: &Type,
+        lifetimes: &HashMap<String, String>,
+        types: &HashMap<String, Type>,
+        depth: usize,
+    ) -> Vec<BorrowSlot> {
+        if depth > 32 {
+            return Vec::new();
+        }
+        match ty {
+            Type::Qualified(TypeQual::Borrow(lifetime), inner) => {
+                let nested = self.slots_with(inner, lifetimes, types, depth + 1);
+                if !nested.is_empty() {
+                    nested
+                } else {
+                    vec![BorrowSlot {
+                        lifetime: lifetimes
+                            .get(lifetime)
+                            .cloned()
+                            .unwrap_or_else(|| lifetime.clone()),
+                        projection: LoanProjection::default(),
+                        storage_type: substitute_borrow_slot_type(inner, types, depth + 1),
+                    }]
+                }
+            }
+            Type::Qualified(_, inner) => self.slots_with(inner, lifetimes, types, depth + 1),
+            Type::Tuple(items) => items
+                .iter()
+                .enumerate()
+                .flat_map(|(index, item)| {
+                    self.slots_with(item, lifetimes, types, depth + 1)
+                        .into_iter()
+                        .map(move |mut slot| {
+                            slot.projection = slot
+                                .projection
+                                .prefixed(LoanProjectionStep::Tuple(index));
+                            slot
+                        })
+                })
+                .collect(),
+            Type::Named(name, arguments) => {
+                if arguments.is_empty()
+                    && let Some(substituted) = types.get(name)
+                {
+                    return self.slots_with(substituted, lifetimes, types, depth + 1);
+                }
+                let Some(definition) = self.definitions.get(name) else {
+                    return Vec::new();
+                };
+                let mut nested_lifetimes = lifetimes.clone();
+                let mut nested_types = types.clone();
+                for (parameter, argument) in definition.params.iter().zip(arguments) {
+                    if parameter.starts_with('\'') {
+                        if let Type::Named(argument, arguments) = argument
+                            && arguments.is_empty()
+                            && argument.starts_with('\'')
+                        {
+                            let parameter = parameter
+                                .strip_prefix('\'')
+                                .expect("guarded lifetime parameter");
+                            let argument = argument
+                                .strip_prefix('\'')
+                                .expect("guarded lifetime argument");
+                            nested_lifetimes.insert(
+                                parameter.to_string(),
+                                lifetimes
+                                    .get(argument)
+                                    .cloned()
+                                    .unwrap_or_else(|| argument.to_string()),
+                            );
+                        }
+                    } else {
+                        nested_types.insert(
+                            parameter.clone(),
+                            substitute_borrow_slot_type(argument, types, depth + 1),
+                        );
+                    }
+                }
+                let [variant] = definition.variants.as_slice() else {
+                    return Vec::new();
+                };
+                variant
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(index, field)| {
+                        let step = variant
+                            .field_names
+                            .get(index)
+                            .cloned()
+                            .map(LoanProjectionStep::Field)
+                            .unwrap_or(LoanProjectionStep::Tuple(index));
+                        self.slots_with(
+                            field,
+                            &nested_lifetimes,
+                            &nested_types,
+                            depth + 1,
+                        )
+                        .into_iter()
+                        .map(move |mut slot| {
+                            slot.projection = slot.projection.prefixed(step.clone());
+                            slot
+                        })
+                    })
+                    .collect()
+            }
+            Type::RecordCompose { .. } | Type::Fn(_, _, _) | Type::Dyn(_, _) => Vec::new(),
+        }
+    }
+
+    pub(crate) fn borrowed_constructor(&self, constructor: &str) -> bool {
+        self.constructors
+            .get(constructor)
+            .and_then(|name| self.definitions.get(name))
+            .is_some_and(|definition| {
+                definition.params.iter().any(|parameter| parameter.starts_with('\''))
+            })
+    }
+
+    pub(crate) fn borrowed_record(&self, name: &str) -> bool {
+        self.definitions
+            .get(name)
+            .is_some_and(|definition| {
+                definition.params.iter().any(|parameter| parameter.starts_with('\''))
+            })
+    }
+
+    pub(crate) fn constructor_step(
+        &self,
+        constructor: &str,
+        index: usize,
+    ) -> LoanProjectionStep {
+        self.constructors
+            .get(constructor)
+            .and_then(|name| self.definitions.get(name))
+            .and_then(|definition| {
+                definition
+                    .variants
+                    .iter()
+                    .find(|variant| variant.name == constructor)
+            })
+            .and_then(|variant| variant.field_names.get(index))
+            .cloned()
+            .map(LoanProjectionStep::Field)
+            .unwrap_or(LoanProjectionStep::Tuple(index))
+    }
+}
+
+fn slot_lifetimes(slots: &[BorrowSlot]) -> Vec<String> {
+    let mut lifetimes = Vec::new();
+    for slot in slots {
+        if !lifetimes.contains(&slot.lifetime) {
+            lifetimes.push(slot.lifetime.clone());
+        }
+    }
+    lifetimes
+}
+
+fn substitute_borrow_slot_type(
+    ty: &Type,
+    substitutions: &HashMap<String, Type>,
+    depth: usize,
+) -> Type {
+    if depth > 32 {
+        return ty.clone();
+    }
+    match ty {
+        Type::Named(name, arguments) if arguments.is_empty() => substitutions
+            .get(name)
+            .map(|ty| substitute_borrow_slot_type(ty, substitutions, depth + 1))
+            .unwrap_or_else(|| ty.clone()),
+        Type::Named(name, arguments) => Type::Named(
+            name.clone(),
+            arguments
+                .iter()
+                .map(|argument| substitute_borrow_slot_type(argument, substitutions, depth + 1))
+                .collect(),
+        ),
+        Type::Qualified(qualifier, inner) => Type::Qualified(
+            qualifier.clone(),
+            Box::new(substitute_borrow_slot_type(inner, substitutions, depth + 1)),
+        ),
+        Type::Tuple(items) => Type::Tuple(
+            items
+                .iter()
+                .map(|item| substitute_borrow_slot_type(item, substitutions, depth + 1))
+                .collect(),
+        ),
+        Type::Fn(params, result, conventions) => Type::Fn(
+            params
+                .iter()
+                .map(|param| substitute_borrow_slot_type(param, substitutions, depth + 1))
+                .collect(),
+            Box::new(substitute_borrow_slot_type(result, substitutions, depth + 1)),
+            conventions.clone(),
+        ),
+        Type::Dyn(name, arguments) => Type::Dyn(
+            name.clone(),
+            arguments
+                .iter()
+                .map(|argument| substitute_borrow_slot_type(argument, substitutions, depth + 1))
+                .collect(),
+        ),
+        Type::RecordCompose { base, fields } => Type::RecordCompose {
+            base: Box::new(substitute_borrow_slot_type(base, substitutions, depth + 1)),
+            fields: fields
+                .iter()
+                .map(|(name, field)| {
+                    (
+                        name.clone(),
+                        substitute_borrow_slot_type(field, substitutions, depth + 1),
+                    )
+                })
+                .collect(),
+        },
+    }
+}
+
 /// The logical ownership state associated with a physical representation.
 ///
 /// `LayoutDependent` is intentional: a checked nominal type alone does not say
@@ -131,11 +425,30 @@ impl AccessParam {
     }
 }
 
-/// A borrowed result lifetime and the parameter positions which can own it.
+/// One input slot which may own a borrowed result slot.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BorrowOwnerRelation {
+    position: usize,
+    input_projection: LoanProjection,
+}
+
+impl BorrowOwnerRelation {
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    pub fn input_projection(&self) -> &LoanProjection {
+        &self.input_projection
+    }
+}
+
+/// An exact borrowed result slot and the input slots which can own it.
+#[derive(Clone, Debug, PartialEq)]
 pub struct BorrowRelation {
     lifetime: String,
-    owner_positions: Vec<usize>,
+    output_projection: LoanProjection,
+    owners: Vec<BorrowOwnerRelation>,
+    storage_type: Type,
 }
 
 impl BorrowRelation {
@@ -143,8 +456,16 @@ impl BorrowRelation {
         &self.lifetime
     }
 
-    pub fn owner_positions(&self) -> &[usize] {
-        &self.owner_positions
+    pub fn output_projection(&self) -> &LoanProjection {
+        &self.output_projection
+    }
+
+    pub fn owners(&self) -> &[BorrowOwnerRelation] {
+        &self.owners
+    }
+
+    pub fn storage_type(&self) -> &Type {
+        &self.storage_type
     }
 }
 
@@ -216,6 +537,13 @@ impl AccessSignature {
     /// in the AST. Callers must first obtain their finalized checked [`Type`]
     /// and use [`Self::from_function_type`] instead of inventing a type here.
     pub fn from_function(function: &Function) -> Result<Self, AccessSignatureError> {
+        Self::from_function_with_catalog(function, &BorrowRelationCatalog::default())
+    }
+
+    pub(crate) fn from_function_with_catalog(
+        function: &Function,
+        catalog: &BorrowRelationCatalog,
+    ) -> Result<Self, AccessSignatureError> {
         let params = function
             .params
             .iter()
@@ -232,18 +560,29 @@ impl AccessSignature {
             .clone()
             .ok_or(AccessSignatureError::MissingResultType)?;
         let conventions = function.params.iter().map(|param| param.convention).collect();
-        Self::from_parts(params, result, conventions)
+        Self::from_parts_with_catalog(params, result, conventions, catalog)
     }
 
     /// Derive the signature carried by a checked first-class function type.
     pub fn from_function_type(ty: &Type) -> Result<Self, AccessSignatureError> {
+        Self::from_function_type_with_catalog(ty, &BorrowRelationCatalog::default())
+    }
+
+    pub(crate) fn from_function_type_with_catalog(
+        ty: &Type,
+        catalog: &BorrowRelationCatalog,
+    ) -> Result<Self, AccessSignatureError> {
         let callable_qualifiers = leading_qualifiers(ty);
         let Type::Fn(params, result, conventions) = ty.unqualified() else {
             return Err(AccessSignatureError::NotFunctionType);
         };
         let conventions = normalized_conventions(params.len(), conventions)?;
-        let mut signature =
-            Self::from_parts(params.clone(), result.as_ref().clone(), conventions)?;
+        let mut signature = Self::from_parts_with_catalog(
+            params.clone(),
+            result.as_ref().clone(),
+            conventions,
+            catalog,
+        )?;
         signature.callable_qualifiers = callable_qualifiers;
         Ok(signature)
     }
@@ -256,9 +595,27 @@ impl AccessSignature {
         function: &Function,
         resolved: &Type,
     ) -> Result<Self, AccessSignatureError> {
+        Self::from_resolved_function_with_catalog(
+            function,
+            resolved,
+            &BorrowRelationCatalog::default(),
+        )
+    }
+
+    fn from_resolved_function_with_catalog(
+        function: &Function,
+        resolved: &Type,
+        catalog: &BorrowRelationCatalog,
+    ) -> Result<Self, AccessSignatureError> {
         let params = function.params.iter().map(|param| param.ty.as_ref()).collect();
         let conventions = function.params.iter().map(|param| param.convention).collect();
-        Self::from_resolved_parts(params, function.ret.as_ref(), conventions, resolved)
+        Self::from_resolved_parts_with_catalog(
+            params,
+            function.ret.as_ref(),
+            conventions,
+            resolved,
+            catalog,
+        )
     }
 
     /// Derive a lambda or generated callable contract from finalized checked
@@ -268,6 +625,22 @@ impl AccessSignature {
         declared_result: Option<&Type>,
         conventions: Vec<Convention>,
         resolved: &Type,
+    ) -> Result<Self, AccessSignatureError> {
+        Self::from_resolved_parts_with_catalog(
+            declared_params,
+            declared_result,
+            conventions,
+            resolved,
+            &BorrowRelationCatalog::default(),
+        )
+    }
+
+    fn from_resolved_parts_with_catalog(
+        declared_params: Vec<Option<&Type>>,
+        declared_result: Option<&Type>,
+        conventions: Vec<Convention>,
+        resolved: &Type,
+        catalog: &BorrowRelationCatalog,
     ) -> Result<Self, AccessSignatureError> {
         let Type::Fn(resolved_params, resolved_result, resolved_conventions) =
             resolved.unqualified()
@@ -298,7 +671,7 @@ impl AccessSignature {
             || resolved_result.as_ref().clone(),
             |declared| apply_declared_contract(declared, resolved_result),
         );
-        Self::from_parts(params, result, conventions)
+        Self::from_parts_with_catalog(params, result, conventions, catalog)
     }
 
     /// Derive a signature from finalized checked parameter and result types.
@@ -306,6 +679,20 @@ impl AccessSignature {
         params: Vec<Type>,
         result: Type,
         conventions: Vec<Convention>,
+    ) -> Result<Self, AccessSignatureError> {
+        Self::from_parts_with_catalog(
+            params,
+            result,
+            conventions,
+            &BorrowRelationCatalog::default(),
+        )
+    }
+
+    pub(crate) fn from_parts_with_catalog(
+        params: Vec<Type>,
+        result: Type,
+        conventions: Vec<Convention>,
+        catalog: &BorrowRelationCatalog,
     ) -> Result<Self, AccessSignatureError> {
         if params.len() != conventions.len() {
             return Err(AccessSignatureError::ConventionArity {
@@ -331,7 +718,7 @@ impl AccessSignature {
                 return Err(AccessSignatureError::MutableBorrowedView { position });
             }
 
-            let borrow_lifetimes = borrow_lifetimes(&ty);
+            let borrow_lifetimes = catalog.borrow_lifetimes(&ty);
             let state = ownership_state_class(&ty)?;
             let requires_state = matches!(kind, AccessKind::ExclusiveWriteback | AccessKind::Consuming)
                 || type_has_ownership_qualifier(&ty);
@@ -354,28 +741,35 @@ impl AccessSignature {
         }) {
             return Err(AccessSignatureError::LocalUniqueResult);
         }
-        let result_lifetimes = borrow_lifetimes(&result);
+        let result_slots = catalog.slots(&result);
+        let result_lifetimes = slot_lifetimes(&result_slots);
         let result_state = ownership_state_class(&result)?;
         let returns_state = type_has_ownership_qualifier(&result);
         let ownership_output = returns_state.then_some(result_state).flatten();
 
-        let mut borrow_relations = Vec::with_capacity(result_lifetimes.len());
-        for lifetime in &result_lifetimes {
-            let owner_positions = access_params
-                .iter()
-                .enumerate()
-                .filter_map(|(position, param)| {
-                    param.borrow_lifetimes.contains(lifetime).then_some(position)
-                })
-                .collect::<Vec<_>>();
-            if owner_positions.is_empty() {
+        let mut borrow_relations = Vec::with_capacity(result_slots.len());
+        for slot in result_slots {
+            let mut owners = Vec::new();
+            for (position, param) in access_params.iter().enumerate() {
+                for input in catalog.slots(&param.ty) {
+                    if input.lifetime == slot.lifetime {
+                        owners.push(BorrowOwnerRelation {
+                            position,
+                            input_projection: input.projection,
+                        });
+                    }
+                }
+            }
+            if owners.is_empty() {
                 return Err(AccessSignatureError::UnboundResultLifetime {
-                    lifetime: lifetime.clone(),
+                    lifetime: slot.lifetime,
                 });
             }
             borrow_relations.push(BorrowRelation {
-                lifetime: lifetime.clone(),
-                owner_positions,
+                lifetime: slot.lifetime,
+                output_projection: slot.projection,
+                owners,
+                storage_type: slot.storage_type,
             });
         }
 
@@ -464,17 +858,15 @@ impl AccessSignature {
             ));
         }
 
-        let required_relations = self
-            .borrow_relations
-            .iter()
-            .map(|relation| relation.owner_positions.as_slice())
-            .collect::<Vec<_>>();
-        let candidate_relations = candidate
-            .borrow_relations
-            .iter()
-            .map(|relation| relation.owner_positions.as_slice())
-            .collect::<Vec<_>>();
-        if required_relations != candidate_relations {
+        if self.borrow_relations.len() != candidate.borrow_relations.len()
+            || self
+                .borrow_relations
+                .iter()
+                .zip(&candidate.borrow_relations)
+                .any(|(required, candidate)| {
+                    !borrow_relation_compatible(required, candidate, &lifetimes)
+                })
+        {
             return Err(AccessMismatch::new(
                 Some(SignaturePosition::Result),
                 AccessMismatchKind::BorrowRelation,
@@ -482,6 +874,47 @@ impl AccessSignature {
         }
         Ok(())
     }
+
+    /// Compare the canonical output-slot to input-slot graph independently of
+    /// surface type specialization. The type checker already owns surface type
+    /// compatibility at callable-value sites; this preserves the relation
+    /// identity while allowing a generic callable and its specialization.
+    pub(crate) fn has_same_projected_borrow_relations(&self, candidate: &Self) -> bool {
+        self.borrow_relations.len() == candidate.borrow_relations.len()
+            && self
+                .borrow_relations
+                .iter()
+                .zip(&candidate.borrow_relations)
+                .all(|(left, right)| {
+                    left.output_projection == right.output_projection
+                        && left.owners.len() == right.owners.len()
+                        && left.owners.iter().zip(&right.owners).all(
+                            |(left_owner, right_owner)| {
+                                left_owner.position == right_owner.position
+                                    && left_owner.input_projection
+                                        == right_owner.input_projection
+                            },
+                        )
+                })
+    }
+}
+
+fn borrow_relation_compatible(
+    required: &BorrowRelation,
+    candidate: &BorrowRelation,
+    lifetimes: &LifetimeBijection,
+) -> bool {
+    lifetimes.matches(&required.lifetime, &candidate.lifetime)
+        && required.output_projection == candidate.output_projection
+        && required.owners.len() == candidate.owners.len()
+        && required
+            .owners
+            .iter()
+            .zip(&candidate.owners)
+            .all(|(required, candidate)| {
+                required.position == candidate.position
+                    && required.input_projection == candidate.input_projection
+            })
 }
 
 /// Classify the ownership state which a type's current representation can need.
@@ -795,39 +1228,6 @@ fn type_has_ownership_qualifier(ty: &Type) -> bool {
     }
 }
 
-fn borrow_lifetimes(ty: &Type) -> Vec<String> {
-    fn collect(ty: &Type, found: &mut Vec<String>) {
-        match ty {
-            Type::Qualified(TypeQual::Borrow(lifetime), inner) => {
-                if !found.contains(lifetime) {
-                    found.push(lifetime.clone());
-                }
-                collect(inner, found);
-            }
-            Type::Qualified(_, inner) => collect(inner, found),
-            Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
-                for argument in arguments {
-                    collect(argument, found);
-                }
-            }
-            Type::RecordCompose { base, fields } => {
-                collect(base, found);
-                for (_, field) in fields {
-                    collect(field, found);
-                }
-            }
-            // A nested function type introduces its own lifetime-relation scope.
-            // Those relations are checked recursively by `compare_type`; they do
-            // not name owners in the enclosing callable signature.
-            Type::Fn(_, _, _) => {}
-        }
-    }
-
-    let mut found = Vec::new();
-    collect(ty, &mut found);
-    found
-}
-
 #[derive(Default)]
 struct LifetimeBijection {
     forward: Vec<(String, String)>,
@@ -1064,22 +1464,26 @@ impl AccessFlow {
         }
     }
 
-    fn from_type(ty: &Type) -> Result<Self, AccessSignatureError> {
+    fn from_type_with_catalog(
+        ty: &Type,
+        catalog: &BorrowRelationCatalog,
+    ) -> Result<Self, AccessSignatureError> {
         if matches!(ty.unqualified(), Type::Fn(_, _, _)) {
-            return AccessSignature::from_function_type(ty).map(Self::Callable);
+            return AccessSignature::from_function_type_with_catalog(ty, catalog)
+                .map(Self::Callable);
         }
         match ty.unqualified() {
             Type::Tuple(children) => {
                 let children = children
                     .iter()
-                    .map(Self::from_type)
+                    .map(|child| Self::from_type_with_catalog(child, catalog))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Self::product(children))
             }
             Type::Named(name, arguments) => {
                 let arguments = arguments
                     .iter()
-                    .map(Self::from_type)
+                    .map(|argument| Self::from_type_with_catalog(argument, catalog))
                     .collect::<Result<Vec<_>, _>>()?;
                 if arguments.iter().all(|argument| matches!(argument, Self::None)) {
                     Ok(Self::None)
@@ -1090,7 +1494,7 @@ impl AccessFlow {
             Type::Dyn(name, arguments) => {
                 let arguments = arguments
                     .iter()
-                    .map(Self::from_type)
+                    .map(|argument| Self::from_type_with_catalog(argument, catalog))
                     .collect::<Result<Vec<_>, _>>()?;
                 if arguments.iter().all(|argument| matches!(argument, Self::None)) {
                     Ok(Self::None)
@@ -1369,6 +1773,7 @@ struct AccessVerifier<'a> {
     functions: HashMap<String, Function>,
     types: HashMap<String, TypeDef>,
     variants: HashMap<String, Vec<(String, Variant)>>,
+    borrow_catalog: BorrowRelationCatalog,
     facts: CheckedAccessFacts<'a>,
     return_frames: Vec<Vec<AccessFlow>>,
     expression_type_hints: HashMap<usize, Type>,
@@ -1376,6 +1781,7 @@ struct AccessVerifier<'a> {
 
 impl<'a> AccessVerifier<'a> {
     fn new(module: &'a Module, table: &'a TypeTable) -> Self {
+        let borrow_catalog = BorrowRelationCatalog::from_module(module);
         let functions = module
             .items
             .iter()
@@ -1407,6 +1813,7 @@ impl<'a> AccessVerifier<'a> {
             functions,
             types,
             variants,
+            borrow_catalog,
             facts: CheckedAccessFacts {
                 owner: module,
                 values: HashMap::new(),
@@ -1426,6 +1833,10 @@ impl<'a> AccessVerifier<'a> {
         Ok(self.facts)
     }
 
+    fn flow_from_type(&self, ty: &Type) -> Result<AccessFlow, AccessSignatureError> {
+        AccessFlow::from_type_with_catalog(ty, &self.borrow_catalog)
+    }
+
     fn resolved_expression_type(&self, expression: &Expr) -> Option<Type> {
         self.table.type_of(expression).and_then(ty_to_ast)
     }
@@ -1443,8 +1854,15 @@ impl<'a> AccessVerifier<'a> {
     ) -> Result<Option<AccessSignature>, AccessFlowError> {
         let resolved = self.table.function_type(&function.name);
         let signature = match resolved {
-            Some(resolved) => AccessSignature::from_resolved_function(function, &resolved),
-            None => AccessSignature::from_function(function),
+            Some(resolved) => AccessSignature::from_resolved_function_with_catalog(
+                function,
+                &resolved,
+                &self.borrow_catalog,
+            ),
+            None => AccessSignature::from_function_with_catalog(
+                function,
+                &self.borrow_catalog,
+            ),
         };
         match signature {
             Ok(signature) => Ok(Some(signature)),
@@ -1469,10 +1887,10 @@ impl<'a> AccessVerifier<'a> {
         for (parameter, access) in function.params.iter().zip(signature.params()) {
             environment.insert(
                 parameter.name.clone(),
-                AccessFlow::from_type(access.ty()).map_err(Self::signature_error)?,
+                self.flow_from_type(access.ty()).map_err(Self::signature_error)?,
             );
         }
-        let expected = AccessFlow::from_type(signature.result().ty())
+        let expected = self.flow_from_type(signature.result().ty())
             .map_err(Self::signature_error)?;
         let tail = self.eval_block(&function.body, &mut environment, &expected)?;
         if matches!(function.body.stmts.last(), Some(Stmt::Expr(_))) {
@@ -1498,7 +1916,7 @@ impl<'a> AccessVerifier<'a> {
         if function.params.len() != args.len() {
             return Ok(None);
         }
-        match AccessSignature::from_function(function) {
+        match AccessSignature::from_function_with_catalog(function, &self.borrow_catalog) {
             Ok(signature) => return Ok(Some(signature)),
             Err(
                 AccessSignatureError::MissingParameterType { .. }
@@ -1518,7 +1936,11 @@ impl<'a> AccessVerifier<'a> {
         };
         let conventions = function.params.iter().map(|parameter| parameter.convention).collect();
         let resolved = Type::Fn(params, Box::new(result), conventions);
-        AccessSignature::from_resolved_function(function, &resolved)
+        AccessSignature::from_resolved_function_with_catalog(
+            function,
+            &resolved,
+            &self.borrow_catalog,
+        )
             .map(Some)
             .map_err(Self::signature_error)
     }
@@ -1536,7 +1958,11 @@ impl<'a> AccessVerifier<'a> {
         if params.len() != function.params.len() {
             return Ok(None);
         }
-        AccessSignature::from_resolved_function(function, &resolved)
+        AccessSignature::from_resolved_function_with_catalog(
+            function,
+            &resolved,
+            &self.borrow_catalog,
+        )
             .map(Some)
             .map_err(Self::signature_error)
     }
@@ -1625,7 +2051,7 @@ impl<'a> AccessVerifier<'a> {
             return Ok(flow.clone());
         }
         let resolved = Self::substitute_type(declared, substitutions);
-        AccessFlow::from_type(&resolved).map_err(Self::signature_error)
+        self.flow_from_type(&resolved).map_err(Self::signature_error)
     }
 
     fn nominal_access_arguments(
@@ -1795,7 +2221,7 @@ impl<'a> AccessVerifier<'a> {
             {
                 return Ok(flow);
             }
-            return AccessFlow::from_type(expression_type).map_err(Self::signature_error);
+            return self.flow_from_type(expression_type).map_err(Self::signature_error);
         };
         let substitutions = self.nominal_substitutions(type_name, expression_type);
         let mut access_arguments = effective_type_def_params(&self.types[type_name])
@@ -1864,13 +2290,13 @@ impl<'a> AccessVerifier<'a> {
             for (_, value) in fields {
                 self.eval_expr(value, environment, return_expected)?;
             }
-            return AccessFlow::from_type(expression_type).map_err(Self::signature_error);
+            return self.flow_from_type(expression_type).map_err(Self::signature_error);
         };
         let Some(definition) = self.types.get(type_name).cloned() else {
             for (_, value) in fields {
                 self.eval_expr(value, environment, return_expected)?;
             }
-            return AccessFlow::from_type(expression_type).map_err(Self::signature_error);
+            return self.flow_from_type(expression_type).map_err(Self::signature_error);
         };
         let substitutions = self.nominal_substitutions(type_name, expression_type);
         let mut access_arguments = spread_flow
@@ -1921,10 +2347,11 @@ impl<'a> AccessVerifier<'a> {
     ) -> Result<AccessSignature, AccessFlowError> {
         let mut params = params.to_vec();
         params.insert(0, receiver.clone());
-        AccessSignature::from_parts(
+        AccessSignature::from_parts_with_catalog(
             params,
             checked_result.clone(),
             conventions.to_vec(),
+            &self.borrow_catalog,
         )
         .map_err(Self::signature_error)
     }
@@ -1938,7 +2365,7 @@ impl<'a> AccessVerifier<'a> {
         for (index, (argument, parameter)) in
             arguments.iter().zip(signature.params()).enumerate()
         {
-            let expected = AccessFlow::from_type(parameter.ty()).map_err(Self::signature_error)?;
+            let expected = self.flow_from_type(parameter.ty()).map_err(Self::signature_error)?;
             argument.verify_directed(
                 &expected,
                 &format!("argument {} passed to `{name}`", index + 1),
@@ -2092,8 +2519,11 @@ impl<'a> AccessVerifier<'a> {
             return Ok((signature, substitutions));
         }
         let specialized = Self::substitute_type(&signature.as_type(), &substitutions);
-        let signature =
-            AccessSignature::from_function_type(&specialized).map_err(Self::signature_error)?;
+        let signature = AccessSignature::from_function_type_with_catalog(
+            &specialized,
+            &self.borrow_catalog,
+        )
+        .map_err(Self::signature_error)?;
         Ok((signature, substitutions))
     }
 
@@ -2153,7 +2583,7 @@ impl<'a> AccessVerifier<'a> {
                     let actual =
                         self.eval_expr_with_hint(value, ty.as_ref(), environment, return_expected)?;
                     let value = if let Some(ty) = ty {
-                        let expected = AccessFlow::from_type(ty).map_err(Self::signature_error)?;
+                        let expected = self.flow_from_type(ty).map_err(Self::signature_error)?;
                         actual.verify_directed(&expected, &format!("function value `{name}`"))?;
                         expected
                     } else {
@@ -2242,7 +2672,7 @@ impl<'a> AccessVerifier<'a> {
                         }
                         _ => field_types
                             .and_then(|fields| fields.get(index))
-                            .map(AccessFlow::from_type)
+                            .map(|field| self.flow_from_type(field))
                             .transpose()
                             .map_err(Self::signature_error)?
                             .unwrap_or(AccessFlow::None),
@@ -2493,7 +2923,7 @@ impl<'a> AccessVerifier<'a> {
                         )?;
                         self.verify_arguments(name, &signature, &arguments)?;
                         self.record_call(expression, &signature);
-                        AccessFlow::from_type(signature.result().ty())
+                        self.flow_from_type(signature.result().ty())
                             .map_err(Self::signature_error)?
                     }
                     None => AccessFlow::None,
@@ -2528,7 +2958,7 @@ impl<'a> AccessVerifier<'a> {
                         )?;
                         self.verify_arguments(name, &signature, &arguments)?;
                         self.record_call(expression, &signature);
-                        AccessFlow::from_type(signature.result().ty())
+                        self.flow_from_type(signature.result().ty())
                             .map_err(Self::signature_error)?
                     }
                     None => AccessFlow::None,
@@ -2568,7 +2998,7 @@ impl<'a> AccessVerifier<'a> {
                 )?;
                 self.verify_arguments("indirect function", &signature, &arguments)?;
                 self.record_call(expression, &signature);
-                AccessFlow::from_type(signature.result().ty()).map_err(Self::signature_error)?
+                self.flow_from_type(signature.result().ty()).map_err(Self::signature_error)?
             }
             Expr::Ctor { name, args } | Expr::AnonCtor { tag: name, args } => {
                 let expression_type = self.resolved_expression_type(expression).unwrap_or_else(|| {
@@ -2622,7 +3052,7 @@ impl<'a> AccessVerifier<'a> {
             Expr::ExistentialPack { expr, ty, .. }
             | Expr::ExistentialUpcast { expr, ty } => {
                 self.eval_expr(expr, environment, return_expected)?;
-                AccessFlow::from_type(ty).map_err(Self::signature_error)?
+                self.flow_from_type(ty).map_err(Self::signature_error)?
             }
             Expr::Field { base, field } => {
                 let base_flow = self.eval_expr(base, environment, return_expected)?;
@@ -2643,24 +3073,25 @@ impl<'a> AccessVerifier<'a> {
                     })?;
                 let conventions: Vec<Convention> =
                     params.iter().map(|parameter| parameter.convention).collect();
-                let mut signature = AccessSignature::from_resolved_parts(
+                let mut signature = AccessSignature::from_resolved_parts_with_catalog(
                     params.iter().map(|parameter| parameter.ty.as_ref()).collect(),
                     ret.as_ref(),
                     conventions.clone(),
                     &resolved,
+                    &self.borrow_catalog,
                 )
                 .map_err(Self::signature_error)?;
                 let mut lambda_environment = environment.clone();
                 for (parameter, access) in params.iter().zip(signature.params()) {
                     lambda_environment.insert(
                         parameter.name.clone(),
-                        AccessFlow::from_type(access.ty()).map_err(Self::signature_error)?,
+                        self.flow_from_type(access.ty()).map_err(Self::signature_error)?,
                     );
                 }
                 let preliminary_expected = if ret.is_none() {
                     AccessFlow::Unknown
                 } else {
-                    AccessFlow::from_type(signature.result().ty())
+                    self.flow_from_type(signature.result().ty())
                         .map_err(Self::signature_error)?
                 };
                 self.return_frames.push(Vec::new());
@@ -2677,7 +3108,7 @@ impl<'a> AccessVerifier<'a> {
                     )?;
                     let inferred_result = inferred.materialize_type(signature.result().ty());
                     let callable_qualifiers = signature.callable_qualifiers.clone();
-                    signature = AccessSignature::from_parts(
+                    signature = AccessSignature::from_parts_with_catalog(
                         signature
                             .params()
                             .iter()
@@ -2685,11 +3116,12 @@ impl<'a> AccessVerifier<'a> {
                             .collect(),
                         inferred_result,
                         conventions,
+                        &self.borrow_catalog,
                     )
                     .map_err(Self::signature_error)?;
                     signature.callable_qualifiers = callable_qualifiers;
                 }
-                let expected = AccessFlow::from_type(signature.result().ty())
+                let expected = self.flow_from_type(signature.result().ty())
                     .map_err(Self::signature_error)?;
                 for returned in &returned {
                     returned.verify_directed(&expected, "lambda return")?;
@@ -2701,7 +3133,7 @@ impl<'a> AccessVerifier<'a> {
             }
             Expr::As { expr, ty } => {
                 let actual = self.eval_expr(expr, environment, return_expected)?;
-                let expected = AccessFlow::from_type(ty).map_err(Self::signature_error)?;
+                let expected = self.flow_from_type(ty).map_err(Self::signature_error)?;
                 actual.verify_directed(&expected, "function cast")?;
                 expected
             }
@@ -2784,7 +3216,7 @@ impl<'a> AccessVerifier<'a> {
                     self.contextual_expression_type(expression).as_ref(),
                 )?;
                 if let Some(receiver_param) = signature.params().first() {
-                    let expected = AccessFlow::from_type(receiver_param.ty())
+                    let expected = self.flow_from_type(receiver_param.ty())
                         .map_err(Self::signature_error)?;
                     receiver_flow.verify_directed(
                         &expected,
@@ -2796,7 +3228,7 @@ impl<'a> AccessVerifier<'a> {
                     .zip(signature.params().iter().skip(1))
                     .enumerate()
                 {
-                    let expected = AccessFlow::from_type(expected.ty())
+                    let expected = self.flow_from_type(expected.ty())
                         .map_err(Self::signature_error)?;
                     actual.verify_directed(
                         &expected,
@@ -2804,7 +3236,7 @@ impl<'a> AccessVerifier<'a> {
                     )?;
                 }
                 self.record_call(expression, &signature);
-                AccessFlow::from_type(signature.result().ty()).map_err(Self::signature_error)?
+                self.flow_from_type(signature.result().ty()).map_err(Self::signature_error)?
             }
             Expr::Binary { lhs, rhs, .. } => {
                 self.eval_expr(lhs, environment, return_expected)?;
@@ -2873,7 +3305,7 @@ impl<'a> AccessVerifier<'a> {
                             Type::Named(_, arguments) if arguments.len() == 1 => arguments.first(),
                             _ => None,
                         })
-                        .map(AccessFlow::from_type)
+                        .map(|element| self.flow_from_type(element))
                         .transpose()
                         .map_err(Self::signature_error)?
                         .unwrap_or(AccessFlow::None),
@@ -2897,7 +3329,7 @@ impl<'a> AccessVerifier<'a> {
                         if arguments.len() == 1 => arguments[0].clone(),
                     _ => self
                         .resolved_expression_type(expression)
-                        .map(|ty| AccessFlow::from_type(&ty))
+                        .map(|ty| self.flow_from_type(&ty))
                         .transpose()
                         .map_err(Self::signature_error)?
                         .unwrap_or(AccessFlow::None),

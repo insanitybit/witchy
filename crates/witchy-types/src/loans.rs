@@ -30,10 +30,11 @@
 use std::collections::HashMap;
 
 use witchy_syntax::ast::{
-    Block, Convention, Expr, Function, Item, Module, Param, Pattern, Stmt, Type, TypeDef, TypeQual,
-    UnOp,
+    Block, Convention, Expr, Function, Item, Module, Param, Pattern, Stmt, Type, TypeQual, UnOp,
 };
 
+pub use crate::access::{LoanProjection, LoanProjectionStep};
+use crate::access::{AccessKind, AccessSignature, BorrowRelation, BorrowRelationCatalog};
 use crate::typeck::TypeError;
 
 fn terr(message: String) -> TypeError {
@@ -43,6 +44,10 @@ fn terr(message: String) -> TypeError {
 /// The output-to-input borrow relation of one function, read off its signature.
 #[derive(Clone)]
 struct BorrowSig {
+    /// Canonical callable identity. Inferred legacy declarations without a
+    /// finalized AST signature retain `None`; every typed callable path uses
+    /// this authority for exact projected-relation comparison.
+    access: Option<AccessSignature>,
     /// `true` when the return type is a borrowed view.
     returns_view: bool,
     /// Parameter indices whose borrow lifetime matches the returned view's
@@ -57,19 +62,6 @@ struct BorrowSig {
 }
 
 #[derive(Clone)]
-struct BorrowRelation {
-    output_projection: LoanProjection,
-    owners: Vec<OwnerPosition>,
-    storage_type: Type,
-}
-
-#[derive(Clone)]
-struct OwnerPosition {
-    index: usize,
-    input_projection: LoanProjection,
-}
-
-#[derive(Clone)]
 struct ReturnBorrowRelation {
     output_projection: LoanProjection,
     owners: Vec<ReturnOwnerPosition>,
@@ -81,250 +73,10 @@ struct ReturnOwnerPosition {
     input_projection: LoanProjection,
 }
 
-#[derive(Clone)]
-struct BorrowSlot {
-    lifetime: String,
-    projection: LoanProjection,
-    storage_type: Type,
-}
-
-#[derive(Default)]
-struct BorrowCatalog {
-    definitions: HashMap<String, TypeDef>,
-    constructors: HashMap<String, String>,
-}
-
-fn substitute_slot_type(
-    ty: &Type,
-    substitutions: &HashMap<String, Type>,
-    depth: usize,
-) -> Type {
-    if depth > 32 {
-        return ty.clone();
-    }
-    match ty {
-        Type::Named(name, arguments) if arguments.is_empty() => substitutions
-            .get(name)
-            .map(|ty| substitute_slot_type(ty, substitutions, depth + 1))
-            .unwrap_or_else(|| ty.clone()),
-        Type::Named(name, arguments) => Type::Named(
-            name.clone(),
-            arguments
-                .iter()
-                .map(|argument| substitute_slot_type(argument, substitutions, depth + 1))
-                .collect(),
-        ),
-        Type::Qualified(qualifier, inner) => Type::Qualified(
-            qualifier.clone(),
-            Box::new(substitute_slot_type(inner, substitutions, depth + 1)),
-        ),
-        Type::Tuple(items) => Type::Tuple(
-            items
-                .iter()
-                .map(|item| substitute_slot_type(item, substitutions, depth + 1))
-                .collect(),
-        ),
-        Type::Fn(params, result, conventions) => Type::Fn(
-            params
-                .iter()
-                .map(|param| substitute_slot_type(param, substitutions, depth + 1))
-                .collect(),
-            Box::new(substitute_slot_type(result, substitutions, depth + 1)),
-            conventions.clone(),
-        ),
-        Type::Dyn(name, arguments) => Type::Dyn(
-            name.clone(),
-            arguments
-                .iter()
-                .map(|argument| substitute_slot_type(argument, substitutions, depth + 1))
-                .collect(),
-        ),
-        Type::RecordCompose { base, fields } => Type::RecordCompose {
-            base: Box::new(substitute_slot_type(base, substitutions, depth + 1)),
-            fields: fields
-                .iter()
-                .map(|(name, field)| {
-                    (
-                        name.clone(),
-                        substitute_slot_type(field, substitutions, depth + 1),
-                    )
-                })
-                .collect(),
-        },
-    }
-}
-
-impl BorrowCatalog {
-    fn from_module(module: &Module) -> Self {
-        let mut catalog = Self::default();
-        for item in &module.items {
-            let Item::Type(definition) = item else { continue };
-            catalog.definitions.insert(definition.name.clone(), definition.clone());
-            for variant in &definition.variants {
-                catalog
-                    .constructors
-                    .insert(variant.name.clone(), definition.name.clone());
-            }
-        }
-        catalog
-    }
-
-    fn slots(&self, ty: &Type) -> Vec<BorrowSlot> {
-        self.slots_with(ty, &HashMap::new(), &HashMap::new(), 0)
-    }
-
-    fn slots_with(
-        &self,
-        ty: &Type,
-        lifetimes: &HashMap<String, String>,
-        types: &HashMap<String, Type>,
-        depth: usize,
-    ) -> Vec<BorrowSlot> {
-        if depth > 32 {
-            return Vec::new();
-        }
-        match ty {
-            Type::Qualified(TypeQual::Borrow(lifetime), inner) => {
-                let nested = self.slots_with(inner, lifetimes, types, depth + 1);
-                if !nested.is_empty() {
-                    nested
-                } else {
-                    vec![BorrowSlot {
-                        lifetime: lifetimes
-                            .get(lifetime)
-                            .cloned()
-                            .unwrap_or_else(|| lifetime.clone()),
-                        projection: LoanProjection::default(),
-                        storage_type: substitute_slot_type(inner, types, depth + 1),
-                    }]
-                }
-            }
-            Type::Qualified(_, inner) => self.slots_with(inner, lifetimes, types, depth + 1),
-            Type::Tuple(items) => items
-                .iter()
-                .enumerate()
-                .flat_map(|(index, item)| {
-                    self.slots_with(item, lifetimes, types, depth + 1)
-                        .into_iter()
-                        .map(move |mut slot| {
-                            slot.projection = slot
-                                .projection
-                                .prefixed(LoanProjectionStep::Tuple(index));
-                            slot
-                        })
-                })
-                .collect(),
-            Type::Named(name, args) => {
-                if args.is_empty()
-                    && let Some(substituted) = types.get(name)
-                {
-                    return self.slots_with(
-                        substituted,
-                        lifetimes,
-                        types,
-                        depth + 1,
-                    );
-                }
-                let Some(definition) = self.definitions.get(name) else {
-                    return Vec::new();
-                };
-                let mut nested_lifetimes = lifetimes.clone();
-                let mut nested_types = types.clone();
-                for (parameter, argument) in definition.params.iter().zip(args) {
-                    if parameter.starts_with('\'') {
-                        if let Type::Named(argument, arguments) = argument
-                            && arguments.is_empty()
-                            && argument.starts_with('\'')
-                        {
-                            let parameter = parameter
-                                .strip_prefix('\'')
-                                .expect("guarded lifetime parameter");
-                            let argument = argument
-                                .strip_prefix('\'')
-                                .expect("guarded lifetime argument");
-                            nested_lifetimes.insert(
-                                parameter.to_string(),
-                                lifetimes
-                                    .get(argument)
-                                    .cloned()
-                                    .unwrap_or_else(|| argument.to_string()),
-                            );
-                        }
-                    } else {
-                        nested_types.insert(
-                            parameter.clone(),
-                            substitute_slot_type(argument, types, depth + 1),
-                        );
-                    }
-                }
-                let [variant] = definition.variants.as_slice() else {
-                    return Vec::new();
-                };
-                variant
-                    .fields
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(index, field)| {
-                        let step = variant
-                            .field_names
-                            .get(index)
-                            .cloned()
-                            .map(LoanProjectionStep::Field)
-                            .unwrap_or(LoanProjectionStep::Tuple(index));
-                        self.slots_with(
-                            field,
-                            &nested_lifetimes,
-                            &nested_types,
-                            depth + 1,
-                        )
-                            .into_iter()
-                            .map(move |mut slot| {
-                                slot.projection = slot.projection.prefixed(step.clone());
-                                slot
-                            })
-                    })
-                    .collect()
-            }
-            Type::RecordCompose { .. } | Type::Fn(_, _, _) | Type::Dyn(_, _) => Vec::new(),
-        }
-    }
-
-    fn borrowed_constructor(&self, constructor: &str) -> bool {
-        self.constructors
-            .get(constructor)
-            .and_then(|name| self.definitions.get(name))
-            .is_some_and(|definition| definition.params.iter().any(|param| param.starts_with('\'')))
-    }
-
-    fn borrowed_record(&self, name: &str) -> bool {
-        self.definitions
-            .get(name)
-            .is_some_and(|definition| definition.params.iter().any(|param| param.starts_with('\'')))
-    }
-
-    fn constructor_step(&self, constructor: &str, index: usize) -> LoanProjectionStep {
-        self.constructors
-            .get(constructor)
-            .and_then(|name| self.definitions.get(name))
-            .and_then(|definition| definition.variants.iter().find(|variant| variant.name == constructor))
-            .and_then(|variant| variant.field_names.get(index))
-            .cloned()
-            .map(LoanProjectionStep::Field)
-            .unwrap_or(LoanProjectionStep::Tuple(index))
-    }
-}
-
 /// The borrow qualifier's lifetime name on a parameter/return type, if any.
 fn view_lifetime(ty: &Type) -> Option<&str> {
     match ty {
         Type::Qualified(TypeQual::Borrow(life), _) => Some(life),
-        _ => None,
-    }
-}
-
-fn view_storage_type(ty: &Type) -> Option<Type> {
-    match ty {
-        Type::Qualified(TypeQual::Borrow(_), inner) => Some((**inner).clone()),
         _ => None,
     }
 }
@@ -367,50 +119,18 @@ pub struct LoanEvent {
     pub owner_type: Type,
 }
 
-/// One statically checked step from an owner root to borrowed storage.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum LoanProjectionStep {
-    Field(String),
-    Tuple(usize),
-    Index(i64),
-    Range { lo: i64, hi: i64, inclusive: bool },
-}
-
-/// A projection is relative to [`LoanEvent::owner`]. Empty means the whole
-/// owner. Only fixed paths reach lowering; dynamic indices are rejected before
-/// a persistent loan can be opened.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct LoanProjection {
-    pub steps: Vec<LoanProjectionStep>,
-}
-
-impl LoanProjection {
-    fn extended(&self, suffix: &Self) -> Self {
-        let mut steps = self.steps.clone();
-        steps.extend(suffix.steps.iter().cloned());
-        Self { steps }
-    }
-
-    fn prefixed(&self, step: LoanProjectionStep) -> Self {
-        let mut steps = Vec::with_capacity(self.steps.len() + 1);
-        steps.push(step);
-        steps.extend(self.steps.iter().cloned());
-        Self { steps }
-    }
-}
-
 fn named_return_relations(sig: &BorrowSig, params: &[Param]) -> Vec<ReturnBorrowRelation> {
     sig.relations
         .iter()
         .map(|relation| ReturnBorrowRelation {
-            output_projection: relation.output_projection.clone(),
+            output_projection: relation.output_projection().clone(),
             owners: relation
-                .owners
+                .owners()
                 .iter()
                 .filter_map(|owner| {
-                    params.get(owner.index).map(|param| ReturnOwnerPosition {
+                    params.get(owner.position()).map(|param| ReturnOwnerPosition {
                         name: param.name.clone(),
-                        input_projection: owner.input_projection.clone(),
+                        input_projection: owner.input_projection().clone(),
                     })
                 })
                 .collect(),
@@ -466,7 +186,7 @@ pub(crate) fn check(module: &Module) -> Result<(), TypeError> {
 
 /// Validate every function and return the exact events consumed by lowering.
 pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
-    let catalog = BorrowCatalog::from_module(module);
+    let catalog = BorrowRelationCatalog::from_module(module);
     let mut sigs: HashMap<String, BorrowSig> = HashMap::new();
 
     // Pass 1: validate signatures and record each function's borrow relation.
@@ -515,13 +235,18 @@ pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
                     ))
                 })
                 .collect(),
-            return_callable: f.ret.as_ref().and_then(borrow_sig_from_fn_type).map(Box::new),
+            return_callable: f
+                .ret
+                .as_ref()
+                .and_then(|ty| borrow_sig_from_fn_type(ty, &catalog))
+                .map(Box::new),
         };
         let callable_params: HashMap<String, BorrowSig> = f
             .params
             .iter()
             .filter_map(|param| {
-                borrow_sig_from_fn_type(param.ty.as_ref()?).map(|sig| (param.name.clone(), sig))
+                borrow_sig_from_fn_type(param.ty.as_ref()?, &catalog)
+                    .map(|sig| (param.name.clone(), sig))
             })
             .collect();
         ctx.check_block_with(&f.body, &[], &callable_params, true)?;
@@ -594,7 +319,8 @@ fn check_lambda_body(
     let callable_params: HashMap<String, BorrowSig> = params
         .iter()
         .filter_map(|param| {
-            borrow_sig_from_fn_type(param.ty.as_ref()?).map(|sig| (param.name.clone(), sig))
+            borrow_sig_from_fn_type(param.ty.as_ref()?, catalog)
+                .map(|sig| (param.name.clone(), sig))
         })
         .collect();
     let input_borrows = params
@@ -648,7 +374,9 @@ fn check_lambda_body(
         },
         block_results: HashMap::new(),
         input_borrows,
-        return_callable: ret.and_then(borrow_sig_from_fn_type).map(Box::new),
+        return_callable: ret
+            .and_then(|ty| borrow_sig_from_fn_type(ty, catalog))
+            .map(Box::new),
     };
     ctx.check_block_with(body, &[], &callable_params, true)
 }
@@ -656,7 +384,7 @@ fn check_lambda_body(
 #[derive(Clone, Copy)]
 struct LoanEnvironment<'a> {
     sigs: &'a HashMap<String, BorrowSig>,
-    catalog: &'a BorrowCatalog,
+    catalog: &'a BorrowRelationCatalog,
 }
 
 /// Recover the typed contract of a pure forwarding lambda. The linker represents
@@ -701,22 +429,22 @@ fn collect_lambdas<'a>(
 fn validate_signature(
     f: &Function,
     opt: bool,
-    catalog: &BorrowCatalog,
+    catalog: &BorrowRelationCatalog,
 ) -> Result<BorrowSig, TypeError> {
     // Input lifetimes declared by direct views or fixed borrowed aggregate
-    // slots: name -> exact parameter/slot positions.
-    let mut input_lifetimes: HashMap<String, Vec<OwnerPosition>> = HashMap::new();
+    // slots. The canonical access signature below records their exact places;
+    // this set is retained only for the established source diagnostic.
+    let mut input_lifetimes = Vec::new();
     let mut uses_view = false;
-    for (i, p) in f.params.iter().enumerate() {
+    for p in &f.params {
         if let Some(ty) = &p.ty {
             validate_nested_fn_borrows(ty, &f.name)?;
             let slots = catalog.slots(ty);
             uses_view |= type_mentions_view(ty) || !slots.is_empty();
             for slot in slots {
-                input_lifetimes
-                    .entry(slot.lifetime)
-                    .or_default()
-                    .push(OwnerPosition { index: i, input_projection: slot.projection });
+                if !input_lifetimes.contains(&slot.lifetime) {
+                    input_lifetimes.push(slot.lifetime);
+                }
             }
         }
     }
@@ -752,46 +480,100 @@ fn validate_signature(
         }
     }
 
-    let mut relations = Vec::new();
     for slot in return_slots {
-        let Some(owners) = input_lifetimes.get(&slot.lifetime) else {
+        if !input_lifetimes.contains(&slot.lifetime) {
             return Err(terr(format!(
                 "`{}` returns borrowed storage with lifetime `'{}`, but no parameter borrows \
                  with that lifetime — an output borrow must come from an input owner",
                 short_name(&f.name),
                 slot.lifetime,
             )));
-        };
-        relations.push(BorrowRelation {
-            output_projection: slot.projection,
-            owners: owners.clone(),
-            storage_type: slot.storage_type,
-        });
-    }
-    let mut owner_params = Vec::new();
-    for owner in relations.iter().flat_map(|relation| &relation.owners) {
-        if owner_params.iter().any(|(index, _)| *index == owner.index) {
-            continue;
-        }
-        if let Some(ty) = f.params.get(owner.index).and_then(|param| param.ty.clone()) {
-            owner_params.push((owner.index, ty));
         }
     }
 
+    let params = f
+        .params
+        .iter()
+        .map(|parameter| parameter.ty.clone())
+        .collect::<Option<Vec<_>>>();
+    if let (Some(params), Some(result)) = (params, f.ret.clone()) {
+        let signature = AccessSignature::from_parts_with_catalog(
+            params,
+            result,
+            f.params.iter().map(|parameter| parameter.convention).collect(),
+            catalog,
+        )
+        .map_err(|error| terr(format!("access signature for `{}` is invalid: {error}", f.name)))?;
+        return Ok(borrow_sig_from_access(signature, catalog));
+    }
+
     Ok(BorrowSig {
-        returns_view: !relations.is_empty(),
-        owner_params,
-        relations,
+        access: None,
+        returns_view: false,
+        owner_params: Vec::new(),
+        relations: Vec::new(),
         conventions: f.params.iter().map(|param| param.convention).collect(),
         callable_params: f
             .params
             .iter()
             .map(|param| {
-                param.ty.as_ref().and_then(borrow_sig_from_fn_type).map(Box::new)
+                param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| borrow_sig_from_fn_type(ty, catalog))
+                    .map(Box::new)
             })
             .collect(),
-        callable_return: f.ret.as_ref().and_then(borrow_sig_from_fn_type).map(Box::new),
+        callable_return: f
+            .ret
+            .as_ref()
+            .and_then(|ty| borrow_sig_from_fn_type(ty, catalog))
+            .map(Box::new),
     })
+}
+
+fn borrow_sig_from_access(
+    signature: AccessSignature,
+    catalog: &BorrowRelationCatalog,
+) -> BorrowSig {
+    let relations = signature.borrow_relations().to_vec();
+    let mut owner_params = Vec::new();
+    for owner in relations.iter().flat_map(|relation| relation.owners()) {
+        if owner_params
+            .iter()
+            .any(|(position, _)| *position == owner.position())
+        {
+            continue;
+        }
+        if let Some(parameter) = signature.params().get(owner.position()) {
+            owner_params.push((owner.position(), parameter.ty().clone()));
+        }
+    }
+    BorrowSig {
+        access: Some(signature.clone()),
+        returns_view: !relations.is_empty(),
+        owner_params,
+        relations,
+        conventions: signature
+            .params()
+            .iter()
+            .map(|parameter| match parameter.kind() {
+                AccessKind::OwnedImmutable => Convention::Let,
+                AccessKind::SharedBorrow => Convention::Borrow,
+                AccessKind::ExclusiveWriteback => Convention::Var,
+                AccessKind::Consuming => Convention::Own,
+            })
+            .collect(),
+        callable_params: signature
+            .params()
+            .iter()
+            .map(|parameter| {
+                borrow_sig_from_fn_type(parameter.ty(), catalog).map(Box::new)
+            })
+            .collect(),
+        callable_return: borrow_sig_from_fn_type(signature.result().ty(), catalog)
+            .map(Box::new),
+    }
 }
 
 fn type_mentions_view(ty: &Type) -> bool {
@@ -853,54 +635,12 @@ fn validate_nested_fn_borrows(ty: &Type, context: &str) -> Result<(), TypeError>
     }
 }
 
-fn params_default_conventions(len: usize) -> Vec<Convention> {
-    vec![Convention::Let; len]
-}
-
-fn borrow_sig_from_fn_type(ty: &Type) -> Option<BorrowSig> {
-    let Type::Fn(params, ret, conventions) = ty.unqualified() else {
-        return None;
-    };
-    let ret_life = view_lifetime(ret);
-    let owner_params: Vec<(usize, Type)> = ret_life
-        .map(|life| {
-            params
-                .iter()
-                .enumerate()
-                .filter(|(_, param)| view_lifetime(param).is_some_and(|input| input == life))
-                .map(|(index, param)| (index, param.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let conventions = if conventions.len() == params.len() {
-        conventions.clone()
-    } else {
-        params_default_conventions(params.len())
-    };
-    Some(BorrowSig {
-        returns_view: ret_life.is_some(),
-        relations: ret_life
-            .map(|_| BorrowRelation {
-                output_projection: LoanProjection::default(),
-                owners: owner_params
-                    .iter()
-                    .map(|(index, _)| OwnerPosition {
-                        index: *index,
-                        input_projection: LoanProjection::default(),
-                    })
-                    .collect(),
-                storage_type: view_storage_type(ret).expect("borrowed function result storage"),
-            })
-            .into_iter()
-            .collect(),
-        owner_params,
-        conventions,
-        callable_params: params
-            .iter()
-            .map(|param| borrow_sig_from_fn_type(param).map(Box::new))
-            .collect(),
-        callable_return: borrow_sig_from_fn_type(ret).map(Box::new),
-    })
+fn borrow_sig_from_fn_type(
+    ty: &Type,
+    catalog: &BorrowRelationCatalog,
+) -> Option<BorrowSig> {
+    let signature = AccessSignature::from_function_type_with_catalog(ty, catalog).ok()?;
+    Some(borrow_sig_from_access(signature, catalog))
 }
 
 /// A single open loan: a view binding that borrows an owner local.
@@ -1061,6 +801,7 @@ fn projection_steps_equal(left: &LoanProjectionStep, right: &LoanProjectionStep)
         }
 }
 
+#[cfg(test)]
 fn fixed_interval(step: &LoanProjectionStep) -> Option<(i128, i128)> {
     match step {
         LoanProjectionStep::Index(value) => {
@@ -1083,6 +824,7 @@ fn fixed_interval(step: &LoanProjectionStep) -> Option<(i128, i128)> {
     }
 }
 
+#[cfg(test)]
 fn projection_steps_overlap(left: &LoanProjectionStep, right: &LoanProjectionStep) -> bool {
     let left_interval = fixed_interval(left);
     let right_interval = fixed_interval(right);
@@ -1105,6 +847,7 @@ fn projection_steps_overlap(left: &LoanProjectionStep, right: &LoanProjectionSte
     }
 }
 
+#[cfg(test)]
 fn projections_overlap(left: &LoanProjection, right: &LoanProjection) -> bool {
     for (left, right) in left.steps.iter().zip(&right.steps) {
         if !projection_steps_overlap(left, right) {
@@ -1112,13 +855,6 @@ fn projections_overlap(left: &LoanProjection, right: &LoanProjection) -> bool {
         }
     }
     true
-}
-
-fn place_overlaps(place: PlaceProjection, borrowed: &LoanProjection) -> bool {
-    match place {
-        PlaceProjection::Fixed(projection) => projections_overlap(&projection, borrowed),
-        PlaceProjection::Dynamic => true,
-    }
 }
 
 fn projection_display(projection: &LoanProjection) -> String {
@@ -1162,39 +898,9 @@ fn index_projection(index: &Expr) -> Option<LoanProjectionStep> {
     }
 }
 
-/// Recover the write region from the parser's place-assignment desugaring.
-/// Unknown shapes conservatively write the whole assigned root.
-fn assignment_write_projections(name: &str, value: &Expr) -> Vec<LoanProjection> {
-    match value {
-        Expr::RecordUpdate { base, fields, .. } if expr_root(base) == Some(name) => fields
-            .iter()
-            .map(|(field, _)| LoanProjection {
-                steps: vec![LoanProjectionStep::Field(field.clone())],
-            })
-            .collect(),
-        Expr::MethodCall { receiver, method, args }
-            if method == "__set_at" && expr_root(receiver) == Some(name) =>
-        {
-            args.first()
-                .and_then(index_projection)
-                .map(|step| vec![LoanProjection { steps: vec![step] }])
-                .unwrap_or_else(|| vec![LoanProjection::default()])
-        }
-        Expr::Call { name: callee, args }
-            if callee.ends_with("__set_at") && args.first().and_then(expr_root) == Some(name) =>
-        {
-            args.get(1)
-                .and_then(index_projection)
-                .map(|step| vec![LoanProjection { steps: vec![step] }])
-                .unwrap_or_else(|| vec![LoanProjection::default()])
-        }
-        _ => vec![LoanProjection::default()],
-    }
-}
-
 fn pattern_bindings(
     pattern: &Pattern,
-    catalog: &BorrowCatalog,
+    catalog: &BorrowRelationCatalog,
     projection: &LoanProjection,
     out: &mut Vec<(String, LoanProjection)>,
 ) {
@@ -1239,7 +945,7 @@ fn pattern_bindings(
 
 struct LoanCtx<'a> {
     sigs: &'a HashMap<String, BorrowSig>,
-    catalog: &'a BorrowCatalog,
+    catalog: &'a BorrowRelationCatalog,
     fn_name: &'a str,
     facts: &'a mut LoanFacts,
     /// Declared output-slot to named input-slot relations. Body checking keeps
@@ -1734,8 +1440,8 @@ impl LoanCtx<'_> {
             return; // an owned result (e.g. `view.owned()`) borrows nothing
         }
         for relation in &sig.relations {
-            for owner in &relation.owners {
-                let Some(arg) = args.get(owner.index) else { continue };
+            for owner in relation.owners() {
+                let Some(arg) = args.get(owner.position()) else { continue };
                 let mut sources = Vec::new();
                 self.collect_alias_sources(arg, live, &mut sources);
                 if sources.is_empty() {
@@ -1744,39 +1450,41 @@ impl LoanCtx<'_> {
                     {
                         sources.push(BorrowSource {
                             owner: root.to_string(),
-                            projection: argument_projection.extended(&owner.input_projection),
+                            projection: argument_projection.extended(owner.input_projection()),
                             borrower_projection: LoanProjection::default(),
                             origin: callee.to_string(),
-                            owner_type: relation.storage_type.clone(),
+                            owner_type: relation.storage_type().clone(),
                             temporary: false,
                         });
                     } else {
                         self.collect_view_owners(arg, callables, live, &mut sources);
                         sources = sources
                             .into_iter()
-                            .filter_map(|source| project_source(source, &owner.input_projection))
+                            .filter_map(|source| {
+                                project_source(source, owner.input_projection())
+                            })
                             .collect();
                     }
                 } else {
                     sources = sources
                         .into_iter()
-                        .filter_map(|source| project_source(source, &owner.input_projection))
+                        .filter_map(|source| project_source(source, owner.input_projection()))
                         .collect();
                 }
                 if sources.is_empty() {
                     sources.push(BorrowSource {
                         owner: String::new(),
                         projection: LoanProjection::default(),
-                        borrower_projection: relation.output_projection.clone(),
+                        borrower_projection: relation.output_projection().clone(),
                         origin: callee.to_string(),
-                        owner_type: relation.storage_type.clone(),
+                        owner_type: relation.storage_type().clone(),
                         temporary: true,
                     });
                 }
                 for mut source in sources {
-                    source.borrower_projection = relation.output_projection.clone();
+                    source.borrower_projection = relation.output_projection().clone();
                     source.origin = callee.to_string();
-                    source.owner_type = relation.storage_type.clone();
+                    source.owner_type = relation.storage_type().clone();
                     self.push_source(source, out);
                 }
             }
@@ -1993,7 +1701,8 @@ impl LoanCtx<'_> {
                         .map(|returned| (name, returned))
                 }),
             Expr::As { ty, .. } => {
-                borrow_sig_from_fn_type(ty).map(|sig| ("indirect function".into(), sig))
+                borrow_sig_from_fn_type(ty, self.catalog)
+                    .map(|sig| ("indirect function".into(), sig))
             }
             Expr::Lambda { params, body, ret } => ret
                 .as_ref()
@@ -2005,11 +1714,10 @@ impl LoanCtx<'_> {
                             param.ty.clone().unwrap_or_else(|| Type::Named("a".into(), vec![]))
                         })
                         .collect();
-                    borrow_sig_from_fn_type(&Type::Fn(
-                        params,
-                        Box::new(ret.clone()),
-                        conventions,
-                    ))
+                    borrow_sig_from_fn_type(
+                        &Type::Fn(params, Box::new(ret.clone()), conventions),
+                        self.catalog,
+                    )
                 })
                 .or_else(|| forwarding_lambda_sig(params, body, self.sigs))
                 .map(|sig| ("closure".into(), sig)),
@@ -2024,7 +1732,7 @@ impl LoanCtx<'_> {
         callables: &HashMap<String, BorrowSig>,
     ) -> Option<BorrowSig> {
         declared
-            .and_then(borrow_sig_from_fn_type)
+            .and_then(|ty| borrow_sig_from_fn_type(ty, self.catalog))
             .or_else(|| self.callable_expr_sig(value, callables).map(|(_, sig)| sig))
     }
 
@@ -2037,7 +1745,9 @@ impl LoanCtx<'_> {
         callables: &HashMap<String, BorrowSig>,
     ) -> Result<(), TypeError> {
         let source = self.callable_expr_sig(value, callables).map(|(_, sig)| sig);
-        let expected = declared.and_then(borrow_sig_from_fn_type).or_else(|| existing.cloned());
+        let expected = declared
+            .and_then(|ty| borrow_sig_from_fn_type(ty, self.catalog))
+            .or_else(|| existing.cloned());
         let (Some(source), Some(expected)) = (source, expected) else {
             return Ok(());
         };
@@ -2045,12 +1755,25 @@ impl LoanCtx<'_> {
     }
 
     fn same_callable_contract(left: &BorrowSig, right: &BorrowSig) -> bool {
-        let relation = |sig: &BorrowSig| {
-            sig.owner_params.iter().map(|(index, _)| *index).collect::<Vec<_>>()
+        let legacy_top_level_matches = || {
+            let owners = |sig: &BorrowSig| {
+                sig.owner_params
+                    .iter()
+                    .map(|(index, _)| *index)
+                    .collect::<Vec<_>>()
+            };
+            left.returns_view == right.returns_view
+                && owners(left) == owners(right)
+                && left.conventions == right.conventions
         };
-        left.returns_view == right.returns_view
-            && relation(left) == relation(right)
-            && left.conventions == right.conventions
+        let top_level_matches = match (&left.access, &right.access) {
+            (Some(left_access), Some(right_access)) => {
+                left.conventions == right.conventions
+                    && left_access.has_same_projected_borrow_relations(right_access)
+            }
+            _ => legacy_top_level_matches(),
+        };
+        top_level_matches
             && left.callable_params.len() == right.callable_params.len()
             && left
                 .callable_params
@@ -2098,7 +1821,7 @@ impl LoanCtx<'_> {
                 Expr::As { expr: inner, ty } => {
                     if let (Some((_, source)), Some(expected)) = (
                         self.callable_expr_sig(inner, callables),
-                        borrow_sig_from_fn_type(ty),
+                        borrow_sig_from_fn_type(ty, self.catalog),
                     ) {
                         result = self.require_same_callable("function cast", &source, &expected);
                     }
@@ -2172,12 +1895,8 @@ impl LoanCtx<'_> {
         }
         for loan in open {
             // Reassigning the owner place invalidates every view of it.
-            if let Stmt::Assign { name, value } = stmt {
-                if name == &loan.owner
-                    && assignment_write_projections(name, value)
-                        .iter()
-                        .any(|write| projections_overlap(write, &loan.projection))
-                {
+            if let Stmt::Assign { name, .. } = stmt {
+                if name == &loan.owner {
                     return Err(self.conflict(loan, "reassigned"));
                 }
             }
@@ -2250,10 +1969,8 @@ impl LoanCtx<'_> {
             }
             // `move owner`
             if let Expr::Unary { op: UnOp::Move, expr } = e {
-                if let Some((root, projection)) = expr_place(expr) {
-                    if let Some(loan) = open.iter().find(|loan| {
-                        loan.owner == root && place_overlaps(projection.clone(), &loan.projection)
-                    }) {
+                if let Some((root, _)) = expr_place(expr) {
+                    if let Some(loan) = open.iter().find(|loan| loan.owner == root) {
                         result = Err(self.conflict(loan, "moved (`move`)"));
                     }
                 }
@@ -2265,11 +1982,8 @@ impl LoanCtx<'_> {
                         if !conv.binds_mutable() {
                             continue;
                         }
-                        if let Some((root, projection)) = expr_place(arg) {
-                            if let Some(loan) = open.iter().find(|loan| {
-                                loan.owner == root
-                                    && place_overlaps(projection.clone(), &loan.projection)
-                            }) {
+                        if let Some((root, _)) = expr_place(arg) {
+                            if let Some(loan) = open.iter().find(|loan| loan.owner == root) {
                                 let kind = if *conv == Convention::Var { "`var`" } else { "`own`" };
                                 result = Err(self.conflict(
                                     loan,
@@ -2287,11 +2001,8 @@ impl LoanCtx<'_> {
                     if !conv.binds_mutable() {
                         continue;
                     }
-                    if let Some((root, projection)) = expr_place(arg)
-                        && let Some(loan) = open.iter().find(|loan| {
-                            loan.owner == root
-                                && place_overlaps(projection.clone(), &loan.projection)
-                        })
+                    if let Some((root, _)) = expr_place(arg)
+                        && let Some(loan) = open.iter().find(|loan| loan.owner == root)
                     {
                         let kind = if *conv == Convention::Var { "`var`" } else { "`own`" };
                         result = Err(self.conflict(
@@ -2400,7 +2111,11 @@ fn stmt_mentions(stmt: &Stmt, name: &str) -> bool {
 
 /// Whether a statement lets the given view escape via a closure capture, a
 /// channel send, or a task spawn while the view is live.
-fn stmt_lets_view_escape(stmt: &Stmt, view: &str, catalog: &BorrowCatalog) -> bool {
+fn stmt_lets_view_escape(
+    stmt: &Stmt,
+    view: &str,
+    catalog: &BorrowRelationCatalog,
+) -> bool {
     match stmt {
         Stmt::Assign { value, .. }
             if expr_mentions_var(value, view) && !expr_materializes_view(value, view) =>

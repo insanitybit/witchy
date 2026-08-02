@@ -8,7 +8,9 @@
     };
     use witchy_syntax::ast::Item;
 
-    use super::{BorrowCatalog, LoanProjection, LoanProjectionStep, projections_overlap};
+    use super::{
+        BorrowRelationCatalog, LoanProjection, LoanProjectionStep, projections_overlap,
+    };
 
     fn linked_normal(main_body: &str) -> Result<(), crate::typeck::TypeError> {
         fn no_comptime(
@@ -768,7 +770,7 @@
     }
 
     #[test]
-    fn projection_conflicts_are_field_sensitive() {
+    fn any_live_projection_blocks_mutation_of_its_owner_root() {
         let source = |field: &str| {
             format!(
                 "mode opt\n\n\
@@ -778,10 +780,11 @@
             )
         };
 
-        check_str(&source("right")).expect("a disjoint fixed field may be reassigned");
-        let error = check_str(&source("left"))
-            .expect_err("the borrowed fixed field may not be reassigned while live");
-        assert!(error.contains("owner `pair` is reassigned"), "{error}");
+        for field in ["left", "right"] {
+            let error = check_str(&source(field))
+                .expect_err("a live projection conservatively freezes its owner root");
+            assert!(error.contains("owner `pair` is reassigned"), "{error}");
+        }
     }
 
     #[test]
@@ -827,12 +830,13 @@
             ))
             .expect("parse")
         };
-        facts(&mutation(2)).expect("a fixed index outside the borrowed range is disjoint");
-        let error = match facts(&mutation(1)) {
-            Ok(_) => panic!("an index inside the borrowed range must conflict"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("owner `xs` is reassigned"), "{error}");
+        for index in [1, 2] {
+            let error = match facts(&mutation(index)) {
+                Ok(_) => panic!("a live range conservatively freezes its owner root"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("owner `xs` is reassigned"), "{error}");
+        }
     }
 
     #[test]
@@ -952,7 +956,7 @@
              type GenericView(a, 'scope):\n    view: View(a, 'scope)\n",
         )
         .expect("borrowed generic declarations parse");
-        let catalog = BorrowCatalog::from_module(&module);
+        let catalog = BorrowRelationCatalog::from_module(&module);
         let lifetime = witchy_syntax::ast::Type::Named("'owner".into(), Vec::new());
         let leaf = witchy_syntax::ast::Type::Named("Leaf".into(), vec![lifetime.clone()]);
         let wrapper = witchy_syntax::ast::Type::Named(

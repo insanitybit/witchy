@@ -2,7 +2,8 @@ use witchy_syntax::ast::{Block, Convention, Function, Param, Type, TypeQual};
 
 use crate::access::{
     AccessKind, AccessMismatchKind, AccessQualifier, AccessSignature, AccessSignatureError,
-    OwnershipStateClass, SignaturePosition, checked_facts, ownership_state_class,
+    BorrowRelationCatalog, LoanProjection, LoanProjectionStep, OwnershipStateClass,
+    SignaturePosition, checked_facts, ownership_state_class,
 };
 
 fn named(name: &str) -> Type {
@@ -27,6 +28,98 @@ fn signature(
 
 fn layout(children: Vec<Option<OwnershipStateClass>>) -> OwnershipStateClass {
     OwnershipStateClass::LayoutDependent { children }
+}
+
+fn catalog_signature(source: &str, function_name: &str) -> AccessSignature {
+    let module = witchy_syntax::parser::parse_module(source).expect("parse access fixture");
+    let catalog = BorrowRelationCatalog::from_module(&module);
+    let function = module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function)
+                if function.name == function_name =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("fixture function");
+    AccessSignature::from_function_with_catalog(function, &catalog)
+        .expect("valid catalog-backed access signature")
+}
+
+#[test]
+fn nominal_borrow_relations_preserve_exact_input_and_output_projections() {
+    let signature = catalog_signature(
+        "mode opt\n\n\
+         type PairView('left, 'right):\n    first: View(String, 'left)\n    second: View(String, 'right)\n\n\
+         fn pair(left: let('left) String, right: let('right) String) \
+             -> PairView('left, 'right):\n    PairView(left, right)\n",
+        "pair",
+    );
+
+    let relations = signature.borrow_relations();
+    assert_eq!(relations.len(), 2);
+    assert_eq!(
+        relations[0].output_projection(),
+        &LoanProjection { steps: vec![LoanProjectionStep::Field("first".into())] }
+    );
+    assert_eq!(relations[0].owners()[0].position(), 0);
+    assert_eq!(
+        relations[0].owners()[0].input_projection(),
+        &LoanProjection::default()
+    );
+    assert_eq!(relations[0].storage_type(), &named("String"));
+    assert_eq!(
+        relations[1].output_projection(),
+        &LoanProjection { steps: vec![LoanProjectionStep::Field("second".into())] }
+    );
+    assert_eq!(relations[1].owners()[0].position(), 1);
+}
+
+#[test]
+fn exact_verifier_rejects_nominal_projection_erasure() {
+    let required = catalog_signature(
+        "mode opt\n\n\
+         type Wrapper('scope):\n    view: View(String, 'scope)\n\n\
+         fn wrap(value: let('scope) String) -> Wrapper('scope):\n    Wrapper(value)\n",
+        "wrap",
+    );
+    let erased = catalog_signature(
+        "mode opt\n\n\
+         type Wrapper('scope):\n    value: String\n\n\
+         fn wrap(value: let('scope) String) -> Wrapper('scope):\n    Wrapper(value)\n",
+        "wrap",
+    );
+
+    let error = required.verify_exact(&erased).expect_err("projection erasure must fail");
+    assert_eq!(error.kind(), AccessMismatchKind::BorrowRelation);
+}
+
+#[test]
+fn exact_verifier_rejects_swapped_generic_nominal_projections() {
+    let required = catalog_signature(
+        "mode opt\n\n\
+         type Leaf(a, 'scope):\n    value: View(a, 'scope)\n\n\
+         type Pair(a, b):\n    first: a\n    second: b\n\n\
+         fn pair(left: let('left) String, right: let('right) String) \
+             -> Pair(Leaf(String, 'left), Leaf(String, 'right)):\n    Pair(Leaf(left), Leaf(right))\n",
+        "pair",
+    );
+    let swapped = catalog_signature(
+        "mode opt\n\n\
+         type Leaf(a, 'scope):\n    value: View(a, 'scope)\n\n\
+         type Pair(a, b):\n    first: b\n    second: a\n\n\
+         fn pair(left: let('left) String, right: let('right) String) \
+             -> Pair(Leaf(String, 'left), Leaf(String, 'right)):\n    Pair(Leaf(left), Leaf(right))\n",
+        "pair",
+    );
+
+    let error = required
+        .verify_exact(&swapped)
+        .expect_err("generic field substitution must not hide a projection swap");
+    assert_eq!(error.kind(), AccessMismatchKind::BorrowRelation);
 }
 
 #[test]
@@ -138,7 +231,14 @@ fn borrowed_result_relates_to_owner_parameter_positions() {
 
     assert_eq!(sig.borrow_relations().len(), 1);
     assert_eq!(sig.borrow_relations()[0].lifetime(), "a");
-    assert_eq!(sig.borrow_relations()[0].owner_positions(), &[0, 2]);
+    assert_eq!(
+        sig.borrow_relations()[0]
+            .owners()
+            .iter()
+            .map(|owner| owner.position())
+            .collect::<Vec<_>>(),
+        vec![0, 2]
+    );
     assert_eq!(
         sig.result().ownership_output(),
         Some(&OwnershipStateClass::BorrowedOwnerRoot {
@@ -239,7 +339,14 @@ fn nested_qualifiers_drive_parameter_and_result_state_flow() {
             Some(layout(vec![None])),
         ]))
     );
-    assert_eq!(sig.borrow_relations()[0].owner_positions(), &[0]);
+    assert_eq!(
+        sig.borrow_relations()[0]
+            .owners()
+            .iter()
+            .map(|owner| owner.position())
+            .collect::<Vec<_>>(),
+        vec![0]
+    );
 }
 
 #[test]
