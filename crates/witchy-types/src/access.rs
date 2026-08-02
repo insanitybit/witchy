@@ -2044,39 +2044,6 @@ impl<'a> AccessVerifier<'a> {
         Ok((signature, substitutions))
     }
 
-    fn substitute_flow(
-        flow: &AccessFlow,
-        substitutions: &HashMap<String, Type>,
-    ) -> Result<AccessFlow, AccessFlowError> {
-        match flow {
-            AccessFlow::Callable(signature) => {
-                let specialized = Self::substitute_type(&signature.as_type(), substitutions);
-                AccessSignature::from_function_type(&specialized)
-                    .map(AccessFlow::Callable)
-                    .map_err(Self::signature_error)
-            }
-            AccessFlow::Product(children) => children
-                .iter()
-                .map(|child| Self::substitute_flow(child, substitutions))
-                .collect::<Result<Vec<_>, _>>()
-                .map(AccessFlow::Product),
-            AccessFlow::Sequence(element) => Self::substitute_flow(element, substitutions)
-                .map(Box::new)
-                .map(AccessFlow::Sequence),
-            AccessFlow::Named { name, arguments, dynamic } => arguments
-                .iter()
-                .map(|argument| Self::substitute_flow(argument, substitutions))
-                .collect::<Result<Vec<_>, _>>()
-                .map(|arguments| AccessFlow::Named {
-                    name: name.clone(),
-                    arguments,
-                    dynamic: *dynamic,
-                }),
-            AccessFlow::None => Ok(AccessFlow::None),
-            AccessFlow::Unknown => Ok(AccessFlow::Unknown),
-        }
-    }
-
     fn eval_block(
         &mut self,
         block: &Block,
@@ -2429,15 +2396,11 @@ impl<'a> AccessVerifier<'a> {
                     .collect::<Vec<_>>();
                 match signature {
                     Some(signature) => {
-                        let (signature, substitutions) = self.specialize_signature_from_flows(
+                        let (signature, _) = self.specialize_signature_from_flows(
                             signature,
                             &arguments,
                             &argument_types,
                         )?;
-                        let arguments = arguments
-                            .iter()
-                            .map(|argument| Self::substitute_flow(argument, &substitutions))
-                            .collect::<Result<Vec<_>, _>>()?;
                         self.verify_arguments(name, &signature, &arguments)?;
                         self.record_call(expression, &signature);
                         AccessFlow::from_type(signature.result().ty())
@@ -2470,15 +2433,11 @@ impl<'a> AccessVerifier<'a> {
                     .collect::<Vec<_>>();
                 match signature {
                     Some(signature) => {
-                        let (signature, substitutions) = self.specialize_signature_from_flows(
+                        let (signature, _) = self.specialize_signature_from_flows(
                             signature,
                             &arguments,
                             &argument_types,
                         )?;
-                        let arguments = arguments
-                            .iter()
-                            .map(|argument| Self::substitute_flow(argument, &substitutions))
-                            .collect::<Result<Vec<_>, _>>()?;
                         self.verify_arguments(name, &signature, &arguments)?;
                         self.record_call(expression, &signature);
                         AccessFlow::from_type(signature.result().ty())
@@ -2515,15 +2474,11 @@ impl<'a> AccessVerifier<'a> {
                 let Some(signature) = signature else {
                     return Ok(self.record(expression, AccessFlow::None));
                 };
-                let (signature, substitutions) = self.specialize_signature_from_flows(
+                let (signature, _) = self.specialize_signature_from_flows(
                     signature,
                     &arguments,
                     &argument_types,
                 )?;
-                let arguments = arguments
-                    .iter()
-                    .map(|argument| Self::substitute_flow(argument, &substitutions))
-                    .collect::<Result<Vec<_>, _>>()?;
                 self.verify_arguments("indirect function", &signature, &arguments)?;
                 self.record_call(expression, &signature);
                 AccessFlow::from_type(signature.result().ty()).map_err(Self::signature_error)?
@@ -2736,16 +2691,11 @@ impl<'a> AccessVerifier<'a> {
                     args.iter()
                         .map(|argument| self.resolved_expression_type(argument)),
                 );
-                let (signature, substitutions) = self.specialize_signature_from_flows(
+                let (signature, _) = self.specialize_signature_from_flows(
                     signature,
                     &all_arguments,
                     &argument_types,
                 )?;
-                let receiver_flow = Self::substitute_flow(&receiver_flow, &substitutions)?;
-                let arguments = arguments
-                    .iter()
-                    .map(|argument| Self::substitute_flow(argument, &substitutions))
-                    .collect::<Result<Vec<_>, _>>()?;
                 if let Some(receiver_param) = signature.params().first() {
                     let expected = AccessFlow::from_type(receiver_param.ty())
                         .map_err(Self::signature_error)?;

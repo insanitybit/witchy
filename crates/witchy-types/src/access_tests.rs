@@ -540,6 +540,27 @@ fn generic_call_specializes_type_variables_without_erasing_access() {
 }
 
 #[test]
+fn callee_substitution_does_not_capture_caller_generic_names() {
+    crate::typeck::check_str(
+        "fn identity(value: a) -> a:\n    value\n\n\
+         fn preserve(callback: fn(a) -> a) -> fn(a) -> a:\n    identity(callback)\n\n\
+         fn main() -> Int:\n    0\n",
+    )
+    .expect("callee type variables are scoped independently from same-spelled caller variables");
+
+    let error = crate::typeck::check_str(
+        "fn identity(value: a) -> a:\n    value\n\n\
+         fn erase(callback: fn(unique a) -> a) -> fn(a) -> a:\n    identity(callback)\n\n\
+         fn main() -> Int:\n    0\n",
+    )
+    .expect_err("alpha-scope preservation must not permit qualifier erasure");
+    assert!(
+        error.contains("ownership/access contract") && error.contains("Qualifier"),
+        "{error}"
+    );
+}
+
+#[test]
 fn try_propagation_preserves_nested_callable_access() {
     crate::typeck::check_str(
         "fn option(value: Option(fn(unique List(Int)) -> Int)) -> Option(fn(unique List(Int)) -> Int):\n    let callback = value?\n    Some(callback)\n\n\
