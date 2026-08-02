@@ -427,6 +427,209 @@
         );
     }
 
+    const HEAP_UNREGISTER_IDEMPOTENT: &str = r#"
+        (module
+          (import "witchy" "heap_register" (func $reg (param i32 i32)))
+          (import "witchy" "heap_unregister" (func $unreg (param i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (call $reg (i32.const 16) (i32.const 20))
+            (call $reg (i32.const 32) (i32.const 36))
+            (call $unreg (i32.const 16))
+            (call $unreg (i32.const 16))
+            ;; Retired A's redzone may be overwritten; B's remains intact.
+            (i64.store (i32.const 20) (i64.const 0))))
+    "#;
+
+    const HEAP_UNREGISTER_KEEPS_ADJACENT: &str = r#"
+        (module
+          (import "witchy" "heap_register" (func $reg (param i32 i32)))
+          (import "witchy" "heap_unregister" (func $unreg (param i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (call $reg (i32.const 16) (i32.const 20))
+            (call $reg (i32.const 32) (i32.const 36))
+            (call $unreg (i32.const 16))
+            ;; Exact retirement must leave B's higher redzone guarded.
+            (i32.store (i32.const 36) (i32.const 0))))
+    "#;
+
+    #[test]
+    fn heap_unregister_is_idempotent_for_one_exact_object() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt.spawn(HEAP_UNREGISTER_IDEMPOTENT, Capabilities::none(), 4).unwrap();
+        vm.run().expect("retiring the same exact object twice must be harmless");
+    }
+
+    #[test]
+    fn heap_unregister_keeps_higher_adjacent_redzones_guarded() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt.spawn(HEAP_UNREGISTER_KEEPS_ADJACENT, Capabilities::none(), 4).unwrap();
+        let err = vm.run().expect_err("retiring A must not retire adjacent B");
+        assert!(err.to_string().contains("HEAP CHECK"), "adjacent B lost protection: {err}");
+    }
+
+    fn checked_uaf_module(double_free: bool) -> Vec<u8> {
+        use witchy_wir::wir::{
+            BinOp, GlobalInit, Kind, WirExpr as E, WirFunc, WirGlobal, WirImport, WirLocal,
+            WirModule, WirNode as N, WirTy,
+        };
+
+        let gl = |name: &str| E::GetLocal(name.into());
+        let i32_bin = |op, lhs, rhs| E::Binary {
+            op,
+            kind: Kind::I32,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
+        let assert_i32 = |lhs, rhs| N::If {
+            cond: i32_bin(BinOp::Eq, lhs, rhs),
+            then_: vec![],
+            els: vec![N::Unreachable],
+            result: None,
+        };
+        let assert_i64 = |lhs, rhs| N::If {
+            cond: E::Binary {
+                op: BinOp::Eq,
+                kind: Kind::I64,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+            then_: vec![],
+            els: vec![N::Unreachable],
+            result: None,
+        };
+        let alloc = || E::Call { func: "rc_alloc".into(), args: vec![E::ConstI32(24)] };
+        let register = |name: &str| N::Do(E::CallHost {
+            import: "heap_register".into(),
+            args: vec![gl(name), i32_bin(BinOp::Add, gl(name), E::ConstI32(16))],
+        });
+        let free = |name: &str| N::Do(E::Call {
+            func: "rc_free".into(),
+            args: vec![gl(name)],
+        });
+        let store = |name: &str, offset, value| N::Store {
+            ptr: gl(name),
+            value: E::ConstI32(value),
+            kind: Kind::I32,
+            offset,
+        };
+        let load = |name: &str, offset| E::Load {
+            ptr: Box::new(gl(name)),
+            kind: Kind::I32,
+            offset,
+        };
+
+        let mut body = vec![
+            N::SetLocal { local: "first".into(), value: alloc() },
+            store("first", 0, 101),
+            store("first", 4, 102),
+            store("first", 8, 103),
+            store("first", 12, 104),
+            register("first"),
+            N::SetLocal { local: "second".into(), value: alloc() },
+            store("second", 0, 201),
+            store("second", 4, 202),
+            store("second", 8, 203),
+            store("second", 12, 204),
+            register("second"),
+            free("first"),
+        ];
+        if double_free {
+            body.push(free("first"));
+        } else {
+            body.push(N::SetLocal { local: "fresh".into(), value: alloc() });
+            body.push(assert_i32(
+                i32_bin(BinOp::Eq, gl("first"), gl("fresh")),
+                E::ConstI32(0),
+            ));
+            for offset in [0, 4, 8, 12, 16, 20] {
+                body.push(assert_i32(load("first", offset), E::ConstI32(0xDEAD_BEEFu32 as i32)));
+            }
+            body.extend([
+                assert_i32(
+                    E::Load {
+                        ptr: Box::new(i32_bin(BinOp::Sub, gl("second"), E::ConstI32(8))),
+                        kind: Kind::I32,
+                        offset: 0,
+                    },
+                    E::ConstI32(1),
+                ),
+                assert_i32(
+                    E::Load {
+                        ptr: Box::new(i32_bin(BinOp::Sub, gl("second"), E::ConstI32(4))),
+                        kind: Kind::I32,
+                        offset: 0,
+                    },
+                    E::ConstI32(24),
+                ),
+                assert_i32(load("second", 0), E::ConstI32(201)),
+                assert_i32(load("second", 4), E::ConstI32(202)),
+                assert_i32(load("second", 8), E::ConstI32(203)),
+                assert_i32(load("second", 12), E::ConstI32(204)),
+                assert_i64(
+                    E::Load { ptr: Box::new(gl("second")), kind: Kind::I64, offset: 16 },
+                    E::ConstI64(i64::from_le_bytes([0xDB; 8])),
+                ),
+                assert_i32(E::GetGlobal("rc_freelist".into()), E::ConstI32(0)),
+                assert_i64(E::GetGlobal("__witchy_rc_reuse_calls".into()), E::ConstI64(0)),
+            ]);
+        }
+
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: ["first", "second", "fresh"]
+                .into_iter()
+                .map(|name| WirLocal { name: name.into(), ty: WirTy::Bool })
+                .collect(),
+            body,
+            raw_body: None,
+        };
+        let mut funcs = witchy_wir::wir_helpers::rc_allocator_helpers_for_test(true, true);
+        funcs.push(run);
+        let module = WirModule {
+            imports: vec![
+                WirImport { name: "heap_register".into(), params: vec![Kind::I32, Kind::I32], results: vec![] },
+                WirImport { name: "heap_unregister".into(), params: vec![Kind::I32], results: vec![] },
+                WirImport { name: "heap_frontier".into(), params: vec![Kind::I32], results: vec![] },
+            ],
+            funcs,
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![
+                WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(2048), export: None },
+                WirGlobal { name: "heap_base".into(), kind: Kind::I32, mutable: false, init: GlobalInit::I32(2048), export: None },
+                WirGlobal { name: "rc_freelist".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
+                WirGlobal { name: "__rc_reused_bytes".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_live_cells".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_rc_alloc_calls".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_bump_alloc_calls".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_rc_reuse_calls".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_rc_free_calls".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+            ],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        witchy_wir::wir_encode::try_encode_with_gc(&module, &[], &[])
+            .expect("combined checked-UAF fixture must encode")
+    }
+
+    #[test]
+    fn checked_uaf_unregisters_only_the_freed_cell_before_full_poison() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt.spawn(checked_uaf_module(false), Capabilities::none(), 4).unwrap();
+        vm.run().expect("full-cell poison must retire only the freed object's redzone");
+    }
+
+    #[test]
+    fn checked_uaf_double_free_still_traps() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt.spawn(checked_uaf_module(true), Capabilities::none(), 4).unwrap();
+        vm.run().expect_err("the zero RC quarantine marker must trap a repeated free");
+    }
+
 #[test]
 fn concrete_grants_have_one_complete_confinement_policy() {
     use std::collections::BTreeSet;

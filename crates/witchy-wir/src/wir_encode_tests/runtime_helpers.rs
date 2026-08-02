@@ -143,7 +143,7 @@
             ],
             raw_body: None,
         };
-        let module = rc_test_module(rc_free_helper_for_test(true), run);
+        let module = rc_test_module(rc_free_helper_for_test(true, false), run);
         assert_agrees(&module, &["0", "0", "-559038737", "777", "0", "2", "0"]);
     }
 
@@ -200,7 +200,7 @@
             ],
             raw_body: None,
         };
-        let module = rc_test_module(rc_free_helper_for_test(false), run);
+        let module = rc_test_module(rc_free_helper_for_test(false, false), run);
         assert_agrees(&module, &["1", "0", "1", "16", "1", "1"]);
     }
 
@@ -225,7 +225,7 @@
             ],
             raw_body: None,
         };
-        let module = rc_test_module(rc_free_helper_for_test(true), run);
+        let module = rc_test_module(rc_free_helper_for_test(true, false), run);
         assert_traps(&module);
     }
 
@@ -250,7 +250,7 @@
                 ],
                 raw_body: None,
             };
-            let binary = encode(&rc_test_module(rc_free_helper_for_test(uaf_check), run), &[]);
+            let binary = encode(&rc_test_module(rc_free_helper_for_test(uaf_check, false), run), &[]);
             wasmparser::validate(&binary).expect("both rc_free modes must remain valid Wasm");
         }
     }

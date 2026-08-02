@@ -46,6 +46,10 @@ getrandom = { version = "0.2", features = ["js"] }
 [target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
 cap-std-ext = "5.1.2"
 
+[dev-dependencies]
+# Combined checked-heap/UAF tests assemble the exact WIR allocator helpers.
+witchy-wir = { path = "../witchy-wir", features = ["raw-encoder-test-api"] }
+
 [features]
 native = ["dep:wasmtime", "dep:getrandom"]
 test-fixtures = ["native", "dep:witchy-test-host", "dep:witchy-testkit"]

@@ -82,13 +82,19 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
-        "rc_free" => Some(WirHelperSpec {
-            func: rc_free_helper(),
-            helper_deps: &[],
-            import_deps: &[],
-            uses_heap: true,
-            uses_table: false,
-        }),
+        "rc_free" => {
+            let heap_check = heap_check_enabled();
+            let uaf_check = uaf_check_enabled();
+            let import_deps: &'static [&'static str] =
+                if heap_check && uaf_check { &["heap_unregister"] } else { &[] };
+            Some(WirHelperSpec {
+                func: rc_free_helper(),
+                helper_deps: &[],
+                import_deps,
+                uses_heap: true,
+                uses_table: false,
+            })
+        }
         "rc_dup" => Some(WirHelperSpec {
             func: rc_dup_helper(),
             helper_deps: &[],

@@ -98,7 +98,7 @@ pub fn heap_check_enabled() -> bool {
 /// stale read" divergence into a guaranteed one. Output-preserving on a CORRECT program (a
 /// correctly-freed block is never read again), so it only ever surfaces real bugs. Trades
 /// reclamation for detection (freed memory leaks), so it is a debug-only test mode.
-fn uaf_check_enabled() -> bool {
+pub(super) fn uaf_check_enabled() -> bool {
     std::env::var_os("WITCHY_UAF_CHECK").is_some_and(|v| v == "1")
 }
 
@@ -415,15 +415,26 @@ pub(crate) fn rc_alloc_helper() -> WirFunc {
 /// size — and is responsible for soundness: it only frees a block the escape oracle
 /// proved confined + unaliased and distinct from the freshly-built result.
 pub(crate) fn rc_free_helper() -> WirFunc {
-    rc_free_helper_with_uaf_check(uaf_check_enabled())
+    rc_free_helper_with_checks(uaf_check_enabled(), heap_check_enabled())
 }
 
 #[cfg(test)]
-pub(crate) fn rc_free_helper_for_test(uaf_check: bool) -> WirFunc {
-    rc_free_helper_with_uaf_check(uaf_check)
+pub(crate) fn rc_free_helper_for_test(uaf_check: bool, heap_check: bool) -> WirFunc {
+    rc_free_helper_with_checks(uaf_check, heap_check)
 }
 
-fn rc_free_helper_with_uaf_check(uaf_check: bool) -> WirFunc {
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub fn rc_allocator_helpers_for_test(heap_check: bool, uaf_check: bool) -> Vec<WirFunc> {
+    vec![
+        ensure_helper(heap_check),
+        bump_alloc_helper(),
+        rc_alloc_helper(),
+        rc_free_helper_with_checks(uaf_check, heap_check),
+    ]
+}
+
+fn rc_free_helper_with_checks(uaf_check: bool, heap_check: bool) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -476,6 +487,24 @@ fn rc_free_helper_with_uaf_check(uaf_check: bool) -> WirFunc {
                 ],
             }],
         };
+        let mut quarantine = Vec::new();
+        if heap_check {
+            // Retire exactly this object's checked-heap shadow entry before poisoning
+            // its complete allocation, which includes the trailing checked redzone.
+            // A frontier reclaim would also retire higher adjacent objects.
+            quarantine.push(N::Do(E::CallHost {
+                import: "heap_unregister".into(),
+                args: vec![getl("ptr")],
+            }));
+        }
+        quarantine.extend([
+            N::SetLocal { local: "i".into(), value: i32c(0) },
+            poison_loop,
+            // Mark this header dead for deterministic double-free detection.
+            // The quarantined pointer is deliberately not linked into `rc_freelist`.
+            N::Store { ptr: rc_addr(), value: i32c(0), kind: Kind::I32, offset: 0 },
+            dec_live,
+        ]);
         return WirFunc {
             name: "rc_free".into(),
             params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
@@ -509,14 +538,7 @@ fn rc_free_helper_with_uaf_check(uaf_check: bool) -> WirFunc {
                             i32c(POISON_LIMIT - 2),
                         ),
                     ),
-                    then_: vec![
-                        N::SetLocal { local: "i".into(), value: i32c(0) },
-                        poison_loop,
-                        // Mark this header dead for deterministic double-free detection.
-                        // The quarantined pointer is deliberately not linked into `rc_freelist`.
-                        N::Store { ptr: rc_addr(), value: i32c(0), kind: Kind::I32, offset: 0 },
-                        dec_live,
-                    ],
+                    then_: quarantine,
                     els: vec![N::Unreachable],
                     result: None,
                 }],

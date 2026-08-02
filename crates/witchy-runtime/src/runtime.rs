@@ -667,7 +667,8 @@ pub struct VmState {
     /// (RFC-0023) Checked-heap shadow. Each `heap_register(start,end)` the guest's
     /// checked allocators emit records an object's `[start,end)`; the host poisons
     /// `[end, end+HEAP_REDZONE)` and the post-run sweep traps if any poison byte was
-    /// overwritten. Empty — and the sweep a no-op — unless the checked codegen ran.
+    /// overwritten. Exact object retirement removes entries when UAF mode quarantines
+    /// and poisons a complete allocation. Empty unless checked codegen ran.
     pub(crate) heap_objects: Vec<(u32, u32)>,
     /// (`Rand`) splitmix64 state for the seeded test/parity path (`WITCHY_RAND_SEED`);
     /// `None` means `rand_u64` draws from the OS CSPRNG instead.
@@ -1149,6 +1150,7 @@ pub(crate) fn link_capability_imports(
     // authority (they only poison/record/reclaim a redzone), so they are always defined
     // and only the checked codegen ever emits calls to them.
     linker.func_wrap("witchy", "heap_register", host_heap_register)?;
+    linker.func_wrap("witchy", "heap_unregister", host_heap_unregister)?;
     linker.func_wrap("witchy", "heap_frontier", host_heap_frontier)?;
 
     host::console::link_abort(linker)?;
@@ -1472,6 +1474,18 @@ fn host_heap_register(mut caller: Caller<'_, VmState>, start: i32, end: i32) -> 
         data[rz_start..rz_end].fill(HEAP_POISON);
     }
     caller.data_mut().heap_objects.push((s, e));
+    Ok(())
+}
+
+/// Retire the checked-heap entry whose object begins at `start`. This is exact:
+/// higher adjacent objects remain protected, unlike a watermark/frontier reclaim.
+/// Removing an unknown, negative, or already-retired start is an idempotent no-op.
+fn host_heap_unregister(mut caller: Caller<'_, VmState>, start: i32) -> Result<()> {
+    if start < 0 {
+        return Ok(());
+    }
+    let start = start as u32;
+    caller.data_mut().heap_objects.retain(|&(object_start, _)| object_start != start);
     Ok(())
 }
 

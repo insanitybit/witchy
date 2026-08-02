@@ -304,16 +304,17 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "exec_only" (func $exec_only_host (param externref i32) (result externref)))
   (import "witchy" "exec_run" (func $exec_run_host (param externref externref i32 i32 i32) (result i32)))
   (import "witchy" "heap_register" (func $heap_register_host (param i32 i32)))
+  (import "witchy" "heap_unregister" (func $heap_unregister_host (param i32)))
   (import "witchy" "heap_frontier" (func $heap_frontier_host (param i32)))
   (import "witchy" "__witchy_abort" (func $__witchy_abort (param i32 i64 i64 i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 95;
+pub const IMPORT_COUNT: usize = 96;
 
 /// Version of the public `"witchy"` host-import contract.
-pub const WITCHY_ABI_VERSION: u32 = 6;
+pub const WITCHY_ABI_VERSION: u32 = 7;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -531,7 +532,9 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "vm_serve_run"
         => C::InternalService,
 
-        "heap_register" | "heap_frontier" | "__witchy_abort" => C::RuntimeDiagnostic,
+        "heap_register" | "heap_unregister" | "heap_frontier" | "__witchy_abort" => {
+            C::RuntimeDiagnostic
+        }
         _ => return None,
     };
 
@@ -782,6 +785,12 @@ mod tests {
         let now = imports.iter().find(|i| i.name == "now").expect("the `now` import is present");
         assert!(now.params.is_empty());
         assert_eq!(now.results, vec![WasmTy::I64]);
+        let unregister = imports
+            .iter()
+            .find(|i| i.name == "heap_unregister")
+            .expect("the exact checked-heap retirement import is present");
+        assert_eq!(unregister.params, vec![WasmTy::I32]);
+        assert!(unregister.results.is_empty());
     }
 
     #[test]
