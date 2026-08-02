@@ -2,7 +2,7 @@ fn main(console: Console, clock: Clock):
     let bench_t0 = clock.now_monotonic()
     var values = []
     for i in 0..300000:
-        values = list.push(values, i * 3)
+        list.push(values, i * 3)
     var total = 0
     for value in values:
         if value % 5 != 0:
