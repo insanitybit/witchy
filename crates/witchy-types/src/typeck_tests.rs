@@ -591,6 +591,47 @@
     }
 
     #[test]
+    fn borrowed_nominal_variable_transport_rejects_until_owner_root_lowering() {
+        let binding = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    let copy = holder\n    0\n",
+        )
+        .expect_err("a bare binding must not copy a borrowed nominal shell");
+        assert!(
+            binding.contains("binding/copy into `copy`")
+                && binding.contains("borrowed nominal type `Holder`")
+                && binding.contains("runtime owner-root lowering"),
+            "{binding}"
+        );
+
+        let moved = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    move holder\n    0\n",
+        )
+        .expect_err("move must not transport a borrowed nominal shell");
+        assert!(
+            moved.contains("unary `move`")
+                && moved.contains("borrowed nominal type `Holder`")
+                && moved.contains("runtime owner-root lowering"),
+            "{moved}"
+        );
+
+        let propagated = check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    holder\n    0\n",
+        )
+        .expect_err("a bare variable expression still performs runtime transport");
+        assert!(
+            propagated.contains("bare variable expression")
+                && propagated.contains("borrowed nominal type `Holder`")
+                && propagated.contains("runtime owner-root lowering"),
+            "{propagated}"
+        );
+
+        check_str(
+            "fn copy(value: Int) -> Int:\n    let duplicate = value\n    duplicate\n\nfn transfer(value: String) -> String:\n    move value\n",
+        )
+        .expect("ordinary values retain binding, variable-return, and move behavior");
+    }
+
+    #[test]
     fn nested_function_output_lifetime_requires_a_nested_input_owner() {
         let error = check_str(
             "mode opt\n\ntype Callback:\n    Callback(fn(View(String, 'a)) -> View(String, 'b))\n",

@@ -5366,6 +5366,12 @@ impl Checker {
                     } else {
                         self.infer(value)?
                     };
+                    if matches!(value, Expr::Var(_)) {
+                        self.reject_borrowed_nominal_runtime_ty(
+                            &vt,
+                            &format!("binding/copy into `{name}`"),
+                        )?;
+                    }
                     self.define(name.clone(), vt, *mutable);
                     ty = Ty::Unit;
                 }
@@ -5389,6 +5395,12 @@ impl Checker {
                         }
                     }
                     let vt = self.infer_expected(value, &existing)?;
+                    if matches!(value, Expr::Var(_)) {
+                        self.reject_borrowed_nominal_runtime_ty(
+                            &vt,
+                            &format!("assignment/copy into `{name}`"),
+                        )?;
+                    }
                     if !self.existential_coercion(&existing, &vt)?
                         && !self.record_width_conformance(&existing, &vt)?
                     {
@@ -5441,6 +5453,12 @@ impl Checker {
                     } else {
                         self.infer(e)?
                     };
+                    if i != tail && matches!(e, Expr::Var(_)) {
+                        self.reject_borrowed_nominal_runtime_ty(
+                            &ty,
+                            "bare variable expression",
+                        )?;
+                    }
                 }
                 Stmt::Yield(e) => {
                     if !self.region_locals.is_empty() {
@@ -6854,6 +6872,7 @@ impl Checker {
                     // actual move). `infer(expr)` above already rejected moving an
                     // already-consumed binding.
                     UnOp::Move => {
+                        self.reject_borrowed_nominal_runtime_ty(&t, "unary `move`")?;
                         if let Expr::Var(v) = expr.as_ref() {
                             self.consumed.insert(v.clone());
                         }
