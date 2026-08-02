@@ -825,34 +825,47 @@ impl<'types> Codegen<'types> {
                     rhs: Box::new(W::GetLocal(r.to_string())),
                 };
                 let exit_op = if *inclusive { witchy_wir::wir::BinOp::Gt } else { witchy_wir::wir::BinOp::Ge };
-                let mut loop_body: witchy_wir::wir::WirSeq = vec![
-                    N::Br { target: format!("fe{id}"), cond: Some(cmp(exit_op, &ctr, &end)) },
-                    N::SetLocal { local: var.clone(), value: W::GetLocal(ctr.clone()) },
-                    N::Block {
-                        label: format!("fc{id}"),
-                        result: None,
-                        body: vec![N::Drop(W::Seq(body_seq))],
-                    },
-                ];
-                // reclaim per-iteration arena garbage before the counter advance.
-                if let Some((_, reset)) = &wm {
-                    loop_body.extend(reset.clone());
-                }
-                if *inclusive {
+                let lanes = if self.loop_unroll_safe(body) { 4 } else { 1 };
+                let mut loop_body: witchy_wir::wir::WirSeq = Vec::new();
+                for _ in 0..lanes {
+                    // Guard every logical iteration. This preserves empty and
+                    // reversed ranges and supplies the exact 0..3 remainder
+                    // without a speculative body evaluation.
                     loop_body.push(N::Br {
                         target: format!("fe{id}"),
-                        cond: Some(cmp(witchy_wir::wir::BinOp::Eq, &ctr, &end)),
+                        cond: Some(cmp(exit_op, &ctr, &end)),
+                    });
+                    loop_body.push(N::SetLocal {
+                        local: var.clone(),
+                        value: W::GetLocal(ctr.clone()),
+                    });
+                    loop_body.push(N::Block {
+                        label: format!("fc{id}"),
+                        result: None,
+                        body: vec![N::Drop(W::Seq(body_seq.clone()))],
+                    });
+                    // Reclaim after each source iteration, never once per
+                    // unrolled group, so allocation/free ordering is unchanged.
+                    if let Some((_, reset)) = &wm {
+                        loop_body.extend(reset.clone());
+                    }
+                    if *inclusive {
+                        // Avoid overflowing the induction variable at i64::MAX.
+                        loop_body.push(N::Br {
+                            target: format!("fe{id}"),
+                            cond: Some(cmp(witchy_wir::wir::BinOp::Eq, &ctr, &end)),
+                        });
+                    }
+                    loop_body.push(N::SetLocal {
+                        local: ctr.clone(),
+                        value: W::Binary {
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: i64k,
+                            lhs: Box::new(W::GetLocal(ctr.clone())),
+                            rhs: Box::new(W::ConstI64(1)),
+                        },
                     });
                 }
-                loop_body.push(N::SetLocal {
-                    local: ctr.clone(),
-                    value: W::Binary {
-                        op: witchy_wir::wir::BinOp::Add,
-                        kind: i64k,
-                        lhs: Box::new(W::GetLocal(ctr.clone())),
-                        rhs: Box::new(W::ConstI64(1)),
-                    },
-                });
                 loop_body.push(N::Br { target: format!("fl{id}"), cond: None });
                 let mut outer: witchy_wir::wir::WirSeq = vec![
                     N::SetLocal { local: ctr, value: lo_w },

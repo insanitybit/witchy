@@ -952,6 +952,97 @@ fn main() -> Int:
             !main.contains("global.get $heap"),
             "allocation-free loop has no watermark capture: {main}"
         );
+        assert_eq!(
+            main.matches("local.set $i").count(),
+            4,
+            "eligible counted range has four statically emitted lanes: {main}"
+        );
+    }
+
+    #[test]
+    fn counted_range_unroll_preserves_remainders_and_extreme_inclusive_bounds() {
+        let source = r#"
+mode opt
+
+fn sum(lo: Int, hi: Int) -> Int:
+    var total = 0
+    for i in lo..hi:
+        total = total + i
+    total
+
+fn count_inclusive(lo: Int, hi: Int) -> Int:
+    var total = 0
+    for i in lo..=hi:
+        total = total + 1
+    total
+
+fn main() -> Int:
+    var errors = 0
+    errors = errors + sum(-3, -5) * sum(-3, -5)
+    errors = errors + sum(-3, -3) * sum(-3, -3)
+    errors = errors + (sum(-3, -2) + 3) * (sum(-3, -2) + 3)
+    errors = errors + (sum(-3, 0) + 6) * (sum(-3, 0) + 6)
+    errors = errors + (sum(-3, 2) + 5) * (sum(-3, 2) + 5)
+    errors = errors + (sum(0, 7) - 21) * (sum(0, 7) - 21)
+    errors = errors + (sum(0, 8) - 28) * (sum(0, 8) - 28)
+    errors = errors + count_inclusive(3, 2) * count_inclusive(3, 2)
+    errors = errors + (count_inclusive(3, 3) - 1) * (count_inclusive(3, 3) - 1)
+    errors = errors + (count_inclusive(3, 6) - 4) * (count_inclusive(3, 6) - 4)
+    errors = errors + (count_inclusive(9223372036854775805, 9223372036854775807) - 3) * (count_inclusive(9223372036854775805, 9223372036854775807) - 3)
+    errors
+"#;
+        assert_eq!(run_int(source), 0);
+
+        let module = parse_module(source).expect("parse counted-range property cases");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("counted-range properties lower"),
+        );
+        let start = wat.find("(func $sum").expect("sum function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let sum = &tail[..end];
+        assert_eq!(
+            sum.matches("local.set $i").count(),
+            4,
+            "safe dynamic range lowers to four guarded lanes: {sum}"
+        );
+    }
+
+    #[test]
+    fn counted_range_with_break_or_continue_declines_unrolling() {
+        let source = r#"
+mode opt
+
+fn main() -> Int:
+    var total = 0
+    for i in 0..10:
+        if i == 2:
+            continue
+        if i == 7:
+            break
+        total = total + i
+    total
+"#;
+        assert_eq!(run_int(source), 19);
+        let module = parse_module(source).expect("parse controlled counted range");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("controlled range lowers"),
+        );
+        let start = wat.find("(func $main").expect("main function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let main = &tail[..end];
+        assert_eq!(
+            main.matches("local.set $i").count(),
+            1,
+            "source-level loop control retains the scalar lowering: {main}"
+        );
     }
 
     #[test]
@@ -1013,6 +1104,23 @@ fn main() -> Int:
             run_int_with_i64_globals(source, &["__witchy_region_rewind_calls"]);
         assert_eq!(result, 15);
         assert_eq!(counters["__witchy_region_rewind_calls"], 5);
+
+        let module = parse_module(source).expect("parse unknown-call loop");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("unknown-call loop lowers"),
+        );
+        let start = wat.find("(func $main").expect("main function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let main = &tail[..end];
+        assert_eq!(
+            main.matches("local.set $i").count(),
+            1,
+            "indirect/unknown effects retain scalar iteration order: {main}"
+        );
     }
 
     #[test]

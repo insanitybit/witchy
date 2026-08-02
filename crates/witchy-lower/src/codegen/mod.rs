@@ -7992,6 +7992,103 @@ impl<'types> Codegen<'types> {
         ok
     }
 
+    /// Counted-range unrolling clones only bodies whose control remains inside
+    /// one logical iteration. Direct source functions are preserved as calls in
+    /// the same order; unknown/host/intrinsic and indirect boundaries decline.
+    fn loop_unroll_safe(&self, body: &Block) -> bool {
+        if body.region.is_some() {
+            return false;
+        }
+        body.stmts.iter().all(|statement| match statement {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Expr(value) => self.loop_unroll_safe_expr(value),
+            Stmt::Return(_) | Stmt::Yield(_) | Stmt::Break | Stmt::Continue => false,
+        })
+    }
+
+    fn loop_unroll_safe_expr(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Var(_) => true,
+            Expr::Unary {
+                op: UnOp::Await, ..
+            }
+            | Expr::Try(_)
+            | Expr::Lambda { .. }
+            | Expr::ExistentialPack { .. }
+            | Expr::Apply { .. }
+            | Expr::MethodCall { .. }
+            | Expr::ExistentialCall { .. }
+            | Expr::LabeledCall { .. }
+            | Expr::While { .. }
+            | Expr::For { .. }
+            | Expr::WhileLet { .. }
+            | Expr::TaggedLit { .. } => false,
+            Expr::Unary { expr, .. }
+            | Expr::As { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
+            | Expr::Field { base: expr, .. } => self.loop_unroll_safe_expr(expr),
+            Expr::Binary { lhs, rhs, .. }
+            | Expr::Range { lo: lhs, hi: rhs, .. }
+            | Expr::Index {
+                base: lhs,
+                index: rhs,
+            } => self.loop_unroll_safe_expr(lhs) && self.loop_unroll_safe_expr(rhs),
+            Expr::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                self.loop_unroll_safe_expr(cond)
+                    && self.loop_unroll_safe(then_block)
+                    && else_block
+                        .as_ref()
+                        .is_none_or(|block| self.loop_unroll_safe(block))
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.loop_unroll_safe_expr(scrutinee)
+                    && arms.iter().all(|arm| {
+                        arm.guard
+                            .as_ref()
+                            .is_none_or(|guard| self.loop_unroll_safe_expr(guard))
+                            && self.loop_unroll_safe_expr(&arm.body)
+                    })
+            }
+            Expr::Block(block) => self.loop_unroll_safe(block),
+            Expr::Call { name, args } => {
+                self.emitted_funcs.contains(name)
+                    && !self.locals.contains_key(name)
+                    && args.iter().all(|argument| self.loop_unroll_safe_expr(argument))
+            }
+            Expr::List(items)
+            | Expr::Tuple(items)
+            | Expr::Ctor { args: items, .. }
+            | Expr::AnonCtor { args: items, .. } => {
+                items.iter().all(|item| self.loop_unroll_safe_expr(item))
+            }
+            Expr::RecordUpdate { base, fields, .. } => {
+                self.loop_unroll_safe_expr(base)
+                    && fields
+                        .iter()
+                        .all(|(_, value)| self.loop_unroll_safe_expr(value))
+            }
+            Expr::Record { fields, spread, .. } => {
+                fields
+                    .iter()
+                    .all(|(_, value)| self.loop_unroll_safe_expr(value))
+                    && spread
+                        .as_ref()
+                        .is_none_or(|value| self.loop_unroll_safe_expr(value))
+            }
+        }
+    }
+
     fn outer_write_can_escape_heap(&self, name: &str, inner: &HashSet<String>) -> bool {
         if inner.contains(name) {
             return false;
