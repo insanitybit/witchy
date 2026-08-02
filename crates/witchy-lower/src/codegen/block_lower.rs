@@ -455,6 +455,15 @@ impl<'types> Codegen<'types> {
                     if self.collect_wir
                         && self.reuse_vars.contains(name)
                         && matches!(value, Expr::List(_) | Expr::Ctor { .. })
+                        // RFC-0111 specialized aggregates are descriptor-shaped, not
+                        // the legacy `[header][i64 slots...]` buffer this optimization
+                        // rewrites. A normal rebind below constructs the new descriptor
+                        // layout safely; never reinterpret it as reusable legacy slots.
+                        && self
+                            .local_types
+                            .get(name)
+                            .and_then(|ty| self.specialized_layout_id(ty))
+                            .is_none()
                         // Reference-backed aggregates have no linear slot buffer.
                         // Their persistent GC lowering is already copy-correct;
                         // never route them through the RFC-0016 i64 reuse path.
@@ -613,6 +622,29 @@ impl<'types> Codegen<'types> {
                         && !matches!(self.locals.get(name), Some(Kind::GcRef(_) | Kind::ExternRef))
                     {
                         let op = analysis::self_inplace_op(name, value).expect("guarded Some above");
+                        if self
+                            .local_types
+                            .get(name)
+                            .and_then(|ty| self.specialized_layout_id(ty))
+                            .is_some()
+                        {
+                            let boundary = match &op {
+                                analysis::InPlaceOp::Push(_) => "list.push",
+                                analysis::InPlaceOp::SetAt(_, _) => "list.set_at",
+                                analysis::InPlaceOp::UpdateAt(_, _) => "list.update_at",
+                                analysis::InPlaceOp::Insert(_, _) => "dict.insert",
+                                analysis::InPlaceOp::Update(_, _, _) => "dict.update",
+                                analysis::InPlaceOp::Concat(_) => "string concatenation",
+                                analysis::InPlaceOp::RecordUpdate(_) => "record update",
+                            };
+                            self.reject_reason.get_or_insert_with(|| CodegenError {
+                                message: format!(
+                                    "declared packed layout cannot cross unsupported mutation `{boundary}`; \
+                                     this boundary requires an exact RFC-0111 LayoutId adapter and cannot box or reshape"
+                                ),
+                            });
+                            return None;
+                        }
                         // A dirty site (its RHS embeds an aliasing share of `name`)
                         // forces a zero ownership token → re-own + copy; a clean site
                         // trusts the runtime token. Read-only here; `sites` consumed

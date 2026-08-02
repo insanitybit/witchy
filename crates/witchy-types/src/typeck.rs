@@ -1484,7 +1484,6 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     if let Some(t) = &p.ty {
                         validate_type_model(t, &known, &arities, &type_defs, &reference_storage)
                             .map_err(|e| in_ctx(e, &f.name))?;
-                        reject_packed_list_boundary(t, &packed_names, &f.name, "a parameter")?;
                         reject_cap_slot_boundary(
                             t,
                             &type_defs,
@@ -1497,7 +1496,6 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                 if let Some(t) = &f.ret {
                     validate_type_model(t, &known, &arities, &type_defs, &reference_storage)
                         .map_err(|e| in_ctx(e, &f.name))?;
-                    reject_packed_list_boundary(t, &packed_names, &f.name, "a return type")?;
                     reject_cap_slot_boundary(
                         t,
                         &type_defs,
@@ -1719,7 +1717,6 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                             &reference_storage,
                         )
                             .map_err(|e| in_ctx(e, &t.name))?;
-                        reject_packed_list_boundary(field, &packed_names, &t.name, "a field")?;
                         reject_cap_slot_boundary(
                             field,
                             &type_defs,

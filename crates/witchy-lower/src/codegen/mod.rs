@@ -58,7 +58,10 @@ use type_vars::*;
 use crate::analysis::{self};
 use witchy_syntax::lambda_scan::{collect_pattern_vars, scan_lambda};
 use witchy_syntax::intrinsics;
-use witchy_wir::layout::{type_tag_of, DATA_BASE};
+use witchy_wir::layout::{
+    type_tag_of, CallableLayoutSignature, FieldKind, HeaderLayout,
+    LayoutId, LayoutInterner, LayoutKind, LayoutSize, ScalarKind, DATA_BASE,
+};
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
@@ -814,6 +817,19 @@ struct Codegen<'types> {
     /// reported as "unsupported".
     reject_reason: Option<CodegenError>,
     wir_funcs: HashMap<String, witchy_wir::wir::WirFunc>,
+    /// Descriptor-derived constructor helpers for specialized values. These
+    /// are separate from source functions but enter the same WIR reachability
+    /// walk, so allocator/checked-heap dependencies remain explicit.
+    layout_wir_funcs: BTreeMap<String, witchy_wir::wir::WirFunc>,
+    /// The canonical physical descriptors selected for this closed module.
+    /// Every offset, stride, and helper below is read back from this interner.
+    specialized_layouts: LayoutInterner,
+    /// Closed logical types paired with their canonical physical IDs. This is
+    /// identity plumbing only: it deliberately stores no duplicate shape data.
+    specialized_type_ids: Vec<(Type, LayoutId)>,
+    /// Exact physical signatures for direct source callables. Ownership/access
+    /// facts remain independently supplied by RFC-0110.
+    callable_layouts: HashMap<String, CallableLayoutSignature>,
     /// Set by `compile_module_binary` to arm WIR capture for the function being
     /// lowered. Left `false` for any scope that doesn't collect WIR, where
     /// `lower_expr`'s call arm stays inert and pays no capture/clone overhead.
@@ -1387,6 +1403,10 @@ impl<'types> Codegen<'types> {
             captured_seq: None,
             reject_reason: None,
             wir_funcs: HashMap::new(),
+            layout_wir_funcs: BTreeMap::new(),
+            specialized_layouts: LayoutInterner::new(),
+            specialized_type_ids: Vec::new(),
+            callable_layouts: HashMap::new(),
             collect_wir: false,
             emitted_funcs: HashSet::new(),
             fn_conventions: HashMap::new(),
@@ -4019,27 +4039,26 @@ impl<'types> Codegen<'types> {
         } else {
             HashSet::new()
         };
-        // The declared-`packed` contract is enforced regardless of the lever: the
-        // lever chooses the REPRESENTATION (flat vs boxed), never the contract or
-        // observable behavior. So a misused declared-`packed` list is rejected even
-        // with `unbox` off, where a *confined* one merely stays boxed.
-        if !self.packed_types.is_empty() {
-            for (name, ctor) in crate::escape::record_list_lets_block(body) {
-                let ty = self.ctor_type_name.get(&ctor).cloned().unwrap_or(ctor);
-                if self.packed_types.contains(&ty) && !confined_packed.contains(&name) {
-                    self.reject_reason.get_or_insert_with(|| CodegenError {
-                        message: format!(
-                            "the list `{name}` of declared-`packed` type `{ty}` is used in a position the flat \
-                             inline layout cannot support — a `packed` list must be a confined local read only via \
-                             `list.length` and `list.at(_, i).field` (it may not be passed or returned whole, \
-                             compared, rendered, iterated with `for`, sent over a channel, or used as a generic \
-                             `List(a)`); drop `packed` from `{ty}` to use the uniform boxed layout there"
-                        ),
-                    });
-                }
-            }
-        }
-        self.packed_candidates = if unbox_on { confined_packed } else { HashSet::new() };
+        // Declared-packed values now use their canonical descriptor across
+        // direct boundaries. Keep the predecessor's name-based path only for
+        // best-effort inferred unboxing; otherwise it would construct the old
+        // `[len][i64 slots...]` layout while descriptor-based consumers expect
+        // `[len][capacity][stride elements...]`.
+        self.packed_candidates = if unbox_on {
+            let declared: HashSet<String> = crate::escape::record_list_lets_block(body)
+                .into_iter()
+                .filter_map(|(name, ctor)| {
+                    let ty = self.ctor_type_name.get(&ctor).cloned().unwrap_or(ctor);
+                    self.packed_types.contains(&ty).then_some(name)
+                })
+                .collect();
+            confined_packed
+                .into_iter()
+                .filter(|name| !declared.contains(name))
+                .collect()
+        } else {
+            HashSet::new()
+        };
         // (RFC-0016) In-place reuse of a confined, never-aliased list `var` at a
         // same-length reassignment — the never-OOM fix for build-and-drop loops.
         // Gated on `rc-elide`; off in forced-copy mode so the de-opt sweep exercises
@@ -4330,6 +4349,431 @@ impl<'types> Codegen<'types> {
             args.push(W::ToSlot(Box::new(w), Self::wir_kind(k)));
         }
         Some(W::Call { func: format!("mk{n}"), args })
+    }
+
+    fn specialized_layout_id(&self, ty: &Type) -> Option<LayoutId> {
+        self.specialized_type_ids
+            .iter()
+            .find(|(known, _)| known.unqualified() == ty.unqualified())
+            .map(|(_, id)| *id)
+    }
+
+    fn specialized_layout_of_expr(&self, expr: &Expr) -> Option<LayoutId> {
+        let ty = self.ast_type_of_expr(expr)?;
+        self.specialized_layout_id(&ty)
+    }
+
+    fn scalar_layout_kind(kind: ScalarKind) -> Kind {
+        match kind {
+            ScalarKind::Int | ScalarKind::Duration => Kind::I64,
+            ScalarKind::Float => Kind::F64,
+            ScalarKind::Bool | ScalarKind::U32 | ScalarKind::Tag8
+            | ScalarKind::Tag16 | ScalarKind::Tag32 => Kind::I32,
+        }
+    }
+
+    fn layout_field_kind(&self, kind: FieldKind) -> Option<Kind> {
+        match kind {
+            FieldKind::Scalar(scalar) => Some(Self::scalar_layout_kind(scalar)),
+            FieldKind::Inline(id) => match self.specialized_layouts.get(id)?.size() {
+                LayoutSize::Fixed(_) => Some(Kind::I32),
+                LayoutSize::Dynamic { .. } => None,
+            },
+        }
+    }
+
+    fn layout_helper_name(prefix: &str, id: LayoutId, count: Option<usize>) -> String {
+        match count {
+            Some(count) => format!("__witchy_{prefix}_{}_n{count}", id.to_hex()),
+            None => format!("__witchy_{prefix}_{}", id.to_hex()),
+        }
+    }
+
+    fn layout_alloc_nodes(
+        &self,
+        size: u32,
+    ) -> (Vec<witchy_wir::wir::WirNode>, witchy_wir::wir::WirExpr) {
+        use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W, WirNode as N};
+        let checked = witchy_wir::wir_helpers::heap_check_enabled();
+        let reserve = size + if checked { witchy_wir::layout::HEAP_REDZONE as u32 } else { 0 };
+        let mut nodes = vec![N::SetLocal {
+            local: "p".into(),
+            value: W::Call { func: "rc_alloc".into(), args: vec![W::ConstI32(reserve as i32)] },
+        }];
+        if checked {
+            nodes.push(N::Do(W::CallHost {
+                import: "heap_register".into(),
+                args: vec![
+                    W::GetLocal("p".into()),
+                    W::Binary {
+                        op: WB::Add,
+                        kind: WK::I32,
+                        lhs: Box::new(W::GetLocal("p".into())),
+                        rhs: Box::new(W::ConstI32(size as i32)),
+                    },
+                ],
+            }));
+        }
+        (nodes, W::GetLocal("p".into()))
+    }
+
+    fn push_layout_store(
+        &self,
+        nodes: &mut Vec<witchy_wir::wir::WirNode>,
+        base: witchy_wir::wir::WirExpr,
+        field: witchy_wir::layout::LayoutField,
+        value: witchy_wir::wir::WirExpr,
+    ) -> Option<()> {
+        use witchy_wir::wir::{Kind as WK, WirExpr as W, WirNode as N};
+        match field.kind() {
+            FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8) => {
+                nodes.push(N::Store8 { ptr: base, value, offset: field.offset() });
+            }
+            FieldKind::Scalar(ScalarKind::Tag16) => return None,
+            FieldKind::Scalar(scalar) => {
+                nodes.push(N::Store {
+                    ptr: base,
+                    value,
+                    kind: match scalar {
+                        ScalarKind::Int | ScalarKind::Duration => WK::I64,
+                        ScalarKind::Float => WK::F64,
+                        ScalarKind::U32 | ScalarKind::Tag32 => WK::I32,
+                        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::Tag16 => unreachable!(),
+                    },
+                    offset: field.offset(),
+                });
+            }
+            FieldKind::Inline(child) => {
+                let LayoutSize::Fixed(size) = self.specialized_layouts.get(child)?.size() else {
+                    return None;
+                };
+                nodes.push(N::MemoryCopy {
+                    dest: W::Binary {
+                        op: witchy_wir::wir::BinOp::Add,
+                        kind: WK::I32,
+                        lhs: Box::new(base),
+                        rhs: Box::new(W::ConstI32(field.offset() as i32)),
+                    },
+                    src: value,
+                    len: W::ConstI32(size as i32),
+                });
+            }
+        }
+        Some(())
+    }
+
+    fn ensure_packed_record_helper(&mut self, id: LayoutId) -> Option<String> {
+        use witchy_wir::wir::{WirFunc, WirLocal, WirNode as N, WirTy};
+        let name = Self::layout_helper_name("packed_record", id, None);
+        if self.layout_wir_funcs.contains_key(&name) {
+            return Some(name);
+        }
+        let descriptor = self.specialized_layouts.get(id)?.clone();
+        if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
+            return None;
+        }
+        let LayoutSize::Fixed(size) = descriptor.size() else { return None };
+        let mut params = Vec::with_capacity(descriptor.fields().len());
+        for (index, field) in descriptor.fields().iter().enumerate() {
+            let kind = self.layout_field_kind(field.kind())?;
+            params.push(WirLocal {
+                name: format!("f{index}"),
+                ty: Self::wir_ty_for_kind(kind),
+            });
+        }
+        let (mut body, base) = self.layout_alloc_nodes(size);
+        for (index, field) in descriptor.fields().iter().copied().enumerate() {
+            self.push_layout_store(
+                &mut body,
+                base.clone(),
+                field,
+                witchy_wir::wir::WirExpr::GetLocal(format!("f{index}")),
+            )?;
+        }
+        body.push(N::Push(base));
+        self.layout_wir_funcs.insert(name.clone(), WirFunc {
+            name: name.clone(),
+            params,
+            ret: vec![WirTy::Bool],
+            locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
+            body,
+            raw_body: None,
+        });
+        Some(name)
+    }
+
+    fn ensure_packed_list_helper(&mut self, id: LayoutId, count: usize) -> Option<String> {
+        use witchy_wir::wir::{Kind as WK, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
+        let name = Self::layout_helper_name("packed_list", id, Some(count));
+        if self.layout_wir_funcs.contains_key(&name) {
+            return Some(name);
+        }
+        let descriptor = self.specialized_layouts.get(id)?.clone();
+        let LayoutKind::PackedList { element, .. } = descriptor.kind() else { return None };
+        let element = *element;
+        let element_descriptor = self.specialized_layouts.get(element)?.clone();
+        let HeaderLayout::PackedList {
+            length_offset,
+            capacity_offset,
+            data_offset,
+            ..
+        } = descriptor.header() else { return None };
+        let LayoutSize::Dynamic { base, stride } = descriptor.size() else { return None };
+        let size = base.checked_add(stride.checked_mul(count as u32)?)?;
+        let fields = element_descriptor.fields();
+        let mut params = Vec::with_capacity(fields.len() * count);
+        for index in 0..count {
+            for (field_index, field) in fields.iter().enumerate() {
+                let kind = self.layout_field_kind(field.kind())?;
+                params.push(WirLocal {
+                    name: format!("e{index}f{field_index}"),
+                    ty: Self::wir_ty_for_kind(kind),
+                });
+            }
+        }
+        let (mut body, root) = self.layout_alloc_nodes(size);
+        body.push(N::Store {
+            ptr: root.clone(),
+            value: W::ConstI32(count as i32),
+            kind: WK::I32,
+            offset: length_offset,
+        });
+        body.push(N::Store {
+            ptr: root.clone(),
+            value: W::ConstI32(count as i32),
+            kind: WK::I32,
+            offset: capacity_offset,
+        });
+        for index in 0..count {
+            for (field_index, field) in fields.iter().copied().enumerate() {
+                let element_base = W::Binary {
+                    op: witchy_wir::wir::BinOp::Add,
+                    kind: WK::I32,
+                    lhs: Box::new(root.clone()),
+                    rhs: Box::new(W::ConstI32((data_offset + stride * index as u32) as i32)),
+                };
+                self.push_layout_store(
+                    &mut body,
+                    element_base,
+                    field,
+                    W::GetLocal(format!("e{index}f{field_index}")),
+                )?;
+            }
+        }
+        body.push(N::Push(root));
+        self.layout_wir_funcs.insert(name.clone(), WirFunc {
+            name: name.clone(),
+            params,
+            ret: vec![WirTy::Bool],
+            locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
+            body,
+            raw_body: None,
+        });
+        Some(name)
+    }
+
+    fn lower_packed_record_ctor(
+        &mut self,
+        expr: &Expr,
+        args: &[Expr],
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        let id = self.specialized_layout_of_expr(expr)?;
+        let descriptor = self.specialized_layouts.get(id)?;
+        if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. })
+            || descriptor.fields().len() != args.len()
+        {
+            return None;
+        }
+        let helper = self.ensure_packed_record_helper(id)?;
+        let lowered = args.iter().map(|arg| self.lower_expr(arg)).collect::<Option<Vec<_>>>()?;
+        Some(witchy_wir::wir::WirExpr::Call { func: helper, args: lowered })
+    }
+
+    fn lower_packed_list_literal(
+        &mut self,
+        expr: &Expr,
+        items: &[Expr],
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        let id = self.specialized_layout_of_expr(expr)?;
+        let LayoutKind::PackedList { .. } = self.specialized_layouts.get(id)?.kind() else {
+            return None;
+        };
+        let mut fields = Vec::new();
+        for item in items {
+            let (Expr::Ctor { args, .. } | Expr::Tuple(args)) = item else { return None };
+            fields.extend(args.iter());
+        }
+        let helper = self.ensure_packed_list_helper(id, items.len())?;
+        let args = fields
+            .into_iter()
+            .map(|field| self.lower_expr(field))
+            .collect::<Option<Vec<_>>>()?;
+        Some(witchy_wir::wir::WirExpr::Call { func: helper, args })
+    }
+
+    fn lower_layout_field_read(
+        &mut self,
+        base: witchy_wir::wir::WirExpr,
+        field: witchy_wir::layout::LayoutField,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W};
+        match field.kind() {
+            FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8) => {
+                Some(W::Load8U { ptr: Box::new(base), offset: field.offset() })
+            }
+            FieldKind::Scalar(ScalarKind::Tag16) => None,
+            FieldKind::Scalar(scalar) => Some(W::Load {
+                ptr: Box::new(base),
+                kind: match scalar {
+                    ScalarKind::Int | ScalarKind::Duration => WK::I64,
+                    ScalarKind::Float => WK::F64,
+                    ScalarKind::U32 | ScalarKind::Tag32 => WK::I32,
+                    ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::Tag16 => unreachable!(),
+                },
+                offset: field.offset(),
+            }),
+            FieldKind::Inline(child) => {
+                let LayoutSize::Fixed(_) = self.specialized_layouts.get(child)?.size() else {
+                    return None;
+                };
+                Some(W::Binary {
+                    op: WB::Add,
+                    kind: WK::I32,
+                    lhs: Box::new(base),
+                    rhs: Box::new(W::ConstI32(field.offset() as i32)),
+                })
+            }
+        }
+    }
+
+    fn lower_specialized_field(
+        &mut self,
+        base: &Expr,
+        field_name: &str,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W};
+        if let Expr::Call { name, args } = base
+            && name == intrinsics::LIST_AT
+            && args.len() == 2
+        {
+            let list_id = self.specialized_layout_of_expr(&args[0])?;
+            let list_descriptor = self.specialized_layouts.get(list_id)?.clone();
+            let LayoutKind::PackedList { element, .. } = list_descriptor.kind() else {
+                return None;
+            };
+            let element_descriptor = self.specialized_layouts.get(*element)?.clone();
+            let HeaderLayout::PackedList { data_offset, .. } = list_descriptor.header() else {
+                return None;
+            };
+            let LayoutSize::Dynamic { stride, .. } = list_descriptor.size() else {
+                return None;
+            };
+            let element_ty = match self.ast_type_of_expr(&args[0])?.unqualified() {
+                Type::Named(name, arguments) if name == "List" => arguments.first()?.clone(),
+                _ => return None,
+            };
+            let field_index = match element_ty.unqualified() {
+                Type::Tuple(_) => field_name.parse::<usize>().ok()?,
+                Type::Named(name, _) => self
+                    .record_fields
+                    .get(name)?
+                    .iter()
+                    .position(|(candidate, _)| candidate == field_name)?,
+                _ => return None,
+            };
+            let field = *element_descriptor.fields().get(field_index)?;
+            let index_kind = self.kind_of(&args[1]);
+            let index = Self::wir_convert(self.lower_expr(&args[1])?, index_kind, Kind::I32);
+            let root = self.lower_expr(&args[0])?;
+            let element_base = W::Binary {
+                op: WB::Add,
+                kind: WK::I32,
+                lhs: Box::new(root),
+                rhs: Box::new(W::Binary {
+                    op: WB::Add,
+                    kind: WK::I32,
+                    lhs: Box::new(W::ConstI32(data_offset as i32)),
+                    rhs: Box::new(W::Binary {
+                        op: WB::Mul,
+                        kind: WK::I32,
+                        lhs: Box::new(index),
+                        rhs: Box::new(W::ConstI32(stride as i32)),
+                    }),
+                }),
+            };
+            return self.lower_layout_field_read(element_base, field);
+        }
+
+        let id = self.specialized_layout_of_expr(base)?;
+        let descriptor = self.specialized_layouts.get(id)?.clone();
+        if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
+            return None;
+        }
+        let field_index = match self.ast_type_of_expr(base)?.unqualified() {
+            Type::Tuple(_) => field_name.parse::<usize>().ok()?,
+            Type::Named(name, _) => self
+                .record_fields
+                .get(name)?
+                .iter()
+                .position(|(candidate, _)| candidate == field_name)?,
+            _ => return None,
+        };
+        let field = *descriptor.fields().get(field_index)?;
+        let root = self.lower_expr(base)?;
+        self.lower_layout_field_read(root, field)
+    }
+
+    fn reject_unsupported_specialized_boundary(&mut self, expr: &Expr) -> bool {
+        let boundary = match expr {
+            Expr::Call { name, args }
+                if !self.emitted_funcs.contains(name)
+                    && witchy_syntax::intrinsics::lookup(
+                        witchy_syntax::intrinsics::canonical_operation_name(name),
+                    )
+                    .is_some()
+                    && witchy_syntax::intrinsics::canonical_operation_name(name)
+                        != intrinsics::LIST_LENGTH
+                    && args.iter().any(|arg| self.specialized_layout_of_expr(arg).is_some()) =>
+            {
+                Some(format!("intrinsic `{name}`"))
+            }
+            Expr::MethodCall { receiver, method, .. }
+                if self.specialized_layout_of_expr(receiver).is_some() =>
+            {
+                Some(format!("method `{method}`"))
+            }
+            Expr::ExistentialCall { receiver, method, .. }
+                if self.specialized_layout_of_expr(receiver).is_some() =>
+            {
+                Some(format!("trait/existential method `{method}`"))
+            }
+            Expr::Apply { func, args }
+                if self.specialized_layout_of_expr(func).is_some()
+                    || args.iter().any(|arg| self.specialized_layout_of_expr(arg).is_some()) =>
+            {
+                Some("first-class function call".to_string())
+            }
+            Expr::Var(name)
+                if !self.locals.contains_key(name) && self.callable_layouts.contains_key(name) =>
+            {
+                Some(format!("function value `{name}`"))
+            }
+            Expr::Binary { lhs, rhs, .. }
+                if self.specialized_layout_of_expr(lhs).is_some()
+                    || self.specialized_layout_of_expr(rhs).is_some() =>
+            {
+                Some("aggregate binary operation".to_string())
+            }
+            _ => None,
+        };
+        let Some(boundary) = boundary else { return false };
+        self.reject_reason.get_or_insert_with(|| CodegenError {
+            message: format!(
+                "declared packed layout cannot cross unsupported {boundary}; \
+                 this boundary requires an exact RFC-0111 LayoutId adapter and cannot box or reshape"
+            ),
+        });
+        true
     }
 
     /// Bounds-checked read for a reference-backed list. The language index is

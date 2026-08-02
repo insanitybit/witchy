@@ -13,6 +13,9 @@ impl<'types> Codegen<'types> {
     pub(crate) fn lower_expr(&mut self, e: &Expr) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
+        if self.reject_unsupported_specialized_boundary(e) {
+            return None;
+        }
         Some(match e {
             // Expanded away by `crate::tagged` during linking, before codegen.
             Expr::TaggedLit { tag, .. } => {
@@ -908,6 +911,16 @@ impl<'types> Codegen<'types> {
                     .ast_type_of_expr(iter)
                     .as_ref()
                     .and_then(|ty| self.gc_reference_list_layout(ty));
+                let specialized_list = self
+                    .specialized_layout_of_expr(iter)
+                    .and_then(|id| self.specialized_layouts.get(id))
+                    .and_then(|descriptor| match (descriptor.header(), descriptor.size()) {
+                        (
+                            HeaderLayout::PackedList { data_offset, .. },
+                            LayoutSize::Dynamic { stride, .. },
+                        ) => Some((data_offset, stride)),
+                        _ => None,
+                    });
                 // idx >= list.len  ->  br_if $fe
                 let exit = N::Br {
                     target: format!("fe{id}"),
@@ -927,6 +940,7 @@ impl<'types> Codegen<'types> {
                     }),
                 };
                 // var = from_slot( load( (list+4) + idx*8 ) )
+                let (data_offset, stride) = specialized_list.unwrap_or((4, 8));
                 let elem_addr = W::Binary {
                     op: add,
                     kind: i32,
@@ -934,18 +948,20 @@ impl<'types> Codegen<'types> {
                         op: add,
                         kind: i32,
                         lhs: Box::new(W::GetLocal(list_l.clone())),
-                        rhs: Box::new(W::ConstI32(4)),
+                        rhs: Box::new(W::ConstI32(data_offset as i32)),
                     }),
                     rhs: Box::new(W::Binary {
                         op: witchy_wir::wir::BinOp::Mul,
                         kind: i32,
                         lhs: Box::new(W::GetLocal(idx_l.clone())),
-                        rhs: Box::new(W::ConstI32(8)),
+                        rhs: Box::new(W::ConstI32(stride as i32)),
                     }),
                 };
                 let bind = N::SetLocal {
                     local: var.clone(),
-                    value: if let Some((_, array_id, _)) = gc_reference_list {
+                    value: if specialized_list.is_some() {
+                        elem_addr
+                    } else if let Some((_, array_id, _)) = gc_reference_list {
                         W::ArrayGet {
                             array_id,
                             array: Box::new(W::GetLocal(list_l.clone())),
@@ -1011,8 +1027,16 @@ impl<'types> Codegen<'types> {
                 }
                 return Some(W::ArrayNewFixed { array_id, items: lowered });
             }
-            Expr::List(items) => return self.lower_aggregate(items.len() as i32, items, 0),
+            Expr::List(items) => {
+                if self.specialized_layout_of_expr(e).is_some() {
+                    return self.lower_packed_list_literal(e, items);
+                }
+                return self.lower_aggregate(items.len() as i32, items, 0);
+            }
             Expr::Tuple(items) => {
+                if self.specialized_layout_of_expr(e).is_some() {
+                    return self.lower_packed_record_ctor(e, items);
+                }
                 if let Some(ty) = self.ast_type_of_expr(e)
                     && let Some(shape) = self.gc_tuple_shape(&ty)
                     && let Some(struct_id) = self.gc_tuple_ids.get(&shape).copied()
@@ -1041,6 +1065,9 @@ impl<'types> Codegen<'types> {
                 return self.lower_aggregate(tag_code, args, 0);
             }
             Expr::Ctor { name, args } => {
+                if self.specialized_layout_of_expr(e).is_some() {
+                    return self.lower_packed_record_ctor(e, args);
+                }
                 if let Some(ty) = self.ast_type_of_expr(e)
                     && let Some((_, option_kind)) = self.option_reference_inner(&ty)
                 {
@@ -1537,6 +1564,13 @@ impl<'types> Codegen<'types> {
             // legacy emission is `base; i32.const off; i32.add; i64.load;
             // from_slot(k)` — reproduced as `FromSlot(Load{Add(base, off)}, k)`.
             Expr::Field { base, field } => {
+                if self.specialized_layout_of_expr(base).is_some()
+                    || matches!(base.as_ref(), Expr::Call { name, args }
+                        if name == intrinsics::LIST_AT
+                            && args.first().and_then(|arg| self.specialized_layout_of_expr(arg)).is_some())
+                {
+                    return self.lower_specialized_field(base, field);
+                }
                 if let Ok(index) = field.parse::<usize>()
                     && let Some(ty) = self.ast_type_of_expr(base)
                     && let Some(shape) = self.gc_tuple_shape(&ty)

@@ -256,7 +256,11 @@
 
     fn run_int(src: &str) -> i64 {
         let module = parse_module(src).expect("parse");
-        let bytes = compile_module_binary(&module)
+        run_int_module(&module)
+    }
+
+    fn run_int_module(module: &witchy_syntax::ast::Module) -> i64 {
+        let bytes = compile_module_binary(module)
             .expect_lowered("the binary path lowers this program");
         let engine = gc_wasmtime_engine();
         let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
@@ -277,6 +281,225 @@
             .call(&mut store, ())
             .unwrap();
         captured.lock().unwrap().take().expect("printed a value")
+    }
+
+    #[test]
+    fn declared_packed_values_cross_direct_and_stored_boundaries() {
+        let source = r#"
+mode opt
+
+type Point packed:
+    x: Int
+    y: Int
+
+type Holder:
+    points: List(Point)
+
+fn make() -> Point:
+    Point(7, 11)
+
+fn score(point: Point) -> Int:
+    point.x * 10 + point.y
+
+fn relay(points: List(Point)) -> List(Point):
+    points
+
+fn stored(holder: Holder) -> Int:
+    list.at(holder.points, 1).y
+
+fn main() -> Int:
+    let points = relay([Point(1, 2), Point(3, 4)])
+    score(make()) * 100 + list.at(points, 0).x * 10 + stored(Holder(points))
+"#;
+        assert_eq!(run_int(source), 8114);
+
+        let module = parse_module(source).expect("parse packed boundary program");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("direct packed boundaries lower to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        assert!(wat.contains("__witchy_packed_record_"), "record descriptor helper: {wat}");
+        assert!(wat.contains("__witchy_packed_list_"), "list descriptor helper: {wat}");
+        assert!(wat.contains("call $relay"), "list pointer crosses the direct call: {wat}");
+        assert!(wat.contains("call $score"), "record pointer crosses the direct call: {wat}");
+    }
+
+    #[test]
+    fn declared_packed_direct_boundaries_match_interpreter_and_oracle() {
+        let source = r#"
+mode opt
+
+type Point packed:
+    x: Int
+    y: Int
+
+type Holder:
+    points: List(Point)
+
+fn make() -> Point:
+    Point(7, 11)
+
+fn relay(points: List(Point)) -> List(Point):
+    points
+
+fn answer() -> Int:
+    let points = relay([Point(1, 2), Point(3, 4)])
+    make().x * 1000 + list.at(points, 0).x * 100 + list.length(Holder(points).points)
+
+fn main(console: Console):
+    console.print("${answer()}")
+"#;
+        let module = parse_module(source).expect("parse packed parity program");
+        let interpreted = witchy_interp::interpreter::run_module(
+            module.clone(),
+            ".",
+            Vec::new(),
+        )
+        .expect("interpreter runs packed parity program");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("compiled backend lowers packed parity program");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap();
+        let compiled = captured.lock().unwrap().clone();
+        let oracle = vec!["7102".to_string()];
+        assert_eq!(interpreted, oracle, "independent expected value");
+        assert_eq!(compiled, oracle, "compiled expected value");
+        assert_eq!(compiled, interpreted, "interpreter/Wasm parity");
+    }
+
+    #[test]
+    fn declared_packed_layout_survives_user_module_linking() {
+        let model = parse_module(r#"
+mode opt
+
+type Point packed:
+    x: Int
+    y: Int
+
+pub fn relay(points: List(Point)) -> List(Point):
+    points
+
+pub fn origin() -> Point:
+    Point(5, 8)
+"#).expect("parse model module");
+        let app = parse_module(r#"
+mode opt
+from model import Point, relay, origin
+
+fn score(point: Point) -> Int:
+    point.x * 10 + point.y
+
+fn main() -> Int:
+    let points = relay([Point(2, 3), Point(7, 11)])
+    score(origin()) * 100 + list.at(points, 1).x * 10 + list.at(points, 0).y
+"#).expect("parse app module");
+        let linked = witchy_interp::pipeline::link(
+            vec![("model".into(), model), ("app".into(), app)],
+            "app",
+        )
+        .expect("link packed modules");
+        let interpreted = witchy_interp::interpreter::run_module(
+            linked.clone(),
+            ".",
+            Vec::new(),
+        )
+        .expect("interpreter runs linked packed modules");
+        assert!(interpreted.is_empty(), "Int main prints only on compiled wrapper: {interpreted:?}");
+        assert_eq!(run_int_module(&linked), 5873);
+    }
+
+    #[test]
+    fn closed_generic_helper_specializes_for_packed_layout() {
+        let source = r#"
+mode opt
+
+type Point packed:
+    x: Int
+    y: Int
+
+fn identity(value: a) -> a:
+    value
+
+fn relay(values: List(a)) -> List(a):
+    identity(values)
+
+fn main() -> Int:
+    let points: List(Point) = relay([Point(3, 5), Point(7, 11)])
+    list.at(points, 0).x * 10 + list.at(points, 1).x
+"#;
+        assert_eq!(run_int(source), 37);
+        let module = parse_module(source).expect("parse generic packed helper");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("closed generic helper specializes its packed signature");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        assert!(wat.contains("__witchy_packed_list_"), "packed constructor retained: {wat}");
+        assert!(wat.contains("call $relay"), "specialized helper remains a direct abstraction: {wat}");
+    }
+
+    #[test]
+    fn unsupported_packed_mutation_and_first_class_boundaries_reject_loudly() {
+        let list_module = parse_module(
+            witchy_syntax::linker::bundled_source("list")
+                .expect("bundled list module"),
+        )
+        .expect("parse list mutation module");
+        let mutation_app = parse_module(r#"
+mode opt
+import list
+type Point packed:
+    x: Int
+fn main() -> Int:
+    var points = [Point(1)]
+    list.push(points, Point(2))
+    list.length(points)
+"#).expect("parse mutation rejection");
+        let mutation = witchy_interp::pipeline::link_with_user_modules(
+            vec![("list".into(), list_module), ("app".into(), mutation_app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        )
+        .expect("link mutation rejection");
+        let error = match compile_module_binary(&mutation) {
+            LoweringOutcome::Rejected(error) => error,
+            LoweringOutcome::Lowered(_) => {
+                let wir = assemble_wir_module(&mutation).expect_lowered("inspect unexpected lowering");
+                panic!("packed mutation unexpectedly lowered:\n{}", witchy_wir::wir::to_wat(&wir));
+            }
+            LoweringOutcome::Unsupported(error) => {
+                panic!("packed mutation was unsupported instead of loudly rejected: {error}")
+            }
+        };
+        let diagnostic = error.to_string();
+        assert!(
+            diagnostic.contains("declared packed layout")
+                && diagnostic.contains("list.push")
+                && diagnostic.contains("cannot box or reshape"),
+            "unexpected mutation diagnostic: {diagnostic}",
+        );
+
+        let first_class = parse_module(r#"
+mode opt
+type Point packed:
+    x: Int
+fn relay(points: List(Point)) -> List(Point):
+    points
+fn invoke(f: fn(List(Point)) -> List(Point), points: List(Point)) -> List(Point):
+    f(points)
+fn main() -> Int:
+    list.length(invoke(relay, [Point(1)]))
+"#).expect("parse first-class rejection");
+        let error = compile_module_binary(&first_class)
+            .expect_rejected("packed function values require the stage-3 physical signature");
+        let diagnostic = error.to_string();
+        assert!(
+            diagnostic.contains("declared packed layout")
+                && diagnostic.contains("function value")
+                && diagnostic.contains("LayoutId"),
+            "unexpected first-class diagnostic: {diagnostic}",
+        );
     }
 
     #[test]

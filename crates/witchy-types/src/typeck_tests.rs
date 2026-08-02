@@ -321,22 +321,19 @@
     }
 
     #[test]
-    fn packed_list_cannot_cross_a_boundary() {
-        // (RFC-0027) a `packed` type's list is a CONFINED LOCAL flat buffer with no
-        // cross-function or stored layout — a `List(P)` in a parameter, return type,
-        // or stored field is a clean compile error (never a silent boxed fall-back).
-        let param = check_str(
+    fn packed_list_can_cross_a_direct_or_stored_boundary() {
+        // (RFC-0111 stage 2) closed direct signatures and ordinary record fields
+        // carry the exact canonical packed layout. Trait/first-class boundaries
+        // remain separately guarded until their physical signature is wired.
+        check_str(
             "import list\ntype P packed:\n    x: Int\nfn f(ps: List(P)) -> Int:\n    list.length(ps)\nfn main(console: Console):\n    console.print(\"hi\")\n"
-        ).unwrap_err();
-        assert!(param.contains("List(P)") && param.contains("parameter"), "{param}");
-        let ret = check_str(
+        ).unwrap();
+        check_str(
             "import list\ntype P packed:\n    x: Int\nfn f() -> List(P):\n    [P(1)]\nfn main(console: Console):\n    console.print(\"hi\")\n"
-        ).unwrap_err();
-        assert!(ret.contains("List(P)") && ret.contains("return"), "{ret}");
-        let field = check_str(
+        ).unwrap();
+        check_str(
             "type P packed:\n    x: Int\n\ntype Holder:\n    ps: List(P)\n\nfn main(console: Console):\n    console.print(\"hi\")\n"
-        ).unwrap_err();
-        assert!(field.contains("List(P)") && field.contains("field"), "{field}");
+        ).unwrap();
     }
 
     #[test]

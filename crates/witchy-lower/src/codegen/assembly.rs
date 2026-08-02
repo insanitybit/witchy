@@ -6,6 +6,149 @@
 
 use super::*;
 
+struct ModuleLayoutResolver<'a> {
+    definitions: BTreeMap<&'a str, &'a witchy_syntax::ast::TypeDef>,
+}
+
+impl<'a> ModuleLayoutResolver<'a> {
+    fn new(module: &'a Module) -> Self {
+        let mut definitions = BTreeMap::new();
+        for item in &module.items {
+            if let Item::Type(definition) = item {
+                definitions.insert(definition.name.as_str(), definition);
+            }
+        }
+        Self { definitions }
+    }
+
+    fn definition(&self, name: &str) -> Option<&'a witchy_syntax::ast::TypeDef> {
+        self.definitions.get(name).copied().or_else(|| {
+            self.definitions
+                .values()
+                .find(|definition| definition.name.rsplit('.').next() == Some(name))
+                .copied()
+        })
+    }
+}
+
+impl witchy_wir::layout::ClosedTypeResolver for ModuleLayoutResolver<'_> {
+    fn resolve_named<'a>(
+        &'a self,
+        name: &str,
+        _arguments: &[Type],
+    ) -> Option<witchy_wir::layout::ResolvedNamed<'a>> {
+        use witchy_wir::layout::{RcHeader, ReferenceKind, ResolvedNamed, ScalarKind};
+        match name {
+            "Bool" => Some(ResolvedNamed::Scalar(ScalarKind::Bool)),
+            "Int" => Some(ResolvedNamed::Scalar(ScalarKind::Int)),
+            "Float" => Some(ResolvedNamed::Scalar(ScalarKind::Float)),
+            "Duration" => Some(ResolvedNamed::Scalar(ScalarKind::Duration)),
+            "List" => Some(ResolvedNamed::PackedList { rc: RcHeader::Required }),
+            _ => {
+                let definition = self.definition(name)?;
+                if definition.is_capability {
+                    Some(ResolvedNamed::Reference(ReferenceKind::Capability))
+                } else if definition.packed {
+                    Some(ResolvedNamed::PackedRecord(definition))
+                } else {
+                    Some(ResolvedNamed::Reference(ReferenceKind::Owning))
+                }
+            }
+        }
+    }
+}
+
+fn type_requests_specialized_layout(
+    ty: &Type,
+    resolver: &ModuleLayoutResolver<'_>,
+) -> bool {
+    match ty.unqualified() {
+        Type::Named(name, arguments) if name == "List" => arguments
+            .first()
+            .is_some_and(|element| type_requests_specialized_layout(element, resolver)),
+        Type::Named(name, _) => resolver.definition(name).is_some_and(|definition| definition.packed),
+        // Tuples have no qualifier of their own. A closed tuple participates
+        // when it contains a declared-packed component; scalar-only tuples keep
+        // the existing uniform ABI until a source contract selects them.
+        Type::Tuple(fields) => fields
+            .iter()
+            .any(|field| type_requests_specialized_layout(field, resolver)),
+        _ => false,
+    }
+}
+
+fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
+    let resolver = ModuleLayoutResolver::new(module);
+    let mut requested = Vec::new();
+    for item in &module.items {
+        match item {
+            Item::Type(definition)
+                if definition.packed
+                    && witchy_syntax::ast::effective_type_def_params(definition).is_empty() =>
+            {
+                let ty = Type::Named(definition.name.clone(), Vec::new());
+                requested.push(ty.clone());
+                requested.push(Type::Named("List".into(), vec![ty]));
+            }
+            Item::Function(function) => {
+                requested.extend(
+                    function
+                        .params
+                        .iter()
+                        .filter_map(|parameter| parameter.ty.clone())
+                        .filter(|ty| type_requests_specialized_layout(ty, &resolver)),
+                );
+                requested.extend(
+                    function
+                        .ret
+                        .iter()
+                        .filter(|ty| type_requests_specialized_layout(ty, &resolver))
+                        .cloned(),
+                );
+            }
+            _ => {}
+        }
+    }
+    for ty in requested {
+        if cg.specialized_type_ids.iter().any(|(known, _)| known == &ty) {
+            continue;
+        }
+        match cg.specialized_layouts.intern_type(&ty, &resolver) {
+            Ok(id) => cg.specialized_type_ids.push((ty, id)),
+            Err(error) => {
+                cg.reject_reason.get_or_insert_with(|| CodegenError {
+                    message: format!("declared packed layout rejected: {error}"),
+                });
+            }
+        }
+    }
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        let parameters = function
+            .params
+            .iter()
+            .map(|parameter| {
+                parameter.ty.as_ref().and_then(|ty| {
+                    cg.specialized_type_ids
+                        .iter()
+                        .find(|(known, _)| known == ty)
+                        .map(|(_, id)| *id)
+                })
+            })
+            .collect();
+        let result = function.ret.as_ref().and_then(|ty| {
+            cg.specialized_type_ids
+                .iter()
+                .find(|(known, _)| known == ty)
+                .map(|(_, id)| *id)
+        });
+        let signature = CallableLayoutSignature::new(parameters, result);
+        if signature.has_specialized_layout() {
+            cg.callable_layouts.insert(function.name.clone(), signature);
+        }
+    }
+}
+
 /// The names of every JS-callable string export in declaration order (`__export_*`
 /// wrappers are emitted for these and they are extra reachability roots).
 fn string_export_functions(module: &Module) -> Vec<String> {
@@ -680,6 +823,7 @@ fn register_module_items(
     reachable: &HashSet<String>,
     witnesses: &witchy_types::witness::WitnessPlan,
 ) {
+    register_specialized_layouts(cg, module);
     let existential_dispatch = witnesses
         .dispatch_index()
         .expect("witness construction assigns dense runtime IDs")
@@ -1908,6 +2052,10 @@ fn assemble_wir_module_with_structs_mode(
                 collect_called_host_imports(&wf.body, &mut user_host_imports);
             }
         }
+        for function in cg.layout_wir_funcs.values() {
+            uses_table |= collect_called_funcs(&function.body, &mut called);
+            collect_called_host_imports(&function.body, &mut user_host_imports);
+        }
         let custom_key_eq = cg.dict_key_eq_wir_helper();
         // The generated structural-eq / render helpers (included below) call
         // prelude helpers themselves — a Str field eq via `$str_eq`, a renderer via
@@ -1945,6 +2093,7 @@ fn assemble_wir_module_with_structs_mode(
         // path. Pull it out of the direct-host set before the gate, but remember to
         // declare the import below.
         let user_calls_abort = user_host_imports.remove("__witchy_abort");
+        let layout_uses_heap_register = user_host_imports.remove("heap_register");
         // A direct host call in user code (e.g. `now`, `dir.subdir`, `recv_*`)
         // needs authority the capability-minimal helper registry can't account
         // for — report `Unsupported` for such programs. (Host access that goes
@@ -2061,6 +2210,9 @@ fn assemble_wir_module_with_structs_mode(
             if user_calls_abort {
                 import_names.insert("__witchy_abort");
             }
+            if layout_uses_heap_register {
+                import_names.insert("heap_register");
+            }
             let pruned_imports: Vec<WirImport> = import_names
                 .iter()
                 .map(|iname| {
@@ -2084,6 +2236,7 @@ fn assemble_wir_module_with_structs_mode(
                 resolved.remove("key_eq");
             }
             let mut pruned_funcs: Vec<WirFunc> = resolved.into_values().map(|s| s.func).collect();
+            pruned_funcs.extend(cg.layout_wir_funcs.values().cloned());
             if let Some(f) = custom_key_eq {
                 pruned_funcs.push(f);
             }

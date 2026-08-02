@@ -579,3 +579,23 @@ fn generic_expanding_cycle_cannot_evade_the_definition_guard() {
             if path.to_string() == "Loop.next" && definition == "Loop"
     ));
 }
+
+#[test]
+fn callable_layout_signature_preserves_exact_parameter_and_result_ids() {
+    use crate::layout::CallableLayoutSignature;
+
+    let first = LayoutId::from_bytes([1; 32]);
+    let second = LayoutId::from_bytes([2; 32]);
+    let signature = CallableLayoutSignature::new(
+        vec![Some(first), None, Some(second)],
+        Some(first),
+    );
+    assert_eq!(signature.parameters(), &[Some(first), None, Some(second)]);
+    assert_eq!(signature.result(), Some(first));
+    assert!(signature.has_specialized_layout());
+    assert_ne!(
+        signature,
+        CallableLayoutSignature::new(vec![Some(second), None, Some(first)], Some(first)),
+        "logical arity alone cannot erase physical-layout disagreement",
+    );
+}

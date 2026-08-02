@@ -51,6 +51,37 @@ impl fmt::Display for LayoutId {
     }
 }
 
+/// The physical-layout portion of a callable signature.
+///
+/// `None` means the value uses its ordinary scalar/reference ABI. `Some(id)`
+/// means callers and callees must agree on the exact canonical descriptor
+/// before the logical signature is considered link-compatible. Ownership and
+/// access remain separate facts (RFC-0110); later first-class-call lowering can
+/// pair this value with the access signature without reconstructing either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableLayoutSignature {
+    parameters: Vec<Option<LayoutId>>,
+    result: Option<LayoutId>,
+}
+
+impl CallableLayoutSignature {
+    pub fn new(parameters: Vec<Option<LayoutId>>, result: Option<LayoutId>) -> Self {
+        Self { parameters, result }
+    }
+
+    pub fn parameters(&self) -> &[Option<LayoutId>] {
+        &self.parameters
+    }
+
+    pub fn result(&self) -> Option<LayoutId> {
+        self.result
+    }
+
+    pub fn has_specialized_layout(&self) -> bool {
+        self.result.is_some() || self.parameters.iter().any(Option::is_some)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarKind {
     Bool,
