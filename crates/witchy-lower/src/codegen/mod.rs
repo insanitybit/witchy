@@ -3623,7 +3623,7 @@ impl<'types> Codegen<'types> {
                     resolved_ret.as_ref(),
                     ret_kind,
                     seq,
-                );
+                )?;
                 self.wir_funcs.insert(f.name.clone(), wf);
             }
         }
@@ -3655,7 +3655,7 @@ impl<'types> Codegen<'types> {
         result: Option<&Type>,
         ret_kind: Kind,
         body: witchy_wir::wir::WirSeq,
-    ) -> witchy_wir::wir::WirFunc {
+    ) -> Result<witchy_wir::wir::WirFunc, CodegenError> {
         use witchy_wir::wir::{WirFunc, WirLocal, WirTy};
         // `.kind()` is all the encoder reads: `Bool` => i32, `Int` => i64.
         let i32t = || WirTy::Bool;
@@ -3694,7 +3694,7 @@ impl<'types> Codegen<'types> {
         // retained after the view-producing binding and released at last use or
         // on every structured return path.
         let mut loan_roots = Vec::new();
-        collect_loan_roots(&f.body, &self.loan_facts, &mut loan_roots);
+        collect_loan_roots(&f.body, &self.loan_facts, &mut loan_roots)?;
         loan_roots.sort_by(|a, b| a.local.cmp(&b.local));
         loan_roots.dedup_by(|a, b| a.local == b.local);
         for root in loan_roots {
@@ -3918,14 +3918,14 @@ impl<'types> Codegen<'types> {
             };
             body.push(witchy_wir::wir::WirNode::Push(cap));
         }
-        WirFunc {
+        Ok(WirFunc {
             name: f.name.clone(),
             params,
             ret,
             locals,
             body,
             raw_body: None,
-        }
+        })
     }
 
     fn return_capacity_expr(&self, expr: &Expr) -> witchy_wir::wir::WirExpr {
@@ -4185,17 +4185,47 @@ impl<'types> Codegen<'types> {
         s
     }
 
-    fn loan_root(event: &witchy_types::loans::LoanEvent) -> Option<LoanRoot> {
+    fn loan_root(
+        event: &witchy_types::loans::LoanEvent,
+    ) -> Result<Option<LoanRoot>, CodegenError> {
         let owner = event.owner_root();
-        let bias = rc_leaf_bias(owner.direct_storage_type.as_ref()?)?;
+        let owner_type = owner.direct_storage_type.as_ref().ok_or_else(|| CodegenError {
+            message: format!(
+                "internal: loan root `{}` for view `{}` has no exact checked root-local type",
+                owner.local, event.view
+            ),
+        })?;
+        let bias = rc_leaf_bias(owner_type).ok_or_else(|| CodegenError {
+            message: format!(
+                "internal: loan root `{}` for view `{}` has unresolved checked type `{:?}`",
+                owner.local, event.view, owner_type
+            ),
+        })?;
         if bias < 0 {
-            return None;
+            return Ok(None);
         }
-        Some(LoanRoot {
+        Ok(Some(LoanRoot {
             local: format!("__loan_root_{}__{}", event.view, owner.local),
             value: owner.local,
             bias,
-        })
+        }))
+    }
+
+    fn checked_loan_roots(
+        &mut self,
+        events: &[witchy_types::loans::LoanEvent],
+    ) -> Vec<LoanRoot> {
+        let mut roots = Vec::new();
+        for event in events {
+            match Self::loan_root(event) {
+                Ok(Some(root)) => roots.push(root),
+                Ok(None) => {}
+                Err(error) => {
+                    self.reject_reason.get_or_insert(error);
+                }
+            }
+        }
+        roots
     }
 
     fn loan_region(root: &LoanRoot) -> witchy_wir::wir::WirExpr {
@@ -4213,12 +4243,13 @@ impl<'types> Codegen<'types> {
     }
 
     fn open_loan_nodes(
+        &mut self,
         events: &[witchy_types::loans::LoanEvent],
     ) -> witchy_wir::wir::WirSeq {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let mut seen = HashSet::new();
         let mut out = Vec::new();
-        for root in events.iter().filter_map(Self::loan_root) {
+        for root in self.checked_loan_roots(events) {
             if !seen.insert(root.local.clone()) {
                 continue;
             }
@@ -4232,12 +4263,13 @@ impl<'types> Codegen<'types> {
     }
 
     fn close_loan_nodes(
+        &mut self,
         events: &[witchy_types::loans::LoanEvent],
     ) -> witchy_wir::wir::WirSeq {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let mut seen = HashSet::new();
         let mut out = Vec::new();
-        for root in events.iter().filter_map(Self::loan_root) {
+        for root in self.checked_loan_roots(events) {
             if !seen.insert(root.local.clone()) {
                 continue;
             }
@@ -5629,7 +5661,7 @@ impl<'types> Codegen<'types> {
     }
 
     fn try_early_return_nodes(
-        &self,
+        &mut self,
         value: witchy_wir::wir::WirExpr,
         aggregate_kind: Kind,
     ) -> witchy_wir::wir::WirSeq {
@@ -5647,7 +5679,7 @@ impl<'types> Codegen<'types> {
             } else {
                 value
             };
-            let mut nodes = Self::close_loan_nodes(&active);
+            let mut nodes = self.close_loan_nodes(&active);
             nodes.push(N::Return(Some(result)));
             return nodes;
         }
@@ -5660,7 +5692,7 @@ impl<'types> Codegen<'types> {
         } else {
             value
         };
-        let mut nodes = Self::close_loan_nodes(&active);
+        let mut nodes = self.close_loan_nodes(&active);
         nodes.push(N::Push(result));
         if self.cur_fn_unique_ret {
             nodes.push(N::Push(W::ConstI32(0)));
@@ -6249,7 +6281,9 @@ impl<'types> Codegen<'types> {
                     locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
                 }
                 let mut loan_roots = Vec::new();
-                collect_loan_roots(body, &self.loan_facts, &mut loan_roots);
+                if let Err(error) = collect_loan_roots(body, &self.loan_facts, &mut loan_roots) {
+                    self.reject_reason.get_or_insert(error);
+                }
                 loan_roots.sort_by(|a, b| a.local.cmp(&b.local));
                 loan_roots.dedup_by(|a, b| a.local == b.local);
                 for root in loan_roots {

@@ -314,7 +314,7 @@ impl<'types> Codegen<'types> {
                         },
                     };
                     let active = self.active_loan_events.clone();
-                    let cleanup = Self::close_loan_nodes(&active);
+                    let cleanup = self.close_loan_nodes(&active);
                     let value = if cleanup.is_empty() {
                         // Keep the direct return expression intact so recursive
                         // calls remain visible to the WIR tail-call pass.
@@ -1238,8 +1238,8 @@ impl<'types> Codegen<'types> {
             if !matches!(stmt, Stmt::Return(_)) {
                 let opens = self.loan_facts.opens_after(analyzed_stmt).to_vec();
                 let closes = self.loan_facts.closes_after(analyzed_stmt).to_vec();
-                seq.extend(Self::open_loan_nodes(&opens));
-                seq.extend(Self::close_loan_nodes(&closes));
+                seq.extend(self.open_loan_nodes(&opens));
+                seq.extend(self.close_loan_nodes(&closes));
             }
             // Reset the cap of any inplace_push var killed AFTER this statement
             // (binary path), positioned here in the seq. Read-only — the kills

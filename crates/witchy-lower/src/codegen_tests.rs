@@ -482,7 +482,9 @@
             "view".into(),
         );
         assert!(!event.projection.steps.is_empty(), "the checked place is projected");
-        let root = Codegen::loan_root(&event).expect("a direct Dict root is retainable");
+        let root = Codegen::loan_root(&event)
+            .expect("checked root classification")
+            .expect("a direct Dict root is retainable");
         let root_local = root.local.clone();
         let module = WirModule {
             imports: vec![],
@@ -507,6 +509,51 @@
         assert!(
             wat.contains("local.get $values\n    i32.const 4\n    i32.sub"),
             "a projection must not erase the direct Dict root's -4 base bias: {wat}",
+        );
+    }
+
+    #[test]
+    fn missing_checked_root_type_is_a_hard_codegen_error_not_an_omitted_root() {
+        use witchy_types::loans::{LoanEvent, LoanOwnerRoot, LoanPlace, LoanProjection};
+
+        let event = LoanEvent::from_checked_place(
+            "view".into(),
+            LoanPlace {
+                root: LoanOwnerRoot {
+                    local: "owner".into(),
+                    direct_storage_type: None,
+                },
+                projection: LoanProjection::default(),
+                storage_type: Type::Named("Int".into(), vec![]),
+            },
+            LoanProjection::default(),
+            "view".into(),
+        );
+        let error = match Codegen::loan_root(&event) {
+            Err(error) => error,
+            Ok(_) => panic!("a missing checked root type must not silently omit retain/release"),
+        };
+        assert!(
+            error.message.contains("has no exact checked root-local type"),
+            "missing root-layout evidence must be a hard codegen error: {error}",
+        );
+
+        let scalar_event = LoanEvent::from_checked_place(
+            "scalar_view".into(),
+            LoanPlace {
+                root: LoanOwnerRoot {
+                    local: "scalar".into(),
+                    direct_storage_type: Some(Type::Named("Int".into(), vec![])),
+                },
+                projection: LoanProjection::default(),
+                storage_type: Type::Named("Int".into(), vec![]),
+            },
+            LoanProjection::default(),
+            "scalar_view".into(),
+        );
+        assert!(
+            matches!(Codegen::loan_root(&scalar_event), Ok(None)),
+            "a checked scalar root is intentionally non-retainable, unlike missing evidence",
         );
     }
 
