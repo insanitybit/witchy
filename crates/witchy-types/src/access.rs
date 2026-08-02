@@ -6,12 +6,16 @@
 //! instead of rediscovering ownership from syntax, rendered names, or individual
 //! container operations.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use witchy_cap_model::CapabilityKind;
-use witchy_syntax::ast::{Convention, Function, Type, TypeQual};
+use witchy_syntax::ast::{
+    Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, Type, TypeQual,
+};
 
 use crate::storage::externref_cap_name;
+use crate::typeck::{TypeTable, ty_to_ast};
 
 /// The source-level access granted to one callable parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,6 +222,59 @@ impl AccessSignature {
         Ok(signature)
     }
 
+    /// Derive a declaration's access contract using its finalized checked
+    /// function type. Source qualifiers and lifetime names remain authoritative;
+    /// inferred holes and generic leaves take their concrete checked shape from
+    /// `resolved`.
+    pub fn from_resolved_function(
+        function: &Function,
+        resolved: &Type,
+    ) -> Result<Self, AccessSignatureError> {
+        let params = function.params.iter().map(|param| param.ty.as_ref()).collect();
+        let conventions = function.params.iter().map(|param| param.convention).collect();
+        Self::from_resolved_parts(params, function.ret.as_ref(), conventions, resolved)
+    }
+
+    /// Derive a lambda or generated callable contract from finalized checked
+    /// parameter/result types without fabricating placeholder type names.
+    pub fn from_resolved_parts(
+        declared_params: Vec<Option<&Type>>,
+        declared_result: Option<&Type>,
+        conventions: Vec<Convention>,
+        resolved: &Type,
+    ) -> Result<Self, AccessSignatureError> {
+        let Type::Fn(resolved_params, resolved_result, resolved_conventions) =
+            resolved.unqualified()
+        else {
+            return Err(AccessSignatureError::NotFunctionType);
+        };
+        if declared_params.len() != resolved_params.len() {
+            return Err(AccessSignatureError::ConventionArity {
+                params: resolved_params.len(),
+                conventions: declared_params.len(),
+            });
+        }
+        let conventions = if conventions.is_empty() {
+            normalized_conventions(resolved_params.len(), resolved_conventions)?
+        } else {
+            normalized_conventions(resolved_params.len(), &conventions)?
+        };
+        let params = declared_params
+            .into_iter()
+            .zip(resolved_params)
+            .map(|(declared, resolved)| {
+                declared.map_or_else(|| resolved.clone(), |declared| {
+                    apply_declared_contract(declared, resolved)
+                })
+            })
+            .collect();
+        let result = declared_result.map_or_else(
+            || resolved_result.as_ref().clone(),
+            |declared| apply_declared_contract(declared, resolved_result),
+        );
+        Self::from_parts(params, result, conventions)
+    }
+
     /// Derive a signature from finalized checked parameter and result types.
     pub fn from_parts(
         params: Vec<Type>,
@@ -266,7 +323,9 @@ impl AccessSignature {
         }
 
         let result_qualifiers = leading_qualifiers(&result);
-        if result_qualifiers.contains(&AccessQualifier::LocalUnique) {
+        if type_has_qualifier(&result, |qualifier| {
+            matches!(qualifier, TypeQual::LocalUnique)
+        }) {
             return Err(AccessSignatureError::LocalUniqueResult);
         }
         let result_lifetimes = borrow_lifetimes(&result);
@@ -577,6 +636,116 @@ fn leading_qualifiers(ty: &Type) -> Vec<AccessQualifier> {
     qualifiers
 }
 
+fn apply_declared_contract(declared: &Type, resolved: &Type) -> Type {
+    match declared {
+        Type::Qualified(qualifier, inner) => Type::Qualified(
+            qualifier.clone(),
+            Box::new(apply_declared_contract(inner, resolved)),
+        ),
+        Type::Named(name, arguments)
+            if arguments.is_empty()
+                && !name.contains('.')
+                && name.chars().next().is_some_and(char::is_lowercase) =>
+        {
+            resolved.clone()
+        }
+        Type::Named(_, declared_arguments) => {
+            let Type::Named(resolved_name, resolved_arguments) = resolved.unqualified() else {
+                return resolved.clone();
+            };
+            if declared_arguments.len() != resolved_arguments.len() {
+                return resolved.clone();
+            }
+            Type::Named(
+                resolved_name.clone(),
+                declared_arguments
+                    .iter()
+                    .zip(resolved_arguments)
+                    .map(|(declared, resolved)| apply_declared_contract(declared, resolved))
+                    .collect(),
+            )
+        }
+        Type::Dyn(_, declared_arguments) => {
+            let Type::Dyn(resolved_name, resolved_arguments) = resolved.unqualified() else {
+                return resolved.clone();
+            };
+            if declared_arguments.len() != resolved_arguments.len() {
+                return resolved.clone();
+            }
+            Type::Dyn(
+                resolved_name.clone(),
+                declared_arguments
+                    .iter()
+                    .zip(resolved_arguments)
+                    .map(|(declared, resolved)| apply_declared_contract(declared, resolved))
+                    .collect(),
+            )
+        }
+        Type::Tuple(declared_fields) => {
+            let Type::Tuple(resolved_fields) = resolved.unqualified() else {
+                return resolved.clone();
+            };
+            if declared_fields.len() != resolved_fields.len() {
+                return resolved.clone();
+            }
+            Type::Tuple(
+                declared_fields
+                    .iter()
+                    .zip(resolved_fields)
+                    .map(|(declared, resolved)| apply_declared_contract(declared, resolved))
+                    .collect(),
+            )
+        }
+        Type::Fn(declared_params, declared_result, declared_conventions) => {
+            let Type::Fn(resolved_params, resolved_result, resolved_conventions) =
+                resolved.unqualified()
+            else {
+                return resolved.clone();
+            };
+            if declared_params.len() != resolved_params.len() {
+                return resolved.clone();
+            }
+            let conventions = if declared_conventions.is_empty() {
+                resolved_conventions.clone()
+            } else {
+                declared_conventions.clone()
+            };
+            Type::Fn(
+                declared_params
+                    .iter()
+                    .zip(resolved_params)
+                    .map(|(declared, resolved)| apply_declared_contract(declared, resolved))
+                    .collect(),
+                Box::new(apply_declared_contract(declared_result, resolved_result)),
+                conventions,
+            )
+        }
+        Type::RecordCompose { .. } => resolved.clone(),
+    }
+}
+
+fn type_has_qualifier(ty: &Type, predicate: impl Copy + Fn(&TypeQual) -> bool) -> bool {
+    match ty {
+        Type::Qualified(qualifier, inner) => {
+            predicate(qualifier) || type_has_qualifier(inner, predicate)
+        }
+        Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
+            arguments
+                .iter()
+                .any(|argument| type_has_qualifier(argument, predicate))
+        }
+        Type::RecordCompose { base, fields } => {
+            type_has_qualifier(base, predicate)
+                || fields
+                    .iter()
+                    .any(|(_, field)| type_has_qualifier(field, predicate))
+        }
+        // A nested callable owns its activation-local result contract. Returning
+        // the callable does not return a value produced by invoking it.
+        Type::Fn(_, _, _) => false,
+    }
+}
+
 fn type_has_ownership_qualifier(ty: &Type) -> bool {
     match ty {
         Type::Qualified(
@@ -818,4 +987,678 @@ fn state_compatible(
         }
         _ => required == candidate,
     }
+}
+
+#[derive(Clone, Debug)]
+enum AccessFlow {
+    None,
+    Callable(AccessSignature),
+    Product(Vec<AccessFlow>),
+}
+
+impl AccessFlow {
+    fn product(children: Vec<Self>) -> Self {
+        if children.iter().all(|child| matches!(child, Self::None)) {
+            Self::None
+        } else {
+            Self::Product(children)
+        }
+    }
+
+    fn from_type(ty: &Type) -> Result<Self, AccessSignatureError> {
+        if matches!(ty.unqualified(), Type::Fn(_, _, _)) {
+            return AccessSignature::from_function_type(ty).map(Self::Callable);
+        }
+        let children = match ty.unqualified() {
+            Type::Tuple(children) | Type::Named(_, children) | Type::Dyn(_, children) => children,
+            Type::Qualified(_, _) => unreachable!("unqualified removes every qualifier"),
+            Type::RecordCompose { .. } | Type::Fn(_, _, _) => return Ok(Self::None),
+        };
+        let children = children
+            .iter()
+            .map(Self::from_type)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self::product(children))
+    }
+
+    fn verify_exact(&self, expected: &Self, context: &str) -> Result<(), AccessFlowError> {
+        match (self, expected) {
+            (_, Self::None) => Ok(()),
+            (Self::Callable(actual), Self::Callable(expected)) => actual
+                .verify_exact(expected)
+                .map_err(|mismatch| AccessFlowError::mismatch(context, mismatch)),
+            (Self::Product(actual), Self::Product(expected))
+                if actual.len() == expected.len() =>
+            {
+                for (actual, expected) in actual.iter().zip(expected) {
+                    actual.verify_exact(expected, context)?;
+                }
+                Ok(())
+            }
+            _ => Err(AccessFlowError::missing(context)),
+        }
+    }
+
+    fn join(&self, other: &Self, context: &str) -> Result<Self, AccessFlowError> {
+        self.verify_exact(other, context)?;
+        other.verify_exact(self, context)?;
+        Ok(self.clone())
+    }
+
+    fn project(&self, index: usize) -> Self {
+        match self {
+            Self::Product(children) => children.get(index).cloned().unwrap_or(Self::None),
+            _ => Self::None,
+        }
+    }
+}
+
+/// Finalized access-signature facts keyed to the exact typed AST used to build
+/// them. The owning [`crate::typeck::TypedModule`] must remain alive while these
+/// address-keyed queries are used.
+#[derive(Default)]
+pub struct CheckedAccessFacts {
+    values: HashMap<usize, AccessFlow>,
+}
+
+impl CheckedAccessFacts {
+    pub fn callable_at(&self, expression: &Expr) -> Option<&AccessSignature> {
+        match self.values.get(&(expression as *const Expr as usize)) {
+            Some(AccessFlow::Callable(signature)) => Some(signature),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AccessFlowError {
+    message: String,
+}
+
+impl AccessFlowError {
+    fn mismatch(context: &str, mismatch: AccessMismatch) -> Self {
+        Self {
+            message: format!(
+                "{context} erases or changes its ownership/access contract ({mismatch})"
+            ),
+        }
+    }
+
+    fn missing(context: &str) -> Self {
+        Self {
+            message: format!(
+                "{context} loses a checked callable ownership/access contract"
+            ),
+        }
+    }
+}
+
+impl fmt::Display for AccessFlowError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for AccessFlowError {}
+
+type FlowEnvironment = HashMap<String, AccessFlow>;
+
+struct AccessVerifier<'a> {
+    module: &'a Module,
+    table: &'a TypeTable,
+    functions: HashMap<String, Function>,
+    record_fields: HashMap<(String, String), usize>,
+    facts: CheckedAccessFacts,
+}
+
+impl<'a> AccessVerifier<'a> {
+    fn new(module: &'a Module, table: &'a TypeTable) -> Self {
+        let functions = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Function(function) => Some((function.name.clone(), function.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut record_fields = HashMap::new();
+        for item in &module.items {
+            let Item::Type(definition) = item else { continue };
+            for variant in &definition.variants {
+                for (index, field) in variant.field_names.iter().enumerate() {
+                    record_fields.insert((definition.name.clone(), field.clone()), index);
+                }
+            }
+        }
+        Self { module, table, functions, record_fields, facts: CheckedAccessFacts::default() }
+    }
+
+    fn verify(mut self) -> Result<CheckedAccessFacts, AccessFlowError> {
+        for item in &self.module.items {
+            let Item::Function(function) = item else { continue };
+            self.verify_function(function)?;
+        }
+        Ok(self.facts)
+    }
+
+    fn resolved_expression_type(&self, expression: &Expr) -> Option<Type> {
+        self.table.type_of(expression).and_then(ty_to_ast)
+    }
+
+    fn declaration_signature(
+        &self,
+        function: &Function,
+    ) -> Result<Option<AccessSignature>, AccessFlowError> {
+        let resolved = self.table.function_type(&function.name);
+        let signature = match resolved {
+            Some(resolved) => AccessSignature::from_resolved_function(function, &resolved),
+            None => AccessSignature::from_function(function),
+        };
+        match signature {
+            Ok(signature) => Ok(Some(signature)),
+            Err(
+                AccessSignatureError::MissingParameterType { .. }
+                | AccessSignatureError::MissingResultType,
+            ) => Ok(None),
+            Err(error) => Err(AccessFlowError {
+                message: format!("access signature for `{}` is invalid: {error}", function.name),
+            }),
+        }
+    }
+
+    fn verify_function(&mut self, function: &Function) -> Result<(), AccessFlowError> {
+        let Some(signature) = self.declaration_signature(function)? else {
+            return Ok(());
+        };
+        let mut environment = HashMap::new();
+        for (parameter, access) in function.params.iter().zip(signature.params()) {
+            environment.insert(
+                parameter.name.clone(),
+                AccessFlow::from_type(access.ty()).map_err(Self::signature_error)?,
+            );
+        }
+        let expected = AccessFlow::from_type(signature.result().ty())
+            .map_err(Self::signature_error)?;
+        let tail = self.eval_block(&function.body, &mut environment, &expected)?;
+        if matches!(function.body.stmts.last(), Some(Stmt::Expr(_))) {
+            tail.verify_exact(
+                &expected,
+                &format!("returned value from `{}`", function.name),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn signature_error(error: AccessSignatureError) -> AccessFlowError {
+        AccessFlowError { message: error.to_string() }
+    }
+
+    fn signature_for_named_call(
+        &self,
+        name: &str,
+        expression: &Expr,
+        args: &[&Expr],
+    ) -> Result<Option<AccessSignature>, AccessFlowError> {
+        let Some(function) = self.functions.get(name) else { return Ok(None) };
+        if function.params.len() != args.len() {
+            return Ok(None);
+        }
+        let Some(result) = self.resolved_expression_type(expression) else {
+            return self.declaration_signature(function);
+        };
+        let params = args
+            .iter()
+            .map(|argument| self.resolved_expression_type(argument))
+            .collect::<Option<Vec<_>>>();
+        let Some(params) = params else {
+            return self.declaration_signature(function);
+        };
+        let conventions = function.params.iter().map(|parameter| parameter.convention).collect();
+        let resolved = Type::Fn(params, Box::new(result), conventions);
+        AccessSignature::from_resolved_function(function, &resolved)
+            .map(Some)
+            .map_err(Self::signature_error)
+    }
+
+    fn signature_for_function_value(
+        &self,
+        name: &str,
+        expression: &Expr,
+    ) -> Result<Option<AccessSignature>, AccessFlowError> {
+        let Some(function) = self.functions.get(name) else { return Ok(None) };
+        let Some(resolved) = self.resolved_expression_type(expression) else {
+            return self.declaration_signature(function);
+        };
+        let Type::Fn(params, _, _) = resolved.unqualified() else { return Ok(None) };
+        if params.len() != function.params.len() {
+            return Ok(None);
+        }
+        AccessSignature::from_resolved_function(function, &resolved)
+            .map(Some)
+            .map_err(Self::signature_error)
+    }
+
+    fn verify_arguments(
+        &self,
+        name: &str,
+        signature: &AccessSignature,
+        arguments: &[AccessFlow],
+    ) -> Result<(), AccessFlowError> {
+        for (index, (argument, parameter)) in
+            arguments.iter().zip(signature.params()).enumerate()
+        {
+            let expected = AccessFlow::from_type(parameter.ty()).map_err(Self::signature_error)?;
+            argument.verify_exact(
+                &expected,
+                &format!("argument {} passed to `{name}`", index + 1),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn eval_block(
+        &mut self,
+        block: &Block,
+        environment: &mut FlowEnvironment,
+        return_expected: &AccessFlow,
+    ) -> Result<AccessFlow, AccessFlowError> {
+        let mut tail = AccessFlow::None;
+        for (index, statement) in block.stmts.iter().enumerate() {
+            tail = match statement {
+                Stmt::Let { name, ty, value, .. } => {
+                    let actual = self.eval_expr(value, environment, return_expected)?;
+                    let value = if let Some(ty) = ty {
+                        let expected = AccessFlow::from_type(ty).map_err(Self::signature_error)?;
+                        actual.verify_exact(&expected, &format!("function value `{name}`"))?;
+                        expected
+                    } else {
+                        actual
+                    };
+                    environment.insert(name.clone(), value);
+                    AccessFlow::None
+                }
+                Stmt::Assign { name, value } => {
+                    let actual = self.eval_expr(value, environment, return_expected)?;
+                    if let Some(expected) = environment.get(name) {
+                        actual.verify_exact(expected, &format!("assignment to `{name}`"))?;
+                    }
+                    environment.insert(name.clone(), actual);
+                    AccessFlow::None
+                }
+                Stmt::LetPattern { pattern, value } => {
+                    let value = self.eval_expr(value, environment, return_expected)?;
+                    Self::bind_pattern(pattern, &value, environment);
+                    AccessFlow::None
+                }
+                Stmt::Return(value) => {
+                    let actual = match value {
+                        Some(value) => self.eval_expr(value, environment, return_expected)?,
+                        None => AccessFlow::None,
+                    };
+                    actual.verify_exact(return_expected, "returned function value")?;
+                    AccessFlow::None
+                }
+                Stmt::Yield(value) | Stmt::Expr(value) => {
+                    self.eval_expr(value, environment, return_expected)?
+                }
+                Stmt::Break | Stmt::Continue => AccessFlow::None,
+            };
+            if index + 1 != block.stmts.len() {
+                tail = AccessFlow::None;
+            }
+        }
+        Ok(tail)
+    }
+
+    fn bind_pattern(pattern: &Pattern, value: &AccessFlow, environment: &mut FlowEnvironment) {
+        match pattern {
+            Pattern::Var(name) if name != "_" => {
+                environment.insert(name.clone(), value.clone());
+            }
+            Pattern::Ctor { args, .. }
+            | Pattern::AnonCtor { args, .. }
+            | Pattern::Tuple(args) => {
+                for (index, pattern) in args.iter().enumerate() {
+                    Self::bind_pattern(pattern, &value.project(index), environment);
+                }
+            }
+            Pattern::List { elems, rest } => {
+                for (index, pattern) in elems.iter().enumerate() {
+                    Self::bind_pattern(pattern, &value.project(index), environment);
+                }
+                if let Some(Some(name)) = rest {
+                    environment.insert(name.clone(), AccessFlow::None);
+                }
+            }
+            Pattern::Or(alternatives) => {
+                if let Some(first) = alternatives.first() {
+                    Self::bind_pattern(first, value, environment);
+                }
+            }
+            Pattern::Wildcard
+            | Pattern::Var(_)
+            | Pattern::Int(_)
+            | Pattern::Str(_)
+            | Pattern::Bool(_)
+            | Pattern::Duration(_)
+            | Pattern::IntRange { .. } => {}
+        }
+    }
+
+    fn eval_arm(
+        &mut self,
+        arm: &MatchArm,
+        scrutinee: &AccessFlow,
+        environment: &FlowEnvironment,
+        return_expected: &AccessFlow,
+    ) -> Result<(AccessFlow, FlowEnvironment), AccessFlowError> {
+        let mut environment = environment.clone();
+        Self::bind_pattern(&arm.pattern, scrutinee, &mut environment);
+        if let Some(guard) = &arm.guard {
+            self.eval_expr(guard, &mut environment, return_expected)?;
+        }
+        let flow = self.eval_expr(&arm.body, &mut environment, return_expected)?;
+        Ok((flow, environment))
+    }
+
+    fn join_flows(
+        flows: impl IntoIterator<Item = AccessFlow>,
+        context: &str,
+    ) -> Result<AccessFlow, AccessFlowError> {
+        let mut flows = flows.into_iter();
+        let Some(first) = flows.next() else { return Ok(AccessFlow::None) };
+        flows.try_fold(first, |left, right| left.join(&right, context))
+    }
+
+    fn merge_environments(
+        target: &mut FlowEnvironment,
+        branches: &[FlowEnvironment],
+        context: &str,
+    ) -> Result<(), AccessFlowError> {
+        let names = target.keys().cloned().collect::<Vec<_>>();
+        for name in names {
+            let mut values = branches
+                .iter()
+                .filter_map(|environment| environment.get(&name).cloned());
+            let Some(first) = values.next() else { continue };
+            let value = values.try_fold(first, |left, right| {
+                left.join(&right, &format!("{context} binding `{name}`"))
+            })?;
+            target.insert(name, value);
+        }
+        Ok(())
+    }
+
+    fn record(&mut self, expression: &Expr, flow: AccessFlow) -> AccessFlow {
+        self.facts.values.insert(expression as *const Expr as usize, flow.clone());
+        flow
+    }
+
+    fn eval_expr(
+        &mut self,
+        expression: &Expr,
+        environment: &mut FlowEnvironment,
+        return_expected: &AccessFlow,
+    ) -> Result<AccessFlow, AccessFlowError> {
+        let flow = match expression {
+            Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_)
+            | Expr::Bool(_) | Expr::TaggedLit { .. } => AccessFlow::None,
+            Expr::Var(name) => {
+                if let Some(flow) = environment.get(name) {
+                    flow.clone()
+                } else {
+                    self.signature_for_function_value(name, expression)?
+                        .map(AccessFlow::Callable)
+                        .unwrap_or(AccessFlow::None)
+                }
+            }
+            Expr::List(values) | Expr::Tuple(values) => AccessFlow::product(
+                values
+                    .iter()
+                    .map(|value| self.eval_expr(value, environment, return_expected))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Expr::Call { name, args } => {
+                let arguments = args
+                    .iter()
+                    .map(|argument| self.eval_expr(argument, environment, return_expected))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let signature = match environment.get(name) {
+                    Some(AccessFlow::Callable(signature)) => Some(signature.clone()),
+                    _ => {
+                        let positional = args.iter().collect::<Vec<_>>();
+                        self.signature_for_named_call(name, expression, &positional)?
+                    }
+                };
+                match signature {
+                    Some(signature) => {
+                        self.verify_arguments(name, &signature, &arguments)?;
+                        AccessFlow::from_type(signature.result().ty())
+                            .map_err(Self::signature_error)?
+                    }
+                    None => AccessFlow::None,
+                }
+            }
+            Expr::LabeledCall { name, args } => {
+                let positional = args.iter().map(|(_, argument)| argument).collect::<Vec<_>>();
+                let arguments = positional
+                    .iter()
+                    .map(|argument| self.eval_expr(argument, environment, return_expected))
+                    .collect::<Result<Vec<_>, _>>()?;
+                match self.signature_for_named_call(name, expression, &positional)? {
+                    Some(signature) => {
+                        self.verify_arguments(name, &signature, &arguments)?;
+                        AccessFlow::from_type(signature.result().ty())
+                            .map_err(Self::signature_error)?
+                    }
+                    None => AccessFlow::None,
+                }
+            }
+            Expr::Apply { func, args } => {
+                let function = self.eval_expr(func, environment, return_expected)?;
+                let arguments = args
+                    .iter()
+                    .map(|argument| self.eval_expr(argument, environment, return_expected))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let AccessFlow::Callable(signature) = function else {
+                    return Ok(self.record(expression, AccessFlow::None));
+                };
+                self.verify_arguments("indirect function", &signature, &arguments)?;
+                AccessFlow::from_type(signature.result().ty()).map_err(Self::signature_error)?
+            }
+            Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => AccessFlow::product(
+                args.iter()
+                    .map(|argument| self.eval_expr(argument, environment, return_expected))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. } => {
+                self.eval_expr(expr, environment, return_expected)?
+            }
+            Expr::Field { base, field } => {
+                let base_flow = self.eval_expr(base, environment, return_expected)?;
+                let index = self
+                    .resolved_expression_type(base)
+                    .and_then(|ty| match ty.unqualified() {
+                        Type::Named(name, _) => self
+                            .record_fields
+                            .get(&(name.clone(), field.clone()))
+                            .copied(),
+                        _ => None,
+                    });
+                index.map_or(AccessFlow::None, |index| base_flow.project(index))
+            }
+            Expr::Lambda { params, body, ret } => {
+                let resolved = self.resolved_expression_type(expression).ok_or_else(|| {
+                    AccessFlowError { message: "lambda has no finalized checked type".into() }
+                })?;
+                let conventions = params.iter().map(|parameter| parameter.convention).collect();
+                let signature = AccessSignature::from_resolved_parts(
+                    params.iter().map(|parameter| parameter.ty.as_ref()).collect(),
+                    ret.as_ref(),
+                    conventions,
+                    &resolved,
+                )
+                .map_err(Self::signature_error)?;
+                let mut lambda_environment = environment.clone();
+                for (parameter, access) in params.iter().zip(signature.params()) {
+                    lambda_environment.insert(
+                        parameter.name.clone(),
+                        AccessFlow::from_type(access.ty()).map_err(Self::signature_error)?,
+                    );
+                }
+                let expected = AccessFlow::from_type(signature.result().ty())
+                    .map_err(Self::signature_error)?;
+                let tail = self.eval_block(body, &mut lambda_environment, &expected)?;
+                if matches!(body.stmts.last(), Some(Stmt::Expr(_))) {
+                    tail.verify_exact(&expected, "lambda result")?;
+                }
+                AccessFlow::Callable(signature)
+            }
+            Expr::As { expr, ty } => {
+                let actual = self.eval_expr(expr, environment, return_expected)?;
+                let expected = AccessFlow::from_type(ty).map_err(Self::signature_error)?;
+                actual.verify_exact(&expected, "function cast")?;
+                expected
+            }
+            Expr::RecordUpdate { base, fields, .. } => {
+                let mut flow = self.eval_expr(base, environment, return_expected)?;
+                let base_type = self.resolved_expression_type(base);
+                if let AccessFlow::Product(children) = &mut flow {
+                    for (field, value) in fields {
+                        let value = self.eval_expr(value, environment, return_expected)?;
+                        if let Some(index) = base_type.as_ref().and_then(|ty| match ty.unqualified() {
+                            Type::Named(name, _) => self
+                                .record_fields
+                                .get(&(name.clone(), field.clone()))
+                                .copied(),
+                            _ => None,
+                        }) && let Some(slot) = children.get_mut(index)
+                        {
+                            *slot = value;
+                        }
+                    }
+                }
+                flow
+            }
+            Expr::Record { fields, spread, .. } => {
+                if let Some(spread) = spread {
+                    self.eval_expr(spread, environment, return_expected)?;
+                }
+                AccessFlow::product(
+                    fields
+                        .iter()
+                        .map(|(_, value)| self.eval_expr(value, environment, return_expected))
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+            }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                self.eval_expr(receiver, environment, return_expected)?;
+                for argument in args {
+                    self.eval_expr(argument, environment, return_expected)?;
+                }
+                AccessFlow::None
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.eval_expr(lhs, environment, return_expected)?;
+                self.eval_expr(rhs, environment, return_expected)?;
+                AccessFlow::None
+            }
+            Expr::If { cond, then_block, else_block } => {
+                self.eval_expr(cond, environment, return_expected)?;
+                let mut then_environment = environment.clone();
+                let then_flow =
+                    self.eval_block(then_block, &mut then_environment, return_expected)?;
+                let (else_flow, else_environment) = if let Some(else_block) = else_block {
+                    let mut else_environment = environment.clone();
+                    let flow =
+                        self.eval_block(else_block, &mut else_environment, return_expected)?;
+                    (flow, else_environment)
+                } else {
+                    (AccessFlow::None, environment.clone())
+                };
+                Self::merge_environments(
+                    environment,
+                    &[then_environment, else_environment],
+                    "if branches",
+                )?;
+                then_flow.join(&else_flow, "if-expression branches")?
+            }
+            Expr::Match { scrutinee, arms } => {
+                let scrutinee = self.eval_expr(scrutinee, environment, return_expected)?;
+                let branches = arms
+                    .iter()
+                    .map(|arm| self.eval_arm(arm, &scrutinee, environment, return_expected))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let flows = branches.iter().map(|(flow, _)| flow.clone());
+                let branch_environments = branches
+                    .iter()
+                    .map(|(_, environment)| environment.clone())
+                    .collect::<Vec<_>>();
+                Self::merge_environments(environment, &branch_environments, "match arms")?;
+                Self::join_flows(flows, "match-expression arms")?
+            }
+            Expr::Block(block) => self.eval_block(block, environment, return_expected)?,
+            Expr::While { cond, body } => {
+                self.eval_expr(cond, environment, return_expected)?;
+                self.eval_block(body, &mut environment.clone(), return_expected)?;
+                AccessFlow::None
+            }
+            Expr::For { var, iter, body } => {
+                self.eval_expr(iter, environment, return_expected)?;
+                let mut body_environment = environment.clone();
+                body_environment.insert(var.clone(), AccessFlow::None);
+                self.eval_block(body, &mut body_environment, return_expected)?;
+                AccessFlow::None
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.eval_expr(lo, environment, return_expected)?;
+                self.eval_expr(hi, environment, return_expected)?;
+                AccessFlow::None
+            }
+            Expr::Index { base, index } => {
+                let base = self.eval_expr(base, environment, return_expected)?;
+                self.eval_expr(index, environment, return_expected)?;
+                match index.as_ref() {
+                    Expr::Int(index) if *index >= 0 => base.project(*index as usize),
+                    _ => AccessFlow::None,
+                }
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                self.eval_expr(scrutinee, environment, return_expected)?;
+                self.eval_block(body, &mut environment.clone(), return_expected)?;
+                AccessFlow::None
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                self.eval_expr(receiver, environment, return_expected)?;
+                for argument in args {
+                    self.eval_expr(argument, environment, return_expected)?;
+                }
+                AccessFlow::None
+            }
+        };
+        Ok(self.record(expression, flow))
+    }
+}
+
+/// Build the checked access-signature query for an already type-checked module.
+/// The supplied table is authoritative for every inferred and use-site
+/// specialized type; this pass propagates only ownership/access contracts.
+pub fn checked_facts(
+    module: &Module,
+    table: &TypeTable,
+) -> Result<CheckedAccessFacts, AccessFlowError> {
+    AccessVerifier::new(module, table).verify()
+}
+
+/// Verify one lowered module through the same checked query used by access-fact
+/// consumers. This convenience wrapper owns the cloned AST together with its
+/// address-keyed type table for the duration of the query.
+pub fn verify_module(module: &Module) -> Result<(), AccessFlowError> {
+    let typed = crate::typeck::annotate_checked(module.clone()).map_err(|error| {
+        AccessFlowError { message: error.message }
+    })?;
+    checked_facts(typed.module(), typed.table()).map(|_| ())
 }

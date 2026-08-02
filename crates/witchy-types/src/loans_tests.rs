@@ -263,6 +263,68 @@
     }
 
     #[test]
+    fn inferred_function_declaration_retains_its_access_contract() {
+        let src = "mode opt\n\n\
+             fn constrained(xs: unique List(Int)):\n    list.length(xs)\n\n\
+             fn use(f: fn(List(Int)) -> Int) -> Nil:\n    return\n\n\
+             fn main():\n    use(constrained)\n";
+        let err = check_str(src)
+            .expect_err("an inferred declaration result may not erase its parameter qualifier");
+        assert!(err.contains("ownership/access contract"), "{err}");
+        assert!(err.contains("Qualifier"), "{err}");
+    }
+
+    #[test]
+    fn polymorphic_function_values_are_specialized_before_access_comparison() {
+        check_str(
+            "fn id(x: a) -> a:\n    x\n\n\
+             fn use(f: fn(Int) -> Int) -> Int:\n    f(1)\n\n\
+             fn main() -> Int:\n    use(id)\n",
+        )
+        .expect("the generic identity function has the concrete use-site access signature");
+    }
+
+    #[test]
+    fn inferred_lambda_parameters_use_the_finalized_callable_type() {
+        check_str(
+            "fn use(f: fn(Int) -> Int) -> Int:\n    f(1)\n\n\
+             fn main() -> Int:\n    use(fn(x) -> Int: x + 1)\n",
+        )
+        .expect("an inferred lambda parameter comes from its checked type, not a placeholder");
+    }
+
+    #[test]
+    fn callable_access_contracts_flow_through_patterns_and_branch_joins() {
+        let bodies = [
+            "    let (f, _) = (constrained, 0)\n    use(f)\n",
+            "    let f = if true:\n        constrained\n    else:\n        constrained\n    use(f)\n",
+            "    let f = match true:\n        true -> constrained\n        false -> constrained\n    use(f)\n",
+        ];
+
+        for body in bodies {
+            let src = format!(
+                "mode opt\n\n\
+                 fn constrained(xs: unique List(Int)) -> Int:\n    list.length(xs)\n\n\
+                 fn use(f: fn(List(Int)) -> Int) -> Nil:\n    return\n\n\
+                 fn main():\n{body}"
+            );
+            let err = check_str(&src)
+                .expect_err("flow-sensitive bindings may not erase a callable qualifier");
+            assert!(err.contains("ownership/access contract"), "{body}: {err}");
+            assert!(err.contains("Qualifier"), "{body}: {err}");
+        }
+    }
+
+    #[test]
+    fn nested_local_unique_result_cannot_escape() {
+        let err = check_str(
+            "mode opt\n\nfn bad() -> (local unique List(Int), Int):\n    ([1], 0)\n",
+        )
+        .expect_err("local unique is activation-bound even below a result aggregate");
+        assert!(err.contains("local unique") && err.contains("escape"), "{err}");
+    }
+
+    #[test]
     fn borrowed_function_types_require_opt_mode_and_bound_outputs() {
         let no_opt = "fn apply(f: fn(View(String, 'a)) -> View(String, 'a), s: String) -> String:\n    f(s)\n";
         let err = check_str(no_opt).expect_err("borrowed function type requires mode opt");

@@ -113,6 +113,18 @@ fn unique_results_return_representation_classed_state() {
 }
 
 #[test]
+fn nested_local_unique_results_are_rejected_recursively() {
+    let result = Type::Tuple(vec![
+        qualified(TypeQual::LocalUnique, list(named("Int"))),
+        named("Int"),
+    ]);
+    assert_eq!(
+        AccessSignature::from_parts(Vec::new(), result, Vec::new()),
+        Err(AccessSignatureError::LocalUniqueResult)
+    );
+}
+
+#[test]
 fn borrowed_result_relates_to_owner_parameter_positions() {
     let sig = signature(
         vec![

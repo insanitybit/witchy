@@ -7473,6 +7473,9 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
             // lowered module (method calls are plain `Call`s and the borrow
             // signatures survive lowering as `Qualified(Borrow, _)`).
             crate::loans::check(&lowered)?;
+            crate::access::verify_module(&lowered).map_err(|error| TypeError {
+                message: error.to_string(),
+            })?;
             Ok(())
         }
         Err(message) => {
@@ -7523,6 +7526,7 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
 #[derive(Default)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
+    functions: HashMap<String, (Vec<Ty>, Ty)>,
     existential_packs: HashMap<usize, (Ty, Ty)>,
     existential_upcasts: HashMap<usize, (Ty, Ty)>,
     record_projections: HashMap<usize, (Ty, Ty)>,
@@ -7538,6 +7542,17 @@ impl TypeTable {
     /// returned semantic types are independent of expression identity.
     pub fn concrete_types(&self) -> impl Iterator<Item = &Ty> {
         self.types.values()
+    }
+
+    /// The finalized declaration signature for a non-polymorphic function.
+    /// Generic declarations remain use-site-specialized and therefore have no
+    /// single concrete entry; their concrete function-value expressions still
+    /// appear in [`Self::type_of`].
+    pub fn function_type(&self, name: &str) -> Option<ast::Type> {
+        let (params, result) = self.functions.get(name)?;
+        let params = params.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?;
+        let result = ty_to_ast(result)?;
+        Some(ast::Type::Fn(params, Box::new(result), Vec::new()))
     }
 
     /// The finalized `(existential, concrete)` construction requested at this
@@ -8218,8 +8233,19 @@ fn run_check_selected(
                 types.insert(k, resolved);
             }
         }
+        let functions = c
+            .fn_sigs
+            .iter()
+            .filter_map(|(name, (params, result))| {
+                let params = params.iter().map(|param| c.resolve(param)).collect::<Vec<_>>();
+                let result = c.resolve(result);
+                (!params.iter().any(ty_has_var) && !ty_has_var(&result))
+                    .then(|| (name.clone(), (params, result)))
+            })
+            .collect();
         return Ok(Some(TypeTable {
             types,
+            functions,
             existential_packs,
             existential_upcasts,
             record_projections,
