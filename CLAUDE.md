@@ -137,6 +137,19 @@ the documented residual, not an invitation to grow the shape tables.
   ceremony for changes the existing suites already adjudicate (docs, std
   functions with differential tests, ledger closes).
 
+### Large-scope delivery
+
+Optimize large RFCs and cross-cutting projects for total completion latency.
+Before implementation, convert acceptance criteria into a dependency graph and
+live ledger, freeze the narrow contracts shared by independent tracks, and start
+those tracks immediately in isolated worktrees. Keep one integration track
+runnable, validate each track continuously, and update generated evidence with
+the change that invalidates it. Report the critical path and unmet acceptance
+criteria, not commit or line counts. Decomposition enables concurrency and
+verification; it does not reduce scope. The merge queue serializes landing, not
+implementation. If independent work is becoming serial, change the execution
+plan and report the bottleneck.
+
 ## Concurrent agents
 
 This checkout is often shared by multiple coding agents at once. Treat the

@@ -58,6 +58,31 @@ evidence.
 `Shared master has tracked changes` is not, by itself, a blocker. The agent owns
 driving that state to a clean, recoverable conclusion.
 
+## Large-scope delivery
+
+Large RFCs and cross-cutting projects should optimize for total completion
+latency, not serial task completion. Decomposition exists to enable concurrency
+and verification; it is not permission to reduce the requested scope.
+
+- Before implementation, turn the acceptance criteria into a dependency graph
+  and a live acceptance ledger. Identify the critical path and the contracts
+  that independent tracks share.
+- Start independent compiler, runtime, host, tooling, test, documentation, and
+  evidence tracks immediately in isolated branches or worktrees. Do not make
+  one track wait for another unless the dependency graph requires it.
+- Freeze narrow shared interfaces early. Keep one integration track responsible
+  for combining completed work, resolving contract drift, and keeping an
+  end-to-end slice runnable throughout development.
+- Run focused checks continuously in each track. Update generated lockfiles,
+  manifests, censuses, snapshots, and evidence with the change that invalidates
+  them instead of leaving reconciliation to the end.
+- Report progress against acceptance criteria, unresolved dependencies, and the
+  critical path. Commit counts and lines changed are not completion evidence.
+- Treat the merge queue as a landing serializer, never an implementation
+  serializer. Continue independent work while gates run.
+- If work that can be independent is becoming serial, change the execution plan
+  immediately and call out the bottleneck in the next status update.
+
 ## Merging: use the gate coordinator
 
 Do not run the full `./scripts/check.sh` gate yourself, and do not merge to
