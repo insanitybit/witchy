@@ -8,7 +8,7 @@
     };
     use witchy_syntax::ast::Item;
 
-    use super::{LoanProjection, LoanProjectionStep};
+    use super::{LoanProjection, LoanProjectionStep, projections_overlap};
 
     fn linked_normal(main_body: &str) -> Result<(), crate::typeck::TypeError> {
         fn no_comptime(
@@ -900,4 +900,44 @@
         };
         assert_eq!(first.owner, "left");
         assert!(first.borrower_projection.steps.is_empty());
+    }
+
+    #[test]
+    fn returned_borrowed_tuple_slots_must_preserve_declared_lifetimes() {
+        let source = "mode opt\n\n\
+            fn bad(let left: let('left) String, let right: let('right) String) \
+                -> (View(String, 'left), View(String, 'right)):\n    (right, left)\n\n\
+            fn main(console: Console):\n    var left = \"left\"\n    var right = \"right\"\n    let both = bad(left, right)\n    let (first, _) = both\n    right = \"changed\"\n    console.print(first)\n";
+
+        let error = check_str(source).expect_err("return slots may not swap lifetime owners");
+        assert!(error.contains("output projection `[0]`"), "{error}");
+        assert!(error.contains("owner `right`"), "{error}");
+        assert!(error.contains("owner `left`"), "{error}");
+    }
+
+    #[test]
+    fn nested_call_owner_selection_applies_the_consumers_input_projection() {
+        let source = "mode opt\n\n\
+            fn pair(let left: let('left) String, let right: let('right) String) \
+                -> (View(String, 'left), View(String, 'right)):\n    (left, right)\n\n\
+            fn first(let pair: (View(String, 'left), View(String, 'right))) \
+                -> View(String, 'left):\n    let (value, _) = pair\n    value\n\n\
+            fn main(console: Console):\n    var left = \"left\"\n    var right = \"right\"\n    let value = first(pair(left, right))\n    right = \"changed\"\n    console.print(value)\n";
+
+        check_str(source).expect("the nested call result borrows only its selected tuple slot");
+    }
+
+    #[test]
+    fn empty_fixed_ranges_do_not_overlap_storage() {
+        let empty = LoanProjection {
+            steps: vec![LoanProjectionStep::Range { lo: 2, hi: 2, inclusive: false }],
+        };
+        let empty_inclusive = LoanProjection {
+            steps: vec![LoanProjectionStep::Range { lo: 3, hi: 2, inclusive: true }],
+        };
+        let point = LoanProjection { steps: vec![LoanProjectionStep::Index(2)] };
+
+        assert!(!projections_overlap(&empty, &empty));
+        assert!(!projections_overlap(&empty, &point));
+        assert!(!projections_overlap(&empty_inclusive, &point));
     }

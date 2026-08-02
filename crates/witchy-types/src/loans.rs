@@ -70,6 +70,18 @@ struct OwnerPosition {
 }
 
 #[derive(Clone)]
+struct ReturnBorrowRelation {
+    output_projection: LoanProjection,
+    owners: Vec<ReturnOwnerPosition>,
+}
+
+#[derive(Clone)]
+struct ReturnOwnerPosition {
+    name: String,
+    input_projection: LoanProjection,
+}
+
+#[derive(Clone)]
 struct BorrowSlot {
     lifetime: String,
     projection: LoanProjection,
@@ -300,6 +312,25 @@ impl LoanProjection {
     }
 }
 
+fn named_return_relations(sig: &BorrowSig, params: &[Param]) -> Vec<ReturnBorrowRelation> {
+    sig.relations
+        .iter()
+        .map(|relation| ReturnBorrowRelation {
+            output_projection: relation.output_projection.clone(),
+            owners: relation
+                .owners
+                .iter()
+                .filter_map(|owner| {
+                    params.get(owner.index).map(|param| ReturnOwnerPosition {
+                        name: param.name.clone(),
+                        input_projection: owner.input_projection.clone(),
+                    })
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 /// Authoritative events keyed by statement identity in the checked module.
 #[derive(Default)]
 pub struct LoanFacts {
@@ -367,15 +398,9 @@ pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
             fn_name: &f.name,
             facts: &mut facts,
             catalog: &catalog,
-            returns_view: sigs.get(&f.name).is_some_and(|sig| sig.returns_view),
-            return_owners: sigs
+            return_relations: sigs
                 .get(&f.name)
-                .map(|sig| {
-                    sig.owner_params
-                        .iter()
-                        .filter_map(|(index, _)| f.params.get(*index).map(|param| param.name.clone()))
-                        .collect()
-                })
+                .map(|sig| named_return_relations(sig, &f.params))
                 .unwrap_or_default(),
             block_results: HashMap::new(),
             input_borrows: f
@@ -513,8 +538,27 @@ fn check_lambda_body(
         fn_name: name,
         facts,
         catalog,
-        returns_view: ret_life.is_some() || forwarded.is_some_and(|sig| sig.returns_view),
-        return_owners,
+        return_relations: if let Some(lifetime) = ret_life {
+            vec![ReturnBorrowRelation {
+                output_projection: LoanProjection::default(),
+                owners: params
+                    .iter()
+                    .filter(|param| {
+                        param
+                            .ty
+                            .as_ref()
+                            .and_then(view_lifetime)
+                            .is_some_and(|input| input == lifetime)
+                    })
+                    .map(|param| ReturnOwnerPosition {
+                        name: param.name.clone(),
+                        input_projection: LoanProjection::default(),
+                    })
+                    .collect(),
+            }]
+        } else {
+            forwarded.map(|sig| named_return_relations(sig, params)).unwrap_or_default()
+        },
         block_results: HashMap::new(),
         input_borrows,
         return_callable: ret.and_then(borrow_sig_from_fn_type).map(Box::new),
@@ -953,12 +997,19 @@ fn fixed_interval(step: &LoanProjectionStep) -> Option<(i128, i128)> {
 }
 
 fn projection_steps_overlap(left: &LoanProjectionStep, right: &LoanProjectionStep) -> bool {
+    let left_interval = fixed_interval(left);
+    let right_interval = fixed_interval(right);
+    if left_interval.is_some_and(|(lo, hi)| lo >= hi)
+        || right_interval.is_some_and(|(lo, hi)| lo >= hi)
+    {
+        return false;
+    }
     if projection_steps_equal(left, right) {
         return true;
     }
     match (left, right) {
         (LoanProjectionStep::Field(left), LoanProjectionStep::Field(right)) => left == right,
-        _ => match (fixed_interval(left), fixed_interval(right)) {
+        _ => match (left_interval, right_interval) {
             (Some((left_lo, left_hi)), Some((right_lo, right_hi))) => {
                 left_lo < right_hi && right_lo < left_hi
             }
@@ -981,6 +1032,39 @@ fn place_overlaps(place: PlaceProjection, borrowed: &LoanProjection) -> bool {
         PlaceProjection::Fixed(projection) => projections_overlap(&projection, borrowed),
         PlaceProjection::Dynamic => true,
     }
+}
+
+fn projection_display(projection: &LoanProjection) -> String {
+    if projection.steps.is_empty() {
+        return "<root>".to_string();
+    }
+    let mut display = String::new();
+    for step in &projection.steps {
+        match step {
+            LoanProjectionStep::Field(field) => {
+                display.push('.');
+                display.push_str(field);
+            }
+            LoanProjectionStep::Tuple(index) => {
+                display.push('[');
+                display.push_str(&index.to_string());
+                display.push(']');
+            }
+            LoanProjectionStep::Index(index) => {
+                display.push('[');
+                display.push_str(&index.to_string());
+                display.push(']');
+            }
+            LoanProjectionStep::Range { lo, hi, inclusive } => {
+                display.push('[');
+                display.push_str(&lo.to_string());
+                display.push_str(if *inclusive { "..=" } else { ".." });
+                display.push_str(&hi.to_string());
+                display.push(']');
+            }
+        }
+    }
+    display
 }
 
 fn index_projection(index: &Expr) -> Option<LoanProjectionStep> {
@@ -1071,8 +1155,10 @@ struct LoanCtx<'a> {
     catalog: &'a BorrowCatalog,
     fn_name: &'a str,
     facts: &'a mut LoanFacts,
-    returns_view: bool,
-    return_owners: Vec<String>,
+    /// Declared output-slot to named input-slot relations. Body checking keeps
+    /// this shape intact so two lifetimes cannot be swapped merely because both
+    /// owner names occur somewhere in the return type.
+    return_relations: Vec<ReturnBorrowRelation>,
     /// Borrowed result provenance for already-checked nested blocks, keyed by
     /// exact block identity. This connects a block-local alias to an enclosing
     /// `if`/block result without re-running a second lifetime analysis.
@@ -1361,14 +1447,49 @@ impl LoanCtx<'_> {
             if source.temporary {
                 return Err(self.temporary_owner(&source.origin));
             }
-            if !self.returns_view || !self.return_owners.contains(&source.owner) {
+            let output_relations: Vec<&ReturnBorrowRelation> = self
+                .return_relations
+                .iter()
+                .filter(|relation| relation.output_projection == source.borrower_projection)
+                .collect();
+            let relation_matches = output_relations.iter().any(|relation| {
+                relation.owners.iter().any(|owner| {
+                    owner.name == source.owner
+                        && strip_projection_prefix(
+                            &source.projection,
+                            &owner.input_projection,
+                        )
+                        .is_some()
+                })
+            });
+            if !relation_matches {
+                let expected = output_relations
+                    .iter()
+                    .flat_map(|relation| &relation.owners)
+                    .map(|owner| {
+                        format!(
+                            "owner `{}` projection `{}`",
+                            owner.name,
+                            projection_display(&owner.input_projection),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                let expected = if expected.is_empty() {
+                    "no borrowed owner".to_string()
+                } else {
+                    expected
+                };
                 return Err(terr(format!(
-                    "in `{}`: returned value still borrows owner `{}` through `{}`, but the \
-                     function signature does not return a view tied to that input — declare \
-                     `View(T, 'a)` with a matching `let('a) T` parameter, or materialize the \
-                     value with `.owned()` before returning",
+                    "in `{}`: returned borrow at output projection `{}` comes from owner `{}` \
+                     projection `{}` through `{}`, but that output declares {expected}; the \
+                     function signature does not return a view tied to that input and output \
+                     slot — preserve the declared lifetime relation, or materialize the value \
+                     with `.owned()` before returning",
                     short_name(self.fn_name),
+                    projection_display(&source.borrower_projection),
                     source.owner,
+                    projection_display(&source.projection),
                     short_name(&source.origin),
                 )));
             }
@@ -1544,6 +1665,10 @@ impl LoanCtx<'_> {
                         });
                     } else {
                         self.collect_view_owners(arg, callables, live, &mut sources);
+                        sources = sources
+                            .into_iter()
+                            .filter_map(|source| project_source(source, &owner.input_projection))
+                            .collect();
                     }
                 } else {
                     sources = sources
