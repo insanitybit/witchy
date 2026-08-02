@@ -789,6 +789,13 @@ impl<'types> Codegen<'types> {
                         return None;
                     }
                 };
+                let unroll_safe = self.loop_unroll_safe(body);
+                let batch_level = (unroll_safe && self.counter_batch_stack.len() < WM_POOL)
+                    .then_some(self.counter_batch_stack.len());
+                if let Some(level) = batch_level {
+                    self.counter_batch_stack.push(level);
+                    self.counter_batch_used.push((false, false));
+                }
                 // Per-iteration arena reset (the watermark optimization): save
                 // `$heap` before the loop, restore it after each body. `None` when
                 // the body isn't resettable — the loop is still correct without it.
@@ -804,6 +811,12 @@ impl<'types> Codegen<'types> {
                 self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
+                let batch_used = if batch_level.is_some() {
+                    self.counter_batch_stack.pop();
+                    self.counter_batch_used.pop().unwrap_or((false, false))
+                } else {
+                    (false, false)
+                };
                 if elide_pair.is_some() {
                     self.elide_index_list.pop();
                 }
@@ -825,7 +838,7 @@ impl<'types> Codegen<'types> {
                     rhs: Box::new(W::GetLocal(r.to_string())),
                 };
                 let exit_op = if *inclusive { witchy_wir::wir::BinOp::Gt } else { witchy_wir::wir::BinOp::Ge };
-                let lanes = if self.loop_unroll_safe(body) { 4 } else { 1 };
+                let lanes = if unroll_safe { 4 } else { 1 };
                 let mut loop_body: witchy_wir::wir::WirSeq = Vec::new();
                 for _ in 0..lanes {
                     // Guard every logical iteration. This preserves empty and
@@ -871,6 +884,20 @@ impl<'types> Codegen<'types> {
                     N::SetLocal { local: ctr, value: lo_w },
                     N::SetLocal { local: end, value: hi_w },
                 ];
+                if let Some(level) = batch_level {
+                    if batch_used.0 {
+                        outer.push(N::SetLocal {
+                            local: Self::counter_batch_local("destination", level),
+                            value: W::ConstI64(0),
+                        });
+                    }
+                    if batch_used.1 {
+                        outer.push(N::SetLocal {
+                            local: Self::counter_batch_local("rewind", level),
+                            value: W::ConstI64(0),
+                        });
+                    }
+                }
                 if let Some((capture, _)) = &wm {
                     outer.push(capture.clone());
                 }
@@ -879,6 +906,20 @@ impl<'types> Codegen<'types> {
                     result: None,
                     body: vec![N::Loop { label: format!("fl{id}"), body: loop_body }],
                 });
+                if let Some(level) = batch_level {
+                    if batch_used.0 {
+                        outer.push(Self::commit_counter_batch(
+                            "__witchy_destination_candidates_forwarded",
+                            Self::counter_batch_local("destination", level),
+                        ));
+                    }
+                    if batch_used.1 {
+                        outer.push(Self::commit_counter_batch(
+                            "__witchy_region_rewind_calls",
+                            Self::counter_batch_local("rewind", level),
+                        ));
+                    }
+                }
                 outer.push(N::Push(W::ConstI32(0)));
                 W::Seq(outer)
             },

@@ -154,6 +154,7 @@ const CALL_RESULT_F64_TMP: &str = "__witchy_call_result_f64";
 const CALL_RESULT_EXTERN_TMP: &str = "__witchy_call_result_extern";
 const UNIQUE_RESULT_CAP_TMP: &str = "__witchy_unique_result_cap";
 const DESTINATION_PARAM: &str = "__witchy_destination";
+const DESTINATION_RESULT_TMP: &str = "__witchy_destination_result";
 
 fn assign_scratch(component: &str, level: usize) -> String {
     format!("__witchy_assign_{component}_{level}")
@@ -1000,6 +1001,10 @@ struct Codegen<'types> {
     /// Immediate nonescaping fixed-layout producer arguments reuse one
     /// caller-owned scratch object per AST call site.
     destination_scratch_sites: HashMap<usize, (String, LayoutId)>,
+    /// Active counted-range counter-batch slots, innermost last.
+    counter_batch_stack: Vec<usize>,
+    /// `(destination, rewind)` counters actually touched by each active batch.
+    counter_batch_used: Vec<(bool, bool)>,
     /// (RFC-0035 step 3) `let x = list.at(xs, i)` bindings whose read was `$rc_dup`'d
     /// (the SAME per-type gate as the dup site — offset-0 element, `rc-floor` on), so `x`
     /// owns a reference and must be `$rc_drop`'d at its last use. Recording the ownership
@@ -1507,6 +1512,8 @@ impl<'types> Codegen<'types> {
             rc_floor_vars: HashSet::new(),
             destination_forward_vars: HashSet::new(),
             destination_scratch_sites: HashMap::new(),
+            counter_batch_stack: Vec::new(),
+            counter_batch_used: Vec::new(),
             rc_owned_bindings: HashSet::new(),
             match_scrut_depth: 0,
             facts_stack: Vec::new(),
@@ -3613,6 +3620,8 @@ impl<'types> Codegen<'types> {
         self.existential_call_level = 0;
         self.assign_level = 0;
         self.wm_level = 0;
+        self.counter_batch_stack.clear();
+        self.counter_batch_used.clear();
         // Lower the body straight to WIR (`assemble_wir_module` sets `collect_wir`
         // for the function being compiled). `lower_block` is the block lowering: it
         // walks the statements and produces the `WirSeq` the encoder consumes.
@@ -3835,8 +3844,20 @@ impl<'types> Codegen<'types> {
         // (RFC-0016) RC-floor free-at-overwrite scratch: the freshly-allocated
         // buffer (a heap pointer) before the old one is freed and the var rebound.
         locals.push(WirLocal { name: "__rc_new".into(), ty: i32t() });
+        locals.push(WirLocal {
+            name: DESTINATION_RESULT_TMP.into(),
+            ty: i32t(),
+        });
         for i in 0..WM_POOL {
             locals.push(WirLocal { name: format!("__witchy_wm_{i}"), ty: i32t() });
+            locals.push(WirLocal {
+                name: Self::counter_batch_local("destination", i),
+                ty: i64t(),
+            });
+            locals.push(WirLocal {
+                name: Self::counter_batch_local("rewind", i),
+                ty: i64t(),
+            });
         }
         for i in 0..APPLY_POOL {
             locals.push(WirLocal {
@@ -4451,6 +4472,14 @@ impl<'types> Codegen<'types> {
         &self,
         size: witchy_wir::wir::WirExpr,
     ) -> (Vec<witchy_wir::wir::WirNode>, witchy_wir::wir::WirExpr) {
+        self.layout_alloc_expr_nodes_into(size, "p")
+    }
+
+    fn layout_alloc_expr_nodes_into(
+        &self,
+        size: witchy_wir::wir::WirExpr,
+        local: &str,
+    ) -> (Vec<witchy_wir::wir::WirNode>, witchy_wir::wir::WirExpr) {
         use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W, WirNode as N};
         let checked = witchy_wir::wir_helpers::heap_check_enabled();
         let reserve = if checked {
@@ -4464,7 +4493,7 @@ impl<'types> Codegen<'types> {
             size.clone()
         };
         let mut nodes = vec![N::SetLocal {
-            local: "p".into(),
+            local: local.into(),
             value: W::Call { func: "rc_alloc".into(), args: vec![reserve] },
         }];
         nodes.push(Self::increment_counter("__witchy_packed_alloc_calls"));
@@ -4487,17 +4516,17 @@ impl<'types> Codegen<'types> {
             nodes.push(N::Do(W::CallHost {
                 import: "heap_register".into(),
                 args: vec![
-                    W::GetLocal("p".into()),
+                    W::GetLocal(local.into()),
                     W::Binary {
                         op: WB::Add,
                         kind: WK::I32,
-                        lhs: Box::new(W::GetLocal("p".into())),
+                        lhs: Box::new(W::GetLocal(local.into())),
                         rhs: Box::new(size),
                     },
                 ],
             }));
         }
-        (nodes, W::GetLocal("p".into()))
+        (nodes, W::GetLocal(local.into()))
     }
 
     fn push_layout_store(
@@ -4601,75 +4630,6 @@ impl<'types> Codegen<'types> {
         Some(name)
     }
 
-    /// Constructor ABI used only by exact-layout destination-aware functions.
-    /// A zero destination retains the ordinary allocation path; a nonzero
-    /// destination initializes the caller-proved-dead object in place.
-    fn ensure_packed_record_destination_helper(&mut self, id: LayoutId) -> Option<String> {
-        use witchy_wir::wir::{
-            BinOp as WB, Kind as WK, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy,
-        };
-        let name = Self::layout_helper_name("packed_record_destination", id, None);
-        if self.layout_wir_funcs.contains_key(&name) {
-            return Some(name);
-        }
-        let descriptor = self.specialized_layouts.get(id)?.clone();
-        if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. }) {
-            return None;
-        }
-        let LayoutSize::Fixed(size) = descriptor.size() else {
-            return None;
-        };
-        let mut params = vec![WirLocal {
-            name: DESTINATION_PARAM.into(),
-            ty: WirTy::Bool,
-        }];
-        for (index, field) in descriptor.fields().iter().enumerate() {
-            params.push(WirLocal {
-                name: format!("f{index}"),
-                ty: Self::wir_ty_for_kind(self.layout_field_kind(field.kind())?),
-            });
-        }
-        let (allocation, _) = self.layout_alloc_nodes(size);
-        let mut body = vec![N::If {
-            cond: W::Binary {
-                op: WB::Ne,
-                kind: WK::I32,
-                lhs: Box::new(W::GetLocal(DESTINATION_PARAM.into())),
-                rhs: Box::new(W::ConstI32(0)),
-            },
-            then_: vec![N::SetLocal {
-                local: "p".into(),
-                value: W::GetLocal(DESTINATION_PARAM.into()),
-            }],
-            els: allocation,
-            result: None,
-        }];
-        for (index, field) in descriptor.fields().iter().copied().enumerate() {
-            self.push_layout_store(
-                &mut body,
-                W::GetLocal("p".into()),
-                field,
-                W::GetLocal(format!("f{index}")),
-            )?;
-        }
-        body.push(N::Push(W::GetLocal("p".into())));
-        self.layout_wir_funcs.insert(
-            name.clone(),
-            WirFunc {
-                name: name.clone(),
-                params,
-                ret: vec![WirTy::Bool],
-                locals: vec![WirLocal {
-                    name: "p".into(),
-                    ty: WirTy::Bool,
-                }],
-                body,
-                raw_body: None,
-            },
-        );
-        Some(name)
-    }
-
     fn ensure_packed_sum_ctor_helper(
         &mut self,
         id: LayoutId,
@@ -4714,87 +4674,6 @@ impl<'types> Codegen<'types> {
             body,
             raw_body: None,
         });
-        Some(name)
-    }
-
-    fn ensure_packed_sum_destination_helper(
-        &mut self,
-        id: LayoutId,
-        tag: usize,
-    ) -> Option<String> {
-        use witchy_wir::wir::{
-            BinOp as WB, Kind as WK, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy,
-        };
-        let name = Self::layout_helper_name("packed_sum_destination", id, Some(tag));
-        if self.layout_wir_funcs.contains_key(&name) {
-            return Some(name);
-        }
-        let descriptor = self.specialized_layouts.get(id)?.clone();
-        let LayoutKind::ClosedSum { variants } = descriptor.kind() else {
-            return None;
-        };
-        let variant = descriptor.variant_layouts().get(tag)?.clone();
-        if variants.get(tag)?.len() != variant.fields().len() {
-            return None;
-        }
-        let LayoutSize::Fixed(size) = descriptor.size() else {
-            return None;
-        };
-        let tag_field = *descriptor.fields().first()?;
-        let mut params = vec![WirLocal {
-            name: DESTINATION_PARAM.into(),
-            ty: WirTy::Bool,
-        }];
-        for (index, field) in variant.fields().iter().enumerate() {
-            params.push(WirLocal {
-                name: format!("f{index}"),
-                ty: Self::wir_ty_for_kind(self.layout_field_kind(field.kind())?),
-            });
-        }
-        let (allocation, _) = self.layout_alloc_nodes(size);
-        let mut body = vec![N::If {
-            cond: W::Binary {
-                op: WB::Ne,
-                kind: WK::I32,
-                lhs: Box::new(W::GetLocal(DESTINATION_PARAM.into())),
-                rhs: Box::new(W::ConstI32(0)),
-            },
-            then_: vec![N::SetLocal {
-                local: "p".into(),
-                value: W::GetLocal(DESTINATION_PARAM.into()),
-            }],
-            els: allocation,
-            result: None,
-        }];
-        self.push_layout_store(
-            &mut body,
-            W::GetLocal("p".into()),
-            tag_field,
-            W::ConstI32(tag as i32),
-        )?;
-        for (index, field) in variant.fields().iter().copied().enumerate() {
-            self.push_layout_store(
-                &mut body,
-                W::GetLocal("p".into()),
-                field,
-                W::GetLocal(format!("f{index}")),
-            )?;
-        }
-        body.push(N::Push(W::GetLocal("p".into())));
-        self.layout_wir_funcs.insert(
-            name.clone(),
-            WirFunc {
-                name: name.clone(),
-                params,
-                ret: vec![WirTy::Bool],
-                locals: vec![WirLocal {
-                    name: "p".into(),
-                    ty: WirTy::Bool,
-                }],
-                body,
-                raw_body: None,
-            },
-        );
         Some(name)
     }
 
@@ -5112,15 +4991,14 @@ impl<'types> Codegen<'types> {
     ) -> Option<witchy_wir::wir::WirExpr> {
         let id = self.specialized_layout_of_expr(expr)?;
         let descriptor = self.specialized_layouts.get(id)?;
+        if self.fn_destination_layouts.get(&self.cur_fn_name) == Some(&id) {
+            return self.lower_packed_destination_ctor_inline(id, expr, args);
+        }
         let helper = match descriptor.kind() {
             LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }
                 if descriptor.fields().len() == args.len() =>
             {
-                if self.fn_destination_layouts.get(&self.cur_fn_name) == Some(&id) {
-                    self.ensure_packed_record_destination_helper(id)?
-                } else {
-                    self.ensure_packed_record_helper(id)?
-                }
+                self.ensure_packed_record_helper(id)?
             }
             LayoutKind::ClosedSum { .. } => {
                 let Expr::Ctor { name, .. } = expr else { return None };
@@ -5137,22 +5015,92 @@ impl<'types> Codegen<'types> {
                 {
                     return None;
                 }
-                if self.fn_destination_layouts.get(&self.cur_fn_name) == Some(&id) {
-                    self.ensure_packed_sum_destination_helper(id, tag as usize)?
-                } else {
-                    self.ensure_packed_sum_ctor_helper(id, tag as usize)?
-                }
+                self.ensure_packed_sum_ctor_helper(id, tag as usize)?
             }
             _ => return None,
         };
-        let mut lowered = args
+        let lowered = args
             .iter()
             .map(|arg| self.lower_expr(arg))
             .collect::<Option<Vec<_>>>()?;
-        if self.fn_destination_layouts.get(&self.cur_fn_name) == Some(&id) {
-            lowered.insert(0, witchy_wir::wir::WirExpr::GetLocal(DESTINATION_PARAM.into()));
-        }
         Some(witchy_wir::wir::WirExpr::Call { func: helper, args: lowered })
+    }
+
+    fn lower_packed_destination_ctor_inline(
+        &mut self,
+        id: LayoutId,
+        expr: &Expr,
+        args: &[Expr],
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W, WirNode as N};
+        let descriptor = self.specialized_layouts.get(id)?.clone();
+        let LayoutSize::Fixed(size) = descriptor.size() else {
+            return None;
+        };
+        let (fields, tag) = match descriptor.kind() {
+            LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }
+                if descriptor.fields().len() == args.len() =>
+            {
+                (descriptor.fields().to_vec(), None)
+            }
+            LayoutKind::ClosedSum { .. } => {
+                let Expr::Ctor { name, .. } = expr else {
+                    return None;
+                };
+                let (tag, arity) = self.ctors.get(name).copied()?;
+                let fields = descriptor
+                    .variant_layouts()
+                    .get(tag as usize)?
+                    .fields()
+                    .to_vec();
+                if arity != args.len() || fields.len() != args.len() {
+                    return None;
+                }
+                (fields, Some(tag as usize))
+            }
+            _ => return None,
+        };
+        let lowered = args
+            .iter()
+            .map(|argument| self.lower_expr(argument))
+            .collect::<Option<Vec<_>>>()?;
+        let destination = W::GetLocal(DESTINATION_PARAM.into());
+        let (allocation, _) = self.layout_alloc_expr_nodes_into(
+            W::ConstI32(size as i32),
+            DESTINATION_RESULT_TMP,
+        );
+        let mut nodes = vec![N::If {
+            cond: W::Binary {
+                op: WB::Ne,
+                kind: WK::I32,
+                lhs: Box::new(destination.clone()),
+                rhs: Box::new(W::ConstI32(0)),
+            },
+            then_: vec![N::SetLocal {
+                local: DESTINATION_RESULT_TMP.into(),
+                value: destination,
+            }],
+            els: allocation,
+            result: None,
+        }];
+        if let Some(tag) = tag {
+            self.push_layout_store(
+                &mut nodes,
+                W::GetLocal(DESTINATION_RESULT_TMP.into()),
+                *descriptor.fields().first()?,
+                W::ConstI32(tag as i32),
+            )?;
+        }
+        for (field, value) in fields.into_iter().zip(lowered) {
+            self.push_layout_store(
+                &mut nodes,
+                W::GetLocal(DESTINATION_RESULT_TMP.into()),
+                field,
+                value,
+            )?;
+        }
+        nodes.push(N::Push(W::GetLocal(DESTINATION_RESULT_TMP.into())));
+        Some(W::Seq(nodes))
     }
 
     fn lower_packed_list_literal(
@@ -6276,7 +6224,7 @@ impl<'types> Codegen<'types> {
         lowered.push(destination);
         let result_kind = self.fn_ret.get(name).copied().unwrap_or(Kind::I32);
         let result_tmp = call_result_tmp(result_kind);
-        let mut nodes = vec![Self::increment_counter(
+        let mut nodes = vec![self.increment_hot_counter(
             "__witchy_destination_candidates_forwarded",
         )];
         if ownership.unique_capacity_result {
@@ -7527,8 +7475,20 @@ impl<'types> Codegen<'types> {
                 locals.push(WirLocal { name: "__witchy_set_idx".into(), ty: i32t() });
                 locals.push(WirLocal { name: "__witchy_set_val".into(), ty: WirTy::Int });
                 locals.push(WirLocal { name: "__rc_new".into(), ty: WirTy::Int });
+                locals.push(WirLocal {
+                    name: DESTINATION_RESULT_TMP.into(),
+                    ty: i32t(),
+                });
                 for i in 0..WM_POOL {
                     locals.push(WirLocal { name: format!("__witchy_wm_{i}"), ty: i32t() });
+                    locals.push(WirLocal {
+                        name: Self::counter_batch_local("destination", i),
+                        ty: WirTy::Int,
+                    });
+                    locals.push(WirLocal {
+                        name: Self::counter_batch_local("rewind", i),
+                        ty: WirTy::Int,
+                    });
                 }
                 for i in 0..APPLY_POOL {
                     locals.push(WirLocal {
@@ -7950,6 +7910,7 @@ impl<'types> Codegen<'types> {
             || self.wm_level >= WM_POOL
             || !self.loop_arena_resettable(body)
             || !self.summaries.block_may_allocate(body)
+            || self.destination_allocation_free_block(body)
         {
             return None;
         }
@@ -7961,7 +7922,7 @@ impl<'types> Codegen<'types> {
             value: witchy_wir::wir::WirExpr::GetGlobal("heap".into()),
         };
         let reset = vec![
-            Self::increment_counter("__witchy_region_rewind_calls"),
+            self.increment_hot_counter("__witchy_region_rewind_calls"),
             witchy_wir::wir::WirNode::SetGlobal {
                 global: "heap".into(),
                 value: witchy_wir::wir::WirExpr::GetLocal(wm),
@@ -7983,6 +7944,52 @@ impl<'types> Codegen<'types> {
         }
     }
 
+    fn counter_batch_local(kind: &str, level: usize) -> String {
+        format!("__witchy_counter_batch_{kind}_{level}")
+    }
+
+    fn increment_hot_counter(&mut self, name: &str) -> witchy_wir::wir::WirNode {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W, WirNode as N};
+        let kind = match name {
+            "__witchy_destination_candidates_forwarded" => "destination",
+            "__witchy_region_rewind_calls" => "rewind",
+            _ => return Self::increment_counter(name),
+        };
+        let Some(level) = self.counter_batch_stack.last().copied() else {
+            return Self::increment_counter(name);
+        };
+        if let Some((destination, rewind)) = self.counter_batch_used.last_mut() {
+            match kind {
+                "destination" => *destination = true,
+                "rewind" => *rewind = true,
+                _ => unreachable!(),
+            }
+        }
+        let local = Self::counter_batch_local(kind, level);
+        N::SetLocal {
+            local: local.clone(),
+            value: W::Binary {
+                op: BinOp::Add,
+                kind: Kind::I64,
+                lhs: Box::new(W::GetLocal(local)),
+                rhs: Box::new(W::ConstI64(1)),
+            },
+        }
+    }
+
+    fn commit_counter_batch(name: &str, local: String) -> witchy_wir::wir::WirNode {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W, WirNode as N};
+        N::SetGlobal {
+            global: name.into(),
+            value: W::Binary {
+                op: BinOp::Add,
+                kind: Kind::I64,
+                lhs: Box::new(W::GetGlobal(name.into())),
+                rhs: Box::new(W::GetLocal(local)),
+            },
+        }
+    }
+
     fn loop_arena_resettable(&self, body: &Block) -> bool {
         let mut inner_lets = Vec::new();
         collect_let_names(body, &mut inner_lets);
@@ -7990,6 +7997,94 @@ impl<'types> Codegen<'types> {
         let mut ok = true;
         self.scan_escapes_block(body, &inner, &mut ok);
         ok
+    }
+
+    /// A second, narrower allocation proof that understands an immediate
+    /// closed-sum producer is initialized into the consumer's setup scratch.
+    /// It never blesses a bare constructor, collection/index boundary, unknown
+    /// call, or escaping consumer.
+    fn destination_allocation_free_block(&self, body: &Block) -> bool {
+        body.region.is_none()
+            && body.stmts.iter().all(|statement| match statement {
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::LetPattern { value, .. }
+                | Stmt::Return(Some(value))
+                | Stmt::Expr(value) => self.destination_allocation_free_expr(value),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => true,
+                Stmt::Yield(_) => false,
+            })
+    }
+
+    fn destination_allocation_free_expr(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Var(_) => true,
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
+            | Expr::Field { base: expr, .. } => self.destination_allocation_free_expr(expr),
+            Expr::Binary { op, lhs, rhs } => {
+                !matches!(op, BinOp::Concat)
+                    && self.destination_allocation_free_expr(lhs)
+                    && self.destination_allocation_free_expr(rhs)
+            }
+            Expr::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                self.destination_allocation_free_expr(cond)
+                    && self.destination_allocation_free_block(then_block)
+                    && else_block
+                        .as_ref()
+                        .is_none_or(|block| self.destination_allocation_free_block(block))
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.destination_allocation_free_expr(scrutinee)
+                    && arms.iter().all(|arm| {
+                        arm.guard
+                            .as_ref()
+                            .is_none_or(|guard| self.destination_allocation_free_expr(guard))
+                            && self.destination_allocation_free_expr(&arm.body)
+                    })
+            }
+            Expr::Block(block) => self.destination_allocation_free_block(block),
+            Expr::Range { lo, hi, .. } => {
+                self.destination_allocation_free_expr(lo)
+                    && self.destination_allocation_free_expr(hi)
+            }
+            Expr::Call { name, args } => {
+                !self.summaries.call_may_allocate(name)
+                    && args.iter().enumerate().all(|(index, argument)| {
+                        self.transient_destination_call(name, index, args.len(), argument)
+                            .is_some()
+                            || self.destination_allocation_free_expr(argument)
+                    })
+            }
+            Expr::While { .. }
+            | Expr::For { .. }
+            | Expr::WhileLet { .. }
+            | Expr::List(_)
+            | Expr::Tuple(_)
+            | Expr::Ctor { .. }
+            | Expr::AnonCtor { .. }
+            | Expr::RecordUpdate { .. }
+            | Expr::Record { .. }
+            | Expr::Index { .. }
+            | Expr::Lambda { .. }
+            | Expr::ExistentialPack { .. }
+            | Expr::Apply { .. }
+            | Expr::MethodCall { .. }
+            | Expr::ExistentialCall { .. }
+            | Expr::LabeledCall { .. }
+            | Expr::TaggedLit { .. } => false,
+        }
     }
 
     /// Counted-range unrolling clones only bodies whose control remains inside

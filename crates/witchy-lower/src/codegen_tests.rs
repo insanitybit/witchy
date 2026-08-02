@@ -684,6 +684,7 @@ fn main() -> Int:
             "__witchy_packed_boxed_elements",
             "__witchy_packed_reshaped_bytes",
             "__witchy_destination_candidates_forwarded",
+            "__witchy_region_rewind_calls",
         ];
         let (result, counters) = run_int_with_i64_globals(source, &names);
         assert_eq!(result, 16833142);
@@ -692,19 +693,31 @@ fn main() -> Int:
         assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
         assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
         assert_eq!(counters["__witchy_destination_candidates_forwarded"], 500_000);
+        assert_eq!(counters["__witchy_region_rewind_calls"], 0);
 
         let module = parse_module(source).expect("parse packed closed-sum oracle");
         let wat = witchy_wir::wir::to_wat(
             &assemble_wir_module(&module).expect_lowered("packed closed sum lowers"),
         );
         assert!(
-            wat.contains("__witchy_packed_sum_destination_"),
-            "every variant initializes the canonical destination descriptor: {wat}"
+            !wat.contains("__witchy_packed_sum_destination_"),
+            "destination-forwarded variants store their canonical descriptor inline: {wat}"
         );
         assert!(wat.contains("call $make"), "packed sum crosses a direct result boundary: {wat}");
         assert!(wat.contains("call $score"), "packed sum crosses a direct parameter boundary: {wat}");
         assert!(wat.contains("i32.load8_u"), "match dispatch reads the descriptor tag width: {wat}");
         assert!(!wat.contains("call $mk1"), "payload is never boxed into a legacy record: {wat}");
+        let make_start = wat.find("(func $make").expect("make function");
+        let make_tail = &wat[make_start..];
+        let make_end = make_tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(make_tail.len());
+        let make = &make_tail[..make_end];
+        assert!(
+            make.contains("i32.store8") && make.contains("i64.store offset=8"),
+            "the producer writes the canonical tag and payload inline: {make}"
+        );
         let start = wat.find("(func $main").expect("main function");
         let tail = &wat[start..];
         let end = tail[1..]
@@ -716,6 +729,23 @@ fn main() -> Int:
             main.matches("call $__witchy_destination_scratch_").count(),
             1,
             "one caller scratch allocation is initialized before the hot loop: {main}"
+        );
+        assert_eq!(
+            main.matches("global.set $__witchy_destination_candidates_forwarded").count(),
+            1,
+            "the exact forwarded total is committed once after the hot loop: {main}"
+        );
+        assert!(
+            main.contains("local.set $__witchy_counter_batch_destination_0"),
+            "the hot loop aggregates its destination count in a local: {main}"
+        );
+        assert!(
+            !main.contains("global.set $__witchy_region_rewind_calls"),
+            "a fully destination-forwarded transient sum needs no loop watermark: {main}"
+        );
+        assert!(
+            !main.contains("global.set $heap"),
+            "the destination-forwarded hot loop does not rewind the heap: {main}"
         );
         assert!(!main.contains("call $rc_alloc"), "the hot caller has no direct allocator: {main}");
         if witchy_wir::wir_helpers::heap_check_enabled() {
@@ -855,9 +885,14 @@ fn main() -> Int:
             main.contains("call $build"),
             "loop calls the destination-aware builder: {main}"
         );
+        assert_eq!(
+            main.matches("global.set $__witchy_destination_candidates_forwarded").count(),
+            1,
+            "the exact forwarded total is committed once after the hot loop: {main}"
+        );
         assert!(
-            main.contains("global.set $__witchy_destination_candidates_forwarded"),
-            "forwarded candidates are counted at the call site: {main}"
+            main.contains("local.set $__witchy_counter_batch_destination_0"),
+            "the hot loop aggregates its destination count in a local: {main}"
         );
         assert!(
             !main.contains("call $rc_alloc"),
@@ -868,8 +903,19 @@ fn main() -> Int:
             "the constructor remains behind the direct build boundary: {main}"
         );
         assert!(
-            wat.contains("__witchy_packed_record_destination_"),
-            "the builder uses a descriptor-specific optional destination helper: {wat}"
+            !wat.contains("__witchy_packed_record_destination_"),
+            "the builder stores its canonical descriptor fields inline: {wat}"
+        );
+        let build_start = wat.find("(func $build").expect("build function");
+        let build_tail = &wat[build_start..];
+        let build_end = build_tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(build_tail.len());
+        let build = &build_tail[..build_end];
+        assert!(
+            build.contains("i64.store") && build.contains("i64.store offset=8"),
+            "the producer writes both canonical record fields inline: {build}"
         );
         if witchy_wir::wir_helpers::heap_check_enabled() {
             assert!(
@@ -1082,9 +1128,14 @@ fn main() -> Int:
             .map(|offset| offset + 1)
             .unwrap_or(tail.len());
         let main = &tail[..end];
+        assert_eq!(
+            main.matches("global.set $__witchy_region_rewind_calls").count(),
+            1,
+            "the exact rewind total is committed once after the loop: {main}"
+        );
         assert!(
-            main.contains("global.set $__witchy_region_rewind_calls"),
-            "either allocating arm preserves the loop reset: {main}"
+            main.contains("local.set $__witchy_counter_batch_rewind_0"),
+            "the allocating loop aggregates rewind instrumentation locally: {main}"
         );
     }
 

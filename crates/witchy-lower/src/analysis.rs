@@ -760,6 +760,10 @@ impl Summaries {
             })
     }
 
+    pub fn call_may_allocate(&self, name: &str) -> bool {
+        self.fns.get(name).is_none_or(|info| info.may_allocate)
+    }
+
     /// Parameter positions written back through the uniform `var` ABI. This is
     /// the operation-independent ownership hook: callers can attach tokens from
     /// conventions without recognizing a source method name.
