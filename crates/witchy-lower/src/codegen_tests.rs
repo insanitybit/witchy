@@ -1366,6 +1366,40 @@ fn main() -> Int:
     }
 
     #[test]
+    fn packed_closed_sum_with_nested_custom_equality_rejects_loudly() {
+        let source = r#"
+mode opt
+
+type Inner packed:
+    id: Int
+    noise: Int
+
+impl PartialEq for Inner:
+    fn eq(self, other: Inner) -> Bool:
+        self.id == other.id
+
+type Outer packed derive(PartialEq):
+    SomeInner(Inner)
+    Empty
+
+fn main() -> Int:
+    if SomeInner(Inner(7, 1)) == SomeInner(Inner(7, 99)):
+        1
+    else:
+        0
+"#;
+        let module = parse_module(source).expect("parse nested custom packed equality");
+        let error = compile_module_binary(&module)
+            .expect_rejected("descriptor equality cannot erase nested custom semantics");
+        let diagnostic = error.to_string();
+        assert!(
+            diagnostic.contains("declared packed layout")
+                && diagnostic.contains("aggregate binary operation"),
+            "nested custom equality must reject instead of comparing structurally: {diagnostic}"
+        );
+    }
+
+    #[test]
     fn escaping_packed_sum_result_keeps_the_allocating_fallback() {
         let source = r#"
 mode opt

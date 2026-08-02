@@ -208,11 +208,10 @@ impl Codegen<'_> {
         rhs: &Expr,
     ) -> bool {
         let shape = self.eq_shape_of(lhs).or_else(|| self.eq_shape_of(rhs));
-        if shape
-            .as_ref()
-            .and_then(|shape| self.custom_eq_type_of_shape(shape))
-            .is_some()
-        {
+        if !shape.as_ref().is_some_and(|shape| {
+            self.specialized_equality_shape_is_custom_free(shape, &mut HashSet::new())
+                == Some(true)
+        }) {
             return false;
         }
         [lhs, rhs].into_iter().any(|operand| {
@@ -220,6 +219,128 @@ impl Codegen<'_> {
                 .and_then(|id| self.specialized_layouts.get(id))
                 .is_some_and(|descriptor| matches!(descriptor.kind(), LayoutKind::ClosedSum { .. }))
         })
+    }
+
+    /// Descriptor equality is structural. It is therefore valid only when the
+    /// complete logical shape uses derived/default equality. A custom
+    /// `PartialEq` nested below a packed sum excludes the descriptor route; the
+    /// specialized-boundary check then rejects the binary operation until a
+    /// descriptor operation can name and call custom equality explicitly.
+    ///
+    /// `None` is fail-closed: if a named shape cannot be expanded, the caller
+    /// does not select descriptor equality. `visiting` cuts recursive nominal
+    /// cycles after their fields have been inspected once.
+    fn specialized_equality_shape_is_custom_free(
+        &self,
+        shape: &EqShape,
+        visiting: &mut HashSet<String>,
+    ) -> Option<bool> {
+        if self.custom_eq_type_of_shape(shape).is_some() {
+            return Some(false);
+        }
+        let all_custom_free = |this: &Self,
+                               shapes: Vec<EqShape>,
+                               visiting: &mut HashSet<String>| {
+            for shape in &shapes {
+                if !this.specialized_equality_shape_is_custom_free(shape, visiting)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        };
+        match shape {
+            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str => Some(true),
+            EqShape::List(element) => {
+                self.specialized_equality_shape_is_custom_free(element, visiting)
+            }
+            EqShape::Tuple(fields) => all_custom_free(self, fields.clone(), visiting),
+            EqShape::Dict(key, value) => all_custom_free(
+                self,
+                vec![(**key).clone(), (**value).clone()],
+                visiting,
+            ),
+            EqShape::Record(name) => {
+                let key = format!("record:{name}");
+                if !visiting.insert(key.clone()) {
+                    return Some(true);
+                }
+                let result = self
+                    .record_field_types
+                    .get(name)?
+                    .iter()
+                    .map(|field| self.eq_shape_of_type(field))
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|fields| all_custom_free(self, fields, visiting));
+                visiting.remove(&key);
+                result
+            }
+            EqShape::RecInst(name, args) => {
+                let key = format!("record:{}", shape.id());
+                if !visiting.insert(key.clone()) {
+                    return Some(true);
+                }
+                let subst = self.record_field_subst(name, args);
+                let result = self
+                    .record_field_types
+                    .get(name)?
+                    .iter()
+                    .map(|field| self.eq_shape_of_type_with(field, &subst))
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|fields| all_custom_free(self, fields, visiting));
+                visiting.remove(&key);
+                result
+            }
+            EqShape::Adt(name) => {
+                let key = format!("adt:{name}");
+                if !visiting.insert(key.clone()) {
+                    return Some(true);
+                }
+                let fields = self
+                    .adt_variants
+                    .get(name)?
+                    .iter()
+                    .flatten()
+                    .map(|field| self.eq_shape_of_type(field))
+                    .collect::<Option<Vec<_>>>()?;
+                let result = all_custom_free(self, fields, visiting);
+                visiting.remove(&key);
+                result
+            }
+            EqShape::AdtInst(name, variants) => {
+                let key = format!("adt:{}", shape.id());
+                if !visiting.insert(key.clone()) {
+                    return Some(true);
+                }
+                let result = all_custom_free(
+                    self,
+                    variants.iter().flatten().cloned().collect(),
+                    visiting,
+                );
+                visiting.remove(&key);
+                result
+            }
+            EqShape::AdtRec(name, args) => {
+                let key = format!("adt:{}", shape.id());
+                if !visiting.insert(key.clone()) {
+                    return Some(true);
+                }
+                let variants = self.adt_variants.get(name)?;
+                let mut params = Vec::new();
+                for field in variants.iter().flatten() {
+                    collect_type_vars(field, &mut params);
+                }
+                let subst: HashMap<String, EqShape> =
+                    params.into_iter().zip(args.iter().cloned()).collect();
+                let fields = variants
+                    .iter()
+                    .flatten()
+                    .map(|field| self.eq_shape_of_type_with(field, &subst))
+                    .collect::<Option<Vec<_>>>()?;
+                let result = all_custom_free(self, fields, visiting);
+                visiting.remove(&key);
+                result
+            }
+        }
     }
 
     fn specialized_layout_address(
