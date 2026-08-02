@@ -406,14 +406,24 @@ pub(crate) fn rc_alloc_helper() -> WirFunc {
 }
 
 /// (RFC-0016) `$rc_free(ptr: i32)` — return a dead, uniquely-owned heap block to the
-/// free-list for reuse by `$rc_alloc`. The block already carries its allocated size
-/// in its header at `ptr-4` (written by `$rc_alloc`), so freeing just links it in:
+/// free-list for reuse by `$rc_alloc`, or quarantine it in UAF sanitizer mode. The block
+/// already carries its allocated size in its header at `ptr-4` (written by `$rc_alloc`),
+/// so ordinary freeing just links it in:
 /// store the old list head into the block's first word (the object is dead, ≥4 bytes,
 /// so there is room) and make this block the new head. The caller (the codegen
 /// free-at-overwrite rule, gated `WITCHY_OPT=rc-floor`) only needs the pointer — no
 /// size — and is responsible for soundness: it only frees a block the escape oracle
 /// proved confined + unaliased and distinct from the freshly-built result.
 pub(crate) fn rc_free_helper() -> WirFunc {
+    rc_free_helper_with_uaf_check(uaf_check_enabled())
+}
+
+#[cfg(test)]
+pub(crate) fn rc_free_helper_for_test(uaf_check: bool) -> WirFunc {
+    rc_free_helper_with_uaf_check(uaf_check)
+}
+
+fn rc_free_helper_with_uaf_check(uaf_check: bool) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -428,16 +438,11 @@ pub(crate) fn rc_free_helper() -> WirFunc {
         },
     };
 
-    if uaf_check_enabled() {
-        // (RFC-0037 §3) UAF sanitizer variant: fill the freed payload with a POISON pattern,
-        // then relink the block for reuse exactly as the normal path does. This is STRICTLY
-        // MORE detection than the plain differential, never less:
-        //   * if the block is later reused, the new owner overwrites the poison with its own
-        //     data — so the existing "reuse corrupts a still-aliased value" divergence is
-        //     preserved unchanged; and
-        //   * if the block is NOT reused before a stale read (the FRAGILE case the plain
-        //     differential misses — G3), the read sees POISON, a wrong value (→ DIVERGE) or,
-        //     read as a length, a fast out-of-bounds wasm trap (also a DIVERGE vs the interp).
+    if uaf_check {
+        // (RFC-0037 §3) UAF sanitizer variant: fill the freed payload with a POISON pattern
+        // and quarantine the block for the rest of the process. A later allocation therefore
+        // cannot overwrite the poison before a stale reader reaches it.
+        //
         // On a CORRECT program a freed block is never read again, so poisoning changes no
         // output — zero false positives. The allocated size is in the header at `ptr-4`;
         // poison every whole word of `[ptr, ptr+size)` when that size is sane (a guard against
@@ -445,8 +450,10 @@ pub(crate) fn rc_free_helper() -> WirFunc {
         let i32c = E::ConstI32;
         let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
         let load = |p: E, off: u32| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: off };
+        let rc_addr = || b(BinOp::Sub, getl("ptr"), i32c(8));
+        let rc_load = || load(rc_addr(), 0);
         const POISON: i32 = 0xDEAD_BEEFu32 as i32;
-        const POISON_LIMIT: i32 = 1 << 20; // 1 MiB — larger than any test object; guards a bogus header.
+        const POISON_LIMIT: i32 = 1 << 20; // exclusive; matches the RC header plausibility bound.
         let poison_loop = N::Block {
             label: "pz_done".into(),
             result: None,
@@ -481,22 +488,38 @@ pub(crate) fn rc_free_helper() -> WirFunc {
             // never poisons the static data segment.
             body: vec![increment_counter("__witchy_rc_free_calls"), N::If {
                 cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
-                then_: vec![
-                    N::SetLocal { local: "size".into(), value: b(BinOp::And, load(b(BinOp::Sub, getl("ptr"), i32c(4)), 0), i32c(RC_SIZE_MASK)) },
-                    // Poison only a sane-sized payload; `LeU` also rejects a negative (→ huge
-                    // unsigned) bogus size. size==0 makes the loop a no-op.
-                    N::If {
-                        cond: b(BinOp::LeU, getl("size"), i32c(POISON_LIMIT)),
-                        then_: vec![N::SetLocal { local: "i".into(), value: i32c(0) }, poison_loop],
-                        els: vec![],
-                        result: None,
-                    },
-                    // Relink for reuse (identical to the normal path). The freelist link occupies
-                    // word 0, overwriting the poison there; words 4.. stay poisoned until reuse.
-                    N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
-                    N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
-                    dec_live,
-                ],
+                then_: vec![N::SetLocal {
+                    local: "size".into(),
+                    value: b(
+                        BinOp::And,
+                        load(b(BinOp::Sub, getl("ptr"), i32c(4)), 0),
+                        i32c(RC_SIZE_MASK),
+                    ),
+                }, N::If {
+                    // A genuine live `$rc_alloc` cell has rc==1 at `$rc_free` and a
+                    // payload size in [1, 1 MiB). The first free writes rc=0 below;
+                    // a repeated free therefore traps instead of decrementing live-cell
+                    // accounting twice or silently accepting a double free.
+                    cond: b(
+                        BinOp::And,
+                        b(BinOp::Eq, rc_load(), i32c(1)),
+                        b(
+                            BinOp::LeU,
+                            b(BinOp::Sub, getl("size"), i32c(1)),
+                            i32c(POISON_LIMIT - 2),
+                        ),
+                    ),
+                    then_: vec![
+                        N::SetLocal { local: "i".into(), value: i32c(0) },
+                        poison_loop,
+                        // Mark this header dead for deterministic double-free detection.
+                        // The quarantined pointer is deliberately not linked into `rc_freelist`.
+                        N::Store { ptr: rc_addr(), value: i32c(0), kind: Kind::I32, offset: 0 },
+                        dec_live,
+                    ],
+                    els: vec![N::Unreachable],
+                    result: None,
+                }],
                 els: vec![],
                 result: None,
             }],

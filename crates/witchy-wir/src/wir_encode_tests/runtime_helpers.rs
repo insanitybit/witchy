@@ -60,6 +60,201 @@
         assert_agrees(&module, &["99", "1", "1", "0"]);
     }
 
+    fn rc_test_globals() -> Vec<WirGlobal> {
+        vec![
+            WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(2048), export: None },
+            WirGlobal { name: "heap_base".into(), kind: Kind::I32, mutable: false, init: GlobalInit::I32(2048), export: None },
+            WirGlobal { name: "rc_freelist".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
+            WirGlobal { name: "__rc_reused_bytes".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+            WirGlobal { name: "__witchy_live_cells".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+            WirGlobal { name: "__witchy_rc_alloc_calls".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+            WirGlobal { name: "__witchy_bump_alloc_calls".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+            WirGlobal { name: "__witchy_rc_reuse_calls".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+            WirGlobal { name: "__witchy_rc_free_calls".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+        ]
+    }
+
+    fn rc_test_module(free: WirFunc, run: WirFunc) -> WirModule {
+        use crate::wir_helpers::{bump_alloc_helper, ensure_helper, rc_alloc_helper};
+        print_int_module(
+            vec![ensure_helper(false), bump_alloc_helper(), rc_alloc_helper(), free, run],
+            rc_test_globals(),
+        )
+    }
+
+    fn print_i32(value: WirExpr) -> WirNode {
+        WirNode::Do(WirExpr::CallHost {
+            import: "print_int".into(),
+            args: vec![WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(value) }],
+        })
+    }
+
+    /// UAF mode quarantines a freed object instead of feeding it back to first-fit
+    /// reuse. Every complete payload word remains poisoned, an adjacent live allocation is
+    /// untouched, and a later same-size allocation receives a fresh address.
+    #[test]
+    fn uaf_free_quarantines_poisoned_cells() {
+        use crate::wir_helpers::rc_free_helper_for_test;
+        let gl = |name: &str| WirExpr::GetLocal(name.into());
+        let call_alloc = || WirExpr::Call { func: "rc_alloc".into(), args: vec![WirExpr::ConstI32(16)] };
+        let call_free = |name: &str| WirNode::Do(WirExpr::Call {
+            func: "rc_free".into(),
+            args: vec![gl(name)],
+        });
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("freed", WirTy::Bool), local("guard", WirTy::Bool), local("fresh", WirTy::Bool)],
+            body: vec![
+                WirNode::SetLocal { local: "freed".into(), value: call_alloc() },
+                WirNode::Store { ptr: gl("freed"), value: WirExpr::ConstI32(123), kind: Kind::I32, offset: 0 },
+                WirNode::SetLocal { local: "guard".into(), value: call_alloc() },
+                WirNode::Store { ptr: gl("guard"), value: WirExpr::ConstI32(777), kind: Kind::I32, offset: 0 },
+                call_free("freed"),
+                WirNode::SetLocal { local: "fresh".into(), value: call_alloc() },
+                print_i32(WirExpr::Binary {
+                    op: BinOp::Eq,
+                    kind: Kind::I32,
+                    lhs: Box::new(gl("freed")),
+                    rhs: Box::new(gl("fresh")),
+                }),
+                print_i32(WirExpr::GetGlobal("rc_freelist".into())),
+                print_i32(WirExpr::Load { ptr: Box::new(gl("freed")), kind: Kind::I32, offset: 0 }),
+                print_i32(WirExpr::Load { ptr: Box::new(gl("guard")), kind: Kind::I32, offset: 0 }),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::GetGlobal("__witchy_rc_reuse_calls".into())],
+                }),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::GetGlobal("__witchy_live_cells".into())],
+                }),
+                print_i32(WirExpr::Load {
+                    ptr: Box::new(WirExpr::Binary {
+                        op: BinOp::Sub,
+                        kind: Kind::I32,
+                        lhs: Box::new(gl("freed")),
+                        rhs: Box::new(WirExpr::ConstI32(8)),
+                    }),
+                    kind: Kind::I32,
+                    offset: 0,
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = rc_test_module(rc_free_helper_for_test(true), run);
+        assert_agrees(&module, &["0", "0", "-559038737", "777", "0", "2", "0"]);
+    }
+
+    /// The production helper keeps the existing free-list contract: a fitting block
+    /// is reused, its RC word is restored to one, and reuse accounting advances.
+    #[test]
+    fn ordinary_free_still_reuses_cells() {
+        use crate::wir_helpers::rc_free_helper_for_test;
+        let gl = |name: &str| WirExpr::GetLocal(name.into());
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("freed", WirTy::Bool), local("reused", WirTy::Bool)],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "freed".into(),
+                    value: WirExpr::Call { func: "rc_alloc".into(), args: vec![WirExpr::ConstI32(16)] },
+                },
+                WirNode::Do(WirExpr::Call { func: "rc_free".into(), args: vec![gl("freed")] }),
+                WirNode::SetLocal {
+                    local: "reused".into(),
+                    value: WirExpr::Call { func: "rc_alloc".into(), args: vec![WirExpr::ConstI32(8)] },
+                },
+                print_i32(WirExpr::Binary {
+                    op: BinOp::Eq,
+                    kind: Kind::I32,
+                    lhs: Box::new(gl("freed")),
+                    rhs: Box::new(gl("reused")),
+                }),
+                print_i32(WirExpr::GetGlobal("rc_freelist".into())),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::GetGlobal("__witchy_rc_reuse_calls".into())],
+                }),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::GetGlobal("__rc_reused_bytes".into())],
+                }),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::GetGlobal("__witchy_live_cells".into())],
+                }),
+                print_i32(WirExpr::Load {
+                    ptr: Box::new(WirExpr::Binary {
+                        op: BinOp::Sub,
+                        kind: Kind::I32,
+                        lhs: Box::new(gl("reused")),
+                        rhs: Box::new(WirExpr::ConstI32(8)),
+                    }),
+                    kind: Kind::I32,
+                    offset: 0,
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = rc_test_module(rc_free_helper_for_test(false), run);
+        assert_agrees(&module, &["1", "0", "1", "16", "1", "1"]);
+    }
+
+    /// A quarantined cell's zero RC marker makes a repeated direct free a
+    /// deterministic sanitizer trap rather than a second live-cell decrement.
+    #[test]
+    fn uaf_free_traps_on_repeated_free() {
+        use crate::wir_helpers::rc_free_helper_for_test;
+        let gl = |name: &str| WirExpr::GetLocal(name.into());
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("cell", WirTy::Bool)],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "cell".into(),
+                    value: WirExpr::Call { func: "rc_alloc".into(), args: vec![WirExpr::ConstI32(16)] },
+                },
+                WirNode::Do(WirExpr::Call { func: "rc_free".into(), args: vec![gl("cell")] }),
+                WirNode::Do(WirExpr::Call { func: "rc_free".into(), args: vec![gl("cell")] }),
+            ],
+            raw_body: None,
+        };
+        let module = rc_test_module(rc_free_helper_for_test(true), run);
+        assert_traps(&module);
+    }
+
+    #[test]
+    fn rc_free_modes_encode_as_valid_wasm() {
+        use crate::wir_helpers::rc_free_helper_for_test;
+        for uaf_check in [false, true] {
+            let run = WirFunc {
+                name: "run".into(),
+                params: vec![],
+                ret: vec![],
+                locals: vec![local("cell", WirTy::Bool)],
+                body: vec![
+                    WirNode::SetLocal {
+                        local: "cell".into(),
+                        value: WirExpr::Call { func: "rc_alloc".into(), args: vec![WirExpr::ConstI32(16)] },
+                    },
+                    WirNode::Do(WirExpr::Call {
+                        func: "rc_free".into(),
+                        args: vec![WirExpr::GetLocal("cell".into())],
+                    }),
+                ],
+                raw_body: None,
+            };
+            let binary = encode(&rc_test_module(rc_free_helper_for_test(uaf_check), run), &[]);
+            wasmparser::validate(&binary).expect("both rc_free modes must remain valid Wasm");
+        }
+    }
+
     /// Byte-level Store8 / Load8U round-trip through both paths: write two bytes,
     /// read them back zero-extended. These back `$int_to_string` and the string
     /// helpers.
