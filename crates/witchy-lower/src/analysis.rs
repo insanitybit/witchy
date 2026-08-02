@@ -3881,6 +3881,7 @@ fn merge_no_copy_env(
 struct NoCopyInputs<'facts, 'module> {
     module: &'module Module,
     access: Option<&'facts witchy_types::access::CheckedAccessFacts<'module>>,
+    places: &'facts witchy_types::access::CheckedPlaceFacts<'module>,
     required: &'facts HashMap<String, Vec<usize>>,
     unique_results: &'facts HashSet<String>,
     summaries: &'facts Summaries,
@@ -3891,6 +3892,7 @@ struct NoCopyWalker<'facts, 'module> {
     function: String,
     module: &'module Module,
     access: Option<&'facts witchy_types::access::CheckedAccessFacts<'module>>,
+    places: &'facts witchy_types::access::CheckedPlaceFacts<'module>,
     required: &'facts HashMap<String, Vec<usize>>,
     unique_results: &'facts HashSet<String>,
     summaries: &'facts Summaries,
@@ -3909,6 +3911,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
         let NoCopyInputs {
             module,
             access,
+            places,
             required,
             unique_results,
             summaries,
@@ -3923,6 +3926,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
             function,
             module,
             access,
+            places,
             required,
             unique_results,
             summaries,
@@ -4283,6 +4287,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     NoCopyInputs {
                         module: self.module,
                         access: self.access,
+                        places: self.places,
                         required: self.required,
                         unique_results: self.unique_results,
                         summaries: self.summaries,
@@ -4432,37 +4437,37 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
     ) {
         for &index in indices {
             let Some(arg) = args.get(index).copied() else { continue };
-            let root = match arg {
-                Expr::Var(root) => root,
-                Expr::Field { base, .. } | Expr::Index { base, .. } => {
-                    let root = expr_root(base).unwrap_or("<computed place>");
-                    self.misses.push(NoCopyMiss {
-                        function: self.function.clone(),
-                        callee: callee.to_string(),
-                        var: root.to_string(),
-                        line: self.line,
-                        reason: "a nested place has no independent ownership-capacity token"
-                            .to_string(),
-                    });
-                    continue;
-                }
-                _ => {
-                    self.misses.push(NoCopyMiss {
-                        function: self.function.clone(),
-                        callee: callee.to_string(),
-                        var: "<computed value>".to_string(),
-                        line: self.line,
-                        reason: "the argument is not a directly tracked mutable binding"
-                            .to_string(),
-                    });
-                    continue;
-                }
+            let Some(place) = self.places.place_at(self.module, arg) else {
+                self.misses.push(NoCopyMiss {
+                    function: self.function.clone(),
+                    callee: callee.to_string(),
+                    var: "<computed value>".to_string(),
+                    line: self.line,
+                    reason: "the argument has no checked mutable-place fact".to_string(),
+                });
+                continue;
             };
+            let root = place.root();
+            if !place.steps().is_empty() {
+                let reason = if place.has_dynamic_index() {
+                    "a dynamically indexed place has no fixed ownership-capacity token"
+                } else {
+                    "a nested place has no independent ownership-capacity token"
+                };
+                self.misses.push(NoCopyMiss {
+                    function: self.function.clone(),
+                    callee: callee.to_string(),
+                    var: root.to_string(),
+                    line: self.line,
+                    reason: reason.to_string(),
+                });
+                continue;
+            }
             let reason = self
                 .loans
                 .active_at(stmt)
                 .iter()
-                .find(|loan| loan.owner == *root)
+                .find(|loan| loan.owner == root)
                 .map(|loan| {
                     format!(
                         "it is actively loaned to view `{}` by `{}`",
@@ -4485,21 +4490,13 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 self.misses.push(NoCopyMiss {
                     function: self.function.clone(),
                     callee: callee.to_string(),
-                    var: root.clone(),
+                    var: root.to_string(),
                     line: self.line,
                     reason,
                 });
             }
-            env.insert(root.clone(), NoCopyProof::Available);
+            env.insert(root.to_string(), NoCopyProof::Available);
         }
-    }
-}
-
-fn expr_root(expr: &Expr) -> Option<&str> {
-    match expr {
-        Expr::Var(name) => Some(name),
-        Expr::Field { base, .. } | Expr::Index { base, .. } => expr_root(base),
-        _ => None,
     }
 }
 
@@ -4532,6 +4529,7 @@ fn module_no_copy_misses_with_access(
     module: &Module,
     access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
 ) -> Vec<NoCopyMiss> {
+    let places = witchy_types::access::checked_place_facts(module);
     let required = no_copy_requirements(module, access);
     if required.is_empty() {
         return Vec::new();
@@ -4553,6 +4551,7 @@ fn module_no_copy_misses_with_access(
                     NoCopyInputs {
                         module,
                         access,
+                        places: &places,
                         required: &required,
                         unique_results: &unique_results,
                         summaries: &summaries,
@@ -4696,6 +4695,39 @@ mod no_copy_tests {
              \nfn fresh() -> Nil:\n    var xs = [1]\n    take(xs)\n    return\n",
         );
         assert!(found.is_empty(), "available proofs should pass: {found:?}");
+    }
+
+    #[test]
+    fn checked_fixed_field_place_reports_its_owner_root() {
+        let found = misses(
+            "type State:\n    items: unique List(Int)\n\n\
+             fn take(var xs: unique List(Int)) -> Nil:\n    return\n\n\
+             fn caller() -> Nil:\n    var state = State([1])\n    take(state.items)\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "the field needs its own capacity token: {found:?}");
+        assert_eq!(found[0].var, "state");
+        assert!(
+            found[0]
+                .reason
+                .contains("nested place has no independent ownership-capacity token"),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn checked_dynamic_index_place_still_fails_closed() {
+        let found = misses(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\n\
+             fn caller(i: Int) -> Nil:\n    var grid: List(unique List(Int)) = [[1]]\n    take(grid[i])\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "the dynamic coordinate cannot name a fixed token: {found:?}");
+        assert_eq!(found[0].var, "grid");
+        assert!(
+            found[0]
+                .reason
+                .contains("dynamically indexed place has no fixed ownership-capacity token"),
+            "{found:?}"
+        );
     }
 
     #[test]

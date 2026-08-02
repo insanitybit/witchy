@@ -2987,75 +2987,6 @@ type CallObligations = Vec<(Ty, String)>;
 type UserCallSig = (Vec<Ty>, Ty, CallObligations);
 type AnonUnionVariants = Vec<(String, Vec<Ty>)>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum VarPlaceStep {
-    Field(String),
-    IndexConst(i64),
-    IndexDynamic,
-}
-
-#[derive(Clone, Debug)]
-struct VarPlace {
-    root: String,
-    steps: Vec<VarPlaceStep>,
-}
-
-fn var_place(expr: &Expr) -> Option<VarPlace> {
-    fn walk(expr: &Expr, steps: &mut Vec<VarPlaceStep>) -> Option<String> {
-        match expr {
-            Expr::Var(root) => Some(root.clone()),
-            Expr::Field { base, field } => {
-                let root = walk(base, steps)?;
-                steps.push(VarPlaceStep::Field(field.clone()));
-                Some(root)
-            }
-            Expr::Index { base, index } => {
-                let root = walk(base, steps)?;
-                let step = match index.as_ref() {
-                    Expr::Int(value) => VarPlaceStep::IndexConst(*value),
-                    _ => VarPlaceStep::IndexDynamic,
-                };
-                steps.push(step);
-                Some(root)
-            }
-            Expr::Call { name, args }
-                if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::DICT_AT)
-                    && args.len() == 2 =>
-            {
-                let root = walk(&args[0], steps)?;
-                let step = match &args[1] {
-                    Expr::Int(value) => VarPlaceStep::IndexConst(*value),
-                    _ => VarPlaceStep::IndexDynamic,
-                };
-                steps.push(step);
-                Some(root)
-            }
-            _ => None,
-        }
-    }
-
-    let mut steps = Vec::new();
-    let root = walk(expr, &mut steps)?;
-    Some(VarPlace { root, steps })
-}
-
-fn places_overlap(left: &VarPlace, right: &VarPlace) -> bool {
-    if left.root != right.root {
-        return false;
-    }
-    for (left, right) in left.steps.iter().zip(&right.steps) {
-        if left == right {
-            continue;
-        }
-        return match (left, right) {
-            (VarPlaceStep::Field(a), VarPlaceStep::Field(b)) => a == b,
-            (VarPlaceStep::IndexConst(a), VarPlaceStep::IndexConst(b)) => a == b,
-            _ => true,
-        };
-    }
-    true
-}
-
 struct Checker {
     /// When annotating (see `annotate`): expression identity -> inferred type,
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
@@ -5996,7 +5927,7 @@ impl Checker {
         // Enforce conventions: a `var` parameter needs a mutable variable;
         // `own` consumes its argument (use-after-move becomes an error).
         if !is_cap_op && let Some(convs) = self.fn_conventions.get(name).cloned() {
-            let mut var_places = Vec::new();
+            let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
             for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
                 match conv {
                     Convention::Var => {
@@ -6007,35 +5938,35 @@ impl Checker {
                                 i + 1
                             ));
                         }
-                        match var_place(arg) {
-                        Some(place) if self.is_mutable(&place.root) == Some(true) => {
-                            for (previous_index, previous) in &var_places {
-                                if places_overlap(previous, &place) {
-                                    return terr(format!(
-                                        "arguments {} and {} to `{name}` are overlapping `var` places rooted in `{}`",
-                                        previous_index + 1,
-                                        i + 1,
-                                        place.root
-                                    ));
+                        match crate::access::checked_place(arg) {
+                            Some(place) if self.is_mutable(place.root()) == Some(true) => {
+                                for (previous_index, previous) in &var_places {
+                                    if previous.overlaps(&place) {
+                                        return terr(format!(
+                                            "arguments {} and {} to `{name}` are overlapping `var` places rooted in `{}`",
+                                            previous_index + 1,
+                                            i + 1,
+                                            place.root()
+                                        ));
+                                    }
                                 }
+                                self.reject_later_writeback_conflict(name, args, i, &place)?;
+                                var_places.push((i, place));
                             }
-                            self.reject_later_writeback_conflict(name, args, i, &place)?;
-                            var_places.push((i, place));
-                        }
-                        Some(place) => {
-                            return terr(format!(
-                                "argument {} to {parameter} has immutable root `{}`; root `{}` must be a mutable `var` for write-back",
-                                i + 1,
-                                place.root,
-                                place.root
-                            ))
-                        }
-                        None => {
-                            return terr(format!(
-                                "argument {} to {parameter} must be a mutable place; bind the expression to a mutable `var` before the call",
-                                i + 1
-                            ))
-                        }
+                            Some(place) => {
+                                return terr(format!(
+                                    "argument {} to {parameter} has immutable root `{}`; root `{}` must be a mutable `var` for write-back",
+                                    i + 1,
+                                    place.root(),
+                                    place.root()
+                                ));
+                            }
+                            None => {
+                                return terr(format!(
+                                    "argument {} to {parameter} must be a mutable place; bind the expression to a mutable `var` before the call",
+                                    i + 1
+                                ));
+                            }
                         }
                     }
                     Convention::Own => {
@@ -6079,7 +6010,7 @@ impl Checker {
         args: &[Expr],
         conventions: &[Convention],
     ) -> Result<(), TypeError> {
-        let mut var_places = Vec::new();
+        let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
         for (index, (arg, convention)) in args.iter().zip(conventions).enumerate() {
             match convention {
                 Convention::Var => {
@@ -6090,35 +6021,35 @@ impl Checker {
                             index + 1
                         ));
                     }
-                    match var_place(arg) {
-                    Some(place) if self.is_mutable(&place.root) == Some(true) => {
-                        for (previous_index, previous) in &var_places {
-                            if places_overlap(previous, &place) {
-                                return terr(format!(
-                                    "arguments {} and {} to `{name}` are overlapping `var` places rooted in `{}`",
-                                    previous_index + 1,
-                                    index + 1,
-                                    place.root
-                                ));
+                    match crate::access::checked_place(arg) {
+                        Some(place) if self.is_mutable(place.root()) == Some(true) => {
+                            for (previous_index, previous) in &var_places {
+                                if previous.overlaps(&place) {
+                                    return terr(format!(
+                                        "arguments {} and {} to `{name}` are overlapping `var` places rooted in `{}`",
+                                        previous_index + 1,
+                                        index + 1,
+                                        place.root()
+                                    ));
+                                }
                             }
+                            self.reject_later_writeback_conflict(name, args, index, &place)?;
+                            var_places.push((index, place));
                         }
-                        self.reject_later_writeback_conflict(name, args, index, &place)?;
-                        var_places.push((index, place));
-                    }
-                    Some(place) => {
-                        return terr(format!(
-                            "argument {} to {parameter} has immutable root `{}`; root `{}` must be a mutable `var` for write-back",
-                            index + 1,
-                            place.root,
-                            place.root
-                        ));
-                    }
-                    None => {
-                        return terr(format!(
-                            "argument {} to {parameter} must be a mutable place; bind the expression to a mutable `var` before the call",
-                            index + 1
-                        ));
-                    }
+                        Some(place) => {
+                            return terr(format!(
+                                "argument {} to {parameter} has immutable root `{}`; root `{}` must be a mutable `var` for write-back",
+                                index + 1,
+                                place.root(),
+                                place.root()
+                            ));
+                        }
+                        None => {
+                            return terr(format!(
+                                "argument {} to {parameter} must be a mutable place; bind the expression to a mutable `var` before the call",
+                                index + 1
+                            ));
+                        }
                     }
                 }
                 Convention::Own => {
@@ -6156,7 +6087,7 @@ impl Checker {
             ));
         }
 
-        let mut var_places = Vec::new();
+        let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
         for (index, (operand, convention)) in operands.iter().zip(conventions).enumerate() {
             match convention {
                 Convention::Var => {
@@ -6166,15 +6097,15 @@ impl Checker {
                             index + 1
                         ));
                     }
-                    match var_place(operand) {
-                        Some(place) if self.is_mutable(&place.root) == Some(true) => {
+                    match crate::access::checked_place(operand) {
+                        Some(place) if self.is_mutable(place.root()) == Some(true) => {
                             for (previous_index, previous) in &var_places {
-                                if places_overlap(previous, &place) {
+                                if previous.overlaps(&place) {
                                     return terr(format!(
                                         "operands {} and {} to existential `{callee}` are overlapping `var` places rooted in `{}`",
                                         previous_index + 1,
                                         index + 1,
-                                        place.root
+                                        place.root()
                                     ));
                                 }
                             }
@@ -6190,8 +6121,8 @@ impl Checker {
                             return terr(format!(
                                 "operand {} to existential `{callee}` has immutable root `{}`; root `{}` must be a mutable `var` for write-back",
                                 index + 1,
-                                place.root,
-                                place.root
+                                place.root(),
+                                place.root()
                             ));
                         }
                         None => {
@@ -6226,7 +6157,7 @@ impl Checker {
     fn collect_var_writebacks_in_expr(
         &self,
         expr: &Expr,
-        out: &mut Vec<(String, usize, VarPlace)>,
+        out: &mut Vec<(String, usize, crate::access::CheckedPlace)>,
     ) {
         match expr {
             Expr::Call { name, args } => {
@@ -6235,7 +6166,7 @@ impl Checker {
                         args.iter().zip(&conventions).enumerate()
                     {
                         if *convention == Convention::Var
-                            && let Some(place) = var_place(argument)
+                            && let Some(place) = crate::access::checked_place(argument)
                         {
                             out.push((name.clone(), index, place));
                         }
@@ -6260,7 +6191,7 @@ impl Checker {
                     .enumerate()
                 {
                     if *convention == Convention::Var
-                        && let Some(place) = var_place(argument)
+                        && let Some(place) = crate::access::checked_place(argument)
                     {
                         out.push((callee.clone(), index, place));
                     }
@@ -6278,7 +6209,7 @@ impl Checker {
                         args.iter().zip(&conventions).enumerate()
                     {
                         if *convention == Convention::Var
-                            && let Some(place) = var_place(argument)
+                            && let Some(place) = crate::access::checked_place(argument)
                         {
                             out.push((name.clone(), index, place));
                         }
@@ -6363,7 +6294,7 @@ impl Checker {
     fn collect_var_writebacks_in_block(
         &self,
         block: &Block,
-        out: &mut Vec<(String, usize, VarPlace)>,
+        out: &mut Vec<(String, usize, crate::access::CheckedPlace)>,
     ) {
         for statement in &block.stmts {
             match statement {
@@ -6383,17 +6314,17 @@ impl Checker {
         callee: &str,
         args: &[Expr],
         reserved_index: usize,
-        reserved: &VarPlace,
+        reserved: &crate::access::CheckedPlace,
     ) -> Result<(), TypeError> {
         for (later_index, argument) in args.iter().enumerate().skip(reserved_index + 1) {
             let mut writebacks = Vec::new();
             self.collect_var_writebacks_in_expr(argument, &mut writebacks);
             for (nested_callee, nested_index, nested_place) in writebacks {
-                if places_overlap(reserved, &nested_place) {
+                if reserved.overlaps(&nested_place) {
                     return terr(format!(
                         "argument {} to `{callee}` reserves `var` place rooted in `{}` until the call returns, but later argument {} writes back to an overlapping place through argument {} of `{nested_callee}`; written evaluation order keeps the earlier reservation live",
                         reserved_index + 1,
-                        reserved.root,
+                        reserved.root(),
                         later_index + 1,
                         nested_index + 1,
                     ));

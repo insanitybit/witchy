@@ -2,8 +2,9 @@ use witchy_syntax::ast::{Block, Convention, Function, Param, Type, TypeQual};
 
 use crate::access::{
     AccessKind, AccessMismatchKind, AccessQualifier, AccessSignature, AccessSignatureError,
-    BorrowRelationCatalog, LoanProjection, LoanProjectionStep, OwnershipStateClass,
-    SignaturePosition, checked_facts, ownership_state_class,
+    BorrowRelationCatalog, CheckedPlaceStep, LoanProjection, LoanProjectionStep,
+    OwnershipStateClass, SignaturePosition, checked_facts, checked_place_facts,
+    ownership_state_class,
 };
 
 fn named(name: &str) -> Type {
@@ -773,6 +774,80 @@ fn checked_query_exposes_declaration_and_exact_call_access_identities() {
         })
         .expect("caller call expression");
     assert_eq!(facts.call_at(typed.module(), call), Some(consume));
+}
+
+#[test]
+fn checked_query_publishes_fixed_and_dynamic_place_paths() {
+    let module = witchy_syntax::parser::parse_module(
+        "type State:\n    items: List(Int)\n\n\
+         fn take_list(var xs: List(Int)):\n    return\n\n\
+         fn take_int(var value: Int):\n    return\n\n\
+         fn caller(i: Int):\n    var state = State([1, 2])\n    take_list(state.items)\n    take_int(state.items[0])\n    take_int(state.items[i])\n    return\n\n\
+         fn main():\n    return\n",
+    )
+    .expect("parse checked-place fixture");
+    let typed = crate::typeck::annotate_checked(module).expect("annotate checked-place fixture");
+    let facts = checked_facts(typed.module(), typed.table()).expect("build checked access facts");
+    let places = checked_place_facts(typed.module());
+    let arguments = typed
+        .module()
+        .items
+        .iter()
+        .find_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) if function.name == "caller" => {
+                Some(
+                    function
+                        .body
+                        .stmts
+                        .iter()
+                        .filter_map(|statement| match statement {
+                            witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call {
+                                args,
+                                ..
+                            }) => args.first(),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }
+            _ => None,
+        })
+        .expect("caller arguments");
+    assert_eq!(arguments.len(), 3);
+
+    let field = places
+        .place_at(typed.module(), arguments[0])
+        .expect("fixed field place");
+    assert_eq!(facts.place_at(typed.module(), arguments[0]), Some(field));
+    assert_eq!(field.root(), "state");
+    assert_eq!(field.steps(), &[CheckedPlaceStep::Field("items".to_string())]);
+    assert!(!field.has_dynamic_index());
+
+    let fixed_index = places
+        .place_at(typed.module(), arguments[1])
+        .expect("fixed index place");
+    assert_eq!(facts.place_at(typed.module(), arguments[1]), Some(fixed_index));
+    assert_eq!(
+        fixed_index.steps(),
+        &[
+            CheckedPlaceStep::Field("items".to_string()),
+            CheckedPlaceStep::Index(0),
+        ]
+    );
+    assert!(!fixed_index.has_dynamic_index());
+
+    let dynamic_index = places
+        .place_at(typed.module(), arguments[2])
+        .expect("dynamic index place");
+    assert_eq!(facts.place_at(typed.module(), arguments[2]), Some(dynamic_index));
+    assert_eq!(
+        dynamic_index.steps(),
+        &[
+            CheckedPlaceStep::Field("items".to_string()),
+            CheckedPlaceStep::DynamicIndex,
+        ]
+    );
+    assert!(dynamic_index.has_dynamic_index());
 }
 
 #[test]

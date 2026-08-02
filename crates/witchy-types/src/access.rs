@@ -15,6 +15,7 @@ use witchy_syntax::ast::{
     TypeDef, TypeQual, Variant, effective_nominal_type_def_params,
     effective_type_def_params,
 };
+use witchy_syntax::intrinsics;
 
 use crate::storage::externref_cap_name;
 use crate::typeck::{TypeTable, ty_to_ast};
@@ -80,6 +81,280 @@ pub enum LoanProjectionStep {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct LoanProjection {
     pub steps: Vec<LoanProjectionStep>,
+}
+
+/// One checked projection from a mutable caller binding to a `var` place.
+///
+/// A dynamic index remains explicit instead of being treated as a fixed path:
+/// overlap and ownership consumers must fail closed when its coordinate is not
+/// statically known.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CheckedPlaceStep {
+    Field(String),
+    Index(i64),
+    DynamicIndex,
+}
+
+/// The canonical checked identity of an assignable caller place.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CheckedPlace {
+    root: String,
+    steps: Vec<CheckedPlaceStep>,
+}
+
+impl CheckedPlace {
+    pub fn root(&self) -> &str {
+        &self.root
+    }
+
+    pub fn steps(&self) -> &[CheckedPlaceStep] {
+        &self.steps
+    }
+
+    pub fn has_dynamic_index(&self) -> bool {
+        self.steps
+            .iter()
+            .any(|step| matches!(step, CheckedPlaceStep::DynamicIndex))
+    }
+
+    /// Whether two simultaneously reserved write-back places may designate
+    /// common storage. A dynamic or unlike projection pair fails closed.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        if self.root != other.root {
+            return false;
+        }
+        for (left, right) in self.steps.iter().zip(&other.steps) {
+            if left == right {
+                continue;
+            }
+            return match (left, right) {
+                (CheckedPlaceStep::Field(left), CheckedPlaceStep::Field(right)) => left == right,
+                (CheckedPlaceStep::Index(left), CheckedPlaceStep::Index(right)) => left == right,
+                _ => true,
+            };
+        }
+        true
+    }
+}
+
+/// Derive a place through the syntax forms authenticated by type checking.
+/// Consumers outside type checking query the finalized [`CheckedAccessFacts`]
+/// table instead of rediscovering this path from the AST.
+pub(crate) fn checked_place(expression: &Expr) -> Option<CheckedPlace> {
+    fn walk(expression: &Expr, steps: &mut Vec<CheckedPlaceStep>) -> Option<String> {
+        match expression {
+            Expr::Var(root) => Some(root.clone()),
+            Expr::Field { base, field } => {
+                let root = walk(base, steps)?;
+                steps.push(CheckedPlaceStep::Field(field.clone()));
+                Some(root)
+            }
+            Expr::Index { base, index } => {
+                let root = walk(base, steps)?;
+                steps.push(match index.as_ref() {
+                    Expr::Int(value) => CheckedPlaceStep::Index(*value),
+                    _ => CheckedPlaceStep::DynamicIndex,
+                });
+                Some(root)
+            }
+            Expr::Call { name, args }
+                if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::DICT_AT)
+                    && args.len() == 2 =>
+            {
+                let root = walk(&args[0], steps)?;
+                steps.push(match &args[1] {
+                    Expr::Int(value) => CheckedPlaceStep::Index(*value),
+                    _ => CheckedPlaceStep::DynamicIndex,
+                });
+                Some(root)
+            }
+            _ => None,
+        }
+    }
+
+    let mut steps = Vec::new();
+    let root = walk(expression, &mut steps)?;
+    Some(CheckedPlace { root, steps })
+}
+
+/// Canonical assignable-place facts keyed to one exact module allocation.
+///
+/// The producer recognizes only the place forms accepted by type checking. A
+/// later access-verification error does not erase these identities, allowing
+/// fail-closed diagnostic consumers to retain roots without re-parsing syntax.
+pub struct CheckedPlaceFacts<'module> {
+    owner: &'module Module,
+    places: HashMap<usize, CheckedPlace>,
+}
+
+impl CheckedPlaceFacts<'_> {
+    fn owns(&self, module: &Module) -> bool {
+        std::ptr::eq(self.owner, module)
+    }
+
+    pub fn place_at(&self, module: &Module, expression: &Expr) -> Option<&CheckedPlace> {
+        if !self.owns(module) {
+            return None;
+        }
+        self.places.get(&(expression as *const Expr as usize))
+    }
+}
+
+/// Publish assignable-place facts for one exact module. Full callable-access
+/// verification embeds this authority, while diagnostic-only consumers may
+/// retain it independently when another access contract rejects.
+pub fn checked_place_facts(module: &Module) -> CheckedPlaceFacts<'_> {
+    let mut places = HashMap::new();
+    visit_place_module(module, &mut |expression| {
+        if let Some(place) = checked_place(expression) {
+            places.insert(expression as *const Expr as usize, place);
+        }
+    });
+    CheckedPlaceFacts { owner: module, places }
+}
+
+fn visit_place_module(module: &Module, visitor: &mut impl FnMut(&Expr)) {
+    for item in &module.items {
+        match item {
+            Item::Function(function) => visit_place_block(&function.body, visitor),
+            Item::Trait(definition) => {
+                for method in &definition.methods {
+                    if let Some(default) = &method.default {
+                        visit_place_block(default, visitor);
+                    }
+                }
+            }
+            Item::Impl(definition) => {
+                for method in &definition.methods {
+                    visit_place_block(&method.body, visitor);
+                }
+            }
+            Item::Const { value, .. } => visit_place_expr(value, visitor),
+            Item::Comptime(block) => visit_place_block(block, visitor),
+            Item::Type(_) | Item::TypeAlias { .. } => {}
+        }
+    }
+}
+
+fn visit_place_block(block: &Block, visitor: &mut impl FnMut(&Expr)) {
+    for statement in &block.stmts {
+        match statement {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value)
+            | Stmt::Return(Some(value)) => visit_place_expr(value, visitor),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn visit_place_expr(expression: &Expr, visitor: &mut impl FnMut(&Expr)) {
+    visitor(expression);
+    match expression {
+        Expr::List(items)
+        | Expr::Tuple(items)
+        | Expr::Ctor { args: items, .. }
+        | Expr::AnonCtor { args: items, .. } => {
+            for item in items {
+                visit_place_expr(item, visitor);
+            }
+        }
+        Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {
+            if let Expr::MethodCall { receiver, .. } = expression {
+                visit_place_expr(receiver, visitor);
+            }
+            for argument in args {
+                visit_place_expr(argument, visitor);
+            }
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            visit_place_expr(receiver, visitor);
+            for argument in args {
+                visit_place_expr(argument, visitor);
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, argument) in args {
+                visit_place_expr(argument, visitor);
+            }
+        }
+        Expr::Apply { func, args } => {
+            visit_place_expr(func, visitor);
+            for argument in args {
+                visit_place_expr(argument, visitor);
+            }
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
+        | Expr::Field { base: expr, .. } => visit_place_expr(expr, visitor),
+        Expr::Lambda { body, .. } | Expr::Block(body) => visit_place_block(body, visitor),
+        Expr::RecordUpdate { base, fields, .. } => {
+            visit_place_expr(base, visitor);
+            for (_, value) in fields {
+                visit_place_expr(value, visitor);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, value) in fields {
+                visit_place_expr(value, visitor);
+            }
+            if let Some(spread) = spread {
+                visit_place_expr(spread, visitor);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            visit_place_expr(lhs, visitor);
+            visit_place_expr(rhs, visitor);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            visit_place_expr(cond, visitor);
+            visit_place_block(then_block, visitor);
+            if let Some(else_block) = else_block {
+                visit_place_block(else_block, visitor);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            visit_place_expr(scrutinee, visitor);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    visit_place_expr(guard, visitor);
+                }
+                visit_place_expr(&arm.body, visitor);
+            }
+        }
+        Expr::While { cond, body } => {
+            visit_place_expr(cond, visitor);
+            visit_place_block(body, visitor);
+        }
+        Expr::For { iter, body, .. } => {
+            visit_place_expr(iter, visitor);
+            visit_place_block(body, visitor);
+        }
+        Expr::Range { lo, hi, .. } => {
+            visit_place_expr(lo, visitor);
+            visit_place_expr(hi, visitor);
+        }
+        Expr::Index { base, index } => {
+            visit_place_expr(base, visitor);
+            visit_place_expr(index, visitor);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            visit_place_expr(scrutinee, visitor);
+            visit_place_block(body, visitor);
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
+    }
 }
 
 impl LoanProjection {
@@ -1824,6 +2099,7 @@ pub struct CheckedAccessFacts<'module> {
     values: HashMap<usize, AccessFlow>,
     declarations: HashMap<String, AccessSignature>,
     calls: HashMap<usize, AccessSignature>,
+    places: CheckedPlaceFacts<'module>,
 }
 
 impl CheckedAccessFacts<'_> {
@@ -1853,6 +2129,15 @@ impl CheckedAccessFacts<'_> {
             return None;
         }
         self.calls.get(&(expression as *const Expr as usize))
+    }
+
+    /// The assignable root and fixed/dynamic projection path authenticated for
+    /// this exact checked expression.
+    pub fn place_at(&self, module: &Module, expression: &Expr) -> Option<&CheckedPlace> {
+        if !self.owns(module) {
+            return None;
+        }
+        self.places.place_at(module, expression)
     }
 }
 
@@ -1947,6 +2232,7 @@ impl<'a> AccessVerifier<'a> {
                 values: HashMap::new(),
                 declarations: HashMap::new(),
                 calls: HashMap::new(),
+                places: checked_place_facts(module),
             },
             return_frames: Vec::new(),
             expression_type_hints: HashMap::new(),
@@ -2918,7 +3204,8 @@ impl<'a> AccessVerifier<'a> {
     }
 
     fn record(&mut self, expression: &Expr, flow: AccessFlow) -> AccessFlow {
-        self.facts.values.insert(expression as *const Expr as usize, flow.clone());
+        let key = expression as *const Expr as usize;
+        self.facts.values.insert(key, flow.clone());
         flow
     }
 
