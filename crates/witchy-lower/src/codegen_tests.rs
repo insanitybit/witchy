@@ -683,26 +683,126 @@ fn main() -> Int:
             "__witchy_packed_alloc_bytes",
             "__witchy_packed_boxed_elements",
             "__witchy_packed_reshaped_bytes",
+            "__witchy_destination_candidates_forwarded",
         ];
         let (result, counters) = run_int_with_i64_globals(source, &names);
         assert_eq!(result, 16833142);
-        assert_eq!(counters["__witchy_packed_alloc_calls"], 500000);
-        assert_eq!(counters["__witchy_packed_alloc_bytes"], 8_000_000);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 1);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 16);
         assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
         assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
+        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 500_000);
 
         let module = parse_module(source).expect("parse packed closed-sum oracle");
         let wat = witchy_wir::wir::to_wat(
             &assemble_wir_module(&module).expect_lowered("packed closed sum lowers"),
         );
-        assert!(wat.contains("__witchy_packed_sum_"), "variant constructors use the descriptor helper: {wat}");
+        assert!(
+            wat.contains("__witchy_packed_sum_destination_"),
+            "every variant initializes the canonical destination descriptor: {wat}"
+        );
         assert!(wat.contains("call $make"), "packed sum crosses a direct result boundary: {wat}");
         assert!(wat.contains("call $score"), "packed sum crosses a direct parameter boundary: {wat}");
         assert!(wat.contains("i32.load8_u"), "match dispatch reads the descriptor tag width: {wat}");
         assert!(!wat.contains("call $mk1"), "payload is never boxed into a legacy record: {wat}");
+        let start = wat.find("(func $main").expect("main function");
+        let tail = &wat[start..];
+        let end = tail[1..]
+            .find("\n  (func $")
+            .map(|offset| offset + 1)
+            .unwrap_or(tail.len());
+        let main = &tail[..end];
+        assert_eq!(
+            main.matches("call $__witchy_destination_scratch_").count(),
+            1,
+            "one caller scratch allocation is initialized before the hot loop: {main}"
+        );
+        assert!(!main.contains("call $rc_alloc"), "the hot caller has no direct allocator: {main}");
         if witchy_wir::wir_helpers::heap_check_enabled() {
             assert!(wat.contains("call $heap_register"), "sum allocations register checked redzones: {wat}");
         }
+    }
+
+    #[test]
+    fn escaping_packed_sum_result_keeps_the_allocating_fallback() {
+        let source = r#"
+mode opt
+
+type Token packed:
+    Skip
+    Value(Int)
+
+fn make(value: Int) -> Token:
+    if value % 2 == 0: Skip else: Value(value)
+
+fn escape(token: Token) -> Token:
+    token
+
+fn score(token: Token) -> Int:
+    match token:
+        Skip -> 1
+        Value(value) -> value
+
+fn main() -> Int:
+    var total = 0
+    for i in 0..6:
+        total = total + score(escape(make(i)))
+    total
+"#;
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_alloc_bytes",
+            "__witchy_destination_candidates_forwarded",
+        ];
+        let (result, counters) = run_int_with_i64_globals(source, &names);
+        assert_eq!(result, 12);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 6);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 96);
+        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 0);
+    }
+
+    #[test]
+    fn packed_sum_destination_preserves_nested_fixed_payloads() {
+        let source = r#"
+mode opt
+
+type Point packed:
+    x: Int
+    y: Int
+
+type Choice packed:
+    Empty
+    PointValue(Point)
+
+fn make(value: Int) -> Choice:
+    if value % 2 == 0:
+        Empty
+    else:
+        PointValue(Point(value, value + 10))
+
+fn score(choice: Choice) -> Int:
+    match choice:
+        Empty -> 1
+        PointValue(point) -> point.x * 10 + point.y
+
+fn main() -> Int:
+    var total = 0
+    for i in 0..4:
+        total = total + score(make(i))
+    total
+"#;
+        let names = [
+            "__witchy_packed_alloc_calls",
+            "__witchy_packed_boxed_elements",
+            "__witchy_packed_reshaped_bytes",
+            "__witchy_destination_candidates_forwarded",
+        ];
+        let (result, counters) = run_int_with_i64_globals(source, &names);
+        assert_eq!(result, 66);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 3);
+        assert_eq!(counters["__witchy_packed_boxed_elements"], 0);
+        assert_eq!(counters["__witchy_packed_reshaped_bytes"], 0);
+        assert_eq!(counters["__witchy_destination_candidates_forwarded"], 4);
     }
 
     #[test]

@@ -750,6 +750,7 @@ struct SavedScope {
     ret_slot: bool,
     unique_ret: bool,
     destination_forward_vars: HashSet<String>,
+    destination_scratch_sites: HashMap<usize, (String, LayoutId)>,
     var: bool,
     var_params: Vec<String>,
     var_cap_params: Vec<String>,
@@ -996,6 +997,9 @@ struct Codegen<'types> {
     /// Reassigned locals whose old value never escapes as a whole. An exact
     /// LayoutId match lets a `unique` result initialize that dead storage.
     destination_forward_vars: HashSet<String>,
+    /// Immediate nonescaping fixed-layout producer arguments reuse one
+    /// caller-owned scratch object per AST call site.
+    destination_scratch_sites: HashMap<usize, (String, LayoutId)>,
     /// (RFC-0035 step 3) `let x = list.at(xs, i)` bindings whose read was `$rc_dup`'d
     /// (the SAME per-type gate as the dup site — offset-0 element, `rc-floor` on), so `x`
     /// owns a reference and must be `$rc_drop`'d at its last use. Recording the ownership
@@ -1502,6 +1506,7 @@ impl<'types> Codegen<'types> {
             reuse_vars: HashSet::new(),
             rc_floor_vars: HashSet::new(),
             destination_forward_vars: HashSet::new(),
+            destination_scratch_sites: HashMap::new(),
             rc_owned_bindings: HashSet::new(),
             match_scrut_depth: 0,
             facts_stack: Vec::new(),
@@ -3892,6 +3897,19 @@ impl<'types> Codegen<'types> {
         for i in 0..REUSE_POOL {
             locals.push(WirLocal { name: format!("__witchy_reuse_{i}"), ty: i64t() });
         }
+        let mut destination_scratches: Vec<(String, LayoutId)> = self
+            .destination_scratch_sites
+            .values()
+            .cloned()
+            .collect();
+        destination_scratches.sort_by(|left, right| left.0.cmp(&right.0));
+        destination_scratches.dedup();
+        for (name, _) in &destination_scratches {
+            locals.push(WirLocal {
+                name: name.clone(),
+                ty: i32t(),
+            });
+        }
         // An `var` function returns its declared value FOLLOWED BY one result per
         // var param (the multi-value move-out ABI, mirroring `var_epilogue` on the
         // WAT path): after the declared tail, push each var param's final value in
@@ -3899,6 +3917,20 @@ impl<'types> Codegen<'types> {
         // caller's variables.
         let mut ret = vec![Self::wir_ty_for_kind(ret_kind)];
         let mut body = body;
+        if !destination_scratches.is_empty() {
+            let mut initialized = destination_scratches
+                .into_iter()
+                .map(|(local, id)| witchy_wir::wir::WirNode::SetLocal {
+                    local,
+                    value: witchy_wir::wir::WirExpr::Call {
+                        func: Self::layout_helper_name("destination_scratch", id, None),
+                        args: Vec::new(),
+                    },
+                })
+                .collect::<witchy_wir::wir::WirSeq>();
+            initialized.append(&mut body);
+            body = initialized;
+        }
         if self.cur_fn_unique_ret {
             ret.push(i32t());
             let cap = f
@@ -4098,6 +4130,7 @@ impl<'types> Codegen<'types> {
         } else {
             HashSet::new()
         };
+        self.destination_scratch_sites.clear();
         // (RFC-0035 step 3) Populated during this unit's lowering (at each dup-eligible
         // `let x = list.at(...)`); start empty. Nested units save/restore it via SavedScope.
         self.rc_owned_bindings = HashSet::new();
@@ -4684,6 +4717,116 @@ impl<'types> Codegen<'types> {
         Some(name)
     }
 
+    fn ensure_packed_sum_destination_helper(
+        &mut self,
+        id: LayoutId,
+        tag: usize,
+    ) -> Option<String> {
+        use witchy_wir::wir::{
+            BinOp as WB, Kind as WK, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy,
+        };
+        let name = Self::layout_helper_name("packed_sum_destination", id, Some(tag));
+        if self.layout_wir_funcs.contains_key(&name) {
+            return Some(name);
+        }
+        let descriptor = self.specialized_layouts.get(id)?.clone();
+        let LayoutKind::ClosedSum { variants } = descriptor.kind() else {
+            return None;
+        };
+        let variant = descriptor.variant_layouts().get(tag)?.clone();
+        if variants.get(tag)?.len() != variant.fields().len() {
+            return None;
+        }
+        let LayoutSize::Fixed(size) = descriptor.size() else {
+            return None;
+        };
+        let tag_field = *descriptor.fields().first()?;
+        let mut params = vec![WirLocal {
+            name: DESTINATION_PARAM.into(),
+            ty: WirTy::Bool,
+        }];
+        for (index, field) in variant.fields().iter().enumerate() {
+            params.push(WirLocal {
+                name: format!("f{index}"),
+                ty: Self::wir_ty_for_kind(self.layout_field_kind(field.kind())?),
+            });
+        }
+        let (allocation, _) = self.layout_alloc_nodes(size);
+        let mut body = vec![N::If {
+            cond: W::Binary {
+                op: WB::Ne,
+                kind: WK::I32,
+                lhs: Box::new(W::GetLocal(DESTINATION_PARAM.into())),
+                rhs: Box::new(W::ConstI32(0)),
+            },
+            then_: vec![N::SetLocal {
+                local: "p".into(),
+                value: W::GetLocal(DESTINATION_PARAM.into()),
+            }],
+            els: allocation,
+            result: None,
+        }];
+        self.push_layout_store(
+            &mut body,
+            W::GetLocal("p".into()),
+            tag_field,
+            W::ConstI32(tag as i32),
+        )?;
+        for (index, field) in variant.fields().iter().copied().enumerate() {
+            self.push_layout_store(
+                &mut body,
+                W::GetLocal("p".into()),
+                field,
+                W::GetLocal(format!("f{index}")),
+            )?;
+        }
+        body.push(N::Push(W::GetLocal("p".into())));
+        self.layout_wir_funcs.insert(
+            name.clone(),
+            WirFunc {
+                name: name.clone(),
+                params,
+                ret: vec![WirTy::Bool],
+                locals: vec![WirLocal {
+                    name: "p".into(),
+                    ty: WirTy::Bool,
+                }],
+                body,
+                raw_body: None,
+            },
+        );
+        Some(name)
+    }
+
+    fn ensure_layout_destination_scratch_helper(&mut self, id: LayoutId) -> Option<String> {
+        use witchy_wir::wir::{WirFunc, WirLocal, WirNode as N, WirTy};
+        let name = Self::layout_helper_name("destination_scratch", id, None);
+        if self.layout_wir_funcs.contains_key(&name) {
+            return Some(name);
+        }
+        let descriptor = self.specialized_layouts.get(id)?;
+        let LayoutSize::Fixed(size) = descriptor.size() else {
+            return None;
+        };
+        let (mut body, base) = self.layout_alloc_nodes(size);
+        body.push(N::Push(base));
+        self.layout_wir_funcs.insert(
+            name.clone(),
+            WirFunc {
+                name: name.clone(),
+                params: Vec::new(),
+                ret: vec![WirTy::Bool],
+                locals: vec![WirLocal {
+                    name: "p".into(),
+                    ty: WirTy::Bool,
+                }],
+                body,
+                raw_body: None,
+            },
+        );
+        Some(name)
+    }
+
     fn ensure_packed_list_push_helper(&mut self, id: LayoutId) -> Option<String> {
         use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
         let name = Self::layout_helper_name("packed_list_push", id, None);
@@ -4994,7 +5137,11 @@ impl<'types> Codegen<'types> {
                 {
                     return None;
                 }
-                self.ensure_packed_sum_ctor_helper(id, tag as usize)?
+                if self.fn_destination_layouts.get(&self.cur_fn_name) == Some(&id) {
+                    self.ensure_packed_sum_destination_helper(id, tag as usize)?
+                } else {
+                    self.ensure_packed_sum_ctor_helper(id, tag as usize)?
+                }
             }
             _ => return None,
         };
@@ -5941,14 +6088,45 @@ impl<'types> Codegen<'types> {
         let mut args_w = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
             let ak = self.kind_of(arg);
-            let w = match self.lower_expr(arg) {
-                Some(value) => value,
-                None => {
-                    if std::env::var_os("WIRDIAG").is_some() {
-                        eprintln!("WIRBAIL user-call-arg: callee={name} index={i} arg={arg:?}");
-                    }
-                    return None;
+            let transient = self.transient_destination_call(name, i, args.len(), arg);
+            let w = match transient {
+                Some((producer, producer_args, id, producer_access)) => {
+                    let site = arg as *const Expr as usize;
+                    let scratch = if let Some((scratch, known_id)) =
+                        self.destination_scratch_sites.get(&site)
+                    {
+                        if *known_id != id {
+                            return None;
+                        }
+                        scratch.clone()
+                    } else {
+                        self.ensure_layout_destination_scratch_helper(id)?;
+                        let scratch = format!(
+                            "__witchy_destination_scratch_{}",
+                            self.destination_scratch_sites.len()
+                        );
+                        self.destination_scratch_sites
+                            .insert(site, (scratch.clone(), id));
+                        scratch
+                    };
+                    self.lower_destination_user_call(
+                        producer,
+                        producer_args,
+                        witchy_wir::wir::WirExpr::GetLocal(scratch),
+                        &producer_access,
+                    )?
                 }
+                None => match self.lower_expr(arg) {
+                    Some(value) => value,
+                    None => {
+                        if std::env::var_os("WIRDIAG").is_some() {
+                            eprintln!(
+                                "WIRBAIL user-call-arg: callee={name} index={i} arg={arg:?}"
+                            );
+                        }
+                        return None;
+                    }
+                },
             };
             args_w.push(match param_kinds.get(i) {
                 Some(&pk) => Self::wir_convert(w, ak, pk),
@@ -6012,7 +6190,51 @@ impl<'types> Codegen<'types> {
                 N::Push(W::GetLocal(result_tmp)),
             ]));
         }
+        if self.fn_destination_layouts.contains_key(name) {
+            args_w.push(witchy_wir::wir::WirExpr::ConstI32(0));
+        }
         Some(witchy_wir::wir::WirExpr::Call { func: name.to_string(), args: args_w })
+    }
+
+    fn transient_destination_call<'expr>(
+        &self,
+        consumer: &str,
+        index: usize,
+        argc: usize,
+        argument: &'expr Expr,
+    ) -> Option<(
+        &'expr str,
+        &'expr [Expr],
+        LayoutId,
+        witchy_types::access::AccessSignature,
+    )> {
+        let Expr::Call {
+            name: producer,
+            args,
+        } = argument
+        else {
+            return None;
+        };
+        let id = self.fn_destination_layouts.get(producer).copied()?;
+        let access = self.call_access_signature(argument)?.clone();
+        let ownership = Self::ownership_envelope_for_signature(&access);
+        if !matches!(
+            self.specialized_layouts.get(id)?.kind(),
+            LayoutKind::ClosedSum { .. }
+        ) || self.summaries.arg_leaks(consumer, index, argc)
+            || ownership.own_capacity_param.is_some()
+            || !ownership.var_capacity_params.is_empty()
+        {
+            return None;
+        }
+        let consumer_id = self
+            .callable_layouts
+            .get(consumer)?
+            .parameters()
+            .get(index)
+            .copied()
+            .flatten()?;
+        (consumer_id == id).then_some((producer.as_str(), args.as_slice(), id, access))
     }
 
     /// Lower a direct call that initializes a proven-dead exact-layout local.
@@ -6027,8 +6249,7 @@ impl<'types> Codegen<'types> {
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let ownership = Self::ownership_envelope_for_signature(access);
-        if !ownership.unique_capacity_result
-            || ownership.own_capacity_param.is_some()
+        if ownership.own_capacity_param.is_some()
             || !ownership.var_capacity_params.is_empty()
         {
             return None;
@@ -6055,18 +6276,26 @@ impl<'types> Codegen<'types> {
         lowered.push(destination);
         let result_kind = self.fn_ret.get(name).copied().unwrap_or(Kind::I32);
         let result_tmp = call_result_tmp(result_kind);
-        Some(W::Seq(vec![
-            Self::increment_counter("__witchy_destination_candidates_forwarded"),
-            N::CallStoreMulti {
+        let mut nodes = vec![Self::increment_counter(
+            "__witchy_destination_candidates_forwarded",
+        )];
+        if ownership.unique_capacity_result {
+            nodes.push(N::CallStoreMulti {
                 func: name.into(),
                 args: lowered,
                 dests: vec![
                     result_tmp.clone(),
                     UNIQUE_RESULT_CAP_TMP.to_string(),
                 ],
-            },
-            N::Push(W::GetLocal(result_tmp)),
-        ]))
+            });
+            nodes.push(N::Push(W::GetLocal(result_tmp)));
+        } else {
+            nodes.push(N::Push(W::Call {
+                func: name.into(),
+                args: lowered,
+            }));
+        }
+        Some(W::Seq(nodes))
     }
 
     fn owned_argument_cap(&self, arg: &Expr) -> witchy_wir::wir::WirExpr {
@@ -7360,6 +7589,19 @@ impl<'types> Codegen<'types> {
                 for i in 0..REUSE_POOL {
                     locals.push(WirLocal { name: format!("__witchy_reuse_{i}"), ty: WirTy::Int });
                 }
+                let mut destination_scratches: Vec<(String, LayoutId)> = self
+                    .destination_scratch_sites
+                    .values()
+                    .cloned()
+                    .collect();
+                destination_scratches.sort_by(|left, right| left.0.cmp(&right.0));
+                destination_scratches.dedup();
+                for (name, _) in &destination_scratches {
+                    locals.push(WirLocal {
+                        name: name.clone(),
+                        ty: i32t(),
+                    });
+                }
                 // Prologue: recover parameters, then captures from the lambda's typed
                 // GC payload or from direct threaded parameters.
                 let mut nodes: witchy_wir::wir::WirSeq = Vec::new();
@@ -7408,6 +7650,15 @@ impl<'types> Codegen<'types> {
                         value,
                     });
                 }
+                nodes.extend(destination_scratches.into_iter().map(|(local, id)| {
+                    N::SetLocal {
+                        local,
+                        value: W::Call {
+                            func: Self::layout_helper_name("destination_scratch", id, None),
+                            args: Vec::new(),
+                        },
+                    }
+                }));
                 // Body, with the declared result and every `var` final value emitted
                 // in the closure signature's selected representation.
                 let mut seq = seq;
@@ -7526,6 +7777,7 @@ impl<'types> Codegen<'types> {
             ret_slot: self.cur_fn_ret_slot,
             unique_ret: self.cur_fn_unique_ret,
             destination_forward_vars: std::mem::take(&mut self.destination_forward_vars),
+            destination_scratch_sites: std::mem::take(&mut self.destination_scratch_sites),
             var: self.cur_fn_var,
             var_params: std::mem::take(&mut self.cur_fn_var_params),
             var_cap_params: std::mem::take(&mut self.cur_fn_var_cap_params),
@@ -7573,6 +7825,7 @@ impl<'types> Codegen<'types> {
         self.cur_fn_ret_slot = s.ret_slot;
         self.cur_fn_unique_ret = s.unique_ret;
         self.destination_forward_vars = s.destination_forward_vars;
+        self.destination_scratch_sites = s.destination_scratch_sites;
         self.cur_fn_var = s.var;
         self.cur_fn_var_params = s.var_params;
         self.cur_fn_var_cap_params = s.var_cap_params;

@@ -153,6 +153,35 @@ fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
     }
 }
 
+/// Every value-producing path in this deliberately small destination ABI slice
+/// ends in a constructor. Requiring a single tail statement per block excludes
+/// early returns and mixed control flow until their proof is represented here.
+fn destination_constructor_tail_block(block: &Block) -> bool {
+    matches!(block.stmts.as_slice(), [Stmt::Expr(expr)] if destination_constructor_tail_expr(expr))
+}
+
+fn destination_constructor_tail_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ctor { .. } => true,
+        Expr::If {
+            then_block,
+            else_block: Some(else_block),
+            ..
+        } => {
+            destination_constructor_tail_block(then_block)
+                && destination_constructor_tail_block(else_block)
+        }
+        Expr::Match { arms, .. } => {
+            !arms.is_empty()
+                && arms
+                    .iter()
+                    .all(|arm| destination_constructor_tail_expr(&arm.body))
+        }
+        Expr::Block(block) => destination_constructor_tail_block(block),
+        _ => false,
+    }
+}
+
 /// The names of every JS-callable string export in declaration order (`__export_*`
 /// wrappers are emitted for these and they are extra reachability roots).
 fn string_export_functions(module: &Module) -> Vec<String> {
@@ -1000,44 +1029,40 @@ fn register_module_items(
                 if let Some(t) = resolved_ret {
                     cg.fn_ret_valtype.insert(f.name.clone(), ty_to_valtype(t));
                     cg.fn_ret_ty.insert(f.name.clone(), t.clone());
-                    // RFC-0111 destination ABI, deliberately narrow for the
-                    // first proof slice: a direct-tail constructor returning an
-                    // exact `unique` fixed-layout record may initialize caller-
-                    // supplied dead storage. Other return shapes keep their
-                    // ordinary allocating ABI.
-                    let checked_unique_result = cg
-                        .access_facts
-                        .declaration(&f.name)
-                        .is_some_and(|signature| {
-                            let ownership =
-                                Codegen::ownership_envelope_for_signature(signature);
-                            ownership.unique_capacity_result
-                                && ownership.own_capacity_param.is_none()
-                                && ownership.var_capacity_params.is_empty()
-                                && signature.result().qualifiers().contains(
-                                    &witchy_types::access::AccessQualifier::Unique,
-                                )
-                        });
-                    if checked_unique_result
-                        && matches!(f.body.stmts.last(), Some(Stmt::Expr(Expr::Ctor { .. })))
-                    {
-                        if let Some(id) = cg
+                    // RFC-0111 destination ABI. An exact `unique` packed record
+                    // retains the reassignment proof; a fixed closed sum also
+                    // admits a nonescaping immediate-consumer scratch destination.
+                    // Both require every result path to initialize a constructor,
+                    // and the final checked access envelope must have no own/var
+                    // state inputs before the hidden destination parameter.
+                    let checked_access = cg.access_facts.declaration(&f.name);
+                    let checked_ownership = checked_access
+                        .map(Codegen::ownership_envelope_for_signature)
+                        .unwrap_or_default();
+                    if !f.public
+                        && f.name.rsplit('.').next() != Some("main")
+                        && destination_constructor_tail_block(&f.body)
+                        && checked_access.is_some()
+                        && checked_ownership.own_capacity_param.is_none()
+                        && checked_ownership.var_capacity_params.is_empty()
+                        && let Some(id) = cg
                             .specialized_type_ids
                             .iter()
                             .find(|(known, _)| known == t)
                             .map(|(_, id)| *id)
-                        {
-                            if cg
-                                .specialized_layouts
-                                .get(id)
-                                .is_some_and(|layout| {
-                                    matches!(layout.kind(), LayoutKind::PackedRecord { .. })
-                                        && matches!(layout.size(), LayoutSize::Fixed(_))
-                                })
-                            {
-                                cg.fn_destination_layouts.insert(f.name.clone(), id);
-                            }
-                        }
+                        && cg.specialized_layouts.get(id).is_some_and(|layout| {
+                            matches!(layout.size(), LayoutSize::Fixed(_))
+                                && (matches!(layout.kind(), LayoutKind::ClosedSum { .. })
+                                    || (matches!(layout.kind(), LayoutKind::PackedRecord { .. })
+                                        && checked_ownership.unique_capacity_result
+                                        && checked_access.is_some_and(|signature| {
+                                            signature.result().qualifiers().contains(
+                                                &witchy_types::access::AccessQualifier::Unique,
+                                            )
+                                        })))
+                        })
+                    {
+                        cg.fn_destination_layouts.insert(f.name.clone(), id);
                     }
                 }
                 // A function returning a closure (`-> fn(...) -> RET`): record the
