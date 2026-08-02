@@ -1,6 +1,0 @@
----
-source: src/diagnostic_golden_tests.rs
-expression: "mode_diag(\"mode opt\\n\\nfn take(var xs: unique List(Int)) -> Nil:\\n    return\\n\\nfn main():\\n    var xs = [1]\\n    let f = take\\n    f(xs)\\n\")"
----
-error: in `main` (line 9): `xs` cannot satisfy the no-copy `var` contract of `indirect function` — the first-class call ABI does not carry an ownership-capacity token [mode opt]
-  call the function directly so its capacity token stays in the compiled ABI, or use normal mode for the copy-correct indirect call

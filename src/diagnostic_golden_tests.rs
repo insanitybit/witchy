@@ -630,9 +630,9 @@ mod perf_mode {
     }
 
     #[test]
-    fn no_copy_indirect_abi_limitation_is_explicit() {
+    fn no_copy_indirect_call_still_explains_alias() {
         insta::assert_snapshot!(mode_diag(
-            "mode opt\n\nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\nfn main():\n    var xs = [1]\n    let f = take\n    f(xs)\n"
+            "mode opt\n\nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\nfn main():\n    var xs = [1]\n    let f = take\n    let alias = xs\n    f(xs)\n    let _ = alias\n"
         ));
     }
 }

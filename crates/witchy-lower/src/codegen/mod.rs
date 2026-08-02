@@ -2017,9 +2017,6 @@ impl<'types> Codegen<'types> {
     }
 
     fn closure_conventions(&self, func: &Expr) -> Vec<Convention> {
-        if let Expr::Lambda { params, .. } = func {
-            return params.iter().map(|param| param.convention).collect();
-        }
         let Some(ty) = self.ast_type_of_expr(func) else {
             return Vec::new();
         };
@@ -2030,14 +2027,6 @@ impl<'types> Codegen<'types> {
     }
 
     fn closure_param_kinds(&self, func: &Expr) -> Vec<Kind> {
-        if let Expr::Lambda { params, .. } = func {
-            return params
-                .iter()
-                .map(|param| {
-                    param.ty.as_ref().map(|ty| self.kind_for_type(ty)).unwrap_or(Kind::I32)
-                })
-                .collect();
-        }
         let Some(ty) = self.ast_type_of_expr(func) else {
             return Vec::new();
         };

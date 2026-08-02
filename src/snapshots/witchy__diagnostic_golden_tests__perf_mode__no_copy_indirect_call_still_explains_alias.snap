@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "mode_diag(\"mode opt\\n\\nfn take(var xs: unique List(Int)) -> Nil:\\n    return\\n\\nfn main():\\n    var xs = [1]\\n    let f = take\\n    let alias = xs\\n    f(xs)\\n    let _ = alias\\n\")"
+---
+error: in `main` (line 10): `xs` cannot satisfy the no-copy `var` contract of `indirect function` — bound to a new name [mode opt]
+  keep `xs` uniquely owned: initialize it from fresh storage or a `var` parameter typed `unique`/`local unique`, and do not alias or loan it before this call
