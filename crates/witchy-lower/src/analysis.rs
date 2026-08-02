@@ -1338,9 +1338,16 @@ impl<'a> Walker<'a> {
                     }
                 } else if let Some(fact) = self.calls.and_then(|calls| calls.fact(e)) {
                     for (index, argument) in args.iter().enumerate() {
+                        // The checked access fact owns the physical channels
+                        // (consuming and write-back arguments), while the
+                        // bottom-up summary owns the semantic escape question
+                        // for an ordinary direct argument.  A plain immutable
+                        // parameter has no physical channel, but that alone
+                        // does not mean a read-only callee retains it.
                         self.scan(
                             argument,
-                            fact.argument_may_alias_out(index),
+                            fact.argument_may_alias_out(index)
+                                && self.summaries.arg_live(name, index),
                             &format!("passed to `{name}`"),
                             out,
                         );
