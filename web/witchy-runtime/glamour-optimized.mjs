@@ -2262,7 +2262,7 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
       }
       return snapshot;
     },
-    async replayDevelopment() {
+    async replayDevelopment({ through = Number.POSITIVE_INFINITY } = {}) {
       if (
         disposed ||
         !developmentTracing ||
@@ -2275,9 +2275,19 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
       if (typeof document.createElement !== "function") {
         fail("isolated development replay requires a document factory");
       }
+      const availableFrames = developmentReplayFrames.filter(
+        (entry) => entry.name !== "__glamour_init",
+      );
+      if (
+        !(through === Number.POSITIVE_INFINITY || Number.isInteger(through)) ||
+        through < 0 ||
+        through > availableFrames.length
+      ) {
+        fail("isolated development replay position is invalid");
+      }
       const replayRoot = document.createElement("div");
       const start = developmentReplayFrames.find((entry) => entry.name === "__glamour_init");
-      const replayFrames = developmentReplayFrames.filter((entry) => entry !== start)
+      const replayFrames = availableFrames.slice(0, through)
         .map((entry) => ({ name: entry.name, frame: entry.frame.slice() }));
       const replayApplication = await mountOptimized(wasmBytes, replayRoot, {
         ...options,
@@ -2289,7 +2299,12 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
         resume: undefined,
         deferActivation: false,
       });
-      return Object.freeze({ root: replayRoot, application: replayApplication });
+      return Object.freeze({
+        root: replayRoot,
+        application: replayApplication,
+        position: replayFrames.length,
+        length: availableFrames.length,
+      });
     },
     activate(nextRoot) {
       if (disposed || !deferredActivation) fail("deferred activation is unavailable");
