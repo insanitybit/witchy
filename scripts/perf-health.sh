@@ -55,13 +55,34 @@ latest_metrics="$metrics_dir/latest.json"
 
 if command -v jq >/dev/null 2>&1; then
     if [ -f "$latest_metrics" ]; then
-        build="$(jq -r '.stages[] | select(.name=="build_workspace") | .duration_s // "n/a"' "$latest_metrics")"
-        test_compile="$(jq -r '.stages[] | select(.name=="test_compile") | .duration_s // "n/a"' "$latest_metrics")"
-        tests="$(jq -r '.stages[] | select(.name=="tests") | .duration_s // "n/a"' "$latest_metrics")"
-        latest_branch="$(jq -r '.branch // "n/a"' "$latest_metrics")"
-        latest_rev="$(jq -r '.git_rev // "n/a"' "$latest_metrics")"
+        latest_status="$(jq -r 'if (.summary.failed // 1) == 0 then "ok" else "failed" end' "$latest_metrics")"
+        metrics_source="$latest_metrics"
+        if [ "$latest_status" = "failed" ]; then
+            while IFS= read -r candidate; do
+                if jq -e '(.summary.failed // 1) == 0' "$candidate" >/dev/null 2>&1; then
+                    metrics_source="$candidate"
+                    latest_status="stale_ok"
+                    break
+                fi
+            done < <(find "$metrics_dir" -mindepth 2 -maxdepth 2 -type f -name metrics.json -print | sort -r)
+        fi
+        if [ "$latest_status" = "ok" ] || [ "$latest_status" = "stale_ok" ]; then
+            build="$(jq -r '.stages[] | select(.name=="build_workspace") | .duration_s // "n/a"' "$metrics_source")"
+            compile="$(jq -r '.stages[] | select(.name=="compile_workspace") | .duration_s // "n/a"' "$metrics_source")"
+            test_compile="$(jq -r '.stages[] | select(.name=="test_compile") | .duration_s // "n/a"' "$metrics_source")"
+            tests="$(jq -r '.stages[] | select(.name=="tests") | .duration_s // "n/a"' "$metrics_source")"
+        else
+            build="n/a"
+            compile="n/a"
+            test_compile="n/a"
+            tests="n/a"
+        fi
+        latest_branch="$(jq -r '.branch // "n/a"' "$metrics_source")"
+        latest_rev="$(jq -r '.git_rev // "n/a"' "$metrics_source")"
     else
+        latest_status="missing"
         build="n/a"
+        compile="n/a"
         test_compile="n/a"
         tests="n/a"
         latest_branch="n/a"

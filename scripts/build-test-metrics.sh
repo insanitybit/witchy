@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Local measurements must not depend on a caller's compiler wrapper. In shared
+# agent environments a stale or sandbox-incompatible wrapper can fail before
+# Cargo emits any useful timing data, turning the whole snapshot into `failed`.
+export RUSTC_WRAPPER=
+export CARGO_BUILD_RUSTC_WRAPPER=
+
 print_help() {
     cat <<'USAGE'
 Usage: ./scripts/build-test-metrics.sh [options]
