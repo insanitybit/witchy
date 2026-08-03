@@ -79,6 +79,22 @@ if command -v jq >/dev/null 2>&1; then
         latest_rev="n/a"
     fi
 
+    structure_report=""
+    if [ -x "./scripts/structure-health.sh" ]; then
+        structure_report="$(./scripts/structure-health.sh --json || true)"
+    fi
+    if [ -n "$structure_report" ]; then
+        structure_warn_lines="$(printf '%s' "$structure_report" | jq -r '.warn_lines // 0')"
+        structure_max_lines="$(printf '%s' "$structure_report" | jq -r '.max_lines // 0')"
+        structure_warnings="$(printf '%s' "$structure_report" | jq -r '.warning_count // 0')"
+        structure_violations="$(printf '%s' "$structure_report" | jq -r '.violation_count // 0')"
+    else
+        structure_warn_lines=0
+        structure_max_lines=0
+        structure_warnings=0
+        structure_violations=0
+    fi
+
     gate_report="$(./scripts/gate-report.sh --since "$since" --json || true)"
     if [ -n "$gate_report" ]; then
         merged="$(printf '%s' "$gate_report" | jq -r '.throughput.merged_branches // 0')"
@@ -102,6 +118,8 @@ if command -v jq >/dev/null 2>&1; then
         printf '  "since": "%s",\n' "$since"
         printf '  "merge_queue": {"submissions":%s,"merged_branches":%s,"green_gates":%s,"failed_attempts":%s,"attempt_p50_s":"%s","attempt_p90_s":"%s"},\n' \
             "$submissions" "$merged" "$green_gates" "$failed" "$p50" "$p90"
+        printf '  "source_structure": {"warn_lines":%s,"max_lines":%s,"warning_count":%s,"violation_count":%s},\n' \
+            "$structure_warn_lines" "$structure_max_lines" "$structure_warnings" "$structure_violations"
         printf '  "latest_local_metrics": {"status":"%s","branch":"%s","git_rev":"%s","build_s":"%s","compile_s":"%s","test_compile_s":"%s","tests_s":"%s"}\n' \
             "$latest_status" "$latest_branch" "$latest_rev" "$build" "$compile" "$test_compile" "$tests"
         printf '}\n'
@@ -114,6 +132,8 @@ if command -v jq >/dev/null 2>&1; then
     printf '  latest compile s: %s\n' "$compile"
     printf '  latest test(no-run) s: %s\n' "$test_compile"
     printf '  latest tests s: %s\n' "$tests"
+    printf '  source structure: warnings=%s violations=%s (warn >= %s, max > %s)\n' \
+        "$structure_warnings" "$structure_violations" "$structure_warn_lines" "$structure_max_lines"
     printf '  merge queue (since %s): submissions=%s merged=%s green_gates=%s failed=%s\n' \
         "$since" "$submissions" "$merged" "$green_gates" "$failed"
     printf '  merge queue attempt latency: p50=%s p90=%s\n' "$p50" "$p90"
