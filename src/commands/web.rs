@@ -131,6 +131,7 @@ struct CheckedWeb {
     source_functions: Value,
     wasm_functions: Value,
     templates: Vec<witchy_lower::codegen::GlamourTemplateMetadata>,
+    islands: Vec<witchy_lower::codegen::GlamourIslandMetadata>,
     development: Option<witchy_lower::codegen::GlamourDevelopmentMetadata>,
     packages: Vec<PackageRecord>,
 }
@@ -160,6 +161,7 @@ struct CompiledWeb {
     source_functions: Value,
     wasm_functions: Value,
     templates: Vec<witchy_lower::codegen::GlamourTemplateMetadata>,
+    islands: Vec<witchy_lower::codegen::GlamourIslandMetadata>,
     development: Option<witchy_lower::codegen::GlamourDevelopmentMetadata>,
     packages: Vec<PackageRecord>,
 }
@@ -1033,6 +1035,7 @@ fn check_loaded_project(
         source_functions,
         wasm_functions,
         templates,
+        islands,
         development,
         packages,
     } = compiled;
@@ -1080,6 +1083,7 @@ fn check_loaded_project(
         source_functions,
         wasm_functions,
         templates,
+        islands,
         development,
         packages,
     })
@@ -1102,6 +1106,8 @@ fn compile_project_with_origins(
     normalize_source_modules(&mut tagged_origins, &project.root);
     let packages = package_records(&checked)?;
     let templates = witchy_lower::codegen::checked_glamour_templates(&checked)
+        .map_err(|error| WebCommandError::failure(error.to_string()))?;
+    let islands = witchy_lower::codegen::checked_glamour_islands(&checked)
         .map_err(|error| WebCommandError::failure(error.to_string()))?;
     let (wasm, development_metadata, source_instructions, source_expressions) = if development {
         let compiled = super::compile::compile_checked_to_development_wasm_cached(&checked)
@@ -1144,6 +1150,7 @@ fn compile_project_with_origins(
         source_functions: development_source_function_registry(&source_graph.functions),
         wasm_functions,
         templates,
+        islands,
         development: development_metadata,
         packages,
     })
@@ -3244,6 +3251,80 @@ fn compiler_operation_source_registry(
         }
     }
     Value::Array(records)
+}
+
+fn append_compiler_work_source_registry(
+    mappings: &mut Value,
+    islands: &[witchy_lower::codegen::GlamourIslandMetadata],
+) {
+    let Some(records) = mappings.as_array_mut() else { return };
+    for island in islands {
+        for work in &island.work {
+            records.push(json!({
+                "operation": "descriptor",
+                "channel": work.channel,
+                "kind": work.kind,
+                "handler": work.handler,
+                "descriptor": work.descriptor_id,
+                "resultSchema": work.result_schema_id,
+                "completion": work.completion_id,
+                "ownerScope": work.owner_scope_id,
+                "semantic": browser_policy_semantic(&work.browser_policy),
+                "island": island.identity,
+                "owner": declaration_identity_json(&work.owner),
+            }));
+        }
+        for work in &island.mapped_work {
+            records.push(json!({
+                "operation": "descriptor",
+                "channel": work.channel,
+                "kind": work.kind,
+                "handler": work.handler,
+                "descriptor": work.descriptor_id,
+                "resultSchema": work.result_schema_id,
+                "completion": work.completion_id,
+                "ownerScope": work.owner_scope_id,
+                "semantic": browser_policy_semantic(&work.browser_policy),
+                "island": island.identity,
+                "owner": declaration_identity_json(&work.owner),
+                "mappedFrom": work.previous_descriptor_id,
+                "mapper": work.mapper_id,
+            }));
+        }
+    }
+}
+
+fn browser_policy_semantic(
+    policy: &witchy_lower::codegen::GlamourBrowserPolicyMetadata,
+) -> &'static str {
+    match policy {
+        witchy_lower::codegen::GlamourBrowserPolicyMetadata::Fetch { .. } => "resource",
+        witchy_lower::codegen::GlamourBrowserPolicyMetadata::Navigation { .. } => "route",
+        witchy_lower::codegen::GlamourBrowserPolicyMetadata::Timer { .. } => "timer",
+        witchy_lower::codegen::GlamourBrowserPolicyMetadata::Storage { .. } => "storage",
+        witchy_lower::codegen::GlamourBrowserPolicyMetadata::Worker { .. } => "worker",
+        witchy_lower::codegen::GlamourBrowserPolicyMetadata::HostPort { .. } => "host-port",
+        witchy_lower::codegen::GlamourBrowserPolicyMetadata::Port { .. } => "port",
+        witchy_lower::codegen::GlamourBrowserPolicyMetadata::SecretField { .. } => "secret",
+    }
+}
+
+fn declaration_identity_json(
+    identity: &witchy_types::runtime_type::DeclarationIdentity,
+) -> Value {
+    let source = match identity.package().source() {
+        witchy_types::runtime_type::PackageSource::Toolchain => "toolchain".to_string(),
+        witchy_types::runtime_type::PackageSource::Workspace => "workspace".to_string(),
+        witchy_types::runtime_type::PackageSource::Registry(name) => format!("registry:{name}"),
+    };
+    json!({
+        "source": source,
+        "package": identity.package().name(),
+        "version": identity.package().version(),
+        "module": identity.module(),
+        "kind": format!("{:?}", identity.kind()),
+        "name": identity.name(),
+    })
 }
 
 fn compiler_template_node(

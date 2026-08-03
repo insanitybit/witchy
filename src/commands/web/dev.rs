@@ -375,6 +375,9 @@ fn publish(
         "templates": super::compiler_template_registry(&checked.templates, true),
         "operationMappings": super::compiler_operation_source_registry(&checked.templates),
     });
+    let mut operation_mappings = super::compiler_operation_source_registry(&checked.templates);
+    super::append_compiler_work_source_registry(&mut operation_mappings, &checked.islands);
+    source_map["operationMappings"] = operation_mappings;
     super::normalize_source_modules(&mut source_map, &checked.project.root);
     let source_map = serde_json::to_vec(&source_map)
     .map_err(|error| WebCommandError::failure(error.to_string()))?;
