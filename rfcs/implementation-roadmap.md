@@ -139,7 +139,7 @@ refinement, because everything below sits on it.
   `.only`/`.deny`/`.subtree` methods + typed policy values behind them, keeping the string
   parser. Land it green on both backends before touching RFC-0002 state-carrying.
 - **Cadence:** one phase = one or more focused, separately-committed, both-backends-green
-  changes; `cargo nextest` + `clippy -D warnings` gate every commit; a runnable
+  changes; `cargo nextest` + `clippy` (bug-lint tiers, not `-D warnings`) gate every commit; a runnable
   `book/`/example for anything user-visible (the parity rule).
 - **Decision levers I'll exercise:** (a) the Phase-1 fast-track deviation above if the
   substrate is too big to front-load; (b) GitHub-login-before-Google (Phase 5) for an

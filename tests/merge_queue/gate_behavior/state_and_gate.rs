@@ -165,7 +165,7 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
          [2] witchy fmt (std+examples) took 2s\n\
          WITCHY_TIMING {\"schema\":1,\"kind\":\"foreground\",\"step\":1,\"name\":\"tests (workspace)\",\"status\":\"green\",\"started_epoch\":10,\"finished_epoch\":81,\"elapsed_s\":71,\"gate_elapsed_s\":71}\n\
          WITCHY_TIMING {\"schema\":1,\"kind\":\"foreground\",\"step\":2,\"name\":\"witchy fmt (std+examples)\",\"status\":\"green\",\"started_epoch\":81,\"finished_epoch\":84,\"elapsed_s\":3,\"gate_elapsed_s\":74}\n\
-         WITCHY_TIMING {\"schema\":1,\"kind\":\"background\",\"step\":3,\"name\":\"clippy (deny warnings)\",\"status\":\"green\",\"started_epoch\":10,\"finished_epoch\":60,\"elapsed_s\":50,\"gate_elapsed_s\":50}\n\
+         WITCHY_TIMING {\"schema\":1,\"kind\":\"background\",\"step\":3,\"name\":\"clippy (bug lints)\",\"status\":\"green\",\"started_epoch\":10,\"finished_epoch\":60,\"elapsed_s\":50,\"gate_elapsed_s\":50}\n\
          ==> [6] queue infrastructure (isolated) (t+74s)\n\
          Finished `test` profile [unoptimized] target(s) in 1s\n\
          Starting 37 tests across 1 binary\n\
@@ -398,7 +398,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert_eq!(timings[0]["status"], "green");
     assert!(timings[0]["elapsed_s"].as_u64().unwrap() >= 3);
     assert_eq!(timings[1]["kind"], "background");
-    assert_eq!(timings[1]["name"], "clippy (deny warnings)");
+    assert_eq!(timings[1]["name"], "clippy (bug lints)");
     assert_eq!(timings[1]["status"], "green");
     assert!(
         timings[1]["elapsed_s"].as_u64().unwrap() <= 2,
@@ -431,7 +431,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         isolated_names,
         [
             "tests (workspace, minus e2e)",
-            "clippy (deny warnings)",
+            "clippy (bug lints)",
             "queue infrastructure (isolated)",
         ],
         "queue fixtures did not run alone after product work: {isolated_stdout}",
@@ -600,7 +600,7 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
             "tests (workspace)",
             "witchy fmt (std+examples)",
             "compile check (cargo check)",
-            "clippy (deny warnings)",
+            "clippy (bug lints)",
             "wasm playground build",
             "runnable book (browser)",
             "Rust-class paired correctness",
@@ -659,7 +659,7 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
     assert_eq!(tests["status"], "aborted");
     let clippy = timings
         .iter()
-        .find(|timing| timing["name"] == "clippy (deny warnings)")
+        .find(|timing| timing["name"] == "clippy (bug lints)")
         .expect("red clippy timing was emitted");
     assert_eq!(clippy["kind"], "background");
     assert_eq!(clippy["status"], "red");

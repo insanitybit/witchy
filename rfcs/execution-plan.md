@@ -22,8 +22,8 @@ in [the terminal-outcome ledger](stale-rfc-acceptance-ledger.md).
   error — identically on the interpreter (`crates/witchy-interp`) and the compiled
   WASM tier (`crates/witchy-lower` → wasmtime). Add a differential test in
   `src/example_tests.rs`, and a runnable `book/` example for anything user-visible.
-- **The gate is `./scripts/check.sh --fast`** (build + clippy `-D warnings` +
-  `nextest --workspace`). It must be green before every commit; `--full` before a
+- **The gate is `./scripts/check.sh --fast`** (build + clippy [bug-lint tiers,
+  not `-D warnings`] + `nextest --workspace`). It must be green before every commit; `--full` before a
   push (note: `--full` is currently blocked by a *pre-existing* `coven_audits` 403
   e2e flake unrelated to this work — use `--fast` for the commit loop).
 - **The PATH `witchy` is the RELEASE binary; `cargo build` writes DEBUG.** Run

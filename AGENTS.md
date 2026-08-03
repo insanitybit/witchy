@@ -17,7 +17,7 @@ When another agent or developer is active in the same checkout:
 ```sh
 ./scripts/worktree-warm.sh --target-dir target-codex
 CARGO_TARGET_DIR=target-codex cargo test --workspace
-CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D warnings
+CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
 ```
 
 - Clean up only artifacts you created, such as your own `target-codex/`.

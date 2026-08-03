@@ -120,7 +120,7 @@ LC_ALL=C awk -v meta="$attempts" '
                 value=line; sub(/^.*"elapsed_s":/, "", value); sub(/[,}].*$/, "", value)
                 if (timing_name ~ /^tests \(workspace/) exact_tests=value
                 else if (timing_name ~ /^witchy fmt /) exact_fmt=value
-                else if (timing_name == "clippy (deny warnings)") exact_clippy=value
+                else if (timing_name ~ /^clippy /) exact_clippy=value
                 else if (timing_name == "wasm playground build") exact_wasm=value
                 else if (timing_name == "runnable book (browser)") exact_book=value
             }

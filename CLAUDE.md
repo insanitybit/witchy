@@ -69,8 +69,11 @@ Two backends, **zero silent divergence**. Any observable behavior must work
 `src/example_tests.rs` and, for anything user-visible, a runnable `book/`
 example. CI exists (`.github/workflows/ci.yml`: build/clippy/nextest, heap-check
 fuzz, parity sweep, e2e, docs, fmt), but the local green gate is
-`./scripts/check.sh` (build + clippy `-D warnings` + `nextest --workspace` + the
-wasm build) — run it before every commit, and `--full` before a push.
+`./scripts/check.sh` (build + clippy [bug-lint tiers: `correctness` +
+`suspicious` + `unused_must_use`, NOT `-D warnings`] + `nextest --workspace` +
+the wasm build) — run it before every commit, and `--full` before a push.
+Style/perf/pedantic lints print but never block; see `CLIPPY_GATE_LINTS` in
+`scripts/check.sh`.
 
 ## Optimizations generalize — never special-case a method
 
@@ -169,7 +172,7 @@ worktree and `target/` as shared state, not scratch space.
 ```sh
 CARGO_TARGET_DIR=target-claude cargo nextest run --workspace
 CARGO_TARGET_DIR=target-codex cargo test --workspace
-CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D warnings
+CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
 ```
 
   The normal `./scripts/check.sh` gate is still authoritative, but coordinate

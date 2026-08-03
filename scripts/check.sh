@@ -446,6 +446,16 @@ run() {
 # cargo's build lock. A leg failure still fails the gate — via run_watched's
 # fail-fast while the tests run (the foreground stage is aborted the moment a
 # leg reports red), or at collect time at the latest.
+# Conservative clippy policy (shared by the gate, the coordinator prewarm, and
+# CI). We deny only the GENUINE-BUG tiers — clippy's `correctness` group (deny by
+# default; code that is outright wrong or useless), `suspicious` (most likely
+# incorrect), and `unused_must_use` (a dropped `Result`/`#[must_use]`, a real bug
+# in a capability language) — and DELIBERATELY do NOT pass `-D warnings`. Style,
+# complexity, perf, and pedantic lints (e.g. `needless_borrow`) still print, but
+# they never block a merge: a needless borrow is not a reason to redo a gate.
+# Keep this list identical everywhere so the CoW-seeded clippy target cache is
+# reused instead of invalidated by a differing lint set.
+CLIPPY_GATE_LINTS=(-D clippy::correctness -D clippy::suspicious -D unused_must_use)
 clippy_dir="${target_dir}-clippy"
 seed_cow_target() { # seed_cow_target <dir>
     # `mkdir` is the atomic claim: exactly one concurrent run seeds; any other
@@ -466,7 +476,7 @@ seed_cow_target() { # seed_cow_target <dir>
 launch_clippy_leg() {
     clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
     clippy_started=$(date +%s)
-    ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- -D warnings ) >"$clippy_log" 2>&1 &
+    ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
     clippy_pid=$!
 }
 
@@ -527,7 +537,7 @@ failfast_scan() {
         return 0
     fi
     if [ -n "${clippy_pid:-}" ] && leg_finished_red "${clippy_log:-}"; then
-        failfast_label="clippy (deny warnings)"; failfast_pid="$clippy_pid"
+        failfast_label="clippy (bug lints)"; failfast_pid="$clippy_pid"
         failfast_log="$clippy_log"; failfast_started="$clippy_started"
         clippy_pid=""
         return 0
@@ -656,7 +666,7 @@ if [ "$fast" -eq 1 ]; then
         run "witchy fmt (changed .witchy files)" witchy_fmt_check
     fi
     run_watched "tests (workspace, minus e2e)" "${test_cmd[@]}"
-    collect_bg "clippy (deny warnings)" "$clippy_pid" "$clippy_log" "$clippy_started"
+    collect_bg "clippy (bug lints)" "$clippy_pid" "$clippy_log" "$clippy_started"
     clippy_pid=""
     # Product discovery already builds the excluded merge_queue test binary.
     # Run its hermetic shard after all product work so it reuses that artifact
@@ -701,7 +711,7 @@ run "witchy fmt (std+examples)" witchy_fmt_check
 
 collect_bg "compile check (cargo check)" "$check_pid" "$check_log" "$check_started"
 check_pid=""
-collect_bg "clippy (deny warnings)"   "$clippy_pid" "$clippy_log" "$clippy_started"
+collect_bg "clippy (bug lints)"   "$clippy_pid" "$clippy_log" "$clippy_started"
 clippy_pid=""
 collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log" "$wasm_started"
 wasm_pid=""

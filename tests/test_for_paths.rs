@@ -78,7 +78,7 @@ fn rust_integration_tests_use_fast_without_redundant_binary_run() {
 fn native_cli_entrypoints_use_the_bounded_compiler_shard() {
     let expected = [
         "cargo check -p witchy --all-targets",
-        "cargo clippy -p witchy --all-targets -- -D warnings",
+        "cargo clippy -p witchy --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use",
         "cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'",
         "cargo nextest run --test cli_subcommands",
         "cargo nextest run -p witchy-syntax",

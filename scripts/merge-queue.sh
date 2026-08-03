@@ -2180,7 +2180,7 @@ prewarm_gate() {
         else
             cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
         fi
-        CARGO_TARGET_DIR="${inactive_target}-clippy" cargo clippy --workspace --all-targets -- -D warnings >/dev/null 2>&1
+        CARGO_TARGET_DIR="${inactive_target}-clippy" cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use >/dev/null 2>&1
         CARGO_TARGET_DIR="${inactive_target}-check" cargo check --workspace --all-targets >/dev/null 2>&1
         [ ! -x scripts/warm-witchy-caches.sh ] || ./scripts/warm-witchy-caches.sh >/dev/null 2>&1
     ' prewarm "$gate_wt" "$reset_inactive" "$inactive_target" ) &

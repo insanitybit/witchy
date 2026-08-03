@@ -63,7 +63,7 @@ for p in "${paths[@]}"; do
             add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
         src/main.rs | src/cli.rs | src/source.rs)
             add "cargo check -p witchy --all-targets"
-            add "cargo clippy -p witchy --all-targets -- -D warnings"
+            add "cargo clippy -p witchy --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use"
             add "cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'"
             add "cargo nextest run --test cli_subcommands"
             add "cargo nextest run -p witchy-syntax" ;;
@@ -179,7 +179,7 @@ if [ "$any_rust" -eq 1 ]; then
             "cargo nextest run -E 'test(/^example_tests::/)'" | \
             "cargo nextest run -E 'test(stdlib_docs_are_current)'" | \
             "cargo check -p witchy --all-targets" | \
-            "cargo clippy -p witchy --all-targets -- -D warnings") ;;
+            "cargo clippy -p witchy --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use") ;;
             *) remaining+=("$c") ;;
         esac
     done

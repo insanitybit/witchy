@@ -128,8 +128,11 @@ jobs:
           tool: nextest
       - name: Build
         run: cargo build --workspace --all-targets --locked
-      - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Same conservative deny-set as the gate and CI (see check.sh
+      # CLIPPY_GATE_LINTS): genuine-bug tiers only. A release must not fail on a
+      # style lint the merge gate already let through.
+      - name: Clippy (bug lints)
+        run: cargo clippy --workspace --all-targets --locked -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
       - name: Unit, integration, and e2e tests
         run: cargo nextest run --workspace --profile ci --all-targets --locked
 

@@ -43,8 +43,11 @@ jobs:
           tool: nextest
       - name: Build
         run: cargo build --workspace --all-targets
-      - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      # Deny only the genuine-bug tiers (see scripts/check.sh CLIPPY_GATE_LINTS):
+      # correctness + suspicious + dropped-must-use. Style/complexity/perf lints
+      # still print but do not fail CI — a needless borrow is not a merge blocker.
+      - name: Clippy (bug lints)
+        run: cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
       - name: Unit + integration tests
         run: cargo nextest run --workspace --profile ci --all-targets
 

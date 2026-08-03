@@ -17,7 +17,7 @@ just perf-health
 
 # Or run one piece while iterating on it:
 cargo build --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
 cargo nextest run --workspace
 ```
 
