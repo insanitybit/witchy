@@ -4489,7 +4489,9 @@ mod tests {
         )
         .expect_err("generated async must enforce imported view lifetimes");
         assert!(
-            error.message.contains("borrowed view `borrowed` remains live across `await`"),
+            error
+                .message
+                .contains("async fn `bad`: borrowed value `borrowed` remains live across `await`"),
             "{}",
             error.message
         );
@@ -4530,7 +4532,9 @@ mod tests {
         )
         .expect_err("generated view facts must not depend on module order");
         assert!(
-            error.message.contains("borrowed view `borrowed` remains live across `await`"),
+            error
+                .message
+                .contains("async fn `bad`: borrowed value `borrowed` remains live across `await`"),
             "{}",
             error.message
         );
@@ -4568,7 +4572,9 @@ mod tests {
         )
         .expect_err("module alias for a public inherent view must remain borrowed");
         assert!(
-            error.message.contains("borrowed view `borrowed` remains live across `await`"),
+            error
+                .message
+                .contains("async fn `bad`: borrowed value `borrowed` remains live across `await`"),
             "{}",
             error.message
         );
@@ -4591,7 +4597,9 @@ mod tests {
         )
         .expect_err("handwritten and generated async must share alias facts");
         assert!(
-            error.message.contains("borrowed view `borrowed` remains live across `await`"),
+            error
+                .message
+                .contains("async fn `bad`: borrowed value `borrowed` remains live across `await`"),
             "{}",
             error.message
         );
@@ -4660,7 +4668,9 @@ mod tests {
         let error = link(vec![("user".into(), user)], "user", append_generated_items)
             .expect_err("pulled std providers participate in whole-link view facts");
         assert!(
-            error.message.contains("borrowed view `borrowed` remains live across `await`"),
+            error
+                .message
+                .contains("async fn `bad`: borrowed value `borrowed` remains live across `await`"),
             "{}",
             error.message
         );

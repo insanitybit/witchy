@@ -698,7 +698,7 @@
     #[test]
     fn view_sent_through_a_channel_is_rejected() {
         let err = linked_main(
-            "mode opt\n\nimport chan\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn bad(tx: Sender(String), input: let('a) String) -> Task(Nil):\n    let view = borrow(input)\n    chan.send(tx, view)\n\nfn main(console: Console):\n    console.print(\"done\")\n",
+            "mode opt\n\nimport chan\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn bad(tx: chan.Sender(String), input: let('a) String) -> Task(Nil):\n    let view = borrow(input)\n    chan.send(tx, view)\n\nfn main(console: Console):\n    console.print(\"done\")\n",
         )
         .expect_err("a view sent through the canonical channel boundary escapes its owner");
         assert!(

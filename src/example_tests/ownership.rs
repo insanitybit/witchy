@@ -28,16 +28,18 @@ use crate::{ast, interpreter, parser, typeck};
         let src = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console) -> Nil:\n    var text = \"borrowed\"\n    let w = view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let err = try_link_std(src).expect_err("a borrowed view may not cross an await");
         assert!(
-            err.contains("escapes") || err.contains("borrowed view"),
+            err.contains("async fn `bad`: borrowed value `w` remains live across `await`"),
             "diagnostic must explain the live view: {}",
             err,
         );
 
         let assigned = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console) -> Nil:\n    var text = \"borrowed\"\n    var slot = \"\"\n    slot = view(text)\n    let _ = task.done(0).await\n    console.print(slot)\n";
-        let linked = try_link_std(assigned).expect("link assigned async view");
-        let err = typeck::check(&linked)
-            .expect_err("assignment may not hide a view in an async frame");
-        assert!(err.message.contains("mutable binding `slot`"), "{}", err.message);
+        let err = try_link_std(assigned)
+            .expect_err("assignment may not hide a view across async suspension");
+        assert!(
+            err.contains("async fn `bad`: borrowed value `slot` remains live across `await`"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -79,7 +81,11 @@ use crate::{ast, interpreter, parser, typeck};
             "main",
         )
         .expect_err("an imported view may not cross async suspension");
-        assert!(err.to_string().contains("borrowed view `w` remains live across `await`"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("async fn `main`: borrowed value `w` remains live across `await`"),
+            "{err}"
+        );
 
         let list_api = "mode opt\n\npub fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n";
         let indirect_main = "import api\nimport list\n\nfn main(console: Console):\n    var xs = [1]\n    let make_view = api.view\n    let w = make_view(xs)\n    console.print(\"${list.length(w)}\")\n    list.push(xs, 2)\n    console.print(\"${list.length(xs)}\")\n";
