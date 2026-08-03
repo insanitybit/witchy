@@ -2545,9 +2545,14 @@ impl<'a> AccessVerifier<'a> {
             .map_err(Self::signature_error)?;
         let tail = self.eval_block(&function.body, &mut environment, &expected)?;
         if matches!(function.body.stmts.last(), Some(Stmt::Expr(_))) {
+            let context = if matches!(&expected, AccessFlow::Callable(_)) {
+                "returned function value".to_string()
+            } else {
+                format!("returned value from `{}`", function.name)
+            };
             tail.verify_directed(
                 &expected,
-                &format!("returned value from `{}`", function.name),
+                &context,
             )?;
         }
         Ok(())

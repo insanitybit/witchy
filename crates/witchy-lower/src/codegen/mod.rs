@@ -5345,18 +5345,42 @@ impl<'types> Codegen<'types> {
             return None;
         };
         let element_descriptor = self.specialized_layouts.get(*element)?.clone();
-        let (Expr::Ctor { args: fields, .. } | Expr::Tuple(fields)) = elem else { return None };
-        if fields.len() != element_descriptor.fields().len() {
-            return None;
-        }
+        let fields = match elem {
+            Expr::Ctor { args: fields, .. } | Expr::Tuple(fields) => {
+                if fields.len() != element_descriptor.fields().len() {
+                    return None;
+                }
+                fields
+                    .iter()
+                    .map(|field| self.lower_expr(field))
+                    .collect::<Option<Vec<_>>>()?
+            }
+            // A physically specialized generic may append a packed-record
+            // parameter. Restrict this path to an exact local with the same
+            // descriptor; arbitrary expressions remain fail-closed.
+            Expr::Var(name) => {
+                let element_ty = self.local_types.get(name)?.clone();
+                let element_id = self.specialized_layout_id(&element_ty)?;
+                if element_id != *element {
+                    return None;
+                }
+                element_descriptor
+                    .fields()
+                    .iter()
+                    .copied()
+                    .map(|field| {
+                        self.lower_layout_field_read(
+                            witchy_wir::wir::WirExpr::GetLocal(name.clone()),
+                            field,
+                        )
+                    })
+                    .collect::<Option<Vec<_>>>()?
+            }
+            _ => return None,
+        };
         let helper = self.ensure_packed_list_push_helper(id)?;
         let mut args = vec![witchy_wir::wir::WirExpr::GetLocal(root.into()), cap];
-        args.extend(
-            fields
-                .iter()
-                .map(|field| self.lower_expr(field))
-                .collect::<Option<Vec<_>>>()?,
-        );
+        args.extend(fields);
         Some((helper, args))
     }
 
@@ -5828,20 +5852,52 @@ impl<'types> Codegen<'types> {
         items: &[Expr],
     ) -> Option<witchy_wir::wir::WirExpr> {
         let id = self.specialized_layout_of_expr(expr)?;
-        let LayoutKind::PackedList { .. } = self.specialized_layouts.get(id)?.kind() else {
+        let list_descriptor = self.specialized_layouts.get(id)?.clone();
+        let LayoutKind::PackedList { element, .. } = list_descriptor.kind() else {
             return None;
         };
+        let element_id = *element;
+        let element_descriptor = self.specialized_layouts.get(element_id)?.clone();
         let mut fields = Vec::new();
         for item in items {
-            let (Expr::Ctor { args, .. } | Expr::Tuple(args)) = item else { return None };
-            fields.extend(args.iter());
+            match item {
+                Expr::Ctor { args, .. } | Expr::Tuple(args) => {
+                    if args.len() != element_descriptor.fields().len() {
+                        return None;
+                    }
+                    fields.extend(
+                        args.iter()
+                            .map(|field| self.lower_expr(field))
+                            .collect::<Option<Vec<_>>>()?,
+                    );
+                }
+                // Preserve the exact packed descriptor when a literal contains
+                // an already-materialized local element. Arbitrary expressions
+                // remain rejected rather than being reinterpreted as slots.
+                Expr::Var(name) => {
+                    let element_ty = self.local_types.get(name)?.clone();
+                    if self.specialized_layout_id(&element_ty)? != element_id {
+                        return None;
+                    }
+                    fields.extend(
+                        element_descriptor
+                            .fields()
+                            .iter()
+                            .copied()
+                            .map(|field| {
+                                self.lower_layout_field_read(
+                                    witchy_wir::wir::WirExpr::GetLocal(name.clone()),
+                                    field,
+                                )
+                            })
+                            .collect::<Option<Vec<_>>>()?,
+                    );
+                }
+                _ => return None,
+            }
         }
         let helper = self.ensure_packed_list_helper(id, items.len())?;
-        let args = fields
-            .into_iter()
-            .map(|field| self.lower_expr(field))
-            .collect::<Option<Vec<_>>>()?;
-        Some(witchy_wir::wir::WirExpr::Call { func: helper, args })
+        Some(witchy_wir::wir::WirExpr::Call { func: helper, args: fields })
     }
 
     fn lower_layout_field_read(
