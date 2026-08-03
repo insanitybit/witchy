@@ -112,6 +112,13 @@
         linker
             .func_wrap(
                 "witchy",
+                "float_to_str",
+                |_value: f64, _output: i32| -> i32 { 0 },
+            )
+            .expect("float_to_str");
+        linker
+            .func_wrap(
+                "witchy",
                 "crypto.sha256",
                 |mut caller: wasmtime::Caller<'_, ()>, input: i32, output: i32| -> wasmtime::Result<()> {
                     let memory = caller
