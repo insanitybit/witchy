@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -68,6 +69,47 @@ struct InputFingerprint {
 struct CompilerModuleFingerprint {
     digest: String,
     imports: Vec<String>,
+}
+
+/// The watcher parses loaded Witchy files to discover the reverse dependency
+/// graph. Keep that parse result across equivalent polls; the content digest is
+/// part of the entry so an edit can never reuse stale imports.
+static PARSED_MODULE_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, (String, CompilerModuleFingerprint)>>> =
+    OnceLock::new();
+
+fn parsed_module_fingerprint(
+    path: &Path,
+    digest: &str,
+    bytes: &[u8],
+    relative: &Path,
+) -> Result<CompilerModuleFingerprint, WebCommandError> {
+    let cache = PARSED_MODULE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Some((cached_digest, fingerprint)) = cache
+        .lock()
+        .map_err(|_| WebCommandError::failure("parsed module cache is poisoned"))?
+        .get(path)
+        && cached_digest == digest
+    {
+        return Ok(fingerprint.clone());
+    }
+    let source = std::str::from_utf8(bytes).map_err(|error| {
+        WebCommandError::failure(format!("cannot decode `{}`: {error}", relative.display()))
+    })?;
+    let parsed = witchy_syntax::parser::parse_module(source).map_err(|error| {
+        WebCommandError::failure(format!("cannot fingerprint `{}`: {error}", relative.display()))
+    })?;
+    let fingerprint = CompilerModuleFingerprint {
+        digest: digest.to_owned(),
+        imports: parsed.imports,
+    };
+    let mut cache = cache
+        .lock()
+        .map_err(|_| WebCommandError::failure("parsed module cache is poisoned"))?;
+    if cache.len() >= 256 {
+        cache.clear();
+    }
+    cache.insert(path.to_path_buf(), (digest.to_owned(), fingerprint.clone()));
+    Ok(fingerprint)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -876,22 +918,14 @@ fn input_fingerprint(
         if is_compiler
             && path.extension().and_then(|value| value.to_str()) == Some("witchy")
         {
-            let source = std::str::from_utf8(&bytes).map_err(|error| {
-                WebCommandError::failure(format!("cannot decode `{}`: {error}", relative.display()))
-            })?;
-            let parsed = witchy_syntax::parser::parse_module(source).map_err(|error| {
-                WebCommandError::failure(format!("cannot fingerprint `{}`: {error}", relative.display()))
-            })?;
             let name = path
                 .file_stem()
                 .and_then(|value| value.to_str())
                 .ok_or_else(|| WebCommandError::failure("compiler source has no module name"))?;
+            let digest = hex(&Sha256::digest(&bytes));
             compiler_modules.insert(
                 name.to_string(),
-                CompilerModuleFingerprint {
-                    digest: hex(&Sha256::digest(&bytes)),
-                    imports: parsed.imports,
-                },
+                parsed_module_fingerprint(&path, &digest, &bytes, &relative)?,
             );
         }
         hash.update(relative.to_string_lossy().as_bytes());
