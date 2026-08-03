@@ -422,6 +422,7 @@ fn function_type_derivation_normalizes_legacy_empty_conventions() {
 #[test]
 fn from_function_requires_a_finalized_result_type() {
     let function = Function {
+        line: 0,
         public: false,
         comptime_only: false,
         attributes: Vec::new(),
