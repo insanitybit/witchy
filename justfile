@@ -43,6 +43,10 @@ perf-health *ARGS:
 agent-check *ARGS:
     ./scripts/agent-check.sh {{ARGS}}
 
+# Fast source-structure hotspot report; does not invoke Cargo.
+structure-health:
+    ./scripts/structure-health.sh
+
 # The exact nextest invocation used by CI's test job.
 test-ci:
     cargo nextest run --workspace --profile ci --all-targets
