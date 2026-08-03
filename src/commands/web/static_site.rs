@@ -904,8 +904,10 @@ fn prepare_static_island_publication(
     let mut artifact_record_identities = BTreeMap::<String, usize>::new();
     let mut artifacts: Vec<StaticIslandArtifact> = Vec::with_capacity(islands.len());
     let mut artifact_files: BTreeMap<String, usize> = BTreeMap::new();
+    let mut compiled_artifacts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut workers: Vec<StaticWorkerArtifact> = Vec::new();
     let mut worker_files: BTreeMap<String, usize> = BTreeMap::new();
+    let mut compiled_workers: BTreeMap<(String, u32), Vec<u8>> = BTreeMap::new();
     let frames = if plans.iter().any(|plan| !plan.frames.is_empty()) {
         let html = static_frame_document();
         vec![StaticFrameArtifact {
@@ -932,7 +934,14 @@ fn prepare_static_island_publication(
         let mut granted_plan = plan.clone();
         let mut worker_bindings = BTreeMap::<u32, Value>::new();
         for work in compiler_metadata.work.iter().filter(|work| work.kind == "worker") {
-            let wasm = compile_static_worker_artifact(checked, compiler_metadata, work.descriptor_id)?;
+            let worker_key = (compiler_metadata.identity.clone(), work.descriptor_id);
+            let wasm = if let Some(wasm) = compiled_workers.get(&worker_key) {
+                wasm.clone()
+            } else {
+                let wasm = compile_static_worker_artifact(checked, compiler_metadata, work.descriptor_id)?;
+                compiled_workers.insert(worker_key, wasm.clone());
+                wasm
+            };
             let file = content_name("worker", "wasm", &wasm);
             let identity = format!("glamour-worker1-{}", sha256(&wasm));
             if let Some(existing) = worker_files.get(&file).copied() {
@@ -1051,13 +1060,41 @@ fn prepare_static_island_publication(
             &serde_json::to_vec(&instance_grant_input)
                 .map_err(|error| WebCommandError::failure(error.to_string()))?,
         );
-        let wasm = embed_web_mount_grant(
-            compile_static_island_artifact(
+        // Placement keys and source spans are intentionally excluded: the executable
+        // is determined by the authenticated program shape, not by where an identical
+        // island was placed in the generated book.
+        let mut artifact_plan = plan.clone();
+        artifact_plan.key.clear();
+        artifact_plan.artifact.clear();
+        artifact_plan.html.clear();
+        let artifact_key = format!(
+            "{:?}|mode={}|wire={}|registry={}|program={}|auth={}|model={}|message={}|work={:?}|mapped={:?}|maps={:?}",
+            artifact_plan,
+            compiler_metadata.mode,
+            compiler_metadata.wire_id,
+            compiler_metadata.registry_id,
+            compiler_metadata.program_name,
+            witchy_syntax::format::type_str(&compiler_metadata.auth_type),
+            witchy_syntax::format::type_str(&compiler_metadata.model_type),
+            witchy_syntax::format::type_str(&compiler_metadata.message_type),
+            compiler_metadata.work,
+            compiler_metadata.mapped_work,
+            compiler_metadata.work_maps,
+        );
+        let base_wasm = if let Some(wasm) = compiled_artifacts.get(&artifact_key) {
+            wasm.clone()
+        } else {
+            let wasm = compile_static_island_artifact(
                 checked,
                 plan,
                 compiler_metadata,
                 &build_identity,
-            )?,
+            )?;
+            compiled_artifacts.insert(artifact_key, wasm.clone());
+            wasm
+        };
+        let wasm = embed_web_mount_grant(
+            base_wasm,
             grant,
             Some(&artifact_identity),
             Some(&grant_projection),
