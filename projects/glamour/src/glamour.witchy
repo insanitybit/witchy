@@ -3853,8 +3853,7 @@ fn island_collect_live_owner_instances(node: VNode(msg), path: List(Int), region
                                         island_collect_live_owner_instances(inner, child_path, regions, owners)
                                     None -> fail("glamour island: authenticated keyed owner is not live")
                             None -> Nil
-                Some(_) -> fail("glamour island: element path resolved to a non-list owner scope")
-                None ->
+                Some(_) | None ->
                     var index = 0
                     for child in children:
                         island_collect_live_owner_instances(child, list.concat(path, [index]), regions, owners)
