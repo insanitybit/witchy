@@ -19,6 +19,9 @@ use witchy_syntax::ast::{
     BinOp, Block, Expr, Function, ImplOrigin, Item, Module, Param, Stmt, Type,
 };
 use witchy_syntax::origin::{ExpansionOrigin, OriginTable, SourceSpan};
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
 
 const MAX_COMPTIME_BLOCKS: usize = 256;
 // Per module, after generated `gen`/`async` helpers are lowered into real items.
@@ -723,6 +726,13 @@ pub fn expand_compile_time(
     module: &mut Module,
     siblings: &[(String, Module)],
 ) -> Result<OriginTable, String> {
+    let key = expansion_cache_key(name, module, siblings);
+    if let Ok(cache) = expansion_cache().lock()
+        && let Some(cached) = cache.get(&key)
+    {
+        *module = cached.module.clone();
+        return Ok(cached.origins.clone());
+    }
     let mut origins = expand_with_origins(name, module)?;
     origins.append_shifted(crate::tagged::expand(name, module, siblings)?, 0);
     if name != "comptime" {
@@ -740,7 +750,38 @@ pub fn expand_compile_time(
         module.compiler_stmt_syntax.clear();
         module.compiler_block_syntax.clear();
     }
+    if let Ok(mut cache) = expansion_cache().lock() {
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        cache.insert(
+            key,
+            CachedExpansion {
+                module: module.clone(),
+                origins: origins.clone(),
+            },
+        );
+    }
     Ok(origins)
+}
+
+#[derive(Clone)]
+struct CachedExpansion {
+    module: Module,
+    origins: OriginTable,
+}
+
+fn expansion_cache() -> &'static Mutex<HashMap<u64, CachedExpansion>> {
+    static CACHE: OnceLock<Mutex<HashMap<u64, CachedExpansion>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn expansion_cache_key(name: &str, module: &Module, siblings: &[(String, Module)]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut hasher);
+    format!("{module:?}").hash(&mut hasher);
+    format!("{siblings:?}").hash(&mut hasher);
+    hasher.finish()
 }
 
 fn strip_comptime_only_functions(name: &str, module: &mut Module, origins: &mut OriginTable) {
