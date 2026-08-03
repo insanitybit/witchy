@@ -1163,6 +1163,7 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
   const developmentTimeline = [];
   const developmentInputs = [];
   const developmentReplayFrames = [];
+  const replayMode = options.replayMode === true;
   const developmentHostLifecycle = [];
   const developmentDescriptors = developmentTracing
     ? Object.freeze({
@@ -1214,7 +1215,7 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
 
   const callWithFrame = (name, frame) => {
     if (disposed) fail("application is disposed");
-    if (developmentTracing && developmentReplayFrames.length < DEVELOPMENT_TRACE_LIMIT) {
+    if (!replayMode && developmentTracing && developmentReplayFrames.length < DEVELOPMENT_TRACE_LIMIT) {
       const privateFrame = frame.slice();
       developmentReplayFrames.push(Object.freeze({ name, frame: privateFrame }));
       developmentInputs.push(Object.freeze({
@@ -1970,7 +1971,10 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
           ...planned.effectStarts,
           ...planned.subscriptionStarts,
         ];
-        if (deferredActivation) {
+        if (replayMode) {
+          // Replay feeds recorded completion frames back into Wasm but never
+          // repeats an external effect, subscription, navigation, or port.
+        } else if (deferredActivation) {
           activationQueue.push(...hostWork);
         } else {
           const hostStarted = monotonicMilliseconds();
@@ -2162,6 +2166,20 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
   } else acceptOutput(callWithFrame("__glamour_init", startFrame));
   }
 
+  if (replayMode) {
+    if (!Array.isArray(options.replayFrames) || options.replayFrames.length > DEVELOPMENT_TRACE_LIMIT) {
+      dispose();
+      fail("development replay frames are malformed or oversized");
+    }
+    for (const entry of options.replayFrames) {
+      if (!entry || typeof entry.name !== "string" || !(entry.frame instanceof Uint8Array)) {
+        dispose();
+        fail("development replay frame is malformed");
+      }
+      acceptOutput(callWithFrame(entry.name, entry.frame));
+    }
+  }
+
   frameHost?.sync();
 
   if (resumed && !startupBarrier) {
@@ -2243,6 +2261,35 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
         }
       }
       return snapshot;
+    },
+    async replayDevelopment() {
+      if (
+        disposed ||
+        !developmentTracing ||
+        replayMode ||
+        developmentReplayFrames.length === 0 ||
+        !developmentReplayFrames.some((entry) => entry.name === "__glamour_init")
+      ) {
+        fail("isolated development replay is unavailable");
+      }
+      if (typeof document.createElement !== "function") {
+        fail("isolated development replay requires a document factory");
+      }
+      const replayRoot = document.createElement("div");
+      const start = developmentReplayFrames.find((entry) => entry.name === "__glamour_init");
+      const replayFrames = developmentReplayFrames.filter((entry) => entry !== start)
+        .map((entry) => ({ name: entry.name, frame: entry.frame.slice() }));
+      const replayApplication = await mountOptimized(wasmBytes, replayRoot, {
+        ...options,
+        document,
+        startFrame: start.frame.slice(),
+        replayFrames,
+        replayMode: true,
+        restoreSnapshot: undefined,
+        resume: undefined,
+        deferActivation: false,
+      });
+      return Object.freeze({ root: replayRoot, application: replayApplication });
     },
     activate(nextRoot) {
       if (disposed || !deferredActivation) fail("deferred activation is unavailable");
