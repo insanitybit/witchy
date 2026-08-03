@@ -1237,9 +1237,7 @@ fn checked_glamour_development_metadata(
             root_definition.map(type_definition_schema).unwrap_or_default()
         ),
     );
-    let aggregate = state_fields
-        .iter()
-        .any(|field| *field == GlamourDevelopmentField::Aggregate);
+    let aggregate = state_fields.contains(&GlamourDevelopmentField::Aggregate);
     let snapshot_codec = if aggregate && public_schema.is_some() {
         let owner = module.linked_entry.as_deref().unwrap_or_default();
         let name = |local: &str| {
@@ -3078,8 +3076,7 @@ fn assemble_wir_module_with_structs_mode(
     let glamour_state_field_shapes = if glamour_development.is_some_and(|metadata| {
         metadata
             .state_fields
-            .iter()
-            .any(|field| *field == GlamourDevelopmentField::Aggregate)
+            .contains(&GlamourDevelopmentField::Aggregate)
     })
     {
         let family = glamour_exports
@@ -4432,7 +4429,7 @@ fn assemble_wir_module_with_structs_mode(
                         raw_body: None,
                     });
                 }
-                let aggregate_development_layout = development_layout.clone();
+                let aggregate_development_layout = development_layout;
                 if let Some((
                     Some((snapshot_header, snapshot_length)),
                     _,
@@ -5297,15 +5294,13 @@ fn assemble_wir_module_with_structs_mode(
                     metadata.snapshot_format()
                         == GlamourDevelopmentMetadata::AGGREGATE_SNAPSHOT_FORMAT
                 }) {
-                    for name in ["__glamour_snapshot_length"] {
-                        pruned_globals.push(WirGlobal {
-                            name: name.into(),
-                            kind: WK::I32,
-                            mutable: true,
-                            init: GlobalInit::I32(0),
-                            export: None,
-                        });
-                    }
+                    pruned_globals.push(WirGlobal {
+                        name: "__glamour_snapshot_length".into(),
+                        kind: WK::I32,
+                        mutable: true,
+                        init: GlobalInit::I32(0),
+                        export: None,
+                    });
                 }
             }
             if cg.uses_diagnostic_sites {
