@@ -621,6 +621,7 @@ fn visit_wir_nodes<'a>(nodes: &'a [WirNode], visit: &mut impl FnMut(&'a WirNode)
             WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
                 visit_wir_nodes(body, visit);
             }
+            WirNode::Source { body, .. } => visit_wir_nodes(body, visit),
             WirNode::Br { cond, .. } => {
                 if let Some(condition) = cond {
                     visit_wir_expr(condition, visit);
