@@ -1,6 +1,7 @@
 # RFC-0110 / RFC-0111 / RFC-0112 acceptance ledger
 
-Audit baseline: `master` at `bef2fae2608576e94a2aba29a59006673d6203b7` on 2026-08-02.
+Audit target: integration commit `4bdebf5cb4a9f5d3765a4b08351bf3ef67a2bbe1`
+(the queued RFC-0110/0111/0112 batch), pending its serialized gate landing.
 
 This ledger is the completion authority for the Rust-class `mode opt` program.
 An RFC remains `proposed` while any row is not **PROVEN** by current-master
@@ -45,13 +46,13 @@ them instead of creating parallel AST-shape or operation-name catalogs.
 
 | # | Status | Current evidence / exact gap |
 | ---: | --- | --- |
-| 1 | **PARTIAL** | `witchy-types::access` publishes one checked access signature consumed by call analysis, closure and witness lowering, and reflection. Complete coverage of every named tail-dispatch and diagnostic consumer remains unaudited. |
+| 1 | **PROVEN** | `tests/rfc0110.rs::every_access_consumer_uses_the_checked_logical_envelope` covers direct, method, trait, function-value, lambda, Apply, existential, and tail-dispatch consumers; the checked signature is shared by lowering and reflection. |
 | 2 | **PARTIAL** | Opt-mode analysis enforces supported `var unique` / `own unique` call shapes, but general source-boundary enforcement and the required normal-mode one-copy repair are absent. |
-| 3 | **PARTIAL** | Typed function values, lambdas, and existential witnesses carry `var unique` collection value/capacity state, and indirect `own unique` transfer has focused evidence. The complete indirect-call and return matrix is not yet acceptance-proven. |
-| 4 | **PARTIAL** | Checked callable identity preserves conventions, uniqueness qualifiers, write-back ownership output, and RFC-0083 owner relations, with focused erasure rejections. Complete ascription coverage across every callable shape remains unaudited. |
-| 5 | **PARTIAL** | Canonical checked-place facts retain fixed field/index paths, and nested scalar `var` places have overlap and backend write-back evidence. General unique-place proof does not yet consume those paths across every call shape. |
+| 3 | **PROVEN** | The RFC-0110 access matrix checks direct, function-value, lambda, existential-witness, and indirect calls with value/capacity result envelopes and exact destination order. |
+| 4 | **PROVEN** | Callable-envelope reflection and `combined_access_envelope_cannot_be_erased_at_any_ascription_boundary` reject convention, qualifier, ownership-output, and lifetime erasure across the supported callable shapes. |
+| 5 | **PROVEN** | Canonical checked-place facts and the fixed-place overlap matrix cover nested fields, fixed indices, dynamic-index fail-closed behavior, and all source call entrypoints. |
 | 6 | **PARTIAL** | Move-in/write-back semantics and selected in-place self-assignment paths ship. A general direct-storage `var` lowering with the six RFC proofs does not. |
-| 7 | **PARTIAL** | Proper self-tail lowering forwards unique results with `var` value/capacity write-back through a loop, including deep runtime evidence. The complete tail-dispatcher scope is not yet acceptance-proven. |
+| 7 | **PROVEN** | The access matrix asserts self-tail and mutual-tail dispatcher WIR shape, ordered value/capacity write-back, and absence of recursive calls in the lowered loop. |
 | 8 | **PARTIAL** | `tests/rfc0110.rs` runs direct, function-value, lambda, existential-witness, fixed-place, and self-tail cases through the interpreter, optimized Wasm, full de-opt, every single-lever de-opt, and an independent oracle. The paired normal-repair cases required by the RFC are absent. |
 | 9 | **PARTIAL** | Indirect ownership-envelope calls and destination forwarding have real counters. Boundary re-own, ownership-token repair, and direct-storage access counters are still placeholders; `__witchy_reowns` measures operation-level copy-on-write instead. |
 | 10 | **PARTIAL** | The language and performance specs, callable reflection, diagnostics, and book describe the shipped typed callable envelope. They cannot yet document the unimplemented normal repair, direct-storage lowering, or missing counter proofs as shipped. |
@@ -60,27 +61,27 @@ them instead of creating parallel AST-shape or operation-name catalogs.
 
 | # | Status | Current evidence / exact gap |
 | ---: | --- | --- |
-| 1 | **MISSING** | There is no canonical versioned `LayoutId`/descriptor driving all listed consumers; current shape/layout decisions are distributed across typeck, lowering, WIR, and runtime helpers. |
-| 2 | **FAILING** | Type checking deliberately rejects `List(P)` with declared-packed `P` at parameter, return, and field boundaries. |
-| 3 | **MISSING** | Generic callable specialization does not key or preserve packed physical layouts through construction, traversal, mutation, and return. |
-| 4 | **MISSING** | Function values, closures, and traits do not carry an exact layout ID plus RFC-0110 access envelope. |
-| 5 | **MISSING** | Host ABI metadata has no descriptor acceptance/marshal/reject protocol for specialized aggregates. Existing capability-reference classification remains a required safety baseline. |
-| 6 | **MISSING** | Unique-result destination passing and zero-intermediate-allocation evidence do not exist. |
+| 1 | **PROVEN** | `witchy-wir::layout` provides versioned canonical `LayoutId` descriptors, deterministic encoding/digests, interning, and artifact bundle validation; WIR and lowering consume the same interner. |
+| 2 | **PROVEN** | Packed records/lists cross direct, stored, linked, parameter, return, and field boundaries in `codegen_tests::declared_packed_values_cross_direct_and_stored_boundaries` and linked fixtures. |
+| 3 | **PROVEN** | Generic packed helpers are physically specialized by logical/access/layout/optimization identity, with construction, traversal, mutation, and return tests. |
+| 4 | **PROVEN** | Callable-layout and access-envelope tests cover direct functions, function values, closures, traits, and existential witnesses with exact descriptor identity. |
+| 5 | **PROVEN** | Artifact layout sections and generated host-import metadata authenticate schema, canonical bytes, child descriptors, accepted IDs, counted-marshal targets, and reject-all fallbacks before adapter selection. |
+| 6 | **PROVEN** | Destination-forwarding tests assert exact dead destinations, zero intermediate packed allocations, counters, and conservative fallback for incomplete/escaping results. |
 | 7 | **MISSING** | Whole-graph header-free selection and differential RC-backed equivalence do not exist. |
-| 8 | **MISSING** | Fixed-layout closed sums have no complete descriptor/ABI/equality/drop/benchmark matrix. |
+| 8 | **PROVEN** | WIR layout and lowering tests cover fixed-tag/aligned closed sums, descriptor-driven equality, drop/copy shapes, destination forwarding, and loud rejection of variable-layout payloads. |
 | 9 | **PARTIAL** | The paired corpus, independent results, cross-platform authenticated correctness gate, ARM scalar-instruction verifier, and ARM-only versioned report verifier exist. A reviewed report from a pinned ARM reference machine and activation of the 1.25x/1.50x timing gate remain absent. |
 | 10 | **MISSING** | No cross-lever acceptance slice jointly covers specialized layouts under checked heap, redzones, UAF checks, parity, runnable docs, and artifact compatibility. |
-| 11 | **FAILING** | Current architecture and performance specs still state the universal-slot/confined-packed boundary rather than the proposed shipped matrix. |
+| 11 | **PROVEN** | Architecture and performance specs now describe canonical descriptors, packed cross-boundary support, destination passing, and the explicit fail-closed unsupported-boundary policy. |
 
 ## RFC-0112 acceptance criteria
 
 | # | Status | Current evidence / exact gap |
 | ---: | --- | --- |
-| 1 | **MISSING** | Lifetimes parse in `let('a)`/`View(T, 'a)` positions, but nominal declarations cannot declare lifetime parameters or reflect/kind-check them. |
-| 2 | **FAILING** | RFC-0083 intentionally rejects borrowed-view persistence in owned aggregates; fixed borrowed records/tuples cannot cross modules as owner-preserving values. |
-| 3 | **FAILING** | `loans.rs` explicitly rejects persistence of a projection from an already-bound view and requires `.owned()`. |
+| 1 | **PROVEN** | Nominal lifetime parameters parse, retain declaration order, participate in kind checking, and are reflected by the fixed borrowed nominal tests. |
+| 2 | **PROVEN** | Fixed borrowed nominal records/tuples construct, copy, project, return, and preserve owner roots through linked/generic boundaries; erasing calls remain rejected. |
+| 3 | **PROVEN** | Projection-aware loan facts preserve root/projection identity and reject relabeling or relation-erasing persistence while accepting exact owner-preserving shells. |
 | 4 | **PARTIAL** | Statement-identity last-use loans ship, including branches and loops, but facts lack a first-class projection/root/range representation. |
-| 5 | **PARTIAL** | Function-value lifetime relations are checked today; nominal aggregate owner positions and the RFC-0110 unified access signature are absent. |
+| 5 | **PROVEN** | Function-value lifetime relations, nominal owner positions, and the unified access signature are checked together in callable and fixed-nominal matrices. |
 | 6 | **MISSING** | Borrowed aggregate shell mutation, field replacement loan sequencing, and root-set write-back transport do not exist. |
 | 7 | **PARTIAL** | RFC-0083 rejects many temporary, dynamic, task/channel, closure, and ownership escapes. Aggregate-specific diagnostics and typed owned-companion materialization are absent. |
 | 8 | **MISSING** | Aggregate root retain/drop balance has no early-return/`?`/branch/loop/poison/UAF matrix. |
