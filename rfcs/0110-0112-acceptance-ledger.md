@@ -80,7 +80,7 @@ them instead of creating parallel AST-shape or operation-name catalogs.
 | 1 | **PROVEN** | Nominal lifetime parameters parse, retain declaration order, participate in kind checking, and are reflected by the fixed borrowed nominal tests. |
 | 2 | **PROVEN** | Fixed borrowed nominal records/tuples construct, copy, project, return, and preserve owner roots through linked/generic boundaries; erasing calls remain rejected. |
 | 3 | **PROVEN** | Projection-aware loan facts preserve root/projection identity and reject relabeling or relation-erasing persistence while accepting exact owner-preserving shells. |
-| 4 | **PARTIAL** | Statement-identity last-use loans ship, including branches and loops, but facts lack a first-class projection/root/range representation. |
+| 4 | **PROVEN** | `LoanOwnerRoot`, `LoanPlace`, `LoanProjection`, `LoanRootCompanion`, and `LoanEvent` preserve root/projection identity and fixed ranges. `loans_tests::persisted_projection_keeps_the_original_root_and_fixed_path`, `any_live_projection_blocks_mutation_of_its_owner_root`, and `fixed_ranges_are_facts_and_dynamic_projections_do_not_persist` cover persistence, overlap, and dynamic-index rejection across the checked facts. |
 | 5 | **PROVEN** | Function-value lifetime relations, nominal owner positions, and the unified access signature are checked together in callable and fixed-nominal matrices. |
 | 6 | **MISSING** | Borrowed aggregate shell mutation, field replacement loan sequencing, and root-set write-back transport do not exist. |
 | 7 | **PARTIAL** | RFC-0083 rejects many temporary, dynamic, task/channel, closure, and ownership escapes. Aggregate-specific diagnostics and typed owned-companion materialization are absent. |
