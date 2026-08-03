@@ -1514,9 +1514,8 @@ fn development_wasm_functions(
                             .map_err(|error| WebCommandError::failure(error.to_string()))?;
                         if let Name::Function(map) = subsection {
                             for naming in map {
-                                let naming = naming.map_err(|error| {
-                                    WebCommandError::failure(error.to_string())
-                                })?;
+                                let naming = naming
+                                    .map_err(|error| WebCommandError::failure(error.to_string()))?;
                                 names.insert(naming.index, naming.name.to_string());
                             }
                         }
@@ -1528,12 +1527,13 @@ fn development_wasm_functions(
     }
     let mut source_ranges = BTreeMap::<u32, Vec<_>>::new();
     for range in source_instructions {
-        source_ranges.entry(range.function_index).or_default().push(range);
+        source_ranges
+            .entry(range.function_index)
+            .or_default()
+            .push(range);
     }
     for ranges in source_ranges.values_mut() {
-        ranges.sort_by_key(|range| {
-            (range.instruction_start, range.instruction_end, range.line)
-        });
+        ranges.sort_by_key(|range| (range.line, range.instruction_start, range.instruction_end));
     }
     let mut expression_ranges = BTreeMap::<u32, Vec<_>>::new();
     for range in source_expressions {
@@ -1544,7 +1544,7 @@ fn development_wasm_functions(
     }
     for ranges in expression_ranges.values_mut() {
         ranges.sort_by_key(|range| {
-            (range.instruction_start, range.instruction_end, range.line)
+            (range.line, range.expression_ordinal, range.instruction_start, range.instruction_end)
         });
     }
     let mut records = Vec::new();
@@ -1611,8 +1611,17 @@ fn development_wasm_functions(
                 })
             })
             .collect::<Vec<_>>();
+
         let expressions = source
             .map(|source| {
+                let mut compiler_lines = BTreeMap::<u32, Vec<&witchy_wir::wir_encode::SourceExpressionInstructionRange>>::new();
+                if let Some(ranges) = expression_ranges.get(&index) {
+                    for range in ranges {
+                        compiler_lines.entry(range.line).or_default().push(range);
+                    }
+                }
+                let mut parser_statement_counters = BTreeMap::<u32, usize>::new();
+
                 source
                     .expression_spans
                     .iter()
@@ -1629,13 +1638,21 @@ fn development_wasm_functions(
                             },
                             "statementLine": span.statement_line,
                         });
-                        let matching = source_ranges
+                        let statement_ordinal = {
+                            let entry = parser_statement_counters
+                                .entry(span.statement_line)
+                                .or_default();
+                            let current = *entry;
+                            *entry = entry.saturating_add(1);
+                            current
+                        };
+                        let matching_statement = source_ranges
                             .get(&index)
                             .into_iter()
                             .flatten()
                             .filter(|range| range.line == span.statement_line)
                             .collect::<Vec<_>>();
-                        if let [range] = matching.as_slice()
+                        if let [range] = matching_statement.as_slice()
                             && let (Ok(instruction_start), Ok(instruction_end)) = (
                                 usize::try_from(range.instruction_start),
                                 usize::try_from(range.instruction_end),
@@ -1652,13 +1669,19 @@ fn development_wasm_functions(
                                 "byteEnd": byte_end,
                             });
                         }
-                        let expression_matching = expression_ranges
-                            .get(&index)
-                            .into_iter()
-                            .flatten()
-                            .filter(|range| range.line == span.statement_line)
-                            .collect::<Vec<_>>();
-                        if let [range] = expression_matching.as_slice()
+                        let matched_expression = compiler_lines
+                            .get(&span.statement_line)
+                            .and_then(|matches| matches.get(statement_ordinal))
+                            .or_else(|| {
+                                let line_matches = expression_ranges
+                                    .get(&index)
+                                    .into_iter()
+                                    .flatten()
+                                    .filter(|range| range.line == span.statement_line)
+                                    .collect::<Vec<_>>();
+                                if line_matches.len() == 1 { Some(line_matches[0]) } else { None }
+                            });
+                        if let Some(range) = matched_expression
                             && let (Ok(instruction_start), Ok(instruction_end)) = (
                                 usize::try_from(range.instruction_start),
                                 usize::try_from(range.instruction_end),
@@ -1673,6 +1696,7 @@ fn development_wasm_functions(
                                 "instructionEnd": range.instruction_end,
                                 "byteStart": byte_start,
                                 "byteEnd": byte_end,
+                                "expressionOrdinal": range.expression_ordinal,
                             });
                         }
                         record

@@ -56,6 +56,7 @@ pub struct SourceInstructionRange {
 pub struct SourceExpressionInstructionRange {
     pub function_index: u32,
     pub line: u32,
+    pub expression_ordinal: u32,
     pub instruction_start: u32,
     pub instruction_end: u32,
 }
@@ -825,11 +826,12 @@ fn encode_with_gc_source_map(
             });
         }
         source_expressions.extend(function.source_expressions.iter().filter_map(
-            |&(line, instruction_start, instruction_end)| {
+            |&(line, expression_ordinal, instruction_start, instruction_end)| {
                 (instruction_end > instruction_start).then_some(
                     SourceExpressionInstructionRange {
                         function_index,
                         line,
+                        expression_ordinal,
                         instruction_start,
                         instruction_end,
                     },
@@ -1030,7 +1032,8 @@ struct TrackedFunction {
     inner: Function,
     instruction_count: u32,
     source_ranges: Vec<(u32, u32, u32)>,
-    source_expressions: Vec<(u32, u32, u32)>,
+    source_expressions: Vec<(u32, u32, u32, u32)>,
+    expression_ordinal: u32,
     source_line: Option<u32>,
     expression_depth: u32,
 }
@@ -1043,6 +1046,7 @@ impl TrackedFunction {
             source_ranges: Vec::new(),
             source_expressions: Vec::new(),
             source_line: None,
+            expression_ordinal: 0,
             expression_depth: 0,
         }
     }
@@ -1325,7 +1329,9 @@ impl EncodeCtx<'_> {
             && instruction_end > instruction_start
             && let Some(line) = func.source_line
         {
-            func.source_expressions.push((line, instruction_start, instruction_end));
+            let expression_ordinal = func.expression_ordinal;
+            func.expression_ordinal = func.expression_ordinal.saturating_add(1);
+            func.source_expressions.push((line, expression_ordinal, instruction_start, instruction_end));
         }
     }
 

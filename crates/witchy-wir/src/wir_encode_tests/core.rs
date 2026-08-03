@@ -1165,6 +1165,7 @@
             [SourceExpressionInstructionRange {
                 function_index: 1,
                 line: 7,
+                expression_ordinal: 0,
                 instruction_start: 0,
                 instruction_end: 2,
             }]

@@ -1406,6 +1406,138 @@ pub fn web() -> Site:
     }
 
     #[test]
+    fn development_expression_mapping_matches_same_line_root_expression_ordinals() {
+        let root = temp_path("source-expression-ordinal");
+        let mut files = client_fixture_files("source-functions", "source_functions");
+        let source = files
+            .get_mut(Path::new("src/source_functions.witchy"))
+            .expect("starter source");
+        source.push_str("
+fn same_line_mix() -> Int:
+    1 + 2
+    3 + 4
+");
+        *source = source.replace("pub fn glamour_dispatch(state: BrowserState, _input: Bytes) -> BrowserState:
+    state","pub fn glamour_dispatch(state: BrowserState, _input: Bytes) -> BrowserState:
+    let _ = same_line_mix()
+    state");
+        create_project_atomically(&root, &files).expect("create source map project");
+
+        let project = load_project(&root).expect("load source map project");
+        let entry = path_text(&project.entry).expect("entry path");
+        let (checked, _) =
+            crate::link_file_checked(entry).expect("link source map fixture");
+        let compiled =
+            crate::commands::compile::compile_checked_to_development_wasm_cached(&checked)
+                .expect("compile");
+
+        let mut source_graph = development_source_graph(&project).expect("build source graph");
+        let mut statement_line = 0u32;
+        for source in source_graph.functions.iter_mut() {
+            if source.name == "same_line_mix" {
+                statement_line = source.start_line.saturating_add(1);
+                source.expression_spans = vec![
+                    witchy_syntax::parser::ExpressionSyntaxSpan {
+                        source: witchy_syntax::parser::SyntaxSpan {
+                            start: witchy_syntax::origin::SourcePosition {
+                                line: statement_line,
+                                column: 1,
+                            },
+                            end: witchy_syntax::origin::SourcePosition {
+                                line: statement_line,
+                                column: 9,
+                            },
+                        },
+                        statement_line,
+                    },
+                    witchy_syntax::parser::ExpressionSyntaxSpan {
+                        source: witchy_syntax::parser::SyntaxSpan {
+                            start: witchy_syntax::origin::SourcePosition {
+                                line: statement_line,
+                                column: 11,
+                            },
+                            end: witchy_syntax::origin::SourcePosition {
+                                line: statement_line,
+                                column: 17,
+                            },
+                        },
+                        statement_line,
+                    },
+                ];
+            }
+        }
+        assert_ne!(statement_line, 0, "same_line_mix source entry missing");
+
+        let mut same_line_index = None;
+        for payload in wasmparser::Parser::new(0).parse_all(&compiled.wasm) {
+            let payload = payload.expect("parse wasm");
+            if let wasmparser::Payload::CustomSection(section) = payload {
+                if let wasmparser::KnownCustom::Name(section) = section.as_known() {
+                    for subsection in section {
+                        let subsection = subsection.expect("parse name subsection");
+                        if let wasmparser::Name::Function(map) = subsection {
+                            for naming in map {
+                                let naming = naming.expect("parse function name");
+                                if naming.name.ends_with("same_line_mix") {
+                                    same_line_index = Some(naming.index);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let same_line_index = same_line_index.expect("same_line_mix function index");
+
+        let source_expressions = compiled
+            .source_expressions
+            .iter()
+            .map(|range| {
+                let mut range = range.clone();
+                if range.function_index == same_line_index {
+                    range.line = statement_line;
+                }
+                range
+            })
+            .collect::<Vec<_>>();
+
+        let wasm_functions =
+            development_wasm_functions(
+                &compiled.wasm,
+                &source_graph.functions,
+                &compiled.source_instructions,
+                &source_expressions,
+            )
+            .expect("map development functions");
+        let mapped = wasm_functions.as_array().expect("wasm functions").iter().find(|function| {
+            function["name"].as_str().is_some_and(|name| name.ends_with("same_line_mix"))
+        }).expect("compiled same_line_mix");
+        let expressions = mapped["expressionSpans"].as_array().expect("expression spans");
+        let mix_expressions = expressions
+            .iter()
+            .filter(|span| span["statementLine"].as_u64() == Some(u64::from(statement_line)))
+            .collect::<Vec<_>>();
+        assert_eq!(mix_expressions.len(), 2);
+
+        let ordinals = mix_expressions
+            .iter()
+            .map(|span| {
+                span["expressionMapping"]["expressionOrdinal"]
+                    .as_u64()
+                    .expect("expression ordinal")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ordinals, vec![0, 1]);
+        assert!(mix_expressions.iter().all(|span| span
+            .get("expressionMapping")
+            .is_some_and(|mapping| mapping.get("byteStart").is_some() && mapping.get("byteEnd").is_some()))
+        );
+
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn typed_static_site_emits_routes_without_browser_runtime() {
         let root = temp_path("static-site");
         let mut files = static_fixture_files("static-check", "static_check");
