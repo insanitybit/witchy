@@ -7,7 +7,7 @@
 //! module installs into `witchy_runtime`.
 
 use witchy_runtime::value::{NativeError as RuntimeError, NativeValue as Value};
-use witchy_syntax::ast::Module;
+use witchy_syntax::ast::{Item, Module};
 use witchy_syntax::intrinsics;
 
 fn type_error(msg: impl Into<String>) -> RuntimeError {
@@ -139,7 +139,13 @@ pub fn diff(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn parse_source_only_module(src: &str, op: &str) -> Result<Module, String> {
-    witchy_syntax::parser::parse_module(src).map_err(|e| format!("{op}: {e}"))
+    let module = witchy_syntax::parser::parse_module(src).map_err(|e| e.to_string())?;
+    if module.items.iter().any(|item| matches!(item, Item::Comptime(_))) {
+        return Err(format!(
+            "{op} does not support comptime source strings; use the source-file CLI path for expanded introspection"
+        ));
+    }
+    Ok(module)
 }
 
 fn checked_source_only_module(src: &str, op: &str) -> Result<Module, String> {
