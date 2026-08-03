@@ -58,10 +58,12 @@ if command -v jq >/dev/null 2>&1; then
         latest_status="$(jq -r 'if (.summary.failed // 1) == 0 then "ok" else "failed" end' "$latest_metrics")"
         if [ "$latest_status" = "ok" ]; then
             build="$(jq -r '.stages[] | select(.name=="build_workspace") | .duration_s // "n/a"' "$latest_metrics")"
+            compile="$(jq -r '.stages[] | select(.name=="compile_workspace") | .duration_s // "n/a"' "$latest_metrics")"
             test_compile="$(jq -r '.stages[] | select(.name=="test_compile") | .duration_s // "n/a"' "$latest_metrics")"
             tests="$(jq -r '.stages[] | select(.name=="tests") | .duration_s // "n/a"' "$latest_metrics")"
         else
             build="n/a"
+            compile="n/a"
             test_compile="n/a"
             tests="n/a"
         fi
@@ -70,6 +72,7 @@ if command -v jq >/dev/null 2>&1; then
     else
         latest_status="missing"
         build="n/a"
+        compile="n/a"
         test_compile="n/a"
         tests="n/a"
         latest_branch="n/a"
@@ -99,8 +102,8 @@ if command -v jq >/dev/null 2>&1; then
         printf '  "since": "%s",\n' "$since"
         printf '  "merge_queue": {"submissions":%s,"merged_branches":%s,"green_gates":%s,"failed_attempts":%s,"attempt_p50_s":"%s","attempt_p90_s":"%s"},\n' \
             "$submissions" "$merged" "$green_gates" "$failed" "$p50" "$p90"
-        printf '  "latest_local_metrics": {"status":"%s","branch":"%s","git_rev":"%s","build_s":"%s","test_compile_s":"%s","tests_s":"%s"}\n' \
-            "$latest_status" "$latest_branch" "$latest_rev" "$build" "$test_compile" "$tests"
+        printf '  "latest_local_metrics": {"status":"%s","branch":"%s","git_rev":"%s","build_s":"%s","compile_s":"%s","test_compile_s":"%s","tests_s":"%s"}\n' \
+            "$latest_status" "$latest_branch" "$latest_rev" "$build" "$compile" "$test_compile" "$tests"
         printf '}\n'
         exit 0
     fi
@@ -108,6 +111,7 @@ if command -v jq >/dev/null 2>&1; then
     printf 'Performance health snapshot\n'
     printf '  latest local run: status=%s branch=%s rev=%s\n' "$latest_status" "$latest_branch" "$latest_rev"
     printf '  latest build s: %s\n' "$build"
+    printf '  latest compile s: %s\n' "$compile"
     printf '  latest test(no-run) s: %s\n' "$test_compile"
     printf '  latest tests s: %s\n' "$tests"
     printf '  merge queue (since %s): submissions=%s merged=%s green_gates=%s failed=%s\n' \

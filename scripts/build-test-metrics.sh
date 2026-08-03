@@ -5,7 +5,8 @@ print_help() {
     cat <<'USAGE'
 Usage: ./scripts/build-test-metrics.sh [options]
 
-Capture stage timings for local build, test-compile, and optional full test runs.
+Capture stage timings for local build, compile, test-compile, and optional full
+test runs.
 
 Options:
   --target-dir <dir>       Pass CARGO_TARGET_DIR to all measured commands
@@ -137,7 +138,8 @@ printf 'timestamp,label,git_rev,branch,stage,duration_s,exit_code\n' >"$run_file
 
 failed=0
 
-run_stage build_workspace cargo build --workspace --all-targets || failed=1
+run_stage build_workspace cargo build --workspace || failed=1
+run_stage compile_workspace cargo check --workspace --all-targets || failed=1
 run_stage test_compile cargo test --workspace --no-run || failed=1
 if [[ "$include_tests" -eq 1 ]]; then
     run_stage tests cargo test --workspace || failed=1
