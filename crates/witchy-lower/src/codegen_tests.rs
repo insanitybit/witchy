@@ -907,6 +907,8 @@ fn main() -> Int:
         let source = r#"
 mode opt
 
+import list
+
 type Point packed:
     x: Int
     y: Int
