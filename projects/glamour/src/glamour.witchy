@@ -4920,10 +4920,12 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
             JsonObject([("slot", JsonString(kind)), ("data", JsonString(data))])
         IslandBoundary(markup) ->
             match markup:
-                IslandMarkup(key, _html, _resume, _templates) -> JsonObject([("island", JsonObject([("key", JsonString(key))]))])
+                IslandMarkup(key, html, _resume, _templates) -> JsonObject([("island", JsonObject([("key", JsonString(key)), ("html", JsonString(html))]))])
         InteractiveBoundary(plan) ->
             match plan:
-                IslandPlan(key, _source_origin, _activation, _prefetch, _name, _start, _markup) -> JsonObject([("island", JsonObject([("key", JsonString(key))]))])
+                IslandPlan(key, _source_origin, _activation, _prefetch, _name, _start, markup) ->
+                    match markup:
+                        IslandMarkup(_markup_key, html, _resume, _templates) -> JsonObject([("island", JsonObject([("key", JsonString(key)), ("html", JsonString(html))]))])
         Element(tag, attrs, children) ->
             var ajs: List(Json) = []
             for a in attrs:

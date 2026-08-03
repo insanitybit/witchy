@@ -89,6 +89,9 @@ function syncRenderedSecretSlots(dispatch, vnode) {
 // A host SLOT (RFC-0041): {"slot": kind, "data": payload}. The host's `kind` renderer mounts
 // a widget here (main frame); glamour renders it once and NEVER diffs into it.
 const isSlot = (v) => v != null && typeof v.slot === "string" && typeof v.data === "string";
+// Compatibility-host island records carry their compiler-authenticated static fallback.
+const isIsland = (v) =>
+  v != null && v.island != null && typeof v.island.key === "string" && typeof v.island.html === "string";
 
 // (BUG-260) The DOM element ALLOWLIST — the structural XSS boundary for the live sink. A pure
 // rune emits an arbitrary `element(tag, …)`, so `createElement` on an unvalidated name would
@@ -1008,6 +1011,7 @@ function createNode(doc, v, dispatch) {
   if (isCompartment(v)) return mountCompartment(doc, v, dispatch);
   if (isSecret(v)) return mountSecretInput(doc, v, dispatch);
   if (isSlot(v)) return mountSlot(doc, v, dispatch);
+  if (isIsland(v)) return mountIslandFallback(doc, v, dispatch);
   if (!isElement(v)) {
     throw new Error(`glamour-dom: malformed vnode: ${JSON.stringify(v)}`);
   }
@@ -1132,6 +1136,42 @@ function mountSlot(doc, node, dispatch) {
   code.appendChild(doc.createTextNode(node.data));
   pre.appendChild(code);
   return pre;
+}
+
+function decodeStaticEntity(value) {
+  return value.replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+}
+
+// Materialize only the bounded compiler-emitted fallback grammar. It never assigns
+// innerHTML and routes every attribute through the ordinary sink validator.
+function mountIslandFallback(doc, node, dispatch) {
+  const root = doc.createElement("div");
+  root.setAttribute("data-glamour-island-key", node.island.key);
+  const stack = [root];
+  const tokens = node.island.html.match(/<!--[\s\S]*?-->|<[^>]*>|[^<]+/g) || [];
+  for (const token of tokens) {
+    if (token.startsWith("<!--")) continue;
+    if (token.startsWith("</")) { if (stack.length > 1) stack.pop(); continue; }
+    if (!token.startsWith("<")) {
+      stack[stack.length - 1].appendChild(doc.createTextNode(decodeStaticEntity(token)));
+      continue;
+    }
+    const match = token.match(/^<([A-Za-z][A-Za-z0-9:-]*)([\s\S]*?)(\/?)>$/);
+    if (!match) throw new Error("glamour-dom: malformed island fallback");
+    const [, tag, rawAttrs, selfClosing] = match;
+    const safeTag = isSafeElement(tag) ? tag : "span";
+    const element = doc.createElement(safeTag);
+    if (safeTag !== tag) element.setAttribute("data-glamour-blocked-tag", tag);
+    const attrs = /([A-Za-z_:][A-Za-z0-9:_.-]*)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s]+)))?/g;
+    let attr;
+    while ((attr = attrs.exec(rawAttrs)) !== null) {
+      applyAttr(element, ["prop", attr[1], decodeStaticEntity(attr[2] ?? attr[3] ?? attr[4] ?? "")], dispatch);
+    }
+    stack[stack.length - 1].appendChild(element);
+    if (!selfClosing && !["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"].includes(tag.toLowerCase())) stack.push(element);
+  }
+  return root;
 }
 
 // (BUG-017) Membership test for a `UiFetch` method-set carried on the `http` wire cmd.
