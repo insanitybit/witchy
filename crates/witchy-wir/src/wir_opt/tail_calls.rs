@@ -1171,6 +1171,7 @@ fn default_value(ty: &WirTy) -> WirExpr {
 fn rewrite_function_tail(seq: &mut WirSeq, ctx: &TailCtx) -> usize {
     let Some(last) = seq.last_mut() else { return 0 };
     match last {
+        WirNode::Source { body, .. } => rewrite_function_tail(body, ctx),
         WirNode::Push(expr) => {
             let count = rewrite_tail_value_expr(expr, ctx);
             let expr = match std::mem::replace(last, WirNode::Unreachable) {
@@ -1190,6 +1191,7 @@ fn rewrite_tail_value_seq(seq: &mut WirSeq, ctx: &TailCtx) -> usize {
     let Some(last) = seq.last_mut() else { return explicit };
     explicit
         + match last {
+            WirNode::Source { body, .. } => rewrite_tail_value_seq(body, ctx),
             WirNode::Push(expr) | WirNode::Return(Some(expr)) => {
                 rewrite_tail_value_expr(expr, ctx)
             }
@@ -1365,6 +1367,7 @@ fn rewrite_result_branches(seq: &mut WirSeq, target: &str, ctx: &TailCtx) -> usi
     }
     for node in seq {
         count += match node {
+            WirNode::Source { body, .. } => rewrite_result_branches(body, target, ctx),
             WirNode::If { then_, els, .. } => {
                 rewrite_result_branches(then_, target, ctx)
                     + rewrite_result_branches(els, target, ctx)
@@ -1384,6 +1387,7 @@ fn rewrite_explicit_returns_seq(seq: &mut WirSeq, ctx: &TailCtx) -> usize {
 
 fn rewrite_explicit_returns_node(node: &mut WirNode, ctx: &TailCtx) -> usize {
     match node {
+        WirNode::Source { body, .. } => rewrite_explicit_returns_seq(body, ctx),
         WirNode::Return(Some(expr)) => rewrite_tail_value_expr(expr, ctx),
         WirNode::If { cond, then_, els, .. } => {
             rewrite_explicit_returns_expr(cond, ctx)

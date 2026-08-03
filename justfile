@@ -188,15 +188,14 @@ e2e-quick:
 
 # --- Book & playground ----------------------------------------------------
 
-# Build "The witchy Book" — the RFC-0041 docs bundle (glamour app + book content
-# compiled to a set of static files) into ./dist, explicitly permitting an
-# absent browser compiler: the Run cells show a clear "missing compiler" error.
-# Use `just docs-build` (or `book-serve`) for a complete runnable bundle.
+# Build "The witchy Book" as native static HTML plus compiler-lowered regions
+# into ./dist. This form explicitly omits the browser compiler, so runnable
+# fences remain inert. Use `just docs-build` (or `book-serve`) for editable cells.
 book: build-release
     ./scripts/build-docs.sh --allow-missing-compiler dist
 
-# Build the COMPLETE runnable bundle (fresh browser compiler included), then
-# serve it locally at http://localhost:8000 — Run cells and /witchy.wasm work.
+# Build the complete bundle (fresh browser compiler and audited runnable host),
+# then serve it locally at http://localhost:8000.
 book-serve: docs-build
     python3 -m http.server -d dist 8000
 

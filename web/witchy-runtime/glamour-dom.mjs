@@ -32,6 +32,11 @@ import { instantiate } from "./witchy-runtime.mjs";
 //   batch : {"cmd": "batch", "cmds": [<cmd>...]}
 const isText = (v) => v != null && typeof v.text === "string";
 const isElement = (v) => v != null && typeof v.el === "string";
+const isPlanned = (v) =>
+  v != null &&
+  v.plan != null &&
+  typeof v.plan === "object" &&
+  v.node != null;
 // An isolated foreign-code compartment (RFC-0015): {"compartment": renderer, "grant":
 // json-string, "on": msg-tag}. The renderer runs in a locked-down iframe, never the page.
 const isCompartment = (v) => v != null && typeof v.compartment === "string";
@@ -59,7 +64,9 @@ const secretSlot = (v) => `${escSlot(v.secret.form)}/${escSlot(v.secret.field)}`
 // disappeared slots so removing then remounting a field cannot resurrect its
 // old value.
 function collectSecretSlots(v, slots = new Set()) {
-  if (isSecret(v)) {
+  if (isPlanned(v)) {
+    collectSecretSlots(v.node, slots);
+  } else if (isSecret(v)) {
     slots.add(secretSlot(v));
   } else if (isKeyed(v)) {
     collectSecretSlots(v.node, slots);
@@ -121,10 +128,13 @@ const isValidEventName = (name) =>
 // raw invalid wire name could survive an update or reach removeAttribute.
 function attrIdentity(attr) {
   const [kind, name] = attr;
-  if (kind === "prop") {
+  if (["prop", "attr", "bool", "url", "class", "aria"].includes(kind)) {
     return ["prop", isValidAttrName(name) ? name : "data-glamour-invalid-attr"];
   }
-  if (kind === "on" || kind === "oninput") {
+  if (kind === "property") {
+    return ["property", String(name)];
+  }
+  if (kind === "on" || kind === "oninput" || kind === "decode") {
     return isValidEventName(name)
       ? ["event", name]
       : ["prop", "data-glamour-invalid-event"];
@@ -136,6 +146,61 @@ function attrIdentity(attr) {
 // as glamour's `valid_renderer_id`: lowercase ASCII alnum / `-` / `_`, leading alnum, non-empty.
 // Excludes `/ . % ? #` so a crafted id can't escape the `/compartments/<id>/` namespace.
 const isValidRendererId = (id) => typeof id === "string" && /^[a-z0-9][a-z0-9_-]*$/.test(id);
+const isStableRuntimeId = (id) =>
+  typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/.test(id);
+
+const completionVariant = (name, values = []) => ({
+  $variant: name,
+  $values: values,
+});
+
+// A typed Cmd callback stays inside Witchy. Glamour serializes callback(ProbeA)
+// and callback(ProbeB); this host validates that they differ at exactly one
+// protocol-owned probe and fills that slot with the real result. Nested
+// Cmd.map wrappers are preserved because the surrounding message is unchanged.
+function fillCompletion(replyA, replyB, probeA, probeB, result) {
+  let holes = 0;
+  const isProbe = (value, name) =>
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    value.$variant === name &&
+    Array.isArray(value.$values) &&
+    value.$values.length === 0 &&
+    Object.keys(value).length === 2;
+
+  const walk = (left, right) => {
+    if (isProbe(left, probeA) && isProbe(right, probeB)) {
+      holes += 1;
+      return result;
+    }
+    if (left === null || right === null || typeof left !== "object" || typeof right !== "object") {
+      if (Object.is(left, right)) return left;
+      throw new Error("glamour-dom: completion callback changes outside its result slot");
+    }
+    if (Array.isArray(left) || Array.isArray(right)) {
+      if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+        throw new Error("glamour-dom: completion callback changes message shape");
+      }
+      return left.map((value, index) => walk(value, right[index]));
+    }
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (
+      leftKeys.length !== rightKeys.length ||
+      leftKeys.some((key) => !Object.prototype.hasOwnProperty.call(right, key))
+    ) {
+      throw new Error("glamour-dom: completion callback changes message fields");
+    }
+    return Object.fromEntries(leftKeys.map((key) => [key, walk(left[key], right[key])]));
+  };
+
+  const message = walk(replyA, replyB);
+  if (holes !== 1) {
+    throw new Error(`glamour-dom: completion callback must preserve exactly one result slot (found ${holes})`);
+  }
+  return message;
+}
 
 /**
  * Mount a glamour rune into `root`. Returns `{ dispatch, getModel, unmount }`.
@@ -144,6 +209,9 @@ const isValidRendererId = (id) => typeof id === "string" && /^[a-z0-9][a-z0-9_-]
  * @param {Element} root            the DOM element to render into
  * @param {object} [opts]
  * @param {object} [opts.initialModel]  the initial model as a JS value (default `{}`)
+ * @param {object} [opts.start]         Program-mode startup data; when present,
+ *                                      the initial call sends `{start}` instead
+ *                                      of `{model}`
  * @param {string} [opts.stepExport]    the export name (default `__export_export_step`)
  * @param {Document} [opts.document]    the DOM document (default the global `document`;
  *                                      pass a jsdom document for headless tests)
@@ -153,7 +221,11 @@ const isValidRendererId = (id) => typeof id === "string" && /^[a-z0-9][a-z0-9_-]
  *                                      headless test can drive a fake clock — this
  *                                      is the capability the rune lacks and the
  *                                      shell holds.
+ * @param {function} [opts.setInterval] repeating timer used by `Sub.Every`
+ * @param {function} [opts.clearInterval] cancellation pair for `setInterval`
  * @param {object} [opts.instantiateOpts]  forwarded to the RFC-0007 host shim
+ * @param {function} [opts.onProtocolStep] called after each rune step with the
+ *                                      current JSON bridge byte counts
  */
 export async function mount(wasmBytes, root, opts = {}) {
   const doc = opts.document || (typeof document !== "undefined" ? document : null);
@@ -164,6 +236,10 @@ export async function mount(wasmBytes, root, opts = {}) {
   // headless test injects a fake/controllable clock here.
   const setTimer =
     opts.setTimeout || (typeof setTimeout !== "undefined" ? setTimeout : null);
+  const setRepeating =
+    opts.setInterval || (typeof setInterval !== "undefined" ? setInterval : null);
+  const clearRepeating =
+    opts.clearInterval || (typeof clearInterval !== "undefined" ? clearInterval : null);
   // The network is the shell's authority too: the rune emits an `http` Cmd DESCRIPTION;
   // the shell performs the fetch — attaching any session credential ITSELF via
   // `opts.authHeaders` so the token never enters the rune — and dispatches the result
@@ -173,14 +249,41 @@ export async function mount(wasmBytes, root, opts = {}) {
   const history = opts.history || (typeof window !== "undefined" ? window.history : null);
   const location = opts.location || (typeof window !== "undefined" ? window.location : null);
 
-  const { callString } = await instantiate(wasmBytes, opts.instantiateOpts || {});
+  const makeRuntime = opts.instantiate || instantiate;
+  const { callString, memory } = await makeRuntime(
+    wasmBytes,
+    opts.instantiateOpts || {},
+  );
+  const protocolStats = {
+    steps: 0,
+    inputBytes: 0,
+    outputBytes: 0,
+  };
+  const utf8Bytes = (value) => {
+    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(value).byteLength;
+    // TextEncoder is present in supported browsers and maintained Node releases.
+    // Keep a correct fallback for small embedded hosts.
+    return unescape(encodeURIComponent(value)).length;
+  };
 
   // Call the rune's pure step function. `extra` is `{}` for the initial render or
   // `{ msg }` after an event; the rune returns `{ model, vnode, cmd }` (or
   // `{ error }`). `cmd` is the effect DESCRIPTION the shell interprets below.
-  const step = (model, extra) => {
-    const input = JSON.stringify({ model, ...extra });
+  const step = (model, extra, start = undefined) => {
+    const input = JSON.stringify(
+      start === undefined ? { model, ...extra } : { start, ...extra },
+    );
     const out = callString(stepExport, input);
+    const sample = {
+      inputBytes: utf8Bytes(input),
+      outputBytes: utf8Bytes(out),
+    };
+    protocolStats.steps += 1;
+    protocolStats.inputBytes += sample.inputBytes;
+    protocolStats.outputBytes += sample.outputBytes;
+    if (typeof opts.onProtocolStep === "function") {
+      opts.onProtocolStep({ step: protocolStats.steps, ...sample });
+    }
     const parsed = JSON.parse(out);
     if (parsed.error) throw new Error(`glamour rune step error: ${parsed.error}`);
     return parsed; // { model, vnode, cmd }
@@ -199,9 +302,38 @@ export async function mount(wasmBytes, root, opts = {}) {
   // be cancelled, and the popstate listener is removed, on unmount.
   let disposed = false;
   const timers = new Set();
+  const stableTimers = new Map();
+  const stableEffects = new Map();
+  const activeSubscriptions = new Map();
+  const templatePlans = new Map();
   const clearTimer =
     opts.clearTimeout || (typeof clearTimeout !== "undefined" ? clearTimeout : null);
   let removeRouteListener = null;
+
+  const cancelStable = (id) => {
+    const timer = stableTimers.get(id);
+    if (timer && clearTimer) clearTimer(timer.handle);
+    stableTimers.delete(id);
+    const effect = stableEffects.get(id);
+    if (effect && effect.cancel) effect.cancel();
+    stableEffects.delete(id);
+  };
+
+  const beginStableEffect = (id) => {
+    if (!isStableRuntimeId(id)) {
+      throw new Error("glamour-dom: malformed stable command id");
+    }
+    cancelStable(id);
+    const generation = {};
+    stableEffects.set(id, { generation, cancel: null });
+    return generation;
+  };
+
+  const finishStableEffect = (id, generation, message) => {
+    if (stableEffects.get(id)?.generation !== generation) return;
+    stableEffects.delete(id);
+    dispatch(message);
+  };
 
   // interpretCmd(cmd) — PERFORM the effect the rune merely described. The rune
   // cannot do any of this (it holds no capability); the shell does, because the
@@ -221,18 +353,45 @@ export async function mount(wasmBytes, root, opts = {}) {
     if (disposed) return;                          // (BUG-377) no effects after unmount
     if (!cmd || typeof cmd.cmd !== "string") return;
     if (cmd.cmd === "none") return;
+    if (cmd.cmd === "immediate") {
+      Promise.resolve().then(() => dispatch(cmd.msg));
+      return;
+    }
     if (cmd.cmd === "after") {
       if (!setTimer) throw new Error("glamour-dom: an `after` Cmd needs a timer (pass opts.setTimeout)");
       // (BUG-017) The host is the real authority on the timer floor: re-clamp the delay to the
       // token's `min_ms` carried on the wire, rather than trusting the emitted `ms` blindly.
       const ms = Math.max(Number(cmd.ms) || 0, Number(cmd.min_ms) || 0);
-      // (BUG-377) Track the id so unmount can cancel a still-pending timer.
+      // A stable ID gives replacement/cancellation semantics. The callback
+      // verifies its generation so even an already-queued stale callback is inert.
+      if (typeof cmd.id === "string" && cmd.id) {
+        if (!isStableRuntimeId(cmd.id)) {
+          throw new Error("glamour-dom: malformed stable command id");
+        }
+        cancelStable(cmd.id);
+        const generation = {};
+        const handle = setTimer(() => {
+          if (stableTimers.get(cmd.id)?.generation !== generation) return;
+          stableTimers.delete(cmd.id);
+          dispatch(cmd.msg);
+        }, ms);
+        stableTimers.set(cmd.id, { handle, generation });
+        return;
+      }
+      // Compatibility timer without an identity.
       let id;
       id = setTimer(() => {
         timers.delete(id);
         dispatch(cmd.msg);
       }, ms);
       timers.add(id);
+      return;
+    }
+    if (cmd.cmd === "cancel") {
+      if (typeof cmd.id !== "string" || !cmd.id) {
+        throw new Error("glamour-dom: malformed `cancel` cmd");
+      }
+      cancelStable(cmd.id);
       return;
     }
     if (cmd.cmd === "batch") {
@@ -251,11 +410,54 @@ export async function mount(wasmBytes, root, opts = {}) {
       const headers = opts.authHeaders ? opts.authHeaders() : {};
       const init = { method: cmd.method, headers };
       if (cmd.body) init.body = cmd.body;
+      const typed = cmd.reply_a !== undefined || cmd.reply_b !== undefined;
+      if (typed) {
+        fillCompletion(
+          cmd.reply_a,
+          cmd.reply_b,
+          "HttpProbeA0107",
+          "HttpProbeB0107",
+          completionVariant("HttpFailure", ["validation"]),
+        );
+      }
+      const generation = typed ? beginStableEffect(cmd.id) : null;
       Promise.resolve(doFetch(cmd.url, init))
         .then((resp) => Promise.resolve(resp.text()).then((body) => ({ status: resp.status, body })))
-        .then(({ status, body }) => dispatch({ $variant: cmd.tag, $values: [status, body] }))
+        .then(({ status, body }) => {
+          if (typed) {
+            finishStableEffect(
+              cmd.id,
+              generation,
+              fillCompletion(
+                cmd.reply_a,
+                cmd.reply_b,
+                "HttpProbeA0107",
+                "HttpProbeB0107",
+                completionVariant("HttpResponse", [status, body]),
+              ),
+            );
+          } else {
+            dispatch({ $variant: cmd.tag, $values: [status, body] });
+          }
+        })
         // A transport error is status 0 — an ordinary `update` arm, never an exception.
-        .catch((e) => dispatch({ $variant: cmd.tag, $values: [0, String(e)] }));
+        .catch((e) => {
+          if (typed) {
+            finishStableEffect(
+              cmd.id,
+              generation,
+              fillCompletion(
+                cmd.reply_a,
+                cmd.reply_b,
+                "HttpProbeA0107",
+                "HttpProbeB0107",
+                completionVariant("HttpFailure", [String(e)]),
+              ),
+            );
+          } else {
+            dispatch({ $variant: cmd.tag, $values: [0, String(e)] });
+          }
+        });
       return;
     }
     if (cmd.cmd === "nav") {
@@ -263,8 +465,23 @@ export async function mount(wasmBytes, root, opts = {}) {
       // authorized base is FAIL CLOSED (no pushState, no route msg).
       if (typeof cmd.path !== "string") return;
       if (cmd.base != null && !cmd.path.startsWith(cmd.base)) return;
+      const typed = cmd.reply_a !== undefined || cmd.reply_b !== undefined;
+      const completed = typed
+        ? fillCompletion(
+            cmd.reply_a,
+            cmd.reply_b,
+            "NavigationProbeA0107",
+            "NavigationProbeB0107",
+            completionVariant("Navigated", [cmd.path]),
+          )
+        : null;
+      const generation = typed ? beginStableEffect(cmd.id) : null;
       if (history) history.pushState({}, "", cmd.path);
-      if (opts.routeTag) dispatch({ $variant: opts.routeTag, $values: [cmd.path] });
+      if (typed) {
+        finishStableEffect(cmd.id, generation, completed);
+      } else if (opts.routeTag) {
+        dispatch({ $variant: opts.routeTag, $values: [cmd.path] });
+      }
       return;
     }
     if (cmd.cmd === "port") {
@@ -274,13 +491,61 @@ export async function mount(wasmBytes, root, opts = {}) {
       // port IDENTITY before invoking: a forged/malformed `port` command is refused. The
       // registered `opts.ports` keys ARE the port allowlist; an optional `opts.allowedPorts`
       // narrows it further for the mounted app.
-      if (typeof cmd.port !== "string" || typeof cmd.tag !== "string") throw new Error("glamour-dom: malformed `port` cmd");
+      const typed = cmd.reply_a !== undefined || cmd.reply_b !== undefined;
+      if (
+        typeof cmd.port !== "string" ||
+        (typed ? !isStableRuntimeId(cmd.id) : typeof cmd.tag !== "string")
+      ) {
+        throw new Error("glamour-dom: malformed `port` cmd");
+      }
       if (!portAllowed(cmd.port)) throw new Error(`glamour-dom: port \`${cmd.port}\` is not in the allowed-port policy`);
       const fn = opts.ports && opts.ports[cmd.port];
       if (!fn) throw new Error(`glamour-dom: no port \`${cmd.port}\` (pass opts.ports.${cmd.port})`);
+      if (typed) {
+        fillCompletion(
+          cmd.reply_a,
+          cmd.reply_b,
+          "PortProbeA0107",
+          "PortProbeB0107",
+          completionVariant("PortFailure", ["validation"]),
+        );
+      }
+      const generation = typed ? beginStableEffect(cmd.id) : null;
       Promise.resolve(fn(cmd.arg))
-        .then((result) => dispatch({ $variant: cmd.tag, $values: [String(result)] }))
-        .catch((e) => dispatch({ $variant: cmd.tag, $values: ["error:" + String(e)] }));
+        .then((result) => {
+          if (typed) {
+            finishStableEffect(
+              cmd.id,
+              generation,
+              fillCompletion(
+                cmd.reply_a,
+                cmd.reply_b,
+                "PortProbeA0107",
+                "PortProbeB0107",
+                completionVariant("PortResponse", [String(result)]),
+              ),
+            );
+          } else {
+            dispatch({ $variant: cmd.tag, $values: [String(result)] });
+          }
+        })
+        .catch((e) => {
+          if (typed) {
+            finishStableEffect(
+              cmd.id,
+              generation,
+              fillCompletion(
+                cmd.reply_a,
+                cmd.reply_b,
+                "PortProbeA0107",
+                "PortProbeB0107",
+                completionVariant("PortFailure", [String(e)]),
+              ),
+            );
+          } else {
+            dispatch({ $variant: cmd.tag, $values: ["error:" + String(e)] });
+          }
+        });
       return;
     }
     if (cmd.cmd === "submit_secret") {
@@ -290,7 +555,14 @@ export async function mount(wasmBytes, root, opts = {}) {
       // (BUG-357) Validate the SHAPE, the port IDENTITY, and that `slot` names a CURRENTLY
       // RENDERED host-owned secret — so a forged command cannot exfiltrate an arbitrary slot
       // or invoke an un-granted port.
-      if (typeof cmd.slot !== "string" || typeof cmd.port !== "string" || typeof cmd.tag !== "string") throw new Error("glamour-dom: malformed `submit_secret` cmd");
+      const typed = cmd.reply_a !== undefined || cmd.reply_b !== undefined;
+      if (
+        typeof cmd.slot !== "string" ||
+        typeof cmd.port !== "string" ||
+        (typed ? !isStableRuntimeId(cmd.id) : typeof cmd.tag !== "string")
+      ) {
+        throw new Error("glamour-dom: malformed `submit_secret` cmd");
+      }
       const renderedSlots = dispatch.__secretSlots || new Set();
       if (!renderedSlots.has(cmd.slot)) throw new Error("glamour-dom: submit_secret for a slot that is not a rendered host-owned secret");
       if (!portAllowed(cmd.port)) throw new Error(`glamour-dom: port \`${cmd.port}\` is not in the allowed-port policy`);
@@ -298,9 +570,51 @@ export async function mount(wasmBytes, root, opts = {}) {
       const secret = typeof store[cmd.slot] === "string" ? store[cmd.slot] : "";
       const fn = (opts.secretPorts && opts.secretPorts[cmd.port]) || (opts.ports && opts.ports[cmd.port]);
       if (!fn) throw new Error(`glamour-dom: no port \`${cmd.port}\` for submit_secret (pass opts.ports.${cmd.port})`);
+      if (typed) {
+        fillCompletion(
+          cmd.reply_a,
+          cmd.reply_b,
+          "PortProbeA0107",
+          "PortProbeB0107",
+          completionVariant("PortFailure", ["validation"]),
+        );
+      }
+      const generation = typed ? beginStableEffect(cmd.id) : null;
       Promise.resolve(fn(secret))
-        .then((result) => dispatch({ $variant: cmd.tag, $values: [String(result)] }))
-        .catch((e) => dispatch({ $variant: cmd.tag, $values: ["error:" + String(e)] }));
+        .then((result) => {
+          if (typed) {
+            finishStableEffect(
+              cmd.id,
+              generation,
+              fillCompletion(
+                cmd.reply_a,
+                cmd.reply_b,
+                "PortProbeA0107",
+                "PortProbeB0107",
+                completionVariant("PortResponse", [String(result)]),
+              ),
+            );
+          } else {
+            dispatch({ $variant: cmd.tag, $values: [String(result)] });
+          }
+        })
+        .catch((e) => {
+          if (typed) {
+            finishStableEffect(
+              cmd.id,
+              generation,
+              fillCompletion(
+                cmd.reply_a,
+                cmd.reply_b,
+                "PortProbeA0107",
+                "PortProbeB0107",
+                completionVariant("PortFailure", [String(e)]),
+              ),
+            );
+          } else {
+            dispatch({ $variant: cmd.tag, $values: ["error:" + String(e)] });
+          }
+        });
       return;
     }
     throw new Error(`glamour-dom: unknown cmd kind \`${cmd.cmd}\``);
@@ -312,17 +626,67 @@ export async function mount(wasmBytes, root, opts = {}) {
   // JSON `to_json` embedded in an `on` attr, or carried by an `after` Cmd).
   const dispatch = (msg) => {
     if (disposed) return;                          // (BUG-377) a late callback is a no-op
-    const { model: nextModel, vnode, cmd } = step(model, { msg });
+    const { model: nextModel, vnode, cmd, subs } = step(model, { msg });
     domRoot = patch(doc, root, domRoot, lastVNode, vnode, dispatch);
     syncRenderedSecretSlots(dispatch, vnode);
     model = nextModel;
     lastVNode = vnode;
+    syncSubscriptions(subs);
     interpretCmd(cmd);
+  };
+
+  // Reconcile ongoing external input by stable identity. An unchanged
+  // subscription keeps its host handle; a changed identity is cancelled before
+  // replacement, and a removed identity is cancelled immediately.
+  const flattenSubscriptions = (spec, out = []) => {
+    if (!spec || spec.sub === "none") return out;
+    if (spec.sub === "batch") {
+      for (const child of spec.subs || []) flattenSubscriptions(child, out);
+      return out;
+    }
+    out.push(spec);
+    return out;
+  };
+  const syncSubscriptions = (spec) => {
+    const desired = new Map();
+    for (const subscription of flattenSubscriptions(spec)) {
+      if (subscription.sub !== "every" || typeof subscription.id !== "string" || !subscription.id) {
+        throw new Error("glamour-dom: malformed subscription");
+      }
+      if (desired.has(subscription.id)) {
+        throw new Error(`glamour-dom: duplicate subscription id \`${subscription.id}\``);
+      }
+      desired.set(subscription.id, subscription);
+    }
+    for (const [id, running] of activeSubscriptions) {
+      if (!desired.has(id)) {
+        if (clearRepeating) clearRepeating(running.handle);
+        activeSubscriptions.delete(id);
+      }
+    }
+    for (const [id, subscription] of desired) {
+      const ms = Math.max(Number(subscription.ms) || 0, Number(subscription.min_ms) || 0);
+      const fingerprint = JSON.stringify({ ms, msg: subscription.msg });
+      const running = activeSubscriptions.get(id);
+      if (running && running.fingerprint === fingerprint) continue;
+      if (running && clearRepeating) clearRepeating(running.handle);
+      if (!setRepeating) {
+        throw new Error("glamour-dom: an `every` Sub needs a repeating timer (pass opts.setInterval)");
+      }
+      const generation = {};
+      const handle = setRepeating(() => {
+        if (activeSubscriptions.get(id)?.generation === generation) {
+          dispatch(subscription.msg);
+        }
+      }, ms);
+      activeSubscriptions.set(id, { handle, fingerprint, generation });
+    }
   };
   // Host-slot renderers (RFC-0041): `{ [kind]: (doc, data) => domNode }`. Stashed on
   // `dispatch` so the module-level `mountSlot` (which only receives `dispatch`) can reach them,
   // mirroring the secret store.
   dispatch.__slots = opts.slots || {};
+  dispatch.__templatePlans = templatePlans;
   // (BUG-357) The set of host-owned secret slots that have actually been RENDERED. A
   // `submit_secret` command is honored only for a slot in this set (see `interpretCmd`).
   dispatch.__secretSlots = new Set();
@@ -330,11 +694,12 @@ export async function mount(wasmBytes, root, opts = {}) {
   // Initial render: model-only input, then build the DOM fresh and interpret the
   // command (the initial step emits `none`, but interpreting it keeps the loop
   // uniform should an app want a startup effect).
-  const first = step(model, {});
+  const first = step(model, {}, opts.start);
   model = first.model;
   lastVNode = first.vnode;
   domRoot = patch(doc, root, null, null, first.vnode, dispatch);
   syncRenderedSecretSlots(dispatch, first.vnode);
+  syncSubscriptions(first.subs);
   interpretCmd(first.cmd);
 
   // Client routing: if the app declares a route msg tag, mirror the URL into the loop —
@@ -359,6 +724,18 @@ export async function mount(wasmBytes, root, opts = {}) {
   return {
     dispatch,
     getModel: () => model,
+    getTemplatePlans: () =>
+      new Map([...templatePlans].map(([id, entry]) => [id, entry.plan])),
+    // RFC-0107 Phase 0 reference measurements. This reports only observable
+    // transport totals and Wasm linear-memory pages; it exposes no model,
+    // message, secret, or host-custodied value.
+    getRuntimeStats: () => ({
+      protocol: { ...protocolStats },
+      wasmMemoryPages:
+        memory && memory.buffer ? memory.buffer.byteLength / (64 * 1024) : null,
+      activeSubscriptions: activeSubscriptions.size,
+      activeStableCommands: stableTimers.size + stableEffects.size,
+    }),
     // (BUG-377) Fully dispose: after this, no pending timer/fetch/port callback can run the
     // rune or touch the DOM (the `disposed` guard), the popstate listener is removed, and
     // pending timers are cancelled. Idempotent.
@@ -367,6 +744,18 @@ export async function mount(wasmBytes, root, opts = {}) {
       disposed = true;
       if (clearTimer) for (const id of timers) clearTimer(id);
       timers.clear();
+      if (clearTimer) {
+        for (const running of stableTimers.values()) clearTimer(running.handle);
+      }
+      stableTimers.clear();
+      for (const running of stableEffects.values()) {
+        if (running.cancel) running.cancel();
+      }
+      stableEffects.clear();
+      if (clearRepeating) {
+        for (const running of activeSubscriptions.values()) clearRepeating(running.handle);
+      }
+      activeSubscriptions.clear();
       if (removeRouteListener) {
         removeRouteListener();
         removeRouteListener = null;
@@ -380,6 +769,69 @@ export async function mount(wasmBytes, root, opts = {}) {
 }
 
 // --- the differ -------------------------------------------------------------
+const TEMPLATE_SLOT_KINDS = new Set([
+  "text", "child", "attribute", "property", "boolean", "url", "class", "aria", "event",
+]);
+
+// Validate and intern compiler-emitted template metadata before touching the
+// DOM. A repeated ID must describe byte-for-byte identical static structure;
+// an ID collision or malformed slot table fails closed.
+function registerTemplatePlan(dispatch, wrapped) {
+  const plan = wrapped.plan;
+  if (
+    plan.version !== 1 ||
+    typeof plan.id !== "string" ||
+    !/^glamour-tp1-[0-9a-f]{64}$/.test(plan.id) ||
+    typeof plan.origin !== "string" ||
+    plan.origin.length > 1024 ||
+    !Array.isArray(plan.slots)
+  ) {
+    throw new Error("glamour-dom: malformed template plan");
+  }
+  const seen = new Set();
+  for (const slot of plan.slots) {
+    if (
+      slot === null ||
+      typeof slot !== "object" ||
+      !Number.isSafeInteger(slot.index) ||
+      slot.index < 0 ||
+      !TEMPLATE_SLOT_KINDS.has(slot.kind) ||
+      typeof slot.name !== "string"
+    ) {
+      throw new Error("glamour-dom: malformed template slot");
+    }
+    if (seen.has(slot.index)) {
+      throw new Error(`glamour-dom: duplicate template slot ${slot.index}`);
+    }
+    seen.add(slot.index);
+    if (slot.kind === "event" && !isValidEventName(slot.name)) {
+      throw new Error("glamour-dom: malformed template event name");
+    }
+    if (
+      !["text", "child", "event"].includes(slot.kind) &&
+      !isValidAttrName(slot.name)
+    ) {
+      throw new Error("glamour-dom: malformed template attribute name");
+    }
+  }
+  const fingerprint = JSON.stringify(plan);
+  const existing = dispatch.__templatePlans.get(plan.id);
+  if (existing !== undefined && existing.fingerprint !== fingerprint) {
+    throw new Error(`glamour-dom: template identity collision for ${plan.id}`);
+  }
+  if (existing === undefined) {
+    dispatch.__templatePlans.set(plan.id, {
+      fingerprint,
+      plan: Object.freeze({
+        version: plan.version,
+        id: plan.id,
+        origin: plan.origin,
+        slots: Object.freeze(plan.slots.map((slot) => Object.freeze({ ...slot }))),
+      }),
+    });
+  }
+}
+
 // Diff `oldV` -> `newV` and patch the DOM, returning the (possibly new) DOM node
 // for `newV`. `dom` is the existing DOM node for `oldV` (null on first render).
 // The strategy is the simple, correct Elm-style structural diff:
@@ -389,6 +841,14 @@ export async function mount(wasmBytes, root, opts = {}) {
 // Keys (stable identity) are a later refinement; index diffing is correct for the
 // static-structure apps this slice targets.
 function patch(doc, parent, dom, oldV, newV, dispatch) {
+  if (isPlanned(oldV)) {
+    registerTemplatePlan(dispatch, oldV);
+    oldV = oldV.node;
+  }
+  if (isPlanned(newV)) {
+    registerTemplatePlan(dispatch, newV);
+    newV = newV.node;
+  }
   // Unwrap keyed wrappers: a `Keyed` carries identity for reconcileKeyed's matching ONLY;
   // structurally it patches as its inner node. The keyed path already passes `.node`, but the
   // index-diff path can hand us a Keyed OLD child against an unkeyed NEW child (e.g. navigating
@@ -539,6 +999,10 @@ function kindOrTagChanged(oldV, newV) {
 // insertAdjacentHTML), so this path is structurally incapable of the injection
 // Perfect Types exists to neutralize (RFC-0007/0008 security composition).
 function createNode(doc, v, dispatch) {
+  if (isPlanned(v)) {
+    registerTemplatePlan(dispatch, v);
+    return createNode(doc, v.node, dispatch);
+  }
   if (isText(v)) return doc.createTextNode(v.text);
   if (isKeyed(v)) return createNode(doc, v.node, dispatch); // the key is a diff hint only
   if (isCompartment(v)) return mountCompartment(doc, v, dispatch);
@@ -663,6 +1127,7 @@ function mountSlot(doc, node, dispatch) {
   }
   const pre = doc.createElement("pre");
   pre.setAttribute("class", "glamour-slot");
+  pre.setAttribute("data-glamour-slot-kind", node.slot);
   const code = doc.createElement("code");
   code.appendChild(doc.createTextNode(node.data));
   pre.appendChild(code);
@@ -714,8 +1179,8 @@ function safeUrl(value) {
 //     the typed `on(event, msg)` path, so `prop("onclick", "alert(1)")` is inert;
 //   - URL attributes are scheme-checked, so a `javascript:` href can't reach the DOM.
 function applyAttr(el, attr, dispatch) {
-  const [kind, a, b] = attr;
-  if (kind === "prop") {
+  const [kind, a, b, c, d, e] = attr;
+  if (kind === "prop" || kind === "attr") {
     if (!isValidAttrName(a)) {
       el.setAttribute("data-glamour-invalid-attr", String(a));
       return;
@@ -724,6 +1189,31 @@ function applyAttr(el, attr, dispatch) {
     if (DANGEROUS_ATTRS.has(a.toLowerCase())) return; // (BUG-260) srcdoc is an HTML sink
     if (URL_ATTRS.has(a.toLowerCase())) el.setAttribute(a, safeUrl(b));
     else el.setAttribute(a, b);
+  } else if (kind === "bool") {
+    if (!isValidAttrName(a)) {
+      el.setAttribute("data-glamour-invalid-attr", String(a));
+      return;
+    }
+    if (b === true) el.setAttribute(a, "");
+    else el.removeAttribute(a);
+  } else if (kind === "property") {
+    if (!["value", "checked", "selected"].includes(a)) {
+      throw new Error("glamour-dom: unknown typed property");
+    }
+    el[a] = b;
+  } else if (kind === "url") {
+    if (!isValidAttrName(a) || !URL_ATTRS.has(a.toLowerCase())) {
+      throw new Error("glamour-dom: URL value used at a non-URL sink");
+    }
+    el.setAttribute(a, safeUrl(b));
+  } else if (kind === "class") {
+    if (a !== "class") throw new Error("glamour-dom: malformed class sink");
+    el.setAttribute("class", String(b));
+  } else if (kind === "aria") {
+    if (!isValidAttrName(a) || !a.startsWith("aria-")) {
+      throw new Error("glamour-dom: malformed ARIA sink");
+    }
+    el.setAttribute(a, String(b));
   } else if (kind === "on") {
     if (!isValidEventName(a)) {
       el.setAttribute("data-glamour-invalid-event", "[msg]");
@@ -740,6 +1230,23 @@ function applyAttr(el, attr, dispatch) {
     // `b` is the msg-variant TAG; on the event, dispatch `tag(target.value)` so the
     // rune receives the field's value as data (the forms/controlled-input path).
     addInputHandler(el, a, b, dispatch);
+  } else if (kind === "decode") {
+    if (!isValidEventName(a)) {
+      el.setAttribute("data-glamour-invalid-event", "[decoder]");
+      return;
+    }
+    if (typeof b !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/.test(b)) {
+      throw new Error("glamour-dom: malformed decoder id");
+    }
+    if (!["msg", "value", "checked", "key"].includes(c)) {
+      throw new Error(`glamour-dom: unknown decoder kind \`${c}\``);
+    }
+    addDecodedHandler(el, a, {
+      id: b,
+      kind: c,
+      preventDefault: d === true,
+      stopPropagation: e === true,
+    }, dispatch);
   } else {
     throw new Error(`glamour-dom: unknown attr kind \`${kind}\``);
   }
@@ -778,6 +1285,36 @@ function addInputHandler(el, event, tag, dispatch) {
   perEl.set(event, { fn, msg: tag });
 }
 
+// A declarative typed decoder never receives the Event object. The host
+// extracts only the allowlisted scalar fields and sends them with the stable
+// decoder identity; Witchy recreates the old Ui and performs typed decoding.
+function addDecodedHandler(el, event, decoder, dispatch) {
+  let perEl = HANDLERS.get(el);
+  if (!perEl) {
+    perEl = new Map();
+    HANDLERS.set(el, perEl);
+  }
+  const existing = perEl.get(event);
+  if (existing) el.removeEventListener(event, existing.fn);
+  const fn = (browserEvent) => {
+    if (decoder.preventDefault && typeof browserEvent?.preventDefault === "function") {
+      browserEvent.preventDefault();
+    }
+    if (decoder.stopPropagation && typeof browserEvent?.stopPropagation === "function") {
+      browserEvent.stopPropagation();
+    }
+    const target = browserEvent && browserEvent.target;
+    dispatch({
+      $glamour_event: decoder.id,
+      value: target && typeof target.value === "string" ? target.value : "",
+      checked: Boolean(target && target.checked),
+      key: browserEvent && typeof browserEvent.key === "string" ? browserEvent.key : "",
+    });
+  };
+  el.addEventListener(event, fn);
+  perEl.set(event, { fn, msg: decoder.id });
+}
+
 function removeHandler(el, event) {
   const perEl = HANDLERS.get(el);
   if (!perEl) return;
@@ -792,21 +1329,26 @@ function removeHandler(el, event) {
 // remove props/handlers that disappeared.
 function reconcileAttrs(el, oldAttrs, newAttrs, dispatch) {
   const oldProps = new Set();
+  const oldProperties = new Set();
   const oldEvents = new Set();
   for (const attr of oldAttrs) {
     const [kind, name] = attrIdentity(attr);
     if (kind === "prop") oldProps.add(name);
+    else if (kind === "property") oldProperties.add(name);
     else if (kind === "event") oldEvents.add(name);
   }
   const newProps = new Set();
+  const newProperties = new Set();
   const newEvents = new Set();
   for (const attr of newAttrs) {
     const [kind, name] = attrIdentity(attr);
     if (kind === "prop") newProps.add(name);
+    else if (kind === "property") newProperties.add(name);
     else if (kind === "event") newEvents.add(name);
     applyAttr(el, attr, dispatch); // setAttribute / (re)addHandler with the new msg
   }
   // Drop props/handlers no longer present.
   for (const name of oldProps) if (!newProps.has(name)) el.removeAttribute(name);
+  for (const name of oldProperties) if (!newProperties.has(name)) el[name] = "";
   for (const event of oldEvents) if (!newEvents.has(event)) removeHandler(el, event);
 }

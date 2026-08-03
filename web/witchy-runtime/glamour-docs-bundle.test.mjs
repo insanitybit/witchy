@@ -1,66 +1,49 @@
 #!/usr/bin/env node
-// RFC-0041: the DEPLOYABLE bundle, validated against the REAL book. Runs `scripts/build-docs.sh`
-// to assemble the static site (the docs app compiled to wasm + the real book content + the web
-// modules + the manifest), then mounts the bundle's `docs.wasm` with a fetch that reads the
-// bundle's staged `content/` — so this proves the actual deploy artifact renders the ACTUAL book
-// (real `SUMMARY.md` nav, real pages, real `witchy` fences → runnable cells), not fakes. No
-// browser needed: the mount is the tested docs path with a file-backed fetch.
+// The deployable Witchy book is native static HTML plus compiler-lowered
+// interactive regions. Runnable code fences are a separately recorded host
+// facility and never turn the whole page back into a client-rendered Wasm app.
 //
-// Usage:  node web/witchy-runtime/glamour-docs-bundle.test.mjs [path/to/witchy-binary]
+// Usage: node web/witchy-runtime/glamour-docs-bundle.test.mjs [path/to/witchy]
 
-import { mount } from "./glamour-dom.mjs";
-import { runnableSlot } from "../witchy-runnable.js";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, chmodSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const BIN = process.argv[2] || resolve(process.cwd(), "target/debug/witchy");
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
-
-class FakeNode {
-  constructor() { this.childNodes = []; this.parentNode = null; }
-  appendChild(c) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.childNodes.push(c); return c; }
-  removeChild(c) { const i = this.childNodes.indexOf(c); if (i >= 0) this.childNodes.splice(i, 1); c.parentNode = null; return c; }
-  replaceChild(n, p) { const i = this.childNodes.indexOf(p); if (i < 0) throw new Error("replaceChild"); this.childNodes[i] = n; n.parentNode = this; p.parentNode = null; return p; }
-}
-class FakeText extends FakeNode {
-  constructor(t) { super(); this._t = t; }
-  get textContent() { return this._t; }
-  set textContent(v) { this._t = v; this.childNodes = []; }
-}
-class FakeElement extends FakeNode {
-  constructor(tag) { super(); this.el = tag; this.attributes = new Map(); this.listeners = new Map(); }
-  setAttribute(n, v) { this.attributes.set(n, String(v)); }
-  getAttribute(n) { return this.attributes.has(n) ? this.attributes.get(n) : null; }
-  addEventListener(e, fn) { if (!this.listeners.has(e)) this.listeners.set(e, new Set()); this.listeners.get(e).add(fn); }
-  removeEventListener(e, fn) { const s = this.listeners.get(e); if (s) s.delete(fn); }
-  dispatchEvent(ev) { const s = this.listeners.get(ev.type); if (s) for (const fn of [...s]) fn(ev); return true; }
-  get textContent() { let o = ""; for (const c of this.childNodes) o += c.textContent; return o; }
-  set textContent(v) { this.childNodes = []; this.appendChild(new FakeText(v)); }
-}
-const fakeDocument = { createElement: (t) => new FakeElement(t), createTextNode: (t) => new FakeText(t) };
-const qsa = (node, tag, acc = []) => {
-  if (node instanceof FakeElement && node.el === tag) acc.push(node);
-  for (const c of node.childNodes) if (c instanceof FakeElement) qsa(c, tag, acc);
-  return acc;
-};
-const settle = async () => { await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0)); };
+const SCRIPT = join(REPO, "scripts/build-docs.sh");
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const json = (path) => JSON.parse(readFileSync(path, "utf8"));
+const filesUnder = (root) => readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+  const path = join(root, entry.name);
+  return entry.isDirectory() ? filesUnder(path) : [path];
+});
 
 let failures = 0;
-const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if (!cond) failures++; };
+const ok = (condition, message) => {
+  console.log(`  ${condition ? "ok" : "FAIL"}: ${message}`);
+  if (!condition) failures++;
+};
 
-const dist = mkdtempSync(join(tmpdir(), "witchy-dist-"));
-const browserBuild = mkdtempSync(join(tmpdir(), "witchy-browser-build-"));
+const scratch = mkdtempSync(join(tmpdir(), "witchy-book-bundle-"));
 try {
-  // 1. Missing browser compiler assets fail closed unless the caller explicitly
-  // opts out. This render smoke test does not execute runnable cells, so it opts out.
-  const missingCompiler = join(dist, "missing-compiler.wasm");
+  const missingCompiler = join(scratch, "missing-compiler.wasm");
   let rejectedMissingCompiler = false;
   try {
-    execFileSync("bash", [join(REPO, "scripts/build-docs.sh"), dist], {
+    execFileSync("bash", [SCRIPT, join(scratch, "rejected")], {
       cwd: REPO,
       env: { ...process.env, WITCHY: BIN, WITCHY_BROWSER_WASM: missingCompiler },
       stdio: "pipe",
@@ -68,15 +51,11 @@ try {
   } catch {
     rejectedMissingCompiler = true;
   }
-  ok(rejectedMissingCompiler, "the bundle build rejects a missing browser compiler by default");
+  ok(rejectedMissingCompiler, "a complete bundle rejects an explicitly missing browser compiler");
 
-  // A normal complete build generates its browser compiler from this checkout;
-  // it must not copy a possibly stale gitignored web/witchy.wasm. Use a fake
-  // Cargo that emits a recognizable artifact to test the build contract without
-  // recursively compiling Rust from inside the Rust test suite.
-  const fakeCargo = join(browserBuild, "cargo");
-  const fakeTarget = join(browserBuild, "target");
-  const completeDist = join(browserBuild, "complete-dist");
+  const fakeCargo = join(scratch, "cargo");
+  const fakeTarget = join(scratch, "target");
+  const completeDist = join(scratch, "complete");
   writeFileSync(fakeCargo, `#!/bin/sh
 set -eu
 out="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/witchy.wasm"
@@ -84,89 +63,210 @@ mkdir -p "$(dirname "$out")"
 printf 'fresh browser compiler' >"$out"
 `);
   chmodSync(fakeCargo, 0o755);
-  execFileSync("bash", [join(REPO, "scripts/build-docs.sh"), completeDist], {
+  execFileSync("bash", [SCRIPT, completeDist], {
     cwd: REPO,
     env: {
       ...process.env,
-      PATH: "/usr/bin:/bin",
+      PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
       WITCHY: BIN,
       WITCHY_BROWSER_WASM: "",
       CARGO: fakeCargo,
       CARGO_TARGET_DIR: fakeTarget,
       WITCHY_SKIP_WASM_OPT: "1",
+      WITCHY_BOOK_BASE: "/witchy/",
     },
     stdio: "pipe",
   });
   ok(
     readFileSync(join(completeDist, "witchy.wasm"), "utf8") === "fresh browser compiler",
-    "a complete bundle builds its browser compiler instead of copying stale web/witchy.wasm",
+    "a complete bundle builds its browser compiler from the current checkout",
   );
 
-  // 2. Build the deployable bundle with the docs app pointed at the REAL book.
-  execFileSync("bash", [join(REPO, "scripts/build-docs.sh"), "--allow-missing-compiler", dist], {
+  const inertDist = join(scratch, "inert");
+  execFileSync("bash", [SCRIPT, "--allow-missing-compiler", inertDist], {
     cwd: REPO,
     env: { ...process.env, WITCHY: BIN, WITCHY_BROWSER_WASM: missingCompiler },
     stdio: "pipe",
   });
-  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "witchy-cell-sandbox.js", "witchy-cell-frame.js", "witchy-runtime/witchy-runtime.mjs", "docs-boot.js", "docs-run-options.js", "docs-asset-url.js", "wasm-fetch.js", "rfc0103-browser-probe.html", "rfc0103-browser-probe.js", "examples.json", "_headers", "content/SUMMARY.md", "content/introduction.md"]) {
-    ok(existsSync(join(dist, f)), `the bundle contains ${f}`);
+  ok(!existsSync(join(inertDist, "witchy.wasm")), "the explicit non-runnable bundle contains no browser compiler");
+  ok(!existsSync(join(inertDist, "docs-static-boot.js")), "the non-runnable bundle contains no runnable host");
+  ok(
+    filesUnder(inertDist)
+      .filter((path) => path.endsWith(".html"))
+      .every((path) => !readFileSync(path, "utf8").includes("data-witchy-runnables")),
+    "the non-runnable bundle leaves checked code fences inert",
+  );
+
+  for (const path of [
+    "index.html",
+    "_headers",
+    "witchy-web-manifest.json",
+    "witchy-islands-manifest.json",
+    "witchy-island-artifacts.json",
+    "witchy-build-report.json",
+    "witchy-sbom.cdx.json",
+    "docs-static-boot.js",
+    "witchy-runnable.js",
+    "witchy-host.js",
+    "witchy-cell-sandbox.js",
+    "witchy-cell-frame.js",
+    "witchy-runtime/witchy-runtime.mjs",
+    "examples.json",
+    "witchy.wasm",
+  ]) {
+    ok(existsSync(join(completeDist, path)), `the complete bundle contains ${path}`);
   }
-  // The bundle carries strict cross-origin isolation for a `_headers`-honoring host.
-  const headers = readFileSync(join(dist, "_headers"), "utf8");
-  ok(/Cross-Origin-Opener-Policy:\s*same-origin/.test(headers) && /Cross-Origin-Embedder-Policy:\s*require-corp/.test(headers), "the bundle ships strict COOP/COEP headers");
+  for (const retired of [
+    "docs.wasm",
+    "counter.wasm",
+    "docs-boot.js",
+    "glamour-dom.mjs",
+    "rfc0103-browser-probe.html",
+    "rfc0103-browser-probe.js",
+    "content/SUMMARY.md",
+  ]) {
+    ok(!existsSync(join(completeDist, retired)), `the complete bundle omits retired ${retired}`);
+  }
 
-  // 3. Mount the bundle's docs.wasm; fetch reads the bundle's staged `content/`.
-  const wasm = readFileSync(join(dist, "docs.wasm"));
-  const fetchCalls = [];
-  const fakeFetch = (url) => {
-    fetchCalls.push(url);
-    const rel = url.startsWith("/") ? url.slice(1) : url; // /content/x.md -> content/x.md
-    const path = join(dist, rel);
-    if (!existsSync(path)) return Promise.resolve({ status: 404, text: () => Promise.resolve("") });
-    return Promise.resolve({ status: 200, text: () => Promise.resolve(readFileSync(path, "utf8")) });
-  };
-  const location = { pathname: "/" };
-  const history = { pushState: (_s, _t, p) => { location.pathname = p; } };
-  const root = new FakeElement("root");
-  await mount(wasm, root, {
-    document: fakeDocument,
-    initialModel: { route: "/", summary: "", content: "" },
-    fetch: fakeFetch,
-    routeTag: "Route",
-    location,
-    history,
-    instantiateOpts: { userCaps: [["witchy-book"]] },
-    slots: { "witchy-runnable": runnableSlot({ runProgram: async () => { throw new Error("no runner in the render smoke test"); } }) },
-  });
-  await settle();
+  const manifest = json(join(completeDist, "witchy-web-manifest.json"));
+  ok(manifest.delivery === "static", "the book uses native static delivery");
+  ok(manifest.routes.length === 43, "the book publishes all 43 canonical routes");
+  ok(manifest.contentInputs.length === 43, "the build authenticates all 43 Markdown inputs");
+  ok(
+    manifest.runtime?.javascript === true && manifest.runtime?.wasm === true,
+    "the manifest reports runtime code because the book contains an interactive region",
+  );
+  ok(
+    manifest.hostFacilities?.schema === "witchy.book.runnable-host.v1"
+      && manifest.hostFacilities?.bundleIdentity === manifest.bundleIdentity,
+    "the runnable-cell host has an explicit authenticated bundle identity",
+  );
+  ok(
+    manifest.hostFacilities?.isolation === "opaque-frame",
+    "runnable programs execute behind the opaque-frame boundary",
+  );
+  ok(
+    manifest.hostFacilities?.basePath === "/witchy/"
+      && manifest.hostFacilities?.loader === "/witchy/docs-static-boot.js"
+      && manifest.hostFacilities?.compiler === "/witchy/witchy.wasm",
+    "the packaged host records the GitHub Pages project base",
+  );
 
-  // 4. The REAL book renders: a full nav from the real SUMMARY.md, and a real page.
-  ok(fetchCalls.some((u) => u.includes("/content/SUMMARY.md")), "the app fetches the real SUMMARY.md");
-  const navButtons = qsa(root, "nav").flatMap((n) => qsa(n, "button"));
-  ok(navButtons.length >= 10, `the real SUMMARY.md renders a full nav (got ${navButtons.length} pages)`);
-  ok(navButtons.some((b) => b.textContent === "Introduction"), "a real page title (Introduction) renders in the nav");
-  ok(qsa(root, "h1").length + qsa(root, "h2").length >= 1, "the real home page renders a heading");
-  ok(root.textContent.length > 200, "the real home page has substantial rendered content");
+  const islands = json(join(completeDist, "witchy-islands-manifest.json"));
+  const counter = islands.islands.find((island) => island.name === "counter");
+  ok(
+    counter?.activation === "interaction" && counter.mode === "resume",
+    "the counter is a compiler-lowered interaction-activated resumable island",
+  );
 
-  // 5. A real book page's own `witchy` fences become editable runnable cells. Navigate to a page
-  //    that carries witchy examples and check for a cell (textarea), trying a few candidate pages.
-  const goto = (title) => {
-    const b = qsa(root, "nav").flatMap((n) => qsa(n, "button")).find((x) => x.textContent === title);
-    if (b) b.dispatchEvent({ type: "click" });
-    return !!b;
-  };
-  let sawCell = qsa(root, "textarea").length > 0;
-  for (const title of ["A Tour of the Language", "Getting Started", "Capabilities: The Heart of witchy", "Introduction"]) {
-    if (sawCell) break;
-    if (goto(title)) {
-      await settle();
-      sawCell = qsa(root, "textarea").length > 0 || qsa(root, "div").some((d) => (d.getAttribute("class") || "") === "witchy-cell");
+  const runnableRoutes = [];
+  const islandRoutes = [];
+  let runnableCells = 0;
+  for (const route of manifest.routes) {
+    const html = readFileSync(join(completeDist, route.file), "utf8");
+    const runnable = html.includes('data-witchy-runnable="1"');
+    const runner = html.includes("data-witchy-runnables");
+    const island = html.includes("data-glamour-island");
+    ok(runnable === runner, `${route.path} loads the runner exactly when it has runnable fences`);
+    if (runnable) {
+      runnableRoutes.push(route.path);
+      runnableCells += html.match(/data-witchy-runnable="1"/g)?.length || 0;
+    }
+    if (island) {
+      islandRoutes.push(route.path);
+      const routeManifestFile = manifest.islands?.routes?.[route.path];
+      ok(
+        typeof routeManifestFile === "string"
+          && html.includes(`data-witchy-islands-manifest="${routeManifestFile}"`),
+        `${route.path} selects its compiler-published route manifest`,
+      );
+      const routeManifest = json(join(completeDist, routeManifestFile));
+      const pageIslandCount = html.match(/data-glamour-island="/g)?.length || 0;
+      ok(
+        routeManifest.islands.length === pageIslandCount
+          && routeManifest.islands.every((record) => html.includes(`data-glamour-island="${record.id}"`)),
+        `${route.path} has an exact DOM-to-manifest island join`,
+      );
+    } else {
+      ok(manifest.islands?.routes?.[route.path] === undefined, `${route.path} has no route manifest`);
     }
   }
-  ok(sawCell, "a real book page's witchy fence became an editable runnable cell (a textarea)");
+  const runners = islands.islands.filter((island) => island.name === "runnable-fence");
+  ok(
+    runners.length === runnableCells
+      && runners.every((island) => island.activation === "load" && island.mode === "resume"),
+    "every editable fence is a load-activated compiler-resumable island",
+  );
+  ok(
+    JSON.stringify(runnableRoutes) === JSON.stringify(manifest.hostFacilities.routes),
+    "the recorded runnable route graph matches emitted HTML",
+  );
+  ok(
+    runnableRoutes.every((route) => islandRoutes.includes(route))
+      && islandRoutes.includes("/p/appendix-recipes"),
+    "every runnable route carries fence islands and the recipe route carries its counter",
+  );
+  const recipe = readFileSync(join(completeDist, "p/appendix-recipes/index.html"), "utf8");
+  ok(recipe.includes("counter-demo") && recipe.includes("data-witchy-islands"), "the recipe page ships server-rendered counter HTML and its island loader");
+  ok(
+    manifest.routes.every((route) => {
+      const html = readFileSync(join(completeDist, route.file), "utf8");
+      return !/<[^>]+\b(?:href|src|action)="\/(?!witchy\/|\/)/.test(html);
+    }),
+    "every root-relative HTML URL is rebased beneath the GitHub Pages project path",
+  );
+
+  const examples = json(join(REPO, "book/examples.json"));
+  const runnableSources = new Set(examples
+    .filter((entry) => entry.browser_runnable && entry.file.startsWith("book/src/"))
+    .map((entry) => entry.file.slice("book/src/".length)));
+  const nonRunnableRoutes = manifest.routes.filter((route) => {
+    const source = route.path === "/" ? "introduction.md" : `${route.path.slice(3)}.md`;
+    return !runnableSources.has(source);
+  });
+  ok(nonRunnableRoutes.length > 0, "the book has routes classified as non-runnable");
+  ok(
+    nonRunnableRoutes.every((route) => {
+      const html = readFileSync(join(completeDist, route.file), "utf8");
+      return !html.includes("<script")
+        && !html.includes('data-witchy-runnable="1"')
+        && !html.includes("data-glamour-island");
+    }),
+    "non-runnable routes ship no script, Wasm loader, runnable marker, or island",
+  );
+
+  const headers = readFileSync(join(completeDist, "_headers"), "utf8");
+  ok(
+    !headers.includes("Content-Security-Policy:")
+      && headers.includes("Referrer-Policy: no-referrer")
+      && headers.includes("X-Content-Type-Options: nosniff")
+      && headers.includes("Content-Type: application/wasm"),
+    "the bundle keeps security and Wasm headers without a parent CSP that would disable opaque srcdoc frames",
+  );
+  ok(
+    manifest.hostFacilities?.parentContentSecurityPolicy === "omitted"
+      && manifest.hostFacilities?.sandboxContentSecurityPolicy === "capability-derived",
+    "the manifest records the relaxed parent policy and capability-derived sandbox policy",
+  );
+
+  const report = json(join(completeDist, "witchy-build-report.json"));
+  const recorded = new Map(report.artifacts.map((artifact) => [artifact.path, artifact]));
+  const emitted = filesUnder(completeDist)
+    .filter((path) => path !== join(completeDist, "witchy-build-report.json"));
+  ok(recorded.size === emitted.length, "the build report records every emitted bundle artifact");
+  ok(emitted.every((path) => {
+    const bytes = readFileSync(path);
+    const name = relative(completeDist, path).split(sep).join("/");
+    const artifact = recorded.get(name);
+    return artifact?.bytes === bytes.length && artifact?.sha256 === sha256(bytes);
+  }), "every recorded bundle artifact has the emitted byte length and SHA-256 digest");
+  ok(
+    report.bundleIdentity === manifest.bundleIdentity
+      && report.hostFacilities?.routes === runnableRoutes.length,
+    "the report and manifest agree on the packaged book identity and host scope",
+  );
 } finally {
-  rmSync(dist, { recursive: true, force: true });
-  rmSync(browserBuild, { recursive: true, force: true });
+  rmSync(scratch, { recursive: true, force: true });
 }
 
 if (failures > 0) {
@@ -174,4 +274,3 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log("\nGLAMOUR-DOCS-BUNDLE OK");
-process.exit(0);

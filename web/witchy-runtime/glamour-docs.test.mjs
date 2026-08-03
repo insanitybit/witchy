@@ -51,9 +51,10 @@ function qsa(node, tag, acc = []) {
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const settle = async () => { await tick(); await tick(); };
 const clickText = (root, text) => {
-  const b = qsa(root, "button").find((x) => x.textContent === text);
-  if (!b) throw new Error("no button: " + text);
-  b.dispatchEvent({ type: "click" });
+  const control = [...qsa(root, "a"), ...qsa(root, "button")]
+    .find((node) => node.textContent === text);
+  if (!control) throw new Error("no navigation control: " + text);
+  control.dispatchEvent({ type: "click", preventDefault() {} });
 };
 
 let failures = 0;
@@ -64,6 +65,7 @@ try {
   copyFileSync(join(REPO, "projects/glamour/src/glamour.witchy"), join(work, "glamour.witchy"));
   copyFileSync(join(REPO, "projects/glamour/src/markdown.witchy"), join(work, "markdown.witchy"));
   copyFileSync(join(REPO, "projects/docs/src/docs.witchy"), join(work, "docs.witchy"));
+  copyFileSync(join(REPO, "projects/docs/src/counter.witchy"), join(work, "counter.witchy"));
   const wasmPath = join(work, "docs.wasm");
   execFileSync(BIN, ["compile", join(work, "docs.witchy"), "--out", wasmPath], { cwd: work });
   const wasm = readFileSync(wasmPath);
@@ -117,19 +119,19 @@ try {
   // 1. The sidebar is DERIVED from the fetched SUMMARY.md (not hardcoded).
   await settle();
   ok(calls.some((u) => u.includes("/content/SUMMARY.md")), "the app fetches SUMMARY.md for the nav");
-  const navButtons = qsa(root, "nav").flatMap((n) => qsa(n, "button"));
+  const navLinks = qsa(root, "nav").flatMap((n) => qsa(n, "a"));
   const clsOf = (n) => n.getAttribute("class") || "";
   // brand + 5 page buttons (Introduction, Tour, Capabilities, Narrowing, Appendix); the cover
   // (title.md) is NOT a list item — it's the header link — and the `---` is a non-button divider.
-  ok(navButtons.length === 6, "the sidebar renders the brand + one button per page link");
-  ok(navButtons.map((b) => b.textContent).includes("Capabilities"), "a page title parsed from SUMMARY.md renders");
-  ok(navButtons.map((b) => b.textContent).includes("A Tour of the Language"), "a multi-word SUMMARY title parses correctly");
+  ok(navLinks.length === 6, "the sidebar renders the brand + one anchor per page link");
+  ok(navLinks.map((link) => link.textContent).includes("Capabilities"), "a page title parsed from SUMMARY.md renders");
+  ok(navLinks.map((link) => link.textContent).includes("A Tour of the Language"), "a multi-word SUMMARY title parses correctly");
   // The sidebar header is the clickable cover link (not a duplicated <h1>).
-  ok(navButtons.some((b) => clsOf(b).includes("sidebar-brand") && b.textContent === "The witchy Book"), "the book title renders as the cover link");
+  ok(navLinks.some((link) => clsOf(link).includes("sidebar-brand") && link.textContent === "The witchy Book"), "the book title renders as the cover link");
   ok(!qsa(root, "li").some((li) => li.textContent === "The witchy Book"), "the cover is NOT repeated as a list item");
   // The SUMMARY's two-level structure survives: the sub-page nests (depth-1), the `---` is a divider.
-  ok(navButtons.some((b) => b.textContent === "Narrowing" && clsOf(b).includes("nav-depth-1")), "a sub-page renders nested at depth 1");
-  ok(navButtons.some((b) => b.textContent === "Capabilities" && clsOf(b).includes("nav-depth-0")), "its parent chapter renders at depth 0");
+  ok(navLinks.some((link) => link.textContent === "Narrowing" && clsOf(link).includes("nav-depth-1")), "a sub-page renders nested at depth 1");
+  ok(navLinks.some((link) => link.textContent === "Capabilities" && clsOf(link).includes("nav-depth-0")), "its parent chapter renders at depth 0");
   ok(qsa(root, "li").some((li) => clsOf(li).includes("nav-divider")), "the `---` rule renders an appendix divider");
 
   // 2. The initial route fetched the home page and rendered its Markdown to real elements.

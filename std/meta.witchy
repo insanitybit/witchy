@@ -866,6 +866,41 @@ fn derive_reflect_source(t: TypeInfo) -> String:
             list.push(arms, "            " + pat + " -> reflect.MVariant(\"" + t.name + "\", \"" + v.name + "\", [" + list.join(refls, ", ") + "])")
         head + "        match self:\n" + list.join(arms, "\n") + "\n"
 
+// `derive(PublicState)` proves a value can cross a public/resumable boundary.
+// The generated method checks every field through the field type's own proof;
+// capabilities, functions, Bytes, host handles, and secrets fail because they
+// deliberately have no PublicState implementation.
+pub fn derive_public_state(t: TypeInfo) -> ItemSyntax:
+    item(derive_public_state_source(t))
+
+fn derive_public_state_source(t: TypeInfo) -> String:
+    let head = "import public_state\n\nimpl PublicState for " + target_with_params(t) + where_each(t.params, "PublicState") + ":\n    fn public_state_proof(self):\n"
+    if let TypeRecord = t.kind:
+        if t.fields.is_empty():
+            head + "        Nil\n"
+        else:
+            var checks: List(String) = []
+            for field in t.fields:
+                checks.push("        public_state.check(self." + field.name + ")")
+            head + checks.join("\n") + "\n"
+    else:
+        var arms: List(String) = []
+        for variant in t.variants:
+            var patterns: List(String) = []
+            var checks: List(String) = []
+            var i = 0
+            for _field in variant.field_type_exprs:
+                let binding = "p${i}"
+                patterns.push(binding)
+                checks.push("                public_state.check(" + binding + ")")
+                i = i + 1
+            let pattern = if patterns.is_empty(): variant.name else: variant.name + "(" + patterns.join(", ") + ")"
+            if checks.is_empty():
+                arms.push("            " + pattern + " -> Nil")
+            else:
+                arms.push("            " + pattern + " ->\n" + checks.join("\n"))
+        head + "        match self:\n" + arms.join("\n") + "\n"
+
 // The lexicographic body for `derive(Ord)`: compare fields in declaration order
 // through the field type's total `Ord.compare`, not through `<`/`>`. Method
 // syntax avoids shadowing by a same-module free function named `compare`.

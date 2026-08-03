@@ -2459,6 +2459,170 @@ fn check_dynamic_method_declarations(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
+fn canonical_public_state_std_impl(implementation: &ast::ImplDef) -> bool {
+    let scalar = matches!(
+        implementation.type_name.as_str(),
+        "Nil" | "Bool" | "Int" | "Float" | "Duration" | "String"
+    ) && implementation.target_args.is_empty();
+    if scalar {
+        return true;
+    }
+    let expected_params: &[&str] = match implementation.type_name.as_str() {
+        "List" | "Option" => &["a"],
+        "Result" => &["a", "e"],
+        _ => return false,
+    };
+    let actual_params = implementation
+        .target_args
+        .iter()
+        .map(|argument| match argument.unqualified() {
+            ast::Type::Named(name, arguments)
+                if arguments.is_empty() && name.chars().next().is_some_and(char::is_lowercase) =>
+            {
+                Some(name.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+    if actual_params.as_deref() != Some(expected_params) {
+        return false;
+    }
+    expected_params.iter().all(|parameter| {
+        implementation.bounds.iter().any(|(variable, trait_name, arguments)| {
+            variable == parameter
+                && arguments.is_empty()
+                && crate::traits::is_standard_trait_identity(
+                    trait_name,
+                    "public_state",
+                    "PublicState",
+                )
+        })
+    })
+}
+
+/// `PublicState` is a sealed boundary proof. Ordinary user-defined traits remain
+/// open, but this one may be implemented only by its canonical std foundations
+/// or by the compiler-authenticated `derive(PublicState)` generator. Without
+/// this check, a handwritten or user-generated empty proof could launder Bytes,
+/// capabilities, functions, secrets, or host handles through a wrapper.
+fn check_public_state_impls(module: &Module) -> Result<(), TypeError> {
+    let derived_types: HashSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(definition) if definition.public_state_derived => {
+                Some(definition.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    for item in &module.items {
+        let Item::Impl(implementation) = item else { continue };
+        let Some(trait_name) = implementation.trait_name.as_deref() else { continue };
+        if trait_name != "public_state.PublicState" {
+            continue;
+        }
+        let canonical_std = implementation.origin == ast::ImplOrigin::Source
+            && canonical_public_state_std_impl(implementation);
+        let authenticated_derive = derived_types.contains(implementation.type_name.as_str());
+        if !canonical_std && !authenticated_derive {
+            return terr(format!(
+                "`PublicState` is a sealed public-boundary proof; type `{}` must use \
+                 `derive(PublicState)`, whose generated proof checks every field",
+                implementation.type_name,
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetAvailability {
+    Shared,
+    Browser,
+    Server,
+    Static,
+}
+
+impl TargetAvailability {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Browser => "browser",
+            Self::Server => "server",
+            Self::Static => "static",
+        }
+    }
+
+    fn permits(self, callee: Self) -> bool {
+        callee == Self::Shared || self == callee
+    }
+}
+
+fn function_target(function: &Function) -> Result<TargetAvailability, TypeError> {
+    let targets: Vec<&str> = function
+        .attributes
+        .iter()
+        .map(String::as_str)
+        .filter(|attribute| matches!(*attribute, "browser" | "server" | "static"))
+        .collect();
+    match targets.as_slice() {
+        [] => Ok(TargetAvailability::Shared),
+        ["browser"] => Ok(TargetAvailability::Browser),
+        ["server"] => Ok(TargetAvailability::Server),
+        ["static"] => Ok(TargetAvailability::Static),
+        _ => terr(format!(
+            "function `{}` declares conflicting target availability: {}",
+            function.name,
+            targets.iter().map(|target| format!("@{target}")).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+/// RFC-0107 target availability is a composition proof, not conditional
+/// compilation. Unannotated functions are shared and can reference only shared
+/// code. A specialized function can additionally reference code for its own
+/// target. Direct calls and first-class function references are both checked.
+fn check_target_availability(module: &Module) -> Result<(), TypeError> {
+    let mut targets = HashMap::new();
+    for item in &module.items {
+        if let Item::Function(function) = item {
+            targets.insert(function.name.as_str(), function_target(function)?);
+        }
+    }
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        let caller_target = function_target(function)?;
+        let mut violation: Option<(String, TargetAvailability)> = None;
+        crate::loans::walk_block(&function.body, &mut |expression| {
+            if violation.is_some() {
+                return;
+            }
+            let referenced = match expression {
+                Expr::Call { name, .. } | Expr::LabeledCall { name, .. } => Some(name.as_str()),
+                Expr::Var(name) => Some(name.as_str()),
+                _ => None,
+            };
+            let Some(name) = referenced else { return };
+            let Some(&callee_target) = targets.get(name) else { return };
+            if !caller_target.permits(callee_target) {
+                violation = Some((name.to_string(), callee_target));
+            }
+        });
+        if let Some((callee, callee_target)) = violation {
+            return terr(format!(
+                "{} function `{}` references {}-only function `{callee}`; \
+                 move the reference into @{} code or make the callee shared",
+                caller_target.label(),
+                function.name,
+                callee_target.label(),
+                callee_target.label(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// RFC-0038: a `grantable capability` may be granted to a root entrypoint, so it
 /// must be **bare** — carrying zero transitive built-in host authority. Otherwise
 /// granting it would be an invisible `Net`/`Dir`/`Secret` grant (and a later
@@ -8059,6 +8223,7 @@ impl Checker {
             "Show" => &["Show"],
             "Reflect" => &["Reflect"],
             "Deserialize" => &["Deserialize"],
+            "PublicState" => &["PublicState"],
             "From" => &["From"],
             "Into" => &["Into"],
             _ => &[],
@@ -8334,6 +8499,7 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
     if !compiler_syntax_allowed {
         check_compiler_syntax_declarations(&recs)?;
     }
+    check_public_state_impls(&recs)?;
     check_trait_names(&recs)?;
     // Validate every `dyn Trait` occurrence (identity, existential safety, and
     // v1 exclusions) while trait declarations are still present.
@@ -8701,6 +8867,26 @@ pub fn annotate_checked(module: Module) -> Result<TypedModule, TypeError> {
     )?
         .unwrap_or_default();
     Ok(TypedModule { module, table })
+}
+
+/// Lower an already checked linked source module to the ordinary typed runtime
+/// AST while retaining expression-level type facts for a compiler metadata
+/// consumer. Unlike [`annotate_checked`], this accepts the pre-lowering module
+/// held by [`crate::pipeline::CheckedModule`].
+pub fn annotate_checked_source(module: Module) -> Result<TypedModule, TypeError> {
+    let checked = witchy_syntax::source_check::check(module)
+        .map_err(|error| TypeError { message: error.message })?;
+    let checked = witchy_syntax::generators::lower(checked)
+        .map_err(|message| TypeError { message })?;
+    let checked = witchy_syntax::async_lower::lower(checked)
+        .map_err(|message| TypeError { message })?;
+    let records = witchy_syntax::records::lower(checked)
+        .map_err(|message| TypeError { message })?
+        .into_module();
+    let mut lowered = crate::traits::lower_checked(records)
+        .map_err(|message| TypeError { message })?;
+    witchy_syntax::parser::lower_sugar_module(&mut lowered);
+    annotate_checked(lowered)
 }
 
 /// Reannotate a build module after its checked `build` entrypoint has been
@@ -9073,6 +9259,7 @@ fn run_check_selected(
     // enters, so they must be capabilities (or the args list) — validate before
     // diving into bodies so a malformed entry point is reported up front.
     check_dynamic_method_declarations(module)?;
+    check_target_availability(module)?;
     check_main_signature(module)?;
     // RFC-0038: a `grantable` capability must be BARE (no transitive host authority),
     // checked module-wide (a grantable cap is invalid regardless of `main`).

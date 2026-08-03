@@ -89,16 +89,40 @@ pub struct GeneratedNodeOrigin {
     pub origin: ExpansionOrigin,
 }
 
+/// One compile-time tagged-literal expansion retained independently of the
+/// generated expression's eventual AST shape.
+///
+/// `tag` is the canonical definition-site name selected by the linker. The
+/// invocation and hole spans remain source metadata only; semantic consumers
+/// derive identities from checked generated values rather than line numbers.
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaggedLiteralOrigin {
+    pub id: GeneratedNodeId,
+    pub tag: String,
+    pub name: String,
+    pub definition: SourceSpan,
+    pub invocation: SourceSpan,
+    pub holes: Vec<SourceSpan>,
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OriginTable {
     nodes: Vec<GeneratedNodeOrigin>,
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    tagged_literals: Vec<TaggedLiteralOrigin>,
     next_ordinals: std::collections::BTreeMap<String, u32>,
 }
 
 impl OriginTable {
     pub fn nodes(&self) -> &[GeneratedNodeOrigin] {
         &self.nodes
+    }
+
+    /// Borrow the deterministic compile-time tagged-literal inventory.
+    pub fn tagged_literals(&self) -> &[TaggedLiteralOrigin] {
+        &self.tagged_literals
     }
 
     pub fn origin_for_item(&self, item: usize) -> Option<&GeneratedNodeOrigin> {
@@ -167,6 +191,29 @@ impl OriginTable {
         id
     }
 
+    /// Retain one checked tag expansion without coupling its source provenance
+    /// to the generated expression's representation.
+    pub fn record_tagged_literal(
+        &mut self,
+        module: &str,
+        tag: String,
+        name: String,
+        definition: SourceSpan,
+        invocation: SourceSpan,
+        holes: Vec<SourceSpan>,
+    ) -> GeneratedNodeId {
+        let id = self.allocate_id(module);
+        self.tagged_literals.push(TaggedLiteralOrigin {
+            id: id.clone(),
+            tag,
+            name,
+            definition,
+            invocation,
+            holes,
+        });
+        id
+    }
+
     fn allocate_id(&mut self, module: &str) -> GeneratedNodeId {
         let next = self.next_ordinals.entry(module.to_string()).or_default();
         let id = GeneratedNodeId { module: module.to_string(), ordinal: *next };
@@ -187,7 +234,12 @@ impl OriginTable {
             let module = entry.id.module.clone();
             entry.id = self.allocate_id(&module);
         }
+        for entry in &mut other.tagged_literals {
+            let module = entry.id.module.clone();
+            entry.id = self.allocate_id(&module);
+        }
         self.nodes.append(&mut other.nodes);
+        self.tagged_literals.append(&mut other.tagged_literals);
     }
 
     /// Remap item addresses after an AST pass. One input may expand to several
@@ -560,13 +612,33 @@ mod tests {
     fn appending_batches_allocates_unique_ids_without_source_identity() {
         let mut first = OriginTable::default();
         first.record_item("main", 0, trace("main", 2, 5));
+        first.record_tagged_literal(
+            "main",
+            "glamour.html".into(),
+            "html".into(),
+            SourceSpan::line("glamour", 20),
+            SourceSpan::line("main", 5),
+            vec![SourceSpan::line("main", 5)],
+        );
         let mut second = OriginTable::default();
         second.record_item("main", 0, trace("main", 9, 12));
+        second.record_tagged_literal(
+            "main",
+            "glamour.jsx".into(),
+            "jsx".into(),
+            SourceSpan::line("glamour", 30),
+            SourceSpan::line("main", 12),
+            Vec::new(),
+        );
         first.append_shifted(second, 4);
 
         assert_eq!(first.nodes[0].id.ordinal, 0);
-        assert_eq!(first.nodes[1].id.ordinal, 1);
+        assert_eq!(first.nodes[1].id.ordinal, 2);
         assert_eq!(first.nodes[1].node.item, 4);
+        assert_eq!(first.tagged_literals[0].id.ordinal, 1);
+        assert_eq!(first.tagged_literals[1].id.ordinal, 3);
+        assert_eq!(first.tagged_literals[1].tag, "glamour.jsx");
+        assert_eq!(first.tagged_literals[1].invocation.start.line, 12);
     }
 
     #[test]

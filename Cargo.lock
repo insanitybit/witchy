@@ -2962,6 +2962,7 @@ name = "witchy-lower"
 version = "0.1.0"
 dependencies = [
  "foldhash 0.2.0",
+ "sha2 0.11.0",
  "wasmparser 0.251.0",
  "wasmtime",
  "witchy-syntax",

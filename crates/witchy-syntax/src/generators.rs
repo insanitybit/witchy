@@ -293,9 +293,10 @@ fn lower_gen(f: Function, method: Option<&MethodCtx>) -> Result<(Function, Funct
     stmts.extend(rewrite_block(f.body.clone(), &f.name, false)?.stmts);
     stmts.push(Stmt::Expr(Expr::Ctor { name: "None".to_string(), args: vec![] }));
     let helper = Function {
+        line: f.line,
         public: false,
         comptime_only: false,
-        attributes: Vec::new(),
+        attributes: f.attributes.clone(),
         name: helper_name.clone(),
         params: helper_params,
         ret: elem.as_ref().map(|a| Type::Named("Option".to_string(), vec![a.clone()])),
@@ -329,6 +330,7 @@ fn lower_gen(f: Function, method: Option<&MethodCtx>) -> Result<(Function, Funct
         ret: None,
     };
     let wrapper = Function {
+        line: f.line,
         public: f.public,
         comptime_only: false,
         attributes: f.attributes,
@@ -473,4 +475,36 @@ fn rewrite_expr(e: Expr, gen_name: &str, in_region: bool) -> Result<Expr, String
         Expr::Block(b) => Expr::Block(rewrite_block(b, gen_name, in_region)?),
         other => other,
     })
+}
+
+#[cfg(test)]
+mod target_availability_tests {
+    use super::*;
+
+    #[test]
+    fn generator_helpers_preserve_target_availability() {
+        let module = crate::parser::parse_module(
+            "@browser\ngen fn browser_values() -> Iter(Int):\n    yield 1\n",
+        )
+        .expect("parse targeted generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower generator").into_module();
+        let generated: Vec<&Function> = lowered
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Function(function)
+                    if function.name == "browser_values"
+                        || function.name == "__gen_browser_values" =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(generated.len(), 2);
+        assert!(generated
+            .iter()
+            .all(|function| function.attributes == ["browser"]));
+    }
 }

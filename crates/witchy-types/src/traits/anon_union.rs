@@ -388,6 +388,7 @@ fn anon_union_show_impl(
         target_args: anon_union_target_args(arity),
         bounds: anon_union_bounds(arity, trait_name),
         methods: vec![Function {
+            line: 0,
             public: true,
             comptime_only: false,
             attributes: Vec::new(),
@@ -419,6 +420,7 @@ fn anon_union_reflect_impl(
         target_args: anon_union_target_args(arity),
         bounds: anon_union_bounds(arity, trait_name),
         methods: vec![Function {
+            line: 0,
             public: true,
             comptime_only: false,
             attributes: Vec::new(),
@@ -450,6 +452,7 @@ fn anon_union_partial_eq_impl(
         target_args: anon_union_target_args(arity),
         bounds: anon_union_bounds(arity, trait_name),
         methods: vec![Function {
+            line: 0,
             public: true,
             comptime_only: false,
             attributes: Vec::new(),

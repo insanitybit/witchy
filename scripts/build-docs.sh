@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Build the deployable witchy-book bundle (RFC-0041): the glamour docs app compiled to wasm,
-# the book content, the browser compiler + shared web modules, and the classification manifest —
-# a set of static files servable anywhere (GitHub Pages, `python3 -m http.server`), NO server.
+# Build the deployable witchy-book bundle: native static HTML, compiler-lowered
+# interactive regions, and the progressively enhanced runnable-code host.
 #
 #   ./scripts/build-docs.sh [OUTDIR]        (default: dist; builds the browser compiler)
 #   ./scripts/build-docs.sh --allow-missing-compiler [OUTDIR]  (non-runnable bundle)
@@ -45,48 +44,29 @@ if [ -z "$BIN" ]; then
   if [ -x "$td/release/witchy" ]; then BIN="$td/release/witchy"; else BIN="$td/debug/witchy"; fi
 fi
 
-rm -rf "$OUT"
-mkdir -p "$OUT/content"
-
-# 1. Compile the docs app (glamour + markdown as siblings) to wasm.
-tmp="$(mktemp -d)"
-cp projects/glamour/src/glamour.witchy projects/glamour/src/markdown.witchy \
-   projects/docs/src/docs.witchy "$tmp/"
-"$BIN" compile "$tmp/docs.witchy" --out "$OUT/docs.wasm"
-rm -rf "$tmp"
-
-# 1b. Compile the INTERACTIVE demo app(s) mounted live in the book (RFC-0041) — each a small
-# glamour app the docs page mounts with the same runtime, network denied. `glamour` resolves
-# from the bundled-rune path (no adjacent copy needed).
-"$BIN" compile projects/docs/src/counter.witchy --out "$OUT/counter.wasm"
-
-# 2. Stage the book content (SUMMARY + every page) under /content/, where the app fetches it.
-cp book/src/*.md "$OUT/content/"
-
-# 3. The shared web modules (flat — they import each other as siblings), the page, the manifest.
-cp web/witchy-runtime/glamour-dom.mjs web/witchy-runtime/witchy-runtime.mjs \
-   web/witchy-host.js web/witchy-runnable.js web/witchy-cell-sandbox.js \
-   web/witchy-cell-frame.js \
-   web/witchy-highlight.js \
-   web/docs-boot.js web/docs-run-options.js web/docs-asset-url.js \
-   web/wasm-fetch.js web/docs.css "$OUT/"
-mkdir -p "$OUT/witchy-runtime"
-cp web/witchy-runtime/witchy-runtime.mjs "$OUT/witchy-runtime/"
-cp web/docs.html "$OUT/index.html"
-cp web/rfc0103-browser-probe.html web/rfc0103-browser-probe.js "$OUT/"
-cp book/examples.json "$OUT/"
-mkdir -p "$OUT/fixture-showcase"
-cp projects/fixture-showcase/src/fixture_showcase.witchy \
-   projects/fixture-showcase/release.fixture.json \
-   "$OUT/fixture-showcase/"
-# Strict cross-origin isolation on every response (house rule) — for a `_headers`-honoring host.
-cp web/_headers "$OUT/"
+# Build all 43 routes, the counter island, manifests, runtime graph, CSS, SBOM,
+# headers, and reports through the production static publisher.
+"$BIN" build --web --out "$OUT" projects/docs
 
 # 4. The browser compiler (built by build-playground.sh) — required for the Run buttons.
 if [[ -n "$BROWSER_COMPILER" && -f "$BROWSER_COMPILER" ]]; then
+  # Runnable Witchy fences are host facilities rather than application
+  # islands. The packager records this browser boundary in the production
+  # graph and injects its loader only into routes with a checked host marker.
+  cp web/witchy-host.js web/witchy-runnable.js web/witchy-cell-sandbox.js \
+     web/witchy-cell-frame.js web/witchy-highlight.js web/docs-static-boot.js \
+     web/docs-run-options.js web/docs-asset-url.js web/wasm-fetch.js "$OUT/"
+  mkdir -p "$OUT/witchy-runtime"
+  cp web/witchy-runtime/witchy-runtime.mjs "$OUT/witchy-runtime/"
+  cp book/examples.json "$OUT/"
+  mkdir -p "$OUT/fixture-showcase"
+  cp projects/fixture-showcase/src/fixture_showcase.witchy \
+     projects/fixture-showcase/release.fixture.json \
+     "$OUT/fixture-showcase/"
   cp "$BROWSER_COMPILER" "$OUT/witchy.wasm"
+  node scripts/package-book.mjs "$OUT"
 else
-  echo "warning: browser compiler explicitly omitted; Run buttons will not work" >&2
+  echo "warning: browser compiler explicitly omitted; runnable fences remain inert" >&2
 fi
 
 echo "built $OUT/ — serve with:  python3 -m http.server -d $OUT 8000"

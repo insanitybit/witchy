@@ -84,17 +84,14 @@ pub(in crate::wir_opt) fn collect_function_tail_calls(
     seq: &WirSeq,
     out: &mut HashSet<TailCallee>,
 ) {
-    collect_explicit_return_calls_seq(seq, out);
-    let Some(last) = seq.last() else { return };
-    if let WirNode::Push(expr) | WirNode::Return(Some(expr)) = last {
-        collect_tail_calls_expr(expr, out);
-    }
+    collect_tail_calls_seq(seq, out);
 }
 
 fn collect_tail_calls_seq(seq: &WirSeq, out: &mut HashSet<TailCallee>) {
     collect_explicit_return_calls_seq(seq, out);
     let Some(last) = seq.last() else { return };
     match last {
+        WirNode::Source { body, .. } => collect_tail_calls_seq(body, out),
         WirNode::Push(expr) | WirNode::Return(Some(expr)) => collect_tail_calls_expr(expr, out),
         WirNode::If { then_, els, result: Some(_), .. } => {
             collect_tail_calls_seq(then_, out);
@@ -146,6 +143,9 @@ fn collect_result_branch_calls(seq: &WirSeq, target: &str, out: &mut HashSet<Tai
     }
     for node in seq {
         match node {
+            WirNode::Source { body, .. } => {
+                collect_result_branch_calls(body, target, out);
+            }
             WirNode::If { then_, els, .. } => {
                 collect_result_branch_calls(then_, target, out);
                 collect_result_branch_calls(els, target, out);
@@ -166,6 +166,7 @@ fn collect_explicit_return_calls_seq(seq: &WirSeq, out: &mut HashSet<TailCallee>
 
 fn collect_explicit_return_calls_node(node: &WirNode, out: &mut HashSet<TailCallee>) {
     match node {
+        WirNode::Source { body, .. } => collect_explicit_return_calls_seq(body, out),
         WirNode::Return(Some(expr)) => collect_tail_calls_expr(expr, out),
         WirNode::If { cond, then_, els, .. } => {
             collect_explicit_return_calls_expr(cond, out);

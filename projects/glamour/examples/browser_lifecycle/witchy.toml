@@ -1,0 +1,14 @@
+[rune]
+name = "glamour-browser-lifecycle"
+version = "0.1.0"
+
+[capabilities]
+runtime = []
+
+[dependencies]
+"glamour" = { path = "../.." }
+
+[web]
+entry = "src/browser_lifecycle.witchy"
+delivery = "static"
+grants = "web/grants.toml"

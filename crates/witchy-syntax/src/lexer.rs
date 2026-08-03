@@ -240,6 +240,22 @@ pub(crate) struct Token {
     pub kind: Tok,
     pub line: u32,
     pub col: u32,
+    /// Exclusive end position in the original source. Layout-inserted tokens are
+    /// zero-width and therefore never extend a source span.
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+impl Token {
+    fn point(kind: Tok, line: u32, col: u32) -> Self {
+        Self {
+            kind,
+            line,
+            col,
+            end_line: line,
+            end_col: col,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -364,7 +380,7 @@ impl Lexer {
             self.skip_trivia()?;
             let (line, col) = (self.line, self.col);
             let Some(c) = self.peek() else {
-                out.push(Token { kind: Tok::Eof, line, col });
+                out.push(Token::point(Tok::Eof, line, col));
                 return Ok(out);
             };
             // `name"…"` (no space) is a compile-time tagged literal: the preceding
@@ -372,7 +388,7 @@ impl Lexer {
             // The `Ident` is replaced by a single `TagLit` carrying the static
             // parts and per-hole source. (RFC-0006.)
             if c == '"' && self.pos == before_trivia {
-                if let Some(Token { kind: Tok::Ident(_), line: tl, col: tc }) = out.last() {
+                if let Some(Token { kind: Tok::Ident(_), line: tl, col: tc, .. }) = out.last() {
                     let (tl, tc) = (*tl, *tc);
                     let Some(Token { kind: Tok::Ident(tag), .. }) = out.pop() else {
                         unreachable!()
@@ -382,6 +398,8 @@ impl Lexer {
                         kind: Tok::TagLit { tag, parts, holes, hole_spans },
                         line: tl,
                         col: tc,
+                        end_line: self.line,
+                        end_col: self.col,
                     });
                     continue;
                 }
@@ -389,14 +407,24 @@ impl Lexer {
             // A string literal may expand into several tokens (interpolation),
             // so it pushes directly; everything else yields a single token.
             if c == '"' {
-                out.extend(self.string(false, line, col)?);
+                let mut tokens = self.string(false, line, col)?;
+                if let Some(last) = tokens.last_mut() {
+                    last.end_line = self.line;
+                    last.end_col = self.col;
+                }
+                out.extend(tokens);
                 continue;
             }
             // `f"..."` is an f-string: `{expr}` interpolates (Python style),
             // `{{`/`}}` are literal braces.
             if c == 'f' && self.peek2() == Some('"') {
                 self.bump(); // consume the `f`
-                out.extend(self.string(true, line, col)?);
+                let mut tokens = self.string(true, line, col)?;
+                if let Some(last) = tokens.last_mut() {
+                    last.end_line = self.line;
+                    last.end_col = self.col;
+                }
+                out.extend(tokens);
                 continue;
             }
             let kind = match c {
@@ -416,7 +444,13 @@ impl Lexer {
                 }
                 _ => self.operator()?,
             };
-            out.push(Token { kind, line, col });
+            out.push(Token {
+                kind,
+                line,
+                col,
+                end_line: self.line,
+                end_col: self.col,
+            });
         }
     }
 
@@ -761,12 +795,16 @@ impl Lexer {
             }
         }
         if interpolated {
-            out.push(Token { kind: Tok::Plus, line: literal_line, col: literal_col });
-            out.push(Token { kind: Tok::Str(text), line: literal_line, col: literal_col });
-            out.push(Token { kind: Tok::RParen, line: literal_line, col: literal_col });
+            out.push(Token::point(Tok::Plus, literal_line, literal_col));
+            out.push(Token::point(Tok::Str(text), literal_line, literal_col));
+            out.push(Token::point(Tok::RParen, literal_line, literal_col));
             Ok(out)
         } else {
-            Ok(vec![Token { kind: Tok::Str(text), line: literal_line, col: literal_col }])
+            Ok(vec![Token::point(
+                Tok::Str(text),
+                literal_line,
+                literal_col,
+            )])
         }
     }
 
@@ -833,11 +871,11 @@ impl Lexer {
     ) -> Result<(), LexError> {
         let first_segment = !*interpolated;
         if !first_segment {
-            out.push(Token { kind: Tok::Plus, line: self.line, col: self.col });
+            out.push(Token::point(Tok::Plus, self.line, self.col));
         } else {
             // Layout uses the first token column as the line indent; for
             // `"${x}"`, that must be the quote column, not the hole column.
-            out.push(Token { kind: Tok::LParen, line: literal_line, col: literal_col });
+            out.push(Token::point(Tok::LParen, literal_line, literal_col));
             *interpolated = true;
         }
         let (segment_line, segment_col) = if first_segment {
@@ -849,6 +887,8 @@ impl Lexer {
             kind: Tok::Str(std::mem::take(text)),
             line: segment_line,
             col: segment_col,
+            end_line: segment_line,
+            end_col: segment_col,
         });
         let span = self.interp_source()?;
         let expr_toks = Lexer::new(&span.src).tokenize().map_err(|err| {
@@ -860,13 +900,15 @@ impl Lexer {
             );
             LexError { message: err.message, line, col }
         })?;
-        out.push(Token { kind: Tok::Plus, line: span.start_line, col: span.start_col });
+        out.push(Token::point(Tok::Plus, span.start_line, span.start_col));
         out.push(Token {
             kind: Tok::Ident(GENERATED_RENDER_INTRINSIC.into()),
             line: span.start_line,
             col: span.start_col,
+            end_line: span.start_line,
+            end_col: span.start_col,
         });
-        out.push(Token { kind: Tok::LParen, line: span.start_line, col: span.start_col });
+        out.push(Token::point(Tok::LParen, span.start_line, span.start_col));
         for t in expr_toks {
             if t.kind == Tok::Eof {
                 break;
@@ -877,12 +919,26 @@ impl Lexer {
                 t.line,
                 t.col,
             );
-            out.push(Token { kind: t.kind, line, col });
+            let (end_line, end_col) = rebase_inner_position(
+                span.start_line,
+                span.start_col,
+                t.end_line,
+                t.end_col,
+            );
+            out.push(Token {
+                kind: t.kind,
+                line,
+                col,
+                end_line,
+                end_col,
+            });
         }
         out.push(Token {
             kind: Tok::InterpRBrace,
             line: span.close_line,
             col: span.close_col,
+            end_line: span.close_line,
+            end_col: span.close_col.saturating_add(1),
         });
         Ok(())
     }
@@ -1124,7 +1180,7 @@ pub(crate) fn trailing_comments(src: &str) -> Vec<(u32, u32, String)> {
 }
 
 fn vtok(kind: Tok, near: &Token) -> Token {
-    Token { kind, line: near.line, col: near.col }
+    Token::point(kind, near.line, near.col)
 }
 
 /// Off-side-rule layout. Transforms an indentation-delimited token stream into a

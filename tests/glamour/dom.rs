@@ -60,6 +60,638 @@ fn run_node_driver(relative_path: &str, success_marker: &str, label: &str) {
     );
 }
 
+/// RFC-0108: malformed optimized-protocol frames fail before returning a
+/// partial operation list, and sequence state advances only after successful
+/// all-or-nothing application.
+#[test]
+fn glamour_binary_protocol_is_checked_before_application() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-protocol.test.mjs",
+        "GLAMOUR-PROTOCOL OK",
+        "Glamour binary protocol",
+    );
+}
+
+/// RFC-0108: a compiler-checked application export family keeps its private
+/// state rooted in one Wasm instance and exposes only bounded byte-buffer
+/// lifecycle calls to the host.
+#[test]
+fn glamour_stateful_wasm_abi_owns_the_application_model() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-stateful-abi.test.mjs",
+        "GLAMOUR-STATEFUL-ABI OK",
+        "Glamour stateful Wasm ABI",
+    );
+}
+
+/// RFC-0108: the optimized host mounts authenticated static templates, applies
+/// changed slots, delegates one root listener per event class, and validates a
+/// whole patch before its first live DOM mutation.
+#[test]
+fn glamour_optimized_host_mounts_patches_and_delegates_events() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-optimized.test.mjs",
+        "GLAMOUR-OPTIMIZED OK",
+        "Glamour optimized DOM host",
+    );
+}
+
+/// RFC-0109: a candidate restores against authenticated compiler metadata on a
+/// detached root. Failure leaves the old application live; success disposes it
+/// only after restoration and activates the candidate.
+#[test]
+fn glamour_development_swap_keeps_the_last_good_application() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-development.test.mjs",
+        "GLAMOUR-DEVELOPMENT OK",
+        "Glamour development swap",
+    );
+}
+
+/// RFC-0108: binary effect and subscription records resolve only
+/// build-authenticated host descriptors. Stable generations cancel replaced
+/// work and make late completions inert without exposing authority to Wasm.
+#[test]
+fn glamour_optimized_host_custodies_effects_and_subscriptions() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-optimized-effects.test.mjs",
+        "GLAMOUR-OPTIMIZED-EFFECTS OK",
+        "Glamour optimized effect host",
+    );
+}
+
+/// RFC-0108 end to end: compiled Witchy emits binary effect and subscription
+/// plans, consumes typed completion records, and retains its private lifecycle
+/// state while the host owns all asynchronous authority.
+#[test]
+fn glamour_optimized_wasm_effects_keep_authority_in_the_host() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-optimized-effects-wasm.test.mjs",
+        "GLAMOUR-OPTIMIZED-EFFECTS-WASM OK",
+        "Glamour optimized compiled-Wasm effects",
+    );
+}
+
+/// RFC-0108 differential oracle: one source runs through the native
+/// interpreter plus JSON host, compiled Wasm plus JSON host, and compiled Wasm
+/// plus optimized binary host. Normalized state agrees after every message.
+#[test]
+fn glamour_optimized_host_matches_the_json_reference_oracle() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-differential.test.mjs",
+        "GLAMOUR-DIFFERENTIAL OK",
+        "Glamour optimized differential oracle",
+    );
+}
+
+/// RFC-0108 Phase 3 performance evidence: the same keyed source runs for 30
+/// measured samples through JSON and binary hosts while structural artifact,
+/// memory, listener, and operation thresholds remain enforced.
+#[test]
+fn glamour_phase3_performance_report_enforces_structural_thresholds() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-phase3-performance.mjs",
+        "GLAMOUR-PHASE3-PERFORMANCE OK",
+        "Glamour Phase 3 performance report",
+    );
+}
+
+/// RFC-0108 end to end: a real compiled Witchy application retains its counter
+/// model in Wasm and exchanges only binary event/mount/one-slot patch frames
+/// with the optimized host.
+#[test]
+fn glamour_optimized_wasm_dispatch_has_no_model_or_vnode_json() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-optimized-wasm.test.mjs",
+        "GLAMOUR-OPTIMIZED-WASM OK",
+        "Glamour optimized compiled-Wasm path",
+    );
+}
+
+/// RFC-0108 keyed planning runs inside Witchy. Retained keys outside one LIS
+/// produce exactly the minimum number of moves; removals precede right-to-left
+/// inserts/moves so every `before` key is already live.
+#[test]
+fn glamour_keyed_plan_is_minimal_and_backends_agree() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = std::env::temp_dir().join(format!("glamour-keyed-plan-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+    std::fs::write(
+        work.join("keyed_plan.witchy"),
+        r#"import glamour
+from glamour import KeyedEdit
+
+fn show(edit: KeyedEdit) -> String:
+    match edit:
+        RemoveKey(key) -> "remove ${key}"
+        InsertKey(key, before) -> "insert ${key} before ${before}"
+        MoveKey(key, before) -> "move ${key} before ${before}"
+
+fn print_plan(console: Console, old_keys: List(Int), new_keys: List(Int)):
+    match glamour.keyed_plan(old_keys, new_keys):
+        Ok(edits) ->
+            for edit in edits:
+                console.print(show(edit))
+        Err(message) -> console.print("error ${message}")
+
+fn main(console: Console):
+    print_plan(console, [1, 2, 3], [3, 1, 2])
+    print_plan(console, [1, 2, 3], [2, 4, 3])
+    print_plan(console, [1, 2, 3, 4], [4, 3, 2, 1])
+    print_plan(console, [1, 1], [1])
+"#,
+    )
+    .unwrap();
+
+    let program = work.join("keyed_plan.witchy");
+    let parity = Command::new(BIN)
+        .arg("parity")
+        .arg(&program)
+        .current_dir(&work)
+        .output()
+        .expect("run keyed planner parity");
+    let parity_stdout = String::from_utf8_lossy(&parity.stdout);
+    let parity_stderr = String::from_utf8_lossy(&parity.stderr);
+    assert!(
+        parity.status.success() && parity_stdout.contains("agree (7 line(s) of output)"),
+        "keyed planner backends must agree:\n{parity_stdout}\n{parity_stderr}"
+    );
+
+    let run = Command::new(BIN)
+        .arg(&program)
+        .current_dir(&work)
+        .output()
+        .expect("run keyed planner");
+    let stdout = String::from_utf8(run.stdout).expect("keyed planner output is UTF-8");
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(run.status.success(), "keyed planner run failed: {}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(
+        stdout,
+        "move 3 before 1\n\
+         remove 1\n\
+         insert 4 before 3\n\
+         move 2 before 1\n\
+         move 3 before 2\n\
+         move 4 before 3\n\
+         error glamour keyed plan: duplicate old key 1\n"
+    );
+}
+
+/// RFC-0107 structural regions are planned in Witchy itself. Branches and
+/// optional children leave with tags 8/13, enter from authenticated dormant
+/// templates with tags 7/12, then apply changed scalar slots.
+#[test]
+fn glamour_structural_patch_frames_agree_on_both_backends() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work =
+        std::env::temp_dir().join(format!("glamour-structural-patch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+    std::fs::write(
+        work.join("branch_patch.witchy"),
+        r#"import glamour
+from glamour import Ui
+
+fn view(active: Bool, value: String) -> Ui(Int):
+    glamour.ui(glamour.element("div", [], [glamour.branch("details", active, glamour.element("button", [glamour.on_event("details.tick", "click", glamour.event_msg(1))], [glamour.text(value)]))]))
+
+fn child_view(active: Bool, value: String) -> Ui(Int):
+    let child = if active: Some(glamour.element("button", [glamour.on_event("details.tick", "click", glamour.event_msg(1))], [glamour.text(value)])) else: None
+    let template = glamour.element("button", [glamour.on_event("details.tick", "click", glamour.event_msg(1))], [glamour.text(value)])
+    glamour.ui(glamour.element("div", [], [glamour.optional_child("summary", template, child)]))
+
+fn event_view(active: Bool) -> Ui(Int):
+    let attrs = if active: [glamour.on_event("details.tick", "click", glamour.event_msg(1))] else: []
+    glamour.ui(glamour.element("button", attrs, [glamour.text("stable")]))
+
+fn alternate_event_view() -> Ui(Int):
+    glamour.ui(glamour.element("button", [glamour.on_event("details.alt", "click", glamour.event_msg(1))], [glamour.text("stable")]))
+
+fn main(console: Console):
+    let nodes = [glamour.island_text_node([0, 0, 0], 30)]
+    let slots = [glamour.island_template_text_slot(70, [0, 0, 0])]
+    let events = [glamour.island_event_descriptor(90, 20, 80, "details.tick", "click", "msg", false, false), glamour.island_event_descriptor(91, 20, 80, "details.alt", "click", "msg", false, false)]
+    let regions = [glamour.island_branch_region([0, 0], 40, 10, 50, 60, [0, 0], slots)]
+    let leave = glamour.island_patch(view(true, "zero"), view(true, "zero"), view(false, "one"), nodes, [], events, regions, 1, 2, 3, 1)
+    console.print("${leave.length()},${leave.at(16)},${leave.at(48)},${leave.at(56)}")
+    let enter = glamour.island_patch(view(false, "zero"), view(false, "one"), view(true, "two"), nodes, [], events, regions, 1, 2, 3, 2)
+    console.print("${enter.length()},${enter.at(16)},${enter.at(48)},${enter.at(56)},${enter.at(60)},${enter.at(64)},${enter.at(68)},${enter.at(72)},${enter.at(84)},${enter.at(92)}")
+    let child_regions = [glamour.island_child_region([0, 0], 41, 10, 51, 61, [0, 0], slots)]
+    let unmount = glamour.island_patch(child_view(false, "zero"), child_view(true, "zero"), child_view(false, "one"), nodes, [], events, child_regions, 1, 2, 3, 3)
+    console.print("${unmount.length()},${unmount.at(16)},${unmount.at(48)},${unmount.at(56)}")
+    let mount = glamour.island_patch(child_view(false, "zero"), child_view(false, "one"), child_view(true, "two"), nodes, [], events, child_regions, 1, 2, 3, 4)
+    console.print("${mount.length()},${mount.at(16)},${mount.at(48)},${mount.at(56)},${mount.at(60)},${mount.at(64)},${mount.at(68)},${mount.at(72)},${mount.at(84)},${mount.at(92)}")
+    let add_event = glamour.island_patch(event_view(false), event_view(false), event_view(true), [glamour.island_text_node([0, 0], 30)], [], events, [], 1, 2, 3, 5)
+    console.print("${add_event.length()},${add_event.at(16)},${add_event.at(48)},${add_event.at(56)},${add_event.at(60)},${add_event.at(64)}")
+    let remove_event = glamour.island_patch(event_view(false), event_view(true), event_view(false), [glamour.island_text_node([0, 0], 30)], [], events, [], 1, 2, 3, 6)
+    console.print("${remove_event.length()},${remove_event.at(16)},${remove_event.at(48)},${remove_event.at(56)},${remove_event.at(60)}")
+    let replace_event = glamour.island_patch(event_view(true), event_view(true), alternate_event_view(), [glamour.island_text_node([0, 0], 30)], [], events, [], 1, 2, 3, 7)
+    console.print("${replace_event.length()},${replace_event.at(16)},${replace_event.at(48)},${replace_event.at(56)},${replace_event.at(60)},${replace_event.at(64)}")
+"#,
+    )
+    .unwrap();
+
+    let program = work.join("branch_patch.witchy");
+    let parity = Command::new(BIN)
+        .arg("parity")
+        .arg(&program)
+        .current_dir(&work)
+        .output()
+        .expect("run branch patch parity");
+    let parity_stdout = String::from_utf8_lossy(&parity.stdout);
+    let parity_stderr = String::from_utf8_lossy(&parity.stderr);
+    assert!(
+        parity.status.success() && parity_stdout.contains("agree (7 line(s) of output)"),
+        "branch patch backends must agree:\n{parity_stdout}\n{parity_stderr}"
+    );
+
+    let run = Command::new(BIN)
+        .arg(&program)
+        .current_dir(&work)
+        .output()
+        .expect("run branch patch planner");
+    let stdout = String::from_utf8(run.stdout).expect("branch patch output is UTF-8");
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        run.status.success(),
+        "branch patch run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        stdout,
+        "60,1,8,40\n110,2,7,40,50,60,1,70,2,30\n60,1,13,41\n110,2,12,41,51,61,1,70,2,30\n68,1,14,20,80,90\n64,1,15,20,80\n68,1,14,20,80,91\n"
+    );
+}
+
+/// RFC-0108 host work shares the same authenticated frame as DOM patches. The
+/// Witchy encoder owns operation sizes, absolute payload references, and stable
+/// ordering before JavaScript observes any effect or subscription request.
+#[test]
+fn glamour_island_host_work_frames_agree_on_both_backends() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work =
+        std::env::temp_dir().join(format!("glamour-host-work-frame-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+    std::fs::write(
+        work.join("host_work.witchy"),
+        r#"import glamour
+from glamour import Ui
+
+fn view() -> Ui(Int):
+    glamour.ui(glamour.element("p", [], [glamour.text("stable")]))
+
+fn main(console: Console):
+    let work = [glamour.island_start_effect(11, 12, 13, "go"), glamour.island_cancel_effect(12), glamour.island_sync_subscription(21, 22, "50"), glamour.island_remove_subscription(21)]
+    let frame = glamour.island_patch_with_work(view(), view(), view(), [], [], [], [], work, 7, 2, 3, 4)
+    console.print("${frame.length()},${frame.at(16)},${frame.at(40)},${frame.at(48)},${frame.at(49)},${frame.at(56)},${frame.at(60)},${frame.at(64)},${frame.at(68)},${frame.at(72)},${frame.at(76)},${frame.at(77)},${frame.at(84)},${frame.at(88)},${frame.at(89)},${frame.at(96)},${frame.at(100)},${frame.at(104)},${frame.at(108)},${frame.at(112)},${frame.at(113)},${frame.at(120)},${frame.at(124)},${frame.at(125)},${frame.at(126)},${frame.at(127)}")
+    let mount = glamour.island_mount_with_work(view(), 31, 32, [], [], [glamour.island_start_effect(41, 42, 43, "")], 7, 2, 3)
+    console.print("${mount.length()},${mount.at(16)},${mount.at(40)},${mount.at(48)},${mount.at(56)},${mount.at(60)},${mount.at(76)},${mount.at(77)},${mount.at(84)},${mount.at(88)},${mount.at(92)},${mount.at(96)},${mount.at(100)}")
+"#,
+    )
+    .unwrap();
+
+    let program = work.join("host_work.witchy");
+    let parity = Command::new(BIN)
+        .arg("parity")
+        .arg(&program)
+        .current_dir(&work)
+        .output()
+        .expect("run host-work parity");
+    let parity_stdout = String::from_utf8_lossy(&parity.stdout);
+    let parity_stderr = String::from_utf8_lossy(&parity.stderr);
+    assert!(
+        parity.status.success() && parity_stdout.contains("agree (2 line(s) of output)"),
+        "host-work frame backends must agree:\n{parity_stdout}\n{parity_stderr}"
+    );
+
+    let run = Command::new(BIN)
+        .arg(&program)
+        .current_dir(&work)
+        .output()
+        .expect("run host-work frame encoder");
+    let stdout = String::from_utf8(run.stdout).expect("host-work output is UTF-8");
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        run.status.success(),
+        "host-work frame run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        stdout,
+        "128,4,124,0,1,11,12,13,124,2,1,1,12,2,1,21,22,126,2,3,1,21,103,111,53,48\n104,2,104,1,31,32,0,1,41,42,43,104,0\n"
+    );
+}
+
+/// RFC-0107 effect completions cross the browser boundary as one bounded,
+/// identity-checked binary record. Witchy performs the same validation on both
+/// backends before a generated adapter may turn the result into a typed message.
+#[test]
+fn glamour_island_completion_frames_agree_on_both_backends() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work =
+        std::env::temp_dir().join(format!("glamour-completion-frame-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+    let mut frame = Vec::from([0_u8; 92]);
+    frame[..4].copy_from_slice(b"GLMR");
+    frame[4..6].copy_from_slice(&1_u16.to_le_bytes());
+    frame[8] = 3;
+    frame[10..12].copy_from_slice(&48_u16.to_le_bytes());
+    frame[12..16].copy_from_slice(&92_u32.to_le_bytes());
+    frame[16..20].copy_from_slice(&1_u32.to_le_bytes());
+    frame[20..24].copy_from_slice(&7_u32.to_le_bytes());
+    frame[24..28].copy_from_slice(&2_u32.to_le_bytes());
+    frame[28..32].copy_from_slice(&3_u32.to_le_bytes());
+    frame[32..36].copy_from_slice(&4_u32.to_le_bytes());
+    frame[40..44].copy_from_slice(&88_u32.to_le_bytes());
+    frame[48..50].copy_from_slice(&1_u16.to_le_bytes());
+    frame[52..56].copy_from_slice(&40_u32.to_le_bytes());
+    frame[56..60].copy_from_slice(&2_u32.to_le_bytes());
+    frame[60..64].copy_from_slice(&11_u32.to_le_bytes());
+    frame[64..68].copy_from_slice(&12_u32.to_le_bytes());
+    frame[68..72].copy_from_slice(&13_u32.to_le_bytes());
+    frame[72..76].copy_from_slice(&14_u32.to_le_bytes());
+    frame[76..80].copy_from_slice(&1_u32.to_le_bytes());
+    frame[80..84].copy_from_slice(&88_u32.to_le_bytes());
+    frame[84..88].copy_from_slice(&4_u32.to_le_bytes());
+    frame[88..].copy_from_slice(b"done");
+    let source = format!(
+        "import bytes\nimport glamour\n\nfn main(console: Console):\n    match bytes.from_list([{}]):\n        Err(_) -> console.print(\"bytes error\")\n        Ok(frame) ->\n            match glamour.island_completion_input(frame, 7, 2, 3, 4):\n                glamour.IslandCompletionInput(source, instance, generation, descriptor, schema, status, value) ->\n                    match value.decode_utf8_string():\n                        Ok(text) -> console.print(\"${{source}},${{instance}},${{generation}},${{descriptor}},${{schema}},${{status}},${{text}}\")\n                        Err(_) -> console.print(\"invalid payload\")\n",
+        frame
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let program = work.join("completion.witchy");
+    std::fs::write(&program, source).unwrap();
+    let parity = Command::new(BIN)
+        .arg("parity")
+        .arg(&program)
+        .current_dir(&work)
+        .output()
+        .expect("run completion-frame parity");
+    let parity_stdout = String::from_utf8_lossy(&parity.stdout);
+    let parity_stderr = String::from_utf8_lossy(&parity.stderr);
+    assert!(
+        parity.status.success() && parity_stdout.contains("agree (1 line(s) of output)"),
+        "completion-frame backends must agree:\n{parity_stdout}\n{parity_stderr}"
+    );
+    let run = Command::new(BIN)
+        .arg(&program)
+        .current_dir(&work)
+        .output()
+        .expect("run completion-frame decoder");
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "2,11,12,13,14,1,done\n");
+}
+
+/// Typed CSS assignments stay distinct from generic style strings and lower to
+/// one authenticated custom-property operation in a protocol-1.3 frame on both
+/// backends.
+#[test]
+fn glamour_custom_property_patch_agrees_on_both_backends() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work =
+        std::env::temp_dir().join(format!("glamour-custom-property-patch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+    std::fs::write(
+        work.join("custom_property_patch.witchy"),
+        r#"import glamour
+from glamour import Ui
+
+fn view(value: Int) -> Ui(Int):
+    var attrs = []
+    match glamour.css_length_property("gap"):
+        Err(_) -> Nil
+        Ok(gap) ->
+            match glamour.css_px(value):
+                Err(_) -> Nil
+                Ok(current) -> attrs.push(glamour.css_custom_properties([glamour.css_assign(gap, current)]))
+    glamour.ui(glamour.element("div", attrs, []))
+
+fn main(console: Console):
+    let sinks = [glamour.island_attribute_sink([0], 10, 0, "css-length", "--glamour-gap", 27)]
+    let patch = glamour.island_patch(view(1), view(1), view(2), [], sinks, [], [], 1, 2, 3, 1)
+    console.print("${patch.length()},${patch.at(6)},${patch.at(16)},${patch.at(48)},${patch.at(56)},${patch.at(60)},${patch.at(72)},${patch.at(73)},${patch.at(74)}")
+"#,
+    )
+    .unwrap();
+
+    let program = work.join("custom_property_patch.witchy");
+    let parity = Command::new(BIN)
+        .arg("parity")
+        .arg(&program)
+        .current_dir(&work)
+        .output()
+        .expect("run custom-property patch parity");
+    let parity_stdout = String::from_utf8_lossy(&parity.stdout);
+    let parity_stderr = String::from_utf8_lossy(&parity.stderr);
+    assert!(
+        parity.status.success() && parity_stdout.contains("agree (1 line(s) of output)"),
+        "custom-property patch backends must agree:\n{parity_stdout}\n{parity_stderr}"
+    );
+
+    let run = Command::new(BIN)
+        .arg(&program)
+        .current_dir(&work)
+        .output()
+        .expect("run custom-property patch");
+    let stdout = String::from_utf8(run.stdout).expect("custom-property output is UTF-8");
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        run.status.success(),
+        "custom-property patch failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(stdout, "75,3,1,18,10,27,50,112,120\n");
+}
+
+/// RFC-0107 Phase 0: the proposed Program/Site/Route/IslandPlan declaration
+/// shape must compile using ordinary Witchy values and agree on both backends.
+/// This is the evidence required before proposing framework-specific syntax.
+#[test]
+fn glamour_next_api_shape_needs_no_language_keyword() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = std::env::temp_dir().join(format!("glamour-next-api-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/examples/next_api/src/next_api.witchy"),
+        work.join("next_api.witchy"),
+    )
+    .unwrap();
+
+    let out = Command::new(BIN)
+        .arg("parity")
+        .arg(work.join("next_api.witchy"))
+        .current_dir(&work)
+        .output()
+        .expect("run parity on the RFC-0107 API prototype");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        out.status.success() && stdout.contains("agree (5 line(s) of output)"),
+        "the RFC-0107 API prototype must compile and agree on both backends:\n\
+         --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
+/// RFC-0107 Phase 1: rendering is a deterministic projection of public model
+/// data. A Program cannot pass its authorization record into the view function.
+#[test]
+fn glamour_program_view_cannot_receive_authority() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = std::env::temp_dir().join(format!(
+        "glamour-capability-free-view-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+    std::fs::write(
+        work.join("bad.witchy"),
+        r#"import glamour
+from glamour import Cmd, Program, Start, Sub, Ui, UiRoot
+
+type Msg:
+    Tick
+
+fn authorize(root: UiRoot) -> UiRoot:
+    root
+
+fn initial(_start: Start) -> Int:
+    0
+
+fn start(_auth: UiRoot, _model: Int) -> Cmd(Msg):
+    NoCmd
+
+fn update(_auth: UiRoot, model: Int, _message: Msg) -> (Int, Cmd(Msg)):
+    (model, NoCmd)
+
+fn authority_view(_auth: UiRoot, model: Int) -> Ui(Msg):
+    glamour.ui(glamour.text("${model}"))
+
+fn subscriptions(_auth: UiRoot, _model: Int) -> Sub(Msg):
+    glamour.no_sub()
+
+fn app() -> Program(UiRoot, Int, Msg):
+    glamour.program(authorize, initial, start, update, authority_view, subscriptions)
+
+fn main():
+    let _app = app()
+"#,
+    )
+    .unwrap();
+
+    let out = Command::new(BIN)
+        .args(["compile", "bad.witchy", "--out", "bad.wasm"])
+        .current_dir(&work)
+        .output()
+        .expect("compile a Program with an authority-bearing view");
+    let produced = work.join("bad.wasm").exists();
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        !out.status.success() && !produced,
+        "a Program view that receives authority must not compile:\n{output}"
+    );
+}
+
+/// RFC-0107 Phase 0: capture a reproducible before-measurement for the current
+/// full-model/full-VNode JSON transport and structural DOM differ.
+#[test]
+fn glamour_reference_baseline_has_checked_transport_and_dom_counts() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-baseline.mjs");
+    let out = Command::new("node")
+        .arg(driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("run Glamour Phase 0 baseline");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the Glamour baseline failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("baseline output must be one JSON document");
+    assert_eq!(report["schema"], "witchy.glamour.baseline.v1");
+    assert_eq!(report["workload"]["finalModel"], 100);
+    assert_eq!(report["transport"]["steps"], 101);
+    assert_eq!(report["domOperations"]["setText"], 100);
+    assert_eq!(report["domOperations"]["replaceChild"], serde_json::Value::Null);
+    assert!(
+        report["artifact"]["wasmBytes"].as_u64().unwrap_or(0) > 0,
+        "baseline must measure a real compiled artifact: {report}"
+    );
+    assert!(
+        report["memory"]["wasmPages"].as_u64().is_some_and(|pages| pages <= 2),
+        "the counter baseline should remain within two Wasm pages: {report}"
+    );
+}
+
+/// RFC-0107 Phase 1: Program initialization, declarative typed events, stable
+/// subscription reconciliation, and unmount cancellation execute through the
+/// unchanged JSON host boundary.
+#[test]
+fn glamour_program_typed_events_and_subscriptions_are_deterministic() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-program.test.mjs",
+        "GLAMOUR-PROGRAM OK",
+        "Glamour Program runtime",
+    );
+}
+
 /// (RFC-0039) The capability gate, made structural: a component WITHOUT a `UiFetch`
 /// cannot construct `Cmd.Http`. `glamour.http_get` REQUIRES the token as its leading
 /// argument, so a fetch attempt without one FAILS TO COMPILE — the unauthorized
@@ -78,7 +710,7 @@ fn glamour_http_effect_requires_a_uifetch_token() {
     // Try to build an HTTP effect WITHOUT holding a `UiFetch`.
     std::fs::write(
         work.join("bad.witchy"),
-        "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\n\ntype Msg:\n    Got(Int, String)\n\npub fn go() -> Cmd(Msg):\n    glamour.http_get(\"/x\", \"Got\")\n",
+        "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\n\ntype Msg:\n    Got(Int, String)\n\npub fn go() -> Cmd(Msg):\n    glamour.http_get_compat(\"/x\", \"Got\")\n",
     )
     .unwrap();
     let out = Command::new(BIN)
@@ -120,7 +752,7 @@ fn glamour_port_effect_requires_a_credential_token() {
     // port name as a bare string the way the old ambient API allowed.
     std::fs::write(
         work.join("bad.witchy"),
-        "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\n\ntype Msg:\n    Done(String)\n\npub fn go() -> Cmd(Msg):\n    glamour.port(\"promote\", \"acme/charts\", \"Done\")\n",
+        "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\n\ntype Msg:\n    Done(String)\n\npub fn go() -> Cmd(Msg):\n    glamour.port_compat(\"promote\", \"acme/charts\", \"Done\")\n",
     )
     .unwrap();
     let out = Command::new(BIN)
@@ -193,6 +825,18 @@ fn glamour_password_is_unreadable_by_a_sibling_component() {
 #[test]
 fn glamour_secret_input_keeps_the_password_host_side() {
     run_node_driver("web/witchy-runtime/glamour-secret.test.mjs", "GLAMOUR-SECRET OK", "glamour secret-custody");
+}
+
+/// RFC-0107 Phase 5: browser form entries are decoded against the published
+/// action schema with the same problem order as Witchy. The delegated
+/// same-origin lifecycle cancels stale work and never publishes secret values.
+#[test]
+fn glamour_progressive_forms_keep_secrets_host_side() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-forms.test.mjs",
+        "GLAMOUR-FORMS OK",
+        "Glamour progressive form decoder",
+    );
 }
 
 #[test]

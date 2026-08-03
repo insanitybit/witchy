@@ -94,6 +94,89 @@ into the real DOM (`createElement` / `textContent` / `setAttribute` only — nev
 events back as `Msg` values and re-render. The witchy rune computes; the shell
 acts (holds the DOM, the events, and the effects).
 
+The exact current JSON shapes, lifecycle, and fail-closed behavior are frozen in
+[`projects/glamour/REFERENCE-PROTOCOL.md`](../../projects/glamour/REFERENCE-PROTOCOL.md).
+RFC-0107's reproducible before-measurement is:
+
+```sh
+node web/witchy-runtime/glamour-baseline.mjs target/debug/witchy
+```
+
+### `glamour-optimized.mjs` — checked binary patches and resume
+
+`mountOptimized` validates complete RFC-0108 frames before mutating the DOM. In
+resume mode it first validates a compiler-owned plan that maps numeric node and
+region identities to bounded child paths in the existing static DOM. Every
+declared node and region must be present exactly once, event plans must match
+their event classes and compiler-owned island registry, and malformed identity
+fails before Wasm instantiation.
+
+The compiler-owned `__glamour_resume` entry installs private Wasm state but
+emits no initial frame. The host rejects any attempted initial output and starts
+the output validator at the manifest's next sequence. Subsequent delegated
+events and the activation loader's first scalar snapshot must match an adopted
+node, event class, and plan before their binary frame is dispatched. Patches
+update the adopted nodes in place, including keyed moves that preserve
+browser-owned state. Resume plans may also name an initial set of checked
+subscription identities, descriptors, and bounded requests; the host starts
+those only after private Wasm state is live and cancels them on disposal.
+
+Development metadata names compiler-authenticated public model fields while
+keeping every value inside Wasm. The inspection bridge reports field names,
+kinds, and change bits with each value fixed to `<redacted>`. The island
+scheduler admits that model summary only from an active application's checked
+development inspector, revalidates its bounded schema, and never exposes the
+application, DOM, dispatch handle, or model value.
+
+### `glamour-forms.mjs` — progressive forms
+
+`decodeProgressiveForm(action, entries)` validates bounded browser form entries
+against the static action manifest with the same fixture corpus and problem
+order as Witchy's `decode_form_entries`. Public values are inert strings.
+Secret values remain in a private `ProgressiveFormSubmission` map: JSON
+serialization throws, and `takeSecret(name)` erases the value on first read.
+
+`installProgressiveForms(options)` adds one delegated submit listener. Checked
+same-origin forms move through `Validating`, `Submitting`, `Succeeded`,
+`Failed`, and `Cancelled` records. A newer submission aborts and invalidates
+the older generation. The host publishes public values only, sends secret
+values directly through the same-origin request path, refuses secret GET
+schemas, uses manual redirect handling, and leaves cross-origin or
+submitter-overridden forms to native browser behavior. The optimized host
+installs and disposes this boundary when its checked manifest declares
+actions. Protocol 1.4 binds every action to compiler-owned input and result
+schema identities. The host encodes public submitted fields into `ActionInput`
+frames, omits secret fields, and sends closed status-only `ActionCompletion`
+frames through the ordinary Wasm dispatch entry. Glamour derives the same
+identities from `FormSchema` and decodes those bytes into closed
+`ClientActionInput`/`ClientActionCompletion` values. Applications match typed
+field-kind and completion-status variants; they never name a transport schema
+ID or install a JavaScript callback.
+
+### `glamour-islands.mjs` — deferred island activation
+
+`installIslands(options)` validates a closed per-page island manifest against
+the existing DOM, then schedules `load`, `idle`, `visible`, `media`,
+`interaction`, or manual activation. `options.load` is the first callback
+allowed to fetch or instantiate application code, so interaction islands load
+none before a matching checked event. Delegated events are reduced to bounded
+value/key/checked/composition records; the browser `Event`, target, and DOM
+handles never enter application state.
+
+The activating event is handed to `artifact.resume` exactly once. Events that
+arrive while loading enter a bounded per-island queue, sibling islands retain
+separate state machines, and disposal removes observers/listeners and disposes
+only applications that were activated. A build or artifact identity mismatch
+uses controlled fresh mounting only through an explicit `freshMount` callback
+and `IslandResumeMismatch`; other failures remain failures. Static publication
+will include this loader only on pages whose authenticated `Site` declares an
+island.
+
+Program-mode tests use
+[`glamour-host-simulator.mjs`](glamour-host-simulator.mjs), a logical clock
+whose same-deadline tasks run in creation order. It supplies injectable timeout
+and interval authority without sleeping or consulting wall time.
+
 **Effects as data.** Each `export_step` also returns a `cmd` — the effect the rune
 *described* but cannot perform (it holds no capability). The shell interprets it:
 `{"cmd":"none"}` does nothing; `{"cmd":"after","ms":N,"msg":…}` arms a timer

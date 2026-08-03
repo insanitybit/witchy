@@ -205,7 +205,17 @@ mod tests {
     #[test]
     fn production_expander_retains_authenticated_loader_ownership() {
         let module = witchy_syntax::parser::parse_module(
-            "type User:\n  User(Int)\n\nfn main() -> Int:\n  1\n",
+            "import meta\n\
+             \n\
+             type User:\n\
+             \x20 User(Int)\n\
+             \n\
+             pub comptime fn located(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:\n\
+             \x20 meta.expr_raw(\"\\\"\" + origin + \"\\\"\")\n\
+             \n\
+             fn main() -> Int:\n\
+             \x20 let value: String = located\"value\"\n\
+             \x20 0\n",
         )
         .expect("parse test module");
         let modules = vec![("main".to_string(), module)];
@@ -240,6 +250,14 @@ mod tests {
         assert_eq!(
             catalog.resolve("main.User", DeclarationKind::Type),
             Some(&owner.declaration(DeclarationKind::Type, "User").expect("identity"))
+        );
+        assert_eq!(
+            catalog.resolve("main.located", DeclarationKind::Function),
+            Some(
+                &owner
+                    .declaration(DeclarationKind::Function, "located")
+                    .expect("tag function identity")
+            )
         );
     }
 }

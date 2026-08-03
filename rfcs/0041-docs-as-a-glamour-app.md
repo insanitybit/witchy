@@ -38,6 +38,13 @@ with real-book/browser coverage in [`tests/glamour/dom.rs`](../tests/glamour/dom
 > `documentation_examples_are_valid` (browser == manifest == interpreter/Wasm). mdBook is
 > removed. RFC-0019 is superseded.
 >
+> **RFC-0107 static target (2026-07-31):** `projects/docs/witchy.toml` also
+> declares `book/src` as closed `StaticContent`, and `witchy build --web
+> projects/docs` emits 43 zero-runtime route documents through the same Witchy
+> view. The real-book bundle test requires every native body to match the client
+> DOM fallback byte for byte. The hosted runnable bundle remains this RFC's
+> client delivery until RFC-0107 Phase 6 supplies resumable runnable islands.
+>
 > **Deploy trade-off (maintainer decision):** the target is GitHub Pages, which does not
 > honor the bundle's strict COOP/COEP/CORP `_headers`, so cross-origin isolation is inert
 > there. Accepted because the runnable cells are contained by wasm capability-denial (not

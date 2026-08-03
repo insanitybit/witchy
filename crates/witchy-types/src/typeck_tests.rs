@@ -3606,3 +3606,68 @@ fn main():
         .expect_err("a lambda parameter type is validated");
         assert!(err.contains("unknown trait `Missing` in `dyn Missing`"), "{err}");
     }
+
+    #[test]
+    fn target_availability_rejects_cross_target_calls_and_function_values() {
+        check_str(
+            "@browser\nfn browser_api() -> Int:\n    1\n\n\
+             @browser\nfn browser_feature() -> Int:\n    browser_api()\n\n\
+             fn shared() -> Int:\n    2\n\n\
+             @server\nfn server_feature() -> Int:\n    shared()\n",
+        )
+        .expect("same-target and shared references are available");
+
+        let cross_call = check_str(
+            "@server\nfn load_secret() -> String:\n    \"secret\"\n\n\
+             @browser\nfn render() -> String:\n    load_secret()\n",
+        )
+        .expect_err("browser code must not call server-only code");
+        assert!(
+            cross_call.contains("browser") &&
+                cross_call.contains("server-only") &&
+                cross_call.contains("load_secret"),
+            "{cross_call}",
+        );
+
+        let shared_reference = check_str(
+            "@browser\nfn browser_api() -> Int:\n    1\n\n\
+             fn shared_callback() -> fn() -> Int:\n    browser_api\n",
+        )
+        .expect_err("shared code must not retain a browser-only function value");
+        assert!(
+            shared_reference.contains("shared") &&
+                shared_reference.contains("browser-only") &&
+                shared_reference.contains("browser_api"),
+            "{shared_reference}",
+        );
+
+        check_str(
+            "@browser\nfn browser_api() -> Int:\n    1\n\n\
+             fn apply(callback: fn() -> Int) -> Int:\n    callback()\n\n\
+             @browser\nfn render() -> Int:\n    apply(browser_api)\n",
+        )
+        .expect("a shared higher-order helper preserves availability checked at the reference site");
+
+        let method_body = check_str(
+            "@browser\nfn browser_api() -> Int:\n    1\n\n\
+             type View:\n    View\n\n\
+             impl View:\n    fn render(self) -> Int:\n        browser_api()\n\n\
+             fn shared(view: View) -> Int:\n    view.render()\n",
+        )
+        .expect_err("lowered shared methods must not call target-only functions");
+        assert!(
+            method_body.contains("shared") &&
+                method_body.contains("browser-only") &&
+                method_body.contains("browser_api"),
+            "{method_body}",
+        );
+    }
+
+    #[test]
+    fn target_availability_rejects_conflicting_annotations() {
+        let error = check_str(
+            "@browser\n@server\nfn impossible() -> Int:\n    1\n",
+        )
+        .expect_err("one function cannot belong to conflicting targets");
+        assert!(error.contains("conflicting target availability"), "{error}");
+    }

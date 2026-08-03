@@ -27,6 +27,27 @@ You can see both halves — a pure `VNode` render and a full live MVU counter wh
 network authority is denied — running right in the page in
 [Appendix: Recipes](appendix-recipes.md).
 
+## Templates are Witchy tagged literals
+
+Glamour does not add JavaScript JSX to the language. `html"..."` and
+`jsx"..."` are ordinary compile-time tags, in the same family as `sql"..."`:
+Glamour parses the static text and the compiler preserves each Witchy `${...}`
+hole as typed syntax. Both spellings produce the same checked template plan.
+
+```text
+let view: VNode(Msg) = jsx"""
+    <section class=${styles.card}>
+        <h1>${model.title}</h1>
+        <button on:click=${Save}>Save</button>
+    </section>
+"""
+```
+
+Text holes stay text nodes. URL, boolean, property, class, ARIA, and event
+positions use distinct typed sinks, so a plain `String` cannot accidentally
+become a navigation URL. `css"..."` similarly compiles a static, scoped sheet
+with deterministic class handles.
+
 ## The browser boundary is deny-by-omission
 
 A Glamour app compiles to the same witchy WebAssembly as any other program, and

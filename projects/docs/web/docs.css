@@ -1,4 +1,4 @@
-/* witchy-book theme (RFC-0041) — a reading UX in the spirit of The Rust Book (mdBook): a fixed,
+/* witchy-book theme (RFC-0041/0107) — a reading UX in the spirit of The Rust Book (mdBook): a fixed,
    independently-scrolling sidebar and a centered reading column. The docs app is a glamour rune;
    this is the only styling — the rune emits inert VNodes, never HTML, so nothing here is a sink. */
 :root {
@@ -22,7 +22,7 @@ body {
 .sidebar-brand {
   display: block; width: 100%; text-align: left; background: none; border: 0; cursor: pointer;
   font: inherit; font-size: 1rem; font-weight: 600; letter-spacing: 0.01em;
-  margin: 0 0 1.25rem; padding: 0.2rem 0.6rem; color: var(--accent); border-radius: 6px;
+  margin: 0 0 1.25rem; padding: 0.2rem 0.6rem; color: var(--accent); border-radius: 6px; text-decoration: none;
 }
 .sidebar-brand:hover { background: #22222f; }
 .sidebar ul { list-style: none; margin: 0; padding: 0; }
@@ -30,7 +30,7 @@ body {
 .nav-item {
   display: block; background: none; border: 0; color: var(--muted); cursor: pointer;
   padding: 0.35rem 0.6rem; text-align: left; width: 100%; border-radius: 6px; font: inherit;
-  font-size: 0.9rem; line-height: 1.35;
+  font-size: 0.9rem; line-height: 1.35; text-decoration: none;
 }
 .nav-item:hover { background: #22222f; color: var(--fg); }
 .nav-item.active { color: var(--accent); background: #22222f; box-shadow: inset 2px 0 0 var(--accent); }
@@ -63,7 +63,7 @@ body {
 
 /* Prev/next chapter navigation at the foot of each page. */
 .nav-chapters { display: flex; justify-content: space-between; gap: 1rem; margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border); }
-.nav-chapter { flex: 1 1 0; min-width: 0; padding: 0.7rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: none; cursor: pointer; font: inherit; color: var(--fg); }
+.nav-chapter { flex: 1 1 0; min-width: 0; padding: 0.7rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: none; cursor: pointer; font: inherit; color: var(--fg); text-decoration: none; }
 .nav-chapter:hover { background: #1b1b28; border-color: var(--accent); }
 .nav-chapter.next { text-align: right; }
 .nav-chapter .dir { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.2rem; }

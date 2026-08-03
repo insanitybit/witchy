@@ -1232,8 +1232,12 @@ fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manifest:
     let files = publish_files(root, dir, manifest)
     let token = id_token_from_env(env)
     let resp = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(manifest, files, identity, token))
-    console.print("publish: ${http.status(resp)} state=${resp_field(http.body(resp), "state")}")
-    if http.status(resp) >= 200 && http.status(resp) < 300:
+    let status = http.status(resp)
+    let response_body = http.body(resp)
+    let error = resp_field(response_body, "error")
+    let detail = if error.is_empty(): "" else: " error=${error}"
+    console.print("publish: ${status} state=${resp_field(response_body, "state")}${detail}")
+    if status >= 200 && status < 300:
         0
     else:
         1

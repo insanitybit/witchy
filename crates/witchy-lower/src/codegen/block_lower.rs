@@ -1619,6 +1619,17 @@ impl<'types> Codegen<'types> {
                 seq.extend(stmt_seq);
                 self.uses_diagnostic_sites = true;
             }
+            if self.collect_source_map
+                && let Some(line) = block
+                    .lines
+                    .get(i)
+                    .copied()
+                    .filter(|line| *line != 0 && *line != u32::MAX)
+                && seq.len() > stmt_start
+            {
+                let body = seq.split_off(stmt_start);
+                seq.push(N::Source { line, body });
+            }
             if !matches!(stmt, Stmt::Return(_)) {
                 let opens = self.loan_facts.opens_after(analyzed_stmt).to_vec();
                 let closes = self.loan_facts.closes_after(analyzed_stmt).to_vec();

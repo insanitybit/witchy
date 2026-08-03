@@ -2689,6 +2689,10 @@ Render a structured type back to source text only when generated source needs to
 
 `derive(Reflect)` → an `impl Reflect for T` building the value's `Mirror`: a record to `MRecord("T", [(field, reflect field)…])`, a sum type to a `match` over variants to `MVariant`. (The module must `import reflect`; caller checks.)
 
+#### `fn derive_public_state(t: TypeInfo) -> ItemSyntax`
+
+`derive(PublicState)` proves a value can cross a public/resumable boundary. The generated method checks every field through the field type's own proof; capabilities, functions, Bytes, host handles, and secrets fail because they deliberately have no PublicState implementation.
+
 #### `fn derive_ord(t: TypeInfo) -> ItemSyntax`
 
 `derive(Ord)` → lexicographic `compare` returning `Ordering` (records only; the caller validates the shape). Requires the `PartialEq`/`Eq`/`PartialOrd` impls too.
@@ -2938,6 +2942,56 @@ A pseudo-random Bool (true ~half the time).
 #### `Rng.choice(xs: List(a)) -> Option(a)`
 
 A pseudo-randomly chosen element of `xs` (`None` if empty) — see the module-level `choice`.
+
+## `public_state`
+
+PublicState is a checked boundary proof for data that may cross into static HTML, resumable state, or another public Glamour artifact. It is intentionally narrower than Reflect: capabilities, functions, Bytes, host handles, streams, and secrets have no implementation.
+
+#### `trait PublicState`
+
+- `fn public_state_proof(self)`
+
+#### `fn check(value: a) where a: PublicState`
+
+#### `fn to_json(value: a) -> json.Json where a: PublicState, a: Reflect`
+
+### Trait implementations
+
+#### `impl PublicState for Nil`
+
+- `fn public_state_proof(self)`
+
+#### `impl PublicState for Bool`
+
+- `fn public_state_proof(self)`
+
+#### `impl PublicState for Int`
+
+- `fn public_state_proof(self)`
+
+#### `impl PublicState for Float`
+
+- `fn public_state_proof(self)`
+
+#### `impl PublicState for Duration`
+
+- `fn public_state_proof(self)`
+
+#### `impl PublicState for String`
+
+- `fn public_state_proof(self)`
+
+#### `impl PublicState for List(a) where a: PublicState`
+
+- `fn public_state_proof(self)`
+
+#### `impl PublicState for Option(a) where a: PublicState`
+
+- `fn public_state_proof(self)`
+
+#### `impl PublicState for Result(a, e) where a: PublicState, e: PublicState`
+
+- `fn public_state_proof(self)`
 
 ## `rand`
 
@@ -3385,6 +3439,10 @@ A captured path parameter, or `default` if absent.
 #### `fn query(req: Request, name: String) -> Option(String)`
 
 A query-string parameter (`?name=...`), or None if absent.
+
+#### `fn query_pairs(req: Request) -> List((String, String))`
+
+Complete decoded query entries for schema-driven adapters such as progressive forms. The list preserves duplicate names so the schema decoder can reject ambiguity instead of silently selecting one value.
 
 #### `fn query_or(req: Request, name: String, default: String) -> String`
 

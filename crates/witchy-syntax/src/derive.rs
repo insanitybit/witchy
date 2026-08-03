@@ -65,7 +65,7 @@ fn unsupported_deserialize_field(t: &TypeDef) -> Option<(&str, &'static str)> {
 fn builtin_derive_on_fieldless_type(d: &str) -> bool {
     matches!(
         d,
-        "Show" | "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Reflect" | "Deserialize"
+        "Show" | "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Reflect" | "Deserialize" | "PublicState"
     )
 }
 
@@ -135,6 +135,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut needs_deserialize = false;
     let mut needs_reflect = false;
     let mut needs_show = false;
+    let mut needs_public_state = false;
     let aliases = crate::aliases::resolved_map(module)?;
     let user_derive_outputs = user_derive_outputs(module);
     let explicit_partial_eq_targets: HashSet<String> = module
@@ -174,6 +175,9 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
             || (derives.iter().any(|d| d == "Eq") && !has_explicit_partial_eq)
         {
             t.partial_eq_derived = true;
+        }
+        if derives.iter().any(|d| d == "PublicState") {
+            t.public_state_derived = true;
         }
         let mut emitted_partial_eq = false;
         for d in &derives {
@@ -255,6 +259,10 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                     generated.push(derive_item_via_comptime("meta.derive_deserialize", &derive_type));
                     needs_deserialize = true;
                 }
+                "PublicState" => {
+                    generated.push(derive_item_via_comptime("meta.derive_public_state", &derive_type));
+                    needs_public_state = true;
+                }
                 // A user-defined derive: route to the witchy generator
                 // `derive_<name>` (lowercased) — which the program defines or imports
                 // and which returns the impl source for the type. Anyone can add a
@@ -308,6 +316,9 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     // unaffected (idempotent — the annotation is consumed, imports are a set).
     if needs_show && !module.imports.iter().any(|i| i == "show") {
         module.imports.push("show".to_string());
+    }
+    if needs_public_state && !module.imports.iter().any(|i| i == "public_state") {
+        module.imports.push("public_state".to_string());
     }
     module.items.extend(generated);
     // A derive block is synthetic, but its invocation site is the source type

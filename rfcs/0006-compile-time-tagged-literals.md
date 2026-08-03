@@ -11,6 +11,8 @@ tracking: |
   function doesn't recurse) + fmt rendering landed, differential-tested on both
   backends. RFC-0080 subsequently closed the representation: a tag is now
   `comptime fn(parts: List(String), holes: List(String)) -> meta.ExprSyntax`.
+  Tags may accept a third compiler-supplied `origin: String` for invocation
+  diagnostics; semantic IDs remain derived from normalized static input.
   Dynamic source construction is explicit through `meta.expr_raw`; String-returning
   tags are removed. Reachable evaluator items cannot recursively invoke tagged
   literals in bodies or initializers; composition returns nested expression syntax, with definition-site

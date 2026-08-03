@@ -8,6 +8,8 @@ target/
 /benchmarks/.build
 /web/witchy.wasm
 .playwright-mcp/
+/tests/browser/node_modules/
+/tests/browser/test-results/
 /dist
 bench/bin/
 

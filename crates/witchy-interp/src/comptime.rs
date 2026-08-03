@@ -198,6 +198,7 @@ fn expand_with_item_limit_and_origins(
         }
         let mut prog_items = reachable_local_items(&module.items, &body);
         prog_items.push(Item::Function(Function {
+            line: 0,
             public: false,
             comptime_only: false,
             attributes: Vec::new(),
@@ -723,7 +724,7 @@ pub fn expand_compile_time(
     siblings: &[(String, Module)],
 ) -> Result<OriginTable, String> {
     let mut origins = expand_with_origins(name, module)?;
-    crate::tagged::expand(name, module, siblings)?;
+    origins.append_shifted(crate::tagged::expand(name, module, siblings)?, 0);
     if name != "comptime" {
         strip_comptime_only_functions(name, module, &mut origins);
         // Quotation handles have either been emitted or were confined to

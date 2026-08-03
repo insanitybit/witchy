@@ -127,7 +127,7 @@ fn view(model: String) -> VNode(Msg):
 fn update(model: String, msg: Msg, route: UiRoute) -> (String, Cmd(Msg)):
     match msg:
         Route(path) -> (path, NoCmd)
-        Go(path) -> (model, glamour.navigate(route, path))
+        Go(path) -> (model, glamour.navigate_compat(route, path))
 
 fn parse_model(j: Json) -> String:
     json.as_string(j).unwrap_or("/")

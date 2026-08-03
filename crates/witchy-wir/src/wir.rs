@@ -412,6 +412,14 @@ pub enum WirExpr {
 /// Control flow is nested here; branch targets are lexically-enclosing labels.
 #[derive(Debug, Clone)]
 pub enum WirNode {
+    /// Compiler-owned source attribution for the enclosed WIR sequence. The
+    /// wrapper emits no Wasm instruction; the development encoder records the
+    /// exact instruction-ordinal interval produced by `body`. A zero line is
+    /// never constructed for source code.
+    Source {
+        line: u32,
+        body: WirSeq,
+    },
     /// Bind/rebind a local: evaluate `value`, `local.set $local`.
     SetLocal {
         local: String,
@@ -543,6 +551,7 @@ pub struct WirImport {
 pub enum GlobalInit {
     I32(i32),
     I64(i64),
+    F64(f64),
 }
 
 impl GlobalInit {
@@ -551,6 +560,7 @@ impl GlobalInit {
         match self {
             GlobalInit::I32(_) => Kind::I32,
             GlobalInit::I64(_) => Kind::I64,
+            GlobalInit::F64(_) => Kind::F64,
         }
     }
 }
@@ -727,6 +737,7 @@ fn print_global(s: &mut String, g: &WirGlobal) {
     let init = match g.init {
         GlobalInit::I32(n) => format!("(i32.const {n})"),
         GlobalInit::I64(n) => format!("(i64.const {n})"),
+        GlobalInit::F64(n) => format!("(f64.const {n})"),
     };
     let _ = writeln!(s, " {ty} {init})");
 }
@@ -764,6 +775,7 @@ fn indent(s: &mut String, depth: usize) {
 // keywords, not the indentation.
 fn print_node(s: &mut String, node: &WirNode, depth: usize) {
     match node {
+        WirNode::Source { body, .. } => print_seq(s, body, depth),
         WirNode::SetLocal { local, value } => {
             print_expr(s, value, depth);
             indent(s, depth);
@@ -1252,6 +1264,7 @@ fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSignature>) {
     }
     fn walk_node(node: &WirNode, out: &mut Vec<ClosureSignature>) {
         match node {
+            WirNode::Source { body, .. } => collect_clos_signatures_seq(body, out),
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
             }
@@ -1345,6 +1358,11 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
     }
     fn node_violates(n: &WirNode, hits: &mut bool) {
         match n {
+            WirNode::Source { body, .. } => {
+                for node in body {
+                    node_violates(node, hits);
+                }
+            }
             WirNode::SetGlobal { global, value } => {
                 if global == "heap" && !value_is_watermark_rewind(value) {
                     *hits = true;

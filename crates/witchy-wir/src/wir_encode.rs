@@ -37,6 +37,23 @@ impl fmt::Display for EncodeError {
 
 impl std::error::Error for EncodeError {}
 
+/// Exact instruction-ordinal interval emitted for one source statement root.
+/// `instruction_end` is exclusive. Function indices use the Wasm index space,
+/// including imported functions before locally defined bodies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceInstructionRange {
+    pub function_index: u32,
+    pub line: u32,
+    pub instruction_start: u32,
+    pub instruction_end: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedModule {
+    pub wasm: Vec<u8>,
+    pub source_instructions: Vec<SourceInstructionRange>,
+}
+
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<String>() {
         message.clone()
@@ -206,6 +223,12 @@ impl Preflight<'_> {
         labels: &mut Vec<String>,
     ) -> Result<(), EncodeError> {
         match node {
+            WirNode::Source { line, body } => {
+                if *line == 0 || *line == u32::MAX {
+                    return Self::reject("source attribution line must be a concrete source line");
+                }
+                self.seq(body, locals, labels)?;
+            }
             WirNode::SetLocal { local, value } => {
                 if !locals.contains(local.as_str()) {
                     return Self::reject(format!("unknown local ${local}"));
@@ -455,8 +478,19 @@ pub fn try_encode_with_gc(
     structs: &[WirStructDef],
     arrays: &[WirArrayDef],
 ) -> Result<Vec<u8>, EncodeError> {
+    try_encode_with_gc_source_map(module, structs, arrays).map(|encoded| encoded.wasm)
+}
+
+/// Encode a module and retain compiler-owned source-to-instruction ordinals as
+/// an out-of-band development sidecar. The Wasm bytes are identical to
+/// [`try_encode_with_gc`]; no source metadata is embedded in the module.
+pub fn try_encode_with_gc_source_map(
+    module: &WirModule,
+    structs: &[WirStructDef],
+    arrays: &[WirArrayDef],
+) -> Result<EncodedModule, EncodeError> {
     preflight(module)?;
-    catch_unwind(AssertUnwindSafe(|| encode_with_gc(module, structs, arrays)))
+    catch_unwind(AssertUnwindSafe(|| encode_with_gc_source_map(module, structs, arrays)))
         .map_err(|payload| EncodeError { message: panic_message(payload) })
 }
 
@@ -465,11 +499,20 @@ pub fn try_encode_with_gc(
 /// the struct-only compatibility entrypoint leaves the production lowering
 /// source-neutral until reference-bearing collections are ready to consume the
 /// array substrate.
+#[cfg(any(test, feature = "raw-encoder-test-api"))]
 pub(crate) fn encode_with_gc(
     module: &WirModule,
     structs: &[WirStructDef],
     arrays: &[WirArrayDef],
 ) -> Vec<u8> {
+    encode_with_gc_source_map(module, structs, arrays).wasm
+}
+
+fn encode_with_gc_source_map(
+    module: &WirModule,
+    structs: &[WirStructDef],
+    arrays: &[WirArrayDef],
+) -> EncodedModule {
     // --- Type section: collect unique (params, results) signatures ---------
     // Imports carry their param/result `Kind`s directly. Funcs derive params
     // from `params[*].ty.kind()` and results from `ret[*].kind()`. Dedup uses a
@@ -663,6 +706,7 @@ pub(crate) fn encode_with_gc(
         let init = match g.init {
             GlobalInit::I32(n) => ConstExpr::i32_const(n),
             GlobalInit::I64(n) => ConstExpr::i64_const(n),
+            GlobalInit::F64(n) => ConstExpr::f64_const(n.into()),
         };
         global_section.global(
             GlobalType { val_type: val_type(g.kind, gc_base), mutable: g.mutable, shared: false },
@@ -716,7 +760,8 @@ pub(crate) fn encode_with_gc(
 
     // --- Code section -------------------------------------------------------
     let mut code_section = CodeSection::new();
-    for f in &module.funcs {
+    let mut source_instructions = Vec::new();
+    for (defined_index, f) in module.funcs.iter().enumerate() {
         // Raw-body splice: a pre-compiled function body (locals + instructions +
         // the trailing `End`, exactly as `Function::raw`/`CodeSection::raw`
         // expect). The func still contributed its type + name→index above; here
@@ -742,7 +787,7 @@ pub(crate) fn encode_with_gc(
             body_local_types.push(val_type(l.ty.kind(), gc_base));
         }
 
-        let mut function = Function::new_with_locals_types(body_local_types);
+        let mut function = TrackedFunction::new(body_local_types);
         let mut ctx = EncodeCtx {
             local_index: &local_index,
             func_index: &func_index,
@@ -756,7 +801,16 @@ pub(crate) fn encode_with_gc(
         };
         ctx.encode_seq(&mut function, &f.body);
         function.instruction(&Instruction::End);
-        code_section.function(&function);
+        let function_index = import_count + defined_index as u32;
+        for &(line, instruction_start, instruction_end) in &function.source_ranges {
+            source_instructions.push(SourceInstructionRange {
+                function_index,
+                line,
+                instruction_start,
+                instruction_end,
+            });
+        }
+        code_section.function(&function.inner);
     }
 
     // --- Data section -------------------------------------------------------
@@ -806,7 +860,7 @@ pub(crate) fn encode_with_gc(
     name_section.functions(&func_names);
     wasm.section(&name_section);
 
-    wasm.finish()
+    EncodedModule { wasm: wasm.finish(), source_instructions }
 }
 
 /// Collect the distinct closure signatures referenced by indirect calls for
@@ -882,6 +936,7 @@ fn collect_clos_signatures(seq: &WirSeq, out: &mut Vec<ClosureSignature>) {
     }
     fn walk_node(node: &WirNode, out: &mut Vec<ClosureSignature>) {
         match node {
+            WirNode::Source { body, .. } => collect_clos_signatures(body, out),
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
             }
@@ -945,6 +1000,30 @@ fn collect_clos_signatures(seq: &WirSeq, out: &mut Vec<ClosureSignature>) {
     }
 }
 
+struct TrackedFunction {
+    inner: Function,
+    instruction_count: u32,
+    source_ranges: Vec<(u32, u32, u32)>,
+}
+
+impl TrackedFunction {
+    fn new(locals: Vec<ValType>) -> Self {
+        Self {
+            inner: Function::new_with_locals_types(locals),
+            instruction_count: 0,
+            source_ranges: Vec::new(),
+        }
+    }
+
+    fn instruction(&mut self, instruction: &Instruction<'_>) {
+        self.inner.instruction(instruction);
+        self.instruction_count = self
+            .instruction_count
+            .checked_add(1)
+            .expect("a Wasm function cannot contain more than u32::MAX instructions");
+    }
+}
+
 /// Per-function emission context: resolves local/func/import names and maintains
 /// the enclosing labeled-frame stack used to compute relative branch depths.
 struct EncodeCtx<'a> {
@@ -994,14 +1073,22 @@ impl EncodeCtx<'_> {
         panic!("br target ${target} has no enclosing Block/Loop frame")
     }
 
-    fn encode_seq(&mut self, func: &mut Function, seq: &WirSeq) {
+    fn encode_seq(&mut self, func: &mut TrackedFunction, seq: &WirSeq) {
         for node in seq {
             self.encode_node(func, node);
         }
     }
 
-    fn encode_node(&mut self, func: &mut Function, node: &WirNode) {
+    fn encode_node(&mut self, func: &mut TrackedFunction, node: &WirNode) {
         match node {
+            WirNode::Source { line, body } => {
+                let instruction_start = func.instruction_count;
+                self.encode_seq(func, body);
+                let instruction_end = func.instruction_count;
+                if instruction_end > instruction_start {
+                    func.source_ranges.push((*line, instruction_start, instruction_end));
+                }
+            }
             WirNode::SetLocal { local, value } => {
                 self.encode_expr(func, value);
                 func.instruction(&Instruction::LocalSet(self.local(local)));
@@ -1192,7 +1279,7 @@ impl EncodeCtx<'_> {
         }
     }
 
-    fn encode_expr(&mut self, func: &mut Function, e: &WirExpr) {
+    fn encode_expr(&mut self, func: &mut TrackedFunction, e: &WirExpr) {
         match e {
             WirExpr::ConstI64(n) => {
                 func.instruction(&Instruction::I64Const(*n));

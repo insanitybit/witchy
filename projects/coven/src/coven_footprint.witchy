@@ -34,7 +34,7 @@ fn footprint_total(report: String) -> Result(List(String), FootprintError):
         Err(_e) -> Err(FootprintReportJson)
         Ok(doc) ->
             match json.get(doc, "error"):
-                Some(_e) -> Err(FootprintSourceDoesNotCompile)
+                Some(error) -> Err(FootprintSourceDoesNotCompile(json.as_string(error) ?? "unknown compiler error"))
                 None -> Ok(json.get_strings(doc, "total"))
 
 // Matchable errors for the registry's recomputed source footprint. This is the
@@ -42,12 +42,12 @@ fn footprint_total(report: String) -> Result(List(String), FootprintError):
 // hard failure before the HTTP layer renders it.
 type FootprintError:
     FootprintReportJson
-    FootprintSourceDoesNotCompile
+    FootprintSourceDoesNotCompile(String)
 
 pub fn footprint_error_message(e: FootprintError) -> String:
     match e:
         FootprintReportJson -> "the compiler footprint report did not parse"
-        FootprintSourceDoesNotCompile -> "the rune source does not compile — its capability footprint is uncomputable"
+        FootprintSourceDoesNotCompile(detail) -> "the rune source does not compile — its capability footprint is uncomputable: ${detail}"
 
 impl Show for FootprintError:
     fn show(self) -> String:

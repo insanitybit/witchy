@@ -10,8 +10,8 @@
         WirLocal { name: name.into(), ty }
     }
 
-    /// Instantiate a wasm binary and run its `run` export, capturing `print_int`
-    /// and `print` output as ordered lines. (Copied from `wir.rs`'s test setup.)
+    /// Instantiate a wasm binary and run its `run` export, capturing scalar and
+    /// string output as ordered lines. (Copied from `wir.rs`'s test setup.)
     fn run_binary(binary: &[u8]) -> Vec<String> {
         // Fuel-capped so a buggy helper loop TRAPS fast instead of hanging the
         // suite (a runaway $find_byte/$str_eq once spun a test for 70 minutes).
@@ -28,6 +28,12 @@
         let o = out.clone();
         linker
             .func_wrap("witchy", "print_int", move |n: i64| {
+                o.lock().unwrap().push(n.to_string());
+            })
+            .unwrap();
+        let o = out.clone();
+        linker
+            .func_wrap("witchy", "print_float", move |n: f64| {
                 o.lock().unwrap().push(n.to_string());
             })
             .unwrap();

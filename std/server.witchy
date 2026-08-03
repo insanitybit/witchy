@@ -79,6 +79,13 @@ pub fn query(req: Request, name: String) -> Option(String):
     match req:
         Request(_m, _p, _pa, q, _h, _b) -> lookup(q, name)
 
+// Complete decoded query entries for schema-driven adapters such as
+// progressive forms. The list preserves duplicate names so the schema decoder
+// can reject ambiguity instead of silently selecting one value.
+pub fn query_pairs(req: Request) -> List((String, String)):
+    match req:
+        Request(_m, _p, _pa, q, _h, _b) -> q
+
 // A query-string parameter, or `default` if absent.
 pub fn query_or(req: Request, name: String, default: String) -> String:
     option.unwrap_or(query(req, name), default)

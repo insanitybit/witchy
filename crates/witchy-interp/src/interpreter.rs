@@ -63,7 +63,10 @@ pub(crate) use runners::{
     run_comptime_module_budgeted_in_scope,
     run_comptime_module_outputs_budgeted_in_scope_with_qualifiers,
 };
-pub use runners::{run, run_checked_module, run_in, run_in_dirs, run_with};
+pub use runners::{
+    evaluate_checked, evaluate_checked_noargs, evaluate_compiler_module, run,
+    run_checked_module, run_in, run_in_dirs, run_with, CompilerValue,
+};
 #[cfg(feature = "test-fixtures")]
 pub use runners::{
     FixtureInterpreterOutcome, FixtureProgramResult, run_checked_module_fixtures,
@@ -468,6 +471,7 @@ struct CallableOutcome {
 /// per-call AST copies.
 fn closure_function(owner: String, params: Vec<Param>, body: Block) -> Rc<Function> {
     Rc::new(Function {
+        line: 0,
         public: false,
         comptime_only: false,
         attributes: Vec::new(),

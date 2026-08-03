@@ -430,6 +430,7 @@
             imports: vec![],
             from_imports: vec![],
             items: vec![Item::Function(Function {
+                line: 0,
                 public: false,
                 comptime_only: false,
                 attributes: Vec::new(),

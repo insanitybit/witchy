@@ -46,9 +46,21 @@ mod match_lower;
 mod block_lower;
 mod header_elision;
 mod specialization;
+mod glamour_metadata;
+pub use glamour_metadata::{
+    checked_glamour_island_execution_module, checked_glamour_islands,
+    checked_glamour_worker_execution_module,
+    checked_glamour_static_evaluation_module,
+    checked_glamour_templates, GlamourBrowserPolicyMetadata, GlamourIslandMetadata, GlamourTemplateAttributeMetadata,
+    GlamourTemplateMetadata, GlamourTemplateNodeMetadata, GlamourTemplateOriginMetadata,
+    GlamourHostPortMetadata, GlamourMappedWorkMetadata, GlamourTemplateSlotMetadata, GlamourWorkerTaskMetadata,
+    GlamourWorkMetadata,
+};
 pub use assembly::{
     assemble_checked_optimized_wir_module, compile_checked_build_module,
-    compile_checked_module_binary,
+    compile_checked_development_module, compile_checked_glamour_island_binary,
+    compile_checked_glamour_island_execution_binary, compile_checked_module_binary,
+    CompiledDevelopmentModule, GlamourDevelopmentField, GlamourDevelopmentMetadata,
 };
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub use assembly::{
@@ -470,8 +482,8 @@ enum NestBottom {
 /// `to_string` rendering on WASM. Because runtime slots are untyped, an op on a
 /// compound must be specialized to the static shape: `Int`/`Bool` both compare
 /// the raw i64 slot (and `Duration` rides along as `Int`) but render differently
-/// ("42" vs "true"); `Float` reinterprets and uses `f64.eq`; `Str` calls
-/// `$str_eq` on the slot's string pointer; and the compound variants recurse
+/// ("42" vs "true"); `Float` reinterprets and uses `f64.eq`; `Str` and `Bytes`
+/// call `$str_eq` on their identical `[len][bytes]` representation; and compounds recurse
 /// element/field-wise through generated helpers. A shape codegen cannot resolve
 /// yields a loud error, never a silent pointer compare or a mis-render.
 #[derive(Clone, PartialEq, Eq)]
@@ -483,6 +495,7 @@ enum EqShape {
     Bool,
     Float,
     Str,
+    Bytes,
     List(Box<EqShape>),
     Tuple(Vec<EqShape>),
     Record(String),
@@ -522,7 +535,8 @@ impl EqShape {
             ValType::Bool => Some(EqShape::Bool),
             ValType::Float => Some(EqShape::Float),
             ValType::Str => Some(EqShape::Str),
-            ValType::Bytes | ValType::Other => None,
+            ValType::Bytes => Some(EqShape::Bytes),
+            ValType::Other => None,
         }
     }
 
@@ -549,6 +563,7 @@ impl EqShape {
             EqShape::Bool => "bool".into(),
             EqShape::Float => "f64".into(),
             EqShape::Str => "str".into(),
+            EqShape::Bytes => "bytes".into(),
             EqShape::List(e) => format!("list_{}", e.id()),
             EqShape::Tuple(fs) => {
                 format!("tup_{}_", fs.iter().map(|f| f.id()).collect::<Vec<_>>().join("_"))
@@ -653,6 +668,7 @@ fn shape_val_type(shape: &EqShape) -> Option<ValType> {
         EqShape::Bool => Some(ValType::Bool),
         EqShape::Float => Some(ValType::Float),
         EqShape::Str => Some(ValType::Str),
+        EqShape::Bytes => Some(ValType::Bytes),
         _ => None,
     }
 }
@@ -891,6 +907,9 @@ struct Codegen<'types> {
     /// lowered. Left `false` for any scope that doesn't collect WIR, where
     /// `lower_expr`'s call arm stays inert and pays no capture/clone overhead.
     collect_wir: bool,
+    /// Retain source statement wrappers for the authenticated development
+    /// instruction map. Production WIR remains source-neutral.
+    collect_source_map: bool,
     /// The exact set of names compiled to real `$name` functions (reachable,
     /// non-intrinsic `Item::Function`s) — populated by `compile_module_binary`.
     /// A call lowers to a direct `WirExpr::Call` only for a member; an intrinsic
@@ -1497,6 +1516,7 @@ impl<'types> Codegen<'types> {
             cur_emitted_fn_name: String::new(),
             current_specialized_type_ids: Vec::new(),
             collect_wir: false,
+            collect_source_map: false,
             emitted_funcs: HashSet::new(),
             fn_conventions: HashMap::new(),
             fn_params: HashMap::new(),
@@ -1708,10 +1728,8 @@ impl<'types> Codegen<'types> {
                 .unwrap_or(Kind::I32),
             Type::Named(n, _) if self.transparent_externref_brands.contains(n) => Kind::ExternRef,
             Type::Named(n, _) if n == "List" => self
-                .gc_reference_list_ids
-                .get(&self.gc_lookup_type_key(t))
-                .copied()
-                .map(Kind::GcRef)
+                .gc_reference_list_layout(t)
+                .map(|(type_id, _, _)| Kind::GcRef(type_id))
                 .unwrap_or(Kind::I32),
             Type::Named(n, args)
                 if n == "Option"
@@ -1732,9 +1750,28 @@ impl<'types> Codegen<'types> {
     }
 
     fn gc_struct_id_for_type(&self, ty: &Type) -> Option<u32> {
-        matches!(ty.unqualified(), Type::Named(_, _))
-            .then(|| self.gc_lookup_type_key(ty))
-            .and_then(|key| self.gc_aggregate_ids.get(&key).copied())
+        let Type::Named(name, _) = ty.unqualified() else {
+            return None;
+        };
+        let key = self.gc_lookup_type_key(ty);
+        if let Some(id) = self.gc_aggregate_ids.get(&key).copied() {
+            return Some(id);
+        }
+        if !type_has_var(ty) {
+            return None;
+        }
+
+        // Result-only generic builders can retain an open source spelling even
+        // when every reachable call selects one closed reference layout. Use
+        // that layout only when the linked module proves it unambiguous.
+        let owner = self.gc_nominal_names.get(name).unwrap_or(name);
+        let prefix = format!("N{}:{owner}[", owner.len());
+        let mut matches = self
+            .gc_aggregate_ids
+            .iter()
+            .filter_map(|(candidate, id)| candidate.starts_with(&prefix).then_some(*id));
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
     }
 
     /// Storage kind for a field in a GC aggregate whose declaration is generic.
@@ -1852,10 +1889,25 @@ impl<'types> Codegen<'types> {
         if !matches!(element_kind, Kind::ExternRef | Kind::GcRef(_)) {
             return None;
         }
-        let type_id = self
+        let type_id = if let Some(type_id) = self
             .gc_reference_list_ids
             .get(&self.gc_lookup_type_key(ty))
-            .copied()?;
+            .copied()
+        {
+            type_id
+        } else if type_has_var(ty) {
+            let mut matches = self
+                .gc_reference_list_layouts()
+                .into_iter()
+                .filter_map(|(type_id, kind)| (kind == element_kind).then_some(type_id));
+            let first = matches.next()?;
+            if matches.next().is_some() {
+                return None;
+            }
+            first
+        } else {
+            return None;
+        };
         let array_id = type_id.checked_sub(self.gc_structs.len() as u32)?;
         Some((type_id, array_id, element_kind))
     }
@@ -2114,17 +2166,55 @@ impl<'types> Codegen<'types> {
         name: &str,
         owner_ty: Option<&Type>,
     ) -> Option<(GcCtorLayout, u32)> {
-        let owner_key = owner_ty.map(|ty| self.gc_lookup_type_key(ty))?;
-        let direct = (owner_key.clone(), name.to_string());
-        let layout = self
-            .gc_ctor_layouts
-            .get(&direct)
+        let owner_key = owner_ty.map(|ty| self.gc_lookup_type_key(ty));
+        let bare_name = name.rsplit('.').next().unwrap_or(name);
+        let layout = owner_key
+            .as_ref()
+            .and_then(|owner_key| {
+                self.gc_ctor_layouts
+                    .get(&(owner_key.clone(), name.to_string()))
+                    .or_else(|| {
+                        self.gc_ctor_layouts.iter().find_map(
+                            |((owner, ctor), layout)| {
+                                (owner == owner_key
+                                    && ctor.rsplit('.').next().unwrap_or(ctor) == bare_name)
+                                    .then_some(layout)
+                            },
+                        )
+                    })
+            })
             .or_else(|| {
-                self.gc_ctor_layouts.iter().find_map(|((owner, ctor), layout)| {
-                    (owner == &owner_key
-                        && ctor.rsplit('.').next().unwrap_or(ctor) == name)
-                        .then_some(layout)
-                })
+                let owner_ty = owner_ty?.unqualified();
+                let Type::Named(owner, _) = owner_ty else {
+                    return None;
+                };
+                if !type_has_var(owner_ty) {
+                    return None;
+                }
+                let owner = self.gc_nominal_names.get(owner).unwrap_or(owner);
+                let prefix = format!("N{}:{owner}[", owner.len());
+                let mut matches = self.gc_ctor_layouts.iter().filter_map(
+                    |((candidate_owner, ctor), layout)| {
+                        (candidate_owner.starts_with(&prefix)
+                            && ctor.rsplit('.').next().unwrap_or(ctor) == bare_name)
+                            .then_some(layout)
+                    },
+                );
+                let first = matches.next()?;
+                matches.next().is_none().then_some(first)
+            })
+            .or_else(|| {
+                if owner_ty.is_some() {
+                    return None;
+                }
+                let mut matches = self.gc_ctor_layouts.iter().filter_map(
+                    |((_owner, ctor), layout)| {
+                        (ctor.rsplit('.').next().unwrap_or(ctor) == bare_name)
+                            .then_some(layout)
+                    },
+                );
+                let first = matches.next()?;
+                matches.next().is_none().then_some(first)
             });
         let layout = layout?.clone();
         let id = self.gc_aggregate_ids.get(&layout.owner_key).copied()?;
@@ -8670,28 +8760,28 @@ impl<'types> Codegen<'types> {
     }
 
     /// The scalar `$key_eq` comparison mode for a Dict key expression: 0 for
-    /// Int/Bool (i64 bit equality), 1 for String (`$str_eq`), 2 for Float
+    /// Int/Bool (i64 bit equality), 1 for String/Bytes (`$str_eq`), 2 for Float
     /// (`f64.eq` on the reinterpreted slot). Float reaches this only in
     /// already-lowered/internal code; the public checker rejects Float dict keys
     /// because Float is not Eq.
     fn scalar_dict_key_mode(&self, key: &Expr) -> Option<u32> {
         match self.val_type_of(key) {
             ValType::Int | ValType::Bool => Some(0),
-            ValType::Str => Some(1),
+            ValType::Str | ValType::Bytes => Some(1),
             ValType::Float => Some(2),
-            ValType::Bytes | ValType::Other => None,
+            ValType::Other => None,
         }
     }
 
     fn dict_key_mode_error() -> CodegenError {
         CodegenError {
-            message: "could not determine the Dict key type for WASM; use Int, Bool, Duration, String, or a resolved Eq compound key (annotate if needed)".to_string(),
+            message: "could not determine the Dict key type for WASM; use Int, Bool, Duration, String, Bytes, or a resolved Eq compound key (annotate if needed)".to_string(),
         }
     }
 
     fn shape_has_eq_impl(&self, shape: &EqShape) -> bool {
         match shape {
-            EqShape::Int | EqShape::Bool | EqShape::Str => true,
+            EqShape::Int | EqShape::Bool | EqShape::Str | EqShape::Bytes => true,
             EqShape::Float => false,
             EqShape::Record(name)
             | EqShape::RecInst(name, _)
@@ -8722,7 +8812,7 @@ impl<'types> Codegen<'types> {
         };
         match shape {
             EqShape::Int | EqShape::Bool => Some(0),
-            EqShape::Str => Some(1),
+            EqShape::Str | EqShape::Bytes => Some(1),
             EqShape::Float => Some(2),
             shape => {
                 if !self.shape_has_eq_impl(&shape) {
@@ -9533,6 +9623,7 @@ impl<'types> Codegen<'types> {
                 "Bool" => Some(EqShape::Bool),
                 "Float" => Some(EqShape::Float),
                 "String" => Some(EqShape::Str),
+                "Bytes" => Some(EqShape::Bytes),
                 "List" => args.first().and_then(|inner| {
                     self.eq_shape_of_type_rec(inner, subst, visiting)
                         .map(|s| EqShape::List(Box::new(s)))

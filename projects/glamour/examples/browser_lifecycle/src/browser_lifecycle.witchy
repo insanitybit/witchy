@@ -1,0 +1,83 @@
+import reflect
+from glamour import Cmd, Program, Site, Start, Sub, Ui, UiRoot
+
+type CountMsg derive(Reflect):
+    CountIncrement
+
+fn authorize_count(_root: UiRoot) -> Nil:
+    Nil
+
+fn initial_count(_start: Start) -> Int:
+    0
+
+fn start_count(_auth: Nil, _model: Int) -> Cmd(CountMsg):
+    NoCmd
+
+fn update_count(_auth: Nil, model: Int, _message: CountMsg) -> (Int, Cmd(CountMsg)):
+    (model + 1, NoCmd)
+
+fn view_count(model: Int) -> Ui(CountMsg):
+    glamour.ui(glamour.element("button", [glamour.attribute("type", "button"), glamour.on_event("default.increment", "click", glamour.event_msg(CountIncrement))], [glamour.text("Default ${model}")]))
+
+fn subscriptions_count(_auth: Nil, _model: Int) -> Sub(CountMsg):
+    NoSub
+
+fn count_app() -> Program(Nil, Int, CountMsg):
+    glamour.program(authorize_count, initial_count, start_count, update_count, view_count, subscriptions_count)
+
+type ToggleMsg derive(Reflect):
+    Toggle
+
+fn authorize_toggle(_root: UiRoot) -> Nil:
+    Nil
+
+fn initial_toggle(_start: Start) -> Bool:
+    false
+
+fn start_toggle(_auth: Nil, _model: Bool) -> Cmd(ToggleMsg):
+    NoCmd
+
+fn update_toggle(_auth: Nil, model: Bool, _message: ToggleMsg) -> (Bool, Cmd(ToggleMsg)):
+    (!model, NoCmd)
+
+fn view_toggle(model: Bool) -> Ui(ToggleMsg):
+    glamour.ui(glamour.element("button", [glamour.attribute("type", "button"), glamour.on_event("prefetched.toggle", "click", glamour.event_msg(Toggle))], [glamour.text("Prefetched ${model}")]))
+
+fn subscriptions_toggle(_auth: Nil, _model: Bool) -> Sub(ToggleMsg):
+    NoSub
+
+fn toggle_app() -> Program(Nil, Bool, ToggleMsg):
+    glamour.program(authorize_toggle, initial_toggle, start_toggle, update_toggle, view_toggle, subscriptions_toggle)
+
+type RecoveryMsg derive(Reflect):
+    Recover
+
+fn authorize_recovery(_root: UiRoot) -> Nil:
+    Nil
+
+fn initial_recovery(_start: Start) -> Int:
+    0
+
+fn start_recovery(_auth: Nil, _model: Int) -> Cmd(RecoveryMsg):
+    NoCmd
+
+fn update_recovery(_auth: Nil, model: Int, _message: RecoveryMsg) -> (Int, Cmd(RecoveryMsg)):
+    (model + 1, NoCmd)
+
+fn view_recovery(model: Int) -> Ui(RecoveryMsg):
+    glamour.ui(glamour.element("div", [], [glamour.element("a", [glamour.static_url_attribute("href", "/next"), glamour.on_event("recovery.navigate", "click", glamour.prevent_default(glamour.event_msg(Recover)))], [glamour.text("Recover link ${model}")]), glamour.element("form", [glamour.static_url_attribute("action", "/save"), glamour.attribute("method", "post"), glamour.on_event("recovery.submit", "submit", glamour.prevent_default(glamour.event_msg(Recover)))], [glamour.element("button", [glamour.attribute("type", "submit")], [glamour.text("Recover form")])])]))
+
+fn subscriptions_recovery(_auth: Nil, _model: Int) -> Sub(RecoveryMsg):
+    NoSub
+
+fn recovery_app() -> Program(Nil, Int, RecoveryMsg):
+    glamour.program(authorize_recovery, initial_recovery, start_recovery, update_recovery, view_recovery, subscriptions_recovery)
+
+pub fn web() -> Site:
+    let default = glamour.interactive(count_app(), 7).named("default-visible")
+    let prefetched = glamour.interactive(toggle_app(), false)
+        .named("prefetch-visible")
+        .activate(glamour.OnInteraction)
+        .prefetch(glamour.PrefetchVisible)
+    let recovery = glamour.interactive(recovery_app(), 0).named("native-recovery").activate(glamour.OnInteraction)
+    glamour.site([glamour.static_page("/", glamour.ui(html"<main><h1>Browser lifecycle</h1>${glamour.embed(default)}${glamour.embed(prefetched)}${glamour.embed(recovery)}</main>"))])

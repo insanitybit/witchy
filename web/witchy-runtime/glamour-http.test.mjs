@@ -127,7 +127,7 @@ fn view(model: String) -> VNode(Msg):
 
 fn update(model: String, msg: Msg, fetch: UiFetch) -> (String, Cmd(Msg)):
     match msg:
-        Fetch -> (model, glamour.http_get(fetch, "/data", "GotData"))
+        Fetch -> (model, glamour.http_get_compat(fetch, "/data", "GotData"))
         GotData(status, body) -> ("\${status}: " + body, NoCmd)
 
 fn parse_model(j: Json) -> String:

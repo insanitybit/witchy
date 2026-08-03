@@ -16,7 +16,7 @@ use witchy_syntax::origin::OriginTable;
 use witchy_syntax::type_resolve::ResolvedDeclarations;
 
 use crate::runtime_type::{
-    AuthenticatedModuleOwners, RuntimeDeclarationCatalog, RuntimeTypeError,
+    AuthenticatedModuleOwners, DeclarationKind, RuntimeDeclarationCatalog, RuntimeTypeError,
 };
 use crate::typeck::{self, TypeError};
 
@@ -28,6 +28,25 @@ use crate::typeck::{self, TypeError};
 pub struct CheckedModule {
     linked: LinkedModule,
     module_owners: Option<AuthenticatedModuleOwners>,
+}
+
+/// A type-checked compiler rewrite that may be evaluated with the declaration
+/// authority retained by its source module, but cannot enter production
+/// lowering or code generation as a [`CheckedModule`].
+#[derive(Debug)]
+pub struct CheckedEvaluationModule {
+    module: Module,
+    runtime_catalog: RuntimeDeclarationCatalog,
+}
+
+impl CheckedEvaluationModule {
+    pub fn module(&self) -> &Module {
+        &self.module
+    }
+
+    pub fn runtime_declaration_catalog(&self) -> &RuntimeDeclarationCatalog {
+        &self.runtime_catalog
+    }
 }
 
 impl CheckedModule {
@@ -59,10 +78,24 @@ impl CheckedModule {
         let module_owners = self.module_owners.as_ref().ok_or(
             RuntimeTypeError::MissingAuthenticatedModuleOwners,
         )?;
-        RuntimeDeclarationCatalog::from_resolved_declarations(
+        let mut catalog = RuntimeDeclarationCatalog::from_resolved_declarations(
             &self.linked.declarations,
             module_owners,
-        )
+        )?;
+        for origin in self.linked.origins.tagged_literals() {
+            let owner = module_owners
+                .owner(&origin.definition.module)
+                .ok_or_else(|| RuntimeTypeError::MissingModuleOwner {
+                    module: origin.definition.module.clone(),
+                })?;
+            catalog.insert_resolved(
+                &origin.tag,
+                owner,
+                &origin.name,
+                DeclarationKind::Function,
+            )?;
+        }
+        Ok(catalog)
     }
 
 }
@@ -188,6 +221,21 @@ pub fn check_synthetic_module(module: Module) -> Result<CheckedModule, TypeError
             declarations: ResolvedDeclarations::default(),
         },
         module_owners: None,
+    })
+}
+
+/// Recheck a compiler-owned body rewrite for deterministic evaluation while
+/// retaining the original module's authenticated runtime declaration catalog.
+/// The distinct result type prevents the rewritten AST from reaching ordinary
+/// production sinks.
+pub fn check_compiler_evaluation_module(
+    authority: &CheckedModule,
+    module: Module,
+) -> Result<CheckedEvaluationModule, PipelineError> {
+    typeck::check(&module)?;
+    Ok(CheckedEvaluationModule {
+        module,
+        runtime_catalog: authority.runtime_declaration_catalog()?,
     })
 }
 

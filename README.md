@@ -112,8 +112,9 @@ including the model used.
 
 The guided path is **[The Witchy Book](book/src/SUMMARY.md)**. Read the Markdown
 chapters directly under `book/src/`. The repository also dogfoods the experimental
-[Glamour](projects/glamour/README.md) frontend by rendering the book as a
-client-side app with editable cells. Build that private-development bundle with:
+[Glamour](projects/glamour/README.md) frontend by compiling the book to native
+static HTML with explicit resumable regions and isolated editable cells. Build
+that deployable bundle with:
 
 ```sh
 cargo build --release            # the toolchain (compiler + native host)
@@ -229,8 +230,9 @@ hosted service or general browser-application platform.
 ## Learn more
 
 - **[The witchy Book](book/src/SUMMARY.md)** — the guided, chapter-by-chapter
-  introduction (a client-side Glamour app: build it with `./scripts/build-docs.sh`,
-  or read the chapters as Markdown under `book/src/`). Start here if you're new.
+  introduction (a native static Glamour site with explicit interactive regions:
+  build it with `./scripts/build-docs.sh`, or read the Markdown under `book/src/`).
+  Start here if you're new.
 - **[Language reference](spec/language.md)** — the full syntax and semantics.
 - **[Capabilities guide](spec/capabilities.md)** — the security model, for users.
 - **[Standard library](spec/stdlib.md)** — the bundled modules, function-by-function.

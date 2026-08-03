@@ -12,14 +12,85 @@ if (!["safari", "chrome"].includes(browser)) {
   throw new Error(`unsupported browser ${JSON.stringify(browser)}; expected safari or chrome`);
 }
 const required = [
-  "rfc0103-browser-probe.html",
-  "rfc0103-browser-probe.js",
+  "witchy-web-manifest.json",
   "witchy-cell-sandbox.js",
   "witchy-cell-frame.js",
   "witchy.wasm",
   "examples.json",
+  "fixture-showcase/fixture_showcase.witchy",
+  "fixture-showcase/release.fixture.json",
 ];
 for (const file of required) statSync(join(root, file));
+
+async function browserProbe() {
+  const result = document.getElementById("result");
+  const params = new URLSearchParams(location.search);
+  const allowedOrigin = params.get("allowed");
+  const blockedOrigin = params.get("blocked");
+  try {
+    if (!allowedOrigin || !blockedOrigin) throw new Error("missing probe origins");
+    const loadCompiler = async () => {
+      const bytes = await fetchWasm("/witchy.wasm");
+      const { module, instance } = await WebAssembly.instantiate(bytes, {});
+      return { bytes, module, exports: instance.exports };
+    };
+    const fetchCaps = { fetch: { origins: [allowedOrigin] } };
+    const allowed = await probeSandboxFetch(`${allowedOrigin}/probe-allowed`, fetchCaps);
+    if (!allowed.ok) throw new Error(`granted origin failed: ${allowed.text || allowed.status}`);
+    const blocked = await probeSandboxFetch(`${blockedOrigin}/probe-blocked`, fetchCaps);
+    if (blocked.ok) throw new Error("ungranted origin was reachable");
+
+    const runner = createSandboxedProgramRunner({ document, loadCompiler, timeoutMs: 60_000 });
+    const [flagshipSource, flagshipPlan] = await Promise.all([
+      fetch("/fixture-showcase/fixture_showcase.witchy").then((response) => response.text()),
+      fetch("/fixture-showcase/release.fixture.json").then((response) => response.text()),
+    ]);
+    const flagship = await runner(flagshipSource, { fixturePlan: flagshipPlan });
+    if (!flagship.ok || flagship.text !== "release api at 1700000000000ms in staging") {
+      throw new Error(`flagship fixture failed: ${JSON.stringify(flagship)}`);
+    }
+    const families = new Set((flagship.transcript?.events || []).map((event) => event.family));
+    for (const family of ["console", "clock", "env", "argv"]) {
+      if (!families.has(family)) throw new Error(`flagship transcript omitted ${family}`);
+    }
+
+    const manifest = await fetch("/witchy-web-manifest.json").then((response) => response.json());
+    let complete = 0;
+    for (const route of manifest.routes) {
+      const html = await fetch(`/${route.file}`).then((response) => response.text());
+      const page = new DOMParser().parseFromString(html, "text/html");
+      for (const editor of page.querySelectorAll('[data-witchy-runnable="1"] textarea.witchy-editor')) {
+        const execution = await runner(editor.value || editor.textContent, DOCS_SANDBOX_RUN_OPTIONS);
+        if (!execution.ok) throw new Error(`${route.path}: ${execution.text}`);
+        complete++;
+      }
+    }
+    if (complete === 0) throw new Error("browser runnable-route proof was vacuous");
+    const exact = await runner('fn main(console: Console):\n    console.print("browser exact proof")', {});
+    if (!exact.ok || exact.text !== "browser exact proof") {
+      throw new Error(`exact browser proof failed: ${JSON.stringify(exact)}`);
+    }
+    result.dataset.state = "pass";
+    result.dataset.flagship = "pass";
+    result.dataset.complete = String(complete);
+    result.dataset.exact = "1";
+    result.textContent = `PASS: ${complete} emitted runnable fences executed in opaque frames`;
+  } catch (error) {
+    result.dataset.state = "fail";
+    result.textContent = `FAIL: ${String((error && error.stack) || error)}`;
+  }
+}
+
+const probeSource = `
+import { createSandboxedProgramRunner, probeSandboxFetch } from "/witchy-cell-sandbox.js";
+import { DOCS_SANDBOX_RUN_OPTIONS } from "/docs-run-options.js";
+import { fetchWasm } from "/wasm-fetch.js";
+(${browserProbe.toString()})();
+`;
+const probeHtml = `<!doctype html><html><head><meta charset="utf-8">
+<title>Witchy browser confinement proof</title></head><body>
+<pre id="result" data-state="running">running browser confinement proof</pre>
+<script type="module" src="/__witchy-browser-proof.js"></script></body></html>`;
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -51,8 +122,24 @@ const staticServer = createServer((request, response) => {
     response.end("allowed");
     return;
   }
+  if (request.url.startsWith("/__witchy-browser-proof.html")) {
+    response.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    response.end(probeHtml);
+    return;
+  }
+  if (request.url === "/__witchy-browser-proof.js") {
+    response.writeHead(200, {
+      "Content-Type": "text/javascript; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    response.end(probeSource);
+    return;
+  }
   const pathname = new URL(request.url, "http://localhost").pathname;
-  const relative = pathname === "/" ? "rfc0103-browser-probe.html" : pathname.slice(1);
+  const relative = pathname === "/" ? "index.html" : pathname.slice(1);
   const path = resolve(root, relative);
   if (path !== root && !path.startsWith(root + sep)) {
     response.writeHead(403).end();
@@ -105,14 +192,16 @@ async function waitForDriver(port, child) {
   throw new Error("safaridriver did not become ready");
 }
 
-async function waitForChrome(port, child) {
+async function waitForChrome(port, child, expectedUrl) {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (child.exitCode !== null) throw new Error(`Chrome exited ${child.exitCode}`);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/json/list`);
       if (response.ok) {
         const targets = await response.json();
-        const page = targets.find((target) => target.type === "page");
+        const page = targets.find((target) => (
+          target.type === "page" && target.url === expectedUrl
+        ));
         if (page) return page;
       }
     } catch {
@@ -188,7 +277,7 @@ try {
   driverPort = await freePort();
   let driverError = "";
   const page =
-    `http://127.0.0.1:${staticPort}/rfc0103-browser-probe.html`
+    `http://127.0.0.1:${staticPort}/__witchy-browser-proof.html`
     + `?allowed=${encodeURIComponent(`http://127.0.0.1:${staticPort}`)}`
     + `&blocked=${encodeURIComponent(`http://127.0.0.1:${blockedPort}`)}`;
   let evaluate;
@@ -225,7 +314,7 @@ try {
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     driver.stderr.on("data", (chunk) => { driverError += chunk; });
-    const target = await waitForChrome(driverPort, driver);
+    const target = await waitForChrome(driverPort, driver, page);
     cdp = await connectCdp(target.webSocketDebuggerUrl, (event) => {
       if (event.method === "Log.entryAdded"
           || event.method === "Runtime.exceptionThrown"
@@ -249,7 +338,7 @@ try {
         exact: e && e.dataset.exact,
       };
     })()`);
-    if (state && state.state !== "running") break;
+    if (state?.state === "pass" || state?.state === "fail") break;
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   if (!state || state.state !== "pass") {
@@ -265,10 +354,33 @@ try {
   if (blockedHits !== 0) {
     throw new Error(`CSP failed: ungranted origin received ${blockedHits} request(s)`);
   }
+  await evaluate(`location.href = ${JSON.stringify(`http://127.0.0.1:${staticPort}/p/appendix-recipes/index.html`)}`);
+  const islandReadyDeadline = Date.now() + 30_000;
+  while (Date.now() < islandReadyDeadline
+      && !staticRequests.includes("/witchy-island-artifacts.json")) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  await evaluate(`document.querySelector('[data-glamour-island] .counter-btn:nth-of-type(2)')?.click()`);
+  let counterValue = null;
+  const islandDeadline = Date.now() + 60_000;
+  while (Date.now() < islandDeadline) {
+    counterValue = await evaluate(
+      `document.querySelector('[data-glamour-island] .counter-value')?.textContent || null`,
+    );
+    if (counterValue === "1") break;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  if (counterValue !== "1") {
+    throw new Error(
+      `published counter island did not resume after interaction: ${JSON.stringify(counterValue)}; `
+      + `static requests: ${JSON.stringify(staticRequests)} ${driverError}`,
+    );
+  }
   console.log(
-    `RFC-0103 BROWSER PASS: flagship fixture passed; blocked origin received 0 requests; `
-    + `${state.complete} complete examples ran in opaque frames `
-    + `(${state.exact} exact manifest outputs)`,
+    `BROWSER CONFINEMENT PASS: published counter resumed; flagship fixture passed; blocked origin received 0 requests; `
+    + `${state.complete} emitted runnable fences ran in opaque frames `
+    + `(${state.exact} exact output proof)`,
   );
 } finally {
   if (session && driver && driver.exitCode === null) {
@@ -285,8 +397,17 @@ try {
       once(driver, "exit"),
       new Promise((resolveWait) => setTimeout(resolveWait, 2_000)),
     ]);
+    if (driver.exitCode === null) {
+      driver.kill("SIGKILL");
+      await Promise.race([
+        once(driver, "exit"),
+        new Promise((resolveWait) => setTimeout(resolveWait, 2_000)),
+      ]);
+    }
   }
   if (chromeProfile) rmSync(chromeProfile, { force: true, recursive: true });
+  staticServer.closeAllConnections?.();
+  blockedServer.closeAllConnections?.();
   await Promise.all([
     new Promise((resolveClose) => staticServer.close(resolveClose)),
     new Promise((resolveClose) => blockedServer.close(resolveClose)),

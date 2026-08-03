@@ -3339,7 +3339,7 @@ fn walk_expr<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
     }
 }
 
-fn walk_block<'a>(b: &'a Block, f: &mut impl FnMut(&'a Expr)) {
+pub(crate) fn walk_block<'a>(b: &'a Block, f: &mut impl FnMut(&'a Expr)) {
     for s in &b.stmts {
         walk_stmt_exprs(s, f);
     }

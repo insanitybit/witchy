@@ -282,6 +282,12 @@ pub struct TypeDef {
     /// flag persists across the idempotent re-runs of `derive::expand` (it is set,
     /// not consumed, so a later empty-`derives` pass never clears it).
     pub partial_eq_derived: bool,
+    /// `derive(PublicState)` is the only user-type route to the sealed
+    /// `public_state.PublicState` proof. The flag survives derive consumption so
+    /// type checking can distinguish the built-in recursive generator from a
+    /// user-emitted impl that would launder a forbidden field.
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    pub public_state_derived: bool,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
@@ -310,8 +316,12 @@ impl PartialEq for Variant {
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Function {
+    /// Source line of the declaration keyword. Compiler-generated functions use
+    /// zero; source-preserving lowerings carry the original line forward.
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    pub line: u32,
     pub public: bool,
     /// `comptime fn` — a pure helper available only while expanding `comptime:`,
     /// derives, and tagged literals. It is omitted from the runtime module after
@@ -339,6 +349,21 @@ pub struct Function {
     /// machine driven by the executor by `crate::async_lower` (before type
     /// checking), so `await` genuinely suspends — not run sequentially.
     pub is_async: bool,
+}
+
+impl PartialEq for Function {
+    fn eq(&self, other: &Self) -> bool {
+        self.public == other.public
+            && self.comptime_only == other.comptime_only
+            && self.attributes == other.attributes
+            && self.name == other.name
+            && self.params == other.params
+            && self.ret == other.ret
+            && self.body == other.body
+            && self.bounds == other.bounds
+            && self.is_gen == other.is_gen
+            && self.is_async == other.is_async
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
@@ -1095,6 +1120,7 @@ pub(crate) fn synthetic_anon_record_def(fields: &[String]) -> TypeDef {
         grantable: false,
         packed: false,
         partial_eq_derived: false,
+        public_state_derived: false,
     }
 }
 

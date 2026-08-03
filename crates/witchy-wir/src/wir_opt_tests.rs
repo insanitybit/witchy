@@ -171,6 +171,35 @@
     }
 
     #[test]
+    fn source_wrappers_preserve_self_tail_call_lowering() {
+        let recur = WirFunc {
+            name: "count".into(),
+            params: vec![WirLocal { name: "n".into(), ty: WirTy::Int }],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Source {
+                line: 7,
+                body: vec![WirNode::Push(WirExpr::Call {
+                    func: "count".into(),
+                    args: vec![WirExpr::GetLocal("n".into())],
+                })],
+            }],
+            raw_body: None,
+        };
+        let mut module = module_with(recur);
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 1);
+        let [WirNode::Loop { body, .. }, WirNode::Unreachable] = module.funcs[0].body.as_slice()
+        else {
+            panic!("expected loop-wrapped function, got {:?}", module.funcs[0].body);
+        };
+        assert!(body.iter().any(|node| matches!(node, WirNode::Source { line: 7, .. })));
+        let mut residual = std::collections::HashSet::new();
+        collect_function_tail_calls(&module.funcs[0].body, &mut residual);
+        assert!(!residual.contains(&TailCallee::Direct("count".into())));
+    }
+
+    #[test]
     fn leaves_multi_result_self_call_for_its_writeback_continuation() {
         let recur = WirFunc {
             name: "bump".into(),

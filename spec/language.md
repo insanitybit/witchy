@@ -617,6 +617,40 @@ Parameter annotations are required; the return type may be inferred for
 non-`pub` functions. Locals are inferred (Hindley-Milner-style unification with
 an occurs check).
 
+**Target availability.** An unannotated function is shared: every selected
+target may include it, so it may reference only other shared functions.
+`@browser`, `@server`, and `@static` mark a function as available only in that
+target. A specialized function may reference shared functions and functions
+with the same annotation. Direct calls and first-class function references are
+both checked; conflicting annotations are rejected. Availability is checked
+when a named function value is introduced, so a shared higher-order helper may
+apply a callback after the caller has proved that callback is available in its
+own target.
+
+This is composition checking, not conditional compilation. The compiler rejects
+a shared or browser function that captures a server-only function instead of
+silently changing the program for one build.
+
+```witchy
+fn normalize(name: String) -> String:
+    name.trim()
+
+@browser
+fn browser_title(name: String) -> String:
+    normalize(name)
+
+@server
+fn server_title(name: String) -> String:
+    normalize(name)
+
+@static
+fn static_title(name: String) -> String:
+    normalize(name)
+
+fn main(console: Console):
+    console.print(normalize(" Witchy "))
+```
+
 **Recursive proper tail calls use constant control stack.** A call qualifies
 when its complete result becomes the current function's result directly, with no
 caller calculation, write-back, drop, conversion, loan cleanup, or error
@@ -1099,7 +1133,7 @@ fn main(console: Console):
 `derive(...)` generates trait impls for a type. The generated code is appended to
 the module before type-checking, so both backends and the footprint analysis treat
 it like handwritten code. The supported derives are `Show`, `PartialEq`, `Eq`,
-`PartialOrd`, `Ord`, `Reflect`, and `Deserialize`. `Reflect` needs
+`PartialOrd`, `Ord`, `Reflect`, `Deserialize`, and `PublicState`. `Reflect` needs
 `import reflect` and makes a user type reflectable (scalars and the built-in
 containers already are); it is what lets
 `json.stringify` / `json.from_value` encode the type with no per-type code.
@@ -1110,6 +1144,17 @@ like handwritten code — needs `import json`. `Result`/`Ok`/`Err` and
 them without redundant imports. There is no `Serialize` derive,
 because reflection already encodes any value (`json.from_value`, `json.stringify`,
 `Into(Json)`); only decoding has to be generated per type.
+
+`derive(PublicState)` recursively proves that every field may cross a public or
+resumable web boundary. Scalars, `List`, `Option`, `Result`, and nested nominal
+types compose when their contained values also satisfy `PublicState`.
+Capabilities, functions, `Bytes`, secrets, and host handles deliberately have
+no implementation, so a forbidden nested field fails during type checking. The
+trait is a sealed compiler boundary: handwritten and user-generated impls are
+rejected; only the canonical standard foundations and the authenticated built-in
+derive may produce a proof.
+`public_state.to_json` additionally requires `Reflect`; public-state eligibility
+does not by itself define a serialization format.
 
 ```witchy
 import show
@@ -1322,6 +1367,16 @@ and its `${…}` hole sources, and the compiler calls the `tag` function
 ```text
 comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
 ```
+
+A tag may accept a third `String` parameter. The compiler supplies
+`module:line` invocation metadata for diagnostics:
+
+```text
+comptime fn tag(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax
+```
+
+The metadata is not a stable semantic identity. A tag derives stable IDs from
+its normalized static parts and slot structure, keeping source location separate.
 
 with `parts` = the static fragments and `holes` = an **opaque marker** per hole —
 a token the tag *places* where that hole's value belongs (the tag does not read

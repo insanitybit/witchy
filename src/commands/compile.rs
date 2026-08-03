@@ -10,6 +10,8 @@ use crate::source::{
     link_file_checked_authenticated_with_deps, AuthenticatedDependency,
 };
 use witchy_types::runtime_type::{ModuleLoadIdentity, PackageCoordinate, PackageSource};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
     // `witchy compile <entry> [--dep name=path]... [--out <file.wasm>]` links the
@@ -322,6 +324,22 @@ pub(super) fn compile_checked_to_wasm(checked: &pipeline::CheckedModule) -> Resu
     Ok(artifact::embed_launch_contract(bytes, checked.module()))
 }
 
+pub(super) fn compile_checked_to_development_wasm(
+    checked: &pipeline::CheckedModule,
+) -> Result<codegen::CompiledDevelopmentModule, String> {
+    let mut compiled = match codegen::compile_checked_development_module(checked) {
+        codegen::LoweringOutcome::Lowered(compiled) => compiled,
+        codegen::LoweringOutcome::Unsupported(reason) => {
+            return Err(format!("cannot compile to WASM: {reason}"));
+        }
+        codegen::LoweringOutcome::Rejected(error) => {
+            return Err(format!("cannot compile to WASM: {error}"));
+        }
+    };
+    compiled.wasm = artifact::embed_launch_contract(compiled.wasm, checked.module());
+    Ok(compiled)
+}
+
 /// A cheap fingerprint of the compiler build: the `witchy` binary's size + mtime.
 /// Any recompile of the compiler (or its bundled std) changes it, so the source
 /// cache can never serve codegen from an older compiler. A `stat`, not a read, so
@@ -422,6 +440,15 @@ pub(crate) fn compile_checked_to_wasm_cached(
     compile_to_wasm_cached(checked, || compile_checked_to_wasm(checked))
 }
 
+/// Compile a checked development module with a small process-local cache. The
+/// cache key is the same content-addressable hash used for production codegen,
+/// so stale compiler artifacts never replay.
+pub(crate) fn compile_checked_to_development_wasm_cached(
+    checked: &pipeline::CheckedModule,
+) -> Result<codegen::CompiledDevelopmentModule, String> {
+    compile_to_development_wasm_cached(checked, || compile_checked_to_development_wasm(checked))
+}
+
 fn compile_to_wasm_cached(
     cache_input: &impl std::fmt::Debug,
     compile: impl FnOnce() -> Result<Vec<u8>, String>,
@@ -481,6 +508,53 @@ fn compile_to_wasm_cached(
         }
     }
     Ok(wasm)
+}
+
+fn development_wasm_cache() -> &'static Mutex<HashMap<String, codegen::CompiledDevelopmentModule>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, codegen::CompiledDevelopmentModule>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn compile_to_development_wasm_cached(
+    cache_input: &impl std::fmt::Debug,
+    compile: impl FnOnce() -> Result<codegen::CompiledDevelopmentModule, String>,
+) -> Result<codegen::CompiledDevelopmentModule, String> {
+    let key = {
+        use std::fmt::Write as _;
+        let mut w = {
+            struct HashWriter(blake3::Hasher);
+            impl std::fmt::Write for HashWriter {
+                fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                    self.0.update(s.as_bytes());
+                    Ok(())
+                }
+            }
+            HashWriter(blake3::Hasher::new())
+        };
+        let _ = write!(w, "{cache_input:?}");
+        let mut hasher = w.0;
+        hasher.update(b"\0");
+        hasher.update(compiler_fingerprint().as_bytes());
+        hasher.update(b"\0");
+        hasher.update(active_opt_key().as_bytes());
+        hasher.finalize().to_hex().to_string()
+    };
+
+    if let Ok(cache) = development_wasm_cache().lock()
+        && let Some(cached) = cache.get(&key)
+    {
+        return Ok(cached.clone());
+    }
+
+    let compiled = compile()?;
+    if let Ok(mut cache) = development_wasm_cache().lock() {
+        if cache.len() >= 32 {
+            cache.clear();
+        }
+        cache.insert(key, compiled.clone());
+    }
+    Ok(compiled)
 }
 
 /// Compile a `.witchy` program to a wasm binary and write it to `out`. The

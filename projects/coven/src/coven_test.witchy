@@ -187,7 +187,7 @@ fn test_computed_footprint_fails_closed_on_bad_source():
         Ok(_caps) -> testing.assert(false, "a non-compiling source must not yield a footprint")
         Err(e) ->
             match e:
-                coven_footprint.FootprintSourceDoesNotCompile -> testing.assert(true, "an uncomputable footprint is a typed hard error")
+                coven_footprint.FootprintSourceDoesNotCompile(_detail) -> testing.assert(true, "an uncomputable footprint is a typed hard error")
                 _ -> testing.assert(false, "a non-compiling source should be FootprintSourceDoesNotCompile")
 
 fn test_computed_footprint_ok_for_pure_source():

@@ -33,12 +33,43 @@ function classOf(n) {
   return (typeof n.getAttribute === "function" && n.getAttribute("class")) || "";
 }
 
-// Collect every `<pre> > <code class="…language-witchy…">` under `root`.
+const adoptedRunnableCells = new WeakSet();
+
+function hasClass(node, name) {
+  return classOf(node).split(/\s+/).includes(name);
+}
+
+function findByClass(root, name, acc = []) {
+  if (hasClass(root, name)) acc.push(root);
+  for (const child of root.childNodes || []) findByClass(child, name, acc);
+  return acc;
+}
+
+function findPublishedRunnableCells(root, acc = []) {
+  if (
+    typeof root.getAttribute === "function"
+    && root.getAttribute("data-witchy-runnable") === "1"
+  ) {
+    if (!adoptedRunnableCells.has(root)) acc.push(root);
+    return acc;
+  }
+  for (const child of root.childNodes || []) findPublishedRunnableCells(child, acc);
+  return acc;
+}
+
+// Collect every ordinary Witchy code fence and every compiler-emitted runnable
+// host marker under `root`.
 function findWitchyCells(root, acc = []) {
   const kids = root.childNodes || [];
   for (const child of kids) {
-    if (isCode(child) && classOf(child).split(/\s+/).includes("language-witchy")) {
-      const pre = child.parentNode;
+    const pre = child.parentNode;
+    const compilerRunnable =
+      pre && typeof pre.getAttribute === "function"
+      && pre.getAttribute("data-glamour-slot-kind") === "witchy-runnable";
+    if (
+      isCode(child)
+      && (classOf(child).split(/\s+/).includes("language-witchy") || compilerRunnable)
+    ) {
       if (pre) acc.push({ pre, code: child });
     } else {
       findWitchyCells(child, acc);
@@ -53,12 +84,7 @@ function findWitchyCells(root, acc = []) {
  * inert affordance, so the tested build path is unchanged. `getText` is read AT CLICK TIME so a
  * runnable cell copies the reader's current edits, not just the seed.
  */
-function buildCopyButton(doc, getText) {
-  const btn = doc.createElement("button");
-  btn.setAttribute("class", "witchy-copy");
-  btn.setAttribute("type", "button");
-  btn.setAttribute("aria-label", "Copy code to clipboard");
-  btn.textContent = "Copy";
+function installCopyBehavior(btn, getText) {
   if (typeof btn.addEventListener === "function") {
     btn.addEventListener("click", async () => {
       try {
@@ -73,7 +99,68 @@ function buildCopyButton(doc, getText) {
       setTimeout(() => { btn.textContent = "Copy"; }, 1200);
     });
   }
+}
+
+function buildCopyButton(doc, getText) {
+  const btn = doc.createElement("button");
+  btn.setAttribute("class", "witchy-copy");
+  btn.setAttribute("type", "button");
+  btn.setAttribute("aria-label", "Copy code to clipboard");
+  btn.textContent = "Copy";
+  installCopyBehavior(btn, getText);
   return btn;
+}
+
+function adoptPublishedRunnableCell(element, opts) {
+  const required = ["witchy-editor", "witchy-run", "witchy-output", "witchy-stats", "witchy-copy"];
+  const parts = Object.fromEntries(required.map((name) => {
+    const matches = findByClass(element, name);
+    if (matches.length !== 1) {
+      throw new Error(`witchy-runnable: published cell requires one ${name}`);
+    }
+    return [name, matches[0]];
+  }));
+  const editor = parts["witchy-editor"];
+  const runButton = parts["witchy-run"];
+  const output = parts["witchy-output"];
+  const statsOutput = parts["witchy-stats"];
+  const copyButton = parts["witchy-copy"];
+  const source = typeof editor.value === "string" && editor.value !== ""
+    ? editor.value
+    : editor.textContent || "";
+  editor.value = source;
+
+  const run = async () => {
+    const current = typeof editor.value === "string" ? editor.value : source;
+    runButton.textContent = "Running…";
+    try {
+      const { ok, text, stats } = await opts.runProgram(current, opts.runOptions || {});
+      output.textContent = text || (ok ? "(no output)" : "(empty error)");
+      output.setAttribute("class", ok ? "witchy-output ok" : "witchy-output err");
+      statsOutput.textContent = /^\s*mode\s+opt\s*$/m.test(current)
+        ? formatOptimizationStats(stats)
+        : "";
+    } catch (error) {
+      output.textContent = "playground error: " + ((error && error.message) || error);
+      output.setAttribute("class", "witchy-output err");
+      statsOutput.textContent = "";
+    }
+    runButton.textContent = "Run";
+  };
+  if (typeof runButton.addEventListener === "function") runButton.addEventListener("click", run);
+  if (typeof editor.addEventListener === "function") {
+    editor.addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        run();
+      }
+    });
+  }
+  installCopyBehavior(copyButton, () => (
+    typeof editor.value === "string" ? editor.value : source
+  ));
+  adoptedRunnableCells.add(element);
+  return { element, editor, runButton, output, statsOutput, run };
 }
 
 /**
@@ -223,14 +310,20 @@ export function staticSlot(opts = {}) {
 
 /**
  * Standalone progressive enhancement (a static page / the playground): find every
- * `pre>code.language-witchy` under `root` and REPLACE it with a runnable cell. Idempotent (a
- * built cell's code carries no `language-witchy` class) and DOM-agnostic. The glamour docs app
- * uses `runnableSlot` instead, so glamour owns the non-diffed slot.
+ * `pre>code.language-witchy` or a compiler-emitted `witchy-runnable` host marker
+ * under `root` and REPLACE it with a runnable cell. Idempotent and DOM-agnostic.
  */
 export function enhanceRunnableCells(root, opts = {}) {
   const doc = opts.document || (typeof document !== "undefined" ? document : null);
   if (!doc) throw new Error("witchy-runnable: no `document` (pass opts.document)");
-  const cells = [];
+  if (typeof opts.runProgram !== "function") {
+    throw new Error("witchy-runnable: opts.runProgram must be an async program runner");
+  }
+  const cells = findPublishedRunnableCells(root).map((element) => ({
+    pre: null,
+    code: null,
+    ...adoptPublishedRunnableCell(element, opts),
+  }));
   for (const { pre, code } of findWitchyCells(root)) {
     const cell = buildRunnableCell(doc, code.textContent, opts);
     const parent = pre.parentNode;

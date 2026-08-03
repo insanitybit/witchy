@@ -20,6 +20,7 @@ witchy-types = { path = "../witchy-types" }
 witchy-wir = { path = "../witchy-wir" }
 # Fast non-DoS-resistant hasher for internal tables (see witchy-types).
 foldhash = "0.2.0"
+sha2 = "0.11.0"
 # Validates the emitted module; pure Rust, so the lowering path stays wasm-clean.
 wasmparser = "0.251"
 

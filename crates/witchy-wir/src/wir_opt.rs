@@ -83,6 +83,7 @@ fn simplify_seq(seq: &mut WirSeq, changed: &mut bool) {
 /// Simplify a statement node: recurse into its child expressions/sequences.
 fn simplify_node(node: &mut WirNode, changed: &mut bool) {
     match node {
+        WirNode::Source { body, .. } => simplify_seq(body, changed),
         WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
             simplify_expr(value, changed);
         }
@@ -260,6 +261,7 @@ fn seq_size(seq: &WirSeq) -> usize {
 
 fn node_size(node: &WirNode) -> usize {
     1 + match node {
+        WirNode::Source { body, .. } => seq_size(body),
         WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => expr_size(value),
         WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
             expr_size(ptr) + expr_size(value)

@@ -158,6 +158,160 @@ fn cli_help_version_and_bare_invocation_are_stable() {
 }
 
 #[test]
+fn web_commands_route_natively_and_complete_clean_clone_flow() {
+    let dir = workdir("web-flow");
+    let project = dir.join("hello-web");
+    let project_text = project.to_str().unwrap();
+
+    let created = run(&["new", "--web", project_text]);
+    assert_eq!(created.status.code(), Some(0), "{}", String::from_utf8_lossy(&created.stderr));
+    assert!(project.join("src/hello_web.witchy").is_file());
+    assert!(project.join("web/public").is_dir());
+
+    let tested = run(&["test", "--web", project_text]);
+    assert_eq!(tested.status.code(), Some(0), "{}", String::from_utf8_lossy(&tested.stderr));
+    assert!(String::from_utf8_lossy(&tested.stdout).contains("typed static Site"));
+
+    let built = run(&["build", "--web", project_text]);
+    assert_eq!(built.status.code(), Some(0), "{}", String::from_utf8_lossy(&built.stderr));
+    for artifact in [
+        "index.html",
+        "witchy-web-manifest.json",
+        "witchy-build-report.json",
+        "witchy-sbom.cdx.json",
+        "_headers",
+    ] {
+        assert!(project.join("dist").join(artifact).is_file(), "{artifact}");
+    }
+
+    let doctor = run(&["doctor", "--web", "--format", "json", project_text]);
+    assert_eq!(doctor.status.code(), Some(0), "{}", String::from_utf8_lossy(&doctor.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(report["schema"], "witchy.web.doctor.v1");
+    assert_eq!(report["ok"], true);
+
+    let misplaced = run(&["new", project_text, "--web"]);
+    assert_eq!(misplaced.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&misplaced.stderr).contains("requires exactly one destination"));
+
+    let dev_usage = run(&["dev", "--port", "0", project_text]);
+    assert_eq!(dev_usage.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&dev_usage.stderr).contains("1..=65535"));
+}
+
+#[test]
+fn static_web_flow_needs_no_client_scaffold_or_browser_runtime() {
+    let project = workdir("static-web-flow");
+    std::fs::create_dir(project.join("src")).unwrap();
+    write(
+        &project,
+        "witchy.toml",
+        "[rune]\nname = \"static-web\"\nversion = \"0.1.0\"\n\n\
+         [capabilities]\nruntime = []\n\n\
+         [dependencies]\n\n\
+         [web]\ndelivery = \"static\"\nentry = \"src/site.witchy\"\n",
+    );
+    write(
+        &project,
+        "src/site.witchy",
+        r#"from glamour import Site
+
+type Message:
+    Unused
+
+fn page(text: String) -> glamour.Ui(Message):
+    glamour.ui(glamour.element("main", [], [glamour.text(text)]))
+
+pub fn web() -> Site:
+    glamour.site([
+        glamour.static_page("/", page("Home")),
+        glamour.static_page("/about", page("About")),
+    ])
+"#,
+    );
+    let project_text = project.to_str().unwrap();
+
+    let tested = run(&["test", "--web", project_text]);
+    assert_eq!(
+        tested.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&tested.stderr)
+    );
+    assert!(String::from_utf8_lossy(&tested.stdout).contains("zero browser runtime"));
+
+    let built = run(&["build", "--web", project_text]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    assert!(project.join("dist/index.html").is_file());
+    assert!(project.join("dist/about/index.html").is_file());
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.join("dist/witchy-web-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["delivery"], "static");
+    assert_eq!(manifest["runtime"]["javascript"], false);
+    assert_eq!(manifest["runtime"]["wasm"], false);
+    assert_eq!(
+        std::fs::read_dir(project.join("dist/assets"))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    let doctor = run(&["doctor", "--web", "--format", "json", project_text]);
+    assert_eq!(
+        doctor.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(report["ok"], true);
+    assert!(report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| check["id"] == "runtime" && check["status"] == "pass"));
+}
+
+#[test]
+fn glamour_server_adapter_enforces_progressive_form_boundary() {
+    let out = Command::new(BIN)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["run", "projects/glamour-server/examples/basic"])
+        .output()
+        .expect("run Glamour server example");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let behavior = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .take(9)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        behavior,
+        "200 values:1;secret:s3cret\n\
+         403 form origin rejected\n\
+         422 duplicate submitted form field `name`\n\
+         400 malformed form encoding\n\
+         200 values:1;secret:s3cret\n\
+         405 method not allowed\n\
+         404 form action not found\n\
+         415 expected application/x-www-form-urlencoded\n\
+         413 form body exceeds configured limit"
+    );
+}
+
+#[test]
 fn missing_secret_values_are_exact_usage_errors() {
     for flag in ["--secret", "--secret-file"] {
         let out = run(&[flag]);

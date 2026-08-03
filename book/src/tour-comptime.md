@@ -219,6 +219,15 @@ holes. Tags use the typed signature
 comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
 ```
 
+Tags that generate source-indexed artifacts may accept a third `String`
+parameter. Witchy supplies the invocation as `module:line`; use it for
+diagnostics, while deriving stable artifact identity from normalized static
+input:
+
+```text
+comptime fn tag(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax
+```
+
 String-returning tags are rejected. With `parts` = the static fragments and `holes` = one
 **opaque marker** per hole,
 The tag returns the typed expression that replaces the literal. Convert a marker

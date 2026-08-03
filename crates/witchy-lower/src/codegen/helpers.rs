@@ -606,7 +606,7 @@ impl Codegen<'_> {
                 rhs: Box::new(W::FromSlot(Box::new(load(bb)), Kind::F64)),
             },
             // String content equality: load each slot's i32 pointer and `$str_eq`.
-            EqShape::Str => {
+            EqShape::Str | EqShape::Bytes => {
                 W::Call { func: "str_eq".into(), args: vec![load_i32(aa), load_i32(bb)] }
             }
             // (RFC-0047) A field whose type has a CUSTOM PartialEq impl: call it,
@@ -802,12 +802,12 @@ impl Codegen<'_> {
         })
     }
 
-    /// Ensure the WIR rcopy helper for `shape` exists, returning its name. `Str` uses
+    /// Ensure the WIR rcopy helper for `shape` exists, returning its name. `Str`/`Bytes` use
     /// the registered `$rcopy_str`; scalars never get one. Compound shapes generate a
     /// `WirFunc` into `rcopy_wir_helpers`. The name is reserved before building,
     /// so a recursive field becomes a call back to the helper being defined.
     pub(crate) fn ensure_rcopy_wir_helper(&mut self, shape: &EqShape) -> Option<String> {
-        if matches!(shape, EqShape::Str) {
+        if matches!(shape, EqShape::Str | EqShape::Bytes) {
             return Some("rcopy_str".to_string());
         }
         let name = format!("rcopy_{}", shape.id());
@@ -1147,7 +1147,7 @@ impl Codegen<'_> {
                     ],
                 ))
             }
-            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str => None,
+            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str | EqShape::Bytes => None,
         }
     }
 
@@ -1433,7 +1433,7 @@ impl Codegen<'_> {
             }
             // Scalars never reach here (compared inline by `slot_cmp_wir`, never
             // via a helper).
-            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str => return None,
+            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str | EqShape::Bytes => return None,
         };
         Some((body, locals))
     }
@@ -1520,6 +1520,33 @@ impl Codegen<'_> {
                 }))
             }
             EqShape::Str => load_i32(addr),
+            EqShape::Bytes => {
+                self.uses_int_to_string = true;
+                let open = self.intern("Bytes(len=");
+                let close = self.intern(")");
+                let pointer = load_i32(addr);
+                let length = W::Convert {
+                    from: Kind::I32,
+                    to: Kind::I64,
+                    arg: Box::new(load_i32(pointer)),
+                };
+                W::Call {
+                    func: "concat".into(),
+                    args: vec![
+                        W::Call {
+                            func: "concat".into(),
+                            args: vec![
+                                W::StrPtr(open),
+                                W::Call {
+                                    func: "int_to_string".into(),
+                                    args: vec![length],
+                                },
+                            ],
+                        },
+                        W::StrPtr(close),
+                    ],
+                }
+            }
             EqShape::Float => {
                 self.uses_float_to_str = true;
                 W::Call { func: "float_to_str".into(), args: vec![W::FromSlot(Box::new(load_i64(addr)), Kind::F64)] }
@@ -1789,7 +1816,7 @@ impl Codegen<'_> {
                 }
                 self.build_variant_ts_wir(&names, &all)
             }
-            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str => None,
+            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str | EqShape::Bytes => None,
         }
     }
 

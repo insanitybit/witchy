@@ -50,6 +50,93 @@
     }
 
     #[test]
+    fn checked_evaluation_accepts_and_returns_only_owned_compiler_values() {
+        let source = "\
+type Page:
+    Page(String)
+
+fn web() -> List(Page):
+    [Page(\"/\"), Page(\"/about\")]
+
+fn echo(page: Page) -> Page:
+    page
+";
+        let module = witchy_syntax::parser::parse_module(source).expect("parse");
+        let application = witchy_types::runtime_type::PackageCoordinate::new(
+            witchy_types::runtime_type::PackageSource::Workspace,
+            "test/site",
+            "0.0.0",
+        )
+        .expect("application coordinate");
+        let toolchain = witchy_types::runtime_type::PackageCoordinate::new(
+            witchy_types::runtime_type::PackageSource::Toolchain,
+            "witchy/stdlib",
+            "0.0.0",
+        )
+        .expect("toolchain coordinate");
+        let mut assignments = vec![(
+            "site".to_string(),
+            witchy_types::runtime_type::ModuleLoadIdentity::new(
+                application,
+                ["site"],
+            )
+            .expect("site owner"),
+        )];
+        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| {
+            (
+                (*name).to_string(),
+                witchy_types::runtime_type::ModuleLoadIdentity::new(
+                    toolchain.clone(),
+                    ["std", *name],
+                )
+                .expect("stdlib owner"),
+            )
+        }));
+        let owners =
+            crate::pipeline::AuthenticatedModuleOwners::from_loader_assignments(assignments)
+                .expect("owners");
+        let checked = crate::pipeline::link_checked_authenticated(
+            vec![("site".to_string(), module)],
+            "site",
+            owners,
+        )
+        .expect("check");
+        let value = evaluate_checked_noargs(&checked, "site.web").expect("evaluate web");
+        assert_eq!(
+            value,
+            CompilerValue::List(vec![
+                CompilerValue::Constructor {
+                    name: "site.Page".into(),
+                    fields: vec![CompilerValue::String("/".into())],
+                },
+                CompilerValue::Constructor {
+                    name: "site.Page".into(),
+                    fields: vec![CompilerValue::String("/about".into())],
+                },
+            ])
+        );
+
+        let page = CompilerValue::Constructor {
+            name: "site.Page".into(),
+            fields: vec![CompilerValue::String("/input".into())],
+        };
+        assert_eq!(
+            evaluate_checked(&checked, "site.echo", vec![page.clone()])
+                .expect("evaluate compiler data argument"),
+            page,
+        );
+        let arity = evaluate_checked(&checked, "site.echo", Vec::new()).unwrap_err();
+        assert!(
+            arity
+                .message
+                .contains("expects 1 compiler argument(s), received 0")
+        );
+
+        let error = evaluate_checked_noargs(&checked, "missing").unwrap_err();
+        assert!(error.message.contains("unknown function `missing`"));
+    }
+
+    #[test]
     fn every_cataloged_string_operation_has_runtime_dispatch() {
         let mut interpreter = minimal_interpreter();
 

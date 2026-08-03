@@ -6,6 +6,7 @@ use foldhash::HashSet;
 
 use crate::ast::*;
 use crate::lexer::{tokenize, Tok, Token};
+use crate::origin::SourcePosition;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseError {
@@ -43,7 +44,40 @@ pub(crate) const QUOTE_EXPR_HOLE_PREFIX: &str = "__witchy_quote_expr_hole_";
 pub(crate) const QUOTE_TYPE_HOLE_PREFIX: &str = "__witchy_quote_type_hole_";
 pub(crate) const QUOTE_PATTERN_HOLE_PREFIX: &str = "__witchy_quote_pattern_hole_";
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxSpan {
+    pub start: SourcePosition,
+    /// Exclusive source end. Layout-inserted tokens never extend this position.
+    pub end: SourcePosition,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpressionSyntaxSpan {
+    pub source: SyntaxSpan,
+    /// Source line of the parser-owned statement containing this expression.
+    pub statement_line: u32,
+}
+
 pub fn parse_module(src: &str) -> Result<Module, ParseError> {
+    parse_module_internal(src, false).map(|(module, _)| module)
+}
+
+/// Parse a module while retaining exact source ranges for expression roots.
+///
+/// This inventory is a development sidecar. It does not alter the AST and does
+/// not claim a narrower Wasm interval until lowering provenance is attached.
+pub fn parse_module_with_expression_spans(
+    src: &str,
+) -> Result<(Module, Vec<ExpressionSyntaxSpan>), ParseError> {
+    parse_module_internal(src, true)
+}
+
+fn parse_module_internal(
+    src: &str,
+    capture_expression_spans: bool,
+) -> Result<(Module, Vec<ExpressionSyntaxSpan>), ParseError> {
     let tokens = tokenize(src).map_err(|e| ParseError {
         message: e.message,
         line: e.line,
@@ -53,6 +87,7 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     // ones (a no-op for code that already uses explicit braces).
     let tokens = crate::lexer::apply_layout(tokens);
     let mut parser = Parser::new(tokens);
+    parser.capture_expression_spans = capture_expression_spans;
     let mut module = parser.module()?;
     // Each anonymous struct `.{…}` becomes a generic synthetic record carrying
     // `derive(Reflect)`, prepended to the module. The synthetic type name is
@@ -78,9 +113,19 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
             module.import_lines.push(u32::MAX);
         }
     }
-    Ok(module)
+    let mut expression_spans = parser.expression_spans;
+    expression_spans.sort_by_key(|span| {
+        (
+            span.source.start.line,
+            span.source.start.column,
+            span.source.end.line,
+            span.source.end.column,
+            span.statement_line,
+        )
+    });
+    expression_spans.dedup();
+    Ok((module, expression_spans))
 }
-
 
 struct Parser {
     toks: Vec<Token>,
@@ -144,6 +189,9 @@ struct Parser {
     /// parser runs inside a wasmtime host function (`compiler.footprint`/`doc`/
     /// `diff` on the supply-chain gate). Mirrors the interpreter's `depth_limit`.
     depth: u32,
+    capture_expression_spans: bool,
+    expression_spans: Vec<ExpressionSyntaxSpan>,
+    current_statement_line: Option<u32>,
 }
 
 /// Maximum nesting depth of the recursive-descent parser. Exceeding it is a clean
@@ -200,7 +248,39 @@ impl Parser {
             quote_pattern_holes: Vec::new(),
             quote_pattern_hole_bases: Vec::new(),
             depth: 0,
+            capture_expression_spans: false,
+            expression_spans: Vec::new(),
+            current_statement_line: None,
         }
+    }
+
+    fn record_expression_span(&mut self, start: usize) {
+        if !self.capture_expression_spans || start >= self.pos {
+            return;
+        }
+        let Some(first) = self
+            .toks
+            .get(start)
+            .filter(|token| token.kind != Tok::Eof)
+        else {
+            return;
+        };
+        let Some(last) = self.toks[start..self.pos].iter().rev().find(|token| {
+            token.kind != Tok::Eof
+                && (token.line != token.end_line || token.col != token.end_col)
+        }) else {
+            return;
+        };
+        let Some(statement_line) = self.current_statement_line else {
+            return;
+        };
+        self.expression_spans.push(ExpressionSyntaxSpan {
+            source: SyntaxSpan {
+                start: SourcePosition { line: first.line, column: first.col },
+                end: SourcePosition { line: last.end_line, column: last.end_col },
+            },
+            statement_line,
+        });
     }
 
     /// Error (never overflow the native stack) if the recursive descent has nested
@@ -414,9 +494,9 @@ impl Parser {
         let mut attributes = Vec::new();
         while self.eat(&Tok::At) {
             let attribute = self.ident()?;
-            if attribute != "dynamic" {
+            if !matches!(attribute.as_str(), "dynamic" | "browser" | "server" | "static") {
                 return Err(self.error(format!(
-                    "unknown declaration attribute `@{attribute}` — supported attributes: @dynamic"
+                    "unknown declaration attribute `@{attribute}` — supported attributes: @dynamic, @browser, @server, @static"
                 )));
             }
             if attributes.contains(&attribute) {
@@ -828,6 +908,7 @@ impl Parser {
                 grantable: false,
                 packed,
                 partial_eq_derived: false,
+                public_state_derived: false,
             }))
         } else {
             Ok(Item::Type(TypeDef {
@@ -840,6 +921,7 @@ impl Parser {
                 grantable: false,
                 packed,
                 partial_eq_derived: false,
+                public_state_derived: false,
             }))
         }
     }
@@ -898,6 +980,7 @@ impl Parser {
                 grantable,
                 packed: false,
                 partial_eq_derived: false,
+                public_state_derived: false,
             }));
         }
         if !self.at_ident("from") {
@@ -937,6 +1020,7 @@ impl Parser {
             grantable,
             packed: false,
             partial_eq_derived: false,
+            public_state_derived: false,
         }))
     }
 
@@ -991,6 +1075,7 @@ impl Parser {
         comptime_only: bool,
         attributes: Vec<String>,
     ) -> Result<Function, ParseError> {
+        let line = self.cur().line;
         let is_async = self.eat(&Tok::Async);
         let is_gen = self.eat(&Tok::Gen);
         if comptime_only && (is_async || is_gen) {
@@ -1028,6 +1113,7 @@ impl Parser {
         self.in_async = prev_async;
         self.in_gen = prev_gen;
         Ok(Function {
+            line,
             public,
             comptime_only,
             attributes,
@@ -1392,6 +1478,13 @@ impl Parser {
     }
 
     fn stmt(&mut self) -> Result<Stmt, ParseError> {
+        let previous = self.current_statement_line.replace(self.cur().line);
+        let statement = self.stmt_inner();
+        self.current_statement_line = previous;
+        statement
+    }
+
+    fn stmt_inner(&mut self) -> Result<Stmt, ParseError> {
         if self.eat(&Tok::Return) {
             // `return` alone (at a block's end) yields Nil; otherwise a value.
             let value = if self.at(&Tok::RBrace) || self.at(&Tok::If) {
@@ -1525,6 +1618,7 @@ impl Parser {
     // --- expressions (Pratt) ---
 
     fn expr(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
+        let start = self.pos;
         let mut lhs = self.prefix()?;
         loop {
             // Inside a match-arm body, a `-` that starts a new line is the next
@@ -1558,6 +1652,7 @@ impl Parser {
                 };
             }
         }
+        self.record_expression_span(start);
         Ok(lhs)
     }
 
@@ -1566,10 +1661,14 @@ impl Parser {
         // `prefix`→`prefix`; parentheses recurse `atom`→`expr`→`prefix`), so
         // bounding depth here bounds the whole expression grammar. Balanced on the
         // success path; a depth error aborts the parse so the leak is harmless.
+        let start = self.pos;
         self.depth += 1;
         self.check_depth()?;
         let out = self.prefix_inner();
         self.depth -= 1;
+        if out.is_ok() {
+            self.record_expression_span(start);
+        }
         out
     }
 

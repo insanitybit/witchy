@@ -5,6 +5,11 @@
 //! `compile_build_module` are the public entry points (re-exported by the parent).
 
 use super::*;
+use super::glamour_metadata::{
+    checked_glamour_development_codec_module, GlamourDevelopmentCodecSpec,
+    GlamourDevelopmentMigrationCodec,
+};
+use sha2::{Digest, Sha256};
 
 struct ModuleLayoutResolver<'a> {
     definitions: BTreeMap<&'a str, &'a witchy_syntax::ast::TypeDef>,
@@ -837,6 +842,607 @@ fn export_cap_of<'a>(f: &'a Function, module: &'a Module) -> Option<(&'a str, us
     Some((cap, nfields))
 }
 
+#[derive(Debug, Clone)]
+struct GlamourExportFamily {
+    init: String,
+    dispatch: String,
+    emit: String,
+    release: String,
+    cap_type: String,
+    cap_fields: usize,
+    state_type: Type,
+    state_fields: Vec<Type>,
+    state_constructor: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlamourDevelopmentField {
+    I64,
+    F64,
+    Bool,
+    /// A compiler-known public-model field whose nested representation remains
+    /// inside Wasm. Development tracing reports only its structural change bit;
+    /// format-1 hot-swap snapshots remain restricted to scalar fields.
+    Aggregate,
+}
+
+impl GlamourDevelopmentField {
+    fn wire_tag(self) -> u8 {
+        match self {
+            Self::I64 => 1,
+            Self::F64 => 2,
+            Self::Bool => 3,
+            Self::Aggregate => 4,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlamourDevelopmentMetadata {
+    pub model_schema: [u8; 32],
+    pub authorization_schema: [u8; 32],
+    pub state_fields: Vec<GlamourDevelopmentField>,
+    pub state_field_names: Vec<String>,
+    snapshot_codec: Option<GlamourDevelopmentCodecSpec>,
+}
+
+impl GlamourDevelopmentMetadata {
+    pub const SCALAR_SNAPSHOT_FORMAT: u16 = 1;
+    pub const AGGREGATE_SNAPSHOT_FORMAT: u16 = 2;
+
+    pub fn supports_snapshot(&self) -> bool {
+        self.snapshot_format() != 0
+    }
+
+    pub fn snapshot_format(&self) -> u16 {
+        if self
+            .state_fields
+            .iter()
+            .all(|field| *field != GlamourDevelopmentField::Aggregate)
+        {
+            Self::SCALAR_SNAPSHOT_FORMAT
+        } else if self.snapshot_codec.is_some() {
+            Self::AGGREGATE_SNAPSHOT_FORMAT
+        } else {
+            0
+        }
+    }
+
+    pub fn model_schema_hex(&self) -> String {
+        hex_bytes(&self.model_schema)
+    }
+
+    pub fn authorization_schema_hex(&self) -> String {
+        hex_bytes(&self.authorization_schema)
+    }
+
+    pub fn migration_schema_hexes(&self) -> Vec<String> {
+        self.snapshot_codec
+            .as_ref()
+            .map(|codec| {
+                codec
+                    .migrations
+                    .iter()
+                    .map(|migration| hex_bytes(&migration.model_schema))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn wire_payload(&self) -> Vec<u8> {
+        let name_bytes = self
+            .state_field_names
+            .iter()
+            .map(|name| 2 + name.len())
+            .sum::<usize>();
+        let mut payload = Vec::with_capacity(80 + self.state_fields.len() + name_bytes);
+        payload.extend_from_slice(b"WGDM");
+        payload.extend_from_slice(&2_u16.to_le_bytes());
+        payload.extend_from_slice(&self.snapshot_format().to_le_bytes());
+        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.extend_from_slice(&4_u16.to_le_bytes());
+        payload.extend_from_slice(
+            &u32::try_from(self.state_fields.len()).unwrap_or(u32::MAX).to_le_bytes(),
+        );
+        payload.extend_from_slice(&self.model_schema);
+        payload.extend_from_slice(&self.authorization_schema);
+        payload.extend(self.state_fields.iter().map(|field| field.wire_tag()));
+        for name in &self.state_field_names {
+            payload.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            payload.extend_from_slice(name.as_bytes());
+        }
+        payload
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledDevelopmentModule {
+    pub wasm: Vec<u8>,
+    pub glamour: Option<GlamourDevelopmentMetadata>,
+    pub source_instructions: Vec<witchy_wir::wir_encode::SourceInstructionRange>,
+}
+
+fn function_tail_name(function: &Function) -> &str {
+    function.name.rsplit('.').next().unwrap_or(&function.name)
+}
+
+fn is_plain_named(ty: &Option<Type>, expected: &str) -> bool {
+    matches!(ty.as_ref().map(Type::unqualified), Some(Type::Named(name, args))
+        if name == expected && args.is_empty())
+}
+
+/// RFC-0108's compiler-owned state boundary. The four source functions are
+/// ordinary typed Witchy and are never exported directly; this validates the
+/// family before WIR reachability or wrapper synthesis can observe it.
+fn glamour_export_family(module: &Module) -> Result<Option<GlamourExportFamily>, CodegenError> {
+    const MEMBERS: [&str; 4] = [
+        "glamour_init",
+        "glamour_dispatch",
+        "glamour_emit",
+        "glamour_release",
+    ];
+    let mut found: HashMap<&str, &Function> = HashMap::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        let tail = function_tail_name(function);
+        if MEMBERS.contains(&tail) {
+            if found.insert(tail, function).is_some() {
+                return Err(CodegenError {
+                    message: format!("duplicate RFC-0108 application function `{tail}`"),
+                });
+            }
+        }
+    }
+    if found.is_empty() {
+        return Ok(None);
+    }
+    for name in MEMBERS {
+        if !found.contains_key(name) {
+            return Err(CodegenError {
+                message: format!(
+                    "incomplete RFC-0108 application export family: missing `{name}`"
+                ),
+            });
+        }
+    }
+    let init = found["glamour_init"];
+    let dispatch = found["glamour_dispatch"];
+    let emit = found["glamour_emit"];
+    let release = found["glamour_release"];
+    for function in [init, dispatch, emit, release] {
+        if !function.public
+            || function.comptime_only
+            || function.is_async
+            || function.is_gen
+            || !function.bounds.is_empty()
+            || !function.attributes.iter().any(|attribute| attribute == "browser")
+        {
+            return Err(CodegenError {
+                message: format!(
+                    "`{}` must be public, non-generic, synchronous, and `@browser`",
+                    function_tail_name(function)
+                ),
+            });
+        }
+    }
+    let grantable = grantable_cap_names(module);
+    let [root, init_input] = init.params.as_slice() else {
+        return Err(CodegenError {
+            message: "`glamour_init` must have `(UiRoot, Bytes) -> State` shape".into(),
+        });
+    };
+    let Some(cap_type) = export_cap_name(root).filter(|name| grantable.contains(name)) else {
+        return Err(CodegenError {
+            message: "`glamour_init` must begin with one bare grantable root capability".into(),
+        });
+    };
+    if !is_plain_named(&init_input.ty, "Bytes") {
+        return Err(CodegenError {
+            message: "`glamour_init` input must be `Bytes`".into(),
+        });
+    }
+    let Some(state_type) = init.ret.clone() else {
+        return Err(CodegenError {
+            message: "`glamour_init` must return a private nominal state value".into(),
+        });
+    };
+    if !matches!(state_type.unqualified(), Type::Named(name, args)
+        if name != "Bytes" && name != "String" && args.is_empty())
+    {
+        return Err(CodegenError {
+            message: "`glamour_init` state must be a private nominal type".into(),
+        });
+    }
+    let [dispatch_state, dispatch_input] = dispatch.params.as_slice() else {
+        return Err(CodegenError {
+            message: "`glamour_dispatch` must have `(State, Bytes) -> State` shape".into(),
+        });
+    };
+    if dispatch_state.ty.as_ref() != Some(&state_type)
+        || dispatch.ret.as_ref() != Some(&state_type)
+        || !is_plain_named(&dispatch_input.ty, "Bytes")
+    {
+        return Err(CodegenError {
+            message: "`glamour_dispatch` must accept and return the init state type plus `Bytes`"
+                .into(),
+        });
+    }
+    let [emit_state] = emit.params.as_slice() else {
+        return Err(CodegenError {
+            message: "`glamour_emit` must have `(State) -> Bytes` shape".into(),
+        });
+    };
+    if emit_state.ty.as_ref() != Some(&state_type) || !is_plain_named(&emit.ret, "Bytes") {
+        return Err(CodegenError {
+            message: "`glamour_emit` must accept the state type and return `Bytes`".into(),
+        });
+    }
+    let [release_state] = release.params.as_slice() else {
+        return Err(CodegenError {
+            message: "`glamour_release` must have `(own State) -> Nil` shape".into(),
+        });
+    };
+    if release_state.ty.as_ref() != Some(&state_type)
+        || release_state.convention != Convention::Own
+    {
+        return Err(CodegenError {
+            message: "`glamour_release` must consume `own` the same state type".into(),
+        });
+    }
+    let cap_fields = module.items.iter().find_map(|item| match item {
+        Item::Type(definition) if definition.name == cap_type => {
+            definition.variants.first().map(|variant| variant.fields.len())
+        }
+        _ => None,
+    }).ok_or_else(|| CodegenError {
+        message: "RFC-0108 root capability definition is missing".into(),
+    })?;
+    let state_name = match state_type.unqualified() {
+        Type::Named(name, _) => name,
+        _ => unreachable!("state nominal checked above"),
+    };
+    let (state_fields, state_constructor) = module.items.iter().find_map(|item| match item {
+        Item::Type(definition) if definition.name == *state_name => {
+            Some(if definition.variants.len() == 1 {
+                (
+                    definition.variants[0].fields.clone(),
+                    Some(definition.variants[0].name.clone()),
+                )
+            } else {
+                (Vec::new(), None)
+            })
+        }
+        _ => None,
+    }).ok_or_else(|| CodegenError {
+        message: "RFC-0108 state definition is missing".into(),
+    })?;
+    Ok(Some(GlamourExportFamily {
+        init: init.name.clone(),
+        dispatch: dispatch.name.clone(),
+        emit: emit.name.clone(),
+        release: release.name.clone(),
+        cap_type: cap_type.to_string(),
+        cap_fields,
+        state_type,
+        state_fields,
+        state_constructor,
+    }))
+}
+
+fn checked_glamour_development_metadata(
+    checked: &witchy_types::pipeline::CheckedModule,
+) -> Result<Option<GlamourDevelopmentMetadata>, CodegenError> {
+    let module = checked.module();
+    let init = module.items.iter().find_map(|item| match item {
+        Item::Function(function) if function_tail_name(function) == "glamour_init" => {
+            Some(function)
+        }
+        _ => None,
+    });
+    let Some(init) = init else { return Ok(None) };
+    let Some(state_type) = init.ret.as_ref() else { return Ok(None) };
+    let Type::Named(state_name, state_arguments) = state_type.unqualified() else {
+        return Ok(None);
+    };
+    if !state_arguments.is_empty() {
+        return Ok(None);
+    }
+    let Some(root_type) = init.params.first().and_then(|param| param.ty.as_ref()) else {
+        return Ok(None);
+    };
+    let catalog = checked.runtime_declaration_catalog().map_err(|error| CodegenError {
+        message: format!("cannot authenticate Glamour development schema: {error}"),
+    })?;
+    let state_identity = catalog.type_identity(state_type).map_err(|error| CodegenError {
+        message: format!("cannot authenticate Glamour model schema: {error}"),
+    })?;
+    let root_identity = catalog.type_identity(root_type).map_err(|error| CodegenError {
+        message: format!("cannot authenticate Glamour authorization schema: {error}"),
+    })?;
+    let state_definition = module.items.iter().find_map(|item| match item {
+        Item::Type(definition)
+            if definition.name == *state_name
+                || catalog.resolve(
+                    &definition.name,
+                    witchy_types::runtime_type::DeclarationKind::Type,
+                ) == match &state_identity {
+                    witchy_types::runtime_type::RuntimeTypeIdentity::Nominal {
+                        declaration,
+                        ..
+                    } => Some(declaration),
+                    _ => None,
+                } =>
+        {
+            Some(definition)
+        }
+        _ => None,
+    });
+    let Some(state_definition) = state_definition else { return Ok(None) };
+    let [state_variant] = state_definition.variants.as_slice() else {
+        return Ok(None);
+    };
+    let state_field_names = if state_variant.field_names.len() == state_variant.fields.len() {
+        state_variant.field_names.clone()
+    } else {
+        vec![String::new(); state_variant.fields.len()]
+    };
+    if state_field_names.iter().any(|name| name.len() > 1024) {
+        return Err(CodegenError {
+            message: "Glamour development model field name exceeds 1024 bytes".into(),
+        });
+    }
+    let mut state_fields = Vec::with_capacity(state_variant.fields.len());
+    for field in &state_variant.fields {
+        let scalar = match field.unqualified() {
+            Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
+                "Int" | "Duration" => GlamourDevelopmentField::I64,
+                "Float" => GlamourDevelopmentField::F64,
+                "Bool" => GlamourDevelopmentField::Bool,
+                _ => GlamourDevelopmentField::Aggregate,
+            },
+            _ => GlamourDevelopmentField::Aggregate,
+        };
+        state_fields.push(scalar);
+    }
+    let root_definition = match &root_identity {
+        witchy_types::runtime_type::RuntimeTypeIdentity::Nominal { declaration, .. } => {
+            module.items.iter().find_map(|item| match item {
+                Item::Type(definition)
+                    if catalog.resolve(
+                        &definition.name,
+                        witchy_types::runtime_type::DeclarationKind::Type,
+                    ) == Some(declaration) =>
+                {
+                    Some(definition)
+                }
+                _ => None,
+            })
+        }
+        _ => None,
+    };
+    let public_schema = public_state_schema(module, state_type);
+    let model_schema = public_schema.as_ref().map_or_else(
+        || {
+            schema_digest(
+                b"witchy.glamour.model-schema.v1",
+                &format!("{state_identity:?}|{}", type_definition_schema(state_definition)),
+            )
+        },
+        |schema| schema_digest(b"witchy.glamour.public-model-schema.v2", schema),
+    );
+    let authorization_schema = schema_digest(
+        b"witchy.glamour.authorization-schema.v1",
+        &format!(
+            "{root_identity:?}|{}",
+            root_definition.map(type_definition_schema).unwrap_or_default()
+        ),
+    );
+    let aggregate = state_fields
+        .iter()
+        .any(|field| *field == GlamourDevelopmentField::Aggregate);
+    let snapshot_codec = if aggregate && public_schema.is_some() {
+        let owner = module.linked_entry.as_deref().unwrap_or_default();
+        let name = |local: &str| {
+            if owner.is_empty() { local.to_string() } else { format!("{owner}.{local}") }
+        };
+        let mut migration_functions = module.items.iter().filter_map(|item| match item {
+            Item::Function(function) if function_tail_name(function) == "glamour_migrate" => {
+                Some(function)
+            }
+            _ => None,
+        });
+        let migration = migration_functions.next();
+        if migration_functions.next().is_some() {
+            return Err(CodegenError {
+                message: "Glamour development module defines more than one `glamour_migrate`"
+                    .into(),
+            });
+        }
+        let mut migrations = Vec::new();
+        if let Some(migration) = migration {
+            let [source] = migration.params.as_slice() else {
+                return Err(CodegenError {
+                    message: "`glamour_migrate` must accept exactly one previous PublicState model"
+                        .into(),
+                });
+            };
+            let source_type = source.ty.clone().ok_or_else(|| CodegenError {
+                message: "`glamour_migrate` parameter must have an explicit PublicState type"
+                    .into(),
+            })?;
+            if migration.ret.as_ref() != Some(state_type)
+                || migration.comptime_only
+                || migration.is_async
+                || migration.is_gen
+                || !migration.bounds.is_empty()
+            {
+                return Err(CodegenError {
+                    message: "`glamour_migrate` must be a synchronous, non-generic `fn(OldState) -> State`"
+                        .into(),
+                });
+            }
+            let source_schema = public_state_schema(module, &source_type).ok_or_else(|| {
+                CodegenError {
+                    message: "`glamour_migrate` input must have a compiler-authenticated PublicState shape"
+                        .into(),
+                }
+            })?;
+            let source_schema = schema_digest(
+                b"witchy.glamour.public-model-schema.v2",
+                &source_schema,
+            );
+            if source_schema == model_schema {
+                return Err(CodegenError {
+                    message: "`glamour_migrate` input schema is identical to the current model"
+                        .into(),
+                });
+            }
+            migrations.push(GlamourDevelopmentMigrationCodec {
+                model_schema: source_schema,
+                source_type,
+                decoder: name("glamour_development_migrate_decode"),
+                migration: migration.name.clone(),
+            });
+        }
+        Some(GlamourDevelopmentCodecSpec {
+            state_type: state_type.clone(),
+            encoder: name("glamour_development_snapshot_encode"),
+            decoder: name("glamour_development_snapshot_decode"),
+            migrations,
+        })
+    } else {
+        None
+    };
+    Ok(Some(GlamourDevelopmentMetadata {
+        model_schema,
+        authorization_schema,
+        state_fields,
+        state_field_names,
+        snapshot_codec,
+    }))
+}
+
+fn public_state_schema(module: &Module, ty: &Type) -> Option<String> {
+    fn definition_for<'a>(module: &'a Module, name: &str) -> Option<&'a witchy_syntax::ast::TypeDef> {
+        if let Some(exact) = module.items.iter().find_map(|item| match item {
+            Item::Type(definition) if definition.name == name => Some(definition),
+            _ => None,
+        }) {
+            return Some(exact);
+        }
+        let mut matches = module.items.iter().filter_map(|item| match item {
+            Item::Type(definition) if definition.name.ends_with(&format!(".{name}")) => {
+                Some(definition)
+            }
+            _ => None,
+        });
+        let definition = matches.next()?;
+        matches.next().is_none().then_some(definition)
+    }
+
+    fn visit(
+        module: &Module,
+        ty: &Type,
+        seen: &mut BTreeMap<String, usize>,
+    ) -> Option<String> {
+        let ty = ty.unqualified();
+        let material = witchy_syntax::format::type_str(ty);
+        if let Some(index) = seen.get(&material) {
+            return Some(format!("ref={index}"));
+        }
+        let index = seen.len();
+        seen.insert(material.clone(), index);
+        let Type::Named(name, arguments) = ty else { return None };
+        let head = name.rsplit('.').next().unwrap_or(name);
+        match (head, arguments.as_slice()) {
+            ("Nil" | "Bool" | "Int" | "Float" | "Duration" | "String", []) => {
+                Some(format!("{index}:std={head}"))
+            }
+            ("List" | "Option", [item]) => Some(format!(
+                "{index}:std={head}<{}>",
+                visit(module, item, seen)?,
+            )),
+            ("Result", [ok, error]) => Some(format!(
+                "{index}:std=Result<{},{}>",
+                visit(module, ok, seen)?,
+                visit(module, error, seen)?,
+            )),
+            _ => {
+                let definition = definition_for(module, name)
+                    .or_else(|| definition_for(module, head))?;
+                if definition.sealed
+                    || definition.is_capability
+                    || !definition.public_state_derived
+                    || definition.params.len() != arguments.len()
+                {
+                    return None;
+                }
+                let fields = witchy_types::storage::instantiate_type_def_fields(
+                    definition,
+                    arguments,
+                );
+                let mut output = format!(
+                    "{index}:nominal={}|args={arguments:?}|variants={}",
+                    definition.name,
+                    definition.variants.len(),
+                );
+                for (variant, fields) in definition.variants.iter().zip(fields) {
+                    output.push_str(&format!(
+                        "|variant={}|names={:?}",
+                        variant.name, variant.field_names,
+                    ));
+                    for field in fields {
+                        output.push_str("|field=");
+                        output.push_str(&visit(module, &field, seen)?);
+                    }
+                }
+                Some(output)
+            }
+        }
+    }
+
+    visit(module, ty, &mut BTreeMap::new())
+}
+
+fn type_definition_schema(definition: &witchy_syntax::ast::TypeDef) -> String {
+    let mut output = format!(
+        "{}|params={:?}|sealed={}|capability={}|grantable={}|packed={}",
+        definition.name,
+        definition.params,
+        definition.sealed,
+        definition.is_capability,
+        definition.grantable,
+        definition.packed,
+    );
+    for variant in &definition.variants {
+        output.push_str(&format!(
+            "|variant={}|names={:?}|fields={:?}",
+            variant.name, variant.field_names, variant.fields
+        ));
+    }
+    output
+}
+
+fn schema_digest(domain: &[u8], material: &str) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(domain);
+    hash.update([0]);
+    hash.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hash.update([0]);
+    hash.update(material.as_bytes());
+    hash.finalize().into()
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(DIGITS[(byte >> 4) as usize] as char);
+        output.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
 /// The functions reachable from `main` (+ string-export roots), plus `extra_roots`
 /// — additional reachability roots for functions a reached AST body does not name
 /// directly. (RFC-0047) A container `==` over a CUSTOM-`PartialEq` element type
@@ -1100,10 +1706,20 @@ fn register_module_items(
         if !matches!(element_kind, Kind::ExternRef | Kind::GcRef(_)) {
             continue;
         }
+        let wir_element = Codegen::wir_kind(element_kind);
+        if let Some(array_id) = cg
+            .gc_arrays
+            .iter()
+            .position(|array| array.element == wir_element)
+        {
+            let type_id = cg.gc_structs.len() as u32 + array_id as u32;
+            cg.gc_reference_list_ids.insert(key.clone(), type_id);
+            continue;
+        }
         let id = cg.gc_structs.len() as u32 + cg.gc_arrays.len() as u32;
         cg.gc_reference_list_ids.insert(key.clone(), id);
         cg.gc_arrays.push(witchy_wir::wir::WirArrayDef {
-            element: Codegen::wir_kind(element_kind),
+            element: wir_element,
         });
     }
     // Collect parameter conventions up front so call sites can resolve `var`
@@ -1782,14 +2398,45 @@ fn encode_validated(
     gc_structs: &[witchy_wir::wir::WirStructDef],
     gc_arrays: &[witchy_wir::wir::WirArrayDef],
 ) -> Result<Vec<u8>, CodegenError> {
-    let bytes = witchy_wir::wir_encode::try_encode_with_gc(module, gc_structs, gc_arrays)
+    encode_validated_with_source_map(module, gc_structs, gc_arrays).map(|encoded| encoded.wasm)
+}
+
+fn encode_validated_with_source_map(
+    module: &witchy_wir::wir::WirModule,
+    gc_structs: &[witchy_wir::wir::WirStructDef],
+    gc_arrays: &[witchy_wir::wir::WirArrayDef],
+) -> Result<witchy_wir::wir_encode::EncodedModule, CodegenError> {
+    let encoded = witchy_wir::wir_encode::try_encode_with_gc_source_map(
+        module,
+        gc_structs,
+        gc_arrays,
+    )
         .map_err(|error| CodegenError {
             message: format!("assembled WIR could not be encoded: {error}"),
         })?;
-    wasmparser::validate(&bytes).map_err(|error| CodegenError {
-        message: format!("assembled WIR failed wasm validation: {error}"),
+    wasmparser::validate(&encoded.wasm).map_err(|error| {
+        let offset = error.offset();
+        let mut body_index = 0_usize;
+        let mut function = None;
+        for payload in wasmparser::Parser::new(0).parse_all(&encoded.wasm) {
+            if let Ok(wasmparser::Payload::CodeSectionEntry(body)) = payload {
+                if body.range().contains(&offset) {
+                    function = module.funcs.get(body_index).map(|func| func.name.as_str());
+                    break;
+                }
+                body_index += 1;
+            }
+        }
+        CodegenError {
+            message: match function {
+                Some(function) => format!(
+                    "assembled WIR failed wasm validation in `{function}`: {error}"
+                ),
+                None => format!("assembled WIR failed wasm validation: {error}"),
+            },
+        }
     })?;
-    Ok(bytes)
+    Ok(encoded)
 }
 
 fn validated_module_outcome(
@@ -1803,6 +2450,7 @@ fn validated_module_outcome(
     }
 }
 
+#[cfg(test)]
 fn encoded_binary_outcome(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -1847,6 +2495,17 @@ fn append_layout_bundle(mut wasm: Vec<u8>, bundle: &witchy_wir::layout::LayoutBu
     wasm
 }
 
+fn encoded_module_outcome(
+    module: &witchy_wir::wir::WirModule,
+    gc_structs: &[witchy_wir::wir::WirStructDef],
+    gc_arrays: &[witchy_wir::wir::WirArrayDef],
+) -> LoweringOutcome<witchy_wir::wir_encode::EncodedModule> {
+    match encode_validated_with_source_map(module, gc_structs, gc_arrays) {
+        Ok(encoded) => LoweringOutcome::Lowered(encoded),
+        Err(error) => LoweringOutcome::Rejected(error),
+    }
+}
+
 #[cfg(any(test, feature = "raw-module-test-api"))]
 fn assemble_optimized_wir_with_structs(
     module: &Module,
@@ -1859,13 +2518,15 @@ fn assemble_optimized_wir_with_structs(
     ),
     LoweringFailure,
 > {
-    assemble_optimized_wir_with_structs_mode(module, false, None)
+    assemble_optimized_wir_with_structs_mode(module, false, None, None, false)
 }
 
 fn assemble_optimized_wir_with_structs_mode(
     module: &Module,
     build_entrypoint: bool,
     runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,
+    glamour_development: Option<&GlamourDevelopmentMetadata>,
+    collect_source_map: bool,
 ) -> Result<
     (
         witchy_wir::wir::WirModule,
@@ -1876,7 +2537,13 @@ fn assemble_optimized_wir_with_structs_mode(
     LoweringFailure,
 > {
     let (mut wir_module, gc_structs, gc_arrays, layouts) =
-        assemble_wir_module_with_structs_mode(module, build_entrypoint, runtime_catalog)?;
+        assemble_wir_module_with_structs_mode(
+            module,
+            build_entrypoint,
+            runtime_catalog,
+            glamour_development,
+            collect_source_map,
+        )?;
     witchy_wir::wir_opt::lower_direct_tail_calls(&mut wir_module);
     witchy_wir::wir_opt::optimize(&mut wir_module);
     Ok((wir_module, gc_structs, gc_arrays, layouts))
@@ -1887,7 +2554,7 @@ fn assemble_optimized_wir_with_structs_mode(
 /// lowering from rejected input or malformed compiler output.
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
-    compile_module_binary_mode(module, false, None)
+    compile_module_binary_mode(module, false, None, None)
 }
 
 /// Compile a module that has crossed the canonical linked type-check boundary.
@@ -1899,69 +2566,134 @@ pub fn compile_checked_module_binary(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<Vec<u8>> {
     let runtime_catalog = checked.runtime_declaration_catalog().ok();
-    compile_module_binary_mode(checked.module(), false, runtime_catalog.as_ref())
+    compile_module_binary_mode(checked.module(), false, runtime_catalog.as_ref(), None)
+}
+
+/// Compile one compiler-synthesized Glamour island adapter against the exact
+/// linked and authenticated application module that selected it.
+pub fn compile_checked_glamour_island_binary(
+    checked: &witchy_types::pipeline::CheckedModule,
+    generated: &Module,
+) -> LoweringOutcome<Vec<u8>> {
+    compile_checked_glamour_island_execution_binary(checked, checked.module(), generated)
+}
+
+/// Compile an authenticated compiler-rewritten application clone plus its
+/// generated island adapter. The original CheckedModule remains the provenance
+/// and runtime-declaration authority for every rewritten call.
+pub fn compile_checked_glamour_island_execution_binary(
+    checked: &witchy_types::pipeline::CheckedModule,
+    application: &Module,
+    generated: &Module,
+) -> LoweringOutcome<Vec<u8>> {
+    if !generated.imports.is_empty()
+        || !generated.from_imports.is_empty()
+        || generated.linked_entry.is_some()
+        || !generated.compiler_item_syntax.is_empty()
+        || !generated.compiler_expr_syntax.is_empty()
+        || !generated.compiler_type_syntax.is_empty()
+        || !generated.compiler_pattern_syntax.is_empty()
+        || !generated.compiler_stmt_syntax.is_empty()
+        || !generated.compiler_block_syntax.is_empty()
+    {
+        return LoweringOutcome::Rejected(CodegenError {
+            message: "compiler-generated Glamour island adapter contains non-item module state"
+                .into(),
+        });
+    }
+    let mut module = application.clone();
+    module.items.extend(generated.items.clone());
+    module.item_lines.clear();
+    let runtime_catalog = checked.runtime_declaration_catalog().ok();
+    compile_module_binary_mode(&module, false, runtime_catalog.as_ref(), None)
+}
+
+pub fn compile_checked_development_module(
+    checked: &witchy_types::pipeline::CheckedModule,
+) -> LoweringOutcome<CompiledDevelopmentModule> {
+    let metadata = match checked_glamour_development_metadata(checked) {
+        Ok(metadata) => metadata,
+        Err(error) => return LoweringOutcome::Rejected(error),
+    };
+    let generated_module = match metadata
+        .as_ref()
+        .and_then(|metadata| metadata.snapshot_codec.as_ref())
+    {
+        Some(codec) => match checked_glamour_development_codec_module(checked, codec) {
+            Ok(module) => Some(module),
+            Err(error) => return LoweringOutcome::Rejected(error),
+        },
+        None => None,
+    };
+    let runtime_catalog = checked.runtime_declaration_catalog().ok();
+    match compile_module_binary_with_source_map_mode(
+        generated_module.as_ref().unwrap_or_else(|| checked.module()),
+        false,
+        runtime_catalog.as_ref(),
+        metadata.as_ref(),
+        true,
+    ) {
+        LoweringOutcome::Lowered(encoded) => {
+            LoweringOutcome::Lowered(CompiledDevelopmentModule {
+                wasm: encoded.wasm,
+                glamour: metadata,
+                source_instructions: encoded.source_instructions,
+            })
+        }
+        LoweringOutcome::Unsupported(reason) => LoweringOutcome::Unsupported(reason),
+        LoweringOutcome::Rejected(error) => LoweringOutcome::Rejected(error),
+    }
 }
 
 fn compile_module_binary_mode(
     module: &Module,
     build_entrypoint: bool,
     runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,
+    glamour_development: Option<&GlamourDevelopmentMetadata>,
 ) -> LoweringOutcome<Vec<u8>> {
+    match compile_module_binary_with_source_map_mode(
+        module,
+        build_entrypoint,
+        runtime_catalog,
+        glamour_development,
+        false,
+    ) {
+        LoweringOutcome::Lowered(encoded) => LoweringOutcome::Lowered(encoded.wasm),
+        LoweringOutcome::Unsupported(reason) => LoweringOutcome::Unsupported(reason),
+        LoweringOutcome::Rejected(error) => LoweringOutcome::Rejected(error),
+    }
+}
+
+fn compile_module_binary_with_source_map_mode(
+    module: &Module,
+    build_entrypoint: bool,
+    runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,
+    glamour_development: Option<&GlamourDevelopmentMetadata>,
+    collect_source_map: bool,
+) -> LoweringOutcome<witchy_wir::wir_encode::EncodedModule> {
     let (wir_module, gc_structs, gc_arrays, layouts) =
         match assemble_optimized_wir_with_structs_mode(
             module,
             build_entrypoint,
             runtime_catalog,
+            glamour_development,
+            collect_source_map,
         ) {
-        Ok(assembled) => assembled,
-        Err(failure) => return public_outcome(Err(failure)),
-    };
-    // Robustness net: if any reached `Call` names a func that didn't make it into
-    // the module — an unregistered guest helper like `$string_from_code`, which
-    // `assemble`'s prelude/wir-helper resolution doesn't account for — bail with
-    // a rejection rather than panic in the encoder's func-index lookup.
-    {
-        let mut defined: HashSet<String> = HashSet::new();
-        for imp in &wir_module.imports {
-            defined.insert(imp.name.clone());
-        }
-        for f in &wir_module.funcs {
-            defined.insert(f.name.clone());
-        }
-        let mut called: HashSet<String> = HashSet::new();
-        for f in &wir_module.funcs {
-            collect_called_funcs(&f.body, &mut called);
-        }
-        if !called.iter().all(|c| defined.contains(c)) {
-            if std::env::var_os("WIRDIAG").is_some() {
-                let missing: Vec<&String> = called.iter().filter(|c| !defined.contains(*c)).collect();
-                eprintln!("WIRBAIL called-undefined-func: {missing:?}");
-            }
-            let mut missing: Vec<&String> =
-                called.iter().filter(|c| !defined.contains(*c)).collect();
-            missing.sort();
-            return LoweringOutcome::Rejected(CodegenError {
-                message: format!("assembled WIR calls undefined functions: {missing:?}"),
-            });
-        }
-    }
-    match encoded_binary_outcome(&wir_module, &gc_structs, &gc_arrays) {
-        LoweringOutcome::Rejected(error) => {
-            if std::env::var_os("WIRDIAG").is_some() {
-                eprintln!("WIRBAIL encode-or-validate-failed: {error}");
-            }
-            LoweringOutcome::Rejected(error)
-        }
-        LoweringOutcome::Lowered(bytes) => {
-            let bytes = append_layout_bundle(bytes, &layouts);
-            match wasmparser::validate(&bytes) {
-                Ok(_) => LoweringOutcome::Lowered(bytes),
+            Ok(assembled) => assembled,
+            Err(failure) => return public_outcome(Err(failure)),
+        };
+    match encoded_module_outcome(&wir_module, &gc_structs, &gc_arrays) {
+        LoweringOutcome::Lowered(mut encoded) => {
+            encoded.wasm = append_layout_bundle(encoded.wasm, &layouts);
+            match wasmparser::validate(&encoded.wasm) {
+                Ok(_) => LoweringOutcome::Lowered(encoded),
                 Err(error) => LoweringOutcome::Rejected(CodegenError {
                     message: format!("layout-annotated Wasm failed validation: {error}"),
                 }),
             }
         }
         LoweringOutcome::Unsupported(reason) => LoweringOutcome::Unsupported(reason),
+        LoweringOutcome::Rejected(error) => LoweringOutcome::Rejected(error),
     }
 }
 
@@ -1990,6 +2722,8 @@ pub fn assemble_checked_optimized_wir_module(
         checked.module(),
         false,
         runtime_catalog.as_ref(),
+        None,
+        false,
     ) {
         Ok((module, gc_structs, gc_arrays, _)) => {
             validated_module_outcome(module, &gc_structs, &gc_arrays)
@@ -2022,13 +2756,15 @@ fn assemble_wir_module_with_structs(
     ),
     LoweringFailure,
 > {
-    assemble_wir_module_with_structs_mode(module, false, None)
+    assemble_wir_module_with_structs_mode(module, false, None, None, false)
 }
 
 fn assemble_wir_module_with_structs_mode(
     module: &Module,
     build_entrypoint: bool,
     runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,
+    glamour_development: Option<&GlamourDevelopmentMetadata>,
+    collect_source_map: bool,
 ) -> Result<
     (
         witchy_wir::wir::WirModule,
@@ -2107,6 +2843,7 @@ fn assemble_wir_module_with_structs_mode(
         .map_err(|error| CodegenError { message: error.to_string() })?;
     let access_facts = witchy_types::access::checked_facts(&module, &type_table)
         .map_err(|error| CodegenError { message: error.to_string() })?;
+    let glamour_exports = glamour_export_family(&module)?;
     // Witness adapters are ordinary monomorphized impl methods, but their only
     // callers are generated after source reachability has run. Seed them before
     // the transitive walk so their own callees are emitted too.
@@ -2115,6 +2852,18 @@ fn assemble_wir_module_with_structs_mode(
         for slot in &witness.slots {
             extra_roots.push(slot.adapter.clone());
         }
+    }
+    if let Some(family) = &glamour_exports {
+        extra_roots.extend([
+            family.init.clone(),
+            family.dispatch.clone(),
+            family.emit.clone(),
+            family.release.clone(),
+        ]);
+    }
+    if let Some(codec) = glamour_development.and_then(|metadata| metadata.snapshot_codec.as_ref()) {
+        extra_roots.extend([codec.encoder.clone(), codec.decoder.clone()]);
+        extra_roots.extend(codec.migrations.iter().map(|migration| migration.decoder.clone()));
     }
     let reachable = reachable_functions_with(&module, &extra_roots);
     let mut cg = Codegen::new(&module, &type_table, loan_facts, access_facts);
@@ -2126,6 +2875,7 @@ fn assemble_wir_module_with_structs_mode(
         &witnesses,
         &generic_specializations,
     )?;
+    cg.collect_source_map = collect_source_map;
     cg.eq_types = eq_types;
     cg.summaries = analysis::Summaries::of_module(&module);
 
@@ -2192,6 +2942,12 @@ fn assemble_wir_module_with_structs_mode(
         .collect();
     for (_, _, nfields) in &export_cap_info {
         cg.mk_arities.insert(*nfields);
+    }
+    if let Some(family) = &glamour_exports {
+        cg.mk_arities.insert(family.cap_fields);
+        if family.state_constructor.is_some() {
+            cg.mk_arities.insert(family.state_fields.len());
+        }
     }
     for item in &module.items {
         if let Item::Function(f) = item {
@@ -2263,10 +3019,10 @@ fn assemble_wir_module_with_structs_mode(
     // A module needs an entry: either a `main` (the `run` export) or at least one
     // string export (a `__export_*` host entry). A library with neither has nothing
     // to instantiate against.
-    if !has_main && string_exports.is_empty() {
+    if !has_main && string_exports.is_empty() && glamour_exports.is_none() {
         if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL no-main"); }
         return Err(LoweringFailure::Rejected(CodegenError {
-            message: "module has neither a `main` entrypoint nor a string export".into(),
+            message: "module has neither a `main` entrypoint nor a string export, and has no RFC-0108 application export family".into(),
         }));
     }
 
@@ -2286,6 +3042,89 @@ fn assemble_wir_module_with_structs_mode(
             "reachable functions do not fully lower to WIR: {missing:?}"
         ));
     }
+    let glamour_state_rcopy_helper = if let Some(family) = &glamour_exports {
+        let scalar_only = family.state_constructor.is_some()
+            && family.state_fields.iter().all(|field| {
+                matches!(
+                    field.unqualified(),
+                    Type::Named(name, arguments)
+                        if arguments.is_empty()
+                            && matches!(name.as_str(), "Int" | "Duration" | "Float" | "Bool")
+                )
+            });
+        if scalar_only {
+            None
+        } else {
+            let state_name = match family.state_type.unqualified() {
+                Type::Named(name, _) => name.as_str(),
+                _ => "<state>",
+            };
+            let Some(shape) = cg.eq_shape_of_type(&family.state_type) else {
+                return unsupported(format!(
+                    "RFC-0108 application state `{state_name}` has no bounded deep-copy shape"
+                ));
+            };
+            let Some(helper) = cg.ensure_rcopy_wir_helper(&shape) else {
+                return unsupported(format!(
+                    "RFC-0108 application state `{state_name}` cannot be copied into the stable arena"
+                ));
+            };
+            cg.uses_region = true;
+            Some(helper)
+        }
+    } else {
+        None
+    };
+    let glamour_state_field_shapes = if glamour_development.is_some_and(|metadata| {
+        metadata
+            .state_fields
+            .iter()
+            .any(|field| *field == GlamourDevelopmentField::Aggregate)
+    })
+    {
+        let family = glamour_exports
+            .as_ref()
+            .expect("Glamour development metadata requires an export family");
+        let mut shapes = Vec::with_capacity(family.state_fields.len());
+        for field in &family.state_fields {
+            let Some(shape) = cg.eq_shape_of_type(field) else {
+                return unsupported(
+                    "Glamour aggregate development tracing requires bounded equality shapes",
+                );
+            };
+            if let Some(custom) = cg.custom_eq_type_of_shape(&shape) {
+                let function = format!("PartialEq__{custom}__eq");
+                if !cg.wir_funcs.contains_key(&function) {
+                    return unsupported(
+                        "Glamour aggregate development tracing cannot introduce an unreachable custom equality method",
+                    );
+                }
+            }
+            if shape.is_compound()
+                && cg.custom_eq_type_of_shape(&shape).is_none()
+                && cg.ensure_eq_wir_helper(&shape).is_none()
+            {
+                return unsupported(
+                    "Glamour aggregate development tracing could not build a field equality comparison",
+                );
+            }
+            shapes.push(shape);
+        }
+        let mut helper_calls = HashSet::new();
+        for helper in cg.eq_wir_helpers.values() {
+            collect_called_funcs(&helper.body, &mut helper_calls);
+        }
+        if helper_calls.iter().any(|function| {
+            function.starts_with("PartialEq__") && !cg.wir_funcs.contains_key(function)
+        }) {
+            return unsupported(
+                "Glamour aggregate development tracing cannot introduce an unreachable nested custom equality method",
+            );
+        }
+        Some(shapes)
+    } else {
+        None
+    };
     // Generate the compiler-owned adapter functions only after their direct impl
     // targets have been lowered. They occupy the leading dense table cells;
     // lifted closures are offset by `existential_table_len` when constructed.
@@ -2409,11 +3248,28 @@ fn assemble_wir_module_with_structs_mode(
             called.insert("build_user_cap_field".to_string());
             called.insert(format!("mk{nfields}"));
         }
+        if let Some(family) = &glamour_exports {
+            called.insert("build_user_cap_field".to_string());
+            called.insert(format!("mk{}", family.cap_fields));
+            if family.state_constructor.is_some() {
+                called.insert(format!("mk{}", family.state_fields.len()));
+            }
+            if glamour_state_field_shapes
+                .as_ref()
+                .is_some_and(|shapes| {
+                    shapes
+                        .iter()
+                        .any(|shape| matches!(shape, EqShape::Str | EqShape::Bytes))
+                })
+            {
+                called.insert("str_eq".to_string());
+            }
+        }
         // The `__galloc` allocator the string-export wrappers expose delegates to
         // `$bump_alloc` (RFC-0051 I2 — the single ensure-prefixed allocator), so pull
         // it into the reached set (it brings `ensure` + the `$heap` global via its
         // registry deps). Harmless if a string-export body already reaches it.
-        if !string_exports.is_empty() {
+        if !string_exports.is_empty() || glamour_exports.is_some() {
             called.insert("bump_alloc".to_string());
         }
         // Resolve every reached helper through the registry (transitively).
@@ -2470,6 +3326,7 @@ fn assemble_wir_module_with_structs_mode(
             // A watermarked loop in user code reads/writes `$heap` even when no
             // reached helper allocates, so the global must still be declared.
             uses_heap |= cg.uses_wm;
+            uses_heap |= glamour_exports.is_some();
             // An Int/Float-returning `main` prints its result in the `run`
             // wrapper, so the corresponding host import must be declared.
             if main_returns_int {
@@ -2531,6 +3388,7 @@ fn assemble_wir_module_with_structs_mode(
             }
             let mut pruned_funcs: Vec<WirFunc> = resolved.into_values().map(|s| s.func).collect();
             pruned_funcs.extend(cg.layout_wir_funcs.values().cloned());
+            let mut glamour_development_data = Vec::new();
             if let Some(f) = custom_key_eq {
                 pruned_funcs.push(f);
             }
@@ -2724,6 +3582,1454 @@ fn assemble_wir_module_with_structs_mode(
                         raw_body: None,
                     });
                 }
+            }
+            let mut glamour_state_field_kinds = None;
+            if let Some(family) = &glamour_exports {
+                use witchy_wir::wir::{BinOp, WirLocal, WirTy};
+                let state_wir_ty = cg
+                    .wir_funcs
+                    .get(&family.init)
+                    .and_then(|function| function.ret.first())
+                    .cloned()
+                    .ok_or_else(|| LoweringFailure::Rejected(CodegenError {
+                        message: "`glamour_init` did not lower to one state result".into(),
+                    }))?;
+                if state_wir_ty.kind() != WK::I32 {
+                    return unsupported(format!(
+                        "RFC-0108 application state `{}` must use the scalar state arena",
+                        match family.state_type.unqualified() {
+                            Type::Named(name, _) => name,
+                            _ => "<state>",
+                        },
+                    ));
+                }
+                let dispatch_state_ty = cg
+                    .wir_funcs
+                    .get(&family.dispatch)
+                    .and_then(|function| function.ret.first())
+                    .cloned();
+                if dispatch_state_ty.as_ref() != Some(&state_wir_ty) {
+                    return unsupported(
+                        "RFC-0108 dispatch result representation differs from init state",
+                    );
+                }
+                if cg.summaries.arg_leaks(&family.emit, 0, 1) {
+                    return unsupported(
+                        "RFC-0108 `glamour_emit` output may alias application state; \
+                         emit must construct a fresh `Bytes` frame",
+                    );
+                }
+                let aggregate_state = glamour_state_rcopy_helper.is_some();
+                let state_field_kinds = if aggregate_state {
+                    Vec::new()
+                } else {
+                    let mut kinds = Vec::with_capacity(family.state_fields.len());
+                    for field in &family.state_fields {
+                        let kind = match field.unqualified() {
+                            Type::Named(name, arguments) if arguments.is_empty() => {
+                                match name.as_str() {
+                                    "Int" | "Duration" => WK::I64,
+                                    "Float" => WK::F64,
+                                    "Bool" => WK::I32,
+                                    _ => unreachable!(
+                                        "non-scalar Glamour state selected scalar storage"
+                                    ),
+                                }
+                            }
+                            _ => unreachable!("non-scalar Glamour state selected scalar storage"),
+                        };
+                        kinds.push(kind);
+                    }
+                    glamour_state_field_kinds = Some(kinds.clone());
+                    kinds
+                };
+                let development_layout = if let Some(metadata) = glamour_development {
+                    if metadata.snapshot_format()
+                        == GlamourDevelopmentMetadata::SCALAR_SNAPSHOT_FORMAT
+                    {
+                        let metadata_kinds = metadata
+                            .state_fields
+                            .iter()
+                            .map(|field| match field {
+                                GlamourDevelopmentField::I64 => WK::I64,
+                                GlamourDevelopmentField::F64 => WK::F64,
+                                GlamourDevelopmentField::Bool => WK::I32,
+                                GlamourDevelopmentField::Aggregate => unreachable!(
+                                    "aggregate fields do not support scalar snapshots"
+                                ),
+                            })
+                            .collect::<Vec<_>>();
+                        if aggregate_state || metadata_kinds != state_field_kinds {
+                            return Err(LoweringFailure::Rejected(CodegenError {
+                                message: "compiler-owned Glamour snapshot metadata does not match the lowered state representation".into(),
+                            }));
+                        }
+                    } else if !aggregate_state
+                        || glamour_state_field_shapes
+                            .as_ref()
+                            .is_none_or(|shapes| shapes.len() != metadata.state_fields.len())
+                    {
+                        return Err(LoweringFailure::Rejected(CodegenError {
+                            message: "compiler-owned Glamour aggregate tracing metadata does not match the lowered state representation".into(),
+                        }));
+                    }
+                    let field_count = u16::try_from(metadata.state_fields.len()).map_err(|_| {
+                        LoweringFailure::Rejected(CodegenError {
+                            message: "Glamour development metadata has more than 65535 fields".into(),
+                        })
+                    })?;
+                    let snapshot_layout = if metadata.snapshot_format()
+                        == GlamourDevelopmentMetadata::SCALAR_SNAPSHOT_FORMAT
+                    {
+                        let snapshot_length = 40_u32
+                            .checked_add(
+                                u32::from(field_count).checked_mul(8).ok_or_else(|| {
+                                    LoweringFailure::Rejected(CodegenError {
+                                        message: "Glamour snapshot byte length overflows Wasm32".into(),
+                                    })
+                                })?,
+                            )
+                            .ok_or_else(|| LoweringFailure::Rejected(CodegenError {
+                                message: "Glamour snapshot byte length overflows Wasm32".into(),
+                            }))?;
+                        let snapshot_header = cg.next_offset;
+                        cg.next_offset = cg
+                            .next_offset
+                            .checked_add(4 + snapshot_length)
+                            .ok_or_else(|| LoweringFailure::Rejected(CodegenError {
+                                message: "Glamour snapshot arena exceeds Wasm32 address space".into(),
+                            }))?;
+                        let mut snapshot = Vec::with_capacity((4 + snapshot_length) as usize);
+                        snapshot.extend_from_slice(&snapshot_length.to_le_bytes());
+                        snapshot.extend_from_slice(b"WGST");
+                        snapshot.extend_from_slice(
+                            &GlamourDevelopmentMetadata::SCALAR_SNAPSHOT_FORMAT.to_le_bytes(),
+                        );
+                        snapshot.extend_from_slice(&field_count.to_le_bytes());
+                        snapshot.extend_from_slice(&metadata.model_schema);
+                        snapshot.resize((4 + snapshot_length) as usize, 0);
+                        glamour_development_data.push(DataSegment {
+                            offset: snapshot_header,
+                            bytes: snapshot,
+                        });
+                        Some((snapshot_header, snapshot_length))
+                    } else if metadata.snapshot_format()
+                        == GlamourDevelopmentMetadata::AGGREGATE_SNAPSHOT_FORMAT
+                    {
+                        Some((0, 0))
+                    } else {
+                        None
+                    };
+
+                    let changes_length = u32::from(field_count);
+                    let changes_pointer = cg.next_offset;
+                    cg.next_offset = cg
+                        .next_offset
+                        .checked_add(changes_length)
+                        .ok_or_else(|| LoweringFailure::Rejected(CodegenError {
+                            message: "Glamour change bitmap exceeds Wasm32 address space".into(),
+                        }))?;
+                    glamour_development_data.push(DataSegment {
+                        offset: changes_pointer,
+                        bytes: vec![0; changes_length as usize],
+                    });
+
+                    let metadata_payload = metadata.wire_payload();
+                    let metadata_length = u32::try_from(metadata_payload.len()).map_err(|_| {
+                        LoweringFailure::Rejected(CodegenError {
+                            message: "Glamour development metadata exceeds Wasm32".into(),
+                        })
+                    })?;
+                    let metadata_header = cg.next_offset;
+                    cg.next_offset = cg
+                        .next_offset
+                        .checked_add(4 + metadata_length)
+                        .ok_or_else(|| LoweringFailure::Rejected(CodegenError {
+                            message: "Glamour development metadata exceeds Wasm32 address space"
+                                .into(),
+                        }))?;
+                    let mut metadata_record = Vec::with_capacity(4 + metadata_payload.len());
+                    metadata_record.extend_from_slice(&metadata_length.to_le_bytes());
+                    metadata_record.extend_from_slice(&metadata_payload);
+                    glamour_development_data.push(DataSegment {
+                        offset: metadata_header,
+                        bytes: metadata_record,
+                    });
+                    Some((
+                        snapshot_layout,
+                        metadata_header,
+                        metadata.model_schema,
+                        changes_pointer,
+                        changes_length,
+                    ))
+                } else {
+                    None
+                };
+                const GLAMOUR_INPUT_CAPACITY: u32 = 1024 * 1024;
+                let glamour_input_header = cg.next_offset;
+                cg.next_offset = cg
+                    .next_offset
+                    .checked_add(4 + GLAMOUR_INPUT_CAPACITY)
+                    .ok_or_else(|| LoweringFailure::Rejected(CodegenError {
+                        message: "RFC-0108 input arena exceeds Wasm32 address space".into(),
+                    }))?;
+                let i32_local = |name: &str| WirLocal {
+                    name: name.into(),
+                    ty: WirTy::Bool,
+                };
+                let i32_binary = |op, left, right| WirExpr::Binary {
+                    op,
+                    kind: WK::I32,
+                    lhs: Box::new(left),
+                    rhs: Box::new(right),
+                };
+                let i64_binary = |op, left, right| WirExpr::Binary {
+                    op,
+                    kind: WK::I64,
+                    lhs: Box::new(left),
+                    rhs: Box::new(right),
+                };
+                let trap_when = |condition| WirNode::If {
+                    cond: condition,
+                    then_: vec![WirNode::Unreachable],
+                    els: vec![],
+                    result: None,
+                };
+                let global_ne = |name: &str, value: i32| {
+                    i32_binary(
+                        BinOp::Ne,
+                        WirExpr::GetGlobal(name.into()),
+                        WirExpr::ConstI32(value),
+                    )
+                };
+                let input_header = || {
+                    i32_binary(
+                        BinOp::Sub,
+                        WirExpr::GetLocal("input_ptr".into()),
+                        WirExpr::ConstI32(4),
+                    )
+                };
+                let output_payload = || {
+                    i32_binary(
+                        BinOp::Add,
+                        WirExpr::GetLocal("output".into()),
+                        WirExpr::ConstI32(4),
+                    )
+                };
+                let state_tag = if aggregate_state {
+                    0
+                } else {
+                    let state_constructor = family
+                        .state_constructor
+                        .as_deref()
+                        .expect("scalar state has one constructor");
+                    cg.ctors
+                        .get(state_constructor)
+                        .ok_or_else(|| LoweringFailure::Rejected(CodegenError {
+                            message: format!(
+                                "RFC-0108 application state constructor `{state_constructor}` is missing"
+                            ),
+                        }))?
+                        .0 as i32
+                };
+                let state_value = || {
+                    if aggregate_state {
+                        return WirExpr::GetGlobal("__glamour_state".into());
+                    }
+                    let mut arguments = Vec::with_capacity(state_field_kinds.len() + 1);
+                    arguments.push(WirExpr::ConstI32(state_tag));
+                    arguments.extend(state_field_kinds.iter().enumerate().map(|(index, kind)| {
+                        WirExpr::ToSlot(
+                            Box::new(WirExpr::GetGlobal(format!("__glamour_state_{index}"))),
+                            *kind,
+                        )
+                    }));
+                    WirExpr::Call {
+                        func: format!("mk{}", state_field_kinds.len()),
+                        args: arguments,
+                    }
+                };
+                let save_state = |local: &str| {
+                    state_field_kinds
+                        .iter()
+                        .enumerate()
+                        .map(|(index, kind)| WirNode::SetGlobal {
+                            global: format!("__glamour_state_{index}"),
+                            value: WirExpr::FromSlot(
+                                Box::new(WirExpr::Load {
+                                    ptr: Box::new(WirExpr::GetLocal(local.into())),
+                                    kind: WK::I64,
+                                    offset: 4 + (index as u32 * 8),
+                                }),
+                                *kind,
+                            ),
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let development_changes = development_layout
+                    .as_ref()
+                    .map(|(_, _, _, pointer, _)| *pointer);
+                let record_state_changes = |local: &str, compare: bool| {
+                    let Some(pointer) = development_changes else { return Vec::new() };
+                    state_field_kinds
+                        .iter()
+                        .enumerate()
+                        .map(|(index, kind)| {
+                            let next = WirExpr::FromSlot(
+                                Box::new(WirExpr::Load {
+                                    ptr: Box::new(WirExpr::GetLocal(local.into())),
+                                    kind: WK::I64,
+                                    offset: 4 + (index as u32 * 8),
+                                }),
+                                *kind,
+                            );
+                            WirNode::Store8 {
+                                ptr: WirExpr::ConstI32(pointer as i32),
+                                value: if compare {
+                                    WirExpr::Binary {
+                                        op: BinOp::Ne,
+                                        kind: *kind,
+                                        lhs: Box::new(next),
+                                        rhs: Box::new(WirExpr::GetGlobal(format!(
+                                            "__glamour_state_{index}"
+                                        ))),
+                                    }
+                                } else {
+                                    WirExpr::ConstI32(1)
+                                },
+                                offset: index as u32,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let aggregate_initial_changes = development_changes
+                    .zip(glamour_state_field_shapes.as_ref())
+                    .map(|(pointer, shapes)| {
+                        shapes
+                            .iter()
+                            .enumerate()
+                            .map(|(index, _)| WirNode::Store8 {
+                                ptr: WirExpr::ConstI32(pointer as i32),
+                                value: WirExpr::ConstI32(1),
+                                offset: index as u32,
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let aggregate_dispatch_changes = if let (Some(pointer), Some(shapes)) =
+                    (development_changes, glamour_state_field_shapes.as_ref())
+                {
+                    let mut changes = Vec::with_capacity(shapes.len());
+                    for (index, shape) in shapes.iter().enumerate() {
+                        let offset = 4 + (index as i32 * 8);
+                        let address = |local: &str| {
+                            i32_binary(
+                                BinOp::Add,
+                                WirExpr::GetLocal(local.into()),
+                                WirExpr::ConstI32(offset),
+                            )
+                        };
+                        let comparison = cg
+                            .slot_cmp_wir(shape, address("old_state"), address("next_state"))
+                            .ok_or_else(|| LoweringFailure::Rejected(CodegenError {
+                                message: "Glamour aggregate development tracing could not compare one model field".into(),
+                            }))?;
+                        changes.push(WirNode::Store8 {
+                            ptr: WirExpr::ConstI32(pointer as i32),
+                            value: WirExpr::Unary {
+                                op: witchy_wir::wir::UnOp::Not,
+                                kind: WK::I32,
+                                arg: Box::new(comparison),
+                            },
+                            offset: index as u32,
+                        });
+                    }
+                    changes
+                } else {
+                    Vec::new()
+                };
+                let prepare_aggregate_state = |source: &str, base: &str| {
+                    let helper = glamour_state_rcopy_helper
+                        .as_ref()
+                        .expect("aggregate state has a copy helper");
+                    vec![
+                        WirNode::SetGlobal {
+                            global: "rcopy_wm".into(),
+                            value: WirExpr::ConstI32(0),
+                        },
+                        WirNode::SetGlobal {
+                            global: "rcopy_base".into(),
+                            value: WirExpr::GetGlobal("heap".into()),
+                        },
+                        WirNode::SetGlobal {
+                            global: "rcopy_delta".into(),
+                            value: i32_binary(
+                                BinOp::Sub,
+                                WirExpr::GetGlobal("heap".into()),
+                                WirExpr::GetLocal(base.into()),
+                            ),
+                        },
+                        WirNode::SetGlobal {
+                            global: "rc_freelist".into(),
+                            value: WirExpr::ConstI32(0),
+                        },
+                        WirNode::SetLocal {
+                            local: "stable_state".into(),
+                            value: WirExpr::Call {
+                                func: helper.clone(),
+                                args: vec![WirExpr::GetLocal(source.into())],
+                            },
+                        },
+                        WirNode::SetLocal {
+                            local: "copied_length".into(),
+                            value: i32_binary(
+                                BinOp::Sub,
+                                WirExpr::GetGlobal("heap".into()),
+                                WirExpr::GetGlobal("rcopy_base".into()),
+                            ),
+                        },
+                    ]
+                };
+                let finish_aggregate_state = |base: &str| {
+                    let mut nodes = Vec::new();
+                    if witchy_wir::wir_helpers::heap_check_enabled() {
+                        nodes.push(WirNode::Do(WirExpr::Call {
+                            func: "__heap_reclaim".into(),
+                            args: vec![WirExpr::GetLocal(base.into())],
+                        }));
+                    }
+                    nodes.extend([
+                        WirNode::MemoryCopy {
+                            dest: WirExpr::GetLocal(base.into()),
+                            src: WirExpr::GetGlobal("rcopy_base".into()),
+                            len: WirExpr::GetLocal("copied_length".into()),
+                        },
+                        WirNode::SetGlobal {
+                            global: "__glamour_state".into(),
+                            value: WirExpr::GetLocal("stable_state".into()),
+                        },
+                        WirNode::SetGlobal {
+                            global: "heap".into(),
+                            value: i32_binary(
+                                BinOp::Add,
+                                WirExpr::GetLocal(base.into()),
+                                WirExpr::GetLocal("copied_length".into()),
+                            ),
+                        },
+                        WirNode::SetGlobal {
+                            global: "rc_freelist".into(),
+                            value: WirExpr::ConstI32(0),
+                        },
+                    ]);
+                    nodes
+                };
+                let mut cap_args = vec![WirExpr::ConstI32(
+                    cg.ctors.get(&family.cap_type).map(|constructor| constructor.0).unwrap_or(0)
+                        as i32,
+                )];
+                for field in 0..family.cap_fields as i32 {
+                    cap_args.push(WirExpr::Convert {
+                        from: WK::I32,
+                        to: WK::I64,
+                        arg: Box::new(WirExpr::Call {
+                            func: "build_user_cap_field".into(),
+                            args: vec![WirExpr::ConstI32(0), WirExpr::ConstI32(field)],
+                        }),
+                    });
+                }
+                let root_cap = WirExpr::Call {
+                    func: format!("mk{}", family.cap_fields),
+                    args: cap_args,
+                };
+
+                pruned_funcs.push(WirFunc {
+                    name: "__glamour_protocol_version".into(),
+                    params: vec![],
+                    ret: vec![WirTy::Bool],
+                    locals: vec![],
+                    body: vec![WirNode::Push(WirExpr::ConstI32((1_i32 << 16) | 4))],
+                    raw_body: None,
+                });
+                pruned_funcs.push(WirFunc {
+                    name: "__glamour_input_reserve".into(),
+                    params: vec![i32_local("length")],
+                    ret: vec![WirTy::Bool],
+                    locals: vec![i32_local("header")],
+                    body: vec![
+                        trap_when(i32_binary(
+                            BinOp::Lt,
+                            WirExpr::GetLocal("length".into()),
+                            WirExpr::ConstI32(0),
+                        )),
+                        trap_when(i32_binary(
+                            BinOp::Gt,
+                            WirExpr::GetLocal("length".into()),
+                            WirExpr::ConstI32(GLAMOUR_INPUT_CAPACITY as i32),
+                        )),
+                        WirNode::SetLocal {
+                            local: "header".into(),
+                            value: WirExpr::ConstI32(glamour_input_header as i32),
+                        },
+                        WirNode::Store {
+                            ptr: WirExpr::GetLocal("header".into()),
+                            value: WirExpr::GetLocal("length".into()),
+                            kind: WK::I32,
+                            offset: 0,
+                        },
+                        WirNode::Push(i32_binary(
+                            BinOp::Add,
+                            WirExpr::GetLocal("header".into()),
+                            WirExpr::ConstI32(4),
+                        )),
+                    ],
+                    raw_body: None,
+                });
+                let mut init_body = vec![
+                    trap_when(global_ne("__glamour_live", 0)),
+                    trap_when(global_ne("__glamour_busy", 0)),
+                    trap_when(global_ne("__glamour_output", 0)),
+                    trap_when(i32_binary(
+                        BinOp::Ne,
+                        WirExpr::GetLocal("input_ptr".into()),
+                        WirExpr::ConstI32((glamour_input_header + 4) as i32),
+                    )),
+                    trap_when(i32_binary(
+                        BinOp::Ne,
+                        WirExpr::Load {
+                            ptr: Box::new(input_header()),
+                            kind: WK::I32,
+                            offset: 0,
+                        },
+                        WirExpr::GetLocal("input_length".into()),
+                    )),
+                    WirNode::SetGlobal {
+                        global: "__glamour_busy".into(),
+                        value: WirExpr::ConstI32(1),
+                    },
+                    WirNode::SetLocal {
+                        local: "call_base".into(),
+                        value: WirExpr::GetGlobal("heap".into()),
+                    },
+                ];
+                init_body.push(WirNode::SetGlobal {
+                    global: "__glamour_state_base".into(),
+                    value: WirExpr::GetLocal("call_base".into()),
+                });
+                init_body.push(WirNode::SetLocal {
+                    local: "state".into(),
+                    value: WirExpr::Call {
+                        func: family.init.clone(),
+                        args: vec![root_cap, input_header()],
+                    },
+                });
+                if aggregate_state {
+                    init_body.extend(aggregate_initial_changes.clone());
+                    init_body.extend(prepare_aggregate_state("state", "call_base"));
+                    init_body.push(WirNode::Drop(WirExpr::Call {
+                        func: family.release.clone(),
+                        args: vec![WirExpr::GetLocal("state".into())],
+                    }));
+                    init_body.extend(finish_aggregate_state("call_base"));
+                } else {
+                    init_body.extend(record_state_changes("state", false));
+                    init_body.extend(save_state("state"));
+                    init_body.extend([
+                        WirNode::Drop(WirExpr::Call {
+                            func: family.release.clone(),
+                            args: vec![WirExpr::GetLocal("state".into())],
+                        }),
+                        WirNode::SetGlobal {
+                            global: "heap".into(),
+                            value: WirExpr::GetLocal("call_base".into()),
+                        },
+                    ]);
+                }
+                let mut resume_body = init_body.clone();
+                resume_body.extend([
+                    WirNode::SetGlobal {
+                        global: "__glamour_live".into(),
+                        value: WirExpr::ConstI32(1),
+                    },
+                    WirNode::SetGlobal {
+                        global: "__glamour_busy".into(),
+                        value: WirExpr::ConstI32(0),
+                    },
+                    WirNode::Push(WirExpr::ConstI32(0)),
+                ]);
+                pruned_funcs.push(WirFunc {
+                    name: "__glamour_resume".into(),
+                    params: vec![i32_local("input_ptr"), i32_local("input_length")],
+                    ret: vec![WirTy::Bool],
+                    locals: vec![
+                        WirLocal { name: "state".into(), ty: state_wir_ty.clone() },
+                        i32_local("call_base"),
+                        i32_local("stable_state"),
+                        i32_local("copied_length"),
+                    ],
+                    body: resume_body,
+                    raw_body: None,
+                });
+                init_body.extend([
+                    WirNode::SetGlobal {
+                        global: "__glamour_output_base".into(),
+                        value: WirExpr::GetGlobal("heap".into()),
+                    },
+                    WirNode::SetLocal {
+                        local: "emit_state".into(),
+                        value: state_value(),
+                    },
+                    WirNode::SetLocal {
+                        local: "output".into(),
+                        value: WirExpr::Call {
+                            func: family.emit.clone(),
+                            args: vec![WirExpr::GetLocal("emit_state".into())],
+                        },
+                    },
+                ]);
+                if !aggregate_state {
+                    init_body.push(WirNode::Drop(WirExpr::Call {
+                        func: family.release.clone(),
+                        args: vec![WirExpr::GetLocal("emit_state".into())],
+                    }));
+                }
+                init_body.extend([
+                    WirNode::SetGlobal {
+                        global: "__glamour_output".into(),
+                        value: WirExpr::GetLocal("output".into()),
+                    },
+                    WirNode::SetGlobal {
+                        global: "__glamour_live".into(),
+                        value: WirExpr::ConstI32(1),
+                    },
+                    WirNode::SetGlobal {
+                        global: "__glamour_busy".into(),
+                        value: WirExpr::ConstI32(0),
+                    },
+                    WirNode::Push(output_payload()),
+                ]);
+                pruned_funcs.push(WirFunc {
+                    name: "__glamour_init".into(),
+                    params: vec![i32_local("input_ptr"), i32_local("input_length")],
+                    ret: vec![WirTy::Bool],
+                    locals: vec![
+                        WirLocal { name: "state".into(), ty: state_wir_ty.clone() },
+                        WirLocal { name: "emit_state".into(), ty: state_wir_ty.clone() },
+                        i32_local("call_base"),
+                        i32_local("stable_state"),
+                        i32_local("copied_length"),
+                        i32_local("output"),
+                    ],
+                    body: init_body,
+                    raw_body: None,
+                });
+                let mut dispatch_body = vec![
+                    trap_when(global_ne("__glamour_live", 1)),
+                    trap_when(global_ne("__glamour_busy", 0)),
+                    trap_when(global_ne("__glamour_output", 0)),
+                    trap_when(i32_binary(
+                        BinOp::Ne,
+                        WirExpr::GetLocal("input_ptr".into()),
+                        WirExpr::ConstI32((glamour_input_header + 4) as i32),
+                    )),
+                    trap_when(i32_binary(
+                        BinOp::Ne,
+                        WirExpr::Load {
+                            ptr: Box::new(input_header()),
+                            kind: WK::I32,
+                            offset: 0,
+                        },
+                        WirExpr::GetLocal("input_length".into()),
+                    )),
+                    WirNode::SetGlobal {
+                        global: "__glamour_busy".into(),
+                        value: WirExpr::ConstI32(1),
+                    },
+                    WirNode::SetLocal {
+                        local: "call_base".into(),
+                        value: WirExpr::GetGlobal("heap".into()),
+                    },
+                    WirNode::SetLocal {
+                        local: "state_base".into(),
+                        value: if aggregate_state {
+                            WirExpr::GetGlobal("__glamour_state_base".into())
+                        } else {
+                            WirExpr::GetGlobal("heap".into())
+                        },
+                    },
+                    WirNode::SetLocal {
+                        local: "old_state".into(),
+                        value: state_value(),
+                    },
+                    WirNode::SetLocal {
+                        local: "next_state".into(),
+                        value: WirExpr::Call {
+                            func: family.dispatch.clone(),
+                            args: vec![
+                                WirExpr::GetLocal("old_state".into()),
+                                input_header(),
+                            ],
+                        },
+                    },
+                ];
+                if aggregate_state {
+                    dispatch_body.extend(aggregate_dispatch_changes);
+                    dispatch_body.extend(prepare_aggregate_state("next_state", "state_base"));
+                    dispatch_body.extend([
+                        WirNode::Drop(WirExpr::Call {
+                            func: family.release.clone(),
+                            args: vec![WirExpr::GetLocal("old_state".into())],
+                        }),
+                        WirNode::Drop(WirExpr::Call {
+                            func: family.release.clone(),
+                            args: vec![WirExpr::GetLocal("next_state".into())],
+                        }),
+                    ]);
+                    dispatch_body.extend(finish_aggregate_state("state_base"));
+                } else {
+                    dispatch_body.extend(record_state_changes("next_state", true));
+                    dispatch_body.extend(save_state("next_state"));
+                    dispatch_body.extend([
+                        WirNode::Drop(WirExpr::Call {
+                            func: family.release.clone(),
+                            args: vec![WirExpr::GetLocal("old_state".into())],
+                        }),
+                        WirNode::Drop(WirExpr::Call {
+                            func: family.release.clone(),
+                            args: vec![WirExpr::GetLocal("next_state".into())],
+                        }),
+                        WirNode::SetGlobal {
+                            global: "heap".into(),
+                            value: WirExpr::GetLocal("call_base".into()),
+                        },
+                    ]);
+                }
+                dispatch_body.extend([
+                    WirNode::SetGlobal {
+                        global: "__glamour_output_base".into(),
+                        value: WirExpr::GetGlobal("heap".into()),
+                    },
+                    WirNode::SetLocal {
+                        local: "emit_state".into(),
+                        value: state_value(),
+                    },
+                    WirNode::SetLocal {
+                        local: "output".into(),
+                        value: WirExpr::Call {
+                            func: family.emit.clone(),
+                            args: vec![WirExpr::GetLocal("emit_state".into())],
+                        },
+                    },
+                ]);
+                if !aggregate_state {
+                    dispatch_body.push(WirNode::Drop(WirExpr::Call {
+                        func: family.release.clone(),
+                        args: vec![WirExpr::GetLocal("emit_state".into())],
+                    }));
+                }
+                dispatch_body.extend([
+                    WirNode::SetGlobal {
+                        global: "__glamour_output".into(),
+                        value: WirExpr::GetLocal("output".into()),
+                    },
+                    WirNode::SetGlobal {
+                        global: "__glamour_busy".into(),
+                        value: WirExpr::ConstI32(0),
+                    },
+                    WirNode::Push(output_payload()),
+                ]);
+                pruned_funcs.push(WirFunc {
+                    name: "__glamour_dispatch".into(),
+                    params: vec![i32_local("input_ptr"), i32_local("input_length")],
+                    ret: vec![WirTy::Bool],
+                    locals: vec![
+                        WirLocal { name: "old_state".into(), ty: state_wir_ty.clone() },
+                        WirLocal { name: "next_state".into(), ty: state_wir_ty.clone() },
+                        WirLocal { name: "emit_state".into(), ty: state_wir_ty.clone() },
+                        i32_local("call_base"),
+                        i32_local("state_base"),
+                        i32_local("stable_state"),
+                        i32_local("copied_length"),
+                        i32_local("output"),
+                    ],
+                    body: dispatch_body,
+                    raw_body: None,
+                });
+                pruned_funcs.push(WirFunc {
+                    name: "__glamour_output_length".into(),
+                    params: vec![],
+                    ret: vec![WirTy::Bool],
+                    locals: vec![],
+                    body: vec![WirNode::Push(WirExpr::Control(Box::new(WirNode::If {
+                        cond: global_ne("__glamour_output", 0),
+                        then_: vec![WirNode::Push(WirExpr::Load {
+                            ptr: Box::new(WirExpr::GetGlobal("__glamour_output".into())),
+                            kind: WK::I32,
+                            offset: 0,
+                        })],
+                        els: vec![WirNode::Push(WirExpr::ConstI32(0))],
+                        result: Some(WirTy::Bool),
+                    })))],
+                    raw_body: None,
+                });
+                pruned_funcs.push(WirFunc {
+                    name: "__glamour_output_release".into(),
+                    params: vec![],
+                    ret: vec![],
+                    locals: vec![],
+                    body: vec![WirNode::If {
+                        cond: global_ne("__glamour_output", 0),
+                        then_: vec![
+                            WirNode::SetGlobal {
+                                global: "__glamour_output".into(),
+                                value: WirExpr::ConstI32(0),
+                            },
+                            WirNode::SetGlobal {
+                                global: "heap".into(),
+                                value: WirExpr::GetGlobal("__glamour_output_base".into()),
+                            },
+                        ],
+                        els: vec![],
+                        result: None,
+                    }],
+                    raw_body: None,
+                });
+                if let Some((
+                    _,
+                    metadata_header,
+                    _,
+                    changes_pointer,
+                    changes_length,
+                )) = development_layout.as_ref()
+                {
+                    pruned_funcs.push(WirFunc {
+                        name: "__glamour_dev_metadata".into(),
+                        params: vec![],
+                        ret: vec![WirTy::Bool],
+                        locals: vec![],
+                        body: vec![WirNode::Push(WirExpr::ConstI32(
+                            *metadata_header as i32,
+                        ))],
+                        raw_body: None,
+                    });
+                    pruned_funcs.push(WirFunc {
+                        name: "__glamour_dev_changes".into(),
+                        params: vec![],
+                        ret: vec![WirTy::Bool],
+                        locals: vec![],
+                        body: vec![WirNode::Push(WirExpr::ConstI32(
+                            *changes_pointer as i32,
+                        ))],
+                        raw_body: None,
+                    });
+                    pruned_funcs.push(WirFunc {
+                        name: "__glamour_dev_changes_length".into(),
+                        params: vec![],
+                        ret: vec![WirTy::Bool],
+                        locals: vec![],
+                        body: vec![WirNode::Push(WirExpr::ConstI32(
+                            *changes_length as i32,
+                        ))],
+                        raw_body: None,
+                    });
+                }
+                let aggregate_development_layout = development_layout.clone();
+                if let Some((
+                    Some((snapshot_header, snapshot_length)),
+                    _,
+                    model_schema,
+                    changes_pointer,
+                    _,
+                )) = development_layout
+                    && snapshot_length != 0
+                {
+                    let snapshot_payload = snapshot_header + 4;
+                    let mut snapshot_body = vec![
+                        trap_when(global_ne("__glamour_live", 1)),
+                        trap_when(global_ne("__glamour_busy", 0)),
+                        trap_when(global_ne("__glamour_output", 0)),
+                    ];
+                    snapshot_body.extend(state_field_kinds.iter().enumerate().map(
+                        |(index, kind)| WirNode::Store {
+                            ptr: WirExpr::ConstI32(snapshot_payload as i32),
+                            value: WirExpr::GetGlobal(format!("__glamour_state_{index}")),
+                            kind: *kind,
+                            offset: 40 + (index as u32 * 8),
+                        },
+                    ));
+                    snapshot_body.push(WirNode::Push(WirExpr::ConstI32(
+                        snapshot_payload as i32,
+                    )));
+                    pruned_funcs.push(WirFunc {
+                        name: "__glamour_dev_snapshot".into(),
+                        params: vec![],
+                        ret: vec![WirTy::Bool],
+                        locals: vec![],
+                        body: snapshot_body,
+                        raw_body: None,
+                    });
+                    pruned_funcs.push(WirFunc {
+                        name: "__glamour_dev_snapshot_length".into(),
+                        params: vec![],
+                        ret: vec![WirTy::Bool],
+                        locals: vec![],
+                        body: vec![WirNode::Push(WirExpr::ConstI32(
+                            snapshot_length as i32,
+                        ))],
+                        raw_body: None,
+                    });
+                    let field_count = state_field_kinds.len() as u16;
+                    let mut snapshot_prefix = [0_u8; 8];
+                    snapshot_prefix[..4].copy_from_slice(b"WGST");
+                    snapshot_prefix[4..6].copy_from_slice(
+                        &GlamourDevelopmentMetadata::SCALAR_SNAPSHOT_FORMAT.to_le_bytes(),
+                    );
+                    snapshot_prefix[6..8].copy_from_slice(&field_count.to_le_bytes());
+                    let mut restore_body = vec![
+                        trap_when(global_ne("__glamour_live", 0)),
+                        trap_when(global_ne("__glamour_busy", 0)),
+                        trap_when(global_ne("__glamour_output", 0)),
+                        trap_when(i32_binary(
+                            BinOp::Ne,
+                            WirExpr::GetLocal("input_ptr".into()),
+                            WirExpr::ConstI32((glamour_input_header + 4) as i32),
+                        )),
+                        trap_when(i32_binary(
+                            BinOp::Ne,
+                            WirExpr::GetLocal("input_length".into()),
+                            WirExpr::ConstI32(snapshot_length as i32),
+                        )),
+                        trap_when(i32_binary(
+                            BinOp::Ne,
+                            WirExpr::Load {
+                                ptr: Box::new(input_header()),
+                                kind: WK::I32,
+                                offset: 0,
+                            },
+                            WirExpr::GetLocal("input_length".into()),
+                        )),
+                        trap_when(i64_binary(
+                            BinOp::Ne,
+                            WirExpr::Load {
+                                ptr: Box::new(WirExpr::GetLocal("input_ptr".into())),
+                                kind: WK::I64,
+                                offset: 0,
+                            },
+                            WirExpr::ConstI64(i64::from_le_bytes(snapshot_prefix)),
+                        )),
+                    ];
+                    for (index, chunk) in model_schema.chunks_exact(8).enumerate() {
+                        restore_body.push(trap_when(i64_binary(
+                            BinOp::Ne,
+                            WirExpr::Load {
+                                ptr: Box::new(WirExpr::GetLocal("input_ptr".into())),
+                                kind: WK::I64,
+                                offset: 8 + (index as u32 * 8),
+                            },
+                            WirExpr::ConstI64(i64::from_le_bytes(
+                                chunk.try_into().expect("schema chunks are eight bytes"),
+                            )),
+                        )));
+                    }
+                    for (index, kind) in state_field_kinds.iter().enumerate() {
+                        if *kind == WK::I32 {
+                            restore_body.push(trap_when(i32_binary(
+                                BinOp::GtU,
+                                WirExpr::Load {
+                                    ptr: Box::new(WirExpr::GetLocal("input_ptr".into())),
+                                    kind: WK::I32,
+                                    offset: 40 + (index as u32 * 8),
+                                },
+                                WirExpr::ConstI32(1),
+                            )));
+                        }
+                    }
+                    restore_body.push(WirNode::SetGlobal {
+                        global: "__glamour_busy".into(),
+                        value: WirExpr::ConstI32(1),
+                    });
+                    restore_body.extend(state_field_kinds.iter().enumerate().map(
+                        |(index, _)| WirNode::Store8 {
+                            ptr: WirExpr::ConstI32(changes_pointer as i32),
+                            value: WirExpr::ConstI32(1),
+                            offset: index as u32,
+                        },
+                    ));
+                    restore_body.extend(state_field_kinds.iter().enumerate().map(
+                        |(index, kind)| WirNode::SetGlobal {
+                            global: format!("__glamour_state_{index}"),
+                            value: WirExpr::Load {
+                                ptr: Box::new(WirExpr::GetLocal("input_ptr".into())),
+                                kind: *kind,
+                                offset: 40 + (index as u32 * 8),
+                            },
+                        },
+                    ));
+                    restore_body.extend([
+                        WirNode::SetGlobal {
+                            global: "__glamour_state_base".into(),
+                            value: WirExpr::GetGlobal("heap".into()),
+                        },
+                        WirNode::SetGlobal {
+                            global: "__glamour_output_base".into(),
+                            value: WirExpr::GetGlobal("heap".into()),
+                        },
+                        WirNode::SetLocal {
+                            local: "emit_state".into(),
+                            value: state_value(),
+                        },
+                        WirNode::SetLocal {
+                            local: "output".into(),
+                            value: WirExpr::Call {
+                                func: family.emit.clone(),
+                                args: vec![WirExpr::GetLocal("emit_state".into())],
+                            },
+                        },
+                        WirNode::Drop(WirExpr::Call {
+                            func: family.release.clone(),
+                            args: vec![WirExpr::GetLocal("emit_state".into())],
+                        }),
+                        WirNode::SetGlobal {
+                            global: "__glamour_output".into(),
+                            value: WirExpr::GetLocal("output".into()),
+                        },
+                        WirNode::SetGlobal {
+                            global: "__glamour_live".into(),
+                            value: WirExpr::ConstI32(1),
+                        },
+                        WirNode::SetGlobal {
+                            global: "__glamour_busy".into(),
+                            value: WirExpr::ConstI32(0),
+                        },
+                        WirNode::Push(output_payload()),
+                    ]);
+                    pruned_funcs.push(WirFunc {
+                        name: "__glamour_dev_restore".into(),
+                        params: vec![i32_local("input_ptr"), i32_local("input_length")],
+                        ret: vec![WirTy::Bool],
+                        locals: vec![
+                            WirLocal {
+                                name: "emit_state".into(),
+                                ty: state_wir_ty.clone(),
+                            },
+                            i32_local("output"),
+                        ],
+                        body: restore_body,
+                        raw_body: None,
+                    });
+                }
+                if let Some((Some((_, 0)), _, _, changes_pointer, _)) =
+                    aggregate_development_layout
+                {
+                    const MAXIMUM_SNAPSHOT_BYTES: i32 = 1024 * 1024 - 44;
+                    let codec = glamour_development
+                        .and_then(|metadata| metadata.snapshot_codec.as_ref())
+                        .expect("format-2 snapshots have a typed codec");
+                    let field_count = glamour_development
+                        .map(|metadata| metadata.state_fields.len() as u16)
+                        .unwrap_or(0);
+                    let mut snapshot_prefix = [0_u8; 8];
+                    snapshot_prefix[..4].copy_from_slice(b"WGST");
+                    snapshot_prefix[4..6].copy_from_slice(
+                        &GlamourDevelopmentMetadata::AGGREGATE_SNAPSHOT_FORMAT.to_le_bytes(),
+                    );
+                    snapshot_prefix[6..8].copy_from_slice(&field_count.to_le_bytes());
+                    let mut snapshot_body = vec![
+                        trap_when(global_ne("__glamour_live", 1)),
+                        trap_when(global_ne("__glamour_busy", 0)),
+                        trap_when(global_ne("__glamour_output", 0)),
+                        WirNode::SetLocal {
+                            local: "call_base".into(),
+                            value: WirExpr::GetGlobal("heap".into()),
+                        },
+                        WirNode::SetLocal {
+                            local: "wire".into(),
+                            value: WirExpr::Call {
+                                func: codec.encoder.clone(),
+                                args: vec![state_value()],
+                            },
+                        },
+                        WirNode::SetLocal {
+                            local: "payload_length".into(),
+                            value: WirExpr::Load {
+                                ptr: Box::new(WirExpr::GetLocal("wire".into())),
+                                kind: WK::I32,
+                                offset: 0,
+                            },
+                        },
+                        trap_when(i32_binary(
+                            BinOp::GtU,
+                            WirExpr::GetLocal("payload_length".into()),
+                            WirExpr::ConstI32(MAXIMUM_SNAPSHOT_BYTES),
+                        )),
+                        WirNode::SetLocal {
+                            local: "snapshot_length".into(),
+                            value: i32_binary(
+                                BinOp::Add,
+                                WirExpr::GetLocal("payload_length".into()),
+                                WirExpr::ConstI32(44),
+                            ),
+                        },
+                        WirNode::SetLocal {
+                            local: "snapshot".into(),
+                            value: WirExpr::ConstI32((glamour_input_header + 4) as i32),
+                        },
+                        WirNode::Store {
+                            ptr: WirExpr::GetLocal("snapshot".into()),
+                            value: WirExpr::ConstI64(i64::from_le_bytes(snapshot_prefix)),
+                            kind: WK::I64,
+                            offset: 0,
+                        },
+                    ];
+                    for (index, chunk) in glamour_development
+                        .expect("development metadata")
+                        .model_schema
+                        .chunks_exact(8)
+                        .enumerate()
+                    {
+                        snapshot_body.push(WirNode::Store {
+                            ptr: WirExpr::GetLocal("snapshot".into()),
+                            value: WirExpr::ConstI64(i64::from_le_bytes(
+                                chunk.try_into().expect("schema chunk"),
+                            )),
+                            kind: WK::I64,
+                            offset: 8 + index as u32 * 8,
+                        });
+                    }
+                    snapshot_body.extend([
+                        WirNode::Store {
+                            ptr: WirExpr::GetLocal("snapshot".into()),
+                            value: WirExpr::GetLocal("payload_length".into()),
+                            kind: WK::I32,
+                            offset: 40,
+                        },
+                        WirNode::MemoryCopy {
+                            dest: i32_binary(
+                                BinOp::Add,
+                                WirExpr::GetLocal("snapshot".into()),
+                                WirExpr::ConstI32(44),
+                            ),
+                            src: i32_binary(
+                                BinOp::Add,
+                                WirExpr::GetLocal("wire".into()),
+                                WirExpr::ConstI32(4),
+                            ),
+                            len: WirExpr::GetLocal("payload_length".into()),
+                        },
+                        WirNode::SetGlobal {
+                            global: "__glamour_snapshot_length".into(),
+                            value: WirExpr::GetLocal("snapshot_length".into()),
+                        },
+                        WirNode::SetGlobal {
+                            global: "heap".into(),
+                            value: WirExpr::GetLocal("call_base".into()),
+                        },
+                        WirNode::SetGlobal {
+                            global: "rc_freelist".into(),
+                            value: WirExpr::ConstI32(0),
+                        },
+                        WirNode::Push(WirExpr::GetLocal("snapshot".into())),
+                    ]);
+                    pruned_funcs.push(WirFunc {
+                        name: "__glamour_dev_snapshot".into(),
+                        params: vec![],
+                        ret: vec![WirTy::Bool],
+                        locals: vec![
+                            i32_local("wire"),
+                            i32_local("payload_length"),
+                            i32_local("snapshot_length"),
+                            i32_local("snapshot"),
+                            i32_local("call_base"),
+                        ],
+                        body: snapshot_body,
+                        raw_body: None,
+                    });
+                    pruned_funcs.push(WirFunc {
+                        name: "__glamour_dev_snapshot_length".into(),
+                        params: vec![],
+                        ret: vec![WirTy::Bool],
+                        locals: vec![],
+                        body: vec![WirNode::Push(WirExpr::GetGlobal(
+                            "__glamour_snapshot_length".into(),
+                        ))],
+                        raw_body: None,
+                    });
+
+                    let schema_matches = |schema: &[u8; 32]| {
+                        schema.chunks_exact(8).enumerate().fold(
+                            WirExpr::ConstI32(1),
+                            |condition, (index, chunk)| i32_binary(
+                                BinOp::And,
+                                condition,
+                                i64_binary(
+                                    BinOp::Eq,
+                                    WirExpr::Load {
+                                        ptr: Box::new(WirExpr::GetLocal("input_ptr".into())),
+                                        kind: WK::I64,
+                                        offset: 8 + index as u32 * 8,
+                                    },
+                                    WirExpr::ConstI64(i64::from_le_bytes(
+                                        chunk.try_into().expect("schema chunk"),
+                                    )),
+                                ),
+                            ),
+                        )
+                    };
+                    let decode = |decoder: String| WirNode::SetLocal {
+                        local: "decoded_state".into(),
+                        value: WirExpr::Call {
+                            func: decoder,
+                            args: vec![i32_binary(
+                                BinOp::Add,
+                                WirExpr::GetLocal("input_ptr".into()),
+                                WirExpr::ConstI32(40),
+                            )],
+                        },
+                    };
+                    let mut decode_branch = vec![WirNode::Unreachable];
+                    for migration in codec.migrations.iter().rev() {
+                        decode_branch = vec![WirNode::If {
+                            cond: schema_matches(&migration.model_schema),
+                            then_: vec![decode(migration.decoder.clone())],
+                            els: decode_branch,
+                            result: None,
+                        }];
+                    }
+                    decode_branch = vec![WirNode::If {
+                        cond: schema_matches(
+                            &glamour_development.expect("development metadata").model_schema,
+                        ),
+                        then_: vec![decode(codec.decoder.clone())],
+                        els: decode_branch,
+                        result: None,
+                    }];
+                    let mut restore_body = vec![
+                        trap_when(global_ne("__glamour_live", 0)),
+                        trap_when(global_ne("__glamour_busy", 0)),
+                        trap_when(global_ne("__glamour_output", 0)),
+                        trap_when(i32_binary(
+                            BinOp::Ne,
+                            WirExpr::GetLocal("input_ptr".into()),
+                            WirExpr::ConstI32((glamour_input_header + 4) as i32),
+                        )),
+                        trap_when(i32_binary(
+                            BinOp::Ne,
+                            WirExpr::Load {
+                                ptr: Box::new(input_header()),
+                                kind: WK::I32,
+                                offset: 0,
+                            },
+                            WirExpr::GetLocal("input_length".into()),
+                        )),
+                        trap_when(i32_binary(
+                            BinOp::LtU,
+                            WirExpr::GetLocal("input_length".into()),
+                            WirExpr::ConstI32(44),
+                        )),
+                        trap_when(i32_binary(
+                            BinOp::Ne,
+                            WirExpr::Load {
+                                ptr: Box::new(WirExpr::GetLocal("input_ptr".into())),
+                                kind: WK::I32,
+                                offset: 0,
+                            },
+                            WirExpr::ConstI32(i32::from_le_bytes(*b"WGST")),
+                        )),
+                        trap_when(i32_binary(
+                            BinOp::Ne,
+                            i32_binary(
+                                BinOp::And,
+                                WirExpr::Load {
+                                    ptr: Box::new(WirExpr::GetLocal("input_ptr".into())),
+                                    kind: WK::I32,
+                                    offset: 4,
+                                },
+                                WirExpr::ConstI32(0xffff),
+                            ),
+                            WirExpr::ConstI32(
+                                GlamourDevelopmentMetadata::AGGREGATE_SNAPSHOT_FORMAT as i32,
+                            ),
+                        )),
+                        WirNode::SetLocal {
+                            local: "payload_length".into(),
+                            value: WirExpr::Load {
+                                ptr: Box::new(WirExpr::GetLocal("input_ptr".into())),
+                                kind: WK::I32,
+                                offset: 40,
+                            },
+                        },
+                        trap_when(i32_binary(
+                            BinOp::GtU,
+                            WirExpr::GetLocal("payload_length".into()),
+                            WirExpr::ConstI32(MAXIMUM_SNAPSHOT_BYTES),
+                        )),
+                        trap_when(i32_binary(
+                            BinOp::Ne,
+                            WirExpr::GetLocal("input_length".into()),
+                            i32_binary(
+                                BinOp::Add,
+                                WirExpr::GetLocal("payload_length".into()),
+                                WirExpr::ConstI32(44),
+                            ),
+                        )),
+                        WirNode::SetLocal {
+                            local: "call_base".into(),
+                            value: WirExpr::GetGlobal("heap".into()),
+                        },
+                    ];
+                    restore_body.extend(decode_branch);
+                    restore_body.extend([
+                        WirNode::SetGlobal {
+                            global: "__glamour_busy".into(),
+                            value: WirExpr::ConstI32(1),
+                        },
+                        WirNode::SetGlobal {
+                            global: "__glamour_state_base".into(),
+                            value: WirExpr::GetLocal("call_base".into()),
+                        },
+                    ]);
+                    restore_body.extend(prepare_aggregate_state("decoded_state", "call_base"));
+                    restore_body.push(WirNode::Drop(WirExpr::Call {
+                        func: family.release.clone(),
+                        args: vec![WirExpr::GetLocal("decoded_state".into())],
+                    }));
+                    restore_body.extend(finish_aggregate_state("call_base"));
+                    restore_body.extend((0..field_count as usize).map(|index| {
+                        WirNode::Store8 {
+                            ptr: WirExpr::ConstI32(changes_pointer as i32),
+                            value: WirExpr::ConstI32(1),
+                            offset: index as u32,
+                        }
+                    }));
+                    restore_body.extend([
+                        WirNode::SetGlobal {
+                            global: "__glamour_output_base".into(),
+                            value: WirExpr::GetGlobal("heap".into()),
+                        },
+                        WirNode::SetLocal {
+                            local: "emit_state".into(),
+                            value: state_value(),
+                        },
+                        WirNode::SetLocal {
+                            local: "output".into(),
+                            value: WirExpr::Call {
+                                func: family.emit.clone(),
+                                args: vec![WirExpr::GetLocal("emit_state".into())],
+                            },
+                        },
+                        WirNode::SetGlobal {
+                            global: "__glamour_output".into(),
+                            value: WirExpr::GetLocal("output".into()),
+                        },
+                        WirNode::SetGlobal {
+                            global: "__glamour_live".into(),
+                            value: WirExpr::ConstI32(1),
+                        },
+                        WirNode::SetGlobal {
+                            global: "__glamour_busy".into(),
+                            value: WirExpr::ConstI32(0),
+                        },
+                        WirNode::Push(output_payload()),
+                    ]);
+                    pruned_funcs.push(WirFunc {
+                        name: "__glamour_dev_restore".into(),
+                        params: vec![i32_local("input_ptr"), i32_local("input_length")],
+                        ret: vec![WirTy::Bool],
+                        locals: vec![
+                            i32_local("payload_length"),
+                            WirLocal {
+                                name: "decoded_state".into(),
+                                ty: state_wir_ty.clone(),
+                            },
+                            WirLocal {
+                                name: "emit_state".into(),
+                                ty: state_wir_ty.clone(),
+                            },
+                            i32_local("call_base"),
+                            i32_local("stable_state"),
+                            i32_local("copied_length"),
+                            i32_local("output"),
+                        ],
+                        body: restore_body,
+                        raw_body: None,
+                    });
+                }
+                let mut dispose_body = vec![WirNode::If {
+                    cond: global_ne("__glamour_output", 0),
+                    then_: vec![WirNode::SetGlobal {
+                        global: "heap".into(),
+                        value: WirExpr::GetGlobal("__glamour_output_base".into()),
+                    }],
+                    els: vec![],
+                    result: None,
+                }];
+                if aggregate_state {
+                    dispose_body.extend([
+                        WirNode::If {
+                            cond: global_ne("__glamour_live", 0),
+                            then_: vec![WirNode::Drop(WirExpr::Call {
+                                func: family.release.clone(),
+                                args: vec![WirExpr::GetGlobal("__glamour_state".into())],
+                            })],
+                            els: vec![],
+                            result: None,
+                        },
+                        WirNode::SetGlobal {
+                            global: "__glamour_state".into(),
+                            value: WirExpr::ConstI32(0),
+                        },
+                    ]);
+                } else {
+                    dispose_body.extend(state_field_kinds.iter().enumerate().map(
+                        |(index, kind)| WirNode::SetGlobal {
+                            global: format!("__glamour_state_{index}"),
+                            value: match kind {
+                                WK::I64 => WirExpr::ConstI64(0),
+                                WK::F64 => WirExpr::ConstF64(0.0),
+                                WK::I32 => WirExpr::ConstI32(0),
+                                _ => unreachable!("state fields were restricted to scalar kinds"),
+                            },
+                        },
+                    ));
+                }
+                dispose_body.extend([
+                    WirNode::If {
+                        cond: global_ne("__glamour_state_base", 0),
+                        then_: vec![WirNode::SetGlobal {
+                            global: "heap".into(),
+                            value: WirExpr::GetGlobal("__glamour_state_base".into()),
+                        }],
+                        els: vec![],
+                        result: None,
+                    },
+                    WirNode::SetGlobal {
+                        global: "__glamour_state_base".into(),
+                        value: WirExpr::ConstI32(0),
+                    },
+                    WirNode::SetGlobal {
+                        global: "rc_freelist".into(),
+                        value: WirExpr::ConstI32(0),
+                    },
+                    WirNode::SetGlobal {
+                        global: "__glamour_output".into(),
+                        value: WirExpr::ConstI32(0),
+                    },
+                    WirNode::SetGlobal {
+                        global: "__glamour_live".into(),
+                        value: WirExpr::ConstI32(0),
+                    },
+                    WirNode::SetGlobal {
+                        global: "__glamour_busy".into(),
+                        value: WirExpr::ConstI32(0),
+                    },
+                ]);
+                pruned_funcs.push(WirFunc {
+                    name: "__glamour_dispose".into(),
+                    params: vec![],
+                    ret: vec![],
+                    locals: vec![],
+                    body: dispose_body,
+                    raw_body: None,
+                });
             }
             // Static host-backed helpers already carry a source-site parameter,
             // and source/lambda bodies were instrumented statement by statement.
@@ -2946,6 +5252,62 @@ fn assemble_wir_module_with_structs_mode(
                 init: GlobalInit::I64(0),
                 export: Some("__witchy_indirect_ownership_calls".into()),
             });
+            if glamour_exports.is_some() {
+                if let Some(state_field_kinds) = &glamour_state_field_kinds {
+                    for (index, kind) in state_field_kinds.iter().enumerate() {
+                        pruned_globals.push(WirGlobal {
+                            name: format!("__glamour_state_{index}"),
+                            kind: *kind,
+                            mutable: true,
+                            init: match kind {
+                                WK::I64 => GlobalInit::I64(0),
+                                WK::F64 => GlobalInit::F64(0.0),
+                                WK::I32 => GlobalInit::I32(0),
+                                _ => unreachable!("state fields were restricted to scalar kinds"),
+                            },
+                            export: None,
+                        });
+                    }
+                }
+                if glamour_state_rcopy_helper.is_some() {
+                    pruned_globals.push(WirGlobal {
+                        name: "__glamour_state".into(),
+                        kind: WK::I32,
+                        mutable: true,
+                        init: GlobalInit::I32(0),
+                        export: None,
+                    });
+                }
+                for name in [
+                    "__glamour_state_base",
+                    "__glamour_output",
+                    "__glamour_output_base",
+                    "__glamour_live",
+                    "__glamour_busy",
+                ] {
+                    pruned_globals.push(WirGlobal {
+                        name: name.into(),
+                        kind: WK::I32,
+                        mutable: true,
+                        init: GlobalInit::I32(0),
+                        export: None,
+                    });
+                }
+                if glamour_development.is_some_and(|metadata| {
+                    metadata.snapshot_format()
+                        == GlamourDevelopmentMetadata::AGGREGATE_SNAPSHOT_FORMAT
+                }) {
+                    for name in ["__glamour_snapshot_length"] {
+                        pruned_globals.push(WirGlobal {
+                            name: name.into(),
+                            kind: WK::I32,
+                            mutable: true,
+                            init: GlobalInit::I32(0),
+                            export: None,
+                        });
+                    }
+                }
+            }
             if cg.uses_diagnostic_sites {
                 pruned_globals.push(WirGlobal {
                     name: "__witchy_diagnostic_site".into(),
@@ -3007,10 +5369,10 @@ fn assemble_wir_module_with_structs_mode(
             // The String/Bytes par_map variants and `vm.with_dir` all copy a buffer into
             // a worker via `__galloc`.
             let needs_galloc = has_par_map_buf || has_call2 || has_with_dir;
-            if needs_galloc && string_exports.is_empty() {
+            if needs_galloc && string_exports.is_empty() && glamour_exports.is_none() {
                 pruned_funcs.push(witchy_wir::wir_helpers::galloc_helper());
             }
-            let data: Vec<DataSegment> = cg
+            let mut data: Vec<DataSegment> = cg
                 .strings
                 .iter()
                 .map(|(text, off)| {
@@ -3019,6 +5381,7 @@ fn assemble_wir_module_with_structs_mode(
                     DataSegment { offset: *off, bytes }
                 })
                 .collect();
+            data.extend(glamour_development_data);
             let gc_structs = cg.gc_structs.clone();
             let gc_arrays = cg.gc_arrays.clone();
             let layout_roots = cg
@@ -3043,7 +5406,7 @@ fn assemble_wir_module_with_structs_mode(
             return Ok((WirModule {
                 imports: pruned_imports,
                 funcs: pruned_funcs,
-                memory_pages: 1,
+                memory_pages: cg.next_offset.div_ceil(64 * 1024).max(1),
                 data,
                 globals: pruned_globals,
                 table: if existential_table_entries.is_empty() && cg.lambda_wir_funcs.is_empty() {
@@ -3080,6 +5443,38 @@ fn assemble_wir_module_with_structs_mode(
                         for name in &string_exports {
                             let ex = string_export_name(name);
                             exports.push((ex.clone(), ex));
+                        }
+                    }
+                    if glamour_exports.is_some() {
+                        for name in [
+                            "__glamour_protocol_version",
+                            "__glamour_input_reserve",
+                            "__glamour_init",
+                            "__glamour_resume",
+                            "__glamour_dispatch",
+                            "__glamour_output_length",
+                            "__glamour_output_release",
+                            "__glamour_dispose",
+                        ] {
+                            exports.push((name.into(), name.into()));
+                        }
+                        if let Some(development) = glamour_development {
+                            for name in [
+                                "__glamour_dev_metadata",
+                                "__glamour_dev_changes",
+                                "__glamour_dev_changes_length",
+                            ] {
+                                exports.push((name.into(), name.into()));
+                            }
+                            if development.supports_snapshot() {
+                                for name in [
+                                    "__glamour_dev_snapshot",
+                                    "__glamour_dev_snapshot_length",
+                                    "__glamour_dev_restore",
+                                ] {
+                                    exports.push((name.into(), name.into()));
+                                }
+                            }
                         }
                     }
                     exports
@@ -3178,6 +5573,9 @@ fn collect_called_funcs(
     }
     fn node(n: &N, out: &mut HashSet<String>, uses_table: &mut bool) {
         match n {
+            N::Source { body, .. } => {
+                *uses_table |= collect_called_funcs(body, out);
+            }
             N::SetLocal { value, .. } | N::SetGlobal { value, .. } => {
                 expr(value, out, uses_table)
             }
@@ -3306,6 +5704,7 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
     }
     fn node(n: &N, out: &mut HashSet<String>) {
         match n {
+            N::Source { body, .. } => collect_called_host_imports(body, out),
             N::SetLocal { value, .. } | N::SetGlobal { value, .. } => expr(value, out),
             N::Store { ptr, value, .. } | N::Store8 { ptr, value, .. } => {
                 expr(ptr, out);
@@ -3494,6 +5893,9 @@ fn attach_diagnostic_site_expr(
     fn node_expr(node: &mut N, site: &E) -> bool {
         let mut reaches_host = false;
         match node {
+            N::Source { body, .. } => {
+                reaches_host |= attach_diagnostic_site_expr(body, site);
+            }
             N::SetLocal { value, .. } | N::SetGlobal { value, .. } => {
                 reaches_host |= expr(value, site);
             }
@@ -4112,5 +6514,5 @@ fn compile_build_module_mode(
             }
         }
     }
-    compile_module_binary_mode(&m, true, runtime_catalog)
+    compile_module_binary_mode(&m, true, runtime_catalog, None)
 }

@@ -281,6 +281,7 @@ pub struct ResolvedDeclaration {
 pub enum ResolvedDeclarationKind {
     Type,
     Trait,
+    Function,
 }
 
 impl ResolvedDeclarations {
@@ -299,6 +300,11 @@ impl ResolvedDeclarations {
                         definition.name.as_str(),
                         ResolvedDeclarationKind::Trait,
                         is_ambient_trait(&definition.name),
+                    ),
+                    Item::Function(function) => (
+                        function.name.as_str(),
+                        ResolvedDeclarationKind::Function,
+                        false,
                     ),
                     _ => continue,
                 };
@@ -329,6 +335,7 @@ fn declaration_kind_order(kind: ResolvedDeclarationKind) -> u8 {
     match kind {
         ResolvedDeclarationKind::Type => 0,
         ResolvedDeclarationKind::Trait => 1,
+        ResolvedDeclarationKind::Function => 2,
     }
 }
 
@@ -2143,6 +2150,12 @@ mod tests {
             source_module: "model_alias".to_string(),
             local_name: "Render".to_string(),
             kind: ResolvedDeclarationKind::Trait,
+        }));
+        assert!(resolved.declarations.contains(&ResolvedDeclaration {
+            compiler_name: "main.use".to_string(),
+            source_module: "main".to_string(),
+            local_name: "use".to_string(),
+            kind: ResolvedDeclarationKind::Function,
         }));
     }
 }

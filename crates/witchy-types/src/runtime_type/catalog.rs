@@ -162,9 +162,13 @@ impl AuthenticatedModuleOwners {
         }
         Ok(())
     }
+
+    pub(crate) fn owner(&self, module: &str) -> Option<&ModuleLoadIdentity> {
+        self.owners.get(module)
+    }
 }
 
-/// Resolved identity of one nominal type or trait declaration.
+/// Resolved identity of one loader-owned declaration.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeclarationIdentity {
     package: PackageCoordinate,
@@ -177,6 +181,7 @@ pub struct DeclarationIdentity {
 pub enum DeclarationKind {
     Type,
     Trait,
+    Function,
 }
 
 impl DeclarationIdentity {
@@ -247,6 +252,7 @@ impl RuntimeDeclarationCatalog {
             let kind = match declaration.kind {
                 ResolvedDeclarationKind::Type => DeclarationKind::Type,
                 ResolvedDeclarationKind::Trait => DeclarationKind::Trait,
+                ResolvedDeclarationKind::Function => DeclarationKind::Function,
             };
             catalog.insert_resolved(
                 &declaration.compiler_name,
@@ -302,6 +308,15 @@ impl RuntimeDeclarationCatalog {
         kind: DeclarationKind,
     ) -> Option<&DeclarationIdentity> {
         self.declarations.get(&kind)?.get(resolved_name)
+    }
+
+    /// Iterate the loader-authenticated declaration identities retained by the
+    /// closed linked program. Consumers may summarize package provenance, but
+    /// compiler lookup keys remain private and cannot be mistaken for identity.
+    pub fn identities(&self) -> impl Iterator<Item = &DeclarationIdentity> {
+        self.declarations
+            .values()
+            .flat_map(|declarations| declarations.values())
     }
 
     pub fn type_identity(&self, ty: &Type) -> Result<RuntimeTypeIdentity, RuntimeTypeError> {

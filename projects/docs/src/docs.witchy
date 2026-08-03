@@ -8,7 +8,9 @@
 import markdown
 import list
 import reflect
-from glamour import VNode, Attr, Cmd, UiFetch, UiRoute, UiRoot
+import counter
+import runner
+from glamour import Attr, Cmd, HttpResult, Interactive, NavigationResult, Program, RouteDef, RouteGraph, RouteId, Site, Start, StaticContent, Sub, Ui, UiFetch, UiRoute, UiRoot, VNode
 from json import Json
 
 // The current path, the book's `SUMMARY.md` source (for the nav), and the current page's
@@ -19,15 +21,29 @@ type Model:
 type Msg derive(Reflect):
     Route(String)
     Visit(String)
-    GotNav(Int, String)
-    GotPage(Int, String)
+    GotNav(HttpResult)
+    GotPage(HttpResult)
+    NavigationDone(NavigationResult)
 
-// The slug for a route: `/p/<slug>` -> `<slug>`; anything else is the home page.
-fn slug_of(route: String) -> String:
-    if route.starts_with("/p/"):
-        route.drop(3)
-    else:
-        "introduction"
+type Auth:
+    Auth(UiFetch, UiRoute)
+
+fn page_route() -> RouteDef:
+    glamour.route("/p/*slug").unwrap_or(RouteDef(RouteId("invalid"), "/", []))
+
+fn book_routes() -> RouteGraph:
+    glamour.route_graph([page_route()]).unwrap_or(RouteGraph([]))
+
+fn page_path(slug: String) -> String:
+    match glamour.route_url(page_route(), [("slug", slug)]):
+        Ok(destination) -> glamour.safe_url_string(destination)
+        Err(_error) -> "/"
+
+// Parse the current path through the same typed graph used to construct links.
+fn slug_of(path: String) -> String:
+    match glamour.match_route(book_routes(), path):
+        Some(found) -> glamour.route_match_parameter(found, "slug") ?? "introduction"
+        None -> "introduction"
 
 // A parsed `SUMMARY.md` entry: a page link at some nesting depth, or the `---` rule that
 // separates the appendices from the main chapters.
@@ -66,27 +82,44 @@ fn nav_pages(nav: List(Nav)) -> List((String, String)):
 
     out
 
-fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd(Msg)):
-    match m:
-        // A sidebar click is a real navigation; the shell echoes it back as `Route`.
+fn update(auth: Auth, m: Model, msg: Msg) -> (Model, Cmd(Msg)):
+    match auth:
+        Auth(fetch, route_cap) ->
+            match m:
+                // A sidebar click is a real navigation; the shell echoes it back as `Route`.
 
-        // The route changed: fetch that page. On the FIRST route (no nav yet) also
-        // fetch SUMMARY.md, batched — the host performs both (it holds the Net).
-        Model(route, summary, content) ->
-            match msg:
-                Visit(path) -> (m, glamour.navigate(route_cap, path))
-                Route(path) ->
-                    let slug = slug_of(path)
-                    let page = glamour.http_get(fetch, "/content/${slug}.md", "GotPage")
-                    let cmd = if summary.is_empty(): Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page]) else: page
-                    (Model(path, summary, content), cmd)
-                GotNav(_status, body) -> (Model(route, body, content), NoCmd)
-                GotPage(_status, body) -> (Model(route, summary, body), NoCmd)
+                // The route changed: fetch that page. On the FIRST route (no nav yet) also
+                // fetch SUMMARY.md, batched — the host performs both (it holds the Net).
+                Model(route, summary, content) ->
+                    match msg:
+                        Visit(path) -> (m, glamour.navigate("book.navigation", route_cap, path, fn(result: NavigationResult): NavigationDone(result)))
+                        Route(path) ->
+                            let slug = slug_of(path)
+                            let page = glamour.http_get("book.page", fetch, "/content/${slug}.md", fn(result: HttpResult): GotPage(result))
+                            let cmd = if summary.is_empty(): Batch([glamour.http_get("book.summary", fetch, "/content/SUMMARY.md", fn(result: HttpResult): GotNav(result)), page]) else: page
+                            (Model(path, summary, content), cmd)
+                        GotNav(result) ->
+                            match result:
+                                HttpResponse(_status, body) -> (Model(route, body, content), NoCmd)
+                                HttpFailure(_problem) -> (m, NoCmd)
+                                _ -> (m, NoCmd)
+                        GotPage(result) ->
+                            match result:
+                                HttpResponse(_status, body) -> (Model(route, summary, body), NoCmd)
+                                HttpFailure(_problem) -> (m, NoCmd)
+                                _ -> (m, NoCmd)
+                        NavigationDone(result) ->
+                            match result:
+                                Navigated(path) -> update(auth, m, Route(path))
+                                _ -> (m, NoCmd)
 
-fn view(m: Model) -> VNode(Msg):
+fn view(m: Model) -> Ui(Msg):
+    book_view(m)
+
+fn book_view(m: Model) -> Ui(Msg):
     match m:
         Model(route, summary, content) ->
-            glamour.element("div", [glamour.prop("class", "book")], [sidebar(route, summary), glamour.element("main", [glamour.prop("class", "page")], [runnable_markdown(content), nav_chapters(route, summary)])])
+            glamour.ui(glamour.element("div", [glamour.prop("class", "book")], [sidebar(route, summary), glamour.element("main", [glamour.prop("class", "page")], [runnable_markdown(content), nav_chapters(route, summary)])]))
 
 // Untrusted Markdown renders INLINE as data (never an HTML sink) — safe by
 // construction (std/markdown): raw HTML shows as literal text, hrefs are
@@ -104,7 +137,7 @@ fn index_of_route(entries: List((String, String)), route: String) -> Int:
     var idx = 0 - 1
     var i = 0
     for _title, slug in entries:
-        if "/p/${slug}" == route:
+        if page_path(slug) == route:
             idx = i
         i = i + 1
     idx
@@ -112,7 +145,8 @@ fn index_of_route(entries: List((String, String)), route: String) -> Int:
 fn edge_link(entries: List((String, String)), i: Int, cls: String, label: String) -> VNode(Msg):
     if i >= 0 && i < entries.length():
         let (title, slug) = entries.at(i)
-        glamour.element("button", [glamour.prop("class", "nav-chapter ${cls}"), glamour.on("click", Visit("/p/${slug}"))], [glamour.element("span", [glamour.prop("class", "dir")], [glamour.text(label)]), glamour.element("span", [glamour.prop("class", "title")], [glamour.text(title)])])
+        let path = page_path(slug)
+        glamour.element("a", [glamour.prop("class", "nav-chapter ${cls}"), glamour.navigation_url_attribute("href", glamour.navigation_url_or_root(path)), glamour.on("click", Visit(path))], [glamour.element("span", [glamour.prop("class", "dir")], [glamour.text(label)]), glamour.element("span", [glamour.prop("class", "title")], [glamour.text(title)])])
     else:
         glamour.element("span", [glamour.prop("class", "nav-spacer")], [])
 
@@ -121,16 +155,17 @@ fn sidebar(route: String, summary: String) -> VNode(Msg):
     // The first entry is the book's cover (the un-bulleted title link); the sidebar header IS
     // its link, so it isn't repeated in the list below.
     let items = nav.drop(1).map(fn(entry: Nav): nav_node(entry, route))
-    glamour.element("nav", [glamour.prop("class", "sidebar")], [glamour.element("button", [glamour.prop("class", "sidebar-brand"), glamour.on("click", Visit(cover_path(nav)))], [glamour.text("The witchy Book")]), glamour.element("ul", [], items)])
+    let cover = cover_path(nav)
+    glamour.element("nav", [glamour.prop("class", "sidebar")], [glamour.element("a", [glamour.prop("class", "sidebar-brand"), glamour.navigation_url_attribute("href", glamour.navigation_url_or_root(cover)), glamour.on("click", Visit(cover))], [glamour.text("The witchy Book")]), glamour.element("ul", [], items)])
 
 // The route of the cover page (the first nav entry), so the sidebar header links to it.
 fn cover_path(nav: List(Nav)) -> String:
     if nav.length() >= 1:
         match nav.at(0):
-            Item(_d, _t, slug) -> "/p/${slug}"
-            Divider -> "/p/introduction"
+            Item(_d, _t, slug) -> page_path(slug)
+            Divider -> page_path("introduction")
     else:
-        "/p/introduction"
+        page_path("introduction")
 
 // One sidebar entry: a page button (indented by its depth, highlighted when it is the current
 // route) or the appendix divider.
@@ -138,20 +173,24 @@ fn nav_node(entry: Nav, route: String) -> VNode(Msg):
     match entry:
         Divider -> glamour.element("li", [glamour.prop("class", "nav-divider")], [])
         Item(depth, title, slug) ->
-            let path = "/p/${slug}"
+            let path = page_path(slug)
             let active = if path == route: " active" else: ""
             let cls = "nav-item nav-depth-${depth}${active}"
-            glamour.element("li", [], [glamour.element("button", [glamour.prop("class", cls), glamour.on("click", Visit(path))], [glamour.text(title)])])
+            glamour.element("li", [], [glamour.element("a", [glamour.prop("class", cls), glamour.navigation_url_attribute("href", glamour.navigation_url_or_root(path)), glamour.on("click", Visit(path))], [glamour.text(title)])])
 
-// (RFC-0041 P2) Render the page's Markdown, then replace each `witchy` code block with a host
-// `Slot` — the DOM shell mounts a RUNNABLE cell there, in a subtree glamour never diffs into,
-// so re-renders (a nav change, another fetch) can't clobber it. `markdown.to_vnode` wraps the
-// page in `<div class="markdown">[blocks]`, and a fenced block is a top-level `<pre>`, so we
-// only remap the div's immediate children. Everything else renders exactly as before.
+// Render the page's Markdown, then make each browser-runnable Witchy fence a compiler-owned
+// interactive region. The static page contains the complete editor cell; the small host adopts
+// that authenticated DOM after resumable activation and owns only compilation and execution.
+// `markdown.to_vnode` wraps the page in `<div class="markdown">[blocks]`, so only the immediate
+// fenced children need remapping. Everything else renders exactly as before.
 fn runnable_markdown(md: String) -> VNode(Msg):
     match markdown.to_vnode(md):
         Element(tag, attrs, blocks) -> Element(tag, attrs, blocks.map(to_runnable))
         other -> other
+
+fn embed_region(interactive: Interactive) -> VNode(Msg):
+    let mapped = glamour.ui(glamour.embed(interactive)).map(fn(_never: Nil): Route(""))
+    glamour.ui_node(mapped)
 
 fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
     match block:
@@ -172,14 +211,19 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
                             let code = code_text(ckids)
                             let lang = code_language(cattrs)
                             if lang == "witchy":
-                                let kind = if runs_in_browser(code): "witchy-runnable" else: "witchy-static"
-                                glamour.slot(kind, code)
+                                if runs_in_browser(code):
+                                    embed_region(runner.interactive_runner(code))
+                                else:
+                                    glamour.slot("witchy-static", code)
                             else if lang == "sh":
                                 glamour.slot("shell-static", code)
                             else if lang == "toml":
                                 glamour.slot("toml-static", code)
                             else if lang == "glamour-app":
-                                glamour.slot("glamour-app", code.trim())
+                                if code.trim() == "counter":
+                                    embed_region(counter.interactive_counter())
+                                else:
+                                    glamour.slot("glamour-app", code.trim())
                             else:
                                 block
                         else:
@@ -214,6 +258,18 @@ fn names_denied_capability(code: String) -> Bool:
 // info string there), or "" if none — so the app can slot each fence to the right highlighter.
 fn attr_language(a: Attr(Msg)) -> String:
     match a:
+        Attribute(name, value) ->
+            if name == "class" && value.starts_with("language-"):
+                value.drop(9)
+            else:
+                ""
+        BooleanAttribute(_name, _enabled) -> ""
+        Property(_name, _value) -> ""
+        UrlAttribute(_name, _value) -> ""
+        ClassAttribute(names) ->
+            names.fold("", fn(language: String, name: String): if language.is_empty() && name.starts_with("language-"): name.drop(9) else: language)
+        AriaAttribute(_name, _value) -> ""
+        CustomProperties(_assignments) -> ""
         Prop(name, value) ->
             if name == "class" && value.starts_with("language-"):
                 value.drop(9)
@@ -221,6 +277,7 @@ fn attr_language(a: Attr(Msg)) -> String:
                 ""
         On(_e, _m) -> ""
         OnInput(_e, _t) -> ""
+        OnDecoded(_id, _event, _decoder) -> ""
 
 fn code_language(attrs: List(Attr(Msg))) -> String:
     attrs.fold("", fn(language: String, a: Attr(Msg)):
@@ -240,6 +297,24 @@ fn code_text(kids: List(VNode(Msg))) -> String:
     else:
         ""
 
+// Static delivery receives a compiler-snapshotted content collection. The same
+// view function renders both the native static document and the client DOM, so
+// their equivalence is testable without maintaining a second template.
+pub fn web(content: StaticContent) -> Site:
+    let summary = glamour.static_content_get(content, "SUMMARY.md") ?? "# Summary\n\n[The witchy Book](title.md)\n\n- [Introduction](introduction.md)\n"
+    let introduction = glamour.static_content_get(content, "introduction.md") ?? "# Introduction\n"
+    var pages = [static_book_page("/", "/", summary, introduction)]
+    for file in glamour.static_content_files(content):
+        let source = glamour.static_content_path(file)
+        if source != "SUMMARY.md" && source.ends_with(".md"):
+            let slug = source.strip_suffix(".md")
+            let route = page_path(slug)
+            pages.push(static_book_page(route, route, summary, glamour.static_content_text(file)))
+    glamour.site(pages)
+
+fn static_book_page(output_route: String, model_route: String, summary: String, content: String) -> glamour.StaticPage:
+    glamour.static_page(output_route, book_view(Model(model_route, summary, content)))
+
 // --- MVU glue (the inbound/outbound JSON boundary) -----------------------------
 fn parse_model(j: Json) -> Model:
     let route = json.get_string(j, "route").unwrap_or("/")
@@ -247,13 +322,13 @@ fn parse_model(j: Json) -> Model:
     let content = json.get_string(j, "content").unwrap_or("")
     Model(route, summary, content)
 
-fn arg_int(j: Json, i: Int) -> Int:
+fn arg_json(j: Json, i: Int) -> Json:
     match json.get(j, "\$values"):
         Some(arr) ->
             match json.index(arr, i):
-                Some(v) -> json.as_int(v).unwrap_or(0)
-                None -> 0
-        None -> 0
+                Some(v) -> v
+                None -> JsonNull
+        None -> JsonNull
 
 fn arg_str(j: Json, i: Int) -> String:
     match json.get(j, "\$values"):
@@ -269,9 +344,11 @@ fn parse_msg(j: Json) -> Msg:
             if v == "Visit":
                 Visit(arg_str(j, 0))
             else if v == "GotNav":
-                GotNav(arg_int(j, 0), arg_str(j, 1))
+                GotNav(glamour.http_result_from_json(arg_json(j, 0)))
             else if v == "GotPage":
-                GotPage(arg_int(j, 0), arg_str(j, 1))
+                GotPage(glamour.http_result_from_json(arg_json(j, 0)))
+            else if v == "NavigationDone":
+                NavigationDone(glamour.navigation_result_from_json(arg_json(j, 0)))
             else:
                 Route(arg_str(j, 0))
         None -> Route("/")
@@ -284,14 +361,24 @@ fn model_to_json(m: Model) -> Json:
 fn msg_to_json(m: Msg) -> Json:
     json.from_value(m)
 
+fn authorize(ui: UiRoot) -> Auth:
+    Auth(glamour.fetch_scope(ui, "book", "GET", "/content/"), glamour.route_scope(ui, "/p", "push"))
+
+fn initial(start: Start) -> Model:
+    match start:
+        Start(route, bootstrap) -> Model(route, "", bootstrap)
+
+fn start(_auth: Auth, _model: Model) -> Cmd(Msg):
+    NoCmd
+
+fn subscriptions(_auth: Auth, _model: Model) -> Sub(Msg):
+    glamour.no_sub()
+
+fn app() -> Program(Auth, Model, Msg):
+    glamour.program(authorize, initial, start, update, view, subscriptions)
+
 pub fn export_step(ui: UiRoot, input: String) -> String:
-    // (RFC-0039/0040) narrow the host-minted `UiRoot` into a GET-only `UiFetch` (confined
-    // to the content dir) and a `UiRoute` (push under `/p`), curried into `update` — so the
-    // docs app can fetch pages and navigate only because it holds those tokens.
-    let fetch = glamour.fetch_scope(ui, "book", "GET", "/content/")
-    let route_cap = glamour.route_scope(ui, "/p", "push")
-    let upd = fn(m: Model, msg: Msg): update(m, msg, fetch, route_cap)
-    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.program_step_with(input, ui, app(), parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
     // idiom-exempt: the trailing newline frames the exported JSON for the host.

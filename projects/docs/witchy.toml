@@ -1,0 +1,16 @@
+[rune]
+name = "witchy-book"
+version = "0.1.0"
+
+[capabilities]
+runtime = []
+
+[dependencies]
+"glamour" = { path = "../glamour" }
+
+[web]
+entry = "src/docs.witchy"
+delivery = "static"
+content = "../../book/src"
+css = "web/docs.css"
+grants = "web/grants.toml"

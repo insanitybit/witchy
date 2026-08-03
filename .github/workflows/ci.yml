@@ -219,6 +219,44 @@ jobs:
       - name: Extract and prove flagship, derived CSP, and every complete example
         run: ./scripts/docs-artifact.sh smoke private-docs-artifact/witchy-docs-private-preview.tar.gz
 
+  glamour-browser:
+    name: Glamour browser acceptance (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Build Witchy
+        run: cargo build --bin witchy
+      - name: Install pinned browser test tools
+        working-directory: tests/browser
+        env:
+          GLAMOUR_BROWSER: ${{ matrix.browser }}
+        run: |
+          npm ci
+          npx playwright install --with-deps "$GLAMOUR_BROWSER"
+      - name: Run browser acceptance
+        working-directory: tests/browser
+        env:
+          GLAMOUR_BROWSER: ${{ matrix.browser }}
+          WITCHY_BIN: ${{ github.workspace }}/target/debug/witchy
+        run: npx playwright test --project="$GLAMOUR_BROWSER"
+      - name: Retain browser evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: glamour-browser-${{ matrix.browser }}
+          path: tests/browser/test-results/acceptance.json
+          if-no-files-found: error
+          retention-days: 14
+
   fmt:
     name: Formatting check (std + examples + projects)
     runs-on: ubuntu-latest

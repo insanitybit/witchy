@@ -253,6 +253,192 @@ pub fn run_checked_module(
     .map(|outcome| outcome.output)
 }
 
+/// An owned, authority-free result admitted across a compiler-evaluation
+/// boundary. Runtime handles, capabilities, closures, and opaque values are
+/// rejected instead of being exposed to tooling.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompilerValue {
+    Int(i64),
+    Float(f64),
+    String(String),
+    Bytes(Vec<u8>),
+    Bool(bool),
+    List(Vec<CompilerValue>),
+    Tuple(Vec<CompilerValue>),
+    Constructor {
+        name: String,
+        fields: Vec<CompilerValue>,
+    },
+    Dict(Vec<(CompilerValue, CompilerValue)>),
+    Unit,
+}
+
+/// Evaluate one no-argument function from an authenticated checked program.
+///
+/// This entry point mints no root capabilities. It is intended for deterministic
+/// compiler-owned declarations such as a Glamour static `web() -> Site`; a
+/// declaration that needs authority must use a build or runtime entry point
+/// whose grants are explicit instead.
+pub fn evaluate_checked_noargs(
+    checked: &witchy_types::pipeline::CheckedModule,
+    function: &str,
+) -> Result<CompilerValue, RuntimeError> {
+    evaluate_checked(checked, function, Vec::new())
+}
+
+/// Evaluate one function with closed, authority-free compiler values.
+///
+/// This is the data-bearing counterpart to [`evaluate_checked_noargs`]. Build
+/// tooling may snapshot declared inputs and pass them as ordinary Witchy data;
+/// it cannot pass capabilities, handles, closures, or any other opaque runtime
+/// value. The checked function signature remains the source of truth for the
+/// argument types.
+pub fn evaluate_checked(
+    checked: &witchy_types::pipeline::CheckedModule,
+    function: &str,
+    arguments: Vec<CompilerValue>,
+) -> Result<CompilerValue, RuntimeError> {
+    let runtime_catalog = checked
+        .runtime_declaration_catalog()
+        .map_err(|error| RuntimeError {
+            message: error.to_string(),
+        })?;
+    evaluate_module_with_catalog(
+        checked.module().clone(),
+        runtime_catalog,
+        function,
+        arguments,
+    )
+}
+
+/// Evaluate a compiler-owned checked body rewrite. Its authenticated catalog is
+/// inherited from the original checked module, while its distinct proof type
+/// keeps the rewritten AST out of production code generation.
+pub fn evaluate_compiler_module(
+    checked: &witchy_types::pipeline::CheckedEvaluationModule,
+    function: &str,
+    arguments: Vec<CompilerValue>,
+) -> Result<CompilerValue, RuntimeError> {
+    evaluate_module_with_catalog(
+        checked.module().clone(),
+        checked.runtime_declaration_catalog().clone(),
+        function,
+        arguments,
+    )
+}
+
+fn evaluate_module_with_catalog(
+    module: Module,
+    runtime_catalog: RuntimeDeclarationCatalog,
+    function: &str,
+    arguments: Vec<CompilerValue>,
+) -> Result<CompilerValue, RuntimeError> {
+    let function = function.to_string();
+    run_on_deep_stack(move || {
+        let (module, witnesses) = prepare_runtime_module(module, Some(&runtime_catalog))?;
+        let mut interp = Interpreter::new_with_witnesses(module, witnesses);
+        let declaration = interp.functions.get(&function).ok_or_else(|| RuntimeError {
+            message: format!("call to unknown function `{function}`"),
+        })?;
+        if declaration.params.len() != arguments.len() {
+            return err(format!(
+                "`{function}` expects {} compiler argument(s), received {}",
+                declaration.params.len(),
+                arguments.len()
+            ));
+        }
+        let arguments = arguments
+            .into_iter()
+            .map(runtime_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        let value = interp
+            .call(&function, arguments)
+            .map_err(|error| rt_at_line(error, interp.cur_line, &interp.cur_fn))?;
+        compiler_value(value)
+    })
+}
+
+fn runtime_value(value: CompilerValue) -> Result<Value, RuntimeError> {
+    let values = |values: Vec<CompilerValue>| {
+        values
+            .into_iter()
+            .map(runtime_value)
+            .collect::<Result<Vec<_>, _>>()
+    };
+    match value {
+        CompilerValue::Int(value) => Ok(Value::Int(value)),
+        CompilerValue::Float(value) => Ok(Value::Float(value)),
+        CompilerValue::String(value) => Ok(Value::str(value)),
+        CompilerValue::Bytes(value) => Ok(Value::Bytes(value)),
+        CompilerValue::Bool(value) => Ok(Value::Bool(value)),
+        CompilerValue::List(items) => Ok(Value::list(values(items)?)),
+        CompilerValue::Tuple(items) => Ok(Value::Tuple(Rc::new(values(items)?))),
+        CompilerValue::Constructor { name, fields } => Ok(Value::Ctor {
+            name: Rc::from(name),
+            fields: Rc::new(values(fields)?),
+        }),
+        CompilerValue::Dict(entries) => Ok(Value::Dict(Rc::new(
+            entries
+                .into_iter()
+                .map(|(key, value)| Ok((runtime_value(key)?, runtime_value(value)?)))
+                .collect::<Result<Vec<_>, RuntimeError>>()?,
+        ))),
+        CompilerValue::Unit => Ok(Value::Unit),
+    }
+}
+
+fn compiler_value(value: Value) -> Result<CompilerValue, RuntimeError> {
+    let values = |values: &[Value]| {
+        values
+            .iter()
+            .cloned()
+            .map(compiler_value)
+            .collect::<Result<Vec<_>, _>>()
+    };
+    match value {
+        Value::Int(value) => Ok(CompilerValue::Int(value)),
+        Value::Float(value) => Ok(CompilerValue::Float(value)),
+        Value::Str(value) => Ok(CompilerValue::String((*value).clone())),
+        Value::Bytes(value) => Ok(CompilerValue::Bytes(value)),
+        Value::Bool(value) => Ok(CompilerValue::Bool(value)),
+        Value::List(items) => Ok(CompilerValue::List(values(&items)?)),
+        Value::Tuple(items) => Ok(CompilerValue::Tuple(values(&items)?)),
+        Value::Ctor { name, fields } => Ok(CompilerValue::Constructor {
+            name: name.to_string(),
+            fields: values(&fields)?,
+        }),
+        Value::Dict(entries) => Ok(CompilerValue::Dict(
+            entries
+                .iter()
+                .cloned()
+                .map(|(key, value)| Ok((compiler_value(key)?, compiler_value(value)?)))
+                .collect::<Result<Vec<_>, RuntimeError>>()?,
+        )),
+        Value::Unit => Ok(CompilerValue::Unit),
+        Value::Cap(_)
+        | Value::Dir(_, _)
+        | Value::File(_)
+        | Value::Net(_)
+        | Value::Fetch(_)
+        | Value::Secret(_, _)
+        | Value::SecretStore(_)
+        | Value::Socket(_)
+        | Value::Listener(_)
+        | Value::Closure { .. }
+        | Value::Existential { .. }
+        | Value::Build(_) => err(
+            "compiler evaluation produced an authority-bearing or opaque value",
+        ),
+        #[cfg(feature = "test-fixtures")]
+        Value::FixtureFetch(_)
+        | Value::FixtureExec(_)
+        | Value::FixtureSecret(_)
+        | Value::FixtureSecretStore(_) => err(
+            "compiler evaluation produced a fixture authority value",
+        ),
+    }
+}
+
 /// Like [`run_module`], but with an evaluation step ceiling — the `comptime:`
 /// path, where termination is part of the contract.
 #[cfg(any(test, feature = "raw-module-test-api"))]

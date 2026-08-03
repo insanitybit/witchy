@@ -23,8 +23,22 @@ pub(super) fn unique_function_name(module: &WirModule, added: &[WirFunc], stem: 
 
 pub(super) fn adapt_function_result_to_slot(seq: &mut WirSeq, kind: Kind) {
     adapt_explicit_returns_seq(seq, kind);
-    if let Some(WirNode::Push(value)) = seq.last_mut() {
-        wrap_to_slot(value, kind);
+    if let Some(last) = seq.last_mut() {
+        match last {
+            WirNode::Source { body, .. } => adapt_tail_result_to_slot(body, kind),
+            WirNode::Push(value) => wrap_to_slot(value, kind),
+            _ => {}
+        }
+    }
+}
+
+fn adapt_tail_result_to_slot(seq: &mut WirSeq, kind: Kind) {
+    if let Some(last) = seq.last_mut() {
+        match last {
+            WirNode::Source { body, .. } => adapt_tail_result_to_slot(body, kind),
+            WirNode::Push(value) => wrap_to_slot(value, kind),
+            _ => {}
+        }
     }
 }
 
@@ -41,6 +55,7 @@ fn adapt_explicit_returns_seq(seq: &mut WirSeq, kind: Kind) {
 
 fn adapt_explicit_returns_node(node: &mut WirNode, kind: Kind) {
     match node {
+        WirNode::Source { body, .. } => adapt_explicit_returns_seq(body, kind),
         WirNode::Return(Some(value)) => {
             adapt_explicit_returns_expr(value, kind);
             wrap_to_slot(value, kind);
@@ -164,6 +179,7 @@ pub(in crate::wir_opt) fn rename_node_locals(
     renames: &HashMap<String, String>,
 ) {
     match node {
+        WirNode::Source { body, .. } => rename_seq_locals(body, renames),
         WirNode::SetLocal { local, value } => {
             if let Some(replacement) = renames.get(local) {
                 *local = replacement.clone();

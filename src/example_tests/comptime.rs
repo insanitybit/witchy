@@ -127,6 +127,104 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0107 Phase 2: `derive(PublicState)` recursively proves that every
+    /// field may cross a public or resumable boundary. It composes through
+    /// nominal records, sums, generics, and the public collection types, then
+    /// serializes through the ordinary `Reflect` representation on both
+    /// backends.
+    #[test]
+    fn public_state_derive_is_recursive_and_has_backend_parity() {
+        let src = r#"import json
+import public_state
+import reflect
+
+type Child derive(PublicState, Reflect):
+    name: String
+
+type LoadState derive(PublicState, Reflect):
+    Empty
+    Ready(Child)
+
+type Model(a) derive(PublicState, Reflect):
+    count: Int
+    selected: Option(a)
+    children: List(Child)
+    load: LoadState
+
+fn main(console: Console):
+    let model = Model(3, Some("chosen"), [Child("Ada")], Ready(Child("Grace")))
+    public_state.check(model)
+    console.print(json.encode(public_state.to_json(model)))
+"#;
+        let interpreted = link_run(src);
+        let compiled = run_linked_on_wasm(&[("main", src)], "main");
+        assert_eq!(compiled, interpreted, "PublicState must agree on both backends");
+        assert_eq!(interpreted.len(), 1);
+        assert!(interpreted[0].contains("\"count\":3"), "{interpreted:?}");
+        assert!(interpreted[0].contains("\"name\":\"Ada\""), "{interpreted:?}");
+        assert!(interpreted[0].contains("\"Ready\""), "{interpreted:?}");
+    }
+
+    /// `Reflect` alone is deliberately insufficient for public state. `Bytes`
+    /// can be reflected for diagnostics, but has no `PublicState` proof, so a
+    /// nested field fails during generated-code type checking.
+    #[test]
+    fn public_state_derive_rejects_non_public_nested_fields() {
+        let src = "import bytes\n\
+                   import public_state\n\
+                   \n\
+                   type Model derive(PublicState):\n\
+                   \x20   payloads: List(Bytes)\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   public_state.check(Model([bytes.from_string(\"private\")]))\n";
+        let linked = resolve_std_src(src);
+        let error = typeck::check(&linked).expect_err("Bytes must not satisfy PublicState");
+        let rendered = error.to_string();
+        assert!(rendered.contains("PublicState"), "{rendered}");
+        assert!(rendered.contains("Bytes"), "{rendered}");
+    }
+
+    #[test]
+    fn public_state_rejects_handwritten_and_user_generated_proofs() {
+        let handwritten = "import bytes\n\
+                           import public_state\n\
+                           \n\
+                           type Forged:\n\
+                           \x20   payload: Bytes\n\
+                           \n\
+                           impl PublicState for Forged:\n\
+                           \x20   fn public_state_proof(self):\n\
+                           \x20       Nil\n\
+                           \n\
+                           fn main(console: Console):\n\
+                           \x20   console.print(\"unreachable\")\n";
+        let linked = resolve_std_src(handwritten);
+        let error = typeck::check(&linked).expect_err("a handwritten proof must not widen PublicState");
+        let rendered = error.to_string();
+        assert!(rendered.contains("sealed public-boundary proof"), "{rendered}");
+        assert!(rendered.contains("derive(PublicState)"), "{rendered}");
+
+        let generated = "import bytes\n\
+                         import public_state\n\
+                         from meta import ItemSyntax, TypeInfo\n\
+                         \n\
+                         comptime fn derive_forged(t: TypeInfo) -> ItemSyntax:\n\
+                         \x20   item(\"impl PublicState for \" + t.name + \":\\n    fn public_state_proof(self):\\n        Nil\")\n\
+                         \n\
+                         type Forged derive(Forged):\n\
+                         \x20   payload: Bytes\n\
+                         \n\
+                         fn main(console: Console):\n\
+                         \x20   console.print(\"unreachable\")\n";
+        let linked = resolve_std_src(generated);
+        let error =
+            typeck::check(&linked).expect_err("a user-generated proof must not widen PublicState");
+        let rendered = error.to_string();
+        assert!(rendered.contains("sealed public-boundary proof"), "{rendered}");
+        assert!(rendered.contains("derive(PublicState)"), "{rendered}");
+    }
+
     #[test]
     fn derive_deserialize_uses_typed_json_error_on_both_backends() {
         let src = r#"import json

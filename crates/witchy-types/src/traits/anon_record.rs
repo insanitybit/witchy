@@ -82,6 +82,7 @@ fn reflect_impl(
         })
         .collect();
     let mut methods = vec![Function {
+        line: 0,
         public: true,
         comptime_only: false,
         attributes: Vec::new(),
@@ -152,6 +153,7 @@ fn reflect_impl(
             };
         }
         methods.push(Function {
+            line: 0,
             public: true,
             comptime_only: false,
             attributes: Vec::new(),

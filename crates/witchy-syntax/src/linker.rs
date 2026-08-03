@@ -317,7 +317,7 @@ pub const STD_MODULES: &[&str] = &[
     "show", "http", "json", "url", "duration", "prng", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "time", "encoding", "path", "testing",
     "future", "task", "chan", "webauthn", "secretstore", "reflect", "dynamic", "meta", "convert", "exec",
-    "policy", "jwt", "oauth", "rand", "vm", "bytes", "error", "borrow",
+    "policy", "jwt", "oauth", "rand", "vm", "bytes", "error", "borrow", "public_state",
 ];
 
 /// Bundled modules linked into every program and usable without an explicit
@@ -589,6 +589,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "vm" => Some(include_str!("../../../std/vm.witchy")),
         "bytes" => Some(include_str!("../../../std/bytes.witchy")),
         "error" => Some(include_str!("../../../std/error.witchy")),
+        "public_state" => Some(include_str!("../../../std/public_state.witchy")),
         // (RFC-0041) `glamour` is a published RUNE, not std — deliberately ABSENT from
         // `STD_MODULES` so it is not advertised as std and a project still declares it as a
         // dependency (the PM/footprint treat it as external). But its source is bundled here so
@@ -1126,7 +1127,14 @@ fn lower_generators_with_canonical_impls(
     Ok(lowered)
 }
 
-fn reclassify_module_members(module: &mut Module) {
+/// Resolve parser-ambiguous `module.member(...)` expressions against this
+/// module's declared imports.
+///
+/// The ordinary linker runs this before sealing a linked module. Compiler
+/// front ends that synthesize an item-only module from parsed source can run it
+/// before discarding the synthetic import declarations and appending the items
+/// to an already linked application module.
+pub fn reclassify_parsed_module_members(module: &mut Module) {
     let imports: HashSet<String> = module
         .imports
         .iter()
@@ -1534,7 +1542,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
     let mut modules: Vec<(String, Module)> = modules
         .into_iter()
         .map(|(name, mut module)| {
-            reclassify_module_members(&mut module);
+            reclassify_parsed_module_members(&mut module);
             crate::source_check::check(module.clone()).map_err(|error| {
                 let error = error.with_module(&name);
                 LinkError {
@@ -1698,7 +1706,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
     // source-visible identities while generators, async functions, records,
     // traits, impls, aliases, and their method signatures are still intact.
     for (_, module) in &mut modules {
-        reclassify_module_members(module);
+        reclassify_parsed_module_members(module);
     }
     let resolved = crate::source_check::resolve_linked_source(modules, user_modules)?;
     check_source(&resolved).map_err(SourceLinkError::Source)?;

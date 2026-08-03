@@ -505,6 +505,24 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
     }
+    // RFC-0109's exact web forms must route before ordinary test parsing and
+    // before `new`/`build` reach the embedded package manager.
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        match commands::web::run(&args) {
+            Ok(Some(message)) => {
+                if !message.is_empty() {
+                    println!("{message}");
+                }
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(error.exit_code());
+            }
+        }
+    }
     // `witchy test <file|dir>` runs authority-free in-language tests. The typed
     // parser keeps the opt-in integration grant surface in one place instead of
     // growing another collection of positional `args().nth(..)` reads.

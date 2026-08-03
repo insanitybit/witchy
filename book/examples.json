@@ -318,12 +318,26 @@
       "Console[Read,Write]"
     ],
     "output": [
-      "42 42"
+      "Witchy"
     ],
     "runnable": true
   },
   {
     "block": 16,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "42 42"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 17,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -338,7 +352,7 @@
     "runnable": true
   },
   {
-    "block": 17,
+    "block": 18,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -354,7 +368,7 @@
     "runnable": true
   },
   {
-    "block": 18,
+    "block": 19,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -368,7 +382,7 @@
     "runnable": true
   },
   {
-    "block": 19,
+    "block": 20,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,

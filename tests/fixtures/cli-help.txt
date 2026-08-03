@@ -8,6 +8,14 @@ USAGE:
                                                   (a verify-the-compiler tool, not a workflow step)
     witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] [--filter <text>] [--list] [--show-output] [--seed <u64>] [--format human|json] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
                                                   run zero-authority fixture tests on one or both backends, or explicit integration tests
+    witchy new --web <directory>                  create a capability-safe Glamour project
+    witchy test --web [directory]                 validate a Glamour project and optimized browser artifact
+    witchy build --web [--out <directory>] [directory]
+                                                  create deterministic production web artifacts
+    witchy doctor --web [--format human|json] [directory]
+                                                  audit web project, target, ABI, and reproducibility
+    witchy dev [--host 127.0.0.1] [--port 3000] [directory]
+                                                  run the integrated Glamour development loop
     witchy sandbox [--confine <best-effort|required>] [--dir <root>] [--net <addr>]... [--fetch <origin>]... <file.witchy> [args...]
                                                   compile and run in a VM granted exactly its footprint
     witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)

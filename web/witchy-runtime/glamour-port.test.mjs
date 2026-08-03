@@ -67,7 +67,7 @@ fn view(session: String) -> VNode(Msg):
 
 fn update(session: String, msg: Msg, cred: CredentialPort) -> (String, Cmd(Msg)):
     match msg:
-        Login -> (session, glamour.port(cred, "", "LoggedIn"))
+        Login -> (session, glamour.port_compat(cred, "", "LoggedIn"))
         LoggedIn(who) -> (who, NoCmd)
 
 fn parse_model(j: Json) -> String:

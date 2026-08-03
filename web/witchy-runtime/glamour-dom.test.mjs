@@ -162,9 +162,26 @@ try {
   const app = await mount(wasm, root, {
     document: fakeDocument,
     initialModel: 0, // Model = Int
+    instantiateOpts: { userCaps: [["counter"]] },
   });
 
   // --- initial render ---
+  const plans = app.getTemplatePlans();
+  ok(plans.size === 1, "the host interns one compiler-emitted template plan");
+  const [counterPlan] = plans.values();
+  ok(
+    /^glamour-tp1-[0-9a-f]{64}$/.test(counterPlan?.id || ""),
+    "the template plan has a versioned semantic identity",
+  );
+  ok(
+    counterPlan?.slots.map((slot) => `${slot.index}:${slot.kind}:${slot.name}`).join(",") ===
+      "0:event:click,1:child:,2:event:click",
+    "the plan carries typed event and child slot metadata",
+  );
+  ok(
+    typeof counterPlan?.origin === "string" && counterPlan.origin.startsWith("counter:"),
+    "the plan retains compiler-owned invocation metadata",
+  );
   const div = querySelector(root, "div");
   ok(div !== null, "the rune renders a <div> root");
   const span = querySelector(root, "span");
@@ -199,6 +216,7 @@ try {
   // The differ patches in place: the same <div> node persists across re-renders
   // (no wholesale root replacement for a same-shaped tree).
   ok(querySelector(root, "div") === div, "the differ patches the existing DOM in place");
+  ok(app.getTemplatePlans().size === 1, "re-renders reuse the interned template plan");
 
   // BUG-512: the canonical serializer uses the same invalid-name markers as
   // static HTML, so a bad property/event name never enters the wire as a sink.
@@ -276,6 +294,29 @@ fn main(console: Console):
       rawDiv.getAttribute("data-glamour-invalid-event") === null,
     "reconciliation removes normalized invalid-name markers",
   );
+
+  const malformedPlanSource = join(work, "raw_malformed_plan.witchy");
+  writeFileSync(
+    malformedPlanSource,
+    `pub fn export_step(_input: String) -> String:
+    "{\\"model\\":0,\\"vnode\\":{\\"plan\\":{\\"version\\":1,\\"id\\":\\"forged\\",\\"origin\\":\\"raw:1\\",\\"slots\\":[]},\\"node\\":{\\"text\\":\\"unsafe\\"}},\\"cmd\\":{\\"cmd\\":\\"none\\"}}"
+
+fn main(console: Console):
+    console.print(export_step(""))
+`,
+  );
+  const malformedPlanWasm = join(work, "raw_malformed_plan.wasm");
+  execFileSync(BIN, ["compile", malformedPlanSource, "--out", malformedPlanWasm], { cwd: work });
+  let malformedPlanRejected = false;
+  try {
+    await mount(readFileSync(malformedPlanWasm), new FakeElement("root"), {
+      document: fakeDocument,
+      initialModel: 0,
+    });
+  } catch (error) {
+    malformedPlanRejected = String(error).includes("malformed template plan");
+  }
+  ok(malformedPlanRejected, "the host rejects a forged template identity before DOM writes");
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

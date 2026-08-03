@@ -71,7 +71,10 @@ async function main() {
   const counterEl = document.getElementById("counter");
   const counterBytes = await fetchWasm("counter");
   // initialModel 0 — Model = Int (a bare JSON integer round-trips).
-  const app = await mount(counterBytes, counterEl, { initialModel: 0 });
+  const app = await mount(counterBytes, counterEl, {
+    initialModel: 0,
+    instantiateOpts: { userCaps: [["counter"]] },
+  });
   tagCounterButtons(counterEl);
   // Re-tag after every dispatch (the differ keeps the same nodes, but be safe if a
   // future rune replaces them) by wrapping the mount's dispatch is overkill; the

@@ -61,6 +61,42 @@ function pageWith(source) {
   return div;
 }
 
+// Build the exact static marker emitted by the native Glamour renderer.
+function compilerPageWith(source) {
+  const div = new FakeElement("div");
+  const pre = new FakeElement("pre");
+  pre.setAttribute("class", "glamour-slot");
+  pre.setAttribute("data-glamour-slot-kind", "witchy-runnable");
+  const code = new FakeElement("code");
+  code.appendChild(new FakeText(source));
+  pre.appendChild(code);
+  div.appendChild(pre);
+  return div;
+}
+
+function publishedPageWith(source) {
+  const root = new FakeElement("div");
+  const cell = new FakeElement("div");
+  cell.setAttribute("class", "witchy-cell");
+  cell.setAttribute("data-witchy-runnable", "1");
+  const editor = new FakeElement("textarea");
+  editor.setAttribute("class", "witchy-editor");
+  editor.appendChild(new FakeText(source));
+  const run = new FakeElement("button");
+  run.setAttribute("class", "witchy-run");
+  run.textContent = "Run";
+  const output = new FakeElement("pre");
+  output.setAttribute("class", "witchy-output");
+  const stats = new FakeElement("pre");
+  stats.setAttribute("class", "witchy-stats");
+  const copy = new FakeElement("button");
+  copy.setAttribute("class", "witchy-copy");
+  copy.textContent = "Copy";
+  for (const child of [editor, run, output, stats, copy]) cell.appendChild(child);
+  root.appendChild(cell);
+  return { root, cell };
+}
+
 // The compiler: instantiate `web/witchy.wasm` (no imports) — the very module the playground
 // and pg_validate use. Lazily, exactly as a browser would fetch it on first Run.
 const loadCompiler = async () => {
@@ -88,6 +124,19 @@ try {
   ok((cells[0].output.getAttribute("class") || "").includes("ok"), "a successful run is marked ok");
   ok(cells[0].statsOutput.textContent === "", "ordinary cells do not show optimization counters");
 
+  const published = publishedPageWith(
+    'fn main(console: Console):\n    console.print("adopted server cell")',
+  );
+  const adopted = enhanceRunnableCells(published.root, { document: doc, runProgram });
+  ok(adopted.length === 1, "one compiler-published runnable cell is adopted");
+  ok(adopted[0].element === published.cell, "adoption retains the server-rendered cell node");
+  await adopted[0].run();
+  ok(adopted[0].output.textContent === "adopted server cell", "the adopted cell runs its server model");
+  ok(
+    enhanceRunnableCells(published.root, { document: doc, runProgram }).length === 0,
+    "published-cell adoption is idempotent",
+  );
+
   // Editing the textarea and re-running runs the READER'S edited source, not the seed.
   cells[0].editor.value = 'fn main(console: Console):\n    console.print("the reader edited this")';
   await cells[0].run();
@@ -106,34 +155,39 @@ try {
   await argvCells[0].run();
   ok(argvCells[0].output.textContent === "2\none\nhéllo", "a runnable cell receives ordered UTF-8 argv");
 
-  // 3. The book host receives explicit page-supplied SecretStore grants.
-  const secrets = pageWith(`import crypto
+  // 3. The book host receives explicit page-supplied SecretStore grants. Node
+  // builds without JSPI cannot exercise asynchronous WebCrypto or VM imports;
+  // the browser confinement job covers them on the supported browser matrix.
+  const hasJspi = typeof WebAssembly.Suspending === "function"
+    && typeof WebAssembly.promising === "function";
+  if (hasJspi) {
+    const secrets = pageWith(`import crypto
 import secretstore
 
 fn main(console: Console, secrets: SecretStore):
     let signing = secrets.require("signing")
     console.print("signature length \${crypto.sign(signing, "release v1.2.3").length()}")
     console.print("token: \${crypto.reveal(secrets.require("api-token"))}")`);
-  const secretCells = enhanceRunnableCells(secrets, {
-    document: doc,
-    runProgram,
-    runOptions: {
-      capabilities: {
-        secrets: {
-          signing: { value: "0".repeat(64), useOnly: true },
-          "api-token": "sk-live-abc",
+    const secretCells = enhanceRunnableCells(secrets, {
+      document: doc,
+      runProgram,
+      runOptions: {
+        capabilities: {
+          secrets: {
+            signing: { value: "0".repeat(64), useOnly: true },
+            "api-token": "sk-live-abc",
+          },
         },
       },
-    },
-  });
-  await secretCells[0].run();
-  ok(
-    secretCells[0].output.textContent === "signature length 128\ntoken: sk-live-abc",
-    "a runnable cell signs with an opaque secret and reveals only the value secret",
-  );
+    });
+    await secretCells[0].run();
+    ok(
+      secretCells[0].output.textContent === "signature length 128\ntoken: sk-live-abc",
+      `a runnable cell signs with an opaque secret and reveals only the value secret (got ${JSON.stringify(secretCells[0].output.textContent)})`,
+    );
 
   // 4. The book host delegates VM examples to fresh sequential instances.
-  const vm = pageWith(`import vm
+    const vm = pageWith(`import vm
 import bytes
 
 fn step(state: Bytes, request: Bytes) -> Bytes:
@@ -147,22 +201,30 @@ fn main(console: Console):
     )
     for response in responses:
         console.print(bytes.to_string(response))`);
-  const vmWorkers = [];
-  const vmCells = enhanceRunnableCells(vm, {
-    document: doc,
-    runProgram,
-    runOptions: {
-      capabilities: { vm: true },
-      onVmSpawn: (instance) => vmWorkers.push(instance),
-    },
-  });
-  await vmCells[0].run();
-  ok(vmCells[0].output.textContent === "a\nab", "a runnable cell executes vm.serve sequentially");
-  ok(vmWorkers.length === 1, "the runnable VM cell uses one fresh worker instance");
+    const vmWorkers = [];
+    const vmCells = enhanceRunnableCells(vm, {
+      document: doc,
+      runProgram,
+      runOptions: {
+        capabilities: { vm: true },
+        onVmSpawn: (instance) => vmWorkers.push(instance),
+      },
+    });
+    await vmCells[0].run();
+    ok(vmCells[0].output.textContent === "a\nab", `a runnable cell executes vm.serve sequentially (got ${JSON.stringify(vmCells[0].output.textContent)})`);
+    ok(vmWorkers.length === 1, `the runnable VM cell uses one fresh worker instance (got ${vmWorkers.length})`);
+  } else {
+    console.log("  skip: SecretStore signing and VM worker cases require WebAssembly JSPI");
+  }
 
   // 5. Idempotent: re-enhancing the same root finds nothing new.
   const again = enhanceRunnableCells(root, { document: doc, runProgram });
   ok(again.length === 0, "re-enhancing is idempotent (no double cells)");
+
+  const compilerRoot = compilerPageWith('fn main(console: Console):\n    console.print("compiler marker")');
+  const compilerCells = enhanceRunnableCells(compilerRoot, { document: doc, runProgram });
+  ok(compilerCells.length === 1, "the compiler-emitted static runnable marker is enhanced");
+  ok(qsa(compilerRoot, "textarea").length === 1, "the compiler marker becomes an editable cell");
 
   // 6. A compile error surfaces as an error cell, not a thrown exception.
   const bad = pageWith("fn main(console: Console):\n    console.print(nope)");

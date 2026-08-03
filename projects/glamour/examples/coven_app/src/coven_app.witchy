@@ -10,7 +10,7 @@
 import markdown
 import list
 import reflect
-from glamour import VNode, Cmd, UiFetch, UiRoute, UiRoot
+from glamour import Cmd, HttpResult, NavigationResult, Program, Start, Sub, Ui, UiFetch, UiRoot, UiRoute, VNode
 from json import Json
 
 type Model:
@@ -19,22 +19,38 @@ type Model:
 type Msg derive(Reflect):
     Route(String)
     Goto(String)
-    GotCatalog(Int, String)
-    GotPackage(Int, String)
+    GotCatalog(HttpResult)
+    GotPackage(HttpResult)
+    NavigationDone(NavigationResult)
 
-fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd(Msg)):
-    match m:
-        Model(route, cat, pkg) ->
-            match msg:
-                Route(path) ->
-                    if path.starts_with("/p/"):
-                        let name = path.drop(3)
-                        (Model(path, cat, pkg), glamour.http_get(fetch, "/api/coven/doc?name=${name}", "GotPackage"))
-                    else:
-                        (Model("/", cat, pkg), glamour.http_get(fetch, "/api/coven/catalog", "GotCatalog"))
-                Goto(name) -> (Model(route, cat, pkg), glamour.navigate(route_cap, "/p/${name}"))
-                GotCatalog(_status, body) -> (Model(route, body, pkg), NoCmd)
-                GotPackage(_status, body) -> (Model(route, cat, body), NoCmd)
+type Auth:
+    Auth(UiFetch, UiRoute)
+
+fn update(auth: Auth, m: Model, msg: Msg) -> (Model, Cmd(Msg)):
+    match auth:
+        Auth(fetch, route_cap) ->
+            match m:
+                Model(route, cat, pkg) ->
+                    match msg:
+                        Route(path) ->
+                            if path.starts_with("/p/"):
+                                let name = path.drop(3)
+                                (Model(path, cat, pkg), glamour.http_get("coven.package", fetch, "/api/coven/doc?name=${name}", fn(result: HttpResult): GotPackage(result)))
+                            else:
+                                (Model("/", cat, pkg), glamour.http_get("coven.catalog", fetch, "/api/coven/catalog", fn(result: HttpResult): GotCatalog(result)))
+                        Goto(name) -> (Model(route, cat, pkg), glamour.navigate("coven.navigation", route_cap, "/p/${name}", fn(result: NavigationResult): NavigationDone(result)))
+                        GotCatalog(result) ->
+                            match result:
+                                HttpResponse(_status, body) -> (Model(route, body, pkg), NoCmd)
+                                _ -> (m, NoCmd)
+                        GotPackage(result) ->
+                            match result:
+                                HttpResponse(_status, body) -> (Model(route, cat, body), NoCmd)
+                                _ -> (m, NoCmd)
+                        NavigationDone(result) ->
+                            match result:
+                                Navigated(path) -> update(auth, m, Route(path))
+                                _ -> (m, NoCmd)
 
 // --- views (the trusted shell; data is registry-sourced, rendered safely) ----
 fn catalog_names(body: String) -> List(String):
@@ -64,13 +80,13 @@ fn doc_markdown(body: String) -> String:
 fn package_view(pkg: String) -> VNode(Msg):
     glamour.element("article", [glamour.prop("class", "package")], [glamour.element("button", [glamour.prop("class", "back"), glamour.on("click", Route("/"))], [glamour.text("← all runes")]), glamour.element("section", [glamour.prop("class", "apidocs")], [markdown.to_vnode(doc_markdown(pkg))])])
 
-fn view(m: Model) -> VNode(Msg):
+fn view(m: Model) -> Ui(Msg):
     match m:
         Model(route, cat, pkg) ->
             if route.starts_with("/p/"):
-                package_view(pkg)
+                glamour.ui(package_view(pkg))
             else:
-                catalog_view(cat)
+                glamour.ui(catalog_view(cat))
 
 // --- MVU glue ----------------------------------------------------------------
 fn gs(j: Json, k: String) -> String:
@@ -84,13 +100,13 @@ fn model_to_json(m: Model) -> Json:
         Model(route, cat, pkg) ->
             JsonObject([("route", JsonString(route)), ("catalog", JsonString(cat)), ("package", JsonString(pkg))])
 
-fn arg_int(j: Json, i: Int) -> Int:
+fn arg_json(j: Json, i: Int) -> Json:
     match json.get(j, "\$values"):
         Some(arr) ->
             match json.index(arr, i):
-                Some(v) -> json.as_int(v).unwrap_or(0)
-                None -> 0
-        None -> 0
+                Some(v) -> v
+                None -> JsonNull
+        None -> JsonNull
 
 fn arg_str(j: Json, i: Int) -> String:
     match json.get(j, "\$values"):
@@ -106,9 +122,11 @@ fn parse_msg(j: Json) -> Msg:
             if v == "Goto":
                 Goto(arg_str(j, 0))
             else if v == "GotCatalog":
-                GotCatalog(arg_int(j, 0), arg_str(j, 1))
+                GotCatalog(glamour.http_result_from_json(arg_json(j, 0)))
             else if v == "GotPackage":
-                GotPackage(arg_int(j, 0), arg_str(j, 1))
+                GotPackage(glamour.http_result_from_json(arg_json(j, 0)))
+            else if v == "NavigationDone":
+                NavigationDone(glamour.navigation_result_from_json(arg_json(j, 0)))
             else:
                 Route(arg_str(j, 0))
         None -> Route("/")
@@ -116,15 +134,24 @@ fn parse_msg(j: Json) -> Msg:
 fn msg_to_json(m: Msg) -> Json:
     json.from_value(m)
 
+fn authorize(ui: UiRoot) -> Auth:
+    Auth(glamour.fetch_scope(ui, "coven", "GET", "/api/coven/"), glamour.route_scope(ui, "/p", "push"))
+
+fn initial(start: Start) -> Model:
+    match start:
+        Start(route, _bootstrap) -> Model(route, "", "")
+
+fn start(_auth: Auth, _model: Model) -> Cmd(Msg):
+    NoCmd
+
+fn subscriptions(_auth: Auth, _model: Model) -> Sub(Msg):
+    glamour.no_sub()
+
+fn app() -> Program(Auth, Model, Msg):
+    glamour.program(authorize, initial, start, update, view, subscriptions)
+
 pub fn export_step(ui: UiRoot, input: String) -> String:
-    // (RFC-0039/0040) the host mints `UiRoot` at this browser root; Glamour narrows it
-    // into a `UiFetch` (GET) and a `UiRoute` (push under `/p`), both curried into `update`
-    // via a closure — so `update` can build `Cmd.Http`/`Cmd.Nav` only because it holds the
-    // matching tokens.
-    let fetch = glamour.fetch_scope(ui, "coven", "GET", "/api/coven/")
-    let route_cap = glamour.route_scope(ui, "/p", "push")
-    let upd = fn(m: Model, msg: Msg): update(m, msg, fetch, route_cap)
-    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.program_step_with(input, ui, app(), parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
     let output = export_step(ui, "{\"model\": {\"route\": \"/\", \"catalog\": \"\", \"package\": \"\"}}")

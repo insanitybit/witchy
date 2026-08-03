@@ -23,6 +23,23 @@ fn add(a: Int, b: Int) -> Int:
     }
 
     #[test]
+    fn function_declaration_lines_are_source_metadata() {
+        let first = parse_module("fn answer() -> Int:\n    42\n").expect("first function");
+        let moved = parse_module("\n\nfn answer() -> Int:\n    42\n").expect("moved function");
+        let Item::Function(first) = &first.items[0] else {
+            panic!("expected function")
+        };
+        let Item::Function(moved) = &moved.items[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(first.line, 1);
+        assert_eq!(moved.line, 3);
+        let mut relined = first.clone();
+        relined.line = 99;
+        assert_eq!(first, &relined, "declaration lines are not semantic fields");
+    }
+
+    #[test]
     fn grantable_capability_marker_parses() {
         // `grantable capability X:` (RFC-0038) is a sealed capability flagged
         // grantable; an ordinary `capability`/`type` is not.
@@ -1573,4 +1590,36 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
         ] {
             parse_module(source).expect_err("runtime_type accepts exactly one type");
         }
+    }
+
+    #[test]
+    fn expression_span_sidecar_retains_exact_nested_source_ranges() {
+        let source = "fn calculate() -> Int:\n    add(1, 2 * 3)\n";
+        let (module, spans) =
+            parse_module_with_expression_spans(source).expect("expression source ranges");
+        assert_eq!(module, parse_module(source).expect("ordinary parse"));
+        let positions = spans
+            .iter()
+            .map(|span| {
+                (
+                    span.source.start.line,
+                    span.source.start.column,
+                    span.source.end.line,
+                    span.source.end.column,
+                    span.statement_line,
+                )
+            })
+            .collect::<Vec<_>>();
+        for expected in [
+            (2, 5, 2, 18, 2),  // add(1, 2 * 3)
+            (2, 9, 2, 10, 2),  // 1
+            (2, 12, 2, 17, 2), // 2 * 3
+            (2, 16, 2, 17, 2), // 3
+        ] {
+            assert!(
+                positions.contains(&expected),
+                "missing {expected:?} in {positions:?}"
+            );
+        }
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
     }

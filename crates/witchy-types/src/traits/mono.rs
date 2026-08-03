@@ -24,6 +24,7 @@ impl Mono<'_> {
                 if self.skip_walk.contains(&f.name) {
                     continue;
                 }
+                self.current_function.clone_from(&f.name);
                 let mut s = Scope::new();
                 seed_typed_params(&f.params, &mut s);
                 self.walk_block(&mut f.body, &mut s);
@@ -33,6 +34,7 @@ impl Mono<'_> {
         // generate (the list grows as we go).
         let mut i = 0;
         while i < self.generated.len() {
+            self.current_function.clone_from(&self.generated[i].name);
             let params = self.generated[i].params.clone();
             let mut body = std::mem::replace(
                 &mut self.generated[i].body,
@@ -88,7 +90,8 @@ impl Mono<'_> {
         scope: &Scope<Type>,
         result_ty: Option<&Type>,
     ) -> Option<Vec<Type>> {
-        let bounded = !template.bounds.is_empty();
+        let requires_specialization =
+            !template.bounds.is_empty() || self.skip_walk.contains(&template.name);
         let mut bindings = HashMap::new();
         let mut table_confirmed = HashSet::new();
 
@@ -128,7 +131,7 @@ impl Mono<'_> {
                     return None;
                 }
                 let key = type_key(ty.unqualified());
-                if !bounded
+                if !requires_specialization
                     && !table_confirmed.contains(&var)
                     && !is_specializable_type_arg(&key)
                 {
@@ -359,7 +362,8 @@ impl Mono<'_> {
     }
 
     fn walk_block(&mut self, b: &mut Block, scope: &mut Scope<Type>) {
-        for stmt in &mut b.stmts {
+        for (index, stmt) in b.stmts.iter_mut().enumerate() {
+            self.current_line = b.lines.get(index).copied().unwrap_or(0);
             match stmt {
                 Stmt::Let { name, ty, value, mutable } => {
                     self.walk_expr(value, scope);
@@ -418,6 +422,38 @@ impl Mono<'_> {
                                 *name = "show.render".to_string();
                             }
                         }
+                    }
+                }
+                if matches!(
+                    name.as_str(),
+                    "template_child_value" | "glamour.template_child_value"
+                ) && args.len() == 1
+                {
+                    let argument_type = self.type_ast(&args[0], scope);
+                    let replacement = argument_type.as_ref().and_then(|ty| {
+                        let Type::Named(type_name, arguments) = ty.unqualified() else {
+                            return None;
+                        };
+                        match (type_name.as_str(), arguments.len()) {
+                            ("String", 0) => Some("template_child_string"),
+                            ("glamour.VNode", 1) => Some("template_child_vnode"),
+                            ("glamour.Ui", 1) => Some("template_child_ui"),
+                            _ => None,
+                        }
+                    });
+                    match replacement {
+                        Some(replacement) => {
+                            let prefix = if name.starts_with("glamour.") {
+                                "glamour."
+                            } else {
+                                ""
+                            };
+                            *name = format!("{prefix}{replacement}");
+                        }
+                        None => self.diagnostics.push(format!(
+                            "{}Glamour child holes accept only `String`, `glamour.VNode(msg)`, or `glamour.Ui(msg)`",
+                            self.current_location_prefix(),
+                        )),
                     }
                 }
                 if !scope.is_local(name)
@@ -616,6 +652,22 @@ impl Mono<'_> {
                 *name = self.specialize(&original, type_args);
             }
             Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
+        }
+    }
+
+    fn current_location_prefix(&self) -> String {
+        if self.current_line == 0 {
+            return String::new();
+        }
+        let function = self
+            .current_function
+            .rsplit('.')
+            .next()
+            .unwrap_or(&self.current_function);
+        if function.is_empty() {
+            format!("line {}: ", self.current_line)
+        } else {
+            format!("`{function}`, line {}: ", self.current_line)
         }
     }
 }

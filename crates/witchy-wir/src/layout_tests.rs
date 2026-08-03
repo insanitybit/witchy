@@ -108,6 +108,7 @@ fn record(name: &str, packed: bool, fields: Vec<(&str, Type)>) -> TypeDef {
         grantable: false,
         packed,
         partial_eq_derived: false,
+        public_state_derived: false,
     }
 }
 
@@ -132,6 +133,7 @@ fn sum(name: &str, arities: &[usize]) -> TypeDef {
         grantable: false,
         packed: false,
         partial_eq_derived: false,
+        public_state_derived: false,
     }
 }
 

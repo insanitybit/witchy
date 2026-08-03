@@ -1,8 +1,12 @@
 //! `tag"…${expr}…"` — compile-time tagged literals (RFC-0006).
 //!
 //! A *tag* is a `comptime` function
-//! `comptime fn <tag>(parts: List(String), holes: List(String)) -> meta.ExprSyntax`. A
-//! tagged literal `tag"a${x}b"` is expanded AT COMPILE TIME — before type-checking.
+//! `comptime fn <tag>(parts: List(String), holes: List(String)) -> meta.ExprSyntax`.
+//! A tag may accept a third `String` parameter containing the compiler-owned
+//! invocation origin (`module:line`). This is metadata, not identity: generators
+//! derive stable semantic IDs from their static input and use the origin only for
+//! diagnostics. A tagged literal `tag"a${x}b"` is expanded AT COMPILE TIME —
+//! before type-checking.
 //!
 //! ## Marker substitution (the hygiene split)
 //!
@@ -37,7 +41,8 @@
 //! after this pass; typeck, the interpreter, and both codegen backends panic on it.
 
 use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Stmt, Type};
-use std::cell::Cell;
+use witchy_syntax::origin::{OriginTable, SourcePosition, SourceSpan};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 /// A tag may emit a tag (re-expansion); cap the nesting so a self-referential or
@@ -65,7 +70,11 @@ fn hole_marker_index(name: &str) -> Option<usize> {
 /// generated expression source over the literal. Runs after `comptime::expand`
 /// (per module), before name resolution / type-checking. `name` is the module's
 /// name, for error messages.
-pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) -> Result<(), String> {
+pub fn expand(
+    name: &str,
+    module: &mut Module,
+    siblings: &[(String, Module)],
+) -> Result<OriginTable, String> {
     // Snapshot the module's own items + std imports once: every tag expansion in
     // this module runs in a comptime program carrying this context, so a tag
     // defined locally (or in std) is callable. Cloning per-module (not per-hole)
@@ -119,6 +128,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
             .chain(siblings.iter().cloned())
             .collect(),
         fresh_invocation: Cell::new(0),
+        origins: RefCell::new(OriginTable::default()),
     };
     // Expand tagged literals in EVERY expression-bearing item position, not just
     // free-function bodies (BUG-181): an inherent/trait `impl` method body, a
@@ -146,7 +156,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
             Item::Type(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
-    Ok(())
+    Ok(ctx.origins.into_inner())
 }
 
 fn expand_tag_program(
@@ -170,6 +180,8 @@ struct Context {
     /// Stable traversal ordinal used to give each tagged-literal evaluator an
     /// independent RFC-0080 fresh-name namespace.
     fresh_invocation: Cell<u64>,
+    /// Backend-neutral source inventory retained by the checked linker result.
+    origins: RefCell<OriginTable>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -310,7 +322,7 @@ fn walk_expr_depth(
         let hole_spans = std::mem::take(hole_spans);
         let mut child_ancestry = ancestry.to_vec();
         child_ancestry.push(current_site);
-        let mut spliced = expand_one(
+        let (mut spliced, canonical_tag, tag_name, definition_origin) = expand_one(
             ctx,
             &tag,
             &parts,
@@ -319,6 +331,22 @@ fn walk_expr_depth(
             invocation_line,
             ancestry,
         )?;
+        let point = |line: u32, column: u32| SourceSpan {
+            module: ctx.name.clone(),
+            start: SourcePosition { line, column },
+            end: SourcePosition { line, column },
+        };
+        ctx.origins.borrow_mut().record_tagged_literal(
+            &ctx.name,
+            canonical_tag,
+            tag_name,
+            SourceSpan::line(definition_origin.module, definition_origin.definition_line),
+            SourceSpan::line(&ctx.name, invocation_line),
+            hole_spans
+                .iter()
+                .map(|(line, column)| point(*line, *column))
+                .collect(),
+        );
         // Substitution happens before recursive expansion. This preserves the
         // established generated-tree order: dropped holes are never expanded,
         // and duplicated holes receive independent invocation identities.
@@ -554,7 +582,7 @@ fn expand_one(
     hole_spans: &[(u32, u32)],
     invocation_line: u32,
     ancestry: &[String],
-) -> Result<Expr, String> {
+) -> Result<(Expr, String, String, TagOrigin), String> {
     let where_ = || expansion_site_with_trace(ctx, tag, invocation_line, ancestry);
     let invocation = ctx.fresh_invocation.get();
     let next_invocation = invocation
@@ -571,9 +599,25 @@ fn expand_one(
     let markers: Vec<String> = (0..holes.len()).map(hole_marker).collect();
     let (selected_tag, definition_origin) = validate_tag(ctx, tag)
         .map_err(|reason| format!("{}: tag `{tag}` {reason}", where_()))?;
+    let canonical_tag = format!("{}.{}", definition_origin.module, selected_tag.name);
+    let tag_name = selected_tag.name.clone();
+    let mut tag_args = vec![str_list(parts), str_list(&markers)];
+    match selected_tag.params.len() {
+        2 => {}
+        3 => tag_args.push(Expr::Str(format!(
+            "{}:{}",
+            ctx.name, invocation_line
+        ))),
+        count => {
+            return Err(format!(
+                "{}: tag `{tag}` must accept `(parts, holes)` or `(parts, holes, origin)`, found {count} parameters",
+                where_()
+            ));
+        }
+    }
     let tag_call = Expr::Call {
         name: selected_tag.name.clone(),
-        args: vec![str_list(parts), str_list(&markers)],
+        args: tag_args,
     };
 
     let emit_call = Stmt::Expr(Expr::Call {
@@ -582,6 +626,7 @@ fn expand_one(
     });
     let bridge_name = "@compiler:tag-bridge";
     let bridge = Function {
+        line: 0,
         public: true,
         comptime_only: true,
         attributes: Vec::new(),
@@ -598,6 +643,7 @@ fn expand_one(
         is_async: false,
     };
     let main = Function {
+        line: 0,
         public: false,
         comptime_only: false,
         attributes: Vec::new(),
@@ -871,7 +917,7 @@ fn expand_one(
     // Each clone keeps the hole's source span, so diagnostics still point into the
     // literal. A tag that drops a hole simply never places its marker (fine).
     substitute_holes(&mut e, &hole_exprs, &where_)?;
-    Ok(e)
+    Ok((e, canonical_tag, tag_name, definition_origin))
 }
 
 /// Parse `src` as a single expression by wrapping it as the tail expression of a

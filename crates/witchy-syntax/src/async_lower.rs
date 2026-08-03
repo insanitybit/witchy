@@ -551,6 +551,7 @@ struct Ctx<'a> {
     segments: Vec<Function>,
     view_fns: &'a HashSet<String>,
     borrowed_shells: &'a BorrowedShellCatalog,
+    attributes: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1013,9 +1014,10 @@ impl<'a> Ctx<'a> {
             });
         }
         self.segments.push(Function {
+            line,
             public: false,
             comptime_only: false,
-            attributes: Vec::new(),
+            attributes: self.attributes.clone(),
             name: seg_name.clone(),
             params,
             ret: None,
@@ -1257,9 +1259,10 @@ impl<'a> Ctx<'a> {
                     default: None,
                 });
                 self.segments.push(Function {
+                    line: first_line(&body.lines),
                     public: false,
                     comptime_only: false,
-                    attributes: Vec::new(),
+                    attributes: self.attributes.clone(),
                     name: recv_name.clone(),
                     params: recv_params,
                     ret: None,
@@ -1287,9 +1290,10 @@ impl<'a> Ctx<'a> {
         };
 
         self.segments.push(Function {
+            line: first_line(&body.lines),
             public: false,
             comptime_only: false,
-            attributes: Vec::new(),
+            attributes: self.attributes.clone(),
             name: seg_name.clone(),
             params,
             ret: None,
@@ -1386,6 +1390,7 @@ fn lower_async_fn_with(
         segments: Vec::new(),
         view_fns,
         borrowed_shells,
+        attributes: f.attributes.clone(),
     };
     let scope: Vec<Local> = f
         .params
@@ -1423,6 +1428,7 @@ fn lower_async_fn_with(
         lazy_body
     };
     let entry = Function {
+        line: f.line,
         public: f.public,
         comptime_only: false,
         attributes: f.attributes,
@@ -2085,5 +2091,29 @@ mod tests {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn okay(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    console.print(w)\n    task.done(0).await\n";
         let module = crate::parser::parse_module(source).expect("parse borrowed async body");
         lower_module(module).expect("a dead view is not carried across suspension");
+    }
+
+    #[test]
+    fn lowering_preserves_target_availability_on_async_segments() {
+        let source = "@browser\nasync fn browser_value() -> Int:\n    let value = task.done(1).await\n    value\n";
+        let module = crate::parser::parse_module(source).expect("parse targeted async function");
+        let lowered = lower_module(module).expect("lower targeted async function");
+        let functions: Vec<&Function> = lowered
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Function(function)
+                    if function.name == "browser_value"
+                        || function.name.starts_with("__async_browser_value_") =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(functions.len() >= 2, "an await must produce a lifted segment");
+        assert!(functions
+            .iter()
+            .all(|function| function.attributes == ["browser"]));
     }
 }

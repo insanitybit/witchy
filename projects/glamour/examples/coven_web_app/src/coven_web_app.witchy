@@ -13,7 +13,7 @@ import markdown
 import list
 import reflect
 import time
-from glamour import VNode, Cmd, UiFetch, UiRoute, UiRoot, CredentialPort
+from glamour import Cmd, CredentialPort, HttpResult, NavigationResult, PortResult, Program, Start, Sub, Ui, UiFetch, UiRoot, UiRoute, VNode
 from json import Json
 
 type Model:
@@ -22,13 +22,14 @@ type Model:
 type Msg derive(Reflect):
     Route(String)
     Visit(String)
-    GotData(Int, String)
+    GotData(HttpResult)
+    NavigationDone(NavigationResult)
     Login
     Register
-    LoggedIn(String)
+    LoggedIn(PortResult)
     Promote
     Yank
-    OpDone(String)
+    OpDone(PortResult)
     Search(String)
 
 // (RFC-0039) The app's capability BUNDLE. Glamour narrows the app-root `UiRoot` into
@@ -44,20 +45,20 @@ type Caps:
 // --- routing + effects -------------------------------------------------------
 fn fetch_for(fetch: UiFetch, path: String) -> Cmd(Msg):
     if path.starts_with("/trust"):
-        glamour.http_get(fetch, "/api/coven/rootpub", "GotData")
+        glamour.http_get("coven-web.data", fetch, "/api/coven/rootpub", fn(result: HttpResult): GotData(result))
     else if path.starts_with("/d/"):
         let (name, ver) = name_ver(path)
-        glamour.http_get(fetch, "/api/coven/doc?name=${name}&version=${ver}", "GotData")
+        glamour.http_get("coven-web.data", fetch, "/api/coven/doc?name=${name}&version=${ver}", fn(result: HttpResult): GotData(result))
     else if path.starts_with("/s/"):
         let (name, ver) = name_ver(path)
-        glamour.http_get(fetch, "/api/coven/source?name=${name}&version=${ver}", "GotData")
+        glamour.http_get("coven-web.data", fetch, "/api/coven/source?name=${name}&version=${ver}", fn(result: HttpResult): GotData(result))
     else if path.starts_with("/v/"):
         let (name, ver) = name_ver(path)
-        glamour.http_get(fetch, "/api/coven/record?name=${name}&version=${ver}", "GotData")
+        glamour.http_get("coven-web.data", fetch, "/api/coven/record?name=${name}&version=${ver}", fn(result: HttpResult): GotData(result))
     else:
-        glamour.http_get(fetch, "/api/coven/catalog", "GotData")
+        glamour.http_get("coven-web.data", fetch, "/api/coven/catalog", fn(result: HttpResult): GotData(result))
 
-fn update(m: Model, msg: Msg, caps: Caps) -> (Model, Cmd(Msg)):
+fn update(caps: Caps, m: Model, msg: Msg) -> (Model, Cmd(Msg)):
     match caps:
         // A write (or register) finished: show its result AND re-fetch the current view so
         // the record reflects the new state immediately (a promote flips staged -> released).
@@ -65,22 +66,38 @@ fn update(m: Model, msg: Msg, caps: Caps) -> (Model, Cmd(Msg)):
             match m:
                 Model(route, sess, data, notice, query) ->
                     match msg:
-                        Visit(path) -> (m, glamour.navigate(router, path))
+                        Visit(path) -> (m, glamour.navigate("coven-web.navigation", router, path, fn(result: NavigationResult): NavigationDone(result)))
                         Route(path) -> (Model(path, sess, "", "", ""), fetch_for(fetch, path))
-                        GotData(_status, body) -> (Model(route, sess, body, notice, query), NoCmd)
-                        Login -> (m, glamour.port(login, "", "LoggedIn"))
-                        Register -> (Model(route, sess, data, "registering passkey…", query), glamour.port(register, "", "OpDone"))
-                        LoggedIn(who) -> (Model(route, who, data, "", query), NoCmd)
-                        Promote -> (Model(route, sess, data, "promoting…", query), glamour.port(promote_cred, route, "OpDone"))
-                        Yank -> (Model(route, sess, data, "yanking…", query), glamour.port(yank_cred, route, "OpDone"))
-                        OpDone(result) -> (Model(route, sess, data, result, query), fetch_for(fetch, route))
+                        GotData(result) ->
+                            match result:
+                                HttpResponse(_status, body) -> (Model(route, sess, body, notice, query), NoCmd)
+                                HttpFailure(problem) -> (Model(route, sess, data, problem, query), NoCmd)
+                                _ -> (m, NoCmd)
+                        NavigationDone(result) ->
+                            match result:
+                                Navigated(path) -> (Model(path, sess, "", "", ""), fetch_for(fetch, path))
+                                _ -> (m, NoCmd)
+                        Login -> (m, glamour.port("coven-web.login", login, "", fn(result: PortResult): LoggedIn(result)))
+                        Register -> (Model(route, sess, data, "registering passkey…", query), glamour.port("coven-web.register", register, "", fn(result: PortResult): OpDone(result)))
+                        LoggedIn(result) ->
+                            match result:
+                                PortResponse(who) -> (Model(route, who, data, "", query), NoCmd)
+                                PortFailure(problem) -> (Model(route, sess, data, problem, query), NoCmd)
+                                _ -> (m, NoCmd)
+                        Promote -> (Model(route, sess, data, "promoting…", query), glamour.port("coven-web.promote", promote_cred, route, fn(result: PortResult): OpDone(result)))
+                        Yank -> (Model(route, sess, data, "yanking…", query), glamour.port("coven-web.yank", yank_cred, route, fn(result: PortResult): OpDone(result)))
+                        OpDone(result) ->
+                            match result:
+                                PortResponse(value) -> (Model(route, sess, data, value, query), fetch_for(fetch, route))
+                                PortFailure(problem) -> (Model(route, sess, data, problem, query), NoCmd)
+                                _ -> (m, NoCmd)
                         Search(q) -> (Model(route, sess, data, notice, q), NoCmd)
 
 // --- views -------------------------------------------------------------------
-fn view(m: Model) -> VNode(Msg):
+fn view(m: Model) -> Ui(Msg):
     match m:
         Model(route, sess, data, notice, query) ->
-            glamour.element("div", [glamour.prop("class", "app")], [header(sess, notice), body(route, data, sess, query)])
+            glamour.ui(glamour.element("div", [glamour.prop("class", "app")], [header(sess, notice), body(route, data, sess, query)]))
 
 fn header(sess: String, notice: String) -> VNode(Msg):
     let auth = if sess.is_empty(): glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Login)], [glamour.text("sign in with passkey")]), glamour.element("button", [glamour.prop("class", "button link ghost"), glamour.on("click", Register)], [glamour.text("register")])]) else: glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("span", [glamour.prop("class", "session-id")], [glamour.text("● signed in as ${sess}")])])
@@ -288,10 +305,10 @@ fn model_to_json(m: Model) -> Json:
         Model(route, sess, data, notice, query) ->
             JsonObject([("route", JsonString(route)), ("session", JsonString(sess)), ("data", JsonString(data)), ("notice", JsonString(notice)), ("query", JsonString(query))])
 
-fn ai(j: Json, i: Int) -> Int:
+fn aj(j: Json, i: Int) -> Json:
     match json.get(j, "\$values"):
-        Some(arr) -> json.as_int(json.index(arr, i).unwrap_or(JsonNull)).unwrap_or(0)
-        None -> 0
+        Some(arr) -> json.index(arr, i).unwrap_or(JsonNull)
+        None -> JsonNull
 
 fn as_(j: Json, i: Int) -> String:
     match json.get(j, "\$values"):
@@ -304,19 +321,21 @@ fn parse_msg(j: Json) -> Msg:
             if v == "Visit":
                 Visit(as_(j, 0))
             else if v == "GotData":
-                GotData(ai(j, 0), as_(j, 1))
+                GotData(glamour.http_result_from_json(aj(j, 0)))
+            else if v == "NavigationDone":
+                NavigationDone(glamour.navigation_result_from_json(aj(j, 0)))
             else if v == "Login":
                 Login
             else if v == "Register":
                 Register
             else if v == "LoggedIn":
-                LoggedIn(as_(j, 0))
+                LoggedIn(glamour.port_result_from_json(aj(j, 0)))
             else if v == "Promote":
                 Promote
             else if v == "Yank":
                 Yank
             else if v == "OpDone":
-                OpDone(as_(j, 0))
+                OpDone(glamour.port_result_from_json(aj(j, 0)))
             else if v == "Search":
                 Search(as_(j, 0))
             else:
@@ -326,16 +345,24 @@ fn parse_msg(j: Json) -> Msg:
 fn msg_to_json(m: Msg) -> Json:
     json.from_value(m)
 
-pub fn export_step(ui: UiRoot, input: String) -> String:
-    // (RFC-0039/0040) the host mints `UiRoot` at this browser root; Glamour narrows it
-    // into the app's `Caps` bundle — read-only fetch, navigation, and the four NAMED
-    // credential ports — threaded into `update` via a closure. Every effect this shell can
-    // emit is now gated by an unforgeable token, and each port's authority is confined to
-    // its own name, so no component can widen what it was granted.
-    let caps = Caps(glamour.fetch_scope(ui, "coven-web", "GET", "/api/coven/"), glamour.route_scope(ui, "/", "push"), glamour.credential_port(ui, "passkeyLogin"), glamour.credential_port(ui, "passkeyRegister"), glamour.credential_port(ui, "promote"), glamour.credential_port(ui, "yank"))
+fn authorize(ui: UiRoot) -> Caps:
+    Caps(glamour.fetch_scope(ui, "coven-web", "GET", "/api/coven/"), glamour.route_scope(ui, "/", "push"), glamour.credential_port(ui, "passkeyLogin"), glamour.credential_port(ui, "passkeyRegister"), glamour.credential_port(ui, "promote"), glamour.credential_port(ui, "yank"))
 
-    let upd = fn(m: Model, msg: Msg): update(m, msg, caps)
-    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+fn initial(start: Start) -> Model:
+    match start:
+        Start(route, _bootstrap) -> Model(route, "", "", "", "")
+
+fn start(_caps: Caps, _model: Model) -> Cmd(Msg):
+    NoCmd
+
+fn subscriptions(_caps: Caps, _model: Model) -> Sub(Msg):
+    glamour.no_sub()
+
+fn app() -> Program(Caps, Model, Msg):
+    glamour.program(authorize, initial, start, update, view, subscriptions)
+
+pub fn export_step(ui: UiRoot, input: String) -> String:
+    glamour.program_step_with(input, ui, app(), parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
     let output = export_step(ui, "{\"model\": {\"route\": \"/\", \"session\": \"\", \"data\": \"\", \"notice\": \"\"}}")

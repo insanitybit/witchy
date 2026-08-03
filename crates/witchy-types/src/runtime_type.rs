@@ -1370,6 +1370,12 @@ mod tests {
                     local_name: "Render".into(),
                     kind: ResolvedDeclarationKind::Trait,
                 },
+                ResolvedDeclaration {
+                    compiler_name: "dependency_alias.render_user".into(),
+                    source_module: "dependency_alias".into(),
+                    local_name: "render_user".into(),
+                    kind: ResolvedDeclarationKind::Function,
+                },
             ],
         };
         let owners = AuthenticatedModuleOwners::from_loader_assignments(
@@ -1388,6 +1394,9 @@ mod tests {
         let expected_trait = owner
             .declaration(DeclarationKind::Trait, "Render")
             .expect("trait identity");
+        let expected_function = owner
+            .declaration(DeclarationKind::Function, "render_user")
+            .expect("function identity");
 
         assert_eq!(
             catalog.resolve("dependency_alias.User", DeclarationKind::Type),
@@ -1396,6 +1405,10 @@ mod tests {
         assert_eq!(
             catalog.resolve("dependency_alias.Render", DeclarationKind::Trait),
             Some(&expected_trait)
+        );
+        assert_eq!(
+            catalog.resolve("dependency_alias.render_user", DeclarationKind::Function),
+            Some(&expected_function)
         );
     }
 

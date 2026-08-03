@@ -79,7 +79,7 @@ fn view(model: String, input: SecretInput) -> VNode(Msg):
 fn update(model: String, msg: Msg, input: SecretInput, cred: CredentialPort) -> (String, Cmd(Msg)):
     match msg:
         PwStatus(s) -> ("status:" + s, NoCmd)
-        Submit -> (model, glamour.submit_secret(glamour.secret_ref(input), cred, "Done"))
+        Submit -> (model, glamour.submit_secret_compat(glamour.secret_ref(input), cred, "Done"))
         Hide -> ("hidden", NoCmd)
         Show -> ("shown", NoCmd)
         Done(r) -> ("result:" + r, NoCmd)

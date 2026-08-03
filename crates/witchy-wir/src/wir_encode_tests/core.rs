@@ -265,6 +265,52 @@
     }
 
     #[test]
+    fn mutable_float_global_roundtrips() {
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![
+                WirNode::SetGlobal {
+                    global: "value".into(),
+                    value: WirExpr::Binary {
+                        op: BinOp::Add,
+                        kind: Kind::F64,
+                        lhs: Box::new(WirExpr::GetGlobal("value".into())),
+                        rhs: Box::new(WirExpr::ConstF64(2.25)),
+                    },
+                },
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_float".into(),
+                    args: vec![WirExpr::GetGlobal("value".into())],
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_float".into(),
+                params: vec![Kind::F64],
+                results: vec![],
+            }],
+            funcs: vec![run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![WirGlobal {
+                name: "value".into(),
+                kind: Kind::F64,
+                mutable: true,
+                init: GlobalInit::F64(1.25),
+                export: None,
+            }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["3.5"]);
+    }
+
+    #[test]
     fn table_call_indirect_roundtrips() {
         // A lifted lambda `$__lam0` with the `$clos1` signature
         // `(param i32 env) (param i64 arg) (result i64)`: returns arg + 100.
@@ -1072,4 +1118,46 @@
             let func = instance.get_typed_func::<(), ()>(&mut store, name).expect(name);
             assert!(func.call(&mut store, ()).is_err(), "{name} must trap");
         }
+    }
+    #[test]
+    fn source_wrappers_record_exact_out_of_band_instruction_ordinals() {
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![WirFunc {
+                name: "run".into(),
+                params: vec![],
+                ret: vec![],
+                locals: vec![],
+                body: vec![WirNode::Source {
+                    line: 7,
+                    body: vec![WirNode::Do(WirExpr::CallHost {
+                        import: "print_int".into(),
+                        args: vec![WirExpr::ConstI64(42)],
+                    })],
+                }],
+                raw_body: None,
+            }],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+
+        let encoded = try_encode_with_gc_source_map(&module, &[], &[])
+            .expect("source-attributed module encodes");
+        assert_eq!(encoded.wasm, encode(&module, &[]));
+        assert_eq!(
+            encoded.source_instructions,
+            [SourceInstructionRange {
+                function_index: 1,
+                line: 7,
+                instruction_start: 0,
+                instruction_end: 2,
+            }]
+        );
     }

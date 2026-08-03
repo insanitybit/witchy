@@ -230,6 +230,23 @@
     }
 
     #[test]
+    fn incomplete_glamour_export_family_is_rejected() {
+        let module = parse_module(
+            "grantable capability UiRoot:\n    policy: String\n\n\
+             type State:\n    State(Int)\n\n\
+             @browser\npub fn glamour_init(_root: UiRoot, _input: Bytes) -> State:\n    State(0)\n",
+        )
+        .expect("parse partial Glamour application");
+        let error = compile_module_binary(&module)
+            .expect_rejected("partial RFC-0108 family must not become a host ABI");
+        assert!(
+            error.message.contains("incomplete RFC-0108 application export family")
+                && error.message.contains("glamour_dispatch"),
+            "unexpected rejection: {error}"
+        );
+    }
+
+    #[test]
     fn build_module_is_zero_ambient() {
         // A compiled build step imports ONLY its build host functions — none of
         // the runtime authority. That's the structural zero-ambient guarantee:

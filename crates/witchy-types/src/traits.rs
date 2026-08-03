@@ -144,6 +144,7 @@ fn method_fn(
     }
     let ret = ret.map(|t| subst_self(&t, &self_ty));
     Function {
+        line: 0,
         public: true,
         comptime_only: false,
         attributes: Vec::new(),
@@ -804,6 +805,8 @@ fn lower_with(
                         skip_walk: &no_fallback,
                         show_types: &show_types,
                         render_available,
+                        current_function: String::new(),
+                        current_line: 0,
                     };
                     match witness_plan {
                         Ok(witnesses) => {
@@ -4316,6 +4319,11 @@ struct Mono<'a> {
     /// Whether `show.render` is linked as a monomorphizable template. Production
     /// linking guarantees it; direct stage callers still avoid a dangling call.
     render_available: bool,
+    /// Source context for focused compiler-directed diagnostics emitted during
+    /// the monomorphization walk. Tagged-literal hole expressions retain their
+    /// call-site statement line in `Block::lines`.
+    current_function: String,
+    current_line: u32,
 }
 
 #[cfg(test)]
@@ -4528,6 +4536,41 @@ mod structured_dispatch_tests {
             "from",
         );
         assert_ne!(qualified, underscored);
+    }
+
+    #[test]
+    fn transitive_no_fallback_generic_specializes_custom_types_without_table_facts() {
+        let source = r#"
+trait Score:
+    fn score(self) -> Int
+
+type Boxed:
+    Boxed(Int)
+
+impl Score for Boxed:
+    fn score(self) -> Int:
+        match self:
+            Boxed(value) -> value
+
+fn bounded(value: a) -> Int where a: Score:
+    value.score()
+
+fn forwarded(value: a) -> Int:
+    bounded(value)
+
+pub fn main() -> Int:
+    forwarded(Boxed(7))
+"#;
+        let module = witchy_syntax::parser::parse_module(source).expect("parse generic chain");
+        let lowered = lower_for_wasm(module);
+
+        assert!(lowered.items.iter().any(|item| matches!(item,
+            Item::Function(function)
+                if function.name.starts_with("forwarded__Boxed")
+        )));
+        assert!(!lowered.items.iter().any(|item| matches!(item,
+            Item::Function(function) if function.name == "forwarded"
+        )));
     }
 
     #[test]
