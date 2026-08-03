@@ -6,6 +6,8 @@
 
 use std::collections::HashSet;
 use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
 
 use witchy_syntax::ast::Module;
 use witchy_syntax::linker::{
@@ -269,8 +271,35 @@ fn link_checked_with(
     if let Some(module_owners) = &module_owners {
         module_owners.validate_module_names(linked.module_names.iter().cloned())?;
     }
-    typeck::check(&linked.module)?;
+    check_linked_module_cached(&linked.module)?;
     Ok(CheckedModule { linked, module_owners })
+}
+
+/// Reuse successful checking for an unchanged linked unit during a development
+/// session. The linked AST is the invalidation boundary: any source, import,
+/// expansion, or generated-shape change produces a different key and runs the
+/// checker again. Failed checks are deliberately not cached so diagnostics
+/// never outlive the source that produced them.
+fn check_linked_module_cached(module: &Module) -> Result<(), TypeError> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{module:?}").hash(&mut hasher);
+    let key = hasher.finish();
+    let cache = linked_check_cache();
+    if cache.lock().unwrap().contains(&key) {
+        return Ok(());
+    }
+    typeck::check(module)?;
+    let mut cache = cache.lock().unwrap();
+    if cache.len() >= 64 {
+        cache.clear();
+    }
+    cache.insert(key);
+    Ok(())
+}
+
+fn linked_check_cache() -> &'static Mutex<HashSet<u64>> {
+    static CACHE: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 /// Link with the injected compile-time expander, then type-check the result.
