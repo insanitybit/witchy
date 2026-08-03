@@ -68,9 +68,16 @@ case "$command" in
             echo "agent-check: target requires --package <name>" >&2
             exit 2
         fi
-        cmd=(cargo test -p "$package")
-        if [ -n "$filter" ]; then
-            cmd+=(-- "$filter")
+        if cargo nextest --version >/dev/null 2>&1; then
+            cmd=(cargo nextest run -p "$package")
+            if [ -n "$filter" ]; then
+                cmd+=(-E "test($filter)")
+            fi
+        else
+            cmd=(cargo test -p "$package")
+            if [ -n "$filter" ]; then
+                cmd+=(-- "$filter")
+            fi
         fi
         run_in_agent_env "${cmd[@]}"
         ;;
