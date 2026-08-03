@@ -3762,7 +3762,11 @@ fn assemble_wir_module_with_structs_mode(
                 } else {
                     None
                 };
-                const GLAMOUR_INPUT_CAPACITY: u32 = 1024 * 1024;
+                // Keep the fixed input arena below the Phase 3 eight-page
+                // budget. Larger frames are rejected by the authenticated
+                // reserve export instead of forcing every island to pay for
+                // an oversized linear-memory reservation.
+                const GLAMOUR_INPUT_CAPACITY: u32 = 256 * 1024;
                 let glamour_input_header = cg.next_offset;
                 cg.next_offset = cg
                     .next_offset
