@@ -5951,12 +5951,84 @@ impl<'types> Codegen<'types> {
         }
     }
 
+    /// Address of packed-list element `index` — `list + data_offset + index *
+    /// stride`, the row base a packed record occupies inline. Only fires when
+    /// `list` is an exact packed-list descriptor; a mismatched or reference list
+    /// returns `None` and the caller falls back to the slot path. `list` and
+    /// `index` are each lowered exactly once (the index may side-effect). This
+    /// is the shared addressing for both the direct `list.at(xs, i).field` read
+    /// and a materialized `let e = list.at(xs, i)` binding, so the two agree on
+    /// layout and on the pinned RFC-0027 inline-read trap behavior.
+    fn lower_packed_list_element_address(
+        &mut self,
+        list: &Expr,
+        index: &Expr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W};
+        let list_id = self.specialized_layout_of_expr(list)?;
+        let list_descriptor = self.specialized_layouts.get(list_id)?.clone();
+        let LayoutKind::PackedList { .. } = list_descriptor.kind() else {
+            return None;
+        };
+        let HeaderLayout::PackedList { data_offset, .. } = list_descriptor.header() else {
+            return None;
+        };
+        let LayoutSize::Dynamic { stride, .. } = list_descriptor.size() else {
+            return None;
+        };
+        let index_kind = self.kind_of(index);
+        let index = Self::wir_convert(self.lower_expr(index)?, index_kind, Kind::I32);
+        let root = self.lower_expr(list)?;
+        Some(W::Binary {
+            op: WB::Add,
+            kind: WK::I32,
+            lhs: Box::new(root),
+            rhs: Box::new(W::Binary {
+                op: WB::Add,
+                kind: WK::I32,
+                lhs: Box::new(W::ConstI32(data_offset as i32)),
+                rhs: Box::new(W::Binary {
+                    op: WB::Mul,
+                    kind: WK::I32,
+                    lhs: Box::new(index),
+                    rhs: Box::new(W::ConstI32(stride as i32)),
+                }),
+            }),
+        })
+    }
+
+    /// Materialized `list.at(xs, i)` on an exact packed-list whose element is an
+    /// inline aggregate (packed record or tuple): the whole element is a row of
+    /// fields, so its value is the row address, matching how a packed local is
+    /// stored and later read field-by-field. Returns `None` for scalar packed
+    /// elements (their value is the slot itself) and for non-packed lists, so
+    /// those keep the ordinary slot read. Shares `lower_packed_list_element_address`
+    /// with the direct `.field` path, so addressing and trap behavior agree.
+    fn lower_packed_list_element_read(
+        &mut self,
+        list: &Expr,
+        index: &Expr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        let list_id = self.specialized_layout_of_expr(list)?;
+        let list_descriptor = self.specialized_layouts.get(list_id)?.clone();
+        let LayoutKind::PackedList { element, .. } = list_descriptor.kind() else {
+            return None;
+        };
+        let element_descriptor = self.specialized_layouts.get(*element)?.clone();
+        if !matches!(
+            element_descriptor.kind(),
+            LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }
+        ) {
+            return None;
+        }
+        self.lower_packed_list_element_address(list, index)
+    }
+
     fn lower_specialized_field(
         &mut self,
         base: &Expr,
         field_name: &str,
     ) -> Option<witchy_wir::wir::WirExpr> {
-        use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W};
         if let Expr::Call { name, args } = base
             && name == intrinsics::LIST_AT
             && args.len() == 2
@@ -5967,12 +6039,6 @@ impl<'types> Codegen<'types> {
                 return None;
             };
             let element_descriptor = self.specialized_layouts.get(*element)?.clone();
-            let HeaderLayout::PackedList { data_offset, .. } = list_descriptor.header() else {
-                return None;
-            };
-            let LayoutSize::Dynamic { stride, .. } = list_descriptor.size() else {
-                return None;
-            };
             let element_ty = match self.ast_type_of_expr(&args[0])?.unqualified() {
                 Type::Named(name, arguments) if name == "List" => arguments.first()?.clone(),
                 _ => return None,
@@ -5987,25 +6053,7 @@ impl<'types> Codegen<'types> {
                 _ => return None,
             };
             let field = *element_descriptor.fields().get(field_index)?;
-            let index_kind = self.kind_of(&args[1]);
-            let index = Self::wir_convert(self.lower_expr(&args[1])?, index_kind, Kind::I32);
-            let root = self.lower_expr(&args[0])?;
-            let element_base = W::Binary {
-                op: WB::Add,
-                kind: WK::I32,
-                lhs: Box::new(root),
-                rhs: Box::new(W::Binary {
-                    op: WB::Add,
-                    kind: WK::I32,
-                    lhs: Box::new(W::ConstI32(data_offset as i32)),
-                    rhs: Box::new(W::Binary {
-                        op: WB::Mul,
-                        kind: WK::I32,
-                        lhs: Box::new(index),
-                        rhs: Box::new(W::ConstI32(stride as i32)),
-                    }),
-                }),
-            };
+            let element_base = self.lower_packed_list_element_address(&args[0], &args[1])?;
             return self.lower_layout_field_read(element_base, field);
         }
 

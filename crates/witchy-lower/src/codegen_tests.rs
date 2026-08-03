@@ -934,9 +934,12 @@ fn main() -> Int:
             witchy_types::traits::lower_for_wasm_with_specializations(module.clone())
                 .into_parts();
         assert!(
-            logical_specializations
-                .values()
-                .any(|identity| identity.types().iter().any(|ty| ty.as_str() == "Point")),
+            logical_specializations.values().any(|identity| identity
+                .types()
+                .iter()
+                // The linked fixture qualifies user types with their module
+                // (`app.Point`); the logical identity keeps that Point identity.
+                .any(|ty| ty.as_str() == "Point" || ty.as_str().ends_with(".Point"))),
             "the generic instance retains its logical Point identity"
         );
 
@@ -957,7 +960,9 @@ fn main() -> Int:
         let wat = witchy_wir::wir::to_wat(&wir);
         assert!(wat.contains("__witchy_packed_list_"), "packed constructor retained: {wat}");
         assert!(
-            wat.contains("call $relay__Point__phys0"),
+            // The linked fixture module-qualifies the callable; the packed
+            // composite physical instance is `app.relay` specialized on Point.
+            wat.contains("call $app.relay__app_2ePoint__phys0"),
             "the call selects the composite physical generic instance: {wat}"
         );
     }

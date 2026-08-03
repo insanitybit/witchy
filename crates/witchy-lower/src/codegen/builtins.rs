@@ -1168,7 +1168,15 @@ impl Codegen<'_> {
                 }
             }
             (intrinsics::LIST_AT, 2) => {
-                if self
+                // A packed record read whose result is materialized whole (bound
+                // to a local, pushed, or re-listed) — not immediately projected
+                // by `.field`. The element occupies an inline row, not a slot, so
+                // return its row address; downstream packed paths read its fields
+                // through the descriptor. Only exact packed-list layouts take this
+                // path; scalar/reference/GC lists fall through to the slot read.
+                if let Some(address) = self.lower_packed_list_element_read(&args[0], &args[1]) {
+                    address
+                } else if self
                     .ast_type_of_expr(&args[0])
                     .as_ref()
                     .and_then(|ty| self.gc_reference_list_layout(ty))

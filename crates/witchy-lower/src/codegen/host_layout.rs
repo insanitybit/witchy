@@ -52,6 +52,33 @@ impl Codegen<'_> {
         }
     }
 
+    /// Read-only mirror of `lower_packed_list_element_read`'s eligibility: a
+    /// two-arg `list.at` whose list is an exact packed-list with an inline
+    /// aggregate (packed record / tuple) element. Such a read is lowered in
+    /// place, so the boundary guard must not reject it as an unsupported
+    /// intrinsic reshape. Kept purely predicate-shaped (no lowering) because the
+    /// guard runs before `lower_expr`.
+    fn packed_list_at_is_materializable(&self, name: &str, args: &[Expr]) -> bool {
+        if witchy_syntax::intrinsics::canonical_operation_name(name) != intrinsics::LIST_AT
+            || args.len() != 2
+        {
+            return false;
+        }
+        let Some(list_id) = self.specialized_layout_of_expr(&args[0]) else {
+            return false;
+        };
+        let Some(list_descriptor) = self.specialized_layouts.get(list_id) else {
+            return false;
+        };
+        let LayoutKind::PackedList { element, .. } = list_descriptor.kind() else {
+            return false;
+        };
+        matches!(
+            self.specialized_layouts.get(*element).map(|d| d.kind()),
+            Some(LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. })
+        )
+    }
+
     pub(super) fn reject_unsupported_specialized_boundary(&mut self, expr: &Expr) -> bool {
         let callable_detail = self.callable_layout_rejection_detail(expr);
         let capture_detail = match expr {
@@ -78,6 +105,11 @@ impl Codegen<'_> {
                     .is_some()
                     && witchy_syntax::intrinsics::canonical_operation_name(name)
                         != intrinsics::LIST_LENGTH
+                    // `list.at` on an exact packed-list with an inline-aggregate
+                    // element is now lowered in place (row address, read
+                    // field-by-field through the descriptor), so it is a
+                    // supported boundary rather than an unsupported reshape.
+                    && !self.packed_list_at_is_materializable(name, args)
                     && self.intrinsic_host_layout_is_unsupported(
                         name,
                         args,

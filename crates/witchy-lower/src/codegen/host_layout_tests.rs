@@ -88,20 +88,27 @@ fn boundary_layout_scan_includes_a_specialized_result_without_specialized_argume
 }
 
 #[test]
-fn generic_wir_boundary_rejects_a_specialized_result_before_kind_erasure() {
+fn generic_packed_result_boundary_lowers_through_the_exact_layout_adapter() {
+    // RFC-0111: a `list.at` on an exact packed-list whose element is an inline
+    // aggregate is materialized in place — the whole element is its row address,
+    // read field-by-field through the descriptor. This is the exact LayoutId
+    // adapter the fail-closed boundary policy demands, so the read now lowers
+    // rather than being rejected as an unsupported box/reshape.
     let module = witchy_syntax::parser::parse_module(
         "mode opt\n\n\
          type Point packed:\n    x: Int\n\n\
          fn main() -> Int:\n    let points = [Point(7)]\n    let point = list.at(points, 0)\n    point.x\n",
     )
     .expect("parse packed result-boundary fixture");
-    let error = compile_module_binary(&module)
-        .expect_rejected("a generic adapter cannot return a specialized pointer");
-    let diagnostic = error.to_string();
+    let wir = assemble_wir_module(&module)
+        .expect_lowered("materialized packed list.at lowers through the exact layout adapter");
+    let wat = witchy_wir::wir::to_wat(&wir);
     assert!(
-        diagnostic.contains("intrinsic `list.at`")
-            && diagnostic.contains("exact RFC-0111 LayoutId adapter")
-            && diagnostic.contains("cannot box or reshape"),
-        "{diagnostic}",
+        wat.contains("__witchy_packed_list_"),
+        "the packed list constructor is retained (no reshape to a boxed list): {wat}"
+    );
+    assert!(
+        !wat.contains("call $list_at"),
+        "the packed element is read in place, not via the slot `list_at` helper: {wat}"
     );
 }
