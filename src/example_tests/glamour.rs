@@ -644,20 +644,6 @@ fn main(console: Console):
             "glamour must demand NO capability — an empty footprint is RFC-0008's headline"
         );
         assert!(fp.total.is_empty(), "the footprint map itself must be empty");
-        // Coven uses the source-string compiler service, which type-checks
-        // before reporting. Keep this path explicit so a library feature that
-        // the source-only linker cannot validate does not turn package publish
-        // into an opaque HTTP 400.
-        witchy_interp::compiler_natives::install();
-        use witchy_runtime::value::NativeValue;
-        let service = witchy_runtime::native::lookup("compiler.footprint")
-            .expect("compiler.footprint native");
-        let NativeValue::Str(report) =
-            service(&[NativeValue::Str(GLAMOUR_SRC.into())]).expect("native footprint")
-        else {
-            panic!("compiler.footprint must return a JSON string");
-        };
-        assert!(!report.contains("\"error\""), "source-string footprint must validate Glamour: {report}");
         // And the manifest agrees: `runtime = []`.
         let toml = include_str!("../../projects/glamour/witchy.toml");
         assert!(

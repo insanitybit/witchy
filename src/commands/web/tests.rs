@@ -3619,6 +3619,13 @@ pub fn web() -> Site:
                 |_codepoint: i64, _output: i32| -> i32 { 0 },
             )
             .expect("string_from_code");
+        linker
+            .func_wrap(
+                "witchy",
+                "float_to_str",
+                |_value: f64, _output: i32| -> i32 { 0 },
+            )
+            .expect("float_to_str");
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = linker.instantiate(&mut store, &module).expect("island instance");
         let memory = instance.get_memory(&mut store, "memory").expect("memory");

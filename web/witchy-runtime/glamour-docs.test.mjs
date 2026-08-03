@@ -66,6 +66,7 @@ try {
   copyFileSync(join(REPO, "projects/glamour/src/markdown.witchy"), join(work, "markdown.witchy"));
   copyFileSync(join(REPO, "projects/docs/src/docs.witchy"), join(work, "docs.witchy"));
   copyFileSync(join(REPO, "projects/docs/src/counter.witchy"), join(work, "counter.witchy"));
+  copyFileSync(join(REPO, "projects/docs/src/runner.witchy"), join(work, "runner.witchy"));
   const wasmPath = join(work, "docs.wasm");
   execFileSync(BIN, ["compile", join(work, "docs.witchy"), "--out", wasmPath], { cwd: work });
   const wasm = readFileSync(wasmPath);
