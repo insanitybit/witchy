@@ -8,7 +8,8 @@ Usage: ./scripts/build-test-metrics.sh [options]
 Capture stage timings for local build, test-compile, and optional full test runs.
 
 Options:
-  --target-dir <dir>       Pass CARGO_TARGET_DIR to all measured commands.
+  --target-dir <dir>       Pass CARGO_TARGET_DIR to all measured commands
+                           (default: CARGO_TARGET_DIR or target-codex).
   --output-dir <path>      Base directory for metrics artifacts (default: scratch/dev-metrics)
   --label <name>           Label for this run (default: cycle)
   --with-tests             Run full workspace tests after test-compile.
@@ -22,7 +23,7 @@ cd "$repo_root"
 
 label="cycle"
 output_dir="scratch/dev-metrics"
-target_dir=""
+target_dir="${CARGO_TARGET_DIR:-target-codex}"
 include_tests=0
 emit_json=0
 
@@ -109,11 +110,8 @@ run_stage() {
 
     start_time="$(timestamp_seconds)"
     set +e
-    if [[ -n "$target_dir" ]]; then
-        (export CARGO_TARGET_DIR="$target_dir"; "$@" >"$log_file" 2>&1)
-    else
-        ("$@" >"$log_file" 2>&1)
-    fi
+    (env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= \
+        CARGO_TARGET_DIR="$target_dir" "$@" >"$log_file" 2>&1)
     status=$?
     set -e
     end_time="$(timestamp_seconds)"

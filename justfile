@@ -29,6 +29,20 @@ build-all:
 test *ARGS:
     cargo nextest run --workspace {{ARGS}}
 
+# Capture build, test-compilation, and optional test timings without sharing
+# Cargo's default target directory. Use `just metrics --with-tests` for the
+# complete local cycle.
+metrics *ARGS:
+    ./scripts/build-test-metrics.sh {{ARGS}}
+
+# Summarize local timings and recent merge-queue throughput.
+perf-health *ARGS:
+    ./scripts/perf-health.sh {{ARGS}}
+
+# Run the narrow agent-owned validation shard selected by the caller.
+agent-check *ARGS:
+    ./scripts/agent-check.sh {{ARGS}}
+
 # The exact nextest invocation used by CI's test job.
 test-ci:
     cargo nextest run --workspace --profile ci --all-targets

@@ -11,6 +11,10 @@ second full gate with the coordinator.
 ./scripts/test-for-paths.sh --run   # run them
 ./scripts/merge-queue.sh submit <branch>
 
+# Measure the local build/compile/test cycle in an isolated target directory:
+just metrics --with-tests
+just perf-health
+
 # Or run one piece while iterating on it:
 cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
@@ -28,7 +32,7 @@ through scaffold/publish/add/build/run against hermetic per-test registries.
 
 Agent-driven contribution flow is documented in
 `docs/agile-agent-playbook.md`, including ownership boundaries, required handoff
-artifacts, and focused pre-queue checks.
+artifacts, focused pre-queue checks, and local performance measurement.
 
 ### Test layers and footprint
 

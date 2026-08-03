@@ -71,6 +71,10 @@ Defaults:
   `scripts/test-for-paths.sh --run`.
 - `agent-check.sh syntax` / `agent-check.sh link` / `agent-check.sh parity`
   are aliases for the most common shard families.
+- `just metrics` records build and test-compilation timings; add
+  `--with-tests` to include the full test stage.
+- `just perf-health` combines the latest local timings with merge-queue
+  throughput and gate latency.
 
 All `target` checks are invoked under:
 
