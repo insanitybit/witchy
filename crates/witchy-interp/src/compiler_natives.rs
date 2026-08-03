@@ -7,7 +7,7 @@
 //! module installs into `witchy_runtime`.
 
 use witchy_runtime::value::{NativeError as RuntimeError, NativeValue as Value};
-use witchy_syntax::ast::{Item, Module};
+use witchy_syntax::ast::Module;
 use witchy_syntax::intrinsics;
 
 fn type_error(msg: impl Into<String>) -> RuntimeError {
@@ -70,10 +70,9 @@ pub fn footprint(args: &[Value]) -> Result<Value, RuntimeError> {
 /// and functions with their signatures and doc-comments. `name` titles the module
 /// heading. Lets a registry generate browsable docs from a rune's stored source,
 /// on either backend. This native
-/// source-string entry point deliberately rejects `comptime:` sources rather
-/// than rendering an under-approximation; the CLI expands source files before
-/// rendering. A parse/expansion-boundary error is returned as an HTML comment
-/// rather than trapping.
+/// source-string entry point expands `comptime:` sources through the same
+/// bounded evaluator used by the source-file linker. A parse/expansion-boundary
+/// error is returned as an HTML comment rather than trapping.
 pub fn doc(args: &[Value]) -> Result<Value, RuntimeError> {
     let [Value::Str(name), Value::Str(src)] = args else {
         return Err(type_error("compiler.doc expects (name, source) strings"));
@@ -140,35 +139,18 @@ pub fn diff(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn parse_source_only_module(src: &str, op: &str) -> Result<Module, String> {
-    let module = witchy_syntax::parser::parse_module(src).map_err(|e| e.to_string())?;
-    if module.items.iter().any(|item| matches!(item, Item::Comptime(_))) {
-        return Err(format!(
-            "{op} does not support comptime source strings; use the source-file CLI path for expanded introspection"
-        ));
-    }
-    Ok(module)
+    witchy_syntax::parser::parse_module(src).map_err(|e| format!("{op}: {e}"))
 }
 
 fn checked_source_only_module(src: &str, op: &str) -> Result<Module, String> {
     use std::collections::{HashSet, VecDeque};
 
-    fn reject_comptime(module: &Module, op: &str) -> Result<(), String> {
-        if module.items.iter().any(|item| matches!(item, Item::Comptime(_))) {
-            Err(format!(
-                "{op} does not support comptime source strings; use the source-file CLI path for expanded introspection"
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn no_comptime_expand(
-        _name: &str,
+    fn expand_source(
+        name: &str,
         module: &mut Module,
-        _siblings: &[(String, Module)],
+        siblings: &[(String, Module)],
     ) -> Result<witchy_syntax::origin::OriginTable, String> {
-        reject_comptime(module, "compiler source-string introspection")?;
-        Ok(witchy_syntax::origin::OriginTable::default())
+        crate::comptime::expand_compile_time(name, module, siblings)
     }
 
     let entry = parse_source_only_module(src, op)?;
@@ -199,7 +181,7 @@ fn checked_source_only_module(src: &str, op: &str) -> Result<Module, String> {
         }
     }
 
-    witchy_types::pipeline::link_checked(modules, "main", no_comptime_expand)
+    witchy_types::pipeline::link_checked(modules, "main", expand_source)
         .map_err(|e| e.to_string())?;
     // The public source-string footprint is the submitted module's footprint,
     // not the linked program's transitive std footprint. Linking/type-checking
