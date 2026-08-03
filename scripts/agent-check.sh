@@ -7,6 +7,9 @@
 #   ./scripts/agent-check.sh syntax
 #   ./scripts/agent-check.sh link
 #   ./scripts/agent-check.sh parity
+#
+# Set AGENT_CHECK_RUNNER=nextest to use nextest for a focused package; the
+# default cargo test runner avoids nextest startup overhead for one binary.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -74,7 +77,11 @@ case "$command" in
             exit 2
         fi
         ensure_agent_target
-        if cargo nextest --version >/dev/null 2>&1; then
+        if [ "${AGENT_CHECK_RUNNER:-cargo}" = "nextest" ]; then
+            cargo nextest --version >/dev/null 2>&1 || {
+                echo "agent-check: AGENT_CHECK_RUNNER=nextest requires cargo-nextest" >&2
+                exit 2
+            }
             cmd=(cargo nextest run -p "$package")
             if [ -n "$filter" ]; then
                 cmd+=(-E "test($filter)")
