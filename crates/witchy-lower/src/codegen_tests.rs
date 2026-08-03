@@ -927,8 +927,9 @@ fn main() -> Int:
         + list.at(points, 1).y * 10
         + list.at(points, 2).x
 "#;
-        assert_eq!(run_int(source), 3312);
-        let module = parse_module(source).expect("parse generic packed helper");
+        let logical_module = parse_module(source).expect("parse generic packed helper");
+        let module = link_list_app(source);
+        assert_eq!(run_int_module(&module), 3312);
         let (_, logical_specializations) =
             witchy_types::traits::lower_for_wasm_with_specializations(module.clone())
                 .into_parts();
@@ -944,7 +945,7 @@ fn main() -> Int:
         )
         .expect("parse logical reflection oracle");
         assert_eq!(
-            witchy_syntax::reflect::module_type_info_exprs(&module)
+            witchy_syntax::reflect::module_type_info_exprs(&logical_module)
                 .expect("reflect packed declaration logically"),
             witchy_syntax::reflect::module_type_info_exprs(&unpacked)
                 .expect("reflect unpacked declaration logically"),
