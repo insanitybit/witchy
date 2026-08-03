@@ -1389,6 +1389,14 @@ fn combined_access_envelope_cannot_be_erased_at_any_ascription_boundary() {
             "{COMBINED_ASCRIPTION_DECLARATION}\n{body}"
         ))
         .expect_err("the combined access envelope must not be erased");
+        if name == "function cast" {
+            assert!(
+                error.contains("`as` narrows a capability to a subset of its rights")
+                    && error.contains(&format!("cannot ascribe `{erased}` as `{erased}`")),
+                "function cast did not produce the canonical capability-subset rejection: {error}",
+            );
+            continue;
+        }
         assert!(
             error.contains(context)
                 && error.contains("erases or changes its ownership/access contract")
