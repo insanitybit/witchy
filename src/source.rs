@@ -7,6 +7,10 @@ use witchy_interp::{comptime, pipeline};
 use witchy_types::runtime_type::{
     AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
 };
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Debug)]
 pub(crate) struct AuthenticatedDependency {
@@ -238,7 +242,8 @@ fn load_file_modules(
                 }
             },
         };
-        let module = parser::parse_module(&src).map_err(|e| format!("{name}: {e}"))?;
+        let module = parse_module_cached(&p.canonicalize().unwrap_or_else(|_| p.clone()), &src)
+            .map_err(|e| format!("{name}: {e}"))?;
         for imp in &module.imports {
             if !loaded.contains(imp) {
                 let dep_path = deps
@@ -325,7 +330,8 @@ fn load_file_modules_authenticated(
             },
         };
         assignments.push((name.clone(), owner.clone()));
-        let module = parser::parse_module(&source).map_err(|error| format!("{name}: {error}"))?;
+        let module = parse_module_cached(&module_path, &source)
+            .map_err(|error| format!("{name}: {error}"))?;
         for import in &module.imports {
             if loaded.contains(import) {
                 continue;
@@ -502,6 +508,43 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
     };
     Ok(format::module(&module, &[]))
 }
+
+#[derive(Clone)]
+struct CachedParsedSource {
+    signature: u64,
+    module: ast::Module,
+}
+
+fn module_cache() -> &'static Mutex<HashMap<PathBuf, CachedParsedSource>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedParsedSource>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn signature_for_source(source: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn parse_module_cached(path: &PathBuf, source: &str) -> Result<ast::Module, String> {
+    let signature = signature_for_source(source);
+    let mut cache = module_cache().lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some(entry) = cache.get(path) {
+        if entry.signature == signature {
+            return Ok(entry.module.clone());
+        }
+    }
+    let module = parser::parse_module(source).map_err(|e| e.to_string())?;
+    cache.insert(
+        path.to_path_buf(),
+        CachedParsedSource {
+            signature,
+            module: module.clone(),
+        },
+    );
+    Ok(module)
+}
+
 /// Whether a linked module contains a runnable `main`. Library-only files are
 /// valid `witchy check` inputs, but there is no program artifact to compile.
 pub(crate) fn linked_has_main(linked: &ast::Module) -> bool {
