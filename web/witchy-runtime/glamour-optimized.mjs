@@ -43,6 +43,18 @@ function fail(message) {
   throw new Error(`glamour optimized: ${message}`);
 }
 
+function developmentFrameDigest(frame) {
+  // A bounded non-cryptographic identity is sufficient here: the frame bytes
+  // never leave the private recorder, and the digest is only a correlation key
+  // for development tooling. Payload bytes are deliberately never exposed.
+  let hash = 2166136261;
+  for (const byte of frame) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
 function asMap(value) {
   if (value instanceof Map) return value;
   if (Array.isArray(value)) {
@@ -1149,6 +1161,8 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
       ? "resume"
       : "fresh";
   const developmentTimeline = [];
+  const developmentInputs = [];
+  const developmentReplayFrames = [];
   const developmentHostLifecycle = [];
   const developmentDescriptors = developmentTracing
     ? Object.freeze({
@@ -1200,6 +1214,17 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
 
   const callWithFrame = (name, frame) => {
     if (disposed) fail("application is disposed");
+    if (developmentTracing && developmentReplayFrames.length < DEVELOPMENT_TRACE_LIMIT) {
+      const privateFrame = frame.slice();
+      developmentReplayFrames.push(Object.freeze({ name, frame: privateFrame }));
+      developmentInputs.push(Object.freeze({
+        ordinal: developmentInputs.length,
+        name,
+        byteLength: privateFrame.byteLength,
+        digest: developmentFrameDigest(privateFrame),
+      }));
+      if (developmentInputs.length > DEVELOPMENT_TRACE_LIMIT) developmentInputs.shift();
+    }
     const pointer = wasm.__glamour_input_reserve(frame.byteLength);
     if (!Number.isInteger(pointer) || pointer < 0 || pointer + frame.byteLength > memory.buffer.byteLength) {
       dispose();
@@ -1974,6 +1999,7 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
             totalMs: finished - started,
           }),
           hostWorkDeferred: deferredActivation,
+          input: developmentInputs.at(-1) || null,
         }));
         if (developmentTimeline.length > DEVELOPMENT_TRACE_LIMIT) {
           developmentTimeline.shift();
@@ -2274,6 +2300,13 @@ export async function mountOptimized(wasmBytes, initialRoot, options = {}) {
       }),
       descriptors: developmentDescriptors,
       timeline: Object.freeze([...developmentTimeline]),
+      replay: Object.freeze({
+        schema: "witchy.glamour.replay.v1",
+        retainedInputs: developmentInputs.length,
+        maxInputs: DEVELOPMENT_TRACE_LIMIT,
+        payloads: "private",
+        commandResults: "recorded-as-authenticated-completion-frames",
+      }),
       hostLifecycle: Object.freeze([...developmentHostLifecycle]),
       stats: Object.freeze(application.getRuntimeStats()),
     });
