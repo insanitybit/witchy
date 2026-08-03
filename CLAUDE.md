@@ -120,6 +120,9 @@ the documented residual, not an invitation to grow the shape tables.
   ownership or priority source. Its reproducers remain useful, but do not restart
   completed tiers from that snapshot. Do not self-select bugs from
   `bugs/README.md` without asking — that local ledger does not encode priority.
+- **For agent process, boundaries, and handoff format**, use
+  [`docs/agile-agent-playbook.md`](docs/agile-agent-playbook.md) before editing
+  and before queue submission.
 - **Do not revive stale RFC-0005 stage branches.** RFC-0005 is implemented on
   `master`; new representation defects need a current repro and a fresh branch,
   not continuation from `impl/rfc-0005-stage2` or another historical worktree.

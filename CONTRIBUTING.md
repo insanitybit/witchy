@@ -26,6 +26,10 @@ evidence rather than permission to bypass the repository landing gate.
 The end-to-end package-manager tests (`tests/e2e.rs`) drive the real binary
 through scaffold/publish/add/build/run against hermetic per-test registries.
 
+Agent-driven contribution flow is documented in
+`docs/agile-agent-playbook.md`, including ownership boundaries, required handoff
+artifacts, and focused pre-queue checks.
+
 ### Test layers and footprint
 
 Measure dedicated Rust test and support code with:
