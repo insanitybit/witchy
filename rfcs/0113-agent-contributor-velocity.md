@@ -3,7 +3,7 @@ rfc: 0113
 title: Improve agent contribution throughput
 status: implemented
 created: 2026-08-02
-tracking: "Implemented 2026-08-02 in docs/agile-agent-playbook.md and scripts/agent-check.sh."
+tracking: "Implemented 2026-08-02 in docs/agile-agent-playbook.md and scripts/agent-check.sh; performance metrics and structure-health tooling added 2026-08-03."
 ---
 
 # RFC-0113: Improve agent contribution throughput

@@ -75,6 +75,12 @@ Defaults:
   `--with-tests` to include the full test stage.
 - `just perf-health` combines the latest local timings with merge-queue
   throughput and gate latency.
+- `./scripts/structure-health.sh` reports the largest source files and warns
+  before files become difficult to edit safely.
+- `./scripts/perf-health.sh --json` is the machine-readable status form for
+  dashboards and handoffs.
+- `./scripts/metric-compare.sh <before.json> <after.json>` compares build,
+  compile, test-compilation, and test-stage speedups between two snapshots.
 
 All `target` checks are invoked under:
 
