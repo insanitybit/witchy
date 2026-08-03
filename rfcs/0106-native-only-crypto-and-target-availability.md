@@ -1,9 +1,10 @@
 ---
 rfc: 0106
 title: "Native-only cryptographic primitives and target availability"
-status: proposed
+status: accepted
 created: 2026-07-27
-tracking: "Design RFC; no implementation branch yet."
+updated: 2026-08-03
+tracking: "Design accepted; no open questions. Implementation not started — native SHAKE128/256 XOF via AWS-LC behind the native/interpreter target, browser target denies it by omission (RFC-0007). Remaining: the native primitive, target-availability gating, and a pure-Witchy browser fallback or documented absence."
 predecessors:
   - "[0007](0007-witchy-wasm-browser-target.md) (browser WASM is the compiled backend under a deny-by-omission host)"
   - "[0044](0044-std-error-policy.md) (stdlib error contracts)"

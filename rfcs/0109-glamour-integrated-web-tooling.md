@@ -1,10 +1,11 @@
 ---
 rfc: 0109
 title: "Glamour integrated web tooling and safe hot swap"
-status: proposed
+status: accepted
 created: 2026-07-29
+updated: 2026-08-03
 superseded-by:
-tracking: "RFC-0107 Phase 4"
+tracking: "Design accepted; no open questions. RFC-0107 Phase 4. Web dev loop, safe hot swap, static delivery, and deterministic rebuild are largely implemented and proven. Remaining before implemented: per-module incremental checked-IR/codegen reuse (RFC-0107-ACCEPTANCE.md row 134, still whole-unit relink), aggregate-model hot-swap serializer (rows 57-60), and the `witchy dev` static-delivery path (src/commands/web.rs:1005-1011 errors 'not implemented yet')."
 predecessors:
   - "[0107](0107-glamour-next-generation-web-framework.md) (Glamour 1.0 delivery contract)"
   - "[0108](0108-glamour-stateful-browser-abi.md) (stateful browser ABI)"

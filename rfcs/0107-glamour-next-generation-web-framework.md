@@ -1,10 +1,11 @@
 ---
 rfc: 0107
 title: "Glamour 1.0: capability-safe, compiler-directed web applications"
-status: proposed
+status: accepted
 created: 2026-07-29
+updated: 2026-08-03
 superseded-by:
-tracking: "umbrella delivery RFC; each implementation phase receives a checked acceptance ledger before it may advance"
+tracking: "Design accepted; no open questions. Umbrella delivery RFC — 116 PROVEN / 4 MISSING / 8 externally-owned rows in projects/glamour/RFC-0107-ACCEPTANCE.md. Framework core, islands (activation policies, hydration, dispatch, event-registry, resume), stateful browser ABI (RFC-0108), and static site generation are implemented and heavily test-backed. Remaining before implemented: incremental compiler (Phase 4), aggregate-model hot-swap serializer, `witchy dev` static-delivery path, JSON-path retirement (Phase 7), and the externally-owned deploy/CI evidence rows (browser matrix, release-host vitals, WebAuthn relying-party exchange, cold-mobile, accessibility matrix)."
 predecessors:
   - "[0006](0006-compile-time-tagged-literals.md) (typed and hygienic `html` literals)"
   - "[0008](0008-frontend-framework-rune.md) (capability-pure model/update/view architecture)"

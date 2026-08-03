@@ -4,8 +4,13 @@ Audit target: integration commit `4bdebf5cb4a9f5d3765a4b08351bf3ef67a2bbe1`
 (the queued RFC-0110/0111/0112 batch), pending its serialized gate landing.
 
 This ledger is the completion authority for the Rust-class `mode opt` program.
-An RFC remains `proposed` while any row is not **PROVEN** by current-master
-executable or structural evidence.
+An RFC reaches `implemented` only when every row below is **PROVEN** by
+current-master executable or structural evidence. The intermediate `accepted`
+status records that the design decision is ratified and the remaining work is
+tracked (not that it is finished): RFC-0110, RFC-0111, and RFC-0112 are all
+`accepted` as of 2026-08-03 with the open rows below carried in each RFC's
+`tracking:` field. `proposed` is not used as a resting state — an unratified
+design stays a draft; a ratified one is `accepted`.
 
 Statuses:
 

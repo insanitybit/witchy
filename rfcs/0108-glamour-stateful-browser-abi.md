@@ -1,10 +1,11 @@
 ---
 rfc: 0108
 title: "Glamour stateful browser ABI and checked patch protocol"
-status: proposed
+status: accepted
 created: 2026-07-29
+updated: 2026-08-03
 superseded-by:
-tracking: "RFC-0107 Phase 3"
+tracking: "Design accepted; no open questions. RFC-0107 Phase 3, implemented and proven: binary patch protocol, Wasm-resident model, and typed completion codecs (web/witchy-runtime/glamour-optimized.mjs + glamour-protocol.mjs); Phase 3 rows PROVEN in projects/glamour/RFC-0107-ACCEPTANCE.md. Remaining before implemented: retire the compatibility JSON path (Phase 7)."
 predecessors:
   - "[0007](0007-rune-runtime.md) (pure-compute Wasm host and data marshaling)"
   - "[0008](0008-frontend-framework-rune.md) (Glamour reference application loop)"

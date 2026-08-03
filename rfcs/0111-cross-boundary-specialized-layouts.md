@@ -1,9 +1,10 @@
 ---
 rfc: 0111
 title: "Cross-boundary specialized layouts and destination passing"
-status: proposed
+status: accepted
 created: 2026-08-01
-tracking: "Rust-class scalar/aggregate performance track; reuses existing `packed` syntax"
+updated: 2026-08-03
+tracking: "Design accepted; no open questions. Rust-class scalar/aggregate performance track; reuses existing `packed` syntax. Criteria 1-8 and 11 PROVEN (canonical LayoutId descriptors, cross-boundary packed values, physical generic specialization, callable-layout identity, host-import metadata, destination forwarding, header elision, closed-sum layouts, specs); criterion 9 PARTIAL (ARM reference-machine report + timing gate activation pending), criterion 10 MISSING (no joint cross-lever acceptance slice under checked-heap/redzones/UAF/parity/docs/artifact-compat). Per rfcs/0110-0112-acceptance-ledger.md."
 predecessors:
   - "[0027](0027-packed-layouts-sroa.md) (confined packed record lists and SROA)"
   - "[0029](0029-performance-tier-contract.md) (`mode opt` performance contract)"
