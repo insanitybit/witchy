@@ -14,6 +14,8 @@
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
 
 use crate::ast::*;
 use crate::lambda_scan::collect_pattern_vars;
@@ -1015,6 +1017,12 @@ fn lower_expanded_source(
     let (checked_modules, declarations) = resolved.into_checked_modules();
     let mut lowered_modules = Vec::with_capacity(checked_modules.len());
     for ((module_name, checked), view_fns) in checked_modules.into_iter().zip(view_fns) {
+        let cache_key = lowered_source_cache_key(&module_name, checked.module(), &view_fns);
+        if let Some(cached) = lowered_source_cache().lock().unwrap().get(&cache_key).cloned() {
+            origin_tables.insert(module_name.clone(), cached.origin_table);
+            lowered_modules.push((module_name, cached.module));
+            continue;
+        }
         let generator_mapping = crate::generators::lowered_item_mapping(checked.module());
         let checked = lower_generators_with_canonical_impls(&module_name, checked).map_err(
             |message| LinkError {
@@ -1050,9 +1058,10 @@ fn lower_expanded_source(
                 message: format!("module `{module_name}`: expanded source: {message}"),
                 location: None,
             })?;
-        origin_tables
+        let origin_table = origin_tables
             .entry(module_name.clone())
-            .or_default()
+            .or_default();
+        origin_table
             .rebuild_item_trees(&module_name, &final_mapping, &lowered.items)
             .map_err(|message| LinkError {
                 message: format!(
@@ -1060,9 +1069,44 @@ fn lower_expanded_source(
                 ),
                 location: None,
             })?;
+        let mut cache = lowered_source_cache().lock().unwrap();
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        cache.insert(
+            cache_key,
+            CachedLoweredSource {
+                module: lowered.clone(),
+                origin_table: origin_table.clone(),
+            },
+        );
         lowered_modules.push((module_name, lowered));
     }
     Ok((lowered_modules, declarations))
+}
+
+#[derive(Clone)]
+struct CachedLoweredSource {
+    module: Module,
+    origin_table: crate::origin::OriginTable,
+}
+
+fn lowered_source_cache() -> &'static Mutex<std::collections::HashMap<u64, CachedLoweredSource>> {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<u64, CachedLoweredSource>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn lowered_source_cache_key(
+    module_name: &str,
+    module: &Module,
+    view_fns: &HashSet<String>,
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    module_name.hash(&mut hasher);
+    format!("{module:?}").hash(&mut hasher);
+    format!("{view_fns:?}").hash(&mut hasher);
+    hasher.finish()
 }
 
 fn lower_generators_with_canonical_impls(
