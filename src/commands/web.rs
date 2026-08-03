@@ -1103,15 +1103,21 @@ fn compile_project_with_origins(
     let packages = package_records(&checked)?;
     let templates = witchy_lower::codegen::checked_glamour_templates(&checked)
         .map_err(|error| WebCommandError::failure(error.to_string()))?;
-    let (wasm, development_metadata, source_instructions) = if development {
+    let (wasm, development_metadata, source_instructions, source_expressions) = if development {
         let compiled = super::compile::compile_checked_to_development_wasm_cached(&checked)
             .map_err(WebCommandError::failure)?;
-        (compiled.wasm, compiled.glamour, compiled.source_instructions)
+        (
+            compiled.wasm,
+            compiled.glamour,
+            compiled.source_instructions,
+            compiled.source_expressions,
+        )
     } else {
         (
             super::compile::compile_checked_to_wasm_cached(&checked)
                 .map_err(WebCommandError::failure)?,
             None,
+            Vec::new(),
             Vec::new(),
         )
     };
@@ -1121,7 +1127,12 @@ fn compile_project_with_origins(
         DevelopmentSourceGraph::default()
     };
     let wasm_functions = if development {
-        development_wasm_functions(&wasm, &source_graph.functions, &source_instructions)?
+        development_wasm_functions(
+            &wasm,
+            &source_graph.functions,
+            &source_instructions,
+            &source_expressions,
+        )?
     } else {
         Value::Array(Vec::new())
     };
@@ -1450,6 +1461,7 @@ fn development_wasm_functions(
     wasm: &[u8],
     sources: &[DevelopmentSourceFunction],
     source_instructions: &[witchy_wir::wir_encode::SourceInstructionRange],
+    source_expressions: &[witchy_wir::wir_encode::SourceExpressionInstructionRange],
 ) -> Result<Value, WebCommandError> {
     use wasmparser::{KnownCustom, Name, Payload, TypeRef};
 
@@ -1512,6 +1524,18 @@ fn development_wasm_functions(
         source_ranges.entry(range.function_index).or_default().push(range);
     }
     for ranges in source_ranges.values_mut() {
+        ranges.sort_by_key(|range| {
+            (range.instruction_start, range.instruction_end, range.line)
+        });
+    }
+    let mut expression_ranges = BTreeMap::<u32, Vec<_>>::new();
+    for range in source_expressions {
+        expression_ranges
+            .entry(range.function_index)
+            .or_default()
+            .push(range);
+    }
+    for ranges in expression_ranges.values_mut() {
         ranges.sort_by_key(|range| {
             (range.instruction_start, range.instruction_end, range.line)
         });
@@ -1615,6 +1639,29 @@ fn development_wasm_functions(
                             )
                         {
                             record["statementMapping"] = json!({
+                                "instructionStart": range.instruction_start,
+                                "instructionEnd": range.instruction_end,
+                                "byteStart": byte_start,
+                                "byteEnd": byte_end,
+                            });
+                        }
+                        let expression_matching = expression_ranges
+                            .get(&index)
+                            .into_iter()
+                            .flatten()
+                            .filter(|range| range.line == span.statement_line)
+                            .collect::<Vec<_>>();
+                        if let [range] = expression_matching.as_slice()
+                            && let (Ok(instruction_start), Ok(instruction_end)) = (
+                                usize::try_from(range.instruction_start),
+                                usize::try_from(range.instruction_end),
+                            )
+                            && let (Some(byte_start), Some(byte_end)) = (
+                                instruction_offsets.get(instruction_start),
+                                instruction_offsets.get(instruction_end),
+                            )
+                        {
+                            record["expressionMapping"] = json!({
                                 "instructionStart": range.instruction_start,
                                 "instructionEnd": range.instruction_end,
                                 "byteStart": byte_start,

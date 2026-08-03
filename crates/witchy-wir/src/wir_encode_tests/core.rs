@@ -1160,4 +1160,13 @@
                 instruction_end: 2,
             }]
         );
+        assert_eq!(
+            encoded.source_expressions,
+            [SourceExpressionInstructionRange {
+                function_index: 1,
+                line: 7,
+                instruction_start: 0,
+                instruction_end: 2,
+            }]
+        );
     }

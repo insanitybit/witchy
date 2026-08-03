@@ -960,6 +960,8 @@ pub struct CompiledDevelopmentModule {
     pub wasm: Vec<u8>,
     pub glamour: Option<GlamourDevelopmentMetadata>,
     pub source_instructions: Vec<witchy_wir::wir_encode::SourceInstructionRange>,
+    pub source_expressions:
+        Vec<witchy_wir::wir_encode::SourceExpressionInstructionRange>,
 }
 
 fn function_tail_name(function: &Function) -> &str {
@@ -2636,6 +2638,7 @@ pub fn compile_checked_development_module(
                 wasm: encoded.wasm,
                 glamour: metadata,
                 source_instructions: encoded.source_instructions,
+                source_expressions: encoded.source_expressions,
             })
         }
         LoweringOutcome::Unsupported(reason) => LoweringOutcome::Unsupported(reason),

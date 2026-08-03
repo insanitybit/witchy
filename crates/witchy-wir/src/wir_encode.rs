@@ -48,10 +48,23 @@ pub struct SourceInstructionRange {
     pub instruction_end: u32,
 }
 
+/// Exact instruction-ordinal interval emitted for one root expression inside a
+/// source statement. Expression intervals are only emitted when the encoder
+/// can identify the complete root expression boundary; nested operands are not
+/// reported as separate roots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceExpressionInstructionRange {
+    pub function_index: u32,
+    pub line: u32,
+    pub instruction_start: u32,
+    pub instruction_end: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedModule {
     pub wasm: Vec<u8>,
     pub source_instructions: Vec<SourceInstructionRange>,
+    pub source_expressions: Vec<SourceExpressionInstructionRange>,
 }
 
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
@@ -761,6 +774,7 @@ fn encode_with_gc_source_map(
     // --- Code section -------------------------------------------------------
     let mut code_section = CodeSection::new();
     let mut source_instructions = Vec::new();
+    let mut source_expressions = Vec::new();
     for (defined_index, f) in module.funcs.iter().enumerate() {
         // Raw-body splice: a pre-compiled function body (locals + instructions +
         // the trailing `End`, exactly as `Function::raw`/`CodeSection::raw`
@@ -810,6 +824,18 @@ fn encode_with_gc_source_map(
                 instruction_end,
             });
         }
+        source_expressions.extend(function.source_expressions.iter().filter_map(
+            |&(line, instruction_start, instruction_end)| {
+                (instruction_end > instruction_start).then_some(
+                    SourceExpressionInstructionRange {
+                        function_index,
+                        line,
+                        instruction_start,
+                        instruction_end,
+                    },
+                )
+            },
+        ));
         code_section.function(&function.inner);
     }
 
@@ -860,7 +886,7 @@ fn encode_with_gc_source_map(
     name_section.functions(&func_names);
     wasm.section(&name_section);
 
-    EncodedModule { wasm: wasm.finish(), source_instructions }
+    EncodedModule { wasm: wasm.finish(), source_instructions, source_expressions }
 }
 
 /// Collect the distinct closure signatures referenced by indirect calls for
@@ -1004,6 +1030,9 @@ struct TrackedFunction {
     inner: Function,
     instruction_count: u32,
     source_ranges: Vec<(u32, u32, u32)>,
+    source_expressions: Vec<(u32, u32, u32)>,
+    source_line: Option<u32>,
+    expression_depth: u32,
 }
 
 impl TrackedFunction {
@@ -1012,6 +1041,9 @@ impl TrackedFunction {
             inner: Function::new_with_locals_types(locals),
             instruction_count: 0,
             source_ranges: Vec::new(),
+            source_expressions: Vec::new(),
+            source_line: None,
+            expression_depth: 0,
         }
     }
 
@@ -1082,9 +1114,12 @@ impl EncodeCtx<'_> {
     fn encode_node(&mut self, func: &mut TrackedFunction, node: &WirNode) {
         match node {
             WirNode::Source { line, body } => {
+                let previous_line = func.source_line;
+                func.source_line = Some(*line);
                 let instruction_start = func.instruction_count;
                 self.encode_seq(func, body);
                 let instruction_end = func.instruction_count;
+                func.source_line = previous_line;
                 if instruction_end > instruction_start {
                     func.source_ranges.push((*line, instruction_start, instruction_end));
                 }
@@ -1280,6 +1315,21 @@ impl EncodeCtx<'_> {
     }
 
     fn encode_expr(&mut self, func: &mut TrackedFunction, e: &WirExpr) {
+        let root = func.expression_depth == 0;
+        let instruction_start = func.instruction_count;
+        func.expression_depth = func.expression_depth.saturating_add(1);
+        self.encode_expr_inner(func, e);
+        func.expression_depth = func.expression_depth.saturating_sub(1);
+        let instruction_end = func.instruction_count;
+        if root
+            && instruction_end > instruction_start
+            && let Some(line) = func.source_line
+        {
+            func.source_expressions.push((line, instruction_start, instruction_end));
+        }
+    }
+
+    fn encode_expr_inner(&mut self, func: &mut TrackedFunction, e: &WirExpr) {
         match e {
             WirExpr::ConstI64(n) => {
                 func.instruction(&Instruction::I64Const(*n));
