@@ -58,14 +58,23 @@ struct SwapContract {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InputFingerprint {
     compiler: String,
+    compiler_modules: BTreeMap<String, CompilerModuleFingerprint>,
     template: String,
     style: String,
     assets: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CompilerModuleFingerprint {
+    digest: String,
+    imports: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Invalidation {
     compiler: bool,
+    changed_modules: Vec<String>,
+    affected_modules: Vec<String>,
     template: bool,
     style: bool,
     assets: bool,
@@ -73,8 +82,41 @@ struct Invalidation {
 
 impl Invalidation {
     fn between(previous: &InputFingerprint, next: &InputFingerprint) -> Self {
+        let changed_modules = next
+            .compiler_modules
+            .iter()
+            .filter_map(|(name, module)| {
+                (previous.compiler_modules.get(name) != Some(module)).then_some(name.clone())
+            })
+            .chain(
+                previous
+                    .compiler_modules
+                    .keys()
+                    .filter(|name| !next.compiler_modules.contains_key(*name))
+                    .cloned(),
+            )
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut reverse = BTreeMap::<String, Vec<String>>::new();
+        for (name, module) in &next.compiler_modules {
+            for import in &module.imports {
+                reverse.entry(import.clone()).or_default().push(name.clone());
+            }
+        }
+        let mut affected = changed_modules.clone();
+        let mut queue = changed_modules.iter().cloned().collect::<std::collections::VecDeque<_>>();
+        let mut seen = changed_modules;
+        while let Some(module) = queue.pop_front() {
+            for dependent in reverse.get(&module).into_iter().flatten() {
+                if seen.insert(dependent.clone()) {
+                    affected.insert(dependent.clone());
+                    queue.push_back(dependent.clone());
+                }
+            }
+        }
         Self {
             compiler: previous.compiler != next.compiler,
+            changed_modules: seen.into_iter().collect(),
+            affected_modules: affected.into_iter().collect(),
             template: previous.template != next.template,
             style: previous.style != next.style,
             assets: previous.assets != next.assets,
@@ -779,6 +821,7 @@ fn input_fingerprint(
     files.sort();
     files.dedup();
     let mut compiler = Sha256::new();
+    let mut compiler_modules = BTreeMap::new();
     let mut template = Sha256::new();
     let mut style = Sha256::new();
     let mut assets = Sha256::new();
@@ -803,16 +846,16 @@ fn input_fingerprint(
                 .expect("walk stays below project or content root")
                 .to_path_buf()
         };
+        let is_compiler = (compiler_sources.is_none_or(|sources| sources.contains(&path))
+            && path.extension().and_then(|value| value.to_str()) == Some("witchy"))
+            || matches!(relative.to_str(), Some("witchy.toml" | "witchy.lock"));
         let hash = if content_relative.is_some() || path == project.manifest {
             Some(&mut template)
         } else if project.css.as_ref() == Some(&path) {
             Some(&mut style)
         } else if path == project.index || path.starts_with(&project.public) {
             Some(&mut assets)
-        } else if (compiler_sources.is_none_or(|sources| sources.contains(&path))
-            && path.extension().and_then(|value| value.to_str()) == Some("witchy"))
-            || matches!(relative.to_str(), Some("witchy.toml" | "witchy.lock"))
-        {
+        } else if is_compiler {
             Some(&mut compiler)
         } else {
             None
@@ -827,6 +870,27 @@ fn input_fingerprint(
         let bytes = std::fs::read(&path).map_err(|error| {
             WebCommandError::failure(format!("cannot watch `{}`: {error}", relative.display()))
         })?;
+        if is_compiler
+            && path.extension().and_then(|value| value.to_str()) == Some("witchy")
+        {
+            let source = std::str::from_utf8(&bytes).map_err(|error| {
+                WebCommandError::failure(format!("cannot decode `{}`: {error}", relative.display()))
+            })?;
+            let parsed = witchy_syntax::parser::parse_module(source).map_err(|error| {
+                WebCommandError::failure(format!("cannot fingerprint `{}`: {error}", relative.display()))
+            })?;
+            let name = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| WebCommandError::failure("compiler source has no module name"))?;
+            compiler_modules.insert(
+                name.to_string(),
+                CompilerModuleFingerprint {
+                    digest: hex(&Sha256::digest(&bytes)),
+                    imports: parsed.imports,
+                },
+            );
+        }
         hash.update(relative.to_string_lossy().as_bytes());
         hash.update([0]);
         hash.update((bytes.len() as u64).to_le_bytes());
@@ -834,6 +898,7 @@ fn input_fingerprint(
     }
     Ok(InputFingerprint {
         compiler: hex(&compiler.finalize()),
+        compiler_modules,
         template: hex(&template.finalize()),
         style: hex(&style.finalize()),
         assets: hex(&assets.finalize()),
@@ -1579,6 +1644,8 @@ mod tests {
             Invalidation::between(&unrelated, &imported),
             Invalidation {
                 compiler: true,
+                changed_modules: vec!["helper".into(), "source_graph".into()],
+                affected_modules: vec!["helper".into(), "source_graph".into()],
                 ..Invalidation::default()
             }
         );
