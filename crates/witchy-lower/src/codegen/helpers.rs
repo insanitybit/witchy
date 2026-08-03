@@ -249,7 +249,9 @@ impl Codegen<'_> {
             Some(true)
         };
         match shape {
-            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str => Some(true),
+            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str | EqShape::Bytes => {
+                Some(true)
+            }
             EqShape::List(element) => {
                 self.specialized_equality_shape_is_custom_free(element, visiting)
             }

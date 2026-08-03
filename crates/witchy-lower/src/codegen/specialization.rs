@@ -593,6 +593,7 @@ mod tests {
 
     fn relay_function() -> Function {
         Function {
+            line: 0,
             public: false,
             comptime_only: false,
             attributes: Vec::new(),
