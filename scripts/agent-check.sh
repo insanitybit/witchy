@@ -24,6 +24,11 @@ run_paths_checks() {
     ./scripts/test-for-paths.sh --run "$@"
 }
 
+ensure_agent_target() {
+    [ -d "$AGENT_TARGET_DIR" ] || [ ! -d target ] || \
+        ./scripts/worktree-warm.sh --target-dir "$AGENT_TARGET_DIR"
+}
+
 AGENT_TARGET_DIR="${CARGO_TARGET_DIR:-target-codex}"
 command="${1:-}"
 shift || true
@@ -68,6 +73,7 @@ case "$command" in
             echo "agent-check: target requires --package <name>" >&2
             exit 2
         fi
+        ensure_agent_target
         if cargo nextest --version >/dev/null 2>&1; then
             cmd=(cargo nextest run -p "$package")
             if [ -n "$filter" ]; then
