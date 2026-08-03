@@ -4,7 +4,7 @@
 //! declaration-level checker before destructive source lowering. Complete body
 //! checking remains on the linked runtime module during the migration.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
@@ -281,11 +281,17 @@ fn link_checked_with(
 /// checker again. Failed checks are deliberately not cached so diagnostics
 /// never outlive the source that produced them.
 fn check_linked_module_cached(module: &Module) -> Result<(), TypeError> {
+    let fingerprint = format!("{module:?}");
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    format!("{module:?}").hash(&mut hasher);
+    fingerprint.hash(&mut hasher);
     let key = hasher.finish();
     let cache = linked_check_cache();
-    if cache.lock().unwrap().contains(&key) {
+    if cache
+        .lock()
+        .unwrap()
+        .get(&key)
+        .is_some_and(|cached| cached == &fingerprint)
+    {
         return Ok(());
     }
     typeck::check(module)?;
@@ -293,13 +299,13 @@ fn check_linked_module_cached(module: &Module) -> Result<(), TypeError> {
     if cache.len() >= 64 {
         cache.clear();
     }
-    cache.insert(key);
+    cache.insert(key, fingerprint);
     Ok(())
 }
 
-fn linked_check_cache() -> &'static Mutex<HashSet<u64>> {
-    static CACHE: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashSet::new()))
+fn linked_check_cache() -> &'static Mutex<HashMap<u64, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Link with the injected compile-time expander, then type-check the result.

@@ -14,7 +14,6 @@
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::fmt;
-use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
 use crate::ast::*;
@@ -1091,8 +1090,8 @@ struct CachedLoweredSource {
     origin_table: crate::origin::OriginTable,
 }
 
-fn lowered_source_cache() -> &'static Mutex<std::collections::HashMap<u64, CachedLoweredSource>> {
-    static CACHE: OnceLock<Mutex<std::collections::HashMap<u64, CachedLoweredSource>>> =
+fn lowered_source_cache() -> &'static Mutex<std::collections::HashMap<String, CachedLoweredSource>> {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<String, CachedLoweredSource>>> =
         OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
@@ -1101,12 +1100,8 @@ fn lowered_source_cache_key(
     module_name: &str,
     module: &Module,
     view_fns: &HashSet<String>,
-) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    module_name.hash(&mut hasher);
-    format!("{module:?}").hash(&mut hasher);
-    format!("{view_fns:?}").hash(&mut hasher);
-    hasher.finish()
+) -> String {
+    format!("{module_name}\n{module:?}\n{view_fns:?}")
 }
 
 fn lower_generators_with_canonical_impls(
