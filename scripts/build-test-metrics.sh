@@ -78,6 +78,7 @@ mkdir -p "$run_dir"
 stage_names=()
 stage_statuses=()
 stage_elapsed_s=()
+test_runner="not-run"
 
 timestamp_seconds() {
     if command -v python3 >/dev/null 2>&1; then
@@ -142,7 +143,13 @@ run_stage build_workspace cargo build --workspace || failed=1
 run_stage compile_workspace cargo check --workspace --all-targets || failed=1
 run_stage test_compile cargo test --workspace --no-run || failed=1
 if [[ "$include_tests" -eq 1 ]]; then
-    run_stage tests cargo test --workspace || failed=1
+    if cargo nextest --version >/dev/null 2>&1; then
+        test_runner="cargo-nextest"
+        run_stage tests cargo nextest run --workspace || failed=1
+    else
+        test_runner="cargo-test"
+        run_stage tests cargo test --workspace || failed=1
+    fi
 fi
 
 history_file="$output_dir/metrics.tsv"
@@ -166,6 +173,7 @@ json_file="$run_dir/metrics.json"
     printf '  "git_rev": "%s",\n' "$git_rev"
     printf '  "branch": "%s",\n' "$git_branch"
     printf '  "target_dir": "%s",\n' "${target_dir:-none}"
+    printf '  "test_runner": "%s",\n' "$test_runner"
     printf '  "stages": [\n'
     for idx in "${!stage_names[@]}"; do
         printf '    {"name":"%s","duration_s":%s,"exit_code":%s,"log":"%s"}%s\n' \
