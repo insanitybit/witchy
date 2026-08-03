@@ -1114,6 +1114,7 @@ mod tests {
             source_functions: json!([]),
             wasm_functions: json!([]),
             templates: Vec::new(),
+            islands: Vec::new(),
             development: None,
             packages: Vec::new(),
         }
