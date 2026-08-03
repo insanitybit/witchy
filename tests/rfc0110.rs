@@ -95,7 +95,6 @@ fn compiled_output(
             &bytes,
             Capabilities {
                 print: true,
-                print_int: true,
                 quiet: true,
                 ..Default::default()
             },
@@ -295,6 +294,16 @@ fn mutual_right(var values: unique List(Int), n: Int) -> unique List(Int):
     values.push(n)
     mutual_left(values, n - 1)
 
+fn oracle(value: Int) -> String:
+    match value:
+        1 -> "1"
+        2 -> "2"
+        3 -> "3"
+        4 -> "4"
+        10 -> "10"
+        12 -> "12"
+        _ -> "unexpected"
+
 fn main(console: Console):
     var direct_values = []
     let direct_result = direct_access(direct_values, 1)
@@ -327,33 +336,33 @@ fn main(console: Console):
     var mutual_values = []
     let mutual_result = mutual_left(mutual_values, 1)
 
-    print_int(list.at(direct_result, 0))
-    print_int(list.length(direct_values))
-    print_int(list.at(direct_values, 0))
-    print_int(list.at(method_result, 0))
-    print_int(list.length(method_values))
-    print_int(list.at(method_values, 0))
-    print_int(list.at(function_value_result, 0))
-    print_int(list.length(function_value_values))
-    print_int(list.at(function_value_values, 0))
-    print_int(list.at(lambda_result, 0))
-    print_int(list.length(lambda_values))
-    print_int(list.at(lambda_values, 0))
-    print_int(list.at(apply_result, 0))
-    print_int(list.length(apply_values))
-    print_int(list.at(apply_values, 0))
-    print_int(list.at(static_trait_result, 0))
-    print_int(list.length(static_trait_values))
-    print_int(list.at(static_trait_values, 0))
-    print_int(list.at(existential_result, 0))
-    print_int(list.length(existential_values))
-    print_int(list.at(existential_values, 0))
-    print_int(list.at(self_result, 0))
-    print_int(list.length(self_values))
-    print_int(list.at(self_values, 0))
-    print_int(list.at(mutual_result, 0))
-    print_int(list.length(mutual_values))
-    print_int(list.at(mutual_values, 0))
+    console.print(oracle(list.at(direct_result, 0)))
+    console.print(oracle(list.length(direct_values)))
+    console.print(oracle(list.at(direct_values, 0)))
+    console.print(oracle(list.at(method_result, 0)))
+    console.print(oracle(list.length(method_values)))
+    console.print(oracle(list.at(method_values, 0)))
+    console.print(oracle(list.at(function_value_result, 0)))
+    console.print(oracle(list.length(function_value_values)))
+    console.print(oracle(list.at(function_value_values, 0)))
+    console.print(oracle(list.at(lambda_result, 0)))
+    console.print(oracle(list.length(lambda_values)))
+    console.print(oracle(list.at(lambda_values, 0)))
+    console.print(oracle(list.at(apply_result, 0)))
+    console.print(oracle(list.length(apply_values)))
+    console.print(oracle(list.at(apply_values, 0)))
+    console.print(oracle(list.at(static_trait_result, 0)))
+    console.print(oracle(list.length(static_trait_values)))
+    console.print(oracle(list.at(static_trait_values, 0)))
+    console.print(oracle(list.at(existential_result, 0)))
+    console.print(oracle(list.length(existential_values)))
+    console.print(oracle(list.at(existential_values, 0)))
+    console.print(oracle(list.at(self_result, 0)))
+    console.print(oracle(list.length(self_values)))
+    console.print(oracle(list.at(self_values, 0)))
+    console.print(oracle(list.at(mutual_result, 0)))
+    console.print(oracle(list.length(mutual_values)))
+    console.print(oracle(list.at(mutual_values, 0)))
 "#;
 
 const ACCESS_CONSUMER_EXPECTED: [&str; 27] = [
@@ -1321,11 +1330,14 @@ fn strict(var values: unique List(Int)) -> unique List(Int):
 
 #[test]
 fn combined_access_envelope_cannot_be_erased_at_any_ascription_boundary() {
-    let checked = witchy::resolve_std_only_checked(&format!(
+    let source = format!(
         "{COMBINED_ASCRIPTION_DECLARATION}\nfn main() -> Int:\n    0\n"
-    ))
-    .expect("checked combined access-envelope declaration");
-    let typed = witchy_types::typeck::annotate_checked(checked.module().clone())
+    );
+    let module = witchy_syntax::parser::parse_module(&source)
+        .expect("parse combined access-envelope declaration");
+    witchy_types::typeck::check(&module)
+        .expect("check combined access-envelope declaration without unrelated std modules");
+    let typed = witchy_types::typeck::annotate_checked(module)
         .expect("typed combined access-envelope declaration");
     let facts = checked_facts(typed.module(), typed.table())
         .expect("checked combined access-envelope facts");
