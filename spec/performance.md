@@ -118,6 +118,17 @@ state-bearing calls that actually retain typed table dispatch. `reowns` counts
 operation-level copy-on-write entries; it is not a count of repairs at source
 call boundaries.
 
+When a `var`-unique call writes its result back into whole caller locals (no
+field or index projection), the result is committed directly into storage rather
+than staged through a scratch local — the callee already produced the exact
+owner the local must hold, so the extra move is redundant. `direct_storage_var_accesses`
+counts these direct commits; it is exact and lever-invariant (the write-back is
+observationally identical to the staged form on every non-trapping path, and the
+single commit still runs after the multi-result call returns, so a trapped VM
+commits nothing — the same all-or-nothing write-back). When the same envelope
+folds into a proper tail loop the write-back becomes loop-argument forwarding and
+no direct commit occurs, so the count is zero there.
+
 ## Functional-in-place state kernels
 
 [RFC-0089](../rfcs/0089-functional-in-place.md) strengthens the ownership and proper-tail-call machinery for a narrow

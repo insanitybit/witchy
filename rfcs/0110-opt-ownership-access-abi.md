@@ -1,10 +1,10 @@
 ---
 rfc: 0110
 title: "Opt ownership/access ABI completion"
-status: accepted
+status: implemented
 created: 2026-08-01
-updated: 2026-08-03
-tracking: "Design accepted; no open questions. Foundation for RFC-0111/0112; no new source syntax. Criteria 1,3,4,5,7 PROVEN (checked logical access envelope, access matrix, envelope-erasure rejection, checked-place facts, tail-dispatch WIR); criteria 2,6,8,9,10 PARTIAL per rfcs/0110-0112-acceptance-ledger.md. Remaining before implemented: general normal-mode one-copy repair, direct-storage `var` lowering with the six proofs, paired normal-repair test cases, and real boundary-reown/ownership-token/direct-storage counters (currently placeholders)."
+updated: 2026-08-04
+tracking: "Implemented; no open questions. Foundation for RFC-0111/0112; no new source syntax. All ten acceptance criteria PROVEN per rfcs/0110-0112-acceptance-ledger.md: checked logical access envelope, own-unique + var-unique checking at every call shape with normal-mode one-copy repair, access matrix, envelope-erasure rejection, checked-place facts, tail-dispatch WIR, paired normal-repair test cases, general direct-storage `var` lowering with the six proofs, and the three real ownership counters (boundary_reown_copies / ownership_token_repairs / direct_storage_var_accesses), all documented in spec/performance.md."
 predecessors:
   - "[0024](0024-unified-facts-lattice.md) (shared ownership, escape, and liveness facts)"
   - "[0026](0026-unique-qualifier.md) (`unique` and `local unique` contracts)"

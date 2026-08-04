@@ -60,7 +60,7 @@ them instead of creating parallel AST-shape or operation-name catalogs.
 | 7 | **PROVEN** | The access matrix asserts self-tail and mutual-tail dispatcher WIR shape, ordered value/capacity write-back, and absence of recursive calls in the lowered loop. |
 | 8 | **PROVEN** | `tests/rfc0110.rs` runs direct, function-value, lambda, existential-witness, fixed-place, and self-tail cases through the interpreter, optimized Wasm, full de-opt, every single-lever de-opt, and an independent oracle; the paired normal-repair case (`boundary_reown_counter_is_exact_runtime_and_lever_invariant`) runs the aliased-owner repair value-equal across interpreter and every lever and asserts the exact repair count. |
 | 9 | **PROVEN** | All three ownership counters are now real and lever-invariant: boundary re-own and ownership-token repair (`__witchy_boundary_reown_copies` / `__witchy_ownership_token_repairs`, proven exact = 1 repaired / 0 accepted / 0 dead-branch), and the direct-storage-access counter (`__witchy_direct_storage_var_accesses`), which the direct-storage `var` lowering fires exactly once per whole-local write-back (proven = 1 under the `direct-storage-var` lever, 0 with the lever off or absent, by `direct_storage_var_writeback_is_counted_and_de_opt_equivalent`). The tail-call recognizer (`wir_opt/tail_calls.rs`) treats the counter `SetGlobal` transparently so the ownership-envelope tail loop still folds. Indirect ownership-envelope calls and destination forwarding also have real counters. |
-| 10 | **PARTIAL** | The language and performance specs, callable reflection, diagnostics, and book describe the shipped typed callable envelope. They cannot yet document the unimplemented normal repair, direct-storage lowering, or missing counter proofs as shipped. |
+| 10 | **PROVEN** | `spec/performance.md` documents the shipped typed callable envelope, the normal-mode operation-level copy-on-write repair, the direct-storage `var` lowering, and all three ownership counters (`boundary_reown_copies`, `ownership_token_repairs`, `direct_storage_var_accesses`) as `witchy stats` fields. Every documented counter is a real `Stats` field (`src/stats.rs`) fed by a live `Vm` reader, and every claim is backed by a passing `tests/rfc0110.rs` proof. |
 
 ## RFC-0111 acceptance criteria
 
@@ -116,18 +116,19 @@ foundation stage changes a row to **PARTIAL** at most; it is not completion.
 
 ## Remaining-work triage (2026-08-04)
 
-RFC-0111 is now **implemented** (all eleven rows PROVEN). RFC-0110 and RFC-0112
-are **in-sandbox but deep** — no external-evidence blocker, but each remaining
-row is multi-session compiler work over a large surface, not a bounded slice:
+RFC-0111 and RFC-0110 are now **implemented** (all rows PROVEN). RFC-0112 is
+**in-sandbox but deep** — no external-evidence blocker, but each remaining row is
+multi-session compiler work over a large surface, not a bounded slice:
 
-- **RFC-0110** (rows 2, 6, 8, 9, 10 PARTIAL): the two clusters are normal-mode
-  **one-copy repair** (a `unique` parameter without a uniqueness proof gets one
-  defensive copy in normal mode instead of an opt-mode rejection — rows 2/8/10)
-  and general **direct-storage `var` lowering** with the six RFC proofs plus real
-  boundary-reown / ownership-token / direct-storage counters (rows 6/9;
-  `__witchy_reowns` currently measures operation-level copy-on-write). This spans
-  the ~9k-line uniqueness/access substrate (`crates/witchy-types/src/access.rs`,
-  `crates/witchy-lower/src/analysis.rs`) — RFC staging steps 3–5.
+- **RFC-0110** (all ten rows PROVEN): normal-mode **one-copy repair** (a `unique`
+  parameter without a uniqueness proof takes one defensive operation-level
+  copy-on-write in normal mode instead of an opt-mode rejection — rows 2/8/10) and
+  general **direct-storage `var` lowering** with the six RFC proofs plus the three
+  real ownership counters (`boundary_reown_copies` / `ownership_token_repairs` /
+  `direct_storage_var_accesses`, rows 6/9). Landed across the uniqueness/access
+  substrate (`crates/witchy-types/src/access.rs`, `crates/witchy-lower/src/analysis.rs`,
+  `crates/witchy-lower/src/codegen/mod.rs`) and the tail-call transform
+  (`crates/witchy-wir/src/wir_opt/tail_calls.rs`).
 - **RFC-0112** (rows 6, 8, 9, 10, 11 MISSING): borrowed-aggregate shell mutation
   + field-replacement loan sequencing + root-set write-back (6), the aggregate
   retain/drop-balance matrix (8), `List(B('a))` lifecycle (9), a runnable
@@ -135,5 +136,5 @@ row is multi-session compiler work over a large surface, not a bounded slice:
   and the shipped-contract docs (11). The largest remaining track; mostly unbuilt
   runtime + codegen.
 
-Both are candidates for the queue-sharded fan-out (RFC-0079) rather than a single
-session; neither is externally blocked.
+RFC-0112 is a candidate for the queue-sharded fan-out (RFC-0079) rather than a
+single session; it is not externally blocked.
