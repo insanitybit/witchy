@@ -7,9 +7,26 @@ first, each independently gate-green and ideally PROVEN-able against a ledger
 row, with explicit STOP-if-uncertain boundaries around the parity-critical
 ownership model.
 
-**Status: Step 1 (counter globals) LANDED. Steps 3-12 remain** — a multi-session
-continuation; a fresh context should execute them in order, running the required
-full opt-mode blast-radius sweep after Steps 3 and 7.
+**Status (2026-08-04):**
+- **Step 1 (counter globals) — LANDED** (`5d9bc824`).
+- **Step 3 (widen detector to `own unique`) — LANDED** (`ed0159c7`): separate
+  `own_unique_params` axis + `unique_params_to_check` union feeds the miss
+  detector only; codegen unchanged. Fixed the fresh-value false positive
+  (`no_copy_fresh_owned`). 732 differential + full opt-mode sweep green.
+- **Step 4 (source-keyed repair set) — LANDED** (`1d5b7f67`): `NoCopyMiss` gains
+  `arg_index`; `analysis::module_boundary_repairs` returns `BoundaryRepair`
+  keyed `(function, line, callee, arg_index)`.
+- **Step 5 (fire the boundary counter) — NEXT / RESUME HERE.** The repair set and
+  the three counter globals both exist; what remains is to compute
+  `module_boundary_repairs` once in `Codegen::new` and, at each `CallStoreMulti`
+  emission site (mod.rs ~6974, 6993, 7099, 7156, 7488), prepend
+  `increment_counter("__witchy_boundary_reown_copies")` (+ ownership_token_repairs)
+  when `(cur_function, cur_line, callee, arg_index)` is in the set — lever-invariant
+  (drive off the repair set, NOT `inplace_push`). Each site needs the current
+  function/line/callee/arg-index in scope; that plumbing is the med-risk work.
+- **Steps 6-12 remain** — local-unique escape gate (6), HIGH-risk entry-filter
+  drop (7), direct-storage var lowering (8-10), stats surface (11), docs (12).
+  Run the full opt-mode blast-radius sweep after Steps 3 (done) and 7.
 
 Verification complete. All load-bearing sites confirmed on current `master` (findings were gathered on the `rfc0110-repair` worktree; structure holds, line numbers re-verified fresh above). Key reconciliation across the three candidate designs, with my tech-lead decisions baked in, follows.
 
