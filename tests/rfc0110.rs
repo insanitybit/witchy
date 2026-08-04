@@ -1524,3 +1524,65 @@ impl ProjectionOps for Ops:
         }
     }
 }
+
+/// (RFC-0110 criterion 2) The `own unique` consuming parameter is now checked
+/// at the call site alongside `var unique`: an aliased owner is rejected under
+/// `mode opt` (with a source-level diagnostic), while a freshly-constructed
+/// owner is accepted. Normal mode accepts both — the aliased case repairs by the
+/// zero-token copy-on-write path (value-parity is exercised by the existing
+/// differential matrix; this test pins the check/repair fork).
+#[test]
+fn own_unique_consuming_param_is_checked_and_fresh_values_pass() {
+    const ALIASED: &str = r#"
+mode opt
+
+import list
+
+fn consume(own values: unique List(Int)) -> Int:
+    list.length(values)
+
+fn main(console: Console):
+    var xs = [1, 2, 3]
+    let alias = xs
+    console.print("${consume(xs)}")
+"#;
+    // Opt mode: the aliased `own unique` argument is a no-copy miss.
+    let checked = witchy::resolve_std_only_checked(ALIASED)
+        .expect("aliased own-unique fixture type-checks");
+    let error = witchy::enforce_performance_modes(checked.module(), "main")
+        .expect_err("an aliased own-unique argument must fail mode opt")
+        .to_string();
+    assert!(
+        error.contains("consume") && error.contains("xs"),
+        "diagnostic must name the source callee and argument: {error}",
+    );
+    let misses = witchy_lower::analysis::try_module_no_copy_misses(checked.module())
+        .expect("checked access graph")
+        .into_iter()
+        .filter(|miss| miss.callee.ends_with("consume"))
+        .collect::<Vec<_>>();
+    assert_eq!(misses.len(), 1, "one own-unique miss at the aliased call: {misses:?}");
+    assert_eq!(misses[0].var, "xs", "the miss names the source owner");
+
+    // A freshly-constructed owner is provably unique — accepted in opt mode.
+    const FRESH: &str = r#"
+mode opt
+
+import list
+
+fn consume(own values: unique List(Int)) -> Int:
+    list.length(values)
+
+fn main(console: Console):
+    console.print("${consume([1, 2, 3])}")
+"#;
+    let fresh = witchy::resolve_std_only_checked(FRESH).expect("fresh fixture type-checks");
+    witchy::enforce_performance_modes(fresh.module(), "main")
+        .expect("a freshly-constructed own-unique argument satisfies mode opt");
+
+    // Normal mode (no `mode opt`) accepts the aliased case: the repair path.
+    let normal_src = ALIASED.replacen("mode opt\n\n", "", 1);
+    let normal = witchy::resolve_std_only_checked(&normal_src).expect("normal fixture type-checks");
+    witchy::enforce_performance_modes(normal.module(), "main")
+        .expect("normal mode repairs an aliased own-unique argument rather than rejecting");
+}

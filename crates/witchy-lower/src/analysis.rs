@@ -148,6 +148,12 @@ pub struct CallOwnershipFact {
     own_capacity_param: Option<usize>,
     var_capacity_params: Vec<usize>,
     no_copy_var_params: Vec<usize>,
+    // (RFC-0110 criterion 2) `own unique` (Consuming + Unique/LocalUnique)
+    // parameter indices. Kept SEPARATE from `no_copy_var_params` (which codegen
+    // consumes for var write-back capacity-slot decisions) so widening the
+    // uniqueness-miss detector to consuming params cannot change owned-argument
+    // lowering. Only the no-copy miss detector reads this.
+    own_unique_params: Vec<usize>,
     unique_capacity_result: bool,
 }
 
@@ -169,6 +175,30 @@ impl CallOwnershipFact {
 
     pub fn no_copy_var_params(&self) -> &[usize] {
         &self.no_copy_var_params
+    }
+
+    /// (RFC-0110) `own unique` parameter indices — the consuming counterpart of
+    /// `no_copy_var_params`. The no-copy miss detector unions the two so every
+    /// source-facing `unique` parameter (var and own) is checked at every call
+    /// shape; codegen never reads this (owned-arg lowering is unchanged).
+    pub fn own_unique_params(&self) -> &[usize] {
+        &self.own_unique_params
+    }
+
+    /// (RFC-0110 criterion 2) Every source-facing `unique` parameter to check
+    /// for a no-copy miss — the union of `var unique` write-back params and
+    /// `own unique` consuming params, deduplicated and ordered. This is the ONLY
+    /// axis the miss detector consumes; codegen keeps reading `no_copy_var_params`
+    /// alone so owned-argument lowering is byte-identical.
+    pub fn unique_params_to_check(&self) -> Vec<usize> {
+        let mut indices = self.no_copy_var_params.clone();
+        for &index in &self.own_unique_params {
+            if !indices.contains(&index) {
+                indices.push(index);
+            }
+        }
+        indices.sort_unstable();
+        indices
     }
 
     pub fn unique_capacity_result(&self) -> bool {
@@ -251,6 +281,22 @@ pub fn call_ownership_fact(
             .then_some(index)
         })
         .collect();
+    // (RFC-0110 criterion 2) The consuming (`own unique`) counterpart. Separate
+    // vector — codegen must not see it; only the miss detector unions it with
+    // `no_copy_var_params`. `let`-borrowed (`SharedBorrow`) uniques are excluded:
+    // a shared borrow cannot mutate, so a re-own repair is meaningless there.
+    let own_unique_params = signature
+        .params()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            (param.kind() == AccessKind::Consuming
+                && param.qualifiers().iter().any(|qualifier| {
+                    matches!(qualifier, AccessQualifier::Unique | AccessQualifier::LocalUnique)
+                }))
+            .then_some(index)
+        })
+        .collect();
     // Result uniqueness remains a logical proof for both legacy containers and
     // layout-dependent values. Codegen refines an exact layout result through
     // `signature_has_unique_layout_result`; erasing this fact here would break
@@ -271,6 +317,7 @@ pub fn call_ownership_fact(
         own_capacity_param,
         var_capacity_params,
         no_copy_var_params,
+        own_unique_params,
         unique_capacity_result,
     }
 }
@@ -3745,7 +3792,7 @@ fn no_copy_contract(
     signature: &witchy_types::access::AccessSignature,
 ) -> (Vec<usize>, bool) {
     let fact = call_ownership_fact(signature);
-    (fact.no_copy_var_params().to_vec(), fact.unique_capacity_result())
+    (fact.unique_params_to_check(), fact.unique_capacity_result())
 }
 
 fn no_copy_requirements(
@@ -3824,6 +3871,16 @@ fn no_copy_display_name(name: &str) -> String {
         return "dict.remove".to_string();
     }
     name.split_once("__").map_or(name, |(source, _)| source).to_string()
+}
+
+/// (RFC-0110 criterion 2) A freshly-constructed value with no other reference —
+/// so it trivially satisfies a consuming `own unique` parameter (nothing can
+/// alias a value produced inline at the call). A record/anon constructor and a
+/// tuple literal are the fresh-value shapes beyond the list/dict cases below;
+/// this is the consuming-side analog of the place-based uniqueness proof for
+/// `var` parameters.
+fn no_copy_fresh_owned(expr: &Expr) -> bool {
+    matches!(expr, Expr::Ctor { .. } | Expr::AnonCtor { .. } | Expr::Tuple(_)) || no_copy_fresh(expr)
 }
 
 fn no_copy_fresh(expr: &Expr) -> bool {
@@ -4170,7 +4227,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 let (required, unique_result) = checked
                     .as_ref()
                     .map(|fact| {
-                        (fact.no_copy_var_params().to_vec(), fact.unique_capacity_result())
+                        (fact.unique_params_to_check(), fact.unique_capacity_result())
                     })
                     .or(legacy)
                     .unwrap_or_default();
@@ -4235,7 +4292,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 let (required, unique_result) = checked
                     .as_ref()
                     .map(|fact| {
-                        (fact.no_copy_var_params().to_vec(), fact.unique_capacity_result())
+                        (fact.unique_params_to_check(), fact.unique_capacity_result())
                     })
                     .or(legacy)
                     .unwrap_or_default();
@@ -4268,11 +4325,11 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 let operands = std::iter::once(receiver.as_ref()).chain(args).collect::<Vec<_>>();
                 let required = fact
                     .as_ref()
-                    .map(|fact| fact.no_copy_var_params())
+                    .map(|fact| fact.unique_params_to_check())
                     .unwrap_or_default();
                 self.record_call_misses(
                     &operands,
-                    required,
+                    &required,
                     stmt,
                     env,
                     "existential dispatch",
@@ -4447,6 +4504,16 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
     ) {
         for &index in indices {
             let Some(arg) = args.get(index).copied() else { continue };
+            // (RFC-0110) A freshly-constructed argument (record/tuple/list/dict
+            // literal) is provably unique — nothing else references a value made
+            // inline at the call — so it satisfies a consuming `own unique`
+            // parameter with no mutable-place fact required. This is the fresh
+            // counterpart of the place-based `var` proof; without it, widening
+            // the detector to `own unique` (criterion 2) would wrongly reject an
+            // owner-threaded call like `scan(ScanState(0, 0), n)`.
+            if no_copy_fresh_owned(arg) {
+                continue;
+            }
             let Some(place) = self.places.place_at(self.module, arg) else {
                 self.misses.push(NoCopyMiss {
                     function: self.function.clone(),
