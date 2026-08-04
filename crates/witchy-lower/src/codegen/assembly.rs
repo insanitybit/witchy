@@ -5256,6 +5256,33 @@ fn assemble_wir_module_with_structs_mode(
                 init: GlobalInit::I64(0),
                 export: Some("__witchy_indirect_ownership_calls".into()),
             });
+            // (RFC-0110 criterion 9) Deterministic ownership counters, all
+            // linear-memory-independent scalars like the call counter above.
+            //   boundary_reown_copies    — one per normal-mode one-copy repair
+            //                              (an unproven `unique` arg re-owned at
+            //                              the call boundary via the zero-token
+            //                              copy-on-write path).
+            //   ownership_token_repairs  — logical repair events (a re-owned
+            //                              boundary, or a var-result reconstructed
+            //                              rather than direct-storage-forwarded).
+            //   direct_storage_var_accesses — one per accepted direct-storage
+            //                              `var` write-back (criterion 6).
+            // The runtime already reads these (Vm::boundary_reown_copies etc.);
+            // declaring them here flips those readers from None to a real 0 and
+            // gives the increment sites a target.
+            for counter in [
+                "__witchy_boundary_reown_copies",
+                "__witchy_ownership_token_repairs",
+                "__witchy_direct_storage_var_accesses",
+            ] {
+                pruned_globals.push(WirGlobal {
+                    name: counter.into(),
+                    kind: WK::I64,
+                    mutable: true,
+                    init: GlobalInit::I64(0),
+                    export: Some(counter.into()),
+                });
+            }
             if glamour_exports.is_some() {
                 if let Some(state_field_kinds) = &glamour_state_field_kinds {
                     for (index, kind) in state_field_kinds.iter().enumerate() {
