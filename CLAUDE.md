@@ -98,8 +98,9 @@ floor; RFC-0051 is why the existing zoo stays.)
 
 `show(x)` / `less(x, y)` etc. resolve by reading the receiver's concrete type
 from **typeck's `TypeTable`** — the real inference judgment, not a string guess
-(`Ctx::type_name` / `Mono::type_name` in `crates/witchy-types/src/traits.rs`,
-`table_scope_name` first). RFC-0046 deleted the string "shadow type system"
+(`self.table.type_of(&args[0])` in `crates/witchy-types/src/traits/mono.rs`,
+with the head name extracted by `nominal_type_name` in
+`crates/witchy-types/src/traits.rs`). RFC-0046 deleted the string "shadow type system"
 (`recover_generic_call`, `bind_type_var`, `builtin_ret`): call results
 (`list.at(xs,i)`, `xs[i]`, generic returns) are typed by the checker and the
 annotate/mono **fixpoint** (`lower_with`), which re-annotates after each round so
@@ -108,8 +109,8 @@ specialized. **A fresh dispatch fix belongs in the typed path** — make the
 checker type the expression (a `call_sig` entry, a signature), so the table
 carries it — never in a new string-shape table. If a trait call still won't
 resolve, the type error guides you (`${x}` / `say` / a typed param). The empty-
-table **quiet pre-mono pass** still uses `head_type_name` for local judgment
-(literals/ctors/params) and `cap_op_return_type` for chained cap-op results
+table **quiet pre-mono pass** still uses `nominal_type_name` for local judgment
+(literals/ctors/params) and `cap_op_result_type` for chained cap-op results
 (bare intrinsics the checker types but the empty table can't surface); those are
 the documented residual, not an invitation to grow the shape tables.
 

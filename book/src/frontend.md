@@ -109,7 +109,7 @@ before performing it. This is the capability model of
 [coven](appendix-ecosystem.md) gates on. The full token vocabulary is in the
 [capability spec](https://github.com/insanitybit/witchy/blob/master/spec/capabilities.md#framework-effect-authority-capability-safe-ui-glamour).
 
-## Running foreign code safely: compartments and the `Js` capability
+## Running foreign code safely: compartments and the `Js` authority
 
 Sometimes you need a JavaScript library a witchy app can't replace — a charting
 engine, a syntax highlighter. Glamour lets you embed one **without giving up the
@@ -119,12 +119,13 @@ host mounts in a locked-down, opaque-origin `sandbox="allow-scripts"` iframe wit
 code runs, but it cannot touch the network, the parent origin, or the DOM outside
 its frame.
 
-Spawning foreign code is a real authority — the **`Js`** capability, the browser
+Spawning foreign code is a real authority — the **`Js`** authority, the browser
 sibling of `Exec` ([RFC-0015](https://github.com/insanitybit/witchy/blob/master/rfcs/0015-secure-web-by-construction.md)). As with every other effect, the app only emits a
-*description*; the host shell, which alone holds `Js`, performs the spawn, and
-emitting a compartment is what puts `Js` in the app's footprint (so `witchy caps`
-surfaces "this rune runs third-party JS"). A component builds the node with
-`glamour.compartment`:
+*description*; the host shell, which alone holds `Js`, performs the spawn. The
+renderer id names a **sealed bundle** the compiler and publisher authenticate
+(the locked renderer registry) — so a compartment can only mount code that was
+sealed at build/publish time, not arbitrary strings assembled at runtime. A
+component builds the node with `glamour.compartment`:
 
 ```
 // `renderer` is a sealed bundle id the host serves under the locked-down origin;

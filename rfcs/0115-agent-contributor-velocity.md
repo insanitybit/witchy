@@ -1,5 +1,5 @@
 ---
-rfc: 0113
+rfc: 0115
 title: Improve agent contribution throughput
 status: implemented
 created: 2026-08-02
