@@ -17,13 +17,34 @@ ownership model.
   `arg_index`; `analysis::module_boundary_repairs` returns `BoundaryRepair`
   keyed `(function, line, callee, arg_index)`.
 - **Step 5 (fire the boundary counter) — NEXT / RESUME HERE.** The repair set and
-  the three counter globals both exist; what remains is to compute
-  `module_boundary_repairs` once in `Codegen::new` and, at each `CallStoreMulti`
-  emission site (mod.rs ~6974, 6993, 7099, 7156, 7488), prepend
-  `increment_counter("__witchy_boundary_reown_copies")` (+ ownership_token_repairs)
-  when `(cur_function, cur_line, callee, arg_index)` is in the set — lever-invariant
-  (drive off the repair set, NOT `inplace_push`). Each site needs the current
-  function/line/callee/arg-index in scope; that plumbing is the med-risk work.
+  the three counter globals both exist; the counter must be incremented at each
+  `CallStoreMulti` emission site (mod.rs ~6974, 6993, 7099, 7156, 7488) when the
+  site is a repair, lever-invariant (drive off the repair set, NOT `inplace_push`).
+
+  **DESIGN BLOCKER found 2026-08-04 (the plan's "med-risk" was an underestimate):**
+  codegen does NOT track a per-call source line — there is no `cur_line`, only
+  `cur_fn_name` and `emitted_name` (a monomorphized/emitted callee name, not the
+  checked-module source callee). So the plan's source-coordinate key
+  `(function, line, callee, arg_index)` CANNOT be looked up at the emission site
+  without first adding per-call line tracking through the whole lowering path — a
+  materially larger change. Two rejected shortcuts:
+    - Static-init the global to `module_boundary_repairs().len()`: WRONG — that
+      counts repairs that *would* lower, not repairs that *execute*. Criterion 9
+      demands a runtime count ("exactly one repair for the paired normal-mode
+      case"); a repair in an unexecuted branch must not count.
+    - Key on `emitted_name`/`cur_fn_name` alone: unsound — monomorphization and
+      trait/adapter emission rename both callee and caller, and same-line
+      disambiguation needs the arg-index the codegen site doesn't carry.
+  RESOLUTION OPTIONS for the next session (pick one, then implement + validate):
+    (a) thread the source line into codegen (add a `cur_call_line` set from the
+        checked call's span at each lower-call entry), then key the repair set as
+        planned — the cleanest but touches the lowering entry points; or
+    (b) mark repair sites in the CHECKED module (an analysis-set the emitter reads
+        by the same `&Expr`/call identity codegen already uses for `call_at`
+        /`callable_at`, sidestepping line/name entirely) and increment when that
+        marked call lowers.
+  Option (b) is likely lower-risk (reuses codegen's existing checked-call lookup,
+  no new line plumbing) — evaluate it first.
 - **Steps 6-12 remain** — local-unique escape gate (6), HIGH-risk entry-filter
   drop (7), direct-storage var lowering (8-10), stats surface (11), docs (12).
   Run the full opt-mode blast-radius sweep after Steps 3 (done) and 7.
