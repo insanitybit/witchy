@@ -41,6 +41,12 @@ The literature behind the "really solid default + drop-into-`opt`" memory model:
 RC-as-floor with reuse, regions as an elision tier, escape analysis, and mutable
 value semantics — plus the tracing-GC lineage we are choosing *not* to follow.
 
+- **Rust 2026 goal, "Immobile types and guaranteed destructors"** —
+  `rust-move-trait-2026/` (@lcnr; Accepted). New `Move`/`Forget` auto-traits:
+  opt out of relocation (immobile types, replacing `Pin`) and opt out of
+  `mem::forget` (guaranteed destructors → scoped spawn, transactions, RAII). We
+  take the `Forget` half (managed witchy has no `Pin` problem) and reframe it as
+  a `must`-consume obligation. → informed `rfcs/0114-must-consume-obligations.md`.
 - **Perceus: Garbage Free Reference Counting with Reuse** — `perceus-2021/`
   (Reinking, Xie, de Moura, Leijen; PLDI 2021). Precise RC + reuse; cycle-free
   programs are garbage-free; enables FBIP. The canonical RC-as-floor reference —
