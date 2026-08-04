@@ -693,6 +693,10 @@ Insert `key` with `val`, returning the displaced value when the key existed. The
 
 The value for `key`, or `default` when absent.
 
+#### `fn get_or_insert(var d: unique Dict(k, v), key: k, default: v) -> v where k: Eq`
+
+The value for `key`, inserting `default` first when the key is absent. Returns the existing value on a hit and `default` on a miss, so the key is guaranteed present afterward. Like `insert`, the `unique` receiver makes the write a checked ownership contract in `mode opt`.
+
 #### `fn at(d: Dict(k, v), key: k) -> v where k: Eq`
 
 The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
@@ -768,6 +772,10 @@ A lookup that says whether the key was present, rather than forcing a default.
 #### `Dict.get_or(key: k, default: v) -> v`
 
 The value for `key`, or `default` when absent.
+
+#### `Dict.get_or_insert(key: k, default: v) -> v`
+
+The value for `key`, inserting `default` first when the key is absent — the key is present afterward either way. Returns the existing value on a hit and `default` on a miss.
 
 #### `Dict.at(key: k) -> v`
 

@@ -169,6 +169,25 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         assert_eq!(wasm_run(src), expected, "wasm: std Dict/Set impl/free methods");
     }
 
+    /// `dict.get_or_insert` returns the existing value on a hit (leaving the dict
+    /// unchanged) and inserts + returns `default` on a miss, so the key is
+    /// present afterward. Method and free-function forms agree across backends.
+    #[test]
+    fn std_dict_get_or_insert_agrees_on_both_backends() {
+        let src = "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    console.print(\"${d.get_or_insert(\"a\", 99)}\")\n    console.print(\"${d.get_or_insert(\"b\", 7)}\")\n    console.print(\"${d.get_or_insert(\"b\", 100)}\")\n    console.print(\"${dict.get_or(d, \"b\", 0)}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or_insert(d, \"c\", 5)}\")\n    console.print(\"${dict.contains_key(d, \"c\")}\")\n";
+        let expected = vec![
+            "1".to_string(),
+            "7".to_string(),
+            "7".to_string(),
+            "7".to_string(),
+            "2".to_string(),
+            "5".to_string(),
+            "true".to_string(),
+        ];
+        assert_eq!(link_run(src), expected, "interpreter: dict get_or_insert");
+        assert_eq!(wasm_run(src), expected, "wasm: dict get_or_insert");
+    }
+
     /// (BUG-315, RFC-0044 rule 3) An out-of-range (or negative) `xs[i] = v` /
     /// `list.set_at` / `list.update_at` is a runtime error on BOTH backends,
     /// matching the `xs[i]` READ trap — never a silent no-op. In-bounds still agrees.

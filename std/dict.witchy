@@ -39,6 +39,17 @@ pub fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Eq
 pub fn get_or(d: Dict(k, v), key: k, default: v) -> v where k: Eq:
     dict.get_or(d, key, default)
 
+// The value for `key`, inserting `default` first when the key is absent. Returns
+// the existing value on a hit and `default` on a miss, so the key is guaranteed
+// present afterward. Like `insert`, the `unique` receiver makes the write a
+// checked ownership contract in `mode opt`.
+pub fn get_or_insert(var d: unique Dict(k, v), key: k, default: v) -> v where k: Eq:
+    if dict.contains_key(d, key):
+        dict.at(d, key)
+    else:
+        dict.insert(d, key, default)
+        default
+
 // The value for `key`, or a runtime error when absent. This is the read half of
 // the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
 pub fn at(d: Dict(k, v), key: k) -> v where k: Eq:
@@ -144,6 +155,12 @@ impl Dict(k, v) where k: Eq:
 
     pub fn get_or(self, key: k, default: v) -> v:
         dict.get_or(self, key, default)
+
+    // The value for `key`, inserting `default` first when the key is absent —
+    // the key is present afterward either way. Returns the existing value on a
+    // hit and `default` on a miss.
+    pub fn get_or_insert(var self: unique Dict(k, v), key: k, default: v) -> v:
+        dict.get_or_insert(self, key, default)
 
     // The value for `key`, or a runtime error when absent. This is the read
     // half of the `d[key]` subscript surface; use `get`/`get_or` when absence
