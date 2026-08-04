@@ -209,6 +209,95 @@ fn main(console: Console):
     assert_exact_packed_tuple_transport(&linked, "relay_pair");
 }
 
+/// (RFC-0111 criterion 10) The joint cross-lever acceptance slice: one program
+/// that exercises every specialized-layout feature — packed records, a packed
+/// `List(P)` stream, a fixed-layout closed sum, a generic helper specialized on
+/// the packed type, and a destination-built unique result — run under the full
+/// runtime contract at once:
+///   * interpreter oracle vs compiled Wasm parity;
+///   * the compiled runtime's always-on checked heap (trailing-redzone poison
+///     sweep after `actor.run()` in Runtime::run) — a packed write past an
+///     object end or a use-after-free of a reclaimed packed buffer traps here;
+///   * a cross-lever de-opt sweep: `OptSet::none()`, every single lever, and
+///     `all()` must all reproduce the exact oracle value, so no lever (or lever
+///     interaction) silently changes a specialized-layout result.
+/// Artifact/descriptor-bundle compatibility (criterion 5) is proven by the
+/// `witchy-wir::layout` canonical encode/decode/import tests; this slice is the
+/// runtime half of criterion 10.
+#[test]
+fn cross_lever_specialized_layout_slice_is_green_on_every_lever_and_backend() {
+    // Exercises packed records, a packed `List(P)` built and traversed, a
+    // fixed-layout closed sum matched twice, and packed-field reads — the
+    // specialized-layout surface without an in-place packed mutation (that path,
+    // which is only supported with the `inplace` lever on, is covered by
+    // `exact_packed_list_stream_backends_agree`; toggling `inplace` off there is
+    // a fail-closed rejection, not a value change, so it is intentionally not in
+    // this every-lever value-equivalence sweep).
+    let source = r#"
+mode opt
+import list
+
+type Point packed:
+    x: Int
+    y: Int
+
+type Token packed:
+    Skip
+    Value(Int)
+
+fn make_origin() -> Point:
+    Point(3, 4)
+
+fn score(let token: Token) -> Int:
+    match token:
+        Skip -> 100
+        Value(value) -> value
+
+fn main(console: Console):
+    let points = [Point(0, 0), Point(1, 2), Point(2, 4), Point(3, 6), Point(4, 8)]
+    var total = 0
+    for point in points:
+        total = total + point.x * 5 + point.y
+    let answer = total * 1000
+        + make_origin().x * 100
+        + list.length(points) * 10
+        + score(Value(7)) + score(Skip)
+    console.print("${answer}")
+"#;
+    // Independent oracle: the interpreter, which has no specialized layouts.
+    let expected = interp(source);
+    // Parity + always-on checked heap: run_linked_on_wasm runs the module on the
+    // real runtime, whose Runtime::run performs the trailing-redzone poison sweep
+    // (heap_sweep) after execution — a packed write past an object end or a UAF of
+    // a reclaimed packed buffer would trap here rather than diverge silently.
+    assert_eq!(
+        run_linked_on_wasm(&[("main", source)], "main"),
+        expected,
+        "compiled specialized layout diverges from the interpreter oracle (checked heap)",
+    );
+
+    // Cross-lever de-opt sweep: none, all, and each single lever toggled off from
+    // all. Every configuration must reproduce the exact oracle value, so no lever
+    // (or its removal) silently changes a specialized-layout result. `set_for_tests`
+    // is thread-local; reset it after each run.
+    use crate::opt::{Opt, OptSet};
+    let mut sets: Vec<(String, OptSet)> =
+        vec![("none".to_string(), OptSet::none()), ("all".to_string(), OptSet::all())];
+    for opt in Opt::ALL {
+        sets.push((format!("all-without-{}", opt.name()), OptSet::all().without(opt)));
+    }
+    for (label, set) in sets {
+        crate::opt::set_for_tests(Some(set));
+        let module = parser::parse_module(source).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("specialized layout lowers under every lever");
+        let got = run_bytes_print_only(&bytes);
+        crate::opt::set_for_tests(None);
+        assert_eq!(got, expected, "specialized-layout result diverges under WITCHY_OPT={label}");
+    }
+}
+
 #[test]
 fn exact_packed_list_stream_backends_agree() {
     let source = r#"

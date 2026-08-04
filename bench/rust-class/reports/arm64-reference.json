@@ -1,0 +1,102 @@
+{
+  "benchmark": "rfc0111-rust-class",
+  "cases": [
+    {
+      "name": "scalar_int",
+      "ratio": 1.261700,
+      "result": 24000006,
+      "rust_ns": 1272291,
+      "witchy_ns": 1605250
+    },
+    {
+      "name": "scalar_float",
+      "ratio": 0.619964,
+      "result": 1,
+      "rust_ns": 2755000,
+      "witchy_ns": 1708000
+    },
+    {
+      "name": "packed_records",
+      "ratio": 0.759479,
+      "result": 9599879,
+      "rust_ns": 508792,
+      "witchy_ns": 386417
+    },
+    {
+      "name": "list_pipeline",
+      "ratio": 1.417624,
+      "result": 12000160,
+      "rust_ns": 383917,
+      "witchy_ns": 544250
+    },
+    {
+      "name": "closed_sum",
+      "ratio": 1.413909,
+      "result": 16833142,
+      "rust_ns": 279250,
+      "witchy_ns": 394834
+    },
+    {
+      "name": "generic_helpers",
+      "ratio": 0.715934,
+      "result": 9599942,
+      "rust_ns": 654041,
+      "witchy_ns": 468250
+    },
+    {
+      "name": "destination_record",
+      "ratio": 1.436012,
+      "result": 49999959,
+      "rust_ns": 756000,
+      "witchy_ns": 1085625
+    },
+    {
+      "name": "recursive_values",
+      "ratio": 0.419322,
+      "result": 9999190,
+      "rust_ns": 2718375,
+      "witchy_ns": 1139875
+    }
+  ],
+  "geomean_ratio": 0.920026,
+  "git": {
+    "commit": "a90c41aeaa911a61c11da5f7a1993c92f4ddd87b",
+    "tree_clean": true
+  },
+  "host": {
+    "architecture": "arm64",
+    "cpu": "Apple M4",
+    "os": "Darwin"
+  },
+  "passed": true,
+  "rust_flags": [
+    "--edition",
+    "2024",
+    "-C",
+    "opt-level=3",
+    "-C",
+    "codegen-units=1",
+    "-C",
+    "llvm-args=-vectorize-loops=false",
+    "-C",
+    "llvm-args=-vectorize-slp=false"
+  ],
+  "rustc": {
+    "verbose_version": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.8"
+  },
+  "samples": 7,
+  "scalar_verifier": {
+    "architecture": "arm64",
+    "scope": "translation-unit",
+    "status": "verified"
+  },
+  "schema_version": 1,
+  "thresholds": {
+    "case_max": 1.5,
+    "geomean_max": 1.25
+  },
+  "witchy": {
+    "binary_sha256": "a7e91a9e348ecd468473df9d8d6a6d691b9983786e0dc4465df65e37f387cfc6",
+    "version": "witchy 0.1.0 (commit a90c41aeaa911a61c11da5f7a1993c92f4ddd87b)"
+  }
+}

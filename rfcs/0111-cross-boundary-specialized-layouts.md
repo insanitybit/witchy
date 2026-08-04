@@ -1,10 +1,10 @@
 ---
 rfc: 0111
 title: "Cross-boundary specialized layouts and destination passing"
-status: accepted
+status: implemented
 created: 2026-08-01
 updated: 2026-08-03
-tracking: "Design accepted; no open questions. Rust-class scalar/aggregate performance track; reuses existing `packed` syntax. Criteria 1-8 and 11 PROVEN (canonical LayoutId descriptors, cross-boundary packed values, physical generic specialization, callable-layout identity, host-import metadata, destination forwarding, header elision, closed-sum layouts, specs); criterion 9 PARTIAL (ARM reference-machine report + timing gate activation pending), criterion 10 MISSING (no joint cross-lever acceptance slice under checked-heap/redzones/UAF/parity/docs/artifact-compat). Per rfcs/0110-0112-acceptance-ledger.md."
+tracking: "All eleven acceptance criteria PROVEN in rfcs/0110-0112-acceptance-ledger.md. Criteria 1-8,11 (canonical LayoutId descriptors, cross-boundary packed values, physical generic specialization, callable-layout identity, host-import metadata, destination forwarding, header elision, closed-sum layouts, specs). Criterion 9: reviewed pinned-ARM report committed at bench/rust-class/reports/arm64-reference.json (geomean 0.92x, all cases within caps), timing gate activated in scripts/check.sh. Criterion 10: example_tests::rfc0111_layout::cross_lever_specialized_layout_slice_is_green_on_every_lever_and_backend (parity + always-on checked heap + full de-opt sweep)."
 predecessors:
   - "[0027](0027-packed-layouts-sroa.md) (confined packed record lists and SROA)"
   - "[0029](0029-performance-tier-contract.md) (`mode opt` performance contract)"

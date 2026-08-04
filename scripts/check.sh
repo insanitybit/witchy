@@ -319,6 +319,17 @@ rust_class_check() {
     esac
     WITCHY="$witchy_bin" WITCHY_RUST_BUILD_DIR="$rust_build_dir" \
         ./bench/rust-class/run.sh --check
+    # (RFC-0111 criterion 9) Timing-gate activation: the reviewed report from the
+    # pinned ARM reference machine is committed at bench/rust-class/reports/. The
+    # gate re-verifies its versioned shape, commit/binary provenance, independent
+    # result oracle, scalar-verifier certification, and the 1.25x geomean / 1.50x
+    # per-case thresholds on every run. `--verify-report` is self-contained
+    # (validates the report's embedded commit, not HEAD), so it stays valid across
+    # later commits and needs no rebuild. A tampered or regressed report fails here.
+    local pinned_report="bench/rust-class/reports/arm64-reference.json"
+    if [ -f "$pinned_report" ]; then
+        ./bench/rust-class/run.sh --verify-report "$pinned_report"
+    fi
 }
 
 # nextest builds what it needs, so no separate build step; without nextest the
