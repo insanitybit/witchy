@@ -92,11 +92,15 @@ test-group = 'gate-cold-heavy'
 # type-resolved repository census can exceed the default 135s slow-kill under
 # a busy gate (the census was the sole timeout after 2,284 tests passed on
 # 2026-07-18). Serialize them in their own group, start them early, and retain
-# a bounded 360s hard cap; assertions are unchanged.
+# a bounded hard cap; assertions are unchanged. The census alone runs ~123s
+# standalone, so a 120s period tripped the slow-kill under concurrent load even
+# with three periods of grace (2026-08-04: two docs-only batches went red on
+# this single test). Widen the period to 240s so one uninterrupted run clears
+# the real runtime with headroom, keeping a bounded 480s (2 × 240s) hard cap.
 [[profile.default.overrides]]
 filter = 'test(/list_reverse_flatten_flat_map_are_linear_at_scale|inplace_set_at_is_fast_and_alias_safe|inplace_update_at_is_fast_and_alias_safe|repository_census_matches_the_checked_in_type_resolved_snapshot/)'
 test-group = 'perf-serial'
-slow-timeout = { period = "120s", terminate-after = 3 }
+slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
 # Serial-tail elimination: these tests are slow AND sort late by name, so at
