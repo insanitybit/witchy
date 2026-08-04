@@ -3289,6 +3289,12 @@ pub struct NoCopyMiss {
     pub callee: String,
     pub var: String,
     pub line: u32,
+    // (RFC-0110) The callee parameter index this argument targets. Part of the
+    // repair key `(function, line, callee, arg_index)` so two unproven-unique
+    // calls on one source line are disambiguated — the codegen repair-set
+    // consumer cannot use `&Stmt` pointer identity (the checked module is a
+    // clone of the codegen module; `module_boundary_repairs`).
+    pub arg_index: usize,
     pub reason: String,
 }
 
@@ -4520,6 +4526,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     callee: callee.to_string(),
                     var: "<computed value>".to_string(),
                     line: self.line,
+                    arg_index: index,
                     reason: "the argument has no checked mutable-place fact".to_string(),
                 });
                 continue;
@@ -4536,6 +4543,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     callee: callee.to_string(),
                     var: root.to_string(),
                     line: self.line,
+                    arg_index: index,
                     reason: reason.to_string(),
                 });
                 continue;
@@ -4569,6 +4577,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     callee: callee.to_string(),
                     var: root.to_string(),
                     line: self.line,
+                    arg_index: index,
                     reason,
                 });
             }
@@ -4600,6 +4609,40 @@ pub fn try_module_no_copy_misses(module: &Module) -> Result<Vec<NoCopyMiss>, Str
     let access = witchy_types::access::checked_facts(typed.module(), typed.table())
         .map_err(|error| format!("checked ownership/access analysis failed: {error}"))?;
     Ok(module_no_copy_misses_with_access(typed.module(), Some(&access)))
+}
+
+/// (RFC-0110 criterion 2/9) A normal-mode one-copy repair site, keyed by source
+/// coordinates so a codegen consumer can match it WITHOUT `&Stmt` pointer
+/// identity (the checked module is a `traits::lower(module.clone())` — its
+/// statement pointers differ from the codegen module's).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundaryRepair {
+    pub function: String,
+    pub line: u32,
+    pub callee: String,
+    pub arg_index: usize,
+}
+
+/// The set of normal-mode one-copy repair sites: exactly the no-copy misses —
+/// a site that `mode opt` rejects for a missing uniqueness proof is the same
+/// site normal mode repairs by re-owning the argument (the zero-token
+/// copy-on-write boundary). Returns an empty set if the checked access graph is
+/// unavailable (a repair counter is best-effort observability, never a
+/// correctness gate). Keyed by `(function, line, callee, arg_index)`.
+pub fn module_boundary_repairs(module: &Module) -> Vec<BoundaryRepair> {
+    try_module_no_copy_misses(module)
+        .map(|misses| {
+            misses
+                .into_iter()
+                .map(|miss| BoundaryRepair {
+                    function: miss.function,
+                    line: miss.line,
+                    callee: miss.callee,
+                    arg_index: miss.arg_index,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn module_no_copy_misses_with_access(
@@ -4762,6 +4805,38 @@ mod no_copy_tests {
     fn misses_unchecked(source: &str) -> Vec<NoCopyMiss> {
         let module = parser::parse_module(source).expect("parse");
         module_no_copy_misses(&module)
+    }
+
+    /// (RFC-0110 Step 4) The boundary-repair set is keyed by source coordinates,
+    /// and two unproven-unique calls on ONE line are disambiguated by callee +
+    /// arg_index — the codegen consumer cannot use `&Stmt` pointers because the
+    /// checked module is a clone. This pins that keying.
+    #[test]
+    fn boundary_repairs_disambiguate_same_line_calls_by_callee_and_arg_index() {
+        let module = parser::parse_module(
+            "fn one(own a: unique List(Int)) -> Int:\n    list.length(a)\n\
+             \nfn two(own b: unique List(Int)) -> Int:\n    list.length(b)\n\
+             \nfn caller() -> Int:\n    var xs = [1]\n    let alias = xs\n    var ys = [2]\n    let alias2 = ys\n    one(xs) + two(ys)\n",
+        )
+        .expect("parse");
+        witchy_types::typeck::check(&module).expect("type check");
+        let repairs = module_boundary_repairs(&module);
+        // Both aliased owners are repair sites, on the same source line, told
+        // apart by their callee (arg_index is 0 for each single-owner call).
+        let one = repairs.iter().find(|r| r.callee.ends_with("one"));
+        let two = repairs.iter().find(|r| r.callee.ends_with("two"));
+        assert!(one.is_some() && two.is_some(), "both same-line repairs present: {repairs:?}");
+        assert_eq!(one.unwrap().line, two.unwrap().line, "both on the one source line");
+        assert_eq!(one.unwrap().arg_index, 0);
+        assert_eq!(two.unwrap().arg_index, 0);
+        // A fresh owner is NOT a repair site.
+        let fresh = parser::parse_module(
+            "fn one(own a: unique List(Int)) -> Int:\n    list.length(a)\n\
+             \nfn caller() -> Int:\n    one([1, 2, 3])\n",
+        )
+        .expect("parse fresh");
+        witchy_types::typeck::check(&fresh).expect("type check fresh");
+        assert!(module_boundary_repairs(&fresh).is_empty(), "a fresh owner needs no repair");
     }
 
     #[test]
