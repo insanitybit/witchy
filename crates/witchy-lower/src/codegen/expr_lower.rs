@@ -11,6 +11,16 @@ impl<'types> Codegen<'types> {
     /// the program is rejected as reaching an unsupported construct; the supported
     /// set is the authoritative codegen for those expression shapes.
     pub(crate) fn lower_expr(&mut self, e: &Expr) -> Option<witchy_wir::wir::WirExpr> {
+        // (RFC-0110 step 5) One chokepoint over every lowering return path: if `e`
+        // is a normal-mode one-copy repair call site, wrap its value so the
+        // boundary-reown counter fires once at runtime. `count_boundary_repair`
+        // is a no-op for the (vast majority) non-repair expressions — the repair
+        // set holds only unproven-`unique` call nodes.
+        let lowered = self.lower_expr_inner(e)?;
+        Some(self.count_boundary_repair(e, lowered))
+    }
+
+    fn lower_expr_inner(&mut self, e: &Expr) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
         let descriptor_closed_sum_equality = matches!(

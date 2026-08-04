@@ -3295,6 +3295,13 @@ pub struct NoCopyMiss {
     // consumer cannot use `&Stmt` pointer identity (the checked module is a
     // clone of the codegen module; `module_boundary_repairs`).
     pub arg_index: usize,
+    // (RFC-0110 step 5) The `*const Expr as usize` of the CALL node this miss was
+    // recorded at. Valid only for pointers into the exact module the walker ran
+    // on — codegen runs the walker on its own `checked_module` (via
+    // `module_boundary_repair_ptrs`) so the counter can match the call node it is
+    // lowering by identity, with no source-line or name plumbing. Zero when the
+    // walker had no call node in scope (never, for real misses).
+    pub call_ptr: usize,
     pub reason: String,
 }
 
@@ -4249,6 +4256,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     stmt,
                     env,
                     &callee,
+                    expr as *const Expr as usize,
                 );
                 if unique_result || no_copy_fresh(expr) {
                     NoCopyProof::Available
@@ -4309,6 +4317,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     stmt,
                     env,
                     "indirect function",
+                    expr as *const Expr as usize,
                 );
                 if unique_result {
                     return NoCopyProof::Available;
@@ -4339,6 +4348,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     stmt,
                     env,
                     "existential dispatch",
+                    expr as *const Expr as usize,
                 );
                 if fact.is_some_and(|fact| fact.unique_capacity_result()) {
                     NoCopyProof::Available
@@ -4507,6 +4517,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
         stmt: &Stmt,
         env: &mut HashMap<String, NoCopyProof>,
         callee: &str,
+        call_ptr: usize,
     ) {
         for &index in indices {
             let Some(arg) = args.get(index).copied() else { continue };
@@ -4527,6 +4538,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     var: "<computed value>".to_string(),
                     line: self.line,
                     arg_index: index,
+                    call_ptr,
                     reason: "the argument has no checked mutable-place fact".to_string(),
                 });
                 continue;
@@ -4544,6 +4556,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     var: root.to_string(),
                     line: self.line,
                     arg_index: index,
+                    call_ptr,
                     reason: reason.to_string(),
                 });
                 continue;
@@ -4578,6 +4591,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     var: root.to_string(),
                     line: self.line,
                     arg_index: index,
+                    call_ptr,
                     reason,
                 });
             }
@@ -4643,6 +4657,29 @@ pub fn module_boundary_repairs(module: &Module) -> Vec<BoundaryRepair> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// (RFC-0110 step 5) The set of call-node pointers (`*const Expr as usize`) that
+/// are normal-mode one-copy repair sites, computed on `module` DIRECTLY (no
+/// clone) so the pointers are live for a caller that walks the same module —
+/// codegen passes its `checked_module` + the access facts derived from it. Each
+/// pointer is a call whose `unique` argument lacks a uniqueness proof; normal
+/// mode re-owns it (the zero-token copy-on-write boundary), and this is where the
+/// boundary-reown counter fires. A repaired call may target more than one
+/// unproven `unique` parameter; the set is by call node, matching one counter
+/// increment per repaired boundary call.
+pub fn module_boundary_repair_ptrs(
+    module: &Module,
+    access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
+) -> foldhash::HashSet<usize> {
+    use foldhash::HashSetExt as _;
+    let mut ptrs = foldhash::HashSet::new();
+    for miss in module_no_copy_misses_with_access(module, access) {
+        if miss.call_ptr != 0 {
+            ptrs.insert(miss.call_ptr);
+        }
+    }
+    ptrs
 }
 
 fn module_no_copy_misses_with_access(

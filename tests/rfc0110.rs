@@ -1586,3 +1586,73 @@ fn main(console: Console):
     witchy::enforce_performance_modes(normal.module(), "main")
         .expect("normal mode repairs an aliased own-unique argument rather than rejecting");
 }
+
+/// (RFC-0110 criterion 9) The deterministic boundary-reown counter proves the
+/// normal-mode one-copy repair: exactly one repair for an aliased `unique`
+/// argument, zero for a fresh/proven one, zero for a repair in an unexecuted
+/// branch (a RUNTIME count, not a would-lower count), and the same count under
+/// every optimization lever (the counter is driven by the checked access graph,
+/// not the `InPlace` lever).
+#[test]
+fn boundary_reown_counter_is_exact_runtime_and_lever_invariant() {
+    fn reowns(source: &str, optimizations: OptSet) -> (Vec<String>, i64) {
+        let checked = witchy::resolve_std_only_checked(source).expect("type-check repair fixture");
+        opt::set_for_tests(Some(optimizations));
+        let bytes = codegen::compile_checked_module_binary(&checked)
+            .expect_lowered("compile repair fixture");
+        opt::set_for_tests(None);
+        let mut runtime = Runtime::batch().expect("runtime");
+        let mut actor = runtime
+            .spawn(&bytes, Capabilities { print: true, quiet: true, ..Default::default() }, 256)
+            .expect("spawn repair fixture");
+        actor.run().expect("run repair fixture");
+        let count = actor
+            .boundary_reown_copies()
+            .expect("boundary reown counter export");
+        (actor.output(), count)
+    }
+
+    const ALIASED: &str = concat!(
+        "fn consume(own values: unique List(Int)) -> Int:\n",
+        "    list.push(values, 9)\n",
+        "    list.length(values)\n",
+        "fn main(console: Console):\n",
+        "    var xs = [1, 2, 3]\n",
+        "    let alias = xs\n",
+        "    console.print(\"${consume(xs)}\")\n",
+    );
+    // Exactly one repair, and identical under every lever configuration.
+    for set in [OptSet::all(), OptSet::none(), OptSet::all().without(Opt::InPlace), OptSet::all().without(Opt::Unbox)] {
+        let (out, count) = reowns(ALIASED, set);
+        assert_eq!(out, vec!["4".to_string()], "repaired call still computes correctly");
+        assert_eq!(count, 1, "exactly one boundary reown for the aliased owner under {set:?}");
+    }
+
+    // A freshly-constructed owner is proven unique: zero repairs.
+    const FRESH: &str = concat!(
+        "fn consume(own values: unique List(Int)) -> Int:\n",
+        "    list.push(values, 9)\n",
+        "    list.length(values)\n",
+        "fn main(console: Console):\n",
+        "    console.print(\"${consume([1, 2, 3])}\")\n",
+    );
+    let (_, fresh) = reowns(FRESH, OptSet::all());
+    assert_eq!(fresh, 0, "a fresh owner needs no repair");
+
+    // A repair inside a dead branch does not execute → zero (runtime count, not
+    // a would-lower count; this is why a static-init counter would be wrong).
+    const DEAD: &str = concat!(
+        "fn consume(own values: unique List(Int)) -> Int:\n",
+        "    list.length(values)\n",
+        "fn main(console: Console):\n",
+        "    var xs = [1, 2, 3]\n",
+        "    let alias = xs\n",
+        "    if false:\n",
+        "        console.print(\"${consume(xs)}\")\n",
+        "    else:\n",
+        "        console.print(\"skipped\")\n",
+    );
+    let (out, dead) = reowns(DEAD, OptSet::all());
+    assert_eq!(out, vec!["skipped".to_string()]);
+    assert_eq!(dead, 0, "a repair in an unexecuted branch must not count");
+}

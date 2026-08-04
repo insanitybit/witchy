@@ -2879,6 +2879,12 @@ fn assemble_wir_module_with_structs_mode(
     cg.collect_source_map = collect_source_map;
     cg.eq_types = eq_types;
     cg.summaries = analysis::Summaries::of_module(&module);
+    // (RFC-0110 step 5) Compute the normal-mode one-copy repair sites on the
+    // exact `&module` codegen lowers, so the returned call-node pointers are live
+    // for the counter check in `lower_var_call`/the owned-call arm. Keyed by the
+    // checked access graph (`cg.access_facts`), hence lever-independent.
+    cg.boundary_repair_sites =
+        analysis::module_boundary_repair_ptrs(&module, Some(&cg.access_facts));
 
     // (RFC-0047) A custom-`PartialEq` type's `PartialEq__T__eq` may be called only
     // from a codegen-synthesized container eq helper (invisible to the AST walk), so

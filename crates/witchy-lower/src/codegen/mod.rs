@@ -1122,6 +1122,13 @@ struct Codegen<'types> {
     /// contracts for `checked_module`. Physical ABI selection must consume
     /// these facts instead of reconstructing access from surface syntax.
     access_facts: witchy_types::access::CheckedAccessFacts<'types>,
+    /// (RFC-0110 step 5) Call-node pointers (`*const Expr as usize`, into
+    /// `checked_module`) that are normal-mode one-copy repair sites — an unproven
+    /// `unique` argument re-owned at the call boundary. Lever-INDEPENDENT (derived
+    /// from the checked access graph, not the `InPlace`/`inplace_push` lever), so
+    /// `__witchy_boundary_reown_copies` counts the same under every `WITCHY_OPT`.
+    /// Populated in `register_module_items`; empty if the access graph is absent.
+    boundary_repair_sites: foldhash::HashSet<usize>,
     /// Exact access rows for the tiny compiler-owned forwarding calls created
     /// after type annotation. Source calls must be present in `access_facts`;
     /// only an address explicitly registered here may use a declaration row.
@@ -1623,6 +1630,7 @@ impl<'types> Codegen<'types> {
             loan_facts,
             checked_module,
             access_facts,
+            boundary_repair_sites: foldhash::HashSet::default(),
             synthesized_call_access: HashMap::new(),
             active_loan_events: Vec::new(),
             cur_fn_own_param: None,
@@ -8895,6 +8903,29 @@ impl<'types> Codegen<'types> {
                 rhs: Box::new(W::ConstI64(1)),
             },
         }
+    }
+
+    /// (RFC-0110 step 5) If `call` is a normal-mode one-copy repair site, wrap
+    /// its lowered value so the boundary-reown + ownership-token counters
+    /// increment once, at runtime, exactly when the repaired call executes (a
+    /// repair inside an unexecuted branch does not count — the increment sits in
+    /// the value's own sequence). Non-repair calls are returned unchanged. The
+    /// membership is lever-independent (`boundary_repair_sites` is derived from
+    /// the checked access graph), satisfying criterion 9's lever invariance.
+    fn count_boundary_repair(
+        &self,
+        call: &Expr,
+        lowered: witchy_wir::wir::WirExpr,
+    ) -> witchy_wir::wir::WirExpr {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        if !self.boundary_repair_sites.contains(&(call as *const Expr as usize)) {
+            return lowered;
+        }
+        W::Seq(vec![
+            Self::increment_counter("__witchy_boundary_reown_copies"),
+            Self::increment_counter("__witchy_ownership_token_repairs"),
+            N::Push(lowered),
+        ])
     }
 
     fn counter_batch_local(kind: &str, level: usize) -> String {
