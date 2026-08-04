@@ -88,6 +88,21 @@ test-group = 'queue-concurrency-serial'
 filter = 'binary_id(witchy::glamour) | (binary_id(witchy::misc) & not test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)) | binary_id(witchy::rfc0005) | binary_id(witchy::rfc0080) | binary_id(witchy::rfc0081_existential_frontend) | binary_id(witchy::rfc0090) | binary_id(witchy::rfc0092) | binary_id(witchy::test_for_paths) | binary_id(witchy::worktree) | (binary_id(witchy::bin/witchy) & test(/^(cli_flag_tests|compiled_build_step_tests)::/)) | (binary_id(witchy-lower) & test(/^analysis::(fip_tests|last_use_tests)::/)) | (binary_id(witchy-syntax) & test(/^aliases::tests::/))'
 test-group = 'gate-cold-heavy'
 
+# The `commands::web::tests` group compiles a full glamour program per test,
+# each driving the multi-core Wasm compiler. Left at the default group they
+# thundering-herd the compiler under a busy gate; the heaviest
+# (`typed_island_plan_erases_only_after_program_model_and_view_agree`) runs
+# ~120s standalone and tipped the default 135s slow-kill after 2,597 tests
+# passed on 2026-08-04 (the sole timeout on an otherwise-green gate). Bound them
+# in the width-4 cold-heavy group AND widen the slow-timeout to 240s so one
+# uninterrupted run clears the real runtime with headroom; assertions and the
+# bounded 480s (2 x 240s) hard cap are unchanged.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::bin/witchy) & test(/^commands::web::tests::/)'
+test-group = 'gate-cold-heavy'
+slow-timeout = { period = "240s", terminate-after = 2 }
+priority = 80
+
 # Long-running regression guards: the at-scale perf programs and the
 # type-resolved repository census can exceed the default 135s slow-kill under
 # a busy gate (the census was the sole timeout after 2,284 tests passed on
