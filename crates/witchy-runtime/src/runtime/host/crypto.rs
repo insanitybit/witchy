@@ -1,7 +1,7 @@
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 use witchy_syntax::intrinsics;
 
-use super::super::{memory_of, read_wstr, read_wstr_list, VmState};
+use super::super::{memory_of, read_wbytes, read_wstr, read_wstr_list, VmState};
 use super::secret::secret_material_ref;
 use crate::value::NativeValue as Value;
 
@@ -47,6 +47,10 @@ pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> 
         intrinsics::CRYPTO_RUNE_HASH,
         host_crypto_rune_hash,
     )?;
+    // (RFC-0106) SHAKE XOFs — native-only. The browser host deliberately does
+    // NOT register these, so a compiled module reaching them cannot instantiate.
+    linker.func_wrap("witchy", intrinsics::CRYPTO_SHAKE128, host_shake128)?;
+    linker.func_wrap("witchy", intrinsics::CRYPTO_SHAKE256, host_shake256)?;
     Ok(())
 }
 
@@ -215,6 +219,38 @@ fn host_sha512(caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Result
 
 fn host_sha3_256(caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
     host_crypto_digest(caller, intrinsics::CRYPTO_SHA3_256, &[in_ptr], out_ptr, 64)
+}
+
+/// (RFC-0106) Shared SHAKE XOF bridge: read the guest `Bytes` input at `in_ptr`
+/// (`[len][payload]`), squeeze exactly `out_len` bytes through the shared native
+/// adapter, and write them into the pre-allocated guest buffer at `out_ptr`. The
+/// guest helper already validated `out_len` to `0..=1048576` and reserved the
+/// buffer; this is a direct output-pointer write.
+fn host_shake(
+    mut caller: Caller<'_, VmState>,
+    which: &str,
+    in_ptr: i32,
+    out_ptr: i32,
+    out_len: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let input = read_wbytes(mem.data(&caller), in_ptr)?;
+    let len = i64::from(out_len);
+    let squeezed = match which {
+        intrinsics::CRYPTO_SHAKE128 => crate::shake::shake128(&input, len),
+        _ => crate::shake::shake256(&input, len),
+    }
+    .map_err(|e| Error::msg(e.message()))?;
+    mem.write(&mut caller, out_ptr as usize, &squeezed)
+        .map_err(|e| Error::msg(format!("writing {which} result into guest memory: {e}")))
+}
+
+fn host_shake128(caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32, out_len: i32) -> Result<()> {
+    host_shake(caller, intrinsics::CRYPTO_SHAKE128, in_ptr, out_ptr, out_len)
+}
+
+fn host_shake256(caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32, out_len: i32) -> Result<()> {
+    host_shake(caller, intrinsics::CRYPTO_SHAKE256, in_ptr, out_ptr, out_len)
 }
 
 fn host_hmac_sha256(

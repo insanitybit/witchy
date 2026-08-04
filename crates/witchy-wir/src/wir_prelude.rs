@@ -259,6 +259,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto.sha512" (func $crypto_sha512_host (param i32 i32)))
   (import "witchy" "crypto.sha3_256" (func $crypto_sha3_256_host (param i32 i32)))
   (import "witchy" "crypto.hmac_sha256" (func $crypto_hmac_sha256_host (param i32 i32 i32)))
+  (import "witchy" "crypto.__shake128" (func $crypto_shake128_host (param i32 i32 i32)))
+  (import "witchy" "crypto.__shake256" (func $crypto_shake256_host (param i32 i32 i32)))
   (import "witchy" "print_int" (func $print_int (param i64)))
   (import "witchy" "print_float" (func $print_float (param f64)))
   (import "witchy" "string_from_code" (func $string_from_code_host (param i64 i32) (result i32)))
@@ -313,10 +315,11 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 96;
+pub const IMPORT_COUNT: usize = 98;
 
 /// Version of the public `"witchy"` host-import contract.
-pub const WITCHY_ABI_VERSION: u32 = 8;
+/// v9 (RFC-0106): adds the browser-omitted `crypto.__shake128`/`__shake256` XOFs.
+pub const WITCHY_ABI_VERSION: u32 = 9;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -459,7 +462,9 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "crypto.__ecdsa_p256_verify_status"
         | "crypto.__ecdsa_p256_verify_hex_status"
         | "crypto.__rsa_pkcs1_sha256_verify_status"
-        | "crypto.__ed25519_verify_status" => C::PureInfrastructure,
+        | "crypto.__ed25519_verify_status"
+        | "crypto.__shake128"
+        | "crypto.__shake256" => C::PureInfrastructure,
 
         "console_read_len"
         | "crypto.sign"

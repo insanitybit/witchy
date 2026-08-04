@@ -72,6 +72,52 @@ pub(super) fn crypto_hash_helper(name: &str, import: &str, hexlen: i32, inputs: 
     }
 }
 
+/// (RFC-0106) A SHAKE XOF helper: `(input: Bytes, output_len: Int) -> Bytes`.
+/// Unlike `crypto_hash_helper` (fixed-size hex String), this produces a
+/// variable-length RAW byte buffer. `output_len` is a runtime i64 the std
+/// wrapper has already clamped to `0..=1048576`; we narrow it to i32, allocate a
+/// `[length][payload]` Bytes buffer of `output_len + 4`, and hand the host a
+/// direct output pointer `(input_ptr, output_ptr = res+4, output_len_i32)`. The
+/// host writes exactly `output_len` bytes; the length header is set here, not by
+/// the host, because it is caller-chosen, not host-discovered.
+pub(super) fn crypto_xof_helper(name: &str, import: &str) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let to_i32 = |v: E| E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(v) };
+    WirFunc {
+        name: name.into(),
+        params: vec![
+            WirLocal { name: "in".into(), ty: WirTy::Str },
+            WirLocal { name: "out_len".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "n".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            // Narrow the pre-validated (0..=1048576) length to i32 once.
+            N::SetLocal { local: "n".into(), value: to_i32(getl("out_len")) },
+            // (RFC-0016) allocate `[length][payload]` through `$rc_alloc`.
+            N::SetLocal {
+                local: "res".into(),
+                value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("n"), i32c(4))] },
+            },
+            N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            // Host squeezes exactly `n` bytes into `res+4`.
+            N::Do(E::CallHost {
+                import: import.into(),
+                args: vec![getl("in"), b(BinOp::Add, getl("res"), i32c(4)), getl("n")],
+            }),
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A keyed crypto op on a `Secret` — `crypto.sign(key, msg)` / `crypto.public_key(key)`.
 /// `key` is the opaque Secret externref; the host signs / derives the public key
 /// with the never-exposed bytes and writes `hexlen` hex chars. (Separate from

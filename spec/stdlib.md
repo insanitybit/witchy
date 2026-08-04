@@ -591,6 +591,12 @@ Malformed verifier input is typed so callers can distinguish "bad key bytes", "b
 - `MalformedSignature(String)`
 - `VerifierUnavailable(String)`
 
+#### `type ShakeError`
+
+A SHAKE request that cannot be served. The only invalid input is an output length outside `0..=1048576`; allocation failure remains a runtime failure.
+
+- `InvalidOutputLength(Int)`
+
 #### `fn verify_error_message(e: VerifyError) -> String`
 
 Human-readable verifier failure text. Kept as an explicit helper so existing String-oriented callers can preserve diagnostics while matching on `VerifyError` remains available for libraries.
@@ -643,6 +649,14 @@ SHA3-256 (FIPS 202) of a string's UTF-8 bytes, as 64 hex characters. (Native-onl
 
 HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `message` is raw text. Returns the 64-hex-char tag. (Native-only.)
 
+#### `fn shake128(input: Bytes, output_len: Int) -> Result(Bytes, ShakeError)`
+
+SHAKE128 (FIPS 202) extendable-output function. Absorbs raw `input` bytes and squeezes exactly `output_len` bytes. `output_len` must be `0..=1048576` (a megabyte ceiling, far past any key/nonce/commitment use — a stream needs repeated domain-separated calls), else `Err(InvalidOutputLength)`. Native-only: the browser target omits this and a module that reaches it cannot instantiate in the browser host (RFC-0106/0007).
+
+#### `fn shake256(input: Bytes, output_len: Int) -> Result(Bytes, ShakeError)`
+
+SHAKE256 (FIPS 202) extendable-output function. See `shake128`; SHAKE256 has the stronger 256-bit capacity. Native-only.
+
 ### Trait implementations
 
 #### `impl Show for VerifyError`
@@ -654,6 +668,12 @@ HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `mess
 #### `impl From(VerifyError) for String`
 
 - `fn from(value: VerifyError) -> Self`
+
+#### `impl Show for ShakeError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for ShakeError`
 
 ## `dict`
 

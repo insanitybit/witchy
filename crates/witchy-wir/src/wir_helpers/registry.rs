@@ -4,7 +4,7 @@
 //! module is the single name-to-spec dispatcher consumed by lowering.
 
 use super::*;
-use super::encoding::{crypto_hash_helper, crypto_keyed_helper};
+use super::encoding::{crypto_hash_helper, crypto_keyed_helper, crypto_xof_helper};
 use super::host::{
     compiler_introspect_helper, host_call_helper_ret, host_call_helper_typed,
     host_void_helper, host_void_helper_typed, net_recv_helper, staged_string_helper,
@@ -763,6 +763,22 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: crypto_hash_helper("crypto_hmac_sha256", "crypto.hmac_sha256", 64, &["key", "msg"]),
             helper_deps: &["rc_alloc"],
             import_deps: &["crypto.hmac_sha256"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        // (RFC-0106) SHAKE XOFs: variable-length raw-Bytes output via a direct
+        // host output pointer. Native-only; the browser host omits the imports.
+        "crypto_shake128" => Some(WirHelperSpec {
+            func: crypto_xof_helper("crypto_shake128", "crypto.__shake128"),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["crypto.__shake128"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "crypto_shake256" => Some(WirHelperSpec {
+            func: crypto_xof_helper("crypto_shake256", "crypto.__shake256"),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["crypto.__shake256"],
             uses_heap: true,
             uses_table: false,
         }),

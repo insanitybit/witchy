@@ -342,6 +342,11 @@ impl Codegen<'_> {
             (intrinsics::CRYPTO_HMAC_SHA256, 2) => {
                 call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
+            // (RFC-0106) SHAKE XOFs: (Bytes, Int) -> Bytes via the variable-length
+            // raw-output helper. The std wrapper pre-validated the length.
+            (intrinsics::CRYPTO_SHAKE128 | intrinsics::CRYPTO_SHAKE256, 2) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
+            }
             (intrinsics::SECRETSTORE_REQUIRE, 2) => {
                 // `SecretStore.require(name)` returns the `Secret` directly (no
                 // `Option`): the host returns a nullable externref. An absent secret

@@ -113,6 +113,48 @@ pub fn sha3_256(data: String) -> String:
 pub fn hmac_sha256(key: String, message: String) -> String:
     ""
 
+// A SHAKE request that cannot be served. The only invalid input is an output
+// length outside `0..=1048576`; allocation failure remains a runtime failure.
+type ShakeError:
+    InvalidOutputLength(Int)
+
+impl Show for ShakeError:
+    fn show(self) -> String:
+        match self:
+            InvalidOutputLength(n) -> "SHAKE output length ${n} is invalid (0..=1048576)"
+
+impl Error for ShakeError
+
+// SHAKE128 (FIPS 202) extendable-output function. Absorbs raw `input` bytes and
+// squeezes exactly `output_len` bytes. `output_len` must be `0..=1048576` (a
+// megabyte ceiling, far past any key/nonce/commitment use — a stream needs
+// repeated domain-separated calls), else `Err(InvalidOutputLength)`. Native-only:
+// the browser target omits this and a module that reaches it cannot instantiate
+// in the browser host (RFC-0106/0007).
+pub fn shake128(input: Bytes, output_len: Int) -> Result(Bytes, ShakeError):
+    if output_len < 0 || output_len > 1048576:
+        Err(InvalidOutputLength(output_len))
+    else:
+        Ok(__shake128(input, output_len))
+
+// SHAKE256 (FIPS 202) extendable-output function. See `shake128`; SHAKE256 has
+// the stronger 256-bit capacity. Native-only.
+pub fn shake256(input: Bytes, output_len: Int) -> Result(Bytes, ShakeError):
+    if output_len < 0 || output_len > 1048576:
+        Err(InvalidOutputLength(output_len))
+    else:
+        Ok(__shake256(input, output_len))
+
+// Private native XOF intrinsics. `output_len` is pre-validated by the public
+// wrappers above, so the host only sees `0..=1048576`. Placeholder bodies: the
+// interpreter intercepts the qualified names and the WASM backend bridges them
+// to the same AWS-LC adapter as host imports.
+fn __shake128(input: Bytes, output_len: Int) -> Bytes:
+    input
+
+fn __shake256(input: Bytes, output_len: Int) -> Bytes:
+    input
+
 fn verify_result(status: Int, name: String) -> Result(Bool, VerifyError):
     if status == 1:
         Ok(true)

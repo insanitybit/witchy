@@ -94,9 +94,21 @@ version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
 dependencies = [
- "aws-lc-sys",
+ "aws-lc-sys 0.41.0",
  "untrusted 0.7.1",
  "zeroize",
+]
+
+[[package]]
+name = "aws-lc-sys"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4321e568ed89bb5a7d291a7f37997c2c0df89809d7b6d12062c81ddb54aa782e"
+dependencies = [
+ "cc",
+ "cmake",
+ "dunce",
+ "fs_extra",
 ]
 
 [[package]]
@@ -2975,6 +2987,7 @@ name = "witchy-runtime"
 version = "0.1.0"
 dependencies = [
  "aws-lc-rs",
+ "aws-lc-sys 0.38.0",
  "cap-fs-ext",
  "cap-std",
  "cap-std-ext",

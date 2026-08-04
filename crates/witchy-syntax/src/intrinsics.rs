@@ -113,6 +113,8 @@ pub enum IntrinsicId {
     CryptoSha512,
     CryptoSha3_256,
     CryptoHmacSha256,
+    CryptoShake128,
+    CryptoShake256,
     StringLength,
     StringCharCount,
     StringChars,
@@ -193,6 +195,7 @@ pub enum IntrinsicSignature {
     BytesIntToInt,
     BytesBytesToBytes,
     BytesIntIntToBytes,
+    BytesIntToBytes,
     SecretStoreStringToOptionSecret,
     SecretStoreStringToSecret,
     StringToString,
@@ -286,6 +289,7 @@ impl IntrinsicSignature {
                 | Self::ListIntToBytes
                 | Self::BytesBytesToBytes
                 | Self::BytesIntIntToBytes
+                | Self::BytesIntToBytes
         )
     }
 
@@ -556,6 +560,10 @@ pub const CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS: &str =
 pub const CRYPTO_SHA512: &str = "crypto.sha512";
 pub const CRYPTO_SHA3_256: &str = "crypto.sha3_256";
 pub const CRYPTO_HMAC_SHA256: &str = "crypto.hmac_sha256";
+// (RFC-0106) Native-only SHAKE XOFs: variable-length raw-byte output, native and
+// interpreter targets only. The browser host deliberately omits these imports.
+pub const CRYPTO_SHAKE128: &str = "crypto.__shake128";
+pub const CRYPTO_SHAKE256: &str = "crypto.__shake256";
 
 pub const STRING_LENGTH: &str = "string.length";
 pub const STRING_CHAR_COUNT: &str = "string.char_count";
@@ -2189,6 +2197,38 @@ pub const ALL: &[IntrinsicSpec] = &[
         diagnostic_name: CRYPTO_HMAC_SHA256,
         private_callers: NO_PRIVATE_CALLERS,
     },
+    // (RFC-0106) SHAKE128/256 XOF: (Bytes, Int) -> Bytes. Native-only; the browser
+    // host omits the imports so a module reaching them cannot instantiate there.
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoShake128,
+        name: CRYPTO_SHAKE128,
+        arity: 2,
+        signature: IntrinsicSignature::BytesIntToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_shake128"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_SHAKE128,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoShake256,
+        name: CRYPTO_SHAKE256,
+        arity: 2,
+        signature: IntrinsicSignature::BytesIntToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_shake256"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_SHAKE256,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
     IntrinsicSpec {
         id: IntrinsicId::StringLength,
         name: STRING_LENGTH,
@@ -2801,6 +2841,8 @@ pub const CRYPTO_OPERATIONS: &[&str] = &[
     CRYPTO_SHA512,
     CRYPTO_SHA3_256,
     CRYPTO_HMAC_SHA256,
+    CRYPTO_SHAKE128,
+    CRYPTO_SHAKE256,
 ];
 
 pub const REGEX_OPERATIONS: &[&str] = &[REGEX_MATCH_SPANS];
@@ -3003,6 +3045,8 @@ pub fn is_crypto_operation(name: &str) -> bool {
                 | IntrinsicId::CryptoSha512
                 | IntrinsicId::CryptoSha3_256
                 | IntrinsicId::CryptoHmacSha256
+                | IntrinsicId::CryptoShake128
+                | IntrinsicId::CryptoShake256
         )
     })
 }
@@ -3680,7 +3724,7 @@ mod tests {
             .map(|spec| spec.name)
             .collect();
         assert_eq!(actual, expected);
-        assert_eq!(actual.len(), 12);
+        assert_eq!(actual.len(), 14);
 
         for name in CRYPTO_OPERATIONS {
             let spec = lookup(name).expect("crypto operation");
@@ -3735,6 +3779,10 @@ mod tests {
                 ),
                 IntrinsicSignature::SecretToString => {
                     (vec![named("Secret")], named("String"))
+                }
+                // (RFC-0106) SHAKE XOFs: __shake128/__shake256(Bytes, Int) -> Bytes.
+                IntrinsicSignature::BytesIntToBytes => {
+                    (vec![named("Bytes"), named("Int")], named("Bytes"))
                 }
                 other => panic!("unexpected crypto signature {other:?}"),
             }

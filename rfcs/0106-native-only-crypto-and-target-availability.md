@@ -1,10 +1,10 @@
 ---
 rfc: 0106
 title: "Native-only cryptographic primitives and target availability"
-status: accepted
+status: implemented
 created: 2026-07-27
-updated: 2026-08-03
-tracking: "Design accepted; no open questions. Implementation not started — native SHAKE128/256 XOF via AWS-LC behind the native/interpreter target, browser target denies it by omission (RFC-0007). Remaining: the native primitive, target-availability gating, and a pure-Witchy browser fallback or documented absence."
+updated: 2026-08-04
+tracking: "Implemented. Native SHAKE128/256 XOF via AWS-LC (aws-lc-sys EVP interface) in witchy-runtime/src/shake.rs; std/crypto.witchy shake128/shake256 (Bytes,Int)->Result(Bytes,ShakeError) with length pre-validation; interpreter native + compiled crypto_xof WIR helper + `crypto.__shake128`/`__shake256` host imports (variable-length raw-byte output pointer); browser-omitted in the ABI catalog (ABI v9). FIPS-202 KAT + length matrix + prefix property proven on both backends (example_tests::crypto::shake_*), browser omission proven by the ABI catalog probe, adapter KAT vs independent reference in witchy-runtime shake unit tests. Target-aware compile-time diagnostic (RFC §5 follow-on) remains future work; today a browser module reaching SHAKE fails to instantiate."
 predecessors:
   - "[0007](0007-witchy-wasm-browser-target.md) (browser WASM is the compiled backend under a deny-by-omission host)"
   - "[0044](0044-std-error-policy.md) (stdlib error contracts)"

@@ -78,6 +78,10 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         intrinsics::CRYPTO_SHA3_256 => Some(crypto::sha3_256),
         #[cfg(not(target_arch = "wasm32"))]
         intrinsics::CRYPTO_HMAC_SHA256 => Some(crypto::hmac_sha256),
+        #[cfg(not(target_arch = "wasm32"))]
+        intrinsics::CRYPTO_SHAKE128 => Some(crypto::shake128),
+        #[cfg(not(target_arch = "wasm32"))]
+        intrinsics::CRYPTO_SHAKE256 => Some(crypto::shake256),
         // The compiler-service natives are installed from above the kernel
         // (`witchy-interp`) so this crate has no parser/type/caps dependency;
         // an uninstalled process resolves them to None (a clear "not registered"
@@ -371,6 +375,31 @@ mod crypto {
         let key = hmac::Key::new(hmac::HMAC_SHA256, &key_bytes);
         let tag = hmac::sign(&key, msg.as_bytes());
         Ok(Value::Str(hex(tag.as_ref())))
+    }
+
+    /// SHAKE128 (FIPS 202) XOF: absorb raw `input` bytes, squeeze exactly
+    /// `output_len` bytes. `output_len` is pre-validated by the std wrapper to
+    /// `0..=1048576`; the adapter re-checks and returns a typed error on any
+    /// out-of-range value, which we surface as a runtime error. Native-only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn shake128(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Bytes(input), Value::Int(len)] = args else {
+            return Err(type_error("crypto.shake128 expects (Bytes, Int)"));
+        };
+        crate::shake::shake128(input, *len)
+            .map(Value::Bytes)
+            .map_err(|e| type_error(e.message()))
+    }
+
+    /// SHAKE256 (FIPS 202) XOF. See `shake128`. Native-only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn shake256(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Bytes(input), Value::Int(len)] = args else {
+            return Err(type_error("crypto.shake256 expects (Bytes, Int)"));
+        };
+        crate::shake::shake256(input, *len)
+            .map(Value::Bytes)
+            .map_err(|e| type_error(e.message()))
     }
 
     fn hex(bytes: &[u8]) -> String {

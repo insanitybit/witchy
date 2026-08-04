@@ -418,3 +418,79 @@ use crate::{codegen, interpreter, parser, typeck};
         actor.run().expect("run");
         assert_eq!(actor.output(), vec!["Ok(true)".to_string(), "Ok(false)".to_string()]);
     }
+
+    /// (RFC-0106) SHAKE128/256 XOF — FIPS 202 known-answer vectors, exact on both
+    /// backends, over the length matrix (0, 1, a rate boundary, multiple rate
+    /// blocks). The empty-message prefixes are the canonical NIST values; agreement
+    /// with an independent reference (the AWS-LC adapter's own unit test asserts the
+    /// same bytes) rules out a common-mode padding/FFI error, and interpreter/Wasm
+    /// parity rules out a backend divergence.
+    #[test]
+    fn shake_matches_fips202_vectors_on_both_backends() {
+        let src = concat!(
+            "import crypto\n",
+            "import encoding\n",
+            "import bytes\n",
+            "fn hex(input: Bytes, n: Int, use256: Bool) -> String:\n",
+            "    let r = if use256: crypto.shake256(input, n) else: crypto.shake128(input, n)\n",
+            "    match r:\n",
+            "        Ok(d) -> encoding.hex_encode_bytes(d)\n",
+            "        Err(_e) -> \"err\"\n",
+            "fn main(console: Console):\n",
+            "    let empty = bytes.from_string(\"\")\n",
+            "    console.print(hex(empty, 16, false))\n",
+            "    console.print(hex(empty, 16, true))\n",
+            "    console.print(hex(empty, 0, false))\n",
+            "    console.print(hex(empty, 1, true))\n",
+            "    console.print(hex(bytes.from_string(\"abc\"), 168, false))\n",
+        );
+        let interp_out = link_run(src);
+        assert_eq!(
+            interp_out[0], "7f9c2ba4e88f827d616045507605853e",
+            "SHAKE128(\"\")[0..16] FIPS-202 KAT",
+        );
+        assert_eq!(
+            interp_out[1], "46b9dd2b0ba88d13233b3feb743eeb24",
+            "SHAKE256(\"\")[0..16] FIPS-202 KAT",
+        );
+        assert_eq!(interp_out[2], "", "zero-length squeeze is empty");
+        assert_eq!(interp_out[3].len(), 2, "one byte = two hex chars");
+        assert_eq!(interp_out[4].len(), 168 * 2, "a full 168-byte SHAKE128 rate block");
+        // Both backends agree, byte-for-byte, on every vector.
+        assert_eq!(run_on_wasm(src), interp_out, "SHAKE interpreter/Wasm parity");
+    }
+
+    /// (RFC-0106) The XOF prefix property and length validation, on both backends:
+    /// a shorter squeeze is a prefix of a longer one, and negative / oversized
+    /// lengths are a typed `Err` (rejected in the std wrapper before the host call),
+    /// identically on interpreter and Wasm.
+    #[test]
+    fn shake_prefix_and_length_validation_agree() {
+        let src = concat!(
+            "import crypto\n",
+            "import encoding\n",
+            "import bytes\n",
+            "fn main(console: Console):\n",
+            "    let seed = bytes.from_string(\"witchy\")\n",
+            "    let short = crypto.shake256(seed, 8)\n",
+            "    let long = crypto.shake256(seed, 32)\n",
+            "    match short:\n",
+            "        Ok(s) ->\n",
+            "            match long:\n",
+            "                Ok(l) -> console.print(\"${encoding.hex_encode_bytes(s)} ${bytes.length(l)}\")\n",
+            "                Err(_e) -> console.print(\"err\")\n",
+            "        Err(_e) -> console.print(\"err\")\n",
+            "    match crypto.shake128(seed, -1):\n",
+            "        Ok(_d) -> console.print(\"unexpected\")\n",
+            "        Err(_e) -> console.print(\"rejected-negative\")\n",
+            "    match crypto.shake256(seed, 1048577):\n",
+            "        Ok(_d) -> console.print(\"unexpected\")\n",
+            "        Err(_e) -> console.print(\"rejected-oversized\")\n",
+        );
+        let interp_out = link_run(src);
+        assert_eq!(interp_out[1], "rejected-negative");
+        assert_eq!(interp_out[2], "rejected-oversized");
+        // short = first 8 bytes = 16 hex chars; long length is 32.
+        assert!(interp_out[0].ends_with(" 32"), "long squeeze is 32 bytes: {}", interp_out[0]);
+        assert_eq!(run_on_wasm(src), interp_out, "SHAKE prefix/validation parity");
+    }

@@ -29,6 +29,10 @@ getrandom = { version = "0.4.2", optional = true }
 # the pure-Rust sha2/ed25519 path and omits TLS.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 aws-lc-rs = "1"
+# (RFC-0106) Native-only SHAKE XOF via AWS-LC's EVP interface, which aws-lc-rs's
+# safe digest API does not expose. Pinned to the same AWS-LC build aws-lc-rs
+# selects (transitive already), so no second crypto provider is introduced.
+aws-lc-sys = "0.38"
 rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12", "logging"] }
 webpki-roots = "0.26"
 rustls-pemfile = "2"

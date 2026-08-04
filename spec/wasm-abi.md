@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **8**. The JavaScript host pins it as
+The current ABI version is **9**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -212,6 +212,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `crypto.sha512` | `(i32, i32)` | pure infrastructure | none | provided |
 | `crypto.sha3_256` | `(i32, i32)` | pure infrastructure | none | provided |
 | `crypto.hmac_sha256` | `(i32, i32, i32)` | pure infrastructure | none | provided |
+| `crypto.__shake128` | `(i32, i32, i32)` | pure infrastructure | none | omitted |
+| `crypto.__shake256` | `(i32, i32, i32)` | pure infrastructure | none | omitted |
 | `print_int` | `(i64)` | pure infrastructure | none | provided |
 | `print_float` | `(f64)` | pure infrastructure | none | provided |
 | `string_from_code` | `(i64, i32) -> i32` | pure infrastructure | none | provided |
