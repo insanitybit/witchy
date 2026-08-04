@@ -36,6 +36,20 @@ impl Result(a, e):
             Ok(_) -> false
             Err(_) -> true
 
+    // True if the result is Ok and its value satisfies `pred`. An Err is always
+    // false, so `pred` runs only on a success value.
+    pub fn is_ok_and(self, pred: fn(a) -> Bool) -> Bool:
+        match self:
+            Ok(v) -> pred(v)
+            Err(_) -> false
+
+    // True if the result is an Err whose value satisfies `pred`. An Ok is always
+    // false, so `pred` runs only on an error value.
+    pub fn is_err_and(self, pred: fn(e) -> Bool) -> Bool:
+        match self:
+            Ok(_) -> false
+            Err(x) -> pred(x)
+
     // The Ok value, or `default` if it's an Err.
     pub fn unwrap_or(self, default: a) -> a:
         match self:
@@ -105,6 +119,24 @@ impl Result(a, e):
         match self:
             Ok(_) -> None
             Err(x) -> Some(x)
+
+impl Result(a, e) where a: Eq:
+    // Whether the result is Ok holding a value equal to `target`, by the Ok type's
+    // `Eq` impl. An Err never contains a success value. The `where a: Eq` bound
+    // makes the equality content-correct on both backends.
+    pub fn contains(self, target: a) -> Bool:
+        match self:
+            Ok(v) -> v == target
+            Err(_) -> false
+
+impl Result(a, e) where e: Eq:
+    // Whether the result is Err holding a value equal to `target`, by the Err
+    // type's `Eq` impl. An Ok never contains an error value. The error-side
+    // counterpart of `contains`.
+    pub fn contains_err(self, target: e) -> Bool:
+        match self:
+            Ok(_) -> false
+            Err(x) -> x == target
 
 impl Result(Result(a, e), e):
     // Collapse one layer of nesting: `Ok(Ok(v))` becomes `Ok(v)`; `Ok(Err(e))`

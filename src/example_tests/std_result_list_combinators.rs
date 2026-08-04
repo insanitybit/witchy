@@ -264,6 +264,81 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["650", "30", "0"]);
     }
 
+    // Option boolean combinators: is_some_and (predicate on a present value),
+    // and (value-forgetting conjunction), xor (exactly one Some), and the
+    // Eq-bounded contains. Method form; both backends agree.
+    #[test]
+    fn std_option_boolean_combinators_backends_agree() {
+        let client = r#"
+import option
+
+fn main(console: Console):
+    console.print("${Some(4).is_some_and(fn(x): (x > 2))} ${Some(1).is_some_and(fn(x): (x > 2))} ${None.is_some_and(fn(x): (x > 2))}")
+    console.print("${Some(1).and(Some(2)).unwrap_or(0)} ${None.and(Some(2)).unwrap_or(0)}")
+    console.print("${Some(1).xor(None).unwrap_or(9)} ${Some(1).xor(Some(2)).unwrap_or(9)} ${None.xor(Some(2)).unwrap_or(9)}")
+    console.print("${Some(5).contains(5)} ${Some(5).contains(6)} ${None.contains(5)}")
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "option boolean combinators diverged");
+        assert_eq!(
+            compiled,
+            vec!["true false false", "2 0", "1 9 2", "true false false"]
+        );
+    }
+
+    // Result boolean combinators: is_ok_and / is_err_and (predicate on the
+    // matching arm) and the Eq-bounded contains / contains_err. Method form;
+    // both backends agree.
+    #[test]
+    fn std_result_boolean_combinators_backends_agree() {
+        let client = r#"
+import result
+
+fn main(console: Console):
+    let r: Result(Int, String) = Ok(10)
+    let e: Result(Int, String) = Err("bad")
+    console.print("${r.is_ok_and(fn(x): (x > 5))} ${r.is_err_and(fn(x): true)}")
+    console.print("${e.is_err_and(fn(x): (x == "bad"))} ${e.is_ok_and(fn(x): true)}")
+    console.print("${r.contains(10)} ${r.contains(11)} ${e.contains(10)}")
+    console.print("${e.contains_err("bad")} ${e.contains_err("other")} ${r.contains_err("bad")}")
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "result boolean combinators diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "true false",
+                "true false",
+                "true false false",
+                "true false false"
+            ]
+        );
+    }
+
+    // Set.is_superset is the reverse of is_subset: this set contains every
+    // member of the other. Both backends agree.
+    #[test]
+    fn std_set_is_superset_backends_agree() {
+        let client = r#"
+import set
+
+fn main(console: Console):
+    let a = set.from_list([1, 2, 3])
+    let b = set.from_list([1, 2])
+    console.print("${a.is_superset(b)} ${b.is_superset(a)}")
+    console.print("${a.is_superset(a)} ${a.is_superset(set.from_list([]))}")
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "set is_superset diverged");
+        assert_eq!(compiled, vec!["true false", "true true"]);
+    }
+
     #[test]
     fn std_list_product_slice_scan_backends_agree() {
         // product (1 for empty), slice (clamped half-open range), and scan

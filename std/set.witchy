@@ -148,6 +148,11 @@ impl Set(a) where a: Eq:
     pub fn is_subset(self, other: Set(a)) -> Bool:
         subset_of(self, other)
 
+    // Whether this set contains every member of `other` — the reverse of
+    // `is_subset`.
+    pub fn is_superset(self, other: Set(a)) -> Bool:
+        subset_of(other, self)
+
     // Whether the two sets share no members.
     pub fn is_disjoint(self, other: Set(a)) -> Bool:
         let sitems = self.items

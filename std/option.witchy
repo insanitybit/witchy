@@ -36,6 +36,13 @@ impl Option(a):
             Some(_) -> false
             None -> true
 
+    // True if the option is Some and its value satisfies `pred`. `None` is
+    // always false, so `pred` runs only on a present value.
+    pub fn is_some_and(self, pred: fn(a) -> Bool) -> Bool:
+        match self:
+            Some(v) -> pred(v)
+            None -> false
+
     // The Some value, or `default` if it's None.
     pub fn unwrap_or(self, default: a) -> a:
         match self:
@@ -74,10 +81,28 @@ impl Option(a):
             Some(v) -> if keep(v): Some(v) else: None
             None -> None
 
+    // `other` if this option is Some, otherwise None — the value-forgetting
+    // conjunction that keeps the second option only when the first is present.
+    // The lazy, value-threading counterpart is `and_then`.
+    pub fn and(self, other: Option(b)) -> Option(b):
+        match self:
+            Some(_) -> other
+            None -> None
+
     // The option if it is Some, otherwise the `alt` option.
     pub fn or(self, alt: Option(a)) -> Option(a):
         match self:
             Some(v) -> Some(v)
+            None -> alt
+
+    // Exactly one of the two options: the Some one when precisely one is Some,
+    // otherwise None (both Some or both None).
+    pub fn xor(self, alt: Option(a)) -> Option(a):
+        match self:
+            Some(v) ->
+                match alt:
+                    Some(_) -> None
+                    None -> Some(v)
             None -> alt
 
     // The option if it is Some, otherwise the option produced by `f` (lazy).
@@ -106,6 +131,16 @@ impl Option(a):
                     Some(y) -> Some((x, y))
                     None -> None
             None -> None
+
+impl Option(a) where a: Eq:
+    // Whether the option holds a value equal to `target`, by the value type's
+    // `Eq` impl. `None` never contains anything. The `where a: Eq` bound
+    // monomorphizes the equality per value type, so it stays content-correct on
+    // both backends.
+    pub fn contains(self, target: a) -> Bool:
+        match self:
+            Some(v) -> v == target
+            None -> false
 
 impl Option(Option(a)):
     // Collapse one layer of nesting: `Some(Some(v))` becomes `Some(v)`, and

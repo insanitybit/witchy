@@ -2811,6 +2811,10 @@ True if the option holds a value.
 
 True if the option holds no value.
 
+#### `Option.is_some_and(pred: fn(a) -> Bool) -> Bool`
+
+True if the option is Some and its value satisfies `pred`. `None` is always false, so `pred` runs only on a present value.
+
 #### `Option.unwrap_or(default: a) -> a`
 
 The Some value, or `default` if it's None.
@@ -2835,9 +2839,17 @@ Chain a fallible step: apply `f` (which itself yields an Option) to the Some val
 
 Keep the Some value only if it satisfies `keep`; otherwise None.
 
+#### `Option.and(other: Option(b)) -> Option(b)`
+
+`other` if this option is Some, otherwise None — the value-forgetting conjunction that keeps the second option only when the first is present. The lazy, value-threading counterpart is `and_then`.
+
 #### `Option.or(alt: Option(a)) -> Option(a)`
 
 The option if it is Some, otherwise the `alt` option.
+
+#### `Option.xor(alt: Option(a)) -> Option(a)`
+
+Exactly one of the two options: the Some one when precisely one is Some, otherwise None (both Some or both None).
 
 #### `Option.or_else(f: fn() -> Option(a)) -> Option(a)`
 
@@ -2854,6 +2866,10 @@ Like `ok_or`, but the error for `None` is produced lazily by `f`.
 #### `Option.zip(other: Option(b)) -> Option((a, b))`
 
 Combine two options into an option of a pair: `Some((x, y))` only when both are `Some`, otherwise `None`.
+
+#### `Option.contains(target: a) -> Bool`
+
+Whether the option holds a value equal to `target`, by the value type's `Eq` impl. `None` never contains anything. The `where a: Eq` bound monomorphizes the equality per value type, so it stays content-correct on both backends.
 
 #### `Option.flatten() -> Option(a)`
 
@@ -3241,6 +3257,14 @@ True if the result is an Ok.
 
 True if the result is an Err.
 
+#### `Result.is_ok_and(pred: fn(a) -> Bool) -> Bool`
+
+True if the result is Ok and its value satisfies `pred`. An Err is always false, so `pred` runs only on a success value.
+
+#### `Result.is_err_and(pred: fn(e) -> Bool) -> Bool`
+
+True if the result is an Err whose value satisfies `pred`. An Ok is always false, so `pred` runs only on an error value.
+
 #### `Result.unwrap_or(default: a) -> a`
 
 The Ok value, or `default` if it's an Err.
@@ -3284,6 +3308,14 @@ The Ok value as `Some`, or `None` for an Err — discards the error, turning a R
 #### `Result.err() -> Option(e)`
 
 The Err value as `Some`, or `None` for an Ok.
+
+#### `Result.contains(target: a) -> Bool`
+
+Whether the result is Ok holding a value equal to `target`, by the Ok type's `Eq` impl. An Err never contains a success value. The `where a: Eq` bound makes the equality content-correct on both backends.
+
+#### `Result.contains_err(target: e) -> Bool`
+
+Whether the result is Err holding a value equal to `target`, by the Err type's `Eq` impl. An Ok never contains an error value. The error-side counterpart of `contains`.
 
 #### `Result.flatten() -> Result(a, e)`
 
@@ -3679,6 +3711,10 @@ The members in exactly one of the two sets.
 #### `Set.is_subset(other: Set(a)) -> Bool`
 
 Whether every member of this set is also in `other`.
+
+#### `Set.is_superset(other: Set(a)) -> Bool`
+
+Whether this set contains every member of `other` — the reverse of `is_subset`.
 
 #### `Set.is_disjoint(other: Set(a)) -> Bool`
 
