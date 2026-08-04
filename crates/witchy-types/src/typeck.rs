@@ -3967,6 +3967,22 @@ impl Checker {
                     }
                     visiting.push(key);
                     let bare = name.rsplit('.').next().unwrap_or(&name);
+                    // Type arguments retain a capability even for builtin
+                    // containers with no field/variant table (`Dict`, `Set`,
+                    // `Iter`): mirror `ty_carries_capability`, which recurses
+                    // into `arguments` here. Without this the two closures
+                    // disagree (the `debug_assert_eq!` below) and a
+                    // `Dict(String, Dir)` payload could erase through the
+                    // RFC-0081 firewall the moment caps-in-containers are
+                    // permitted.
+                    for (index, argument) in arguments.iter().enumerate() {
+                        let mut child = path.to_vec();
+                        child.push(format!("{bare}<arg {index}>"));
+                        if let Some(found) = go(checker, argument, visiting, &child) {
+                            visiting.pop();
+                            return Some(found);
+                        }
+                    }
                     if let Some((parameters, fields)) = checker.record_fields.get(&name) {
                         let substitution = parameters
                             .iter()

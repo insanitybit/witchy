@@ -180,3 +180,25 @@ use crate::{ast, codegen, interpreter, typeck};
             "WASM byte codecs must preserve binary"
         );
     }
+
+    /// An empty needle is treated as ABSENT by `bytes.index_of`/`contains`,
+    /// matching `string.index_of`'s module-wide empty-pattern rule so a
+    /// String→Bytes port of the same search behaves identically. (Audit
+    /// 2026-08-04: bytes used to return `Some(0)`/`true` for the empty needle.)
+    #[test]
+    fn bytes_empty_needle_is_absent_on_both_backends() {
+        let src = "import bytes\n\n\
+                   fn main(console: Console):\n\
+                   \x20   let b = bytes.from_string(\"abc\")\n\
+                   \x20   let e = bytes.from_string(\"\")\n\
+                   \x20   console.print(\"${b.index_of(e)}\")\n\
+                   \x20   console.print(\"${b.contains(e)}\")\n\
+                   \x20   console.print(\"${b.index_of(bytes.from_string(\"bc\"))}\")\n";
+        let want = ["None", "false", "Some(1)"];
+        assert_eq!(link_run(src), want, "interpreter: empty needle is absent");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            want,
+            "WASM: empty needle is absent",
+        );
+    }

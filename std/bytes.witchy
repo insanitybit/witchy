@@ -158,18 +158,20 @@ impl Bytes:
     pub fn to_list(self) -> List(Int):
         int_list(self)
 
-    // Whether `needle` appears in the buffer. The empty needle is always present.
+    // Whether `needle` appears in the buffer. An empty needle matches nothing
+    // (the same empty-pattern rule `string.contains` follows).
     pub fn contains(self, needle: Bytes) -> Bool:
         match self.index_of(needle):
             Some(_) -> true
             None -> false
 
-    // The first byte index where `needle` appears, or None when absent. The empty
-    // needle is found at 0, matching string/list search conventions.
+    // The first byte index where `needle` appears, or None when absent. An empty
+    // needle is treated as absent (`None`), matching `string.index_of`'s
+    // module-wide empty-pattern rule so a String/Bytes port behaves identically.
     pub fn index_of(self, needle: Bytes) -> Option(Int):
         let n = __bytes_length(needle)
         if n == 0:
-            Some(0)
+            None
         else:
             let limit = __bytes_length(self) - n
             var i = 0

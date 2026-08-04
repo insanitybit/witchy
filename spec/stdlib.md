@@ -129,11 +129,11 @@ The bytes as a list of Ints in `0..=255`.
 
 #### `Bytes.contains(needle: Bytes) -> Bool`
 
-Whether `needle` appears in the buffer. The empty needle is always present.
+Whether `needle` appears in the buffer. An empty needle matches nothing (the same empty-pattern rule `string.contains` follows).
 
 #### `Bytes.index_of(needle: Bytes) -> Option(Int)`
 
-The first byte index where `needle` appears, or None when absent. The empty needle is found at 0, matching string/list search conventions.
+The first byte index where `needle` appears, or None when absent. An empty needle is treated as absent (`None`), matching `string.index_of`'s module-wide empty-pattern rule so a String/Bytes port behaves identically.
 
 #### `Bytes.starts_with(prefix: Bytes) -> Bool`
 
