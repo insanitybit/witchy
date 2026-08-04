@@ -1656,3 +1656,61 @@ fn boundary_reown_counter_is_exact_runtime_and_lever_invariant() {
     assert_eq!(out, vec!["skipped".to_string()]);
     assert_eq!(dead, 0, "a repair in an unexecuted branch must not count");
 }
+
+/// (RFC-0110 criterion 6) Direct-storage `var` lowering (Slice A): a `var` call
+/// result written to a whole local commits straight into that local under the
+/// `direct-storage-var` lever, skipping the reconstruct-into-scratch round-trip.
+/// The counter fires exactly when the lever is on, zero when off, and the
+/// program value is identical on the interpreter and every lever configuration
+/// (Slice A is observationally identical — the de-opt oracle is lever-off).
+#[test]
+fn direct_storage_var_writeback_is_counted_and_de_opt_equivalent() {
+    const SRC: &str = concat!(
+        "mode opt\n",
+        "import list\n",
+        "fn revise(var values: unique List(Int), value: Int) -> unique List(Int):\n",
+        "    values.push(value)\n",
+        "    [value * 10]\n",
+        "fn main(console: Console):\n",
+        "    var xs = [0]\n",
+        "    var result = revise(xs, 7)\n",
+        "    console.print(\"${list.length(xs) * 100 + list.at(result, 0)}\")\n",
+    );
+    fn run(set: OptSet) -> (Vec<String>, i64) {
+        let checked = witchy::resolve_std_only_checked(SRC).expect("type-check direct-storage fixture");
+        opt::set_for_tests(Some(set));
+        let bytes = codegen::compile_checked_module_binary(&checked)
+            .expect_lowered("compile direct-storage fixture");
+        opt::set_for_tests(None);
+        let mut runtime = Runtime::batch().expect("runtime");
+        let mut actor = runtime
+            .spawn(&bytes, Capabilities { print: true, quiet: true, ..Default::default() }, 256)
+            .expect("spawn direct-storage fixture");
+        actor.run().expect("run direct-storage fixture");
+        let count = actor
+            .direct_storage_var_accesses()
+            .expect("direct-storage counter export");
+        (actor.output(), count)
+    }
+
+    // Independent interpreter oracle.
+    let expected = witchy::resolve_std_only_checked(SRC)
+        .ok()
+        .map(|c| interpreter::run_module(c.module().clone(), ".", Vec::new()).expect("interp"))
+        .expect("interp oracle");
+
+    // Lever on: counter >= 1, value equals the oracle.
+    let (on_out, on_count) = run(OptSet::all());
+    assert_eq!(on_out, expected, "direct-storage value matches the interpreter oracle");
+    assert!(on_count >= 1, "the whole-local var write-back is direct-storage lowered");
+
+    // Lever off: counter 0, value UNCHANGED — Slice A is observationally identical.
+    let (off_out, off_count) = run(OptSet::all().without(Opt::DirectStorageVar));
+    assert_eq!(off_out, expected, "de-opt (lever off) produces the identical value");
+    assert_eq!(off_count, 0, "the counter does not fire with the lever off");
+
+    // `none` (all levers off) still matches — full de-opt oracle.
+    let (none_out, none_count) = run(OptSet::none());
+    assert_eq!(none_out, expected, "none-mode value is identical");
+    assert_eq!(none_count, 0, "no direct-storage under none");
+}

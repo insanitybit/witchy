@@ -110,6 +110,14 @@ pub enum Opt {
     /// cursor walks. Off emits one guarded scalar iteration, providing the exact
     /// de-opt oracle for this code-size/scheduling transformation. RFC-0111.
     LoopUnroll,
+    /// (RFC-0110 criterion 6) Direct-storage `var` lowering: a `var` call result
+    /// whose destination is a proven-disjoint whole local writes back directly
+    /// into that local, skipping the reconstruct-into-scratch rebuild. Off emits
+    /// the move-in/write-back reconstruction verbatim — the de-opt oracle. Only
+    /// fires when the six RFC proofs (evaluate-once, overlap-disjoint, no live
+    /// alias/view, no callee escape, identical repr, valid whole-local writeback)
+    /// hold; a missed proof falls back to reconstruction (never an unsound write).
+    DirectStorageVar,
     // NOTE: the registry holds ONLY optimizations the compiler actually performs —
     // every entry must pass the differential de-opt sweep AND prove it fired
     // (RFC-0030's contract). For a MEMORY lever that proof is a `witchy stats`
@@ -124,7 +132,7 @@ pub enum Opt {
 impl Opt {
     /// Every optimization, in a stable order — drives the differential de-opt
     /// sweep and `witchy stats` reporting.
-    pub const ALL: [Opt; 13] = [
+    pub const ALL: [Opt; 14] = [
         Opt::InPlace,
         Opt::Views,
         Opt::Sroa,
@@ -138,6 +146,7 @@ impl Opt {
         Opt::BoundsElide,
         Opt::ClosureElide,
         Opt::LoopUnroll,
+        Opt::DirectStorageVar,
     ];
 
     /// The token used in `WITCHY_OPT` and reported by `witchy stats`.
@@ -156,6 +165,7 @@ impl Opt {
             Opt::BoundsElide => "bounds-elide",
             Opt::ClosureElide => "closure-elide",
             Opt::LoopUnroll => "loop-unroll",
+            Opt::DirectStorageVar => "direct-storage-var",
         }
     }
 

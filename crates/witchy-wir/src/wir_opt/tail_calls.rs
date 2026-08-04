@@ -498,6 +498,16 @@ fn forwarded_envelope_args(
                     origins.insert(local.clone(), origin);
                 }
             }
+            // (RFC-0110 criterion 6/9) The direct-storage `var` lowering fires an
+            // ownership counter increment in the write-back epilogue. It is a pure
+            // side-effect on a synthesized global — orthogonal to the envelope
+            // dataflow this recognizer tracks — so skip it transparently. When the
+            // tail transition fires, the epilogue (counter included) is replaced by
+            // loop-arg forwarding: no direct-storage commit occurs in the loop form,
+            // so dropping the counter there is correct and matches the lever-off
+            // oracle, which also counts zero.
+            WirNode::SetGlobal { global, .. }
+                if global == "__witchy_direct_storage_var_accesses" => {}
             WirNode::Push(WirExpr::GetLocal(local))
                 if is_last && origins.get(local) == Some(&0) => {}
             _ => return None,

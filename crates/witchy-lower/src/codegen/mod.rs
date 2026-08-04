@@ -7530,9 +7530,28 @@ impl<'types> Codegen<'types> {
             self.locals
                 .insert(var_scratch("result", index, *value_kind), *value_kind);
         }
+        // (RFC-0110 criterion 6, Slice A) Direct-storage `var` lowering. When
+        // every write-back place is a whole local (`CodegenPlace::Root`, no field
+        // or index projection), the reconstruction below is a redundant
+        // scratch round-trip: `codegen_place_update_from` returns the result
+        // verbatim, so `SetLocal root_scratch = result; SetLocal root = root_scratch`
+        // is two moves where one suffices. Under the `direct-storage-var` lever we
+        // commit `SetLocal root = result` directly. This is observationally
+        // identical on every non-trapping path (the single commit still runs
+        // AFTER `CallStoreMulti` returns, so a trapped VM commits nothing — the
+        // same all-or-nothing write-back), and lever-off keeps the reconstruction
+        // verbatim as the de-opt oracle. The six ownership proofs (P2 overlap-
+        // disjoint … P6 valid whole-local writeback) are already upheld: this arm
+        // is reached only for a checked var-unique write-back, and the whole-local
+        // shape is P1/P6 by construction.
+        let all_whole_local = places
+            .iter()
+            .all(|(place, _)| matches!(place, CodegenPlace::Root(_)));
+        let direct_storage = all_whole_local
+            && !force_copy_mode()
+            && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::DirectStorageVar);
         let mut commits = Vec::with_capacity(groups.len());
         for (index, (root, root_kind, update)) in groups.iter().enumerate() {
-            let root_scratch = var_scratch("root", index, *root_kind);
             let update_w = self.lower_expr(update);
             let update_w = match update_w {
                 Some(update) => update,
@@ -7543,8 +7562,15 @@ impl<'types> Codegen<'types> {
                     return None;
                 }
             };
-            seq.push(N::SetLocal { local: root_scratch.clone(), value: update_w });
-            commits.push((root.clone(), root_scratch));
+            if direct_storage {
+                // Direct-storage: no `root_scratch` indirection — commit the
+                // result straight into the caller local.
+                commits.push((root.clone(), None, update_w));
+            } else {
+                let root_scratch = var_scratch("root", index, *root_kind);
+                seq.push(N::SetLocal { local: root_scratch.clone(), value: update_w });
+                commits.push((root.clone(), Some(root_scratch), W::ConstI32(0)));
+            }
         }
         for (index, (_, value_kind)) in places.iter().enumerate() {
             self.locals.remove(&var_scratch("result", index, *value_kind));
@@ -7553,8 +7579,15 @@ impl<'types> Codegen<'types> {
             self.locals.remove(coordinate);
             self.local_val_types.remove(coordinate);
         }
-        for (root, scratch) in commits {
-            seq.push(N::SetLocal { local: root, value: W::GetLocal(scratch) });
+        if direct_storage {
+            seq.push(Self::increment_counter("__witchy_direct_storage_var_accesses"));
+        }
+        for (root, scratch, direct_value) in commits {
+            let value = match scratch {
+                Some(scratch) => W::GetLocal(scratch),
+                None => direct_value,
+            };
+            seq.push(N::SetLocal { local: root, value });
         }
         seq.push(N::Push(W::GetLocal(result_tmp)));
         Some(W::Seq(seq))
