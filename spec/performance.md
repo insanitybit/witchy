@@ -33,6 +33,48 @@ expressed with index-arena handles rather than shared pointers, so even cyclic
 *structure* is just integers reclaimed with its arena. The two-tier contract
 over this model is [RFC-0029](../rfcs/0029-performance-tier-contract.md).
 
+## "You're I/O-bound" is false — assume CPU/allocation-bound until measured
+
+A persistent piece of folklore says server and async programs are I/O-bound, so
+runtime CPU and allocation cost are noise. Treat that claim as **false by
+default.** Programs — including the networked, concurrent, `async` ones witchy
+is built for — are routinely bound by CPU, by allocation, by memory bandwidth,
+or by the runtime's own per-event overhead. Optimizing those costs is not
+premature; it is the main event.
+
+The folklore conflates two different things: async *hides* per-operation I/O
+latency by overlapping it — that is the entire point of async — but hiding
+latency does not make the work free. What binds **throughput** is the CPU spent
+per event: parsing, framing, (de)serialization, TLS, compression, buffer
+copies, allocation, and the scheduler's own poll/waker/state-machine
+transitions. All of that scales with event count and none of it is hidden by
+concurrency. A proxy, broker, cache, or database moving millions of small
+operations per second does async I/O and is flatly CPU- and
+memory-bandwidth-bound. Modern I/O (NVMe, io_uring, intra-datacenter RTTs in
+tens of microseconds) makes per-operation compute a large fraction of total
+time, not a rounding error.
+
+There is a **selection effect** that makes this decisive for us: a path is worth
+optimizing only when its throughput matters, and throughput-limited work is
+CPU/allocation/copy-bound by construction — the latency has already been
+concurrency-hidden, leaving per-event compute as the binding constraint. The
+latency-bound programs where the folklore holds (a script making a few remote
+calls) are exactly the ones no one optimizes. So conditioning on "this is worth
+optimizing" selects *for* the CPU/allocation-bound case.
+
+witchy sharpens this further: its concurrency scheduler is in-language (the pure
+deterministic executor of [RFC-0032](../rfcs/0032-multi-core-execution.md)),
+so poll/wakeup/state-machine overhead is visible witchy code on the hot path,
+not cost buried inside a native runtime. Per-event runtime cost is *more*
+exposed here, not less. This is why the memory model above and the
+ownership-driven allocation work below are load-bearing for exactly the
+server/streaming workloads (`std/server`, `witchy serve`, the coven registry)
+that the folklore would wrongly wave off.
+
+The rule this implies: **never assume where the time goes — measure** (see
+Phase 0). Profile the actual workload; the answer is far more often "CPU and
+allocation" than "waiting on I/O."
+
 ## Ownership-aware update and extraction
 
 `List.pop`, `Dict.insert`, and `Dict.remove` return an ordinary `Option` while
