@@ -5,7 +5,7 @@ status: accepted
 created: 2026-07-29
 updated: 2026-08-03
 superseded-by:
-tracking: "Design accepted; no open questions. RFC-0107 Phase 3, implemented and proven: binary patch protocol, Wasm-resident model, and typed completion codecs (web/witchy-runtime/glamour-optimized.mjs + glamour-protocol.mjs); Phase 3 rows PROVEN in projects/glamour/RFC-0107-ACCEPTANCE.md. Remaining before implemented: retire the compatibility JSON path (Phase 7)."
+tracking: "Design accepted; no open questions. BLOCKED-EXTERNAL (2026-08-04 triage): the two open Phase-3 rows both need out-of-sandbox evidence — a release-channel Chromium/Firefox/WebKit browser matrix in release CI (ACCEPTANCE.md:121) and a controlled release-host timing report on pinned macOS-arm64 + Linux-x86-64 machines (:123). No in-sandbox code remains; the protocol, ABI, and codecs are implemented and proven. RFC-0107 Phase 3, implemented and proven: binary patch protocol, Wasm-resident model, and typed completion codecs (web/witchy-runtime/glamour-optimized.mjs + glamour-protocol.mjs); Phase 3 rows PROVEN in projects/glamour/RFC-0107-ACCEPTANCE.md. Remaining before implemented: retire the compatibility JSON path (Phase 7)."
 predecessors:
   - "[0007](0007-rune-runtime.md) (pure-compute Wasm host and data marshaling)"
   - "[0008](0008-frontend-framework-rune.md) (Glamour reference application loop)"

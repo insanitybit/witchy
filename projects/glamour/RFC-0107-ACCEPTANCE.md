@@ -199,3 +199,29 @@ Phase 6 remains `MISSING` until every row above is proven. Phase 7 remains
 `MISSING` until its implementation, focused evidence,
 and documentation land. Completing a phase ledger does not by itself change
 RFC-0107's status to implemented.
+
+## Remaining-work triage (2026-08-04)
+
+Every open row above was classified as either **in-sandbox** (code/tests that
+can still be written and proven on a developer machine) or **external** (needs
+evidence that cannot be produced in a local sandbox: an approved public GitHub
+CI push, a real GitHub Pages / second-host deployment with Core Web Vitals, a
+controlled release-host or cold-mobile reference measurement, a deployed-header
+doctor run, or the approved WebAuthn relying-party exchange).
+
+| Open row | Owning RFC | Bucket | Note |
+| --- | --- | --- | --- |
+| Typed HTTP/nav/storage/port/secret completion descriptors | 0107 | external | Only the WebAuthn credential-response exchange remains; needs an approved relying-party. Production already rejects credential exchange by default. |
+| Complete browser accessibility matrix | 0107 | external | All three engines pass locally; only a successful public-CI run (an approved push) is missing. |
+| Static-host and production-vitals evidence | 0107 | external | Needs a GitHub Pages + second-host deployment and controlled Core Web Vitals. |
+| Release-channel browser matrix | 0108 | external | Needs release-CI Chromium/Firefox/WebKit runs. |
+| Controlled release-host timing report | 0108 | external | Needs pinned macOS-arm64 + Linux-x86-64 release-host records. |
+| Build-authenticated mount grants and browser policy | 0109 | external | Every locally executable path is covered; only a deployed-header doctor run + the approved WebAuthn exchange remain. |
+| Cold-mobile and book migration evidence | 0109 | external | Local migration complete; only cold-mobile measurement against the approved reference deployment remains. |
+| **Incremental compiler** | 0109 | **in-sandbox (deep)** | The dev watcher's fingerprinting / affected-module / parsed-module cache is done. Remaining: **per-module checked-IR + codegen reuse** (`src/commands/web/dev.rs`, `crates/witchy-types/src/pipeline.rs`, `crates/witchy-lower/src/codegen/*`) so a Witchy source edit no longer relinks + regenerates the whole loaded unit, plus a local incremental-timing threshold test (model on `web/witchy-runtime/glamour-phase3-performance.mjs`). This is a multi-session codegen track, not a bounded slice. |
+
+**Conclusion.** RFC-0107 and RFC-0108 have **no in-sandbox work left** — both are
+100% gated on external release/CI/deployment evidence and can move to
+`implemented` only when those approved runs are recorded. RFC-0109 has exactly
+one implementable row (the incremental compiler), which is deep per-module
+IR/codegen-reuse work rather than a bounded increment.

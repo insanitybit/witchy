@@ -113,3 +113,27 @@ marks the RFCs implemented. At minimum, the checked evidence set contains:
 
 Passing a narrower predecessor test, compiling an interface, or landing a
 foundation stage changes a row to **PARTIAL** at most; it is not completion.
+
+## Remaining-work triage (2026-08-04)
+
+RFC-0111 is now **implemented** (all eleven rows PROVEN). RFC-0110 and RFC-0112
+are **in-sandbox but deep** — no external-evidence blocker, but each remaining
+row is multi-session compiler work over a large surface, not a bounded slice:
+
+- **RFC-0110** (rows 2, 6, 8, 9, 10 PARTIAL): the two clusters are normal-mode
+  **one-copy repair** (a `unique` parameter without a uniqueness proof gets one
+  defensive copy in normal mode instead of an opt-mode rejection — rows 2/8/10)
+  and general **direct-storage `var` lowering** with the six RFC proofs plus real
+  boundary-reown / ownership-token / direct-storage counters (rows 6/9;
+  `__witchy_reowns` currently measures operation-level copy-on-write). This spans
+  the ~9k-line uniqueness/access substrate (`crates/witchy-types/src/access.rs`,
+  `crates/witchy-lower/src/analysis.rs`) — RFC staging steps 3–5.
+- **RFC-0112** (rows 6, 8, 9, 10, 11 MISSING): borrowed-aggregate shell mutation
+  + field-replacement loan sequencing + root-set write-back (6), the aggregate
+  retain/drop-balance matrix (8), `List(B('a))` lifecycle (9), a runnable
+  zero-copy parser + borrowed iterator with zero-materialization counters (10),
+  and the shipped-contract docs (11). The largest remaining track; mostly unbuilt
+  runtime + codegen.
+
+Both are candidates for the queue-sharded fan-out (RFC-0079) rather than a single
+session; neither is externally blocked.
