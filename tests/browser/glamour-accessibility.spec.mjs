@@ -7,10 +7,20 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 const repo = resolve(here, "../..");
 const binary = process.env.WITCHY_BIN || resolve(repo, "target/debug/witchy");
 const project = "projects/glamour/examples/accessibility";
+// `witchy run` drives the app through Exec, whose contract concatenates the
+// child's stdout with its stderr (rfcs/0004). When platform confinement is
+// enforced (Linux: Landlock + seccomp), the app's `confinement: layer=...`
+// diagnostic lines (on stderr) fold into that combined output. They are
+// operational noise, not rendered HTML — strip them before injecting into the
+// DOM, matching the same filter used by scripts/e2e-full.sh and release-smoke.sh.
 const html = execFileSync(binary, ["run", project], {
   cwd: repo,
   encoding: "utf8",
-}).trim();
+})
+  .split("\n")
+  .filter((line) => !line.startsWith("confinement: layer="))
+  .join("\n")
+  .trim();
 
 test("Glamour accessibility primitives retain native browser semantics", async ({ page, browserName }) => {
   await page.setContent(`<!doctype html><html lang="en"><body>${html}</body></html>`);
