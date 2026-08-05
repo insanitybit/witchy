@@ -5,5 +5,5 @@
 name = "glamour"
 version = "0.1.0"
 source = "path:projects/glamour"
-hash = "sha256:b5e7e931272b4541994c5725a78a6e668df7da11cb5502e1459b76c840ced325"
+hash = "sha256:19f17c83bbe022fd488ca4fff638cfd2a00b6ea3d28e4cf3b0ed479992cf2f77"
 runtime_footprint = []

@@ -338,6 +338,37 @@ use crate::{codegen, interpreter, parser, typeck};
         );
     }
 
+    /// `markdown.to_vnode` renders `*emphasis*` as an `<em>` element of inert text
+    /// nodes (never an HTML sink), and `**bold**` still wins over a lone `*` when
+    /// their markers coincide, so `**b**` is one `<strong>` — not `<em>*b*</em>`.
+    /// An unclosed `*` renders as a literal asterisk. Identical on both backends.
+    #[test]
+    fn markdown_emphasis_renders_em_and_yields_to_bold_on_both_backends() {
+        let src = "import glamour\n\
+                   import markdown\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   console.print(glamour.to_html(markdown.to_vnode(\"an *italic* word\")))\n\
+                   \x20   console.print(glamour.to_html(markdown.to_vnode(\"a **bold** word\")))\n\
+                   \x20   console.print(glamour.to_html(markdown.to_vnode(\"one *star\")))\n";
+        let out = markdown_run_both(src);
+        assert!(
+            out[0].contains("<em>italic</em>") && !out[0].contains('*'),
+            "a *span* becomes <em> with no literal asterisks:\n{}",
+            out[0]
+        );
+        assert!(
+            out[1].contains("<strong>bold</strong>") && !out[1].contains("<em>"),
+            "** wins over a lone * so bold stays <strong>:\n{}",
+            out[1]
+        );
+        assert!(
+            out[2].contains("one *star"),
+            "an unclosed * renders as a literal asterisk:\n{}",
+            out[2]
+        );
+    }
+
     /// (RFC-0041) A host `Slot` is pure data on the wire — `{"slot": kind, "data": payload}`
     /// (the DOM host mounts the widget) with an inert escaped-code fallback for `to_html`.
     /// Both serializations are IDENTICAL on the interpreter and compiled WASM.

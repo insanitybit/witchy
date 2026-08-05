@@ -133,8 +133,9 @@ fn table_row_cells(line: String, tag: String) -> List(VNode(msg)):
     cells
 
 // --- inline (recursive, earliest-marker) ------------------------------------
-// Handles `code`, **bold**, and [text](url). Everything else is a plain text node,
-// so stray Markdown and raw HTML render as their literal characters.
+// Handles `code`, **bold**, *emphasis*, and [text](url). Everything else is a
+// plain text node, so stray Markdown and raw HTML render as their literal
+// characters.
 fn inline(s: String) -> List(VNode(msg)):
     if s.is_empty():
         []
@@ -142,7 +143,8 @@ fn inline(s: String) -> List(VNode(msg)):
         let ci = s.index_of("`") ?? -1
         let bi = s.index_of("**") ?? -1
         let ki = s.index_of("[") ?? -1
-        let first = min3(ci, bi, ki)
+        let ei = s.index_of("*") ?? -1
+        let first = min4(ci, bi, ki, ei)
         if first < 0:
             [glamour.text(s)]
         else:
@@ -151,9 +153,14 @@ fn inline(s: String) -> List(VNode(msg)):
             if first == ci:
                 span(s, first, 1, "`", "code", head)
             else if first == bi:
+                // Bold is checked before emphasis: the first `*` of a `**` shares
+                // this position, so `**` always wins the tie and `*emphasis*`
+                // only fires for a lone `*` that starts strictly earlier.
                 span(s, first, 2, "**", "strong", head)
-            else:
+            else if first == ki:
                 link(s, first, head)
+            else:
+                span(s, first, 1, "*", "em", head)
 
 // A delimited inline span (`code`/**bold**): `open` is the marker, `dlen` its length,
 // `tag` the wrapping element. An unclosed marker renders as literal text.
@@ -250,6 +257,9 @@ fn has_control(s: String) -> Bool:
             found = true
         code = code + 1
     found || s.contains(string.from_code(127))
+
+fn min4(a: Int, b: Int, c: Int, d: Int) -> Int:
+    min2(min3(a, b, c), d)
 
 fn min3(a: Int, b: Int, c: Int) -> Int:
     min2(min2(a, b), c)
