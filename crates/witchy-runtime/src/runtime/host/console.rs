@@ -86,14 +86,15 @@ fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()>
     let bytes = slice(data, ptr, len)?;
     let text = String::from_utf8_lossy(bytes);
     let id = caller.data().id;
-    if !caller.data().caps.quiet {
+    if caller.data().caps.live_output {
         use std::io::Write;
-        print!("[vm {id}] {text}");
-        // A long-running server prints its readiness/log lines and then blocks
-        // in the accept loop without ever exiting, so block-buffered stdout (the
-        // default when stdout is a pipe/file, as under `coven-serve > log`) would
-        // never reach the reader. Flush so "live stdout" is actually live.
+        // Long-running server: stream cleanly (no debug prefix) and flush, since
+        // `main` never returns to drain the buffer and stdout is block-buffered
+        // when redirected to a pipe/file (e.g. `coven-serve > log`).
+        print!("{text}");
         let _ = std::io::stdout().flush();
+    } else if !caller.data().caps.quiet {
+        print!("[vm {id}] {text}");
     }
     caller
         .data()
@@ -125,10 +126,12 @@ fn host_console_read_len(mut caller: Caller<'_, VmState>) -> Result<i32> {
 }
 
 fn host_print_int(caller: Caller<'_, VmState>, n: i64) -> Result<()> {
-    if !caller.data().caps.quiet {
+    if caller.data().caps.live_output {
         use std::io::Write;
-        println!("[vm {}] {n}", caller.data().id);
+        println!("{n}");
         let _ = std::io::stdout().flush();
+    } else if !caller.data().caps.quiet {
+        println!("[vm {}] {n}", caller.data().id);
     }
     caller.data().output.lock().unwrap().push(n.to_string());
     Ok(())
@@ -139,10 +142,12 @@ fn host_print_float(caller: Caller<'_, VmState>, x: f64) -> Result<()> {
     // Display via `render_float`), so the two backends agree on float output —
     // including the trailing `.0` on a whole-valued float.
     let s = witchy_syntax::fmt::render_float(x);
-    if !caller.data().caps.quiet {
+    if caller.data().caps.live_output {
         use std::io::Write;
-        println!("[vm {}] {s}", caller.data().id);
+        println!("{s}");
         let _ = std::io::stdout().flush();
+    } else if !caller.data().caps.quiet {
+        println!("[vm {}] {s}", caller.data().id);
     }
     caller.data().output.lock().unwrap().push(s);
     Ok(())

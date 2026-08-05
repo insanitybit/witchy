@@ -463,7 +463,12 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             print: true,
             print_int: true,
             // A server logs as it runs (live stdout), not captured-then-flushed.
+            // `live_output` streams each line cleanly and FLUSHES it; without the
+            // flush the readiness/log lines sit in a block-buffered stdout (when
+            // redirected to a pipe/file) and never reach a reader, since `main`
+            // never returns to drain them.
             quiet: false,
+            live_output: true,
             args: coven_args,
             clock: true,
             dir_root: Some(root),

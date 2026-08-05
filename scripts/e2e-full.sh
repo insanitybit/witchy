@@ -204,7 +204,10 @@ export COVEN_URL="http://127.0.0.1:$PORT"
     --signing-key "$WORK/registry-signing.seed" \
     --trust-issuer "local-idp=$PUBHEX" > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
-for _ in $(seq 1 100); do
+# Wait up to ~30s: coven-serve cold-compiles its (sizable) WASM module before it
+# binds, and that can exceed 10s on a loaded or slow CI runner. The readiness
+# probe below is the real gate; this only bounds how long we wait for it.
+for _ in $(seq 1 300); do
     grep -q "coven serving" "$WORK/server.log" 2>/dev/null && break
     kill -0 "$SERVER_PID" 2>/dev/null || die "coven-serve exited during startup: $(cat "$WORK/server.log")"
     sleep 0.1
@@ -247,7 +250,12 @@ expect_contains "vendored record preserves trusted-publishing provenance" \
 
 printf 'import logger\n\nfn main(console: Console):\n    console.print(logger.line("hello"))\n' \
     > "$WORK/app/src/app.witchy"
-GOT="$(cd "$WORK/app" && WITCHY_USER=dev "$BIN" run)"
+# `pm run` drives the app through `Exec`, whose contract concatenates the child's
+# stdout with its stderr (rfcs/0004). When platform confinement is enforced
+# (Linux: Landlock + seccomp), the app's `confinement: layer=...` diagnostic lines
+# (correctly on stderr) are folded into that combined output. They are operational
+# noise, not program output — strip them before comparing, as release-smoke.sh does.
+GOT="$(cd "$WORK/app" && WITCHY_USER=dev "$BIN" run | grep -v '^confinement: layer=')"
 expect_eq "the consumer runs against the fetched rune" "[log] hello" "$GOT"
 
 # The widening gate: v1.1.0 quietly starts demanding Net.

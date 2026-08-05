@@ -178,6 +178,12 @@ pub(crate) fn run_wasm_module(
         print: true,
         print_int: true,
         quiet: true,
+        // A listening program (e.g. `coven-serve`) is a long-running server: its
+        // `main` never returns, so the buffered output path (drained only after
+        // the run) would swallow its log/readiness lines. Stream them live and
+        // flushed instead. Non-listening programs keep the buffered path, which
+        // the differential/parity harness depends on.
+        live_output: net_listen,
         args,
         ..Default::default()
     };

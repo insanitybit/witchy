@@ -300,6 +300,14 @@ pub struct Capabilities {
     /// Capture output without echoing it to stdout (used by `witchy parity`,
     /// which compares the captured lines rather than showing them).
     pub quiet: bool,
+    /// Stream Console output live to stdout as each line is printed, cleanly
+    /// (no `[vm N]` debug prefix) and flushed immediately. This is for
+    /// long-running servers (`coven-serve`) whose `main` never returns: the
+    /// default path buffers output and drains it only after the run completes,
+    /// so a server's log/readiness lines would never appear. Independent of
+    /// `quiet` (which governs the debug echo); when `live_output` is set the
+    /// clean stream replaces that echo.
+    pub live_output: bool,
     /// May read the wall clock via `witchy.now` (a `Clock` capability).
     pub clock: bool,
     /// May draw cryptographic randomness via `witchy.rand_u64` (a `Rand` capability).
