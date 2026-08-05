@@ -473,10 +473,15 @@ impl Capabilities {
             );
         }
         if let Some(path) = &self.build_out {
+            // The output tree needs READ as well as write: writing into it
+            // requires opening/traversing the directory, and the build host
+            // lists it afterward (`std::fs::read_dir` in build_steps). A
+            // write-only Landlock rule denies that open with "reading output
+            // dir: Permission denied" once confinement is enforced (Linux).
             policy.add_fs_rule(
                 path,
                 FsScope::Tree,
-                FsAccess::new(false, true, false),
+                FsAccess::new(true, true, false),
             );
         }
         for path in &self.build_read_roots {
