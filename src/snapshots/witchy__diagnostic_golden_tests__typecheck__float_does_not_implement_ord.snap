@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"import list\\n\\nfn main(console: Console):\\n    let xs = [3.0, 1.0]\\n    print(console, __render(list.length(list.sort(xs))))\\n\")"
+---
+type error: `Float` does not implement `Ord` (no `impl Ord for Float`) — required by a call to `compare`

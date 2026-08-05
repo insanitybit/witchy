@@ -1,0 +1,53 @@
+// std/vm — (RFC-0032) parallel execution across cores.
+//
+// `par_map` maps a function over a list with the elements processed in PARALLEL on
+// the compiled backend: the work is split across OS-thread worker VMs, each its own
+// isolated WebAssembly instance, and the results are gathered back in INPUT order.
+// Because the result is ordered by input index and the mapped function is pure, the
+// parallel result is identical to a sequential map — so the interpreter oracle (and
+// this module's own reference body) computes it sequentially and the two backends
+// agree. Parallelism changes how fast the map runs, not what it returns.
+//
+// The compiled backend takes the parallel path only when `f` is a BARE TOP-LEVEL
+// function and the element representation can cross the worker boundary. A local
+// function value, lambda, or pointer-bearing element type instead runs this module's
+// sequential reference body, with identical results. That fallback changes only
+// performance: `par_map` promises an ordered map, not isolation.
+
+import list
+
+// Map `f` over every element of `xs`, in parallel where the backend supports it,
+// returning the results in input order.
+pub fn par_map(xs: List(a), f: fn(a) -> b) -> List(b):
+    list.map(xs, f)
+
+// Run `f` on `input` in an ISOLATED worker VM (on the compiled backend) that is granted
+// EXACTLY the directory capability `dir` — and nothing else. The worker can read/write
+// within `dir` (with `dir`'s own rights) and reach NO other host resource: it is its own
+// WebAssembly instance with its own memory, and every ungranted capability traps. This is
+// the capability-passing sandbox — run untrusted/partially-trusted code with precisely
+// scoped authority. `f` must be named directly as a bare top-level function; closures and
+// local function values are rejected rather than silently running in the parent VM.
+// Because the result is a deterministic function of `dir`'s contents and `input`, the
+// isolation is invisible to the output, so the interpreter (which runs `f` directly) and
+// the compiled backend agree.
+pub fn with_dir(dir: Dir, f: fn(Dir, Bytes) -> Bytes, input: Bytes) -> Bytes:
+    f(dir, input)
+
+// Run a stateful SERVICE on a single long-lived ISOLATED worker VM. The worker is
+// created once and processes `requests` in order, threading an accumulator `state`
+// through `handler(state, request) -> new_state`, emitting each new state as that
+// request's response. This is witchy's cross-VM channel: a worker that processes a
+// message stream with persistent state. It is deliberately LOCK-STEP (ordered, not
+// racing) — that determinism is what lets the interpreter (a sequential scan) and the
+// compiled backend (a persistent worker VM) agree, which a truly-racing channel could
+// not. `handler` must be named directly as a bare top-level function; closures and local
+// function values are rejected rather than silently replacing isolation with a parent-VM
+// loop.
+pub fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> List(Bytes):
+    var state = init
+    var out = []
+    for req in requests:
+        state = handler(state, req)
+        list.push(out, state)
+    out

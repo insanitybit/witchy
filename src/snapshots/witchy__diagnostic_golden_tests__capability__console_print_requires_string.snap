@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console):\\n    console.print(42)\\n\")"
+---
+type error: `main`, line 2: in call to `print`: expected `String`, found `Int`

@@ -1,0 +1,370 @@
+// std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over
+// first-class `channel`s. Spawning and channels are independent — you can spawn
+// without a channel, and a channel is a value you create and pass around, not a
+// task's mailbox. Built on a pure-witchy cooperative executor with a deterministic
+// round-robin schedule, so a concurrent run is byte-identical on the interpreter
+// and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
+//
+// Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)`
+// pair carries values of ITS OWN type `m`, and independent channels in one program
+// may carry different types — a library may pipeline work through a private channel
+// without forcing its message type on the whole program. Under the hood the
+// executor is ERASED: its effects and buffers carry the opaque `__Msg`; the
+// typed endpoints erase a message on `send` and recover it on `recv`. The erasure
+// is representationally the identity on both backends (a message already rides the
+// universal slot), so interleavings stay byte-identical. Spawned tasks return
+// `Nil`; a task reports a result by sending it on a channel, not by returning it (a
+// typed `JoinHandle(T)` would force a native runtime and break the parity
+// contract). `send`/`recv` are always `await`ed because messaging is an effect on
+// the executor-owned buffer; a *bounded* channel additionally blocks the sender
+// when full while the executor is making progress (backpressure), an unbounded
+// one never does. If every live task parks with no progress, the executor runs
+// its quiescence close pass: parked receivers/selects resume with `None`, parked
+// senders are released, and parked joins resume. This replaces sender
+// refcounting and destructors; it is deterministic on both backends, but
+// "closed" means quiescent, not "no `Sender` value can ever be used again".
+//
+// The `async`/`await` CPS transform lowers onto the `std/task` executor
+// (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` /
+// `await chan.send(tx, x)`) run on the same protocol.
+
+import option
+from task import Task, Handle, ChannelId
+
+fn appended(own xs: List(a), x: a) -> List(a):
+    var out = move xs
+    list.push(out, x)
+    out
+
+// (RFC-0042) `Task` and `Handle` are owned by std/task. The raw scheduler
+// protocol is sealed; chan reaches channel effects through task's compiler-private
+// bridge, carrying a non-mintable `ChannelId`. Channel tasks and async-fn tasks
+// remain the same type without exposing construction of the erased protocol.
+// ---- erasure boundary (RFC-0055) ----
+
+// Recover a received `Option(__Msg)` at the endpoint's message type. `__unerase`
+// is the identity on both backends; the `Sender(m)`/`Receiver(m)` pairing to one
+// channel id guarantees the value was erased at the same `m`.
+fn unerase_option(o: Option(__Msg)) -> Option(m):
+    match o:
+        Some(x) -> Some(__unerase(x))
+        None -> None
+
+// ---- core combinators ----
+
+// A finished task.
+pub fn done(x: a) -> Task(a):
+    task.done(x)
+
+// An already-complete `Task(Nil)` — the async/await lowering target for a body
+// that falls off its end.
+pub fn ready_unit() -> Task(Nil):
+    task.ready_unit()
+
+// Hand control back to the executor once, then continue.
+pub fn yield_now() -> Task(Nil):
+    task.yield_now()
+
+// Sequence: run `t`, then continue with `k` applied to its result. This is what
+// `await` lowers to — the continuation `k` is the rest of the body.
+pub fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b):
+    task.and_then(t, k)
+
+// Transform a task's result.
+pub fn map(t: Task(a), f: fn(a) -> b) -> Task(b):
+    task.map(t, f)
+
+// Build the task `thunk()` lazily: nothing runs until this task is polled. A
+// `Task` is a replayable execution recipe, not a memo cell; the standard driver
+// advances through continuations, but driving the same task value again reruns
+// its thunk.
+pub fn lazy(thunk: fn() -> Task(a)) -> Task(a):
+    task.lazy(thunk)
+
+// Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an
+// `await` inside a `for x in xs:` loop.
+pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
+    task.for_each(xs, f)
+
+// ---- spawn + channels (the surface) ----
+
+// The typed sending endpoint of a channel carrying `m` messages.
+sealed type Sender(m):
+    Sender(ChannelId)
+
+// The typed receiving endpoint of a channel carrying `m` messages.
+sealed type Receiver(m):
+    Receiver(ChannelId)
+
+// `Handle` is task's (from-imported above) — a spawned child's join handle.
+
+// A channel of logical `capacity`: a positive capacity is bounded (the sender
+// blocks when the buffer is full), while 0 — or any non-positive value — is
+// unbounded and never blocks the sender, matching the convention that a
+// non-positive bound means "no bound".
+pub fn channel(capacity: Int) -> Task((Sender(m), Receiver(m))):
+    let cap = if capacity < 0: 0 else: capacity
+    and_then(task.__channel_open(cap), fn(id): done((Sender(id), Receiver(id))))
+
+// An unbounded channel — `send` never blocks (the buffer grows without limit).
+pub fn unbounded() -> Task((Sender(m), Receiver(m))):
+    channel(0)
+
+// Send `msg`; on a bounded channel this blocks until there is room while some
+// task can make progress. If the whole executor reaches quiescence with this
+// send parked, the close pass releases it and stores the message, even if that
+// temporarily exceeds the logical capacity. Always awaited. The message is
+// erased to the executor's opaque slot at this boundary.
+pub fn send(tx: Sender(m), msg: m) -> Task(Nil):
+    match tx:
+        Sender(id) -> task.__channel_send(id, __erase(msg))
+
+// Receive the next message, or `None` when the executor reaches quiescence with
+// this receive parked. `for await x in rx:` loops until this `None`. Because
+// witchy does not refcount sender values, a `Sender` retained by later code may
+// still send after such a quiescent close. The erased value is recovered at `m`
+// at this boundary.
+pub fn recv(rx: Receiver(m)) -> Task(Option(m)):
+    match rx:
+        Receiver(id) -> task.__channel_recv(id, fn(o): unerase_option(o))
+
+// Start `child` as a concurrent task; the returned handle completes when it does.
+pub fn spawn(child: Task(Nil)) -> Task(Handle):
+    task.spawn(child)
+
+// Wait for the spawned task behind `h` while the executor can make progress. If
+// the whole executor reaches quiescence with this join parked, the close pass
+// releases it even if the joined task has a continuation that will run afterward.
+pub fn join(h: Handle) -> Task(Nil):
+    task.join(h)
+
+// Cancel the spawned task behind `h`: it is stepped no further and is treated as
+// finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow —
+// it stops this one task, not any tasks it itself spawned — and idempotent (already
+// finished or already cancelled is a no-op). Deterministic on the cooperative
+// schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
+pub fn cancel(h: Handle) -> Task(Nil):
+    task.cancel(h)
+
+// Spawn every task in `children` concurrently, returning their handles. The
+// children begin running on the next executor turns; nothing is joined yet.
+pub fn spawn_all(children: List(Task(Nil))) -> Task(List(Handle)):
+    spawn_all_into(children, 0, [])
+
+// Tail-recursive accumulator form (see `recv_n_into`): each spawned handle is
+// appended and the recursion continues in TAIL position, so the executor
+// trampolines it at constant stack depth rather than building the O(n)-deep
+// continuation the post-`concat` form did — the same stack floor that let
+// `par_map`/`gather`/`scope` overflow the compiled backend (BUG-396).
+fn spawn_all_into(children: List(Task(Nil)), i: Int, hs: List(Handle)) -> Task(List(Handle)):
+    if i >= list.length(children):
+        done(hs)
+    else:
+        and_then(spawn(list.at(children, i)), fn(h): spawn_all_into(children, i + 1, appended(move hs, h)))
+
+// Join every handle in `hs` while the executor can make progress. Like `join`,
+// quiescence releases a parked join even if a child has a continuation that will
+// run afterward.
+pub fn join_all(hs: List(Handle)) -> Task(Nil):
+    join_all_from(hs, 0)
+
+fn join_all_from(hs: List(Handle), i: Int) -> Task(Nil):
+    if i >= list.length(hs):
+        ready_unit()
+    else:
+        and_then(join(list.at(hs, i)), fn(_done): join_all_from(hs, i + 1))
+
+// Cancel every handle in `hs` — the companion to `spawn_all`/`join_all`. Each is
+// stopped and treated as finished; idempotent, so cancelling an already-finished
+// handle is a no-op. Used by `race_n` to drop the losers.
+pub fn cancel_all(hs: List(Handle)) -> Task(Nil):
+    cancel_all_from(hs, 0)
+
+fn cancel_all_from(hs: List(Handle), i: Int) -> Task(Nil):
+    if i >= list.length(hs):
+        ready_unit()
+    else:
+        and_then(cancel(list.at(hs, i)), fn(_done): cancel_all_from(hs, i + 1))
+
+// STRUCTURED concurrency (a "nursery"): run every task in `children`
+// concurrently and wait for their handles while the executor can make progress.
+// No handle escapes the call, so the normal case has no leaked tasks; if the
+// whole executor reaches quiescence, `join_all` releases just like `join`. Prefer
+// this over a bare `spawn` whose handle you must remember to `join`. The children
+// interleave on the cooperative executor, so a concurrent run is byte-identical
+// on both backends (the parity contract). Results flow out over channels, as with
+// any task (a child returns `Nil`).
+pub fn scope(children: List(Task(Nil))) -> Task(Nil):
+    and_then(spawn_all(children), fn(hs): join_all(hs))
+
+// Receive exactly `n` messages from `rx`, in arrival order. Stops early (and
+// shorter) if the channel closes first.
+fn recv_n(rx: Receiver(m), n: Int) -> Task(List(m)):
+    recv_n_into(rx, n, [])
+
+// Tail-recursive accumulator form: each received message is pushed onto `acc` and
+// the recursion continues in TAIL position, so the executor trampolines it at a
+// constant stack depth. The earlier post-`concat` form wrapped one extra `and_then`
+// around the recursion per received message, building an O(n)-deep continuation
+// that overflowed the compiled backend's stack at a few thousand messages — the
+// OOB trap `gather`/`par_map` hit at N≈2000 (BUG-396).
+fn recv_n_into(rx: Receiver(m), n: Int, acc: List(m)) -> Task(List(m)):
+    if n <= 0:
+        done(acc)
+    else:
+        and_then(recv(rx), fn(o):
+            match o:
+                Some(x) -> recv_n_into(rx, n - 1, appended(move acc, x))
+                None -> done(acc)
+        )
+
+// STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return
+// the results that arrive before the collecting channel quiesces. In the normal
+// case every job completes and sends exactly one result. Each job produces a value
+// of the message type `m` (results ride the same channels), so `gather` is the
+// typed companion to `scope` — the same no-escaping-handle shape, with the results
+// handed back. Results are in COMPLETION order (deterministic on the cooperative
+// executor, hence byte-identical on both backends), not input order.
+pub fn gather(jobs: List(Task(m))) -> Task(List(m)):
+    and_then(channel(0), fn(pair):
+        let (tx, rx) = pair
+        let senders = list.map(jobs, fn(j): and_then(j, fn(r): send(tx, r)))
+        and_then(scope(senders), fn(_ignore): recv_n(rx, list.length(jobs)))
+    )
+
+// Receive one message from each receiver in `rxs`, in list order. A closed
+// receiver contributes nothing (its slot is skipped). Used by `par_map` to read
+// back results in INPUT order — each task owns its own channel, so the parent
+// collecting channel-by-channel is independent of which task finished first.
+fn recv_each(rxs: List(Receiver(m))) -> Task(List(m)):
+    recv_each_into(rxs, 0, [])
+
+// Tail-recursive accumulator form (see `recv_n_into`): indexing `rxs` and threading
+// the growing result forward keeps the recursion in TAIL position, so the executor
+// trampolines it at constant stack depth instead of building the O(n)-deep
+// continuation that overflowed the compiled backend at N≈2000 (BUG-396).
+fn recv_each_into(rxs: List(Receiver(m)), i: Int, acc: List(m)) -> Task(List(m)):
+    if i >= list.length(rxs):
+        done(acc)
+    else:
+        and_then(recv(list.at(rxs, i)), fn(o):
+            match o:
+                Some(x) -> recv_each_into(rxs, i + 1, appended(move acc, x))
+                None -> recv_each_into(rxs, i + 1, acc)
+        )
+
+// Build one private channel per item, pairing each item's task (which sends its
+// own result) with its receiver, so results can be read back in input order.
+fn par_build(items: List(a), f: fn(a) -> Task(m)) -> Task((List(Task(Nil)), List(Receiver(m)))):
+    par_build_into(items, 0, f, [], [])
+
+// Tail-recursive accumulator form (see `recv_n_into`): each opened channel appends
+// its job and receiver to the accumulators and the recursion continues in TAIL
+// position, so the executor trampolines it at constant stack depth. The earlier
+// post-`concat` form nested an extra `and_then` per item, building the O(n)-deep
+// continuation that overflowed the compiled backend at N≈2000 (BUG-396).
+fn par_build_into(items: List(a), i: Int, f: fn(a) -> Task(m), jobs: List(Task(Nil)), rxs: List(Receiver(m))) -> Task((List(Task(Nil)), List(Receiver(m)))):
+    if i >= list.length(items):
+        done((jobs, rxs))
+    else:
+        and_then(channel(0), fn(pair):
+            let (tx, rx) = pair
+            let job = and_then(f(list.at(items, i)), fn(r): send(tx, r))
+            par_build_into(items, i + 1, f, appended(move jobs, job), appended(move rxs, rx))
+        )
+
+// STRUCTURED parallel map (the level-1 combinator): run `f` over every item of
+// `items` concurrently and return the results in INPUT order. The tasks are never
+// visible — spawn and join happen inside — so this cannot leak a handle, cannot
+// deadlock on a forgotten join, and is the ergonomic default for data parallelism.
+// Each item's result rides its own channel, so the returned order is the input
+// order regardless of completion order: the result is a pure function of `items`
+// and `f`, hence DETERMINISTIC by construction and byte-identical on both backends.
+// That determinism is exactly what lets a future parallel backend run the items on
+// separate cores without changing the observable result (see RFC-0032). Results are
+// of the message type `m` (they ride channels), as with `gather`.
+pub fn par_map(items: List(a), f: fn(a) -> Task(m)) -> Task(List(m)):
+    and_then(par_build(items, f), fn(built):
+        let (jobs, rxs) = built
+        and_then(scope(jobs), fn(_ignore): recv_each(rxs))
+    )
+
+// STRUCTURED parallel reduce: `par_map` the items, then fold the results with
+// `combine` starting from `init`. `combine` should be associative for the fold to
+// be meaningful independent of evaluation order; the map runs concurrently while
+// the fold is a deterministic left fold over the input-ordered results.
+pub fn par_reduce(items: List(a), f: fn(a) -> Task(m), init: m, combine: fn(m, m) -> m) -> Task(m):
+    and_then(par_map(items, f), fn(results): done(list.fold(results, init, combine)))
+
+// Run `a` and `b` concurrently and return the FIRST result, cancelling the loser.
+// `None` only if neither ever produces a value. The winner is decided by the
+// deterministic round-robin schedule (a tie favours `a`), so the outcome is
+// byte-identical on both backends — and under a future parallel backend the cancel
+// genuinely stops the loser's remaining work. This is the cancellation-enabled
+// combinator of RFC-0032's ladder; build `timeout` by racing a task against one
+// that yields a sentinel.
+pub fn race(a: Task(m), b: Task(m)) -> Task(Option(m)):
+    and_then(channel(0), fn(pair):
+        let (tx, rx) = pair
+        and_then(spawn(and_then(a, fn(ra): send(tx, ra))), fn(ha): and_then(spawn(and_then(b, fn(rb): send(tx, rb))), fn(hb): and_then(recv(rx), fn(o): and_then(cancel(ha), fn(_x): and_then(cancel(hb), fn(_y): done(o))))))
+    )
+
+// `race` generalized to a pool: run every task in `tasks` concurrently and return
+// the FIRST result, cancelling all the others. `None` only if none ever produces a
+// value (e.g. an empty list). The winner is fixed by the deterministic schedule, so
+// the outcome is byte-identical on both backends.
+pub fn race_n(tasks: List(Task(m))) -> Task(Option(m)):
+    and_then(channel(0), fn(pair):
+        let (tx, rx) = pair
+        let jobs = list.map(tasks, fn(t): and_then(t, fn(r): send(tx, r)))
+        and_then(spawn_all(jobs), fn(hs): and_then(recv(rx), fn(o): and_then(cancel_all(hs), fn(_x): done(o))))
+    )
+
+// The outcome of a `select`: a message from the first or the second receiver, or
+// `Closed` once neither can deliver.
+type Selected(m):
+    First(m)
+    Second(m)
+    Closed
+
+// Receive from whichever of `a` or `b` has a message first; a tie favours `a`.
+// Yields `Closed` once both channels are closed.
+pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m)):
+    match a:
+        Receiver(ia) ->
+            match b:
+                Receiver(ib) -> task.__channel_select([ia, ib], fn(o): select_result(o))
+
+fn select_result(o: Option((Int, __Msg))) -> Task(Selected(m)):
+    match o:
+        Some(hit) ->
+            let (i, msg) = hit
+            if i == 0:
+                done(First(__unerase(msg)))
+            else:
+                done(Second(__unerase(msg)))
+        None -> done(Closed)
+
+// Receive from `rx`, run `f` on each message, until the channel closes. The
+// stateless server loop; `for await x in rx:` lowers to this.
+pub fn consume(rx: Receiver(m), f: fn(m) -> Task(Nil)) -> Task(Nil):
+    and_then(recv(rx), fn(o):
+        match o:
+            Some(x) -> and_then(f(x), fn(_u): consume(rx, f))
+            None -> ready_unit()
+    )
+
+// The stateful server loop: receive a message, run `handler` with the current
+// `state` to get the next state, and repeat until the channel closes. State
+// threads through every message with no hand-written recursion.
+pub fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(s)) -> Task(Nil):
+    and_then(recv(rx), fn(o):
+        match o:
+            Some(msg) -> and_then(handler(state, msg), fn(next): serve(rx, next, handler))
+            None -> ready_unit()
+    )
+
+// Drive `root` through the canonical `std/task` executor. `chan` keeps this
+// facade for channel-centric programs, but scheduling has a single implementation.
+pub fn run(root: Task(Nil)):
+    task.run(root)

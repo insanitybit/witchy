@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "parse_diag(\"mode turbo\\n\\nfn main(console: Console):\\n    print(console, \\\"hi\\\")\\n\")"
+---
+parse error at 3:1: unknown performance mode `turbo` — the only mode is `opt`

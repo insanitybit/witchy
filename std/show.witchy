@@ -1,0 +1,169 @@
+// The witchy standard `Show` trait: render a value as a `String`. Built-in impls
+// cover the scalars — `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which
+// shows in its human form, `1m30s`, not raw milliseconds) — and the built-in
+// comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or
+// tuple through arity 8 whose elements are themselves `Show` renders structurally
+// through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so
+// `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work — and a custom
+// element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own
+// types to give them a custom readable form. `Show` is preluded: interpolation
+// (`"${x}"`) always honors a relevant impl, while values without one keep the
+// structural default. Pure except `say`, which takes the `Console` it prints to.
+
+import duration
+import cmp
+import set
+import string
+import bytes
+
+trait Show:
+    fn show(self) -> String
+
+impl Show for Int:
+    fn show(self) -> String:
+        "${self}"
+
+impl Show for Bool:
+    fn show(self) -> String:
+        if self:
+            "true"
+        else:
+            "false"
+
+impl Show for String:
+    fn show(self) -> String:
+        self
+
+impl Show for Bytes:
+    fn show(self) -> String:
+        "Bytes(len=${bytes.length(self)})"
+
+impl Show for Float:
+    fn show(self) -> String:
+        "${self}"
+
+// A Duration SHOWS in its human form ("1m30s"), unlike the structural
+// `to_string`, which renders the underlying milliseconds — exactly the kind
+// of custom rendering `Show` exists for.
+impl Show for Duration:
+    fn show(self) -> String:
+        duration.human(self)
+
+impl Show for Ordering:
+    fn show(self) -> String:
+        match self:
+            Less -> "Less"
+            Equal -> "Equal"
+            Greater -> "Greater"
+
+// Render one value through its `Show` impl. Used for a *let-destructured* slot
+// (a tuple's parts), where the slot's concrete type is seeded by the
+// destructure, so the bound resolves.
+fn show_one(x: a) -> String where a: Show:
+    show(x)
+
+// Render each element of a list through its `Show` impl. Every container impl
+// below funnels its elements through this ONE single-bound helper: the loop
+// runs over a parameter (whose concrete type each specialization knows), so the
+// `show(x)` dispatch resolves — including when the element is itself a
+// container rendered by another blanket impl.
+fn show_each(xs: List(a)) -> List(String) where a: Show:
+    var parts = []
+    for x in xs:
+        list.push(parts, show(x))
+    parts
+
+// A list renders as `[a, b, c]`, each element through its own `Show` — the same
+// structural form `"${xs}"` produces, but honoring a custom element `Show`.
+impl Show for List(a) where a: Show:
+    fn show(self) -> String:
+        "[" + list.join(show_each(self), ", ") + "]"
+
+// An option renders as `Some(x)` / `None`, the payload through its `Show`.
+// Match bindings retain the constructor field's generic type, so dispatch is
+// direct: no temporary 0-or-1 list is needed to recover `a`.
+impl Show for Option(a) where a: Show:
+    fn show(self) -> String:
+        match self:
+            Some(value) -> "Some(${show(value)})"
+            None -> "None"
+
+// A result renders as `Ok(x)` / `Err(e)`, each payload through its `Show`.
+impl Show for Result(a, e) where a: Show, e: Show:
+    fn show(self) -> String:
+        match self:
+            Ok(value) -> "Ok(${show(value)})"
+            Err(error) -> "Err(${show(error)})"
+
+// A dict renders as `{k1: v1, k2: v2}` (insertion order), keys and values each
+// through their `Show`.
+impl Show for Dict(k, v) where k: Show, v: Show:
+    fn show(self) -> String:
+        let key_elems: List(k) = dict.keys(self)
+        let val_elems: List(v) = dict.values(self)
+        let ks = show_each(key_elems)
+        let vs = show_each(val_elems)
+        var parts = []
+        for kk, vv in list.zip(ks, vs):
+            list.push(parts, kk + ": " + vv)
+        "{" + list.join(parts, ", ") + "}"
+
+// A set renders as `{a, b, c}` (members in insertion order), each through its
+// `Show`.
+impl Show for Set(a) where a: Show:
+    fn show(self) -> String:
+        let elems: List(a) = set.to_list(self)
+        "{" + list.join(show_each(elems), ", ") + "}"
+
+// Tuples render as `(a, b)`; each supported arity has its own impl and dispatches
+// per slot, as the derives do. The protocol surface is explicit through arity 8;
+// larger tuples remain structural values but do not carry blanket `Show`.
+impl Show for (a, b) where a: Show, b: Show:
+    fn show(self) -> String:
+        let (x0, x1) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ")"
+
+impl Show for (a, b, c) where a: Show, b: Show, c: Show:
+    fn show(self) -> String:
+        let (x0, x1, x2) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ")"
+
+impl Show for (a, b, c, d) where a: Show, b: Show, c: Show, d: Show:
+    fn show(self) -> String:
+        let (x0, x1, x2, x3) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ")"
+
+impl Show for (a, b, c, d, e) where a: Show, b: Show, c: Show, d: Show, e: Show:
+    fn show(self) -> String:
+        let (x0, x1, x2, x3, x4) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ", " + show_one(x4) + ")"
+
+impl Show for (a, b, c, d, e, f) where a: Show, b: Show, c: Show, d: Show, e: Show, f: Show:
+    fn show(self) -> String:
+        let (x0, x1, x2, x3, x4, x5) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ", " + show_one(x4) + ", " + show_one(x5) + ")"
+
+impl Show for (a, b, c, d, e, f, g) where a: Show, b: Show, c: Show, d: Show, e: Show, f: Show, g: Show:
+    fn show(self) -> String:
+        let (x0, x1, x2, x3, x4, x5, x6) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ", " + show_one(x4) + ", " + show_one(x5) + ", " + show_one(x6) + ")"
+
+impl Show for (a, b, c, d, e, f, g, h) where a: Show, b: Show, c: Show, d: Show, e: Show, f: Show, g: Show, h: Show:
+    fn show(self) -> String:
+        let (x0, x1, x2, x3, x4, x5, x6, x7) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ", " + show_one(x4) + ", " + show_one(x5) + ", " + show_one(x6) + ", " + show_one(x7) + ")"
+
+// Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`,
+// `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string
+// interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type
+// has a relevant `Show` impl, so interpolation and `show.say` agree. A type without
+// a `Show` path keeps interpolation's byte-identical structural default.
+pub fn render(x: impl Show) -> String:
+    show(x)
+
+// Print any `Show` value without converting it by hand — `show.say(console, 42)`,
+// `show.say(console, point)`, `show.say(console, [1, 2, 3])`. This is the explicit
+// Show-accepting print helper; interpolation remains the normal inline rendering form.
+// (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
+pub fn say(console: Console, x: impl Show):
+    console.print(show(x))

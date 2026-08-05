@@ -1,0 +1,22 @@
+// `for await x in rx:` — a receive loop over a channel. It runs the body for each
+// message until the channel closes, and the body may itself `await`. Two forms of
+// `for` appear here: the producer iterates a *list* (`for n in [...]`), the worker
+// iterates a *receiver* (`for await n in rx`). Both lower onto the same executor.
+//
+// Run:  witchy examples/for_await/src/for_await.witchy
+//       witchy parity examples/for_await/src/for_await.witchy
+
+from chan import Receiver, Sender
+
+async fn producer(tx: Sender(Int)):
+    for n in [2, 3, 4]:
+        chan.send(tx, n).await
+
+async fn worker(console: Console, rx: Receiver(Int)):
+    for await n in rx:
+        console.print("n*n = ${n * n}")
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(4).await
+    chan.spawn(producer(tx)).await
+    worker(console, rx).await

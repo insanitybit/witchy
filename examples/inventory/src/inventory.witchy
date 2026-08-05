@@ -1,0 +1,22 @@
+// Iterating a Dict. `.values()` walks the values and `.pairs()` walks
+// `(key, value)` entries (destructured with `let (k, v) = ...`), so you can
+// aggregate over a map's contents — not just look keys up. The results are
+// reported with string interpolation: `${expr}` renders the value and splices
+// it into the string.
+fn main(console: Console):
+    var prices = dict.new()
+    prices.insert("apple", 3)
+    prices.insert("bread", 2)
+    prices.insert("milk", 4)
+
+    var total = 0
+    for v in prices.values():
+        total = total + v
+    console.print("total = ${total}")
+
+    var pricey = 0
+    for entry in prices.pairs():
+        let (name, price) = entry
+        if price > 2:
+            pricey = pricey + 1
+    console.print("over 2: ${pricey}")

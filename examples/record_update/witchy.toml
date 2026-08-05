@@ -1,0 +1,5 @@
+[rune]
+name = "record_update"
+version = "0.1.0"
+
+[dependencies]

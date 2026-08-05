@@ -1,0 +1,2 @@
+[user_caps]
+ui = { type = "UiRoot", policy = "glamour-interactive" }

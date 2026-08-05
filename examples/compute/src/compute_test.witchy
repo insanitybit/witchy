@@ -1,0 +1,18 @@
+// In-rune tests for `compute`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting. Run them with `witchy test examples/compute`.
+
+import compute
+import testing
+
+fn test_double():
+    testing.assert_int_eq(compute.double(21), 42)
+    testing.assert_int_eq(compute.double(0), 0)
+
+fn test_fib():
+    testing.assert_int_eq(compute.fib(0), 0)
+    testing.assert_int_eq(compute.fib(1), 1)
+    testing.assert_int_eq(compute.fib(10), 55)
+
+fn test_fact():
+    testing.assert_int_eq(compute.fact(0), 1)
+    testing.assert_int_eq(compute.fact(5), 120)

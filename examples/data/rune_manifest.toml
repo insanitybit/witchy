@@ -1,0 +1,10 @@
+# A manifest that looks complete but is rights-short: it admits Net[Connect]
+# (a client), yet the rune's source (sample_rune_v2.witchy) demands full Net —
+# it also *listens*. coven_check must flag this even though the Net *kind* is
+# declared, because the declared authority is narrower than the code's.
+[rune]
+name = "acme/widget"
+version = "0.2.0"
+
+[capabilities]
+runtime = ["Console", "Dir[Read]", "Net[Connect]"]

@@ -1,0 +1,369 @@
+// coven_web_app — the COMPLETE coven-web frontend as ONE glamour app (RFC-0015 Phase D):
+// the routed, data-fetched, authenticated shell that replaces the TypeScript app. All four
+// views (catalog, version record, API docs, registry trust) are wired into one MVU loop;
+// every fetch is performed by the host shell (which attaches the session credential itself),
+// every navigation is a real URL, and login + promote/yank go through host PORTS (the
+// WebAuthn ceremony runs in the host, never the rune). The rune is capability-PURE — no Net,
+// no token, empty footprint — so the whole trusted shell is XSS-immune by construction;
+// authority lives entirely at the JS host edge (glamour-dom.mjs + the fetch/session/passkey
+// ports). State is 4 strings — the route, the signed-in identity, the current view's raw
+// response, and a status notice — because only one view is active at a time.
+
+import markdown
+import list
+import reflect
+import time
+from glamour import Cmd, CredentialPort, HttpResult, NavigationResult, PortResult, Program, Start, Sub, Ui, UiFetch, UiRoot, UiRoute, VNode
+from json import Json
+
+type Model:
+    Model(String, String, String, String, String)
+
+type Msg derive(Reflect):
+    Route(String)
+    Visit(String)
+    GotData(HttpResult)
+    NavigationDone(NavigationResult)
+    Login
+    Register
+    LoggedIn(PortResult)
+    Promote
+    Yank
+    OpDone(PortResult)
+    Search(String)
+
+// (RFC-0039) The app's capability BUNDLE. Glamour narrows the app-root `UiRoot` into
+// exactly the tokens this shell needs — read-only fetch, navigation, and the four named
+// host credential ports — and `export_step` threads this ONE value into `update`. A
+// component can construct only the effect whose token it was handed, and each
+// `CredentialPort` BAKES IN its port name, so the promote token can never emit a yank:
+// the authority graph is explicit, reviewable, and unforgeable.
+type Caps:
+    //   fetch     router   login          register        promote         yank
+    Caps(UiFetch, UiRoute, CredentialPort, CredentialPort, CredentialPort, CredentialPort)
+
+// --- routing + effects -------------------------------------------------------
+fn fetch_for(fetch: UiFetch, path: String) -> Cmd(Msg):
+    if path.starts_with("/trust"):
+        glamour.http_get("coven-web.data", fetch, "/api/coven/rootpub", fn(result: HttpResult): GotData(result))
+    else if path.starts_with("/d/"):
+        let (name, ver) = name_ver(path)
+        glamour.http_get("coven-web.data", fetch, "/api/coven/doc?name=${name}&version=${ver}", fn(result: HttpResult): GotData(result))
+    else if path.starts_with("/s/"):
+        let (name, ver) = name_ver(path)
+        glamour.http_get("coven-web.data", fetch, "/api/coven/source?name=${name}&version=${ver}", fn(result: HttpResult): GotData(result))
+    else if path.starts_with("/v/"):
+        let (name, ver) = name_ver(path)
+        glamour.http_get("coven-web.data", fetch, "/api/coven/record?name=${name}&version=${ver}", fn(result: HttpResult): GotData(result))
+    else:
+        glamour.http_get("coven-web.data", fetch, "/api/coven/catalog", fn(result: HttpResult): GotData(result))
+
+fn update(caps: Caps, m: Model, msg: Msg) -> (Model, Cmd(Msg)):
+    match caps:
+        // A write (or register) finished: show its result AND re-fetch the current view so
+        // the record reflects the new state immediately (a promote flips staged -> released).
+        Caps(fetch, router, login, register, promote_cred, yank_cred) ->
+            match m:
+                Model(route, sess, data, notice, query) ->
+                    match msg:
+                        Visit(path) -> (m, glamour.navigate("coven-web.navigation", router, path, fn(result: NavigationResult): NavigationDone(result)))
+                        Route(path) -> (Model(path, sess, "", "", ""), fetch_for(fetch, path))
+                        GotData(result) ->
+                            match result:
+                                HttpResponse(_status, body) -> (Model(route, sess, body, notice, query), NoCmd)
+                                HttpFailure(problem) -> (Model(route, sess, data, problem, query), NoCmd)
+                                _ -> (m, NoCmd)
+                        NavigationDone(result) ->
+                            match result:
+                                Navigated(path) -> (Model(path, sess, "", "", ""), fetch_for(fetch, path))
+                                _ -> (m, NoCmd)
+                        Login -> (m, glamour.port("coven-web.login", login, "", fn(result: PortResult): LoggedIn(result)))
+                        Register -> (Model(route, sess, data, "registering passkey…", query), glamour.port("coven-web.register", register, "", fn(result: PortResult): OpDone(result)))
+                        LoggedIn(result) ->
+                            match result:
+                                PortResponse(who) -> (Model(route, who, data, "", query), NoCmd)
+                                PortFailure(problem) -> (Model(route, sess, data, problem, query), NoCmd)
+                                _ -> (m, NoCmd)
+                        Promote -> (Model(route, sess, data, "promoting…", query), glamour.port("coven-web.promote", promote_cred, route, fn(result: PortResult): OpDone(result)))
+                        Yank -> (Model(route, sess, data, "yanking…", query), glamour.port("coven-web.yank", yank_cred, route, fn(result: PortResult): OpDone(result)))
+                        OpDone(result) ->
+                            match result:
+                                PortResponse(value) -> (Model(route, sess, data, value, query), fetch_for(fetch, route))
+                                PortFailure(problem) -> (Model(route, sess, data, problem, query), NoCmd)
+                                _ -> (m, NoCmd)
+                        Search(q) -> (Model(route, sess, data, notice, q), NoCmd)
+
+// --- views -------------------------------------------------------------------
+fn view(m: Model) -> Ui(Msg):
+    match m:
+        Model(route, sess, data, notice, query) ->
+            glamour.ui(glamour.element("div", [glamour.prop("class", "app")], [header(sess, notice), body(route, data, sess, query)]))
+
+fn header(sess: String, notice: String) -> VNode(Msg):
+    let auth = if sess.is_empty(): glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Login)], [glamour.text("sign in with passkey")]), glamour.element("button", [glamour.prop("class", "button link ghost"), glamour.on("click", Register)], [glamour.text("register")])]) else: glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("span", [glamour.prop("class", "session-id")], [glamour.text("● signed in as ${sess}")])])
+
+    glamour.element("nav", [glamour.prop("class", "topnav")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("Runes")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/trust"))], [glamour.text("Trust")]), auth, glamour.element("span", [glamour.prop("class", "muted notice")], [glamour.text(notice)])])
+
+fn body(route: String, data: String, sess: String, query: String) -> VNode(Msg):
+    if route.starts_with("/trust"):
+        trust_view(data)
+    else if route.starts_with("/d/"):
+        docs_view(data)
+    else if route.starts_with("/s/"):
+        source_view(route, data)
+    else if route.starts_with("/v/"):
+        version_view(route, data, sess)
+    else:
+        catalog_view(data, query)
+
+// catalog: a crates.io-style list. Each row LEADS with the rune name + version and its publish
+// metadata — author, lifecycle state, release date — the things you scan a registry for. A rune's
+// required capabilities are a quiet secondary line, not the headline. The search box still filters
+// by name, author, OR capability (so "Net" finds everything that touches the network); filtering
+// is pure (the model holds the query, no fetch per keystroke).
+fn catalog_view(data: String, query: String) -> VNode(Msg):
+    let all = parse_runes(data)
+    let q = query.to_lower()
+    var items = []
+    for r in all:
+        let name = json.get_string(r, "name").unwrap_or("?")
+        let ver = json.get_string(r, "version").unwrap_or("0.0.0")
+        let caps = json.get_strings(r, "runtime_footprint")
+        let author = json.get_string(r, "uploaded_by").unwrap_or("unknown")
+        let st = json.get_string(r, "state").unwrap_or("staged")
+        if q.is_empty() || rune_matches(name, caps, author, q):
+            items.push(glamour.keyed(name, rune_card(name, ver, caps, author, st, gi(r, "released_at"))))
+    let shown = items.length()
+    let total = all.length()
+    let label = if query.is_empty(): "${total} runes" else: "${shown} of ${total} runes"
+    glamour.element("section", [glamour.prop("class", "catalog")], [glamour.element("h1", [], [glamour.text("Runes")]), glamour.element("input", [glamour.prop("class", "field search"), glamour.prop("type", "search"), glamour.prop("placeholder", "search runes by name, author, or capability"), glamour.on_input("input", "Search")], []), glamour.element("p", [glamour.prop("class", "muted count")], [glamour.text(label)]), glamour.element("ul", [glamour.prop("class", "rune-list")], items)])
+
+// One catalog row (crates.io card): name + version is the link; the right rail carries the
+// lifecycle badge, the author byline, and the release date; the footprint is a quiet "needs" line.
+fn rune_card(name: String, ver: String, caps: List(String), author: String, st: String, released: Int) -> VNode(Msg):
+    let date_node = if released > 0: glamour.element("span", [glamour.prop("class", "meta-date")], [glamour.text("published ${fmt_date(released)}")]) else: glamour.element("span", [glamour.prop("class", "meta-date dim")], [glamour.text("not yet released")])
+    glamour.element("li", [glamour.prop("class", "rune-row")], [glamour.element("div", [glamour.prop("class", "rune-main")], [glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Visit("/v/${wire(name)}/${ver}"))], [glamour.text(name), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text("v${ver}")])]), needs(caps)]), glamour.element("div", [glamour.prop("class", "rune-meta")], [state_badge(st), glamour.element("span", [glamour.prop("class", "meta-by")], [glamour.text("by ${author}")]), date_node])])
+
+// the quiet, secondary footprint line: small chips, still color-coded by danger but low-key.
+fn needs(caps: List(String)) -> VNode(Msg):
+    if caps.is_empty():
+        glamour.element("span", [glamour.prop("class", "needs")], [glamour.element("span", [glamour.prop("class", "chip-sm cap-none")], [glamour.text("no authority")])])
+    else:
+        var cs = []
+        for c in caps:
+            cs.push(glamour.element("span", [glamour.prop("class", "chip-sm cap-${cap_kind(c)}")], [glamour.text(c)]))
+        glamour.element("span", [glamour.prop("class", "needs")], cs)
+
+fn state_badge(st: String) -> VNode(Msg):
+    glamour.element("span", [glamour.prop("class", "badge state-${st}")], [glamour.text(st)])
+
+fn gi(j: Json, k: String) -> Int:
+    match json.get(j, k):
+        Some(v) -> json.as_int(v).unwrap_or(0)
+        None -> 0
+
+// Format a unix-SECONDS timestamp as a crates.io-style date, e.g. "Jun 23, 2026" (pure: no Clock).
+fn fmt_date(secs: Int) -> String:
+    time.format(time.from_unix(secs), "%b %d, %Y")
+
+fn parse_runes(data: String) -> List(Json):
+    match json.decode(data):
+        Ok(doc) -> json.as_array(json.get(doc, "runes").unwrap_or(JsonNull)).unwrap_or([])
+        Err(_e) -> []
+
+// A rune matches the filter if its name, author, or any footprint capability contains the query.
+fn rune_matches(name: String, caps: List(String), author: String, q: String) -> Bool:
+    if name.to_lower().contains(q) || author.to_lower().contains(q):
+        true
+    else:
+        var hit = false
+        for c in caps:
+            if c.to_lower().contains(q):
+                hit = true
+        hit
+
+// version: the signed record (security audit) + promote/yank (when signed in) + a docs link.
+fn version_view(route: String, data: String, sess: String) -> VNode(Msg):
+    let (name, ver) = name_ver(route)
+    let rows = record_rows(data)
+    let controls = if sess.is_empty(): glamour.element("p", [glamour.prop("class", "muted")], [glamour.text("sign in to promote or yank")]) else: glamour.element("div", [glamour.prop("class", "promote")], [glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Promote)], [glamour.text("promote")]), glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Yank)], [glamour.text("yank")])])
+
+    glamour.element("article", [glamour.prop("class", "version")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("← all runes")]), glamour.element("h1", [], [glamour.text(unwire(name)), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text("v${ver}")])]), record_subhead(data), glamour.element("dl", [glamour.prop("class", "record")], rows), controls, glamour.element("div", [glamour.prop("class", "viewlinks")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/d/${name}/${ver}"))], [glamour.text("API documentation →")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/s/${name}/${ver}"))], [glamour.text("source →")])])])
+
+// source: every file of the package, rendered inline as <pre><code> via glamour.text. Untrusted
+// stranger-uploaded source is DATA, and glamour cannot produce an HTML sink, so it is XSS-immune
+// INLINE in the trusted shell — no sandbox/compartment is needed (RFC-0015 §0: foreign *code*
+// gets a compartment; untrusted *data* renders inline, safe by construction).
+fn source_view(route: String, data: String) -> VNode(Msg):
+    let (name, ver) = name_ver(route)
+    let files = match json.decode(data):
+        Ok(doc) -> json.as_array(json.get(doc, "files").unwrap_or(JsonNull)).unwrap_or([])
+        Err(_e) -> []
+
+    var blocks = []
+    blocks.push(glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/v/${name}/${ver}"))], [glamour.text("← ${unwire(name)} @ ${ver}")]))
+    blocks.push(glamour.element("h1", [], [glamour.text("source")]))
+    for f in files:
+        let path = json.as_string(json.index(f, 0).unwrap_or(JsonNull)).unwrap_or("?")
+        let contents = json.as_string(json.index(f, 1).unwrap_or(JsonNull)).unwrap_or("")
+        blocks.push(glamour.keyed(path, glamour.element("div", [glamour.prop("class", "srcfile")], [glamour.element("div", [glamour.prop("class", "srcpath")], [glamour.text(path)]), glamour.element("pre", [glamour.prop("class", "src")], [glamour.element("code", [], [glamour.text(contents)])])])))
+
+    glamour.element("article", [glamour.prop("class", "source")], blocks)
+
+// The crates.io-style byline under the title: lifecycle badge · author · release date. The
+// human-facing facts lead; the cryptographic audit (footprint, provenance, hash) is the dl below.
+fn record_subhead(data: String) -> VNode(Msg):
+    match json.decode(data):
+        Ok(doc) ->
+            let st = json.get_string(doc, "state").unwrap_or("staged")
+            let author = json.get_string(doc, "uploaded_by").unwrap_or("unknown")
+            let released = gi(doc, "released_at")
+            let date_txt = if released > 0: "published ${fmt_date(released)}" else: "not yet released"
+            glamour.element("div", [glamour.prop("class", "version-meta")], [state_badge(st), glamour.element("span", [glamour.prop("class", "meta-by")], [glamour.text("by ${author}")]), glamour.element("span", [glamour.prop("class", "meta-date")], [glamour.text(date_txt)])])
+        Err(_e) -> glamour.text("")
+
+fn record_rows(data: String) -> List(VNode(Msg)):
+    match json.decode(data):
+        Ok(doc) ->
+            var rows = []
+            rows = rows.concat(dt_chips("footprint", json.get_strings(doc, "runtime_footprint")))
+            rows = rows.concat(row("determinism", json.get_string(doc, "determinism").unwrap_or("?")))
+            rows = rows.concat(row("provenance", json.get_string(doc, "provenance").unwrap_or("?")))
+            rows = rows.concat(row("hash", json.get_string(doc, "hash").unwrap_or("?")))
+            rows
+        Err(_e) -> []
+
+fn docs_view(data: String) -> VNode(Msg):
+    let md = match json.decode(data):
+        Ok(doc) -> json.get_string(doc, "markdown").unwrap_or("(no docs)")
+        Err(_e) -> "loading…"
+
+    glamour.element("article", [glamour.prop("class", "apidocs")], [markdown.to_vnode(md)])
+
+fn trust_view(data: String) -> VNode(Msg):
+    let rootpub = if data.is_empty(): "loading…" else: data
+    glamour.element("article", [glamour.prop("class", "trust")], [glamour.element("h1", [], [glamour.text("Registry trust (TUF)")]), glamour.element("dl", [glamour.prop("class", "record")], row("root key", rootpub))])
+
+// --- small view helpers ------------------------------------------------------
+fn row(label: String, value: String) -> List(VNode(Msg)):
+    [glamour.element("dt", [], [glamour.text(label)]), glamour.element("dd", [], [glamour.text(value)])]
+
+fn dt_chips(label: String, caps: List(String)) -> List(VNode(Msg)):
+    [glamour.element("dt", [], [glamour.text(label)]), glamour.element("dd", [], [chips(caps)])]
+
+fn chips(caps: List(String)) -> VNode(Msg):
+    if caps.is_empty():
+        glamour.element("span", [glamour.prop("class", "chip cap-none")], [glamour.text("no authority")])
+    else:
+        var cs = []
+        for c in caps:
+            cs.push(glamour.element("span", [glamour.prop("class", "chip cap cap-${cap_kind(c)}")], [glamour.text(c)]))
+        glamour.element("span", [glamour.prop("class", "chips")], cs)
+
+// Classify a footprint capability so the UI can color-code authority: the dangerous ones
+// (foreign Js code, Exec, Net egress, filesystem, secrets) get their own conspicuous hue,
+// the benign ambient ones (Console/Clock/Env/Random) read as plain.
+fn cap_kind(c: String) -> String:
+    let lc = c.to_lower()
+    if lc.starts_with("js"):
+        "js"
+    else if lc.starts_with("exec"):
+        "exec"
+    else if lc.starts_with("net"):
+        "net"
+    else if lc.starts_with("file") || lc.starts_with("dir"):
+        "fs"
+    else if lc.starts_with("secret"):
+        "secret"
+    else:
+        "plain"
+
+// --- path helpers ------------------------------------------------------------
+fn wire(name: String) -> String:
+    name.replace("/", "~")
+
+fn unwire(w: String) -> String:
+    w.replace("~", "/")
+
+// "/v/<name>/<version>" or "/d/<name>/<version>" -> (name, version). `name` stays wire-encoded.
+fn name_ver(path: String) -> (String, String):
+    let rest = path.drop(3)
+    if rest.contains("/"):
+        rest.split_once("/")
+    else:
+        (rest, "")
+
+// --- MVU glue ----------------------------------------------------------------
+fn gs(j: Json, k: String) -> String:
+    json.get_string(j, k).unwrap_or("")
+
+fn parse_model(j: Json) -> Model:
+    Model(gs(j, "route"), gs(j, "session"), gs(j, "data"), gs(j, "notice"), gs(j, "query"))
+
+fn model_to_json(m: Model) -> Json:
+    match m:
+        Model(route, sess, data, notice, query) ->
+            JsonObject([("route", JsonString(route)), ("session", JsonString(sess)), ("data", JsonString(data)), ("notice", JsonString(notice)), ("query", JsonString(query))])
+
+fn aj(j: Json, i: Int) -> Json:
+    match json.get(j, "\$values"):
+        Some(arr) -> json.index(arr, i).unwrap_or(JsonNull)
+        None -> JsonNull
+
+fn as_(j: Json, i: Int) -> String:
+    match json.get(j, "\$values"):
+        Some(arr) -> json.as_string(json.index(arr, i).unwrap_or(JsonNull)).unwrap_or("")
+        None -> ""
+
+fn parse_msg(j: Json) -> Msg:
+    match json.get_string(j, "\$variant"):
+        Some(v) ->
+            if v == "Visit":
+                Visit(as_(j, 0))
+            else if v == "GotData":
+                GotData(glamour.http_result_from_json(aj(j, 0)))
+            else if v == "NavigationDone":
+                NavigationDone(glamour.navigation_result_from_json(aj(j, 0)))
+            else if v == "Login":
+                Login
+            else if v == "Register":
+                Register
+            else if v == "LoggedIn":
+                LoggedIn(glamour.port_result_from_json(aj(j, 0)))
+            else if v == "Promote":
+                Promote
+            else if v == "Yank":
+                Yank
+            else if v == "OpDone":
+                OpDone(glamour.port_result_from_json(aj(j, 0)))
+            else if v == "Search":
+                Search(as_(j, 0))
+            else:
+                Route(as_(j, 0))
+        None -> Route("/")
+
+fn msg_to_json(m: Msg) -> Json:
+    json.from_value(m)
+
+fn authorize(ui: UiRoot) -> Caps:
+    Caps(glamour.fetch_scope(ui, "coven-web", "GET", "/api/coven/"), glamour.route_scope(ui, "/", "push"), glamour.credential_port(ui, "passkeyLogin"), glamour.credential_port(ui, "passkeyRegister"), glamour.credential_port(ui, "promote"), glamour.credential_port(ui, "yank"))
+
+fn initial(start: Start) -> Model:
+    match start:
+        Start(route, _bootstrap) -> Model(route, "", "", "", "")
+
+fn start(_caps: Caps, _model: Model) -> Cmd(Msg):
+    NoCmd
+
+fn subscriptions(_caps: Caps, _model: Model) -> Sub(Msg):
+    glamour.no_sub()
+
+fn app() -> Program(Caps, Model, Msg):
+    glamour.program(authorize, initial, start, update, view, subscriptions)
+
+pub fn export_step(ui: UiRoot, input: String) -> String:
+    glamour.program_step_with(input, ui, app(), parse_model, parse_msg, model_to_json, msg_to_json)
+
+fn main(console: Console, ui: UiRoot):
+    let output = export_step(ui, "{\"model\": {\"route\": \"/\", \"session\": \"\", \"data\": \"\", \"notice\": \"\"}}")
+    console.print("${output}\n")

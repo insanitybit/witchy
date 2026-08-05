@@ -1,0 +1,36 @@
+name: Install Rust
+description: Install the pinned Rust toolchain and restore the cargo build cache.
+inputs:
+  components:
+    description: Space-separated rustup components to add (e.g. "clippy", "rustfmt").
+    required: false
+    default: ""
+  targets:
+    description: Space-separated compilation targets to add (e.g. "wasm32-unknown-unknown").
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Install toolchain
+      shell: bash
+      env:
+        # Pin the toolchain here, in one place, rather than tracking a moving
+        # `stable` — a compiler bump is then a reviewed one-line change, not a
+        # silent drift. rustup ships preinstalled on GitHub runners, so we drive
+        # it directly instead of a third-party toolchain action.
+        TOOLCHAIN: "1.96.1"
+        COMPONENTS: ${{ inputs.components }}
+        TARGETS: ${{ inputs.targets }}
+      run: |
+        args=(--profile minimal)
+        if [ -n "$COMPONENTS" ]; then
+          args+=(--component $COMPONENTS)
+        fi
+        if [ -n "$TARGETS" ]; then
+          args+=(--target $TARGETS)
+        fi
+        rustup toolchain install "$TOOLCHAIN" "${args[@]}"
+        rustup default "$TOOLCHAIN"
+
+    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1

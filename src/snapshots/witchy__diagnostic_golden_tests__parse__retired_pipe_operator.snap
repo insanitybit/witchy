@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "parse_diag(\"fn main(console: Console):\\n    console.print(\\\"hi\\\" |> string.to_upper())\\n\")"
+---
+parse error at 2:25: `|>` is not a witchy operator — write `f(value, ...)` or `value.f(...)`

@@ -1,0 +1,15 @@
+// In-rune tests for `rpn`. Each `test_*` function takes no parameters, passes by
+// returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/rpn`.
+
+import rpn
+import testing
+
+fn test_arithmetic():
+    testing.assert_eq(rpn.run("3 4 +"), "7")
+    testing.assert_eq(rpn.run("5 1 2 + 4 * + 3 -"), "14")
+    testing.assert_eq(rpn.run("10 2 /"), "5")
+
+fn test_errors():
+    testing.assert_eq(rpn.run("1 0 /"), "error: division by zero")
+    testing.assert_eq(rpn.run("1 +"), "error: stack underflow at `+`")

@@ -1,0 +1,15 @@
+// In-rune tests for `calculator`. Each `test_*` function takes no parameters,
+// passes by returning, and fails by aborting (the `testing` assertions do that
+// with a message). Run them with `witchy test examples/calculator`.
+
+import calculator
+import testing
+
+fn test_precedence():
+    testing.assert_int_eq(calculator.eval("2 + 3 * 4"), 14)
+    testing.assert_int_eq(calculator.eval("(2 + 3) * 4"), 20)
+    testing.assert_int_eq(calculator.eval("100 - 2 * (3 + 4)"), 86)
+
+fn test_mixed():
+    testing.assert_int_eq(calculator.eval("7 + 6 / 2 - 1"), 9)
+    testing.assert_int_eq(calculator.eval("  42  "), 42)

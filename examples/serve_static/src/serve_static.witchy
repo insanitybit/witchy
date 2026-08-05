@@ -1,0 +1,18 @@
+// Serving fixed static content — and a vivid capability story. The route handler
+// is a bare top-level function, so it captures no ambient authority: `serve`
+// holds the Net to listen, while the handler has exactly the request value it is
+// passed. Capability-carrying route closures are intentionally rejected until
+// RFC-0005's GC-struct closure environments land.
+// Run: witchy --net 127.0.0.1:8080 examples/serve_static/src/serve_static.witchy
+
+from http import Request, Response
+from server import Router
+
+fn asset(_req: Request) -> Response:
+    server.text(200, "hello from witchy")
+
+fn main(console: Console, net: Net):
+    let app = server.router().get("/files/hello.txt", asset)
+
+    console.print("serving files on 127.0.0.1:8080")
+    server.serve(net, "127.0.0.1:8080", app)

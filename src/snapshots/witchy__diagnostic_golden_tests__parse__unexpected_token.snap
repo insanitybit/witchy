@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "parse_diag(\"fn main(console: Console):\\n    let x = = 3\\n\")"
+---
+parse error at 2:13: expected an expression, found `=`

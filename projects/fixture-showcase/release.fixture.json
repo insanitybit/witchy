@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "console": {},
+  "clock": {
+    "start_ns": "1700000000000000000",
+    "step_ns": "1"
+  },
+  "env": {
+    "values": {
+      "DEPLOY_ENV": "staging"
+    },
+    "allow": [
+      "DEPLOY_ENV"
+    ]
+  },
+  "argv": [
+    "api"
+  ],
+  "expectations": {
+    "calls": [
+      {
+        "family": "console",
+        "operation": "print",
+        "minimum": "1",
+        "maximum": "1"
+      },
+      {
+        "family": "clock",
+        "operation": "now",
+        "minimum": "1",
+        "maximum": "1"
+      },
+      {
+        "family": "env",
+        "operation": "env_len",
+        "minimum": "1",
+        "maximum": "1"
+      },
+      {
+        "family": "argv",
+        "operation": "args",
+        "minimum": "1",
+        "maximum": "1"
+      }
+    ]
+  }
+}

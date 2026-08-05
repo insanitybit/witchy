@@ -1,0 +1,41 @@
+// wordlib — word-frequency analysis. A pure library rune (a path dependency of
+// `wordfreq`) showcasing std `string` + `ascii` + `dict` + `list`: it normalizes
+// words (letters/digits only, lowercased), tallies them into a Dict, and ranks
+// them by count (ties broken alphabetically) for a deterministic top-N.
+
+import ascii
+import dict
+import list
+
+// How many times each normalized word occurs in the text.
+pub fn word_counts(text: String) -> Dict(String, Int):
+    var counts = dict.new()
+    for raw in text.words():
+        let word = normalize(raw)
+        if word.length() > 0:
+            dict.update(counts, word, 0, fn(running: Int): running + 1)
+    counts
+
+// The `limit` most frequent words, most frequent first, ties broken by spelling
+// so the ranking is deterministic. Returns (word, count) pairs.
+pub fn top_words(text: String, limit: Int) -> List((String, Int)):
+    var ranked = dict.pairs(word_counts(text))
+    list.sort_by(ranked, more_common)
+    ranked.take(limit)
+
+fn more_common(a: (String, Int), b: (String, Int)) -> Bool:
+    let (word_a, count_a) = a
+    let (word_b, count_b) = b
+    if count_a == count_b:
+        word_a < word_b
+    else:
+        count_a > count_b
+
+// A word reduced to its lowercase letters and digits (drops surrounding
+// punctuation like commas, periods, and semicolons).
+fn normalize(word: String) -> String:
+    var kept = ""
+    for ch in word.chars():
+        if ascii.is_alpha(ch) || ascii.is_digit(ch):
+            kept = kept + ch
+    kept.to_lower()

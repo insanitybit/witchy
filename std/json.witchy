@@ -1,0 +1,974 @@
+// A JSON library — the witchy take on Go's encoding/json. This slice is the
+// value type and the encoder (serialization); the decoder (parsing) follows.
+// Pure and capability-free, so — unlike networking — it compiles to WASM like
+// the rest of the data std.
+
+import string
+import show
+import error
+// `decode` returns a `Result` and the accessors return `Option`; importing
+// these brings `Ok`/`Err`/`Result` and `Some`/`None`/`Option` into scope for any
+// program that imports `json`.
+import result
+import option
+// Reflection backs `from_value`/`stringify`: encode ANY value to JSON with no
+// `derive(Json)` — `reflect(x)` gives the structure, and we walk the `Mirror`.
+
+// `impl From(a) for Json` gives `Json.from(x)` / `x.into()` for reflectable values.
+import convert
+from reflect import Mirror
+
+type Json:
+    JsonNull
+    JsonBool(Bool)
+    JsonInt(Int)
+    JsonFloat(Float)
+    JsonString(String)
+    JsonArray(List(Json))
+    JsonObject(List((String, Json)))
+
+type DecodeError:
+    message: String
+
+type DeserializeError:
+    DeserializeMissingField(String)
+    DeserializeExpected(String)
+
+pub fn decode_error_message(e: DecodeError) -> String:
+    match e:
+        DecodeError(message) -> message
+
+pub fn deserialize_error_message(e: DeserializeError) -> String:
+    match e:
+        DeserializeMissingField(key) -> "missing field `" + key + "`"
+        DeserializeExpected(shape) -> "expected " + shape
+
+impl Show for DecodeError:
+    fn show(self) -> String:
+        decode_error_message(self)
+
+impl Show for DeserializeError:
+    fn show(self) -> String:
+        deserialize_error_message(self)
+
+impl Error for DecodeError
+
+impl Error for DeserializeError
+
+impl From(DecodeError) for String:
+    fn from(value: DecodeError) -> Self:
+        decode_error_message(value)
+
+impl From(DeserializeError) for String:
+    fn from(value: DeserializeError) -> Self:
+        deserialize_error_message(value)
+
+fn decode_error(message: String) -> DecodeError:
+    DecodeError(message)
+
+// The compact serializer core. The recursive walk stays a free function with a
+// non-colliding name: the pre-mono pass cannot resolve a method called from
+// inside the recursive helpers (`encode_array`/`encode_object`), so the
+// `encode` method delegates here.
+fn encode_value(j: Json) -> String:
+    match j:
+        JsonNull -> "null"
+        JsonBool(b) -> if b: "true" else: "false"
+        JsonInt(n) -> "${n}"
+        JsonFloat(x) -> encode_float(x)
+        JsonString(s) -> encode_string(s)
+        JsonArray(items) -> encode_array(items)
+        JsonObject(pairs) -> encode_object(pairs)
+
+// The pretty serializer core (see `encode_value` for why it is a free function).
+fn encode_indent(j: Json, depth: Int) -> String:
+    match j:
+        JsonNull -> "null"
+        JsonBool(b) -> if b: "true" else: "false"
+        JsonInt(n) -> "${n}"
+        JsonFloat(x) -> encode_float(x)
+        JsonString(s) -> encode_string(s)
+        JsonArray(items) -> pretty_array(items, depth)
+        JsonObject(pairs) -> pretty_object(pairs, depth)
+
+fn pretty_array(items: List(Json), depth: Int) -> String:
+    if list.length(items) == 0:
+        "[]"
+    else:
+        let pad = indent(depth + 1)
+        var out = "[\n"
+        var first = true
+        for it in items:
+            if first:
+                first = false
+            else:
+                out = out + ",\n"
+            out = out + pad + encode_indent(it, depth + 1)
+        out + "\n" + indent(depth) + "]"
+
+fn pretty_object(pairs: List((String, Json)), depth: Int) -> String:
+    assert_unique_object_keys(pairs, "json.encode_pretty")
+    if list.length(pairs) == 0:
+        "{}"
+    else:
+        let pad = indent(depth + 1)
+        var out = "{\n"
+        var first = true
+        for p in pairs:
+            let (k, v) = p
+            if first:
+                first = false
+            else:
+                out = out + ",\n"
+            out = out + pad + encode_string(k) + ": " + encode_indent(v, depth + 1)
+        out + "\n" + indent(depth) + "}"
+
+fn indent(depth: Int) -> String:
+    var out = ""
+    var i = 0
+    while i < depth:
+        out = out + "  "
+        i = i + 1
+    out
+
+fn encode_array(items: List(Json)) -> String:
+    var out = "["
+    var first = true
+    for it in items:
+        if first:
+            first = false
+        else:
+            out = out + ","
+        out = out + encode_value(it)
+    out + "]"
+
+fn encode_object(pairs: List((String, Json))) -> String:
+    assert_unique_object_keys(pairs, "json.encode")
+    var out = "{"
+    var first = true
+    for p in pairs:
+        let (k, v) = p
+        if first:
+            first = false
+        else:
+            out = out + ","
+        out = out + encode_string(k) + ":" + encode_value(v)
+    out + "}"
+
+fn assert_unique_object_keys(pairs: List((String, Json)), context: String):
+    var seen: List(String) = []
+    for p in pairs:
+        let (k, _v) = p
+        if list.contains(seen, k):
+            fail(context + ": duplicate object key `" + k + "`")
+        list.push(seen, k)
+
+// Render a Float as a JSON number. `inf`/`-inf`/`NaN` are not JSON tokens; a
+// core JSON encoder must fail loudly rather than erase the numeric value as
+// `null`, which already means an intentional JSON null / `Option.None`.
+fn encode_float(x: Float) -> String:
+    if is_finite(x):
+        "${x}"
+    else:
+        fail("json.encode: non-finite Float cannot be encoded as JSON")
+        ""
+
+// Wrap `s` in quotes, escaping the characters JSON requires.
+fn encode_string(s: String) -> String:
+    var out = "\""
+    for c in s.chars():
+        out = out + escape_char(c)
+    out + "\""
+
+fn escape_char(c: String) -> String:
+    if c == "\"":
+        "\\\""
+    else if c == "\\":
+        "\\\\"
+    else if c == "\n":
+        "\\n"
+    else if c == "\t":
+        "\\t"
+    else if c == "\r":
+        "\\r"
+    else if c < " ":
+        escape_control(c)
+    else:
+        c
+
+// A C0 control character (`c < U+0020`, other than the `\n`/`\t`/`\r` handled
+// above) rendered as a JSON escape: `\b`/`\f` in short form, the rest as
+// `\u00XX`. RFC 8259 forbids a raw control character inside a string, so without
+// this the encoder produced invalid JSON no conformant parser would accept.
+fn escape_control(c: String) -> String:
+    let code = control_code(c)
+    if code == 8:
+        "\\b"
+    else if code == 12:
+        "\\f"
+    else:
+        "\\u00" + hex_digit(code / 16) + hex_digit(code % 16)
+
+// The Unicode scalar value of a single character — the inverse of
+// `string.from_code`, found by scanning the C0 range. Only called for
+// `c < U+0020`, so the scan never exceeds 32 iterations.
+fn control_code(c: String) -> Int:
+    var k = 0
+    while k < 32:
+        if c == string.from_code(k):
+            return k
+        k = k + 1
+    0
+
+// One lowercase hex digit for `v` in 0..15 (always in range here).
+fn hex_digit(v: Int) -> String:
+    "0123456789abcdef".substring(v, v + 1)
+
+// --- Decoder (parsing) ---------------------------------------------------
+//
+// A recursive-descent parser. Helpers return `(value, index just past it)` on
+// success and thread errors with `?`. Numbers are integers only (JSON floats
+// would need a Float-in-collections representation and float-to-string the WASM
+// backend still lacks); fractional/exponent numbers decode to `JsonFloat` (see
+// error rather than mis-parsed.
+
+// Parse a complete JSON document, or return an error message. The whole input
+// must be a single value: trailing content after it (other than whitespace) is
+// rejected, so `decode("1 2")` is an Err rather than silently yielding `1`.
+pub fn decode(s: String) -> Result(Json, DecodeError):
+    // Scan over the CHAR ARRAY (one O(n) `string.chars` pass) and index it with O(1)
+    // `list.at`, so the whole parse is O(n). Reading characters with `string.substring(s, j,
+    // j + 1)` instead would be O(j) per char (UTF-8 character indexing walks from the start),
+    // i.e. O(n^2) overall — which made decoding even a modest document take hundreds of ms.
+    let cs = s.chars()
+    let r = parse_value(cs, skip_ws(cs, 0), 0)?
+    let (v, rest) = r
+    let end = skip_ws(cs, rest)
+    if end < list.length(cs):
+        Err(decode_error("unexpected trailing content at " + "${end}"))
+    else:
+        Ok(v)
+
+// Re-join `cs[a..b)` into a String — for the rare multi-char spans (a number's or literal's
+// text). The spans are short, so the per-char concat is negligible.
+fn cspan(cs: List(String), a: Int, b: Int) -> String:
+    var out = ""
+    var k = a
+    while k < b:
+        out = out + list.at(cs, k)
+        k = k + 1
+    out
+
+// The index of the first non-whitespace char at or after `i`.
+fn skip_ws(cs: List(String), i: Int) -> Int:
+    var j = i
+    let n = list.length(cs)
+    while j < n:
+        let c = list.at(cs, j)
+        if c == " " || c == "\n" || c == "\t" || c == "\r":
+            j = j + 1
+        else:
+            return j
+    j
+
+// Parse the value at `i` (whitespace already skipped).
+fn parse_value(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), DecodeError):
+    if depth > 256:
+        // SEC-031: bound recursion. A deeply-nested document would otherwise exhaust the
+        // call stack and TRAP the VM — an unauthenticated DoS via any `json.decode` of
+        // untrusted input (HTTP bodies, registry records). 256 is far beyond any real
+        // document and well below the stack limit.
+        Err(decode_error("JSON nesting too deep (max 256)"))
+    else if i >= list.length(cs):
+        Err(decode_error("unexpected end of input"))
+    else:
+        let c = list.at(cs, i)
+        if c == "{":
+            parse_object(cs, i, depth)
+        else if c == "[":
+            parse_array(cs, i, depth)
+        else if c == "\"":
+            parse_string(cs, i)
+        else if c == "t":
+            parse_lit(cs, i, "true", JsonBool(true))
+        else if c == "f":
+            parse_lit(cs, i, "false", JsonBool(false))
+        else if c == "n":
+            parse_lit(cs, i, "null", JsonNull)
+        else:
+            parse_number(cs, i)
+
+fn parse_lit(cs: List(String), i: Int, word: String, value: Json) -> Result((Json, Int), DecodeError):
+    let n = word.char_count()
+    if i + n <= list.length(cs) && cspan(cs, i, i + n) == word:
+        Ok((value, i + n))
+    else:
+        Err(decode_error("invalid literal at " + "${i}"))
+
+fn is_digit(c: String) -> Bool:
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+
+// Fold a run of decimal digits (with an optional leading `-`) into a Float
+// without an intermediate i64, so a large integer part never overflows. Each
+// per-digit `string.to_int` is on a single character, so it can't trap.
+fn digits_to_float(s: String) -> Float:
+    let n = s.char_count()
+    var i = 0
+    var neg = false
+    if n > 0 && s.substring(0, 1) == "-":
+        neg = true
+        i = 1
+    var acc = 0.0
+    while i < n:
+        acc = acc * 10.0 + math.to_float(s.substring(i, i + 1).to_int())
+        i = i + 1
+    if neg:
+        0.0 - acc
+    else:
+        acc
+
+fn parse_number(cs: List(String), i: Int) -> Result((Json, Int), DecodeError):
+    let n = list.length(cs)
+    var j = i
+    if j < n && list.at(cs, j) == "-":
+        j = j + 1
+    let int_start = j
+    var digits = 0
+    while j < n && is_digit(list.at(cs, j)):
+        j = j + 1
+        digits = digits + 1
+    if digits == 0:
+        Err(decode_error("invalid number at " + "${i}"))
+    else if digits > 1 && list.at(cs, int_start) == "0":
+        // JSON forbids a leading zero on a multi-digit integer part (`01`, `-01`);
+        // only a lone `0` (optionally with a fraction/exponent) is allowed.
+        Err(decode_error("leading zero in number at " + "${i}"))
+    else if j < n && is_float_tail(list.at(cs, j)):
+        parse_float_tail(cs, i, j)
+    else:
+        // A bare integer literal beyond the i64 range can't be a `JsonInt`;
+        // report it rather than trapping in the raw `string.to_int`.
+        match cspan(cs, i, j).parse_int():
+            Some(v) -> Ok((JsonInt(v), j))
+            None -> Err(decode_error("integer out of range at " + "${i}"))
+
+// A `.`/`e`/`E` after the integer digits: parse the fraction and exponent and
+// build a JsonFloat. (Assembled from parts with float arithmetic — fine for
+// data interchange; extreme magnitudes may round in the last places.)
+fn parse_float_tail(cs: List(String), start: Int, ip_end: Int) -> Result((Json, Int), DecodeError):
+    let n = list.length(cs)
+    var j = ip_end
+    var frac_start = ip_end
+    var frac_digits = 0
+    if j < n && list.at(cs, j) == ".":
+        j = j + 1
+        frac_start = j
+        while j < n && is_digit(list.at(cs, j)):
+            frac_digits = frac_digits + 1
+            j = j + 1
+        if frac_digits == 0:
+            return Err(decode_error("invalid number at " + "${start}"))
+    // The fraction is folded straight into a Float over its digit span, NOT an
+    // Int accumulator (`frac * 10 + digit`): a long input-controlled fraction
+    // like `0.<400 nines>` would wrap i64 and silently yield a wrong value
+    // (BUG-241). `digits_to_float` accumulates in Float, matching the integer
+    // part; an unrepresentable magnitude is caught by the `is_finite` check below.
+    let frac = if frac_digits > 0: digits_to_float(cspan(cs, frac_start, j)) else: 0.0
+    var exp = 0
+    var exp_neg = false
+    if j < n && (list.at(cs, j) == "e" || list.at(cs, j) == "E"):
+        j = j + 1
+        if j < n && list.at(cs, j) == "+":
+            j = j + 1
+        else if j < n && list.at(cs, j) == "-":
+            exp_neg = true
+            j = j + 1
+        let exp_start = j
+        while j < n && is_digit(list.at(cs, j)):
+            j = j + 1
+        if j == exp_start:
+            return Err(decode_error("invalid number at " + "${start}"))
+        // Parse the exponent TOTALLY. The old digit-by-digit fold overflowed i64
+        // and wrapped (`1e9223372036854775808` decoded to `1.0`); `parse_int`
+        // returns None on overflow, and a magnitude no double can represent is
+        // rejected rather than fed to `pow10` (which would loop or produce `inf`).
+        match cspan(cs, exp_start, j).parse_int():
+            Some(e) -> exp = e
+            None -> return Err(decode_error("exponent out of range at " + "${start}"))
+        if exp > 400:
+            return Err(decode_error("exponent out of range at " + "${start}"))
+    let negative = list.at(cs, start) == "-"
+    // Fold the integer-part digits straight into a Float: a float literal with a
+    // huge integer part (`99999999999999999999.5`) is valid JSON and must not
+    // trap the way `string.to_int` would on an out-of-i64 magnitude.
+    var x = digits_to_float(cspan(cs, start, ip_end))
+    var fpart = frac / pow10(frac_digits)
+    if negative:
+        fpart = 0.0 - fpart
+    x = x + fpart
+    if exp_neg:
+        x = x / pow10(exp)
+    else:
+        x = x * pow10(exp)
+    if !is_finite(x):
+        // A magnitude past the double range (`1e400`, or a huge integer part times
+        // a large exponent) overflows to `inf` — not a JSON number, so reject it.
+        return Err(decode_error("number out of range at " + "${start}"))
+    Ok((JsonFloat(x), j))
+
+// Whether `x` is a finite Float (not `inf`/`-inf`/`NaN`). For any non-finite `x`,
+// `x - x` is `NaN`, which is not equal to `0.0`; for a finite `x` it is exactly
+// `0.0`. witchy exposes no `is_finite` primitive, so this identity stands in.
+fn is_finite(x: Float) -> Bool:
+    x - x == 0.0
+
+fn pow10(k: Int) -> Float:
+    var out = 1.0
+    var i = 0
+    while i < k:
+        out = out * 10.0
+        i = i + 1
+    out
+
+fn is_float_tail(c: String) -> Bool:
+    c == "." || c == "e" || c == "E"
+
+fn parse_string(cs: List(String), i: Int) -> Result((Json, Int), DecodeError):
+    let r = scan_string(cs, i + 1)?
+    let (text, j) = r
+    Ok((JsonString(text), j))
+
+// Scan string contents from `start` (just past the opening quote) to the
+// closing quote, returning the unescaped text and the index past the quote.
+fn scan_string(cs: List(String), start: Int) -> Result((String, Int), DecodeError):
+    var acc = ""
+    var j = start
+    let n = list.length(cs)
+    while j < n:
+        let c = list.at(cs, j)
+        if c == "\"":
+            return Ok((acc, j + 1))
+        else if c == "\\":
+            if j + 1 >= n:
+                return Err(decode_error("unterminated escape"))
+            else if list.at(cs, j + 1) == "u":
+                let r = scan_unicode(cs, j, n)?
+                let (decoded, k) = r
+                acc = acc + decoded
+                j = k
+            else if is_valid_escape(list.at(cs, j + 1)):
+                acc = acc + unescape(list.at(cs, j + 1))
+                j = j + 2
+            else:
+                return Err(decode_error("invalid string escape `\\" + list.at(cs, j + 1) + "`"))
+        else if c < " ":
+            // RFC 8259 forbids a raw control character (U+0000..U+001F) inside a
+            // string — it must be escaped (as `\n`, `\t`, `\u00XX`). The old
+            // scanner absorbed it verbatim, accepting malformed JSON.
+            return Err(decode_error("raw control character in JSON string (must be escaped)"))
+        else:
+            acc = acc + c
+            j = j + 1
+    Err(decode_error("unterminated string"))
+
+// The single-character escapes JSON permits after a backslash (besides `\u`).
+fn is_valid_escape(e: String) -> Bool:
+    e == "\"" || e == "\\" || e == "/" || e == "b" || e == "f" || e == "n" || e == "r" || e == "t"
+
+fn unescape(e: String) -> String:
+    if e == "n":
+        "\n"
+    else if e == "t":
+        "\t"
+    else if e == "r":
+        "\r"
+    else if e == "b":
+        string.from_code(8)
+    else if e == "f":
+        string.from_code(12)
+    else if e == "/":
+        "/"
+    else:
+        e
+
+// One hex digit (0-9, a-f, A-F) to its 0..15 value, or -1 if not a hex digit.
+fn hex_val(c: String) -> Int:
+    "0123456789abcdef".index_of(c.to_lower()) ?? -1
+
+// The 16-bit value of the four hex digits at `j`, or -1 if any is not hex.
+fn hex4(cs: List(String), j: Int) -> Int:
+    let a = hex_val(list.at(cs, j))
+    let b = hex_val(list.at(cs, j + 1))
+    let c = hex_val(list.at(cs, j + 2))
+    let d = hex_val(list.at(cs, j + 3))
+    if a < 0 || b < 0 || c < 0 || d < 0:
+        -1
+    else:
+        a * 4096 + b * 256 + c * 16 + d
+
+// Decode a `\uXXXX` escape (with `j` at the backslash). A high surrogate
+// (U+D800..U+DBFF) is combined with the following `\uXXXX` low surrogate into a
+// single astral code point — how JSON encodes characters beyond the BMP.
+// Returns the decoded character and the index just past the escape.
+fn scan_unicode(cs: List(String), j: Int, n: Int) -> Result((String, Int), DecodeError):
+    if j + 6 > n:
+        return Err(decode_error("incomplete \\u escape"))
+    let cp = hex4(cs, j + 2)
+    if cp < 0:
+        return Err(decode_error("invalid \\u escape"))
+    if cp >= 55296 && cp <= 56319:
+        if j + 12 > n || cspan(cs, j + 6, j + 8) != "\\u":
+            return Err(decode_error("unpaired high surrogate"))
+        let lo = hex4(cs, j + 8)
+        if lo < 56320 || lo > 57343:
+            return Err(decode_error("invalid low surrogate"))
+        Ok((string.from_code(65536 + (cp - 55296) * 1024 + (lo - 56320)), j + 12))
+    else if cp >= 56320 && cp <= 57343:
+        Err(decode_error("unexpected low surrogate"))
+    else:
+        Ok((string.from_code(cp), j + 6))
+
+fn parse_array(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), DecodeError):
+    let n = list.length(cs)
+    var items = []
+    var j = skip_ws(cs, i + 1)
+    if j < n && list.at(cs, j) == "]":
+        return Ok((JsonArray(items), j + 1))
+    while true:
+        let r = parse_value(cs, skip_ws(cs, j), depth + 1)?
+        let (v, k) = r
+        list.push(items, v)
+        let m = skip_ws(cs, k)
+        if m >= n:
+            return Err(decode_error("unterminated array"))
+        let c = list.at(cs, m)
+        if c == "]":
+            return Ok((JsonArray(items), m + 1))
+        else if c == ",":
+            j = m + 1
+        else:
+            return Err(decode_error("expected , or ] in array"))
+    Err(decode_error("unreachable"))
+
+fn parse_object(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), DecodeError):
+    let n = list.length(cs)
+    var pairs = []
+    var j = skip_ws(cs, i + 1)
+    if j < n && list.at(cs, j) == "}":
+        return Ok((JsonObject(pairs), j + 1))
+    while true:
+        let ws = skip_ws(cs, j)
+        if ws >= n || list.at(cs, ws) != "\"":
+            return Err(decode_error("expected string key in object"))
+        let kr = scan_string(cs, ws + 1)?
+        let (key, k1) = kr
+        let colon = skip_ws(cs, k1)
+        if colon >= n || list.at(cs, colon) != ":":
+            return Err(decode_error("expected : in object"))
+        let vr = parse_value(cs, skip_ws(cs, colon + 1), depth + 1)?
+        let (v, k2) = vr
+        if pairs_contains_key(pairs, key):
+            return Err(decode_error("duplicate object key `" + key + "`"))
+        list.push(pairs, (key, v))
+        let m = skip_ws(cs, k2)
+        if m >= n:
+            return Err(decode_error("unterminated object"))
+        let c = list.at(cs, m)
+        if c == "}":
+            return Ok((JsonObject(pairs), m + 1))
+        else if c == ",":
+            j = m + 1
+        else:
+            return Err(decode_error("expected , or } in object"))
+    Err(decode_error("unreachable"))
+
+// --- Accessor cores -------------------------------------------------------
+//
+// The shared bodies behind the accessor methods below. They stay free
+// functions with non-colliding names: the pre-mono pass cannot resolve
+// method-to-method chains inside generic module code, so any logic reused by
+// another method lives here and the methods delegate.
+
+// The lookup core. `get` is reused by `require`, the typed field accessors, and
+// the path walkers; method-to-method chaining inside std internals is
+// pre-mono-risky, so the shared logic lives here under a non-colliding name and
+// the `get` method delegates.
+fn get_key(j: Json, key: String) -> Option(Json):
+    match j:
+        JsonObject(pairs) ->
+            assert_unique_object_keys(pairs, "json.get")
+            find_key(pairs, key)
+        _ -> None
+
+fn find_key(pairs: List((String, Json)), key: String) -> Option(Json):
+    for p in pairs:
+        let (k, v) = p
+        if k == key:
+            return Some(v)
+    None
+
+fn pairs_contains_key(pairs: List((String, Json)), key: String) -> Bool:
+    for p in pairs:
+        let (k, _v) = p
+        if k == key:
+            return true
+    false
+
+fn merge_pairs(pa: List((String, Json)), pb: List((String, Json))) -> List((String, Json)):
+    var out = []
+    for p in pa:
+        let (k, _v) = p
+        if !pairs_contains_key(pb, k):
+            list.push(out, p)
+    for q in pb:
+        list.push(out, q)
+    out
+
+// The array-index core (`index` method + `index_string`).
+fn index_at(j: Json, i: Int) -> Option(Json):
+    match j:
+        JsonArray(items) -> if i >= 0 && i < list.length(items): Some(list.at(items, i)) else: None
+        _ -> None
+
+// Scalar coercion cores, shared by the `as_*` methods and the typed field
+// accessors (`get_string`/`get_int`/`get_bool`, `strings`, `index_string`).
+fn int_value(j: Json) -> Option(Int):
+    match j:
+        JsonInt(n) -> Some(n)
+        _ -> None
+
+fn string_value(j: Json) -> Option(String):
+    match j:
+        JsonString(s) -> Some(s)
+        _ -> None
+
+fn bool_value(j: Json) -> Option(Bool):
+    match j:
+        JsonBool(b) -> Some(b)
+        _ -> None
+
+fn array_value(j: Json) -> Option(List(Json)):
+    match j:
+        JsonArray(items) -> Some(items)
+        _ -> None
+
+// Reconstruct a value from a `Json`. Reflection can read a value's structure but not
+// rebuild a value from structure, so `derive(Deserialize)` generates `from_json` per
+// type. Encoding needs no trait: `from_value`, `stringify`, and `x.into()` already
+// serialize any `Reflect` value.
+trait Deserialize:
+    fn from_json(j: Json) -> Result(Self, DeserializeError)
+
+// Decode an optional field: an absent key or an explicit `null` is `None`;
+// otherwise the value is decoded via `each`. Used for `Option(_)` fields.
+pub fn optional(o: Option(Json), each: fn(Json) -> Result(a, e)) -> Result(Option(a), e):
+    match o:
+        None -> Ok(None)
+        Some(JsonNull) -> Ok(None)
+        Some(v) -> match each(v):
+            Ok(x) -> Ok(Some(x))
+            Err(e) -> Err(e)
+
+// Build a JSON object whose keys are sorted (matching a serialized BTreeMap),
+// e.g. TUF `targets`. Use this only for dynamic key/value sets whose order must
+// be deterministic for signing; reflectively-encoded records keep their declared
+// field order instead.
+pub fn object_sorted(pairs: List((String, Json))) -> Json:
+    assert_unique_object_keys(pairs, "json.object_sorted")
+    var sorted: List((String, Json)) = []
+    for p in pairs:
+        sorted = insert_by_key(sorted, p)
+    JsonObject(sorted)
+
+fn insert_by_key(sorted: List((String, Json)), item: (String, Json)) -> List((String, Json)):
+    let (ik, _iv) = item
+    var out = []
+    var placed = false
+    for p in sorted:
+        let (k, _v) = p
+        if !placed && ik < k:
+            list.push(out, item)
+            placed = true
+        list.push(out, p)
+    if !placed:
+        list.push(out, item)
+    out
+
+// The "array of strings, leniently" core (`strings` method + `get_strings`).
+fn string_items(j: Json) -> List(String):
+    var out = []
+    if let Some(items) = array_value(j):
+        for it in items:
+            if let Some(s) = string_value(it):
+                list.push(out, s)
+    out
+
+// The path-walking core (`get_in` + `get_path` methods).
+fn follow_segments(j: Json, segments: List(String)) -> Option(Json):
+    var cur = Some(j)
+    for seg in segments:
+        cur = step(cur, seg)
+    cur
+
+fn step(cur: Option(Json), seg: String) -> Option(Json):
+    match cur:
+        Some(j) -> get_key(j, seg)
+        None -> None
+
+// Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as
+// `JsonNull`. Keeps a derived `to_json`'s Option field a single-line call. (The
+// param is `each`, not `encode`, so it doesn't shadow `json.encode`.)
+pub fn from_option(o: Option(a), each: fn(a) -> Json) -> Json:
+    match o:
+        Some(x) -> each(x)
+        None -> JsonNull
+
+// --- Methods are the primary surface (RFC-0099). The module level keeps the
+// String-input decoder (`decode`), the generic reflective encoders
+// (`from_value`/`stringify` — bounded on `a: Reflect`, so they cannot be Json
+// methods), the constructor `object_sorted`, the Option-shaped combinators
+// (`optional`/`from_option`), and the error-message helpers; every operation
+// on a `Json` value lives here. The accessors return `Option`, so a wrong
+// shape is `None` rather than a trap. A JsonObject with duplicate names is not
+// a valid std JSON object; accessors fail loudly instead of choosing first- or
+// last-wins semantics. Recursive or internally-reused bodies live in the
+// private cores above; those methods delegate. ---
+impl Json:
+    // Serialize to the compact textual form.
+    pub fn encode(self) -> String:
+        encode_value(self)
+
+    // Serialize with 2-space indentation, for human-readable output. Empty
+    // arrays and objects stay on one line (`[]` / `{}`).
+    pub fn encode_pretty(self) -> String:
+        encode_indent(self, 0)
+
+    // Look up a key in a JSON object.
+    pub fn get(self, key: String) -> Option(Json):
+        get_key(self, key)
+
+    // Whether a JSON object has `key` (false for non-objects).
+    pub fn contains_key(self, key: String) -> Bool:
+        match self:
+            JsonObject(pairs) ->
+                assert_unique_object_keys(pairs, "json.contains_key")
+                pairs_contains_key(pairs, key)
+            _ -> false
+
+    // A shallow merge of two JSON objects: every key of `other` overrides the
+    // same key in `self`, and `self`'s other keys are kept. If either value is
+    // not an object, `other` wins (so it works as "patch `self` with `other`").
+    // Override is top-level only — nested objects are replaced, not deep-merged.
+    pub fn merge(self, other: Json) -> Json:
+        match self:
+            JsonObject(pa) ->
+                match other:
+                    JsonObject(pb) ->
+                        assert_unique_object_keys(pa, "json.merge")
+                        assert_unique_object_keys(pb, "json.merge")
+                        JsonObject(merge_pairs(pa, pb))
+                    _ -> other
+            _ -> other
+
+    // The element at index `i` of a JSON array.
+    pub fn index(self, i: Int) -> Option(Json):
+        index_at(self, i)
+
+    // `self` as an integer, when it is one.
+    pub fn as_int(self) -> Option(Int):
+        int_value(self)
+
+    // `self` as a string, when it is one.
+    pub fn as_string(self) -> Option(String):
+        string_value(self)
+
+    // `self` as a bool, when it is one.
+    pub fn as_bool(self) -> Option(Bool):
+        bool_value(self)
+
+    // `self` as a list of elements, when it is an array.
+    pub fn as_array(self) -> Option(List(Json)):
+        array_value(self)
+
+    // `self` as its key/value pairs, when it is an object — for iterating an
+    // object whose keys aren't known ahead of time.
+    pub fn as_object(self) -> Option(List((String, Json))):
+        match self:
+            JsonObject(pairs) ->
+                assert_unique_object_keys(pairs, "json.as_object")
+                Some(pairs)
+            _ -> None
+
+    // --- Result-returning decoders (the backbone of `derive(Deserialize)`'s
+    // from_json) ---
+
+    // The value at `key`, or `Err(DeserializeMissingField)` when absent.
+    pub fn require(self, key: String) -> Result(Json, DeserializeError):
+        match get_key(self, key):
+            Some(v) -> Ok(v)
+            None -> Err(DeserializeMissingField(key))
+
+    // Coerce a Json value to a scalar, or `Err` describing the expected shape.
+    pub fn int_of(self) -> Result(Int, DeserializeError):
+        match self:
+            JsonInt(n) -> Ok(n)
+            _ -> Err(DeserializeExpected("an integer"))
+
+    pub fn string_of(self) -> Result(String, DeserializeError):
+        match self:
+            JsonString(s) -> Ok(s)
+            _ -> Err(DeserializeExpected("a string"))
+
+    pub fn bool_of(self) -> Result(Bool, DeserializeError):
+        match self:
+            JsonBool(b) -> Ok(b)
+            _ -> Err(DeserializeExpected("a boolean"))
+
+    // A JSON number with no fraction/exponent decodes to `JsonInt`, but it is
+    // still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
+    pub fn float_of(self) -> Result(Float, DeserializeError):
+        match self:
+            JsonFloat(f) -> Ok(f)
+            JsonInt(n) -> Ok(math.to_float(n))
+            _ -> Err(DeserializeExpected("a number"))
+
+    pub fn array_of(self) -> Result(List(Json), DeserializeError):
+        match self:
+            JsonArray(items) -> Ok(items)
+            _ -> Err(DeserializeExpected("an array"))
+
+    // --- typed field accessors (get a key, then coerce) ---
+    // `get` composed with each `as_*` — the common case of reading a typed
+    // field out of an object without spelling the two steps every time.
+    pub fn get_string(self, key: String) -> Option(String):
+        match get_key(self, key):
+            Some(v) -> string_value(v)
+            None -> None
+
+    pub fn get_int(self, key: String) -> Option(Int):
+        match get_key(self, key):
+            Some(v) -> int_value(v)
+            None -> None
+
+    pub fn get_bool(self, key: String) -> Option(Bool):
+        match get_key(self, key):
+            Some(v) -> bool_value(v)
+            None -> None
+
+    // The string array at `key` as a `List(String)`, dropping any non-string
+    // element; `[]` when the key is absent or not an array. Collapses the very
+    // common "decode an object's array-of-strings field" pattern into one call.
+    //
+    // LENIENT BY DESIGN (RFC-0044): a missing key, a non-array value, and a
+    // non-string element all collapse to the same empty/filtered result —
+    // ergonomic for display, but it cannot tell "absent" from "malformed". At a
+    // trust boundary (package, registry, or security code) where a wrong shape
+    // must be an ERROR, use the strict path instead: `get` then `array_of`
+    // (`Result`), coercing each element with `as_string`.
+    pub fn get_strings(self, key: String) -> List(String):
+        match get_key(self, key):
+            Some(arr) -> string_items(arr)
+            None -> []
+
+    // A JSON array value as a `List(String)`, dropping any non-string element.
+    // Lenient by design (RFC-0044), like `get_strings`; for a strict decode use
+    // `array_of` (`Result`) and coerce each element with `as_string`.
+    pub fn strings(self) -> List(String):
+        string_items(self)
+
+    // The string at index `i` of a JSON array, when it is a string.
+    pub fn index_string(self, i: Int) -> Option(String):
+        match index_at(self, i):
+            Some(v) -> string_value(v)
+            None -> None
+
+    // Follow exact object-key segments. Unlike `get_path`, segment strings are
+    // not parsed, so dots and empty strings are literal key names. Any missing
+    // key (or a non-object along the way) yields `None`.
+    pub fn get_in(self, segments: List(String)) -> Option(Json):
+        follow_segments(self, segments)
+
+    // Follow a dotted path of object keys, e.g. `resp.get_path("user.name")`.
+    // This splits on every `.`, so use `get_in` when a key itself may contain a
+    // dot. Any missing key (or a non-object along the way) yields `None`.
+    pub fn get_path(self, path: String) -> Option(Json):
+        follow_segments(self, path.split("."))
+
+// --- reflective encoding (no derive) -----------------------------------------
+// `from_value(x)` encodes a value to `Json` by reflecting over its structure, so
+// it works for any type with no derive. `stringify(x)` returns the encoded string.
+pub fn from_value(x: a) -> Json where a: Reflect:
+    mirror_to_json(reflect(x))
+
+pub fn stringify(x: a) -> String where a: Reflect:
+    encode_value(from_value(x))
+
+// A `Json` reflects to its own value rather than to the `Json` enum's shape, so
+// `mirror_to_json(reflect(j))` returns `j`. This lets an already-built `Json` (a
+// decoded record, a signed blob) sit inside a reflected value such as an anonymous
+// struct, e.g. `json.stringify(.{record: decoded, ok: true})`.
+impl Reflect for Json:
+    fn reflect(self) -> Mirror:
+        match self:
+            JsonNull -> MNil
+            JsonBool(b) -> MBool(b)
+            JsonInt(n) -> MInt(n)
+            JsonFloat(f) -> MFloat(f)
+            JsonString(s) -> MString(s)
+            JsonArray(xs) -> MList(reflect_json_each(xs))
+            JsonObject(fields) ->
+                assert_unique_object_keys(fields, "json.reflect")
+                MRecord("", reflect_json_fields(fields))
+
+fn reflect_json_each(xs: List(Json)) -> List(Mirror):
+    var out = []
+    for x in xs:
+        list.push(out, x.reflect())
+    out
+
+fn reflect_json_fields(fields: List((String, Json))) -> List((String, Mirror)):
+    var out = []
+    for k, v in fields:
+        list.push(out, (k, v.reflect()))
+    out
+
+// Convert any reflectable value to `Json`, which also gives `Json.from(x)` and
+// `x.into()` through `std/convert`'s blanket `Into`. This is `from_value` exposed
+// as `From`, so a handler can accept `x: Into(Json)` instead of a pre-encoded string.
+impl From(a) for Json where a: Reflect:
+    fn from(value: a) -> Json:
+        from_value(value)
+
+fn mirror_to_json(m: Mirror) -> Json:
+    match m:
+        MInt(n) -> JsonInt(n)
+        MFloat(f) -> JsonFloat(f)
+        MBool(b) -> JsonBool(b)
+        MString(s) -> JsonString(s)
+        MNil -> JsonNull
+        MList(xs) -> JsonArray(mirror_each(xs))
+        MTuple(xs) -> JsonArray(mirror_each(xs))
+        MRecord(_name, fields) -> JsonObject(mirror_fields(fields))
+        MVariant(tyname, variant, payload) -> mirror_variant_to_json(tyname, variant, payload)
+
+fn mirror_each(xs: List(Mirror)) -> List(Json):
+    var out = []
+    for m in xs:
+        list.push(out, mirror_to_json(m))
+    out
+
+fn mirror_fields(fields: List((String, Mirror))) -> List((String, Json)):
+    var out = []
+    for k, m in fields:
+        list.push(out, (k, mirror_to_json(m)))
+    out
+
+// An `Option` encodes as payload-or-`null`; any other
+// sum-type variant as a tagged object `{"$variant": name, "$values": [...]}`.
+fn mirror_variant_to_json(tyname: String, variant: String, payload: List(Mirror)) -> Json:
+    if tyname == "Option":
+        match list.head(payload):
+            Some(m) -> mirror_to_json(m)
+            None -> JsonNull
+    else:
+        JsonObject([("\$variant", JsonString(variant)), ("\$values", JsonArray(mirror_each(payload)))])

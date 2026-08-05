@@ -1,0 +1,23 @@
+// A regular-expression matcher from the standard library (std/regex), exercised
+// over a handful of patterns. It supports `. * + ? ^ $` and literal characters.
+// Pure (only `main` touches the Console), so it runs identically interpreted,
+// compiled, and inside the capability sandbox:
+//   witchy examples/patterns/src/patterns.witchy
+//   witchy parity examples/patterns/src/patterns.witchy
+//   witchy sandbox examples/patterns/src/patterns.witchy
+
+import regex
+
+fn check(console: Console, pattern: String, text: String):
+    let mark = if regex.matches(pattern, text): "match" else: "no   "
+    console.print(mark + "  " + pattern + "  ~  " + text)
+
+fn main(console: Console):
+    check(console, "^h.*o\$", "hello")
+    check(console, "^h.*o\$", "hi there")
+    check(console, "colou?r", "color")
+    check(console, "colou?r", "colour")
+    check(console, "ab+a", "abbba")
+    check(console, "ab+a", "aa")
+    check(console, "cat", "the cat sat")
+    check(console, "^cat", "the cat sat")

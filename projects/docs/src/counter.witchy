@@ -1,0 +1,50 @@
+// A tiny INTERACTIVE glamour app for the book (RFC-0041): a live counter. Pure MVU — it holds
+// no capability and emits no effect, so it needs no network and no timer. The docs page mounts
+// it with the SAME `glamour-dom` runtime that drives the book itself, with `UiFetch` denied —
+// proof that a live glamour app runs in the docs with authority withheld by construction.
+
+import public_state
+import reflect
+import json
+from glamour import Cmd, Interactive, Program, Start, Sub, Ui, UiRoot, VNode
+
+type Model derive(PublicState, Reflect, Deserialize):
+    n: Int
+
+type Msg:
+    Inc
+    Dec
+    Reset
+
+fn view(m: Model) -> VNode(Msg):
+    glamour.element("div", [glamour.prop("class", "counter-demo")], [glamour.element("button", [glamour.prop("class", "counter-btn"), glamour.on_event("counter.decrement", "click", glamour.event_msg(Dec))], [glamour.text("−")]), glamour.element("span", [glamour.prop("class", "counter-value")], [glamour.text("${m.n}")]), glamour.element("button", [glamour.prop("class", "counter-btn"), glamour.on_event("counter.increment", "click", glamour.event_msg(Inc))], [glamour.text("+")]), glamour.element("button", [glamour.prop("class", "counter-reset"), glamour.on_event("counter.reset", "click", glamour.event_msg(Reset))], [glamour.text("reset")])])
+
+fn update(m: Model, msg: Msg) -> (Model, Cmd(Msg)):
+    match msg:
+        Inc -> (Model(m.n + 1), NoCmd)
+        Dec -> (Model(m.n - 1), NoCmd)
+        Reset -> (Model(0), NoCmd)
+
+fn authorize(_root: UiRoot) -> Nil:
+    Nil
+
+fn initial(_start: Start) -> Model:
+    Model(0)
+
+fn start(_auth: Nil, _model: Model) -> Cmd(Msg):
+    NoCmd
+
+fn program_update(_auth: Nil, model: Model, message: Msg) -> (Model, Cmd(Msg)):
+    update(model, message)
+
+fn program_view(model: Model) -> Ui(Msg):
+    glamour.ui(view(model))
+
+fn subscriptions(_auth: Nil, _model: Model) -> Sub(Msg):
+    glamour.no_sub()
+
+fn app() -> Program(Nil, Model, Msg):
+    glamour.program(authorize, initial, start, program_update, program_view, subscriptions)
+
+pub fn interactive_counter() -> Interactive:
+    glamour.interactive(app(), Model(0)).named("counter").activate(glamour.OnInteraction)

@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"type Point:\\n    x: Int\\n    y: Int\\n\\nfn describe(p: Point) -> Int:\\n    p.x\\n\\nfn main(console: Console):\\n    let p = Point(1, 2)\\n    console.print(\\\"${p.describe()}\\\")\\n\")"
+---
+type error: no method `describe` on `Point` — methods come from `impl` blocks; a plain function is called as `describe(value, …)` (or module-qualified, e.g. `list.describe(value, …)`)

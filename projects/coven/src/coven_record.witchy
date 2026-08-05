@@ -1,0 +1,139 @@
+// coven_record — a published version's signed metadata, and the canonical signing
+// payload it is verified against. `derive(Reflect)` encodes the record to JSON via
+// reflection (`json.from_value`) and `derive(Deserialize)` reconstructs it from JSON;
+// field order matches the Rust `Record`, so the bytes are identical. Records are
+// signed over `signing_payload` (a fixed line format byte-identical to
+// src/pm/registry.rs), not over the JSON, so a record signed here verifies under
+// the Rust ed25519 verifier.
+
+import reflect
+import crypto
+import result
+import option
+import show
+import error
+import convert
+from json import Json
+
+type Record derive(Reflect, Deserialize):
+    name: String
+    version: String
+    state: String
+    hash: String
+    runtime_footprint: List(String)
+    build_footprint: List(String)
+    determinism: String
+    uploaded_by: String
+    promoted_by: Option(String)
+    second_factor: Option(String)
+    provenance: Option(String)
+    released_at: Int
+    sig: String
+
+// A version's place in the publish lifecycle. `publish` lands a version `Staged`; a
+// second-factor `promote` moves it to `Released`; `yank` excludes it as `Yanked`. The
+// wire form is the lowercase variant name (`state_wire`), kept a plain string in the
+// signed `Record` so the JSON stays byte-identical to the Rust registry.
+type State:
+    Staged
+    Released
+    Yanked
+    Unknown
+
+// The wire/canonical string for a state — what is stored and signed. `Unknown` is
+// never written (records are only signed with a real state); it exists so `state_of`
+// can name an unrecognized stored string without silently aliasing a real state.
+pub fn state_wire(s: State) -> String:
+    match s:
+        Staged -> "staged"
+        Released -> "released"
+        Yanked -> "yanked"
+        Unknown -> "unknown"
+
+// A stored state string back to a `State`. A persisted record always holds one of the
+// three; an unrecognized string maps to `Unknown` — NOT `Staged` — so a corrupt state
+// can never be mistaken for a promotable version (`promote_checked` requires `Staged`).
+pub fn state_of(s: String) -> State:
+    if s == "staged":
+        Staged
+    else if s == "released":
+        Released
+    else if s == "yanked":
+        Yanked
+    else:
+        Unknown
+
+// The canonical, signed view of a record — every security-relevant field except the
+// signature. List fields are encoded as canonical JSON so their element boundaries
+// are part of what the signature commits to.
+// idiom-exempt: concatenation defines the signed coven-v1 payload byte format.
+pub fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
+    "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + string_list_payload(rt) + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
+
+fn string_list_payload(xs: List(String)) -> String:
+    json.encode(JsonArray(xs.map(fn(x: String): JsonString(x))))
+
+// Build + sign a record, returning its coven.json text. `released_at` (unix seconds;
+// 0 = not yet released) is part of the signed payload — tamper-evident.
+pub fn sign_record(key: Secret, name: String, version: String, state: State, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
+    let sw = state_wire(state)
+    let sig = crypto.sign(key, signing_payload(name, version, sw, hash, rt, uploaded_by, promoted_by, factor, provenance, released_at))
+    let rec = Record(name, version, sw, hash, rt, [], "guaranteed", uploaded_by, opt_str(promoted_by), opt_str(factor), opt_str(provenance), released_at, sig)
+    json.encode(json.from_value(rec))
+
+// Decode a stored coven.json into a typed `Record` (or a matchable parse error).
+pub fn parse(text: String) -> Result(Record, RecordParseError):
+    match json.decode(text):
+        Err(e) -> Err(RecordJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            match Record.from_json(doc):
+                Ok(r) -> Ok(r)
+                Err(e) -> Err(RecordShape(e))
+
+// Stored signed records are registry trust state. Keep malformed JSON distinct
+// from a well-formed JSON value with the wrong record shape.
+type RecordParseError:
+    RecordJson(String)
+    RecordShape(json.DeserializeError)
+
+pub fn record_parse_error_message(e: RecordParseError) -> String:
+    match e:
+        RecordJson(reason) -> reason
+        RecordShape(reason) -> json.deserialize_error_message(reason)
+
+impl Show for RecordParseError:
+    fn show(self) -> String:
+        record_parse_error_message(self)
+
+impl Error for RecordParseError
+
+impl From(RecordParseError) for String:
+    fn from(value: RecordParseError) -> Self:
+        record_parse_error_message(value)
+
+// Reconstruct a record's canonical signing payload from its stored JSON — the digest
+// the snapshot pins, so a record swapped to an older state stops matching.
+pub fn record_signing_payload(text: String) -> String:
+    match parse(text):
+        Ok(r) -> signing_payload(r.name, r.version, r.state, r.hash, r.runtime_footprint, r.uploaded_by, str_or_empty(r.promoted_by), str_or_empty(r.second_factor), str_or_empty(r.provenance), r.released_at)
+        Err(e) -> corrupt_record(record_parse_error_message(e))
+
+// A stored record that no longer parses is corruption/tampering, not an empty payload:
+// hashing sha256("") would give every corrupt record the same snapshot digest and hide
+// the damage. Fail loudly instead. `fail` aborts, so the trailing "" is unreachable —
+// it only gives this the `String` type the caller needs.
+fn corrupt_record(reason: String) -> String:
+    fail("coven: corrupt stored record — cannot reconstruct its signing payload (${reason}); refusing to hash an empty payload into the snapshot")
+    ""
+
+// Empty string <-> absent (`null`): keeps the optional fields' JSON byte-identical.
+fn opt_str(s: String) -> Option(String):
+    if s.is_empty():
+        None
+    else:
+        Some(s)
+
+pub fn str_or_empty(o: Option(String)) -> String:
+    match o:
+        Some(s) -> s
+        None -> ""

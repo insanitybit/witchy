@@ -1,0 +1,18 @@
+// In-rune tests for `try`. Each `test_*` function takes no parameters, passes by
+// returning, and fails by aborting. Run with `witchy test examples/try`.
+
+import try
+import testing
+
+fn test_compute_ok():
+    testing.assert_eq(try.show(try.compute(100, 5, 2)), "= 11")
+
+fn test_compute_propagates_first_error():
+    testing.assert_eq(try.show(try.compute(100, 0, 2)), "error: divide by zero")
+
+fn test_compute_propagates_second_error():
+    testing.assert_eq(try.show(try.compute(100, 5, 0)), "error: divide by zero")
+
+fn test_checked_div():
+    testing.assert_eq(try.show(try.checked_div(10, 2)), "= 5")
+    testing.assert_eq(try.show(try.checked_div(10, 0)), "error: divide by zero")

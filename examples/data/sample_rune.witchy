@@ -1,0 +1,7 @@
+// A sample rune for caps_audit to analyze. It is never run — only its capability
+// footprint is computed (from the parameter types of its public functions).
+pub fn load(dir: Dir[Read], name: String) -> String:
+    dir.read(name)
+
+pub fn fetch(net: Net[Connect], addr: String) -> String:
+    net.connect(addr).recv_all()

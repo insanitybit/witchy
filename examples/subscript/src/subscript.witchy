@@ -1,0 +1,33 @@
+// Subscript indexing: `xs[i]` reads the i-th element of a list — sugar for
+// `xs.at(i)`. It chains for nested lists (`grid[r][c]`) and accepts any integer
+// expression as the index. Pure (only `main` touches the Console), so it runs
+// identically interpreted, compiled, and inside the capability sandbox:
+//   witchy examples/subscript/src/subscript.witchy
+//   witchy parity examples/subscript/src/subscript.witchy
+//   witchy sandbox examples/subscript/src/subscript.witchy
+
+// Dot product of two equal-length vectors, read by index.
+pub fn dot(a: List(Int), b: List(Int)) -> Int:
+    var sum = 0
+    var i = 0
+    while i < a.length():
+        sum = sum + a[i] * b[i]
+        i = i + 1
+    sum
+
+fn main(console: Console):
+    let u = [1, 2, 3]
+    let v = [4, 5, 6]
+    console.print("dot = " + "${dot(u, v)}")
+
+    // A 2D grid, indexed row-then-column with chained subscripts.
+    let grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    console.print("grid[1][2] = " + "${grid[1][2]}")
+
+    // Sum of the main diagonal: grid[i][i].
+    var diag = 0
+    var i = 0
+    while i < grid.length():
+        diag = diag + grid[i][i]
+        i = i + 1
+    console.print("diagonal sum = " + "${diag}")

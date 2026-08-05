@@ -1,0 +1,26 @@
+// wrap — greedy word wrapping. Pack as many space-separated words as fit onto
+// each line within a column width, breaking before a word that would overflow.
+// A staple of text formatting, in a few lines of pure string handling. Pure
+// (Console only); identical interpreted and compiled. Run:
+//   witchy examples/wrap/src/wrap.witchy
+fn main(console: Console):
+    let text = "The quick brown fox jumps over the lazy dog and then keeps on running far away"
+    let width = 20
+    console.print("wrapped to ${width} columns:")
+    for line in wrap(text, width):
+        console.print("| " + line.pad_right(width, " ") + " |")
+
+pub fn wrap(text: String, width: Int) -> List(String):
+    var lines = []
+    var current = ""
+    for word in text.words():
+        if current.length() == 0:
+            current = word
+        else if current.char_count() + 1 + word.char_count() <= width:
+            current = current + " " + word
+        else:
+            lines.push(current)
+            current = word
+    if current.length() > 0:
+        lines.push(current)
+    lines

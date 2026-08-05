@@ -1,0 +1,95 @@
+// autocounter — the glamour EFFECTS-AS-DATA demo (RFC-0008). A capability-pure
+// rune that nonetheless makes a count climb on its own, once per second, with NO
+// user interaction. The trick is the whole point of RFC-0008's hard part: the rune
+// CANNOT read a clock or arm a timer — it holds no `Clock` capability — so it
+// cannot perform the tick itself. Instead its `update` DESCRIBES the effect by
+// returning a `Cmd`: `After(1000, Tick)` ("after 1000ms, dispatch `Tick`"). The
+// capability-HOLDING JS host shell (`web/witchy-runtime/glamour-dom.mjs`) reads
+// that description, calls `setTimeout`, and folds the deferred `Tick` back in as a
+// msg — re-arming the next `After` each step. The rune decides WHAT; the shell,
+// which alone holds the timer authority, decides WHETHER and DOES it.
+//
+// `witchy caps …/autocounter.witchy` proves the rune's footprint stays empty (only
+// `main` touches `Console`). The auto-increment authority is the shell's, never
+// the rune's.
+
+import reflect
+from glamour import VNode, Cmd, UiRoot, UiTimer
+from json import Json
+
+// `Model = Int` (the count). A bare `Int` round-trips as a JSON integer — no
+// wrapper shape to keep in sync.
+
+// The only message: a timer fired. `Start` kicks off the loop from a click (so the
+// demo is also drivable by hand); `Tick` is the deferred msg the shell dispatches
+// when the `After` delay elapses.
+type Msg derive(Reflect):
+    Start
+    Tick
+
+// view: project the count to a VNode tree. A `${Start}` button lets a human kick
+// the loop off; the running count is an inert, escape-on-render text node.
+fn view(count: Int) -> VNode(Msg):
+    html"<div><button on:click=${Start}>start</button><span>${int_to_str(count)}</span></div>"
+
+// update: a pure match from (model, msg) to (model, Cmd). BOTH `Start` and `Tick`
+// increment the count AND return `glamour.after(timer, 1000, Tick)` — the description
+// of the next tick. (RFC-0039) Arming a timer requires a `UiTimer` token: a component
+// without one literally cannot schedule work. The rune still performs nothing; it only
+// asks. The shell, which holds the real `setTimeout`, dispatches `Tick` back in 1000ms,
+// which re-arms the next timer: a self-sustaining clock driven entirely from the edge.
+fn update(count: Int, msg: Msg, timer: UiTimer) -> (Int, Cmd(Msg)):
+    match msg:
+        Start -> (count + 1, glamour.after(timer, 1000, Tick))
+        Tick -> (count + 1, glamour.after(timer, 1000, Tick))
+
+fn int_to_str(n: Int) -> String:
+    "${n}"
+
+// Parse the model (a JSON integer) back into an `Int`; a non-integer defaults to 0
+// so a bad input renders rather than traps.
+fn parse_model(j: Json) -> Int:
+    match json.as_int(j):
+        Some(n) -> n
+        None -> 0
+
+// Parse a `Msg` from its reflected JSON `{"$variant":"Tick","$values":[]}` — a
+// small match over the app's own message shape (the deliberate MVU glue). The
+// shell sends back exactly the JSON embedded in the `on` handler or in the `After`
+// command, so `Tick` round-trips into `update`.
+fn parse_msg(j: Json) -> Msg:
+    match json.get_string(j, "\$variant"):
+        Some(v) ->
+            if v == "Tick":
+                Tick
+            else:
+                Start
+        None -> Start
+
+// The outbound boundary: encode the model / msg to JSON. `json.from_value` works for
+// any `Reflect` type, so these are one-liners (passed to `step_with` as values).
+fn model_to_json(count: Int) -> Json:
+    json.from_value(count)
+
+fn msg_to_json(m: Msg) -> Json:
+    json.from_value(m)
+
+// The single JS-callable export. `step_with` is glamour's reusable MVU engine: it
+// parses the input, runs `update` when a `msg` is present, then `view`, and returns
+// `{"model": ..., "vnode": ..., "cmd": ...}` — the `cmd` is the `After` the shell
+// interprets as a `setTimeout`.
+pub fn export_step(ui: UiRoot, input: String) -> String:
+    // (RFC-0039/0040) the host mints `UiRoot` at this browser root; Glamour narrows it
+    // into a `UiTimer` (no faster than 1000ms), curried into `update` via a closure — so
+    // only code holding the token can arm the self-sustaining tick.
+    let timer = glamour.timer_scope(ui, 1000)
+    let upd = fn(count: Int, msg: Msg): update(count, msg, timer)
+    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+
+// A `main` so the rune also runs as a CLI program (and the compiled module gets a
+// `run` export): render the initial model (count 0) and print the wire JSON. The
+// initial render carries no msg, so its command is `{"cmd":"none"}`; click/Tick
+// steps carry `{"cmd":"after","ms":1000,"msg":{...Tick...}}`.
+fn main(console: Console, ui: UiRoot):
+    let output = export_step(ui, "{\"model\": 0}")
+    console.print("${output}\n")

@@ -1,0 +1,85 @@
+// Optional native adapter for Glamour progressive form actions. The adapter is
+// capability-free: a returned handler computes over Request data, while an
+// application-supplied callback may explicitly capture its own authority.
+
+import server
+import list
+import url
+from glamour import FormProblem, FormSchema, FormSubmission
+from http import Request, Response
+
+@server
+pub fn form_action(schema: FormSchema, expected_origin: String, max_chars: Int, handle: fn(FormSubmission) -> Response) -> fn(Request) -> Response:
+    fn(req: Request) -> Response:
+        let method = glamour.form_schema_method(schema)
+        let action = glamour.form_schema_action(schema)
+        if server.method(req) != method:
+            response(405, [("allow", method)], "method not allowed")
+        else if !local_action(action) || server.path(req) != action:
+            response(404, [], "form action not found")
+        else if method == "POST" && !same_origin(req, expected_origin):
+            response(403, [], "form origin rejected")
+        else if method == "POST" && !form_content_type(req):
+            response(415, [], "expected application/x-www-form-urlencoded")
+        else if method == "POST" && (max_chars <= 0 || server.request_body(req).char_count() > max_chars):
+            response(413, [], "form body exceeds configured limit")
+        else if method == "POST" && !valid_form_encoding(server.request_body(req)):
+            response(400, [], "malformed form encoding")
+        else:
+            let entries = if method == "GET": server.query_pairs(req) else: server.form_body(req)
+            match glamour.decode_form_entries(schema, entries):
+                Ok(submission) -> handle(submission)
+                Err(problems) -> response(422, [], problem_text(problems))
+
+@server
+pub fn same_origin(req: Request, expected_origin: String) -> Bool:
+    if !valid_expected_origin(expected_origin):
+        false
+    else:
+        match server.request_header(req, "origin"):
+            Some(origin) -> origin == expected_origin
+            None ->
+                match server.request_header(req, "referer"):
+                    Some(referer) -> referer == expected_origin || referer.starts_with(expected_origin + "/")
+                    None -> false
+
+fn valid_expected_origin(origin: String) -> Bool:
+    if origin.ends_with("/"):
+        false
+    else:
+        match url.parse(origin):
+            Err(_) -> false
+            Ok(parsed) ->
+                (url.scheme(parsed) == "https" || url.scheme(parsed) == "http") && url.pathname(parsed) == "/" && url.query(parsed).is_none() && url.fragment(parsed).is_none()
+
+fn local_action(action: String) -> Bool:
+    action.starts_with("/") && !action.starts_with("//") && !action.contains("?") && !action.contains("#")
+
+fn form_content_type(req: Request) -> Bool:
+    match server.request_header(req, "content-type"):
+        Some(value) -> value.to_lower().split(";").at(0).trim() == "application/x-www-form-urlencoded"
+        None -> false
+
+fn valid_form_encoding(body: String) -> Bool:
+    let chars = body.chars()
+    var index = 0
+    while index < chars.length():
+        if chars.at(index) == "%":
+            if index + 2 >= chars.length() || !hex(chars.at(index + 1)) || !hex(chars.at(index + 2)):
+                return false
+            index = index + 3
+        else:
+            index = index + 1
+    true
+
+fn hex(character: String) -> Bool:
+    "0123456789abcdefABCDEF".contains(character)
+
+fn problem_text(problems: List(FormProblem)) -> String:
+    var messages: List(String) = []
+    for problem in problems:
+        messages.push(glamour.form_problem_message(problem))
+    messages.join("\n")
+
+fn response(status: Int, headers: List((String, String)), body: String) -> Response:
+    Response(status, list.concat(headers, [("content-type", "text/plain; charset=utf-8")]), body)

@@ -1,0 +1,48 @@
+import list
+import testing
+from docs_nav import Entry
+
+fn sample_summary() -> String:
+    "# Summary\n\n[Introduction](introduction.md)\n\n- [Tour](tour.md)\n  - [Values](tour-values.md)\n\n---\n"
+
+fn test_summary_parser_preserves_pages_depth_and_divider():
+    let entries = docs_nav.parse(sample_summary())
+    testing.assert_int_eq(entries.length(), 4)
+
+    match entries.get(0):
+        Some(PageLink(depth, page)) ->
+            testing.assert_int_eq(depth, 0)
+            testing.assert_eq(page.title, "Introduction")
+            testing.assert_eq(page.slug, "introduction")
+        _ -> testing.assert(false, "the first entry should be the introduction")
+
+    match entries.get(2):
+        Some(PageLink(depth, page)) ->
+            testing.assert_int_eq(depth, 1)
+            testing.assert_eq(page.title, "Values")
+        _ -> testing.assert(false, "the nested page should retain its depth")
+
+    match entries.get(3):
+        Some(Divider) -> testing.assert(true, "the divider is preserved")
+        _ -> testing.assert(false, "the final entry should be a divider")
+
+fn test_summary_parser_ignores_malformed_links():
+    let entries = docs_nav.parse("- [Missing target\n- [Missing suffix](tour)\nplain text")
+    testing.assert_int_eq(entries.length(), 0)
+
+fn test_navigation_helpers_use_option_for_absence():
+    let entries = docs_nav.parse(sample_summary())
+    let pages = docs_nav.pages(entries)
+    testing.assert_value_eq(docs_nav.route_position(pages, "/p/tour"), Some(1))
+    testing.assert_value_eq(docs_nav.route_position(pages, "/"), Some(0))
+    testing.assert_value_eq(docs_nav.route_position(pages, "/p/missing"), None)
+    match pages.get(0):
+        Some(page) -> testing.assert(docs_nav.is_current(page, "/"), "the home route is the introduction")
+        None -> testing.assert(false, "the sample navigation has an introduction")
+
+    testing.assert_eq(docs_nav.cover_path(entries), "/p/introduction")
+    testing.assert_eq(docs_nav.cover_path([]), "/p/introduction")
+
+fn test_route_slug_defaults_to_introduction():
+    testing.assert_eq(docs_nav.slug("/p/tour-values"), "tour-values")
+    testing.assert_eq(docs_nav.slug("/"), "introduction")

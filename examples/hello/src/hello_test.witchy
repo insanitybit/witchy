@@ -1,0 +1,15 @@
+// In-rune tests for `hello`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/hello`.
+
+import hello
+import testing
+
+fn test_double():
+    testing.assert_int_eq(hello.double(8), 16)
+    testing.assert_int_eq(hello.double(0), 0)
+
+fn test_classify():
+    testing.assert_eq(hello.classify(0), "zero")
+    testing.assert_eq(hello.classify(7), "positive")
+    testing.assert_eq(hello.classify(-3), "negative")

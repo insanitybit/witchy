@@ -1,0 +1,1000 @@
+// Compile-time type introspection — the `typeInfo` half of witchy's comptime
+// reflection (Zig's `@typeInfo`). A `comptime:` block can read the structure of
+// every type in its module as ordinary data and generate code from it (e.g. a
+// `to_json` specialized to a record's fields), with zero runtime cost. The
+// compiler injects the type list as the `module_types` value; these are the
+// shapes it hands you.
+//
+// This is COMPILE-TIME structure (field names + declared type expressions),
+// distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
+
+// RFC-0080's typed boundary for whole generated items. `quote item:` and literal
+// whole-item `meta.item("...")` values retain compiler-owned item AST. For an
+// item quote with holes, the compiler substitutes typed expression, type, and
+// pattern nodes into that AST. Dynamic `item(source)` input is parsed once at
+// this boundary and then travels as a compiler-owned module fragment, including
+// any imports required by the generated declaration.
+sealed type ItemSyntax:
+    ItemSyntax(String)
+
+// An opaque aggregate of generated items. Keeping the aggregate typed lets
+// generators build and transform a whole generated module without flattening
+// its items back into source text.
+sealed type ModuleSyntax:
+    ModuleSyntax(List(ItemSyntax))
+
+// Source spans are compiler-owned metadata. The constructor is sealed so user
+// code cannot forge locations; expansion records definition, invocation, and
+// hole-ancestry spans for diagnostics and generated-symbol navigation.
+sealed type Span:
+    Span(String, Int, Int)
+
+// Hole-free `quote type:` values retain a compiler-owned type AST. The
+// internal constructor carries its opaque identity plus canonical source so
+// existing builders can compose it through the compatibility path.
+sealed type TypeSyntax:
+    TypeSyntax(String)
+    CompilerTypeSyntax(String, String)
+
+// Hole-free `quote expr:` and literal `meta.expr_raw("...")` values retain a
+// compiler-owned expression AST. The second constructor is compiler-internal;
+// structural call, field, and match builders retain it, while remaining
+// compatibility builders may still project canonical source.
+sealed type ExprSyntax:
+    ExprSyntax(String)
+    CompilerExprSyntax(String, String)
+
+// Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing
+// builders project canonical source when composing compatibility values.
+sealed type PatternSyntax:
+    PatternSyntax(String)
+    CompilerPatternSyntax(String, String)
+
+sealed type SyntaxHole:
+    ExprHole(ExprSyntax)
+    TypeHole(TypeSyntax)
+    PatternHole(PatternSyntax)
+
+// Hole-free `quote stmt:` values retain compiler-owned statement AST.
+sealed type StmtSyntax:
+    StmtSyntax(String)
+    CompilerStmtSyntax(String, String)
+
+// Hole-free `quote block:` values retain compiler-owned block AST.
+sealed type BlockSyntax:
+    BlockSyntax(String)
+    CompilerBlockSyntax(String, String)
+
+sealed type MatchArmSyntax:
+    MatchArmSyntax(String)
+    CompilerMatchArmSyntax(String, String)
+
+sealed type ParamSyntax:
+    ParamSyntax(String)
+    CompilerParamSyntax(String, String)
+
+sealed type Ident:
+    Ident(String)
+    CallSiteIdent(String)
+
+// Parse one complete dynamic declaration (and its imports) into compiler-owned
+// syntax. Literal whole-item arguments take the parser's equivalent zero-runtime
+// path; dynamic input is rejected here unless it is exactly one declaration.
+pub fn item(source: String) -> ItemSyntax:
+    __meta_item(source)
+
+// Compiler-private bridge. Runtime modules cannot construct ItemSyntax, and
+// the linker limits this intrinsic to std/meta.
+fn __meta_item(source: String) -> ItemSyntax:
+    ItemSyntax(source)
+
+// Join parser-checked item quote fragments with typed syntax holes.
+pub fn item_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ItemSyntax:
+    if list.length(parts) != list.length(holes) + 1:
+        fail("meta.item_join_syntax: expected one more part than hole")
+
+    var out = list.at(parts, 0)
+    var i = 0
+    while i < list.length(holes):
+        out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
+        i = i + 1
+    __meta_item(out)
+
+// A validated Witchy identifier. This rejects keywords, `_`, non-ASCII source
+// spelling, and compiler-reserved `__` names before generated source is parsed.
+pub fn ident(name: String) -> Ident:
+    if !is_identifier(name):
+        fail("meta.ident: invalid identifier `" + name + "`")
+    Ident(name)
+
+// An explicit invocation-site reference. The syntax constructor that consumes
+// this Ident determines whether it denotes a value/function, type, or
+// constructor; the compiler retains that category and origin without rendering
+// a forgeable source marker.
+pub fn call_site(name: String) -> Ident:
+    if !is_identifier(name):
+        fail("meta.call_site: expected an identifier, got `" + name + "`")
+    CallSiteIdent(name)
+
+// A deterministic compiler-owned binding name. The returned identifier cannot
+// collide with source names because its spelling lives in the reserved `__`
+// namespace; repeated calls, blocks, and tagged-literal invocations are distinct.
+pub fn fresh(hint: String) -> Ident:
+    if !is_identifier(hint):
+        fail("meta.fresh: invalid identifier hint `" + hint + "`")
+    Ident(__meta_fresh_ident(hint))
+
+// Interpreter-owned compile-time hook. Runtime modules cannot mention Ident,
+// and the linker limits this private intrinsic to std/meta.
+fn __meta_fresh_ident(hint: String) -> String:
+    __meta_fresh_ident(hint)
+
+pub fn is_identifier(name: String) -> Bool:
+    let n = name.char_count()
+    if n == 0 || name == "_" || is_keyword(name) || name.contains("__"):
+        false
+    else:
+        var ok = is_ident_start(name.substring(0, 1))
+        var i = 1
+        while i < n:
+            if !is_ident_continue(name.substring(i, i + 1)):
+                ok = false
+            i = i + 1
+        ok
+
+fn ident_source(id: Ident) -> String:
+    match id:
+        Ident(source) -> source
+        CallSiteIdent(source) -> source
+
+fn expr_ident(id: Ident) -> ExprSyntax:
+    match id:
+        Ident(source) -> __meta_expr_leaf("name", source)
+        CallSiteIdent(source) -> __meta_call_site_expr(source)
+
+// Compiler-owned literal/name construction. The bridge decodes the typed
+// payload directly into an Expr node; it never renders and reparses source.
+fn __meta_expr_leaf(kind: String, payload: String) -> ExprSyntax:
+    __meta_expr_leaf(kind, payload)
+
+// Interpreter-owned compile-time hook. It creates a compiler-owned expression
+// node carrying call-site origin; no source spelling can mint that origin.
+fn __meta_call_site_expr(name: String) -> ExprSyntax:
+    __meta_call_site_expr(name)
+
+fn is_ident_start(c: String) -> Bool:
+    c == "_" || "a" <= c && c <= "z" || "A" <= c && c <= "Z"
+
+fn is_ident_continue(c: String) -> Bool:
+    is_ident_start(c) || "0" <= c && c <= "9"
+
+fn is_keyword(name: String) -> Bool:
+    match name:
+        "fn" -> true
+        "gen" -> true
+        "yield" -> true
+        "async" -> true
+        "await" -> true
+        "let" -> true
+        "var" -> true
+        "match" -> true
+        "pub" -> true
+        "if" -> true
+        "else" -> true
+        "true" -> true
+        "false" -> true
+        "type" -> true
+        "own" -> true
+        "move" -> true
+        "import" -> true
+        "while" -> true
+        "for" -> true
+        "in" -> true
+        "return" -> true
+        "break" -> true
+        "continue" -> true
+        "trait" -> true
+        "impl" -> true
+        "where" -> true
+        "as" -> true
+        "region" -> true
+        "comptime" -> true
+        "capability" -> true
+        _ -> false
+
+// Source-backed type syntax. Prefer this to assembling type names at each
+// generator call site; it is still a migration helper, not full hygiene.
+pub fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
+    match name:
+        Ident(source) -> __meta_type_named(source, args)
+        CallSiteIdent(source) -> __meta_call_site_type(source, args)
+
+// Compiler-owned definition-site named type construction. Type arguments retain
+// their own origin and structure.
+fn __meta_type_named(name: String, args: List(TypeSyntax)) -> TypeSyntax:
+    __meta_type_named(name, args)
+
+// Interpreter-owned compile-time hook. It retains an invocation-site type
+// identity plus structurally decoded type arguments.
+fn __meta_call_site_type(name: String, args: List(TypeSyntax)) -> TypeSyntax:
+    __meta_call_site_type(name, args)
+
+pub fn type_qualified(module: Ident, name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
+    let member = ident_source(name)
+    match module:
+        Ident(source) -> __meta_type_named(source + "." + member, args)
+        CallSiteIdent(source) -> __meta_call_site_type(source + "." + member, args)
+
+// A tuple type such as `(Int, String)`.
+pub fn type_tuple(types: List(TypeSyntax)) -> TypeSyntax:
+    __meta_type_tuple(types)
+
+// Compiler-owned tuple type construction.
+fn __meta_type_tuple(types: List(TypeSyntax)) -> TypeSyntax:
+    __meta_type_tuple(types)
+
+// A function type such as `fn(Int) -> String`.
+pub fn type_fn(params: List(TypeSyntax), ret: TypeSyntax) -> TypeSyntax:
+    __meta_type_fn(params, [], ret)
+
+pub fn type_fn_with_conventions(params: List(TypeSyntax), conventions: List(String), ret: TypeSyntax) -> TypeSyntax:
+    __meta_type_fn(params, conventions, ret)
+
+// Compiler-owned function type construction. An empty convention list means
+// default `let` parameters; otherwise it must align with params.
+fn __meta_type_fn(params: List(TypeSyntax), conventions: List(String), ret: TypeSyntax) -> TypeSyntax:
+    __meta_type_fn(params, conventions, ret)
+
+// A deeply immutable type qualifier.
+pub fn type_frozen(ty: TypeSyntax) -> TypeSyntax:
+    __meta_type_qualified("frozen", ty)
+
+// A unique-reference type qualifier.
+pub fn type_unique(ty: TypeSyntax) -> TypeSyntax:
+    __meta_type_qualified("unique", ty)
+
+// A local unique-reference type qualifier.
+pub fn type_local_unique(ty: TypeSyntax) -> TypeSyntax:
+    __meta_type_qualified("local unique", ty)
+
+// Compiler-owned ownership qualifier construction.
+fn __meta_type_qualified(qualifier: String, ty: TypeSyntax) -> TypeSyntax:
+    __meta_type_qualified(qualifier, ty)
+
+// A capability type with rights, such as `Dir[Read]`.
+pub fn type_capability(name: Ident, rights: List(TypeSyntax)) -> TypeSyntax:
+    let head = ident_source(name)
+    if head != "Dir" && head != "File" && head != "Net":
+        fail("meta.type_capability: expected Dir, File, or Net")
+    __meta_type_capability(name, rights)
+
+// Compiler-owned capability type construction. Rights remain structural type
+// children; the ambient capability head is validated above and by the bridge.
+fn __meta_type_capability(name: Ident, rights: List(TypeSyntax)) -> TypeSyntax:
+    __meta_type_capability(name, rights)
+
+pub fn type_expr(ty: TypeExpr) -> TypeSyntax:
+    __meta_type_expr(ty)
+
+// Compiler-owned conversion from reflection data to type syntax. Rendering is
+// reserved for generators that explicitly need source text.
+fn __meta_type_expr(ty: TypeExpr) -> TypeSyntax:
+    __meta_type_expr(ty)
+
+// Join parser-checked type quote fragments with typed type holes.
+pub fn type_join(parts: List(String), holes: List(TypeSyntax)) -> TypeSyntax:
+    if list.length(parts) != list.length(holes) + 1:
+        fail("meta.type_join: expected one more part than hole")
+
+    var out = list.at(parts, 0)
+    var i = 0
+    while i < list.length(holes):
+        out = out + type_syntax_source(list.at(holes, i)) + list.at(parts, i + 1)
+        i = i + 1
+    TypeSyntax(out)
+
+fn type_syntax_source(ty: TypeSyntax) -> String:
+    match ty:
+        TypeSyntax(source) -> source
+        CompilerTypeSyntax(_, source) -> source
+
+// Expression syntax builders. Ordinary names retain the compatibility payload;
+// call-site names become compiler-owned nodes so their origin cannot be forged
+// or lost before linking.
+pub fn expr_name(name: Ident) -> ExprSyntax:
+    expr_ident(name)
+
+pub fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_call(callee, args)
+
+// Compiler-owned structural composition for `expr_call`. It preserves syntax
+// identity such as `meta.call_site` through a constructed call; source-backed
+// syntax values remain supported by the compatibility path in the intrinsic.
+fn __meta_expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_call(callee, args)
+
+pub fn expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
+    __meta_expr_field(base, field)
+
+// Compiler-owned structural composition for `expr_field`. The base keeps its
+// expression origin; fields are validated identifiers rather than bindings.
+fn __meta_expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
+    __meta_expr_field(base, field)
+
+pub fn expr_int(n: Int) -> ExprSyntax:
+    __meta_expr_leaf("int", "${n}")
+
+pub fn expr_bool(b: Bool) -> ExprSyntax:
+    __meta_expr_leaf("bool", if b: "true" else: "false")
+
+pub fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax:
+    if list.is_empty(arms):
+        fail("meta.expr_match: at least one match arm is required")
+    __meta_expr_match(scrutinee, arms)
+
+// The scrutinee remains compiler-owned. Match arms are still the documented
+// source-backed compatibility boundary until MatchArmSyntax has owned nodes.
+fn __meta_expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax:
+    __meta_expr_match(scrutinee, arms)
+
+pub fn expr_raw(source: String) -> ExprSyntax:
+    __meta_expr(source)
+
+// Compiler-private parse boundary for complete dynamic expressions.
+fn __meta_expr(source: String) -> ExprSyntax:
+    ExprSyntax(source)
+
+// Join parser-checked expression fragments with mixed typed syntax holes.
+pub fn expr_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ExprSyntax:
+    if list.length(parts) != list.length(holes) + 1:
+        fail("meta.expr_join_syntax: expected one more part than hole")
+
+    var out = list.at(parts, 0)
+    var i = 0
+    while i < list.length(holes):
+        out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
+        i = i + 1
+    __meta_expr(out)
+
+fn expr_source(expr: ExprSyntax) -> String:
+    match expr:
+        ExprSyntax(source) -> source
+        CompilerExprSyntax(_, source) -> source
+
+// Source-backed pattern syntax. Patterns share validated identifiers with
+// expressions, so generated matches cannot accidentally mint a reserved binding.
+pub fn pattern_var(name: Ident) -> PatternSyntax:
+    match name:
+        Ident(source) -> __meta_pattern_leaf("var", source, "", false)
+        CallSiteIdent(source) -> __meta_pattern_leaf("call-site-var", source, "", false)
+
+pub fn pattern_wildcard() -> PatternSyntax:
+    __meta_pattern_leaf("wildcard", "", "", false)
+
+pub fn pattern_int(n: Int) -> PatternSyntax:
+    __meta_pattern_leaf("int", "${n}", "", false)
+
+pub fn pattern_bool(b: Bool) -> PatternSyntax:
+    __meta_pattern_leaf("bool", if b: "true" else: "false", "", false)
+
+// A string literal pattern.
+pub fn pattern_str(value: String) -> PatternSyntax:
+    __meta_pattern_leaf("string", value, "", false)
+
+// A duration literal pattern from its whole-millisecond value.
+pub fn pattern_duration_ms(ms: Int) -> PatternSyntax:
+    __meta_pattern_leaf("duration", "${ms}", "", false)
+
+// An integer range pattern.
+pub fn pattern_range(lo: Int, hi: Int, inclusive: Bool) -> PatternSyntax:
+    __meta_pattern_leaf("range", "${lo}", "${hi}", inclusive)
+
+// Compiler-owned pattern leaf construction. Scalar payloads are validated and
+// decoded directly into Pattern variants by the compiler bridge.
+fn __meta_pattern_leaf(kind: String, first: String, second: String, inclusive: Bool) -> PatternSyntax:
+    __meta_pattern_leaf(kind, first, second, inclusive)
+
+pub fn pattern_ctor(name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
+    match name:
+        Ident(source) -> __meta_pattern_ctor(source, args)
+        CallSiteIdent(source) -> __meta_call_site_pattern(source, args)
+
+// Compiler-owned definition-site constructor-pattern construction. Arguments
+// retain their own origin and structure.
+fn __meta_pattern_ctor(name: String, args: List(PatternSyntax)) -> PatternSyntax:
+    __meta_pattern_ctor(name, args)
+
+// Interpreter-owned compile-time hook. It retains an invocation-site
+// constructor-pattern identity plus structurally decoded arguments.
+fn __meta_call_site_pattern(name: String, args: List(PatternSyntax)) -> PatternSyntax:
+    __meta_call_site_pattern(name, args)
+
+// A module-qualified constructor pattern such as `iter.Item(x)`.
+pub fn pattern_qualified_ctor(module: Ident, name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
+    let member = ident_source(name)
+    match module:
+        Ident(source) -> __meta_pattern_ctor(source + "." + member, args)
+        CallSiteIdent(source) -> __meta_call_site_pattern(source + "." + member, args)
+
+pub fn pattern_anon_ctor(tag: Ident, args: List(PatternSyntax)) -> PatternSyntax:
+    pattern_with_head("." + ident_source(tag), args)
+
+// A tuple pattern.
+pub fn pattern_tuple(patterns: List(PatternSyntax)) -> PatternSyntax:
+    __meta_pattern_tuple(patterns)
+
+fn __meta_pattern_tuple(patterns: List(PatternSyntax)) -> PatternSyntax:
+    __meta_pattern_tuple(patterns)
+
+// An exact-length list pattern.
+pub fn pattern_list(patterns: List(PatternSyntax)) -> PatternSyntax:
+    __meta_pattern_list(patterns)
+
+fn __meta_pattern_list(patterns: List(PatternSyntax)) -> PatternSyntax:
+    __meta_pattern_list(patterns)
+
+// A list pattern with `..` or `..rest`.
+pub fn pattern_list_rest(patterns: List(PatternSyntax), rest: Option(Ident)) -> PatternSyntax:
+    __meta_pattern_list_rest(patterns, rest)
+
+fn __meta_pattern_list_rest(patterns: List(PatternSyntax), rest: Option(Ident)) -> PatternSyntax:
+    __meta_pattern_list_rest(patterns, rest)
+
+// An or-pattern. Every alternative must bind the same names when type-checked.
+pub fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
+    if list.is_empty(patterns):
+        fail("meta.pattern_or: at least one alternative is required")
+    __meta_pattern_or(patterns)
+
+fn __meta_pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
+    __meta_pattern_or(patterns)
+
+// Join parser-checked pattern quote fragments with typed pattern holes.
+pub fn pattern_join(parts: List(String), holes: List(PatternSyntax)) -> PatternSyntax:
+    if list.length(parts) != list.length(holes) + 1:
+        fail("meta.pattern_join: expected one more part than hole")
+
+    var out = list.at(parts, 0)
+    var i = 0
+    while i < list.length(holes):
+        out = out + pattern_source(list.at(holes, i)) + list.at(parts, i + 1)
+        i = i + 1
+    PatternSyntax(out)
+
+fn pattern_with_head(head: String, args: List(PatternSyntax)) -> PatternSyntax:
+    if list.is_empty(args):
+        PatternSyntax(head)
+    else:
+        PatternSyntax(head + "(" + list.join(pattern_sources(args), ", ") + ")")
+
+fn pattern_source(pattern: PatternSyntax) -> String:
+    match pattern:
+        PatternSyntax(source) -> source
+        CompilerPatternSyntax(_, source) -> source
+
+fn pattern_sources(patterns: List(PatternSyntax)) -> List(String):
+    var out = []
+    for pattern in patterns:
+        list.push(out, pattern_source(pattern))
+    out
+
+pub fn expr_hole(expr: ExprSyntax) -> SyntaxHole:
+    ExprHole(expr)
+
+pub fn type_hole(ty: TypeSyntax) -> SyntaxHole:
+    TypeHole(ty)
+
+pub fn pattern_hole(pattern: PatternSyntax) -> SyntaxHole:
+    PatternHole(pattern)
+
+fn syntax_hole_source(hole: SyntaxHole) -> String:
+    match hole:
+        ExprHole(expr) -> expr_source(expr)
+        TypeHole(ty) -> type_syntax_source(ty)
+        PatternHole(pattern) -> pattern_source(pattern)
+
+pub fn match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax:
+    __meta_match_arm(pattern, body)
+
+// Compiler-owned match-arm construction. Pattern and body retain their AST
+// identity until the enclosing match is built.
+fn __meta_match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax:
+    __meta_match_arm(pattern, body)
+
+// Source-backed statement and block syntax. These are still text at the
+// compiler boundary, but they make block-shaped generators compose through
+// typed, validated pieces instead of one large string template.
+pub fn stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_let(mutable, name, ty, value)
+
+// Compiler-owned let/var statement construction. Binder, optional type, and
+// value remain typed nodes through block construction.
+fn __meta_stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_let(mutable, name, ty, value)
+
+pub fn stmt_expr(expr: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_expr(expr)
+
+// Compiler-owned expression statement construction.
+fn __meta_stmt_expr(expr: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_expr(expr)
+
+pub fn stmt_return(value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_return(value)
+
+// Compiler-owned return statement construction.
+fn __meta_stmt_return(value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_return(value)
+
+pub fn stmt_return_none() -> StmtSyntax:
+    __meta_stmt_leaf("return")
+
+// Compiler-owned statement construction for leaf statements without children.
+fn __meta_stmt_leaf(kind: String) -> StmtSyntax:
+    __meta_stmt_leaf(kind)
+
+// A source-backed statement wrapper for parser-checked `quote stmt:`.
+pub fn stmt_raw(source: String) -> StmtSyntax:
+    StmtSyntax(source)
+
+// Join parser-checked statement quote fragments with typed syntax holes.
+pub fn stmt_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> StmtSyntax:
+    if list.length(parts) != list.length(holes) + 1:
+        fail("meta.stmt_join_syntax: expected one more part than hole")
+
+    var out = list.at(parts, 0)
+    var i = 0
+    while i < list.length(holes):
+        out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
+        i = i + 1
+    StmtSyntax(out)
+
+pub fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
+    if list.is_empty(stmts) && option.is_none(tail):
+        fail("meta.block: body must contain at least one statement or tail expression")
+    __meta_block(stmts, tail)
+
+// Compiler-owned block construction. Owned statements and the optional tail
+// expression are transferred directly instead of being projected to source.
+fn __meta_block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
+    __meta_block(stmts, tail)
+
+// A source-backed block wrapper for parser-checked `quote block:`.
+pub fn block_raw(source: String) -> BlockSyntax:
+    BlockSyntax(source)
+
+// Join parser-checked block quote fragments with typed syntax holes.
+pub fn block_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> BlockSyntax:
+    if list.length(parts) != list.length(holes) + 1:
+        fail("meta.block_join_syntax: expected one more part than hole")
+
+    var out = list.at(parts, 0)
+    var i = 0
+    while i < list.length(holes):
+        out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
+        i = i + 1
+    BlockSyntax(out)
+
+// A function parameter and function item constructors. The single-expression
+// form now delegates to the block form so item generation has one body shape.
+pub fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax:
+    __meta_param(name, ty)
+
+// Compiler-owned parameter construction. Binding and type remain typed through
+// generated function construction.
+fn __meta_param(name: Ident, ty: TypeSyntax) -> ParamSyntax:
+    __meta_param(name, ty)
+
+pub fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax:
+    function_block(public, name, params, ret, block([], Some(body)))
+
+pub fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
+    __meta_function_block(public, name, params, ret, body)
+
+// Compiler-owned function construction. Name, parameters, return type, and body
+// transfer as typed nodes; compatibility ParamSyntax values remain accepted.
+fn __meta_function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
+    __meta_function_block(public, name, params, ret, body)
+
+// Build a trait implementation directly from typed trait/target heads and
+// compiler-owned function items. No impl source is rendered or reparsed.
+pub fn impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
+    __meta_impl_block(trait_ty, target_ty, items)
+
+fn __meta_impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
+    __meta_impl_block(trait_ty, target_ty, items)
+
+pub fn module(items: List(ItemSyntax)) -> ModuleSyntax:
+    ModuleSyntax(items)
+
+pub fn module_items(module_syntax: ModuleSyntax) -> List(ItemSyntax):
+    match module_syntax:
+        ModuleSyntax(items) -> items
+
+// A declared type expression, exposed as data so generators do not have to parse
+// source-looking type strings.
+type TypeExpr:
+    TNamed(String, List(TypeExpr))
+    TTuple(List(TypeExpr))
+    TFn(List(TypeExpr), TypeExpr, List(String))
+    TQualified(String, TypeExpr)
+    TBorrowed(TypeExpr, String)
+
+// The declaration shape. `TypeUninhabited` is intentionally not called "unit":
+// a fieldless declaration has no constructor and therefore no values.
+type TypeKind:
+    TypeRecord
+    TypeSum
+    TypeUninhabited
+
+// One field of a record: its name and declared type.
+type FieldInfo:
+    name: String
+    type_expr: TypeExpr
+
+// One constructor of a sum type: its name and positional payload types.
+type VariantInfo:
+    name: String
+    field_type_exprs: List(TypeExpr)
+
+// A type's structure. `fields` is populated for records and `variants` for sums;
+// both are empty for an uninhabited fieldless declaration.
+type TypeInfo:
+    name: String
+    kind: TypeKind
+    params: List(String)
+    fields: List(FieldInfo)
+    variants: List(VariantInfo)
+
+// --- built-in derive generators ----------------------------------------------
+// Built-in `derive(X)` desugars to a comptime call `meta.derive_<x>(typeInfo)`
+// that returns an `ItemSyntax`. These ARE witchy — the per-trait code generation that used to be
+// hardcoded in the Rust compiler now lives here as ordinary, readable functions over
+// `TypeInfo`, and anyone can write their own `derive_foo` the same way.
+
+// The impl target with its type parameters — `Box(a)` for a generic type, `Point`
+// otherwise. Also the type of a same-typed `other` parameter.
+fn target_with_params(t: TypeInfo) -> String:
+    if list.is_empty(t.params):
+        t.name
+    else:
+        t.name + "(" + list.join(t.params, ", ") + ")"
+
+// A ` where a: Trait, b: Trait` clause binding each type parameter to `trait_name`,
+// or "" for a non-generic type — so a generic type's derived impl discharges its
+// parameters' bounds and monomorphizes per argument.
+fn where_each(params: List(String), trait_name: String) -> String:
+    if list.is_empty(params):
+        ""
+    else:
+        var bounds = []
+        for p in params:
+            // Lifetime parameters are compile-time owner relations, not types
+            // implementing the derived trait.
+            if !p.starts_with("'"):
+                list.push(bounds, p + ": " + trait_name)
+        if list.is_empty(bounds):
+            ""
+        else:
+            " where " + list.join(bounds, ", ")
+
+fn type_sources(types: List(TypeExpr)) -> List(String):
+    var out = []
+    for ty in types:
+        list.push(out, type_source(ty))
+    out
+
+fn function_type_sources(types: List(TypeExpr), conventions: List(String)) -> List(String):
+    var out = []
+    var i = 0
+    for ty in types:
+        let prefix = match list.at(conventions, i):
+            "borrow" -> "let "
+            "var" -> "var "
+            "own" -> "own "
+            _ -> ""
+
+        list.push(out, prefix + type_source(ty))
+        i = i + 1
+    out
+
+// Render a structured type back to source text only when generated source needs
+// to name the type. Semantic branching should stay on `TypeExpr`, not this
+// string.
+pub fn type_source(ty: TypeExpr) -> String:
+    match ty:
+        TNamed(name, args) ->
+            if list.is_empty(args):
+                name
+            else:
+                name + "(" + list.join(type_sources(args), ", ") + ")"
+        TTuple(slots) -> "(" + list.join(type_sources(slots), ", ") + ")"
+        TFn(params, ret, conventions) -> "fn(" + list.join(function_type_sources(params, conventions), ", ") + ") -> " + type_source(ret)
+        TQualified(q, inner) -> q + " " + type_source(inner)
+        TBorrowed(inner, lifetime) -> "View(" + type_source(inner) + ", '" + lifetime + ")"
+
+// `derive(Show)` -> constructor-shaped rendering with each field/payload rendered
+// through its own `Show` impl. Primitive fields still match structural
+// interpolation bytes, while fields with custom `Show` keep their public display
+// form. Generic parameters carry a `: Show` bound, so the same code path compiles
+// coherently on both backends.
+pub fn derive_show(t: TypeInfo) -> ItemSyntax:
+    item(derive_show_source(t))
+
+fn derive_show_source(t: TypeInfo) -> String:
+    let head = "impl Show for " + target_with_params(t) + where_each(t.params, "Show") + ":\n    fn show(self) -> String:\n"
+    match t.kind:
+        TypeRecord -> head + "        " + record_show_body(t.name, t.fields) + "\n"
+        _ ->
+            var arms = []
+            for v in t.variants:
+                list.push(arms, variant_show_arm(v))
+            head + "        match self:\n" + list.join(arms, "\n") + "\n"
+
+// The rendered body of a record's `show`: `"Name"` for a defensive empty-field
+// record input, else `"Name(" + show(self.f1) + ", " + show(self.f2) + ")"`.
+fn record_show_body(name: String, fields: List(FieldInfo)) -> String:
+    if list.is_empty(fields):
+        "\"" + name + "\""
+    else:
+        var parts = []
+        for f in fields:
+            list.push(parts, "show(self." + f.name + ")")
+        "\"" + name + "(\" + " + list.join(parts, " + \", \" + ") + " + \")\""
+
+// One arm of a sum type's `show`: bind the variant's payloads and render them
+// through their own `Show` (a nullary variant is just its name).
+fn variant_show_arm(v: VariantInfo) -> String:
+    var pats = []
+    var parts = []
+    var i = 0
+    for _ft in v.field_type_exprs:
+        list.push(pats, "p${i}")
+        list.push(parts, "show(p${i})")
+        i = i + 1
+    var selfpat = v.name
+    if list.length(pats) > 0:
+        selfpat = v.name + "(" + list.join(pats, ", ") + ")"
+    var rhs = "\"" + v.name + "\""
+    if list.length(parts) > 0:
+        rhs = "\"" + v.name + "(\" + " + list.join(parts, " + \", \" + ") + " + \")\""
+    "            " + selfpat + " -> " + rhs
+
+// `derive(Eq)` → the total-equality marker. Refines `PartialEq` (derive both).
+pub fn derive_eq(t: TypeInfo) -> ItemSyntax:
+    item(derive_eq_source(t))
+
+fn derive_eq_source(t: TypeInfo) -> String:
+    "impl Eq for " + target_with_params(t) + where_each(t.params, "Eq") + "\n"
+
+// `derive(PartialEq)` → field-wise structural equality. The operators dispatch
+// per field, so it is content-correct on both backends: a record compares each
+// field with `==`; a sum type matches the variant and compares payloads.
+pub fn derive_partial_eq(t: TypeInfo) -> ItemSyntax:
+    item(derive_partial_eq_source(t))
+
+fn derive_partial_eq_source(t: TypeInfo) -> String:
+    let head = "impl PartialEq for " + target_with_params(t) + where_each(t.params, "PartialEq") + ":\n    fn eq(self, other: " + target_with_params(t) + ") -> Bool:\n"
+    match t.kind:
+        TypeRecord -> head + "        " + record_eq_body(t.fields) + "\n"
+        _ ->
+            var arms = []
+            for v in t.variants:
+                list.push(arms, variant_eq_arm(v))
+            head + "        match self:\n" + list.join(arms, "\n") + "\n"
+
+// The `&&`-chained field comparison of a record's `eq`, or `true` for a
+// defensive empty-field record input.
+fn record_eq_body(fields: List(FieldInfo)) -> String:
+    if list.is_empty(fields):
+        "true"
+    else:
+        var terms = []
+        for f in fields:
+            list.push(terms, "self." + f.name + " == other." + f.name)
+        list.join(terms, " && ")
+
+// One arm of a sum type's `eq`: match `other` against the same variant, compare
+// payloads pairwise, and fail on any other variant.
+fn variant_eq_arm(v: VariantInfo) -> String:
+    var pats = []
+    var opats = []
+    var terms = []
+    var i = 0
+    for _ft in v.field_type_exprs:
+        list.push(pats, "p${i}")
+        list.push(opats, "o${i}")
+        list.push(terms, "p${i} == o${i}")
+        i = i + 1
+    var selfpat = v.name
+    var otherpat = v.name
+    if list.length(pats) > 0:
+        selfpat = v.name + "(" + list.join(pats, ", ") + ")"
+        otherpat = v.name + "(" + list.join(opats, ", ") + ")"
+    var rhs = "true"
+    if list.length(terms) > 0:
+        rhs = list.join(terms, " && ")
+    "            " + selfpat + " -> match other:\n                " + otherpat + " -> " + rhs + "\n                _ -> false"
+
+// The `reflect`-call for a field/payload of declared type `ty` applied to the
+// expression text `value` — single-line, dispatched by structured type shape.
+fn reflect_call(ty: TypeExpr, value: String) -> String:
+    match ty:
+        TNamed(name, _args) ->
+            if name == "List":
+                "reflect.reflect_list(" + value + ")"
+            else if name == "Option":
+                "reflect.reflect_option(" + value + ")"
+            else:
+                "reflect.reflect_one(" + value + ")"
+        _ -> "reflect.reflect_one(" + value + ")"
+
+// `derive(Reflect)` → an `impl Reflect for T` building the value's `Mirror`: a
+// record to `MRecord("T", [(field, reflect field)…])`, a sum type to a `match`
+// over variants to `MVariant`. (The module must `import reflect`; caller checks.)
+pub fn derive_reflect(t: TypeInfo) -> ItemSyntax:
+    item(derive_reflect_source(t))
+
+fn dynamic_field_body(fields: List(FieldInfo), index: Int, indent: String) -> String:
+    if index >= list.length(fields):
+        indent + "None\n"
+    else:
+        let f = list.at(fields, index)
+        indent + "if __name == \"" + f.name + "\":\n" + indent + "    Some(reflect.DynamicFieldValue(__dynamic_descriptor_id(self), __dynamic_descriptor_id(self." + f.name + "), self." + f.name + "))\n" + indent + "else:\n" + dynamic_field_body(fields, index + 1, indent + "    ")
+
+fn derive_reflect_source(t: TypeInfo) -> String:
+    let head = "import reflect\n\nimpl Reflect for " + target_with_params(t) + where_each(t.params, "Reflect") + ":\n    fn reflect(self) -> reflect.Mirror:\n"
+    if let TypeRecord = t.kind:
+        var pairs = []
+        for f in t.fields:
+            list.push(pairs, "(\"" + f.name + "\", " + reflect_call(f.type_expr, "self." + f.name) + ")")
+        head + "        reflect.MRecord(\"" + t.name + "\", [" + list.join(pairs, ", ") + "])\n\n    fn __dynamic_field(self, __name: String) -> Option(reflect.DynamicFieldValue):\n" + dynamic_field_body(t.fields, 0, "        ")
+    else:
+        var arms = []
+        for v in t.variants:
+            var pats = []
+            var refls = []
+            var i = 0
+            for ft in v.field_type_exprs:
+                let pv = "p${i}"
+                list.push(pats, pv)
+                list.push(refls, reflect_call(ft, pv))
+                i = i + 1
+            var pat = v.name
+            if list.length(pats) > 0:
+                pat = v.name + "(" + list.join(pats, ", ") + ")"
+            list.push(arms, "            " + pat + " -> reflect.MVariant(\"" + t.name + "\", \"" + v.name + "\", [" + list.join(refls, ", ") + "])")
+        head + "        match self:\n" + list.join(arms, "\n") + "\n"
+
+// `derive(PublicState)` proves a value can cross a public/resumable boundary.
+// The generated method checks every field through the field type's own proof;
+// capabilities, functions, Bytes, host handles, and secrets fail because they
+// deliberately have no PublicState implementation.
+pub fn derive_public_state(t: TypeInfo) -> ItemSyntax:
+    item(derive_public_state_source(t))
+
+fn derive_public_state_source(t: TypeInfo) -> String:
+    let head = "import public_state\n\nimpl PublicState for " + target_with_params(t) + where_each(t.params, "PublicState") + ":\n    fn public_state_proof(self):\n"
+    if let TypeRecord = t.kind:
+        if t.fields.is_empty():
+            head + "        Nil\n"
+        else:
+            var checks: List(String) = []
+            for field in t.fields:
+                checks.push("        public_state.check(self." + field.name + ")")
+            head + checks.join("\n") + "\n"
+    else:
+        var arms: List(String) = []
+        for variant in t.variants:
+            var patterns: List(String) = []
+            var checks: List(String) = []
+            var i = 0
+            for _field in variant.field_type_exprs:
+                let binding = "p${i}"
+                patterns.push(binding)
+                checks.push("                public_state.check(" + binding + ")")
+                i = i + 1
+            let pattern = if patterns.is_empty(): variant.name else: variant.name + "(" + patterns.join(", ") + ")"
+            if checks.is_empty():
+                arms.push("            " + pattern + " -> Nil")
+            else:
+                arms.push("            " + pattern + " ->\n" + checks.join("\n"))
+        head + "        match self:\n" + arms.join("\n") + "\n"
+
+// The lexicographic body for `derive(Ord)`: compare fields in declaration order
+// through the field type's total `Ord.compare`, not through `<`/`>`. Method
+// syntax avoids shadowing by a same-module free function named `compare`.
+fn ord_lexicographic_body(fields: List(FieldInfo), index: Int, indent: String) -> String:
+    if index >= list.length(fields):
+        indent + "Equal\n"
+    else:
+        let f = list.at(fields, index)
+        indent + "match self." + f.name + ".compare(other." + f.name + "):\n" + indent + "    Less -> Less\n" + indent + "    Greater -> Greater\n" + indent + "    Equal ->\n" + ord_lexicographic_body(fields, index + 1, indent + "        ")
+
+// The lexicographic body for `derive(PartialOrd)`: propagate an incomparable
+// field (`None`) instead of treating "neither less nor greater" as equality.
+fn partial_ord_lexicographic_body(fields: List(FieldInfo), index: Int, indent: String) -> String:
+    if index >= list.length(fields):
+        indent + "Some(Equal)\n"
+    else:
+        let f = list.at(fields, index)
+        indent + "match self." + f.name + ".partial_compare(other." + f.name + "):\n" + indent + "    None -> None\n" + indent + "    Some(Less) -> Some(Less)\n" + indent + "    Some(Greater) -> Some(Greater)\n" + indent + "    Some(Equal) ->\n" + partial_ord_lexicographic_body(fields, index + 1, indent + "        ")
+
+// `derive(Ord)` → lexicographic `compare` returning `Ordering` (records only; the
+// caller validates the shape). Requires the `PartialEq`/`Eq`/`PartialOrd` impls too.
+pub fn derive_ord(t: TypeInfo) -> ItemSyntax:
+    item(derive_ord_source(t))
+
+fn derive_ord_source(t: TypeInfo) -> String:
+    "impl Ord for " + target_with_params(t) + where_each(t.params, "Ord") + ":\n    fn compare(self, other: " + target_with_params(t) + ") -> Ordering:\n" + ord_lexicographic_body(t.fields, 0, "        ")
+
+// `derive(PartialOrd)` → lexicographic `partial_compare` (records only).
+pub fn derive_partial_ord(t: TypeInfo) -> ItemSyntax:
+    item(derive_partial_ord_source(t))
+
+fn derive_partial_ord_source(t: TypeInfo) -> String:
+    "impl PartialOrd for " + target_with_params(t) + where_each(t.params, "PartialOrd") + ":\n    fn partial_compare(self, other: " + target_with_params(t) + ") -> Option(Ordering):\n" + partial_ord_lexicographic_body(t.fields, 0, "        ")
+
+// A `Result`-producing decode of a `Json` value already in hand (recursive).
+fn json_decode_value(ty: TypeExpr, value: String) -> String:
+    match ty:
+        // An `Option` value already in hand: JSON `null` decodes to `None`,
+        // anything else applies the element decoder and wraps `Some`. Reuses
+        // `json.optional` (which maps `Some(JsonNull) -> None`) so it composes
+        // at any depth — inside a `List`, another `Option`, or a record field.
+        TNamed(name, args) ->
+            if name == "Int":
+                "json.int_of(" + value + ")"
+            else if name == "Float":
+                "json.float_of(" + value + ")"
+            else if name == "Bool":
+                "json.bool_of(" + value + ")"
+            else if name == "String":
+                "json.string_of(" + value + ")"
+            else if name == "List" && list.length(args) == 1:
+                let elem = list.at(args, 0)
+                "result.all(list.map(json.array_of(" + value + ")?, fn(__e: json.Json) -> Result(" + type_source(elem) + ", json.DeserializeError): " + json_decode_value(elem, "__e") + "))"
+            else if name == "Option" && list.length(args) == 1:
+                let elem = list.at(args, 0)
+                "json.optional(Some(" + value + "), fn(__e: json.Json) -> Result(" + type_source(elem) + ", json.DeserializeError): " + json_decode_value(elem, "__e") + ")"
+            else:
+                type_source(ty) + ".from_json(" + value + ")"
+        _ -> type_source(ty) + ".from_json(" + value + ")"
+
+// Decode one record field from `object`: an Option reads with `get` (absent
+// allowed), everything else with `require`. Trails a `?` so it's a `let` initializer.
+fn json_decode_field(ty: TypeExpr, object: String, key: String) -> String:
+    match ty:
+        TNamed(name, args) ->
+            if name == "Option" && list.length(args) == 1:
+                let elem = list.at(args, 0)
+                "json.optional(json.get(" + object + ", \"" + key + "\"), fn(__e: json.Json) -> Result(" + type_source(elem) + ", json.DeserializeError): " + json_decode_value(elem, "__e") + ")?"
+            else:
+                json_decode_value(ty, "json.require(" + object + ", \"" + key + "\")?") + "?"
+        _ -> json_decode_value(ty, "json.require(" + object + ", \"" + key + "\")?") + "?"
+
+// `derive(Deserialize)` generates `from_json` for a record (the caller validates the
+// shape). It decodes and coerces each field, returning on the first error. There is
+// no matching `Serialize` derive, because reflection (`json.from_value`, `stringify`,
+// `Into(Json)`) already encodes any value, so only this reconstruction is per-type.
+// The generated code uses only json/result/list/option.
+pub fn derive_deserialize(t: TypeInfo) -> ItemSyntax:
+    item(derive_deserialize_source(t))
+
+fn derive_deserialize_source(t: TypeInfo) -> String:
+    var lets = []
+    var names = []
+    var i = 0
+    for f in t.fields:
+        let local = "__field${i}"
+        list.push(lets, "        let " + local + " = " + json_decode_field(f.type_expr, "__j", f.name) + "\n")
+        list.push(names, local)
+        i = i + 1
+    let from_json = "    fn from_json(__j: json.Json) -> Result(Self, json.DeserializeError):\n" + list.join(lets, "") + "        Ok(" + t.name + "(" + list.join(names, ", ") + "))\n"
+    // The generated body makes module-qualified calls (json.*, list.map, result.all);
+    // emitted source is parsed on its own, so it must carry those imports for the
+    // parser to qualify them (comptime merges them into the module). A generic type's
+    // impl carries its parameters and a `: Deserialize` bound per parameter — the same
+    // `target_with_params`/`where_each` convention every other standard derive uses —
+    // so `Box(a)` reconstructs coherently (each `a` field decodes via `a`'s bound).
+    "import json\nimport list\nimport result\n\nimpl Deserialize for " + target_with_params(t) + where_each(t.params, "Deserialize") + ":\n" + from_json

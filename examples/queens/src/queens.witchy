@@ -1,0 +1,69 @@
+// queens — the N-queens puzzle by backtracking. A partial placement is a list
+// where entry r is the column of the queen in row r; a new queen is safe if it
+// shares no column and no diagonal with the queens already placed. We count
+// every solution for the 8x8 board and render the first one found (column-order
+// DFS). Pure (Console only); identical interpreted and compiled. Run:
+//   witchy examples/queens/src/queens.witchy
+fn main(console: Console):
+    let n = 8
+    console.print("${n}" + "-queens solutions: " + "${count(n, [])}")
+    console.print("first solution:")
+    for queen_col in solve(n, []):
+        console.print(row_string(queen_col, n))
+
+// Total number of complete placements reachable from `placed`.
+pub fn count(n: Int, placed: List(Int)) -> Int:
+    if placed.length() == n:
+        1
+    else:
+        var total = 0
+        var col = 0
+        while col < n:
+            if safe(placed, col):
+                var next = placed
+                next.push(col)
+                total = total + count(n, next)
+            col = col + 1
+        total
+
+// The first complete placement found, or an empty list if none exists.
+pub fn solve(n: Int, placed: List(Int)) -> List(Int):
+    if placed.length() == n:
+        placed
+    else:
+        var result = []
+        var found = false
+        var col = 0
+        while col < n && !found:
+            if safe(placed, col):
+                var next = placed
+                next.push(col)
+                let attempt = solve(n, next)
+                if attempt.length() == n:
+                    result = attempt
+                    found = true
+            col = col + 1
+        result
+
+// Can a queen sit in `col` of the next row without attacking those placed?
+pub fn safe(placed: List(Int), col: Int) -> Bool:
+    let row = placed.length()
+    var ok = true
+    var r = 0
+    while r < row:
+        let c = placed.at(r)
+        if c == col || row - r == col - c || row - r == c - col:
+            ok = false
+        r = r + 1
+    ok
+
+pub fn row_string(queen_col: Int, n: Int) -> String:
+    var line = ""
+    var col = 0
+    while col < n:
+        if col == queen_col:
+            line = line + "Q"
+        else:
+            line = line + "."
+        col = col + 1
+    line

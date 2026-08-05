@@ -1,0 +1,57 @@
+// Parse mdBook's SUMMARY.md into the small navigation model used by the app.
+
+import list
+
+type Page:
+    title: String
+    slug: String
+
+type Entry:
+    PageLink(Int, Page)
+    Divider
+
+pub fn slug(route: String) -> String:
+    if route.starts_with("/p/"):
+        route.drop(3)
+    else:
+        "introduction"
+
+pub fn page_path(page: Page) -> String:
+    "/p/${page.slug}"
+
+pub fn is_current(page: Page, route: String) -> Bool:
+    page.slug == slug(route)
+
+fn depth(line: String) -> Int:
+    (line.length() - line.trim_start().length()) / 2
+
+fn page_from_line(line: String) -> Option(Page):
+    let (_prefix, after_open) = line.split_once_opt("[")?
+    let (title, after_title) = after_open.split_once_opt("](")?
+    let (slug, _suffix) = after_title.split_once_opt(".md)")?
+    Some(Page(title: title, slug: slug))
+
+pub fn parse(summary: String) -> List(Entry):
+    var entries = []
+    for line in summary.lines():
+        if line.trim() == "---":
+            entries.push(Divider)
+        else:
+            if let Some(page) = page_from_line(line):
+                entries.push(PageLink(depth(line), page))
+    entries
+
+pub fn pages(entries: List(Entry)) -> List(Page):
+    var result = []
+    for entry in entries:
+        if let PageLink(_depth, page) = entry:
+            result.push(page)
+    result
+
+pub fn route_position(ordered: List(Page), route: String) -> Option(Int):
+    ordered.position(fn(page: Page): is_current(page, route))
+
+pub fn cover_path(entries: List(Entry)) -> String:
+    match entries.head():
+        Some(PageLink(_depth, page)) -> page_path(page)
+        _ -> "/p/introduction"

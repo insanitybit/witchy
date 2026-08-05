@@ -1,0 +1,43 @@
+witchy — a capability-secure language with twin interpreter and WASM backends
+
+USAGE:
+    witchy [--net <host:port>]... [--fetch <origin>]... <file.witchy>
+                                                  run a program
+    witchy check    <file.witchy>                 check + verify compiled acceptance without running
+    witchy parity   <file.witchy>                 run on both backends, confirm identical output
+                                                  (a verify-the-compiler tool, not a workflow step)
+    witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] [--filter <text>] [--list] [--show-output] [--seed <u64>] [--format human|json] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
+                                                  run zero-authority fixture tests on one or both backends, or explicit integration tests
+    witchy new --web <directory>                  create a capability-safe Glamour project
+    witchy test --web [directory]                 validate a Glamour project and optimized browser artifact
+    witchy build --web [--out <directory>] [directory]
+                                                  create deterministic production web artifacts
+    witchy doctor --web [--format human|json] [directory]
+                                                  audit web project, target, ABI, and reproducibility
+    witchy dev [--host 127.0.0.1] [--port 3000] [directory]
+                                                  run the integrated Glamour development loop
+    witchy sandbox [--confine <best-effort|required>] [--dir <root>] [--net <addr>]... [--fetch <origin>]... <file.witchy> [args...]
+                                                  compile and run in a VM granted exactly its footprint
+    witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
+    witchy expand  <file.witchy>                  print canonical source after comptime/tag expansion
+    witchy caps     [file.witchy]                 report the capability footprint (defaults to the project entry)
+    witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
+    witchy which    <name>                        find a function in the standard library by (partial) name
+    witchy doc     <file.witchy>...                generate stdlib documentation from doc-comments
+    witchy compile <entry.witchy> [--dep name=path]... [--package-owner source package version module] [--dep-owner alias source package version module]... [--out <file.wasm>]
+                                                  compile to a standalone .wasm module
+    witchy --release build --target trusted-exe [--out <file>]
+                                                  build a trusted self-contained native application
+    witchy build-step <file.witchy> [--out <dir>] [--read <dir>]...
+                                                  run a build-time entrypoint with declared grants
+    witchy grants-check <prog.witchy> <grants.toml>
+                                                  verify a program's footprint fits declared grants
+    witchy fmt [--check] [--cap-methods] <file.witchy>
+                                                   reformat in place (--check: verify only, --cap-methods: RFC-0076 migration)
+    witchy lsp                                    run the language server
+
+Package commands: new, init, add, build, run [args...], update, audit, tree,
+outdated, why, why-cap, verify, vendor, publish, promote, yank, list — run
+`witchy pm` for the full package-manager help. All of them accept
+`-C <dir>`; `witchy run` passes everything after `run` (or after `--`) to the
+program as `main`'s `args`, including `--help`.

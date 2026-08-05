@@ -1,0 +1,17 @@
+[package]
+name = "witchy-caps"
+version = "0.1.0"
+edition = "2024"
+publish = false            # internal workspace crate — not published standalone
+license = "MIT OR Apache-2.0"
+description = "witchy compiler — capability footprint analysis and RFC-0013 grant documents"
+
+[dependencies]
+witchy-cap-model = { path = "../witchy-cap-model" }
+witchy-syntax = { path = "../witchy-syntax" }
+# Grant-document parsing (native-only).
+serde = { version = "1.0.228", features = ["derive"], optional = true }
+toml = { version = "1.1.2", optional = true }
+
+[features]
+native = ["dep:serde", "dep:toml"]

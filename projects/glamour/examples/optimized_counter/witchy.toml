@@ -1,0 +1,9 @@
+[rune]
+name = "optimized-counter"
+version = "0.1.0"
+
+[capabilities]
+runtime = []
+
+[dependencies]
+"glamour" = { path = "../.." }

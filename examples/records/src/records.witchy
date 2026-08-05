@@ -1,0 +1,19 @@
+// Records are product types with named fields. They're constructed positionally
+// (`Point(2, 3)`) and read by name (`p.x`). Like every value in witchy they are
+// plain capability-free data.
+type Point:
+    x: Int
+    y: Int
+
+fn manhattan(p: Point) -> Int:
+    p.x + p.y
+
+fn shift(p: Point, dx: Int) -> Point:
+    Point(p.x + dx, p.y)
+
+fn main(console: Console):
+    let origin = Point(2, 3)
+    let moved = shift(origin, 10)
+    console.print("origin.x = " + "${origin.x}")
+    console.print("moved = (${moved.x}, ${moved.y})")
+    console.print("manhattan(moved) = " + "${manhattan(moved)}")

@@ -1,0 +1,275 @@
+// markdown — a SAFE-subset Markdown -> glamour VNode renderer (RFC-0015 Phase A3).
+//
+// Untrusted Markdown (a package README, generated API docs) renders INLINE in the
+// trusted shell, safe BY CONSTRUCTION: every leaf is a glamour `text` node — never an
+// HTML-string sink — so raw HTML in the source is shown as literal text, never parsed
+// as markup; and a link's `href` is scheme-checked, so a `javascript:`/`data:` URL is
+// neutralized. This is witchy-rendered DATA, not foreign code, so it needs no
+// compartment. (`string`/`list` are prelude — pure, capability-free — so this module's
+// footprint stays empty, exactly like the rest of glamour.)
+
+from glamour import VNode
+
+// Render a Markdown document to a single container VNode.
+pub fn to_vnode(md: String) -> VNode(msg):
+    glamour.element("div", [glamour.prop("class", "markdown")], blocks(md.split("\n")))
+
+// --- block level (line-driven) ----------------------------------------------
+fn blocks(lines: List(String)) -> List(VNode(msg)):
+    var acc = []
+    var i = 0
+    let n = lines.length()
+    while i < n:
+        let line = lines.at(i)
+        if line.trim().is_empty():
+            i = i + 1
+        else if heading_level(line) > 0:
+            let lvl = heading_level(line)
+            let body = line.drop(lvl + 1)
+            acc.push(glamour.element("h${lvl}", [], inline(body)))
+            i = i + 1
+        else if line.starts_with("```"):
+            // Preserve the fence's INFO STRING (its language) as a `language-<lang>` class on
+            // the `<code>`, so a host can find runnable `witchy` blocks and highlight by
+            // language — the value is still inert text, so no sink is introduced.
+            let lang = line.drop(3).trim()
+            var code = []
+            var j = i + 1
+            while j < n && !lines.at(j).starts_with("```"):
+                code.push(lines.at(j))
+                j = j + 1
+            let code_attrs = if lang.is_empty(): [] else: [glamour.prop("class", "language-${lang}")]
+            let pre = glamour.element("pre", [], [glamour.element("code", code_attrs, [glamour.text(code.join("\n"))])])
+            acc.push(pre)
+            i = j + 1
+        else if is_list_item(line):
+            var items = []
+            var j = i
+            while j < n && is_list_item(lines.at(j)):
+                let text = lines.at(j).drop(2)
+                items.push(glamour.element("li", [], inline(text)))
+                j = j + 1
+            acc.push(glamour.element("ul", [], items))
+            i = j
+        else if is_table_row(line) && i + 1 < n && is_table_separator(lines.at(i + 1)):
+            // A GFM table: a header row, a `|---|---|` separator, then body rows. The separator
+            // (line i+1) is consumed but never rendered; body rows run until the first non-row.
+            let thead = glamour.element("thead", [], [glamour.element("tr", [], table_row_cells(line, "th"))])
+            var body_rows = []
+            var j = i + 2
+            while j < n && is_table_row(lines.at(j)):
+                body_rows.push(glamour.element("tr", [], table_row_cells(lines.at(j), "td")))
+                j = j + 1
+            acc.push(glamour.element("table", [], [thead, glamour.element("tbody", [], body_rows)]))
+            i = j
+        else:
+            var para = []
+            var j = i
+            while j < n && !block_break(lines.at(j)):
+                para.push(lines.at(j))
+                j = j + 1
+            acc.push(glamour.element("p", [], inline(para.join(" "))))
+            i = j
+    acc
+
+// A line that ends a paragraph (blank, a heading, a fence, or a list item).
+fn block_break(line: String) -> Bool:
+    line.trim().is_empty() || heading_level(line) > 0 || line.starts_with("```") || is_list_item(line)
+
+fn heading_level(line: String) -> Int:
+    if line.starts_with("###### "):
+        6
+    else if line.starts_with("##### "):
+        5
+    else if line.starts_with("#### "):
+        4
+    else if line.starts_with("### "):
+        3
+    else if line.starts_with("## "):
+        2
+    else if line.starts_with("# "):
+        1
+    else:
+        0
+
+fn is_list_item(line: String) -> Bool:
+    line.starts_with("- ") || line.starts_with("* ")
+
+// --- GFM tables (leading-pipe rows + a `|---|` separator) --------------------
+// Only the leading-pipe form is recognized (every table in our docs uses it), which keeps a
+// prose line that merely contains a `|` from ever being mistaken for a table.
+fn is_table_row(line: String) -> Bool:
+    line.trim().starts_with("|")
+
+// The delimiter row beneath the header (`|---|:--:|`): pipes, dashes, colons, spaces only, with
+// at least one dash. Alignment colons are tolerated but not (yet) applied as a text-align.
+fn is_table_separator(line: String) -> Bool:
+    let t = line.trim()
+    t.starts_with("|") && t.contains("-") && only_chars(t, "|-: ")
+
+fn only_chars(s: String, allowed: String) -> Bool:
+    var ok = true
+    var i = 0
+    let n = s.length()
+    while i < n:
+        if !allowed.contains(s.char_at(i) ?? ""):
+            ok = false
+        i = i + 1
+    ok
+
+// Split a `| a | b |` row into cell elements (`tag` = th/td), dropping the empty cells the
+// border pipes produce and rendering each cell's inline Markdown.
+fn table_row_cells(line: String, tag: String) -> List(VNode(msg)):
+    let raw = line.trim().split("|")
+    let m = raw.length()
+    var cells = []
+    var k = 0
+    while k < m:
+        let cell = raw.at(k)
+        let edge = k == 0 || k == m - 1
+        if !(edge && cell.trim().is_empty()):
+            cells.push(glamour.element(tag, [], inline(cell.trim())))
+        k = k + 1
+    cells
+
+// --- inline (recursive, earliest-marker) ------------------------------------
+// Handles `code`, **bold**, *emphasis*, and [text](url). Everything else is a
+// plain text node, so stray Markdown and raw HTML render as their literal
+// characters.
+fn inline(s: String) -> List(VNode(msg)):
+    if s.is_empty():
+        []
+    else:
+        let ci = s.index_of("`") ?? -1
+        let bi = s.index_of("**") ?? -1
+        let ki = s.index_of("[") ?? -1
+        let ei = s.index_of("*") ?? -1
+        let first = min4(ci, bi, ki, ei)
+        if first < 0:
+            [glamour.text(s)]
+        else:
+            let before = s.substring(0, first)
+            let head = if before.is_empty(): [] else: [glamour.text(before)]
+            if first == ci:
+                span(s, first, 1, "`", "code", head)
+            else if first == bi:
+                // Bold is checked before emphasis: the first `*` of a `**` shares
+                // this position, so `**` always wins the tie and `*emphasis*`
+                // only fires for a lone `*` that starts strictly earlier.
+                span(s, first, 2, "**", "strong", head)
+            else if first == ki:
+                link(s, first, head)
+            else:
+                span(s, first, 1, "*", "em", head)
+
+// A delimited inline span (`code`/**bold**): `open` is the marker, `dlen` its length,
+// `tag` the wrapping element. An unclosed marker renders as literal text.
+fn span(s: String, at: Int, dlen: Int, marker: String, tag: String, head: List(VNode(msg))) -> List(VNode(msg)):
+    let body_start = at + dlen
+    let rest_from_body = s.drop(body_start)
+    let close = rest_from_body.index_of(marker) ?? -1
+    if close < 0:
+        head.concat([glamour.text(s.drop(at))])
+    else:
+        let body = rest_from_body.substring(0, close)
+        let inner = if tag == "code": [glamour.text(body)] else: inline(body)
+        let node = glamour.element(tag, [], inner)
+        let rest = rest_from_body.drop(close + dlen)
+        head.concat([node]).concat(inline(rest))
+
+// A `[label](url)` link, with the href scheme-checked. A malformed link renders the
+// `[` as a literal character and continues.
+fn link(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg)):
+    let tail = s.drop(at)
+    let close_br = tail.index_of("](") ?? -1
+    if close_br < 0:
+        as_text_bracket(s, at, head)
+    else:
+        let label = tail.substring(1, close_br)
+        let url_start = close_br + 2
+        let rest_tail = tail.drop(url_start)
+        let close_par = rest_tail.index_of(")") ?? -1
+        if close_par < 0:
+            as_text_bracket(s, at, head)
+        else:
+            let url = rest_tail.substring(0, close_par)
+            let node = glamour.element("a", [glamour.prop("href", safe_href(url))], inline(label))
+            let consumed = at + url_start + close_par + 1
+            let rest = s.drop(consumed)
+            head.concat([node]).concat(inline(rest))
+
+fn as_text_bracket(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg)):
+    head.concat([glamour.text("[")]).concat(inline(s.drop(at + 1)))
+
+// Neutralize dangerous URL schemes. (BUG-409) This is an ALLOWLIST, not a denylist: only
+// `http`/`https`/`mailto`/`tel` schemes and scheme-less relative URLs pass; every other scheme
+// (`file:`, `ftp:`, `blob:`, `javascript:`, `data:`, `vbscript:`, and any future/custom scheme)
+// collapses to `#`. A denylist silently admits new schemes; an allowlist fails closed.
+// (BUG-283) A URL carrying an ASCII control character (`java\nscript:` and friends, which the
+// browser strips before scheme detection) is rejected outright — release-facing Markdown links
+// have no legitimate reason to contain raw controls.
+fn safe_href(url: String) -> String:
+    let trimmed = url.trim()
+    if has_control(trimmed):
+        "#"
+    else:
+        let lower = trimmed.to_lower()
+        if protocol_relative(trimmed):
+            "#"
+        else if allowed_scheme(lower):
+            trimmed
+        else if has_scheme(trimmed):
+            "#"
+        else:
+            trimmed
+
+fn allowed_scheme(lower: String) -> Bool:
+    lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:") || lower.starts_with("tel:")
+
+// Browsers normalize backslashes in special-scheme URLs. Any two leading slash-like
+// characters are therefore protocol-relative, including `//`, `\\`, `/\\`, and `\\/`.
+fn protocol_relative(s: String) -> Bool:
+    if s.length() < 2:
+        false
+    else:
+        let first = s.substring(0, 1)
+        let second = s.substring(1, 2)
+        (first == "/" || first == "\\") && (second == "/" || second == "\\")
+
+// A URL has a scheme when a `:` appears before any `/`, `\\`, `?`, or `#` (so `foo:bar` is
+// a scheme but `foo/bar:baz` and `page.html` are relative paths).
+fn has_scheme(s: String) -> Bool:
+    let ci = s.index_of(":") ?? -1
+    if ci < 0:
+        false
+    else:
+        colon_before(ci, s.index_of("/") ?? -1) && colon_before(ci, s.index_of("\\") ?? -1) && colon_before(ci, s.index_of("?") ?? -1) && colon_before(ci, s.index_of("#") ?? -1)
+
+fn colon_before(colon: Int, other: Int) -> Bool:
+    other < 0 || colon < other
+
+// True if the string contains any ASCII C0 control (U+0000–U+001F) or DEL (U+007F).
+fn has_control(s: String) -> Bool:
+    var found = false
+    var code = 0
+    while code < 32:
+        if s.contains(string.from_code(code)):
+            found = true
+        code = code + 1
+    found || s.contains(string.from_code(127))
+
+fn min4(a: Int, b: Int, c: Int, d: Int) -> Int:
+    min2(min3(a, b, c), d)
+
+fn min3(a: Int, b: Int, c: Int) -> Int:
+    min2(min2(a, b), c)
+
+fn min2(a: Int, b: Int) -> Int:
+    if a < 0:
+        b
+    else if b < 0:
+        a
+    else if a < b:
+        a
+    else:
+        b

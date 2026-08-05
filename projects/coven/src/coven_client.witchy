@@ -1,0 +1,131 @@
+// coven_client — a self-hosted client that drives a coven registry over HTTP, to
+// exercise the registry end-to-end: publish (stage), record, promote (release),
+// separation-of-duties, server-side footprint enforcement (under-declaration is
+// refused), and source fetch. It speaks the same JSON wire protocol as the Rust
+// client. Run against a coven server:
+//   witchy --net 127.0.0.1:8787 projects/coven/src/coven_client.witchy 127.0.0.1:8787
+
+import crypto
+import coven_proto
+from json import Json
+from http import Response
+
+fn registry_origin(host: String, port: Int) -> String:
+    "http://${host}:${port}"
+
+fn registry_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
+    let origin = registry_origin(host, port)
+    http.get(net.fetch(origin), origin + path)
+
+fn registry_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response:
+    let origin = registry_origin(host, port)
+    http.post(net.fetch(origin), origin + path, body)
+
+fn main(console: Console, net: Net, clock: Clock, args: List(String)):
+    let addr = if args.length() > 0: args.at(0) else: "127.0.0.1:8787"
+    let (host, port) = hostport(addr)
+
+    let rp = registry_get(net, host, port, "/coven/rootpub")
+    console.print("rootpub:${http.status(rp)}")
+
+    // publish acme/money@1.0.0 (a pure library — no capabilities). Anonymous registry:
+    // no identity token, so the builders pass `None`.
+    let pub1 = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml(), money_files(), "ci-bot", None))
+    let pub1_doc = json.decode(http.body(pub1)) ?? json.object_sorted([])
+    console.print("publish:${http.status(pub1)} state=${json.get_string(pub1_doc, "state") ?? "?"}")
+
+    let rec = registry_get(net, host, port, "/coven/record?name=acme~money&version=1.0.0")
+    let rec_doc = json.decode(http.body(rec)) ?? json.object_sorted([])
+    console.print("record:${http.status(rec)} state=${json.get_string(rec_doc, "state") ?? "?"}")
+
+    // promote with a DISTINCT identity (separation of duties holds) -> released
+    let prom = registry_post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "1.0.0", "webauthn", "release-human", None))
+    let prom_doc = json.decode(http.body(prom)) ?? json.object_sorted([])
+    console.print("promote:${http.status(prom)} state=${nested_state(prom_doc)} sod=${nested_bool(prom_doc)}")
+
+    // publish v2, then attempt to promote it as the SAME identity that uploaded
+    // it — separation of duties must refuse (403).
+    let pub2 = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml_v2(), money_files_v2(), "ci-bot", None))
+    console.print("publish2:${http.status(pub2)}")
+    let sod = registry_post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "2.0.0", "webauthn", "ci-bot", None))
+    console.print("selfpromote:${http.status(sod)}")
+
+    // an under-declared rune: the code demands Net but the manifest declares
+    // nothing — the server recomputes the footprint and refuses (400).
+    let leak = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(leak_toml(), leak_files(), "attacker", None))
+    console.print("underdeclared:${http.status(leak)}")
+
+    let src = registry_get(net, host, port, "/coven/source?name=acme~money&version=1.0.0")
+    console.print("source:${http.status(src)}")
+
+    let idx = registry_get(net, host, port, "/coven/index")
+    console.print("index:${http.status(idx)} ${http.body(idx)}")
+
+    // TUF roles: the snapshot pins every target (rollback protection) and the
+    // timestamp points at it with an expiry (freeze protection). Verify the
+    // snapshot's signature against the registry's published root key.
+    let rootpub = http.body(registry_get(net, host, port, "/coven/rootpub"))
+    let snap = registry_get(net, host, port, "/coven/snapshot")
+    console.print("snapshot:${http.status(snap)} verified=${verify_signed_doc(http.body(snap), rootpub)}")
+    let ts = registry_get(net, host, port, "/coven/timestamp")
+    console.print("timestamp:${http.status(ts)} verified=${verify_signed_doc(http.body(ts), rootpub)} fresh=${timestamp_fresh(http.body(ts), clock.now() / 1000)}")
+
+// Freeze protection: a verified timestamp is only trustworthy while it is
+// FRESH — replaying an old (validly signed) timestamp would let a mirror
+// freeze a client on stale targets, so an expired one is refused.
+fn timestamp_fresh(text: String, now_seconds: Int) -> String:
+    match json.decode(text):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) ->
+                match json.get_int(signed, "expires"):
+                    Some(expires) -> if expires > now_seconds: "true" else: "false"
+                    None -> "no-expiry"
+            None -> "no-signed"
+        Err(_e) -> "decode-err"
+
+// Verify a signed TUF role: re-encode its `signed` payload canonically and check
+// the ed25519 signature against the registry root key.
+fn verify_signed_doc(text: String, rootpub: String) -> String:
+    match json.decode(text):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) ->
+                match crypto.ed25519_verify(rootpub, json.encode(signed), json.get_string(doc, "sig") ?? ""):
+                    Ok(true) -> "true"
+                    Ok(false) -> "false"
+                    Err(_e) -> "false"
+            None -> "no-signed"
+        Err(_e) -> "decode-err"
+
+// --- fixtures ----------------------------------------------------------------
+fn money_toml() -> String:
+    "[rune]\nname = \"acme/money\"\nversion = \"1.0.0\"\n"
+
+fn money_files() -> List((String, String)):
+    [("witchy.toml", money_toml()), ("src/money.witchy", "fn dollars(n: Int) -> Int:\n    n * 100\n")]
+
+fn money_toml_v2() -> String:
+    "[rune]\nname = \"acme/money\"\nversion = \"2.0.0\"\n"
+
+fn money_files_v2() -> List((String, String)):
+    [("witchy.toml", money_toml_v2()), ("src/money.witchy", "fn dollars(n: Int) -> Int:\n    n * 100\n")]
+
+fn leak_toml() -> String:
+    "[rune]\nname = \"acme/leak\"\nversion = \"1.0.0\"\n"
+
+fn leak_files() -> List((String, String)):
+    [("witchy.toml", leak_toml()), ("src/leak.witchy", "fn main(c: Console, net: Net):\n    let s = net.connect(\"example.com:80\")\n    c.print(\"x\")\n")]
+
+// --- response parsing --------------------------------------------------------
+fn hostport(addr: String) -> (String, Int):
+    let (host, portstr) = addr.split_once(":")
+    (host, portstr.to_int())
+
+fn nested_state(doc: Json) -> String:
+    match json.get(doc, "record"):
+        Some(rec) -> json.get_string(rec, "state") ?? "?"
+        None -> "?"
+
+fn nested_bool(doc: Json) -> String:
+    match json.get_bool(doc, "separation_of_duties"):
+        Some(v) -> if v: "true" else: "false"
+        None -> "?"

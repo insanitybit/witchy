@@ -1,0 +1,73 @@
+// Render staged book Markdown and replace supported fenced blocks with host
+// slots. Build-time staging marks each Witchy block from the compiler-generated
+// examples manifest; this module does not guess browser support from source.
+// The host owns each slot subtree, so Glamour never diffs inside it.
+
+import list
+import markdown
+from glamour import VNode, Attr
+
+pub fn render(source: String) -> VNode(msg):
+    match markdown.to_vnode(source):
+        Element(tag, attrs, blocks) -> Element(tag, attrs, blocks.map(with_slot))
+        other -> other
+
+fn with_slot(block: VNode(msg)) -> VNode(msg):
+    match fenced_code(block):
+        Some((language, source)) -> slot_for(language, source, block)
+        None -> block
+
+fn fenced_code(block: VNode(msg)) -> Option((String, String)):
+    match block:
+        Element(tag, _attrs, children) ->
+            if tag == "pre":
+                code_child(children)
+            else:
+                None
+        _ -> None
+
+fn code_child(children: List(VNode(msg))) -> Option((String, String)):
+    match children.head():
+        Some(Element(tag, attrs, body)) ->
+            if tag == "code":
+                Some((code_language(attrs), code_text(body)))
+            else:
+                None
+        _ -> None
+
+fn slot_for(language: String, source: String, original: VNode(msg)) -> VNode(msg):
+    match language:
+        "witchy-runnable" -> glamour.slot("witchy-runnable", source)
+        "witchy-static" -> glamour.slot("witchy-static", source)
+        "witchy" ->
+            // An unclassified Witchy fence fails closed to read-only. Production
+            // bundles replace every plain `witchy` marker during staging.
+            glamour.slot("witchy-static", source)
+        "sh" -> glamour.slot("shell-static", source)
+        "toml" -> glamour.slot("toml-static", source)
+        "glamour-app" -> glamour.slot("glamour-app", source.trim())
+        _ -> original
+
+fn attr_language(attr: Attr(msg)) -> String:
+    match attr:
+        Prop(name, value) ->
+            if name == "class" && value.starts_with("language-"):
+                value.drop(9)
+            else:
+                ""
+        On(_event, _msg) -> ""
+        OnInput(_event, _tag) -> ""
+
+fn code_language(attrs: List(Attr(msg))) -> String:
+    attrs.fold("", fn(language: String, attr: Attr(msg)):
+        let candidate = attr_language(attr)
+        if candidate.is_empty():
+            language
+        else:
+            candidate
+    )
+
+fn code_text(children: List(VNode(msg))) -> String:
+    match children.head():
+        Some(Text(source)) -> source
+        _ -> ""

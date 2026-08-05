@@ -1,0 +1,23 @@
+// The `?` operator propagates errors. `e?` unwraps an `Ok`/`Some` to its value,
+// or short-circuits — returning the `Err`/`None` straight out of the enclosing
+// function. The function must itself return a matching Result/Option, so the
+// error type is checked end to end. Both ADTs are part of the prelude.
+pub fn checked_div(a: Int, b: Int) -> Result(Int, String):
+    match b:
+        0 -> Err("divide by zero")
+        _ -> Ok(a / b)
+
+pub fn compute(x: Int, y: Int, z: Int) -> Result(Int, String):
+    let p = checked_div(x, y)?
+    let q = checked_div(p, z)?
+    Ok(q + 1)
+
+pub fn show(r: Result(Int, String)) -> String:
+    match r:
+        Ok(n) -> "= " + "${n}"
+        Err(e) -> "error: " + e
+
+fn main(console: Console):
+    console.print(show(compute(100, 5, 2)))
+    console.print(show(compute(100, 0, 2)))
+    console.print(show(compute(100, 5, 0)))

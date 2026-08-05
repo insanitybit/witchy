@@ -1,0 +1,15 @@
+// In-rune tests for `generators`. Each `test_*` function takes no parameters,
+// passes by returning, and fails by aborting (the `testing` assertions do that
+// with a message). Run them with `witchy test examples/generators`.
+
+import generators
+import testing
+
+fn test_show():
+    testing.assert_eq(generators.show([1, 2, 3]), "1, 2, 3")
+
+fn test_show_single():
+    testing.assert_eq(generators.show([42]), "42")
+
+fn test_show_empty():
+    testing.assert_eq(generators.show([]), "")

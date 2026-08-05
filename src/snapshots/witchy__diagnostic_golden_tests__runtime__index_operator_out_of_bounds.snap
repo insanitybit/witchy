@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "trap_pair(\"fn main(console: Console):\\n    let xs = [1, 2]\\n    console.print(__render(xs[9]))\\n\")"
+---
+interp: runtime error: `main`, line 3: list index 9 out of bounds (length 2)
+wasm:   runtime error: `main`, line 3: list index 9 out of bounds (length 2)

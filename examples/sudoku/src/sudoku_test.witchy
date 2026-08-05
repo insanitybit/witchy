@@ -1,0 +1,21 @@
+// In-rune tests for `sudoku`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/sudoku`.
+
+import sudoku
+import testing
+
+let puzzle = [[5, 3, 0, 0, 7, 0, 0, 0, 0], [6, 0, 0, 1, 9, 5, 0, 0, 0], [0, 9, 8, 0, 0, 0, 0, 6, 0], [8, 0, 0, 0, 6, 0, 0, 0, 3], [4, 0, 0, 8, 0, 3, 0, 0, 1], [7, 0, 0, 0, 2, 0, 0, 0, 6], [0, 6, 0, 0, 0, 0, 2, 8, 0], [0, 0, 0, 4, 1, 9, 0, 0, 5], [0, 0, 0, 0, 8, 0, 0, 7, 9]]
+
+let solution = "534678912\n672195348\n198342567\n859761423\n426853791\n713924856\n961537284\n287419635\n345286179"
+
+fn test_solve():
+    match sudoku.solve(puzzle):
+        Some(solved) -> testing.assert_eq(sudoku.render(solved), solution)
+        None -> testing.fail_with("expected a solution")
+
+fn test_consistent():
+    // Row 0 already holds a 5, so placing 5 at an empty cell in that row is not
+    // consistent; placing 4 there (absent from row, column, and box) is.
+    testing.assert(!sudoku.consistent(puzzle, 0, 2, 5), "5 already in row 0")
+    testing.assert(sudoku.consistent(puzzle, 0, 2, 4), "4 fits at (0,2)")

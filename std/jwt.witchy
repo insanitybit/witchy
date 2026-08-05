@@ -1,0 +1,414 @@
+// jwt — verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy
+// over `crypto` (RS256), `encoding` (base64url), and `json`. Verification is
+// computation, so this module has no host capability of its own — fetching the
+// signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
+//
+// A compact JWT is `header.payload.signature`, each base64url. The signature covers
+// the ASCII bytes of `header.payload`; for RS256 it is verified against the issuer's
+// RSA public key (DER PKCS#1, hex). On success the decoded payload `claims` are
+// returned for the caller to inspect (`sub`, `iss`, provider-specific owner fields).
+
+import string
+import list
+import crypto
+import encoding
+import option
+import math
+import show
+import error
+import convert
+from json import Json
+
+// Matchable compact-JWT/OIDC verification failures. These distinguish malformed
+// wire segments, malformed JSON/JWKS metadata, invalid signatures, and semantic
+// claim rejection without forcing callers to parse display strings.
+type JwtError:
+    MalformedCompact
+    NoHeaderSegment
+    NoPayloadSegment
+    HeaderBase64(String)
+    HeaderJson(String)
+    HeaderMissingAlg
+    HeaderMissingKid
+    UnsupportedAlg(String)
+    SignatureSegmentBase64(String)
+    SignatureInputMalformed(String)
+    SignatureInvalid
+    PayloadBase64(String)
+    PayloadJson(String)
+    MissingClaim(String)
+    IntClaimExpected(String)
+    StringClaimExpected(String)
+    AudienceClaimExpected
+    AudienceArrayStringExpected
+    TokenExpired
+    AudienceMismatch
+    IssuerMismatch
+    NotYetValid
+    AuthorizedPartyMismatch
+    FreshnessPolicyInvalid
+    IssuedAtBeforeEpoch(Int)
+    IssuedAtAfterExpiry(Int, Int)
+    IssuedAtInFuture(Int, Int)
+    TokenLifetimeTooLong(Int, Int)
+    JwkModulusBase64(String)
+    JwkExponentBase64(String)
+    JwkModulusEmpty
+    JwkExponentEmpty
+    JwksMissingKeys
+    JwksKeysNotArray
+    JwksNoMatchingRsaKey(String)
+
+// Human-readable JWT/OIDC failure text for logs, CLI output, and HTTP responses.
+pub fn jwt_error_message(e: JwtError) -> String:
+    match e:
+        MalformedCompact -> "malformed JWT: expected three `.`-separated segments"
+        NoHeaderSegment -> "malformed JWT: no header segment"
+        NoPayloadSegment -> "malformed JWT: no payload segment"
+        HeaderBase64(reason) -> "JWT header is not valid base64url: " + reason
+        HeaderJson(reason) -> "JWT header is not JSON: " + reason
+        HeaderMissingAlg -> "JWT header is missing `alg`"
+        HeaderMissingKid -> "JWT header is missing `kid`"
+        UnsupportedAlg(alg) -> "JWT `alg` is `" + alg + "`, not the required `RS256`"
+        SignatureSegmentBase64(reason) -> "JWT signature segment is malformed: " + reason
+        SignatureInputMalformed(reason) -> "JWT signature input is malformed: " + reason
+        SignatureInvalid -> "JWT signature is invalid (untrusted or forged)"
+        PayloadBase64(reason) -> "JWT payload is not valid base64url: " + reason
+        PayloadJson(reason) -> "JWT payload is not JSON: " + reason
+        MissingClaim(name) -> "JWT payload is missing `" + name + "`"
+        IntClaimExpected(name) -> "JWT payload `" + name + "` must be an integer"
+        StringClaimExpected(name) -> "JWT payload `" + name + "` must be a string"
+        AudienceClaimExpected -> "JWT payload `aud` must be a string or array of strings"
+        AudienceArrayStringExpected -> "JWT payload `aud` array must contain only strings"
+        TokenExpired -> "JWT has expired"
+        AudienceMismatch -> "JWT audience mismatch (wrong relying party / replay)"
+        IssuerMismatch -> "JWT issuer mismatch (untrusted identity provider)"
+        NotYetValid -> "JWT is not yet valid (nbf is in the future)"
+        AuthorizedPartyMismatch -> "JWT `azp` mismatch: a multi-audience OIDC token must name this client as the authorized party"
+        FreshnessPolicyInvalid -> "JWT freshness policy requires non-negative current time, maximum lifetime, and clock skew"
+        IssuedAtBeforeEpoch(iat) -> "JWT `iat` ${iat} is before the Unix epoch"
+        IssuedAtAfterExpiry(iat, exp) -> "JWT `iat` ${iat} is after its `exp` ${exp}"
+        IssuedAtInFuture(iat, skew) -> "JWT `iat` ${iat} is too far in the future (allowed issuer clock skew: ${skew}s)"
+        TokenLifetimeTooLong(actual, maximum) -> "JWT lifetime ${actual}s exceeds the relying party's ${maximum}s maximum"
+        JwkModulusBase64(reason) -> "JWK modulus `n` is not valid base64url: " + reason
+        JwkExponentBase64(reason) -> "JWK exponent `e` is not valid base64url: " + reason
+        JwkModulusEmpty -> "JWK modulus `n` is empty or missing"
+        JwkExponentEmpty -> "JWK exponent `e` is empty or missing"
+        JwksMissingKeys -> "JWKS has no `keys` array"
+        JwksKeysNotArray -> "JWKS `keys` is not an array (malformed issuer metadata)"
+        JwksNoMatchingRsaKey(key_id) -> "no RSA key in the JWKS matches kid `" + key_id + "`"
+
+impl Show for JwtError:
+    fn show(self) -> String:
+        jwt_error_message(self)
+
+impl Error for JwtError
+
+impl From(JwtError) for String:
+    fn from(value: JwtError) -> Self:
+        jwt_error_message(value)
+
+// Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 RSA
+// public key (hex), checking the signature, `exp > now` (unix seconds), and
+// `aud == audience`. Returns the decoded claims, or a typed error.
+pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String, now: Int) -> Result(Json, JwtError):
+    let parts = token.split(".")
+    if list.length(parts) != 3:
+        Err(MalformedCompact)
+    else:
+        // Pin the algorithm: the JOSE header's `alg` MUST be exactly `RS256`. An
+        // attacker-chosen `alg` (`none`, a symmetric alg, a downgrade) is refused
+        // here rather than trusted — algorithm confusion is defended by failing
+        // closed on anything but RS256, never by honouring the header (BUG-250,
+        // RFC 8725 §3.1).
+        let alg = header_alg(list.at(parts, 0))?
+        if alg != "RS256":
+            Err(UnsupportedAlg(alg))
+        else:
+            let signed = list.at(parts, 0) + "." + list.at(parts, 1)
+            // A malformed signature segment is a distinct, reachable error — not a
+            // silent truncation to garbage bytes that would later read as "signature
+            // invalid". Rejecting on the decode error is the safe direction.
+            let sig_hex = encoding.base64url_to_hex(list.at(parts, 2)).map_err(fn(e: encoding.EncodingError): SignatureSegmentBase64(encoding.encoding_error_message(e)))?
+            match crypto.rsa_pkcs1_sha256_verify(rsa_pubkey_der_hex, signed, sig_hex):
+                Err(e) -> Err(SignatureInputMalformed(crypto.verify_error_message(e)))
+                Ok(false) -> Err(SignatureInvalid)
+                Ok(true) -> check_claims(list.at(parts, 1), audience, now)
+
+// The `alg` from a compact JWT's base64url header segment, or an `Err` if the
+// header is not valid base64url/JSON or carries no `alg`. A missing `alg` is an
+// error (fail closed), not a default.
+fn header_alg(header_b64: String) -> Result(String, JwtError):
+    let header_json = encoding.base64url_decode(header_b64).map_err(fn(e: encoding.EncodingError): HeaderBase64(encoding.encoding_error_message(e)))?
+    match json.decode(header_json):
+        Err(e) -> Err(HeaderJson(json.decode_error_message(e)))
+        Ok(h) ->
+            match json.get_string(h, "alg"):
+                Some(a) -> Ok(a)
+                None -> Err(HeaderMissingAlg)
+
+// Decode and validate the payload's registered claims: `exp` not in the past, and the
+// audience matches (defends against a token minted for a different relying party).
+fn check_claims(payload_b64: String, audience: String, now: Int) -> Result(Json, JwtError):
+    let payload_json = encoding.base64url_decode(payload_b64).map_err(fn(e: encoding.EncodingError): PayloadBase64(encoding.encoding_error_message(e)))?
+    match json.decode(payload_json):
+        Err(e) -> Err(PayloadJson(json.decode_error_message(e)))
+        Ok(claims) ->
+            let exp = require_int_claim(claims, "exp")?
+            if exp <= now:
+                Err(TokenExpired)
+            else:
+                let aud_ok = aud_matches(claims, audience)?
+                if !aud_ok:
+                    Err(AudienceMismatch)
+                else:
+                    Ok(claims)
+
+// The `aud` claim may be a single string OR an array of strings (RFC 7519 §4.1.3):
+// the token is accepted when `audience` is that string, or is a member of that array.
+// A missing or wrong-shaped `aud` is malformed input; a well-shaped claim that lacks
+// this relying party is an audience mismatch (BUG-270).
+fn aud_matches(claims: Json, audience: String) -> Result(Bool, JwtError):
+    match json.get(claims, "aud"):
+        None -> Err(MissingClaim("aud"))
+        Some(aud) ->
+            match json.as_string(aud):
+                Some(single) -> Ok(single == audience)
+                None ->
+                    match json.as_array(aud):
+                        None -> Err(AudienceClaimExpected)
+                        Some(items) -> aud_array_matches(items, audience)
+
+fn aud_array_matches(items: List(Json), audience: String) -> Result(Bool, JwtError):
+    var found = false
+    for item in items:
+        match json.as_string(item):
+            None -> return Err(AudienceArrayStringExpected)
+            Some(aud) ->
+                if aud == audience:
+                    found = true
+    Ok(found)
+
+// The generic OIDC relying-party check: verify the RS256 signature AND that the token was
+// minted by the expected `issuer` for the expected `audience`, and is valid now
+// (`exp`/`nbf`). Returns the identity claims — `sub` plus provider-specific fields like
+// GitHub's `repository` or Google's `email` — for the caller to authorize. This is the
+// base check once it holds the issuer's JWKS key (`rsa_key_from_jwk`). Login and
+// trusted-publishing flows should use `verify_oidc_fresh`, which adds their explicit
+// `iat` and maximum-lifetime policy. The issuer check is what binds a token to a
+// TRUSTED provider: without it, anyone who can mint a JWT for the right audience
+// would be admitted.
+pub fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError):
+    match verify_rs256(token, rsa_pubkey_der_hex, audience, now):
+        Err(e) -> Err(e)
+        Ok(claims) ->
+            let iss = require_string_claim(claims, "iss")?
+            if iss != issuer:
+                Err(IssuerMismatch)
+            else:
+                let early = not_yet_valid(claims, now)?
+                if early:
+                    Err(NotYetValid)
+                else:
+                    let azp = azp_ok(claims, audience)?
+                    if !azp:
+                        Err(AuthorizedPartyMismatch)
+                    else:
+                        Ok(claims)
+
+// The stricter relying-party entrypoint for short-lived identity tokens. RFC 7519
+// defines `iat` as optional in generic JWTs; OIDC relying parties choose their own
+// acceptable freshness range. This variant makes that application policy explicit:
+// `iat` is required, `exp - iat` may not exceed `max_lifetime`, and an issuer clock
+// may lead the relying-party clock by at most `clock_skew` seconds. Signature,
+// issuer, audience, expiry, nbf, and azp checks are still those of `verify_oidc`.
+//
+// `clock_skew` applies only to a future `iat`. Expiry and nbf remain strict, so this
+// API never extends the token's signed validity interval.
+pub fn verify_oidc_fresh(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError):
+    if now < 0 || max_lifetime < 0 || clock_skew < 0:
+        Err(FreshnessPolicyInvalid)
+    else:
+        let claims = verify_oidc(token, rsa_pubkey_der_hex, issuer, audience, now)?
+        check_freshness(claims, now, max_lifetime, clock_skew)?
+        Ok(claims)
+
+fn check_freshness(claims: Json, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Nil, JwtError):
+    let iat = require_int_claim(claims, "iat")?
+    let exp = require_int_claim(claims, "exp")?
+    if iat < 0:
+        Err(IssuedAtBeforeEpoch(iat))
+    else if iat > exp:
+        Err(IssuedAtAfterExpiry(iat, exp))
+    else if exp - iat > max_lifetime:
+        Err(TokenLifetimeTooLong(exp - iat, max_lifetime))
+    else if iat > now && iat - now > clock_skew:
+        Err(IssuedAtInFuture(iat, clock_skew))
+    else:
+        Ok(Nil)
+
+// OpenID Connect Core §3.1.3.7: when an ID Token carries MORE THAN ONE audience,
+// the `azp` (authorized party) claim MUST be present and MUST be this relying
+// party's client id. `aud_matches` already proves we are IN the audience list;
+// this additionally binds the AUTHORIZED party, so a token minted for several
+// clients cannot be replayed at ours by a co-audience. A single-audience token
+// (the common case) needs no `azp`, so it always passes.
+fn azp_ok(claims: Json, audience: String) -> Result(Bool, JwtError):
+    if aud_count(claims) <= 1:
+        Ok(true)
+    else:
+        let azp = require_string_claim(claims, "azp")?
+        Ok(azp == audience)
+
+// The number of audiences in the `aud` claim: 1 for a bare string, the array
+// length for an array (RFC 7519 §4.1.3), 0 when absent or wrong-typed.
+fn aud_count(claims: Json) -> Int:
+    match json.get(claims, "aud"):
+        None -> 0
+        Some(aud) ->
+            match json.as_string(aud):
+                Some(_single) -> 1
+                None ->
+                    match json.as_array(aud):
+                        Some(items) -> list.length(items)
+                        None -> 0
+
+// The optional `nbf` (not-before) claim: a token is rejected until its activation time.
+// Absent `nbf` means always-active (only `exp` bounds it).
+fn not_yet_valid(claims: Json, now: Int) -> Result(Bool, JwtError):
+    match json.get(claims, "nbf"):
+        None -> Ok(false)
+        Some(nbf) ->
+            match json.as_int(nbf):
+                None -> Err(IntClaimExpected("nbf"))
+                Some(n) -> Ok(n > now)
+
+fn require_int_claim(claims: Json, name: String) -> Result(Int, JwtError):
+    match json.get(claims, name):
+        None -> Err(MissingClaim(name))
+        Some(value) ->
+            match json.as_int(value):
+                Some(n) -> Ok(n)
+                None -> Err(IntClaimExpected(name))
+
+fn require_string_claim(claims: Json, name: String) -> Result(String, JwtError):
+    match json.get(claims, name):
+        None -> Err(MissingClaim(name))
+        Some(value) ->
+            match json.as_string(value):
+                Some(s) -> Ok(s)
+                None -> Err(StringClaimExpected(name))
+
+// The decoded JOSE header of a compact JWT (its first segment), or an error — so a
+// verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
+pub fn header(token: String) -> Result(Json, JwtError):
+    let parts = token.split(".")
+    if list.length(parts) < 1 || list.at(parts, 0).is_empty():
+        Err(NoHeaderSegment)
+    else:
+        let header_json = encoding.base64url_decode(list.at(parts, 0)).map_err(fn(e: encoding.EncodingError): HeaderBase64(encoding.encoding_error_message(e)))?
+        match json.decode(header_json):
+            Err(e) -> Err(HeaderJson(json.decode_error_message(e)))
+            Ok(doc) -> Ok(doc)
+
+// The payload claims of a compact JWT WITHOUT verifying its signature — for reading the
+// routing fields (`iss`, and `kid` via `header`) needed to SELECT the verification key
+// before `verify_oidc`. DANGER: never authorize on these claims; verify the signature
+// first and read the claims `verify_oidc` returns.
+pub fn claims_unverified(token: String) -> Result(Json, JwtError):
+    let parts = token.split(".")
+    if list.length(parts) < 2 || list.at(parts, 1).is_empty():
+        Err(NoPayloadSegment)
+    else:
+        let payload_json = encoding.base64url_decode(list.at(parts, 1)).map_err(fn(e: encoding.EncodingError): PayloadBase64(encoding.encoding_error_message(e)))?
+        match json.decode(payload_json):
+            Err(e) -> Err(PayloadJson(json.decode_error_message(e)))
+            Ok(doc) -> Ok(doc)
+
+// Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) from a
+// JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS
+// entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER
+// `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit
+// is set (DER integers are signed two's-complement, RSA values are unsigned magnitudes).
+pub fn rsa_key_from_jwk(n: String, e: String) -> Result(String, JwtError):
+    let n_hex = encoding.base64url_to_hex(n).map_err(fn(err: encoding.EncodingError): JwkModulusBase64(encoding.encoding_error_message(err)))?
+    let e_hex = encoding.base64url_to_hex(e).map_err(fn(err: encoding.EncodingError): JwkExponentBase64(encoding.encoding_error_message(err)))?
+    // Reject an empty/missing `n` or `e` (a JWK with no such member decodes to empty
+    // hex): building a key from them would yield a structurally-valid but bogus DER
+    // key that later "verifies" nothing, so fail closed here (BUG-408).
+    if n_hex.is_empty():
+        Err(JwkModulusEmpty)
+    else if e_hex.is_empty():
+        Err(JwkExponentEmpty)
+    else:
+        let body = der_integer(n_hex) + der_integer(e_hex)
+        Ok("30" + der_len(body) + body)
+
+// An ASN.1 INTEGER (tag `02`) wrapping an unsigned magnitude, sign-padded with `00`
+// when the high bit would otherwise read as negative.
+fn der_integer(value_hex: String) -> String:
+    let content = if high_bit_set(value_hex): "00" + value_hex else: value_hex
+    "02" + der_len(content) + content
+
+// DER length of a hex string's byte count (`len/2`): short form below 128, else a
+// `0x8N` count-of-length-bytes prefix. RSA keys stay well under 65536 bytes, so one or
+// two length bytes always suffice.
+fn der_len(content_hex: String) -> String:
+    let n = content_hex.length() / 2
+    if n < 128:
+        byte_hex(n)
+    else if n < 256:
+        "81" + byte_hex(n)
+    else:
+        "82" + math.to_hex(n).pad_left(4, "0")
+
+// A single byte as exactly two lowercase hex digits.
+fn byte_hex(b: Int) -> String:
+    math.to_hex(b).pad_left(2, "0")
+
+// Is the top bit of the first byte set (first hex digit in `8`..`f`)? Empty hex is not.
+fn high_bit_set(value_hex: String) -> Bool:
+    !value_hex.is_empty() && "89abcdef".contains(value_hex.char_at(0) ?? "")
+
+// Require the `kid` (key id) from a compact JWT header, preserving malformed
+// compact/header input and a missing `kid` as matchable `JwtError` cases.
+pub fn require_kid(token: String) -> Result(String, JwtError):
+    let h = header(token)?
+    match json.get_string(h, "kid"):
+        Some(k) -> Ok(k)
+        None -> Err(HeaderMissingKid)
+
+// Optional convenience for callers that genuinely treat a malformed/missing key
+// id as absence. Verification boundaries should use `require_kid`.
+pub fn kid(token: String) -> Option(String):
+    match require_kid(token):
+        Err(_) -> None
+        Ok(k) -> Some(k)
+
+// Select the RSA public key for `kid` from a JWKS document (`{"keys":[{"kty":"RSA","kid":
+// …,"n":…,"e":…}, …]}`) and return it as the DER PKCS#1 hex `verify_rs256`/`verify_oidc`
+// want. This is how an OIDC verifier consumes a provider's published keys (Google, GitHub
+// Actions): fetch the JWKS, read the token's `kid` (`jwt.kid`), then pick the key.
+pub fn rsa_key_for_kid(jwks: Json, key_id: String) -> Result(String, JwtError):
+    match json.get(jwks, "keys"):
+        // A present-but-wrong-typed `keys` is malformed issuer metadata, not an
+        // empty key set: fail with a distinct "not an array" error rather than
+        // defaulting to [] and reporting "no matching key" (BUG-408), so a
+        // provider/config error is diagnosed at the JWKS boundary.
+        None -> Err(JwksMissingKeys)
+        Some(keys) ->
+            match json.as_array(keys):
+                None -> Err(JwksKeysNotArray)
+                Some(arr) ->
+                    match find_rsa_jwk(arr, key_id):
+                        None -> Err(JwksNoMatchingRsaKey(key_id))
+                        Some(ne) ->
+                            let (n, e) = ne
+                            rsa_key_from_jwk(n, e)
+
+// First RSA JWK whose `kid` matches, as its `(n, e)` base64url pair.
+fn find_rsa_jwk(keys: List(Json), key_id: String) -> Option((String, String)):
+    for k in keys:
+        if json.get_string(k, "kty").unwrap_or("") == "RSA" && json.get_string(k, "kid").unwrap_or("") == key_id:
+            return Some((json.get_string(k, "n").unwrap_or(""), json.get_string(k, "e").unwrap_or("")))
+    None

@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"import list\\n\\nfn take(own xs: List(Int)) -> Int:\\n    list.length(xs)\\n\\nfn main(console: Console):\\n    let xs = [1, 2, 3]\\n    let a = take(xs)\\n    let b = take(xs)\\n    print(console, __render(a + b))\\n\")"
+---
+type error: `main`, line 9: use of `xs` after it was moved (consumed by an `own` parameter)

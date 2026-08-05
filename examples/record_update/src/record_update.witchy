@@ -1,0 +1,23 @@
+// Named-field construction and the spread `..base`. `Account(name: "x", ..a)`
+// makes a new record like `a` with some fields replaced — it never mutates `a`
+// (records are immutable values), and the field values can reference `a`.
+// Fields may be given in any order, and a bare `Account(name: …, balance: …)`
+// (no spread) constructs from scratch.
+type Account:
+    name: String
+    balance: Int
+
+fn deposit(a: Account, amount: Int) -> Account:
+    Account(balance: a.balance + amount, ..a)
+
+fn rename(a: Account, name: String) -> Account:
+    Account(name: name, ..a)
+
+fn main(console: Console):
+    let acc = Account(name: "alice", balance: 100)
+    let acc2 = deposit(acc, 50)
+    let acc3 = rename(acc2, "alice smith")
+
+    console.print(acc.name + " " + "${acc.balance}")
+    console.print(acc2.name + " " + "${acc2.balance}")
+    console.print(acc3.name + " " + "${acc3.balance}")

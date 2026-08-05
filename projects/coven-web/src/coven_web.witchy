@@ -1,0 +1,774 @@
+// coven-web — the secure web frontend server for the coven registry.
+//
+// 100% witchy on std/server. It serves a zero-dep SPA + the full security-header
+// stack (Perfect Types CSP, COOP/COEP/DIP cross-origin isolation, the
+// double-iframe `/sandbox-frame` bootstrap) and reverse-proxies coven's read API
+// same-origin, so the browser's `connect-src 'self'` is satisfied without CORS.
+//
+// Handlers are `fn(Request) -> Response` (no ambient authority). The proxy
+// handlers are *deliberately* given the `Net` capability via closure capture so
+// they can reach the upstream coven; nothing else can phone home.
+
+import server
+import ascii
+import list
+import crypto
+import encoding
+import webauthn
+import oauth
+import rand
+import jwt
+import secretstore
+import url
+import result
+import option
+from http import HttpError, Request, Response
+from json import Json
+
+fn upstream_origin(host: String, port: Int) -> String:
+    "http://${host}:${port}"
+
+fn upstream_try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, HttpError):
+    let origin = upstream_origin(host, port)
+    http.try_get(net.fetch(origin), origin + path)
+
+fn upstream_try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, HttpError):
+    let origin = upstream_origin(host, port)
+    http.try_post(net.fetch(origin), origin + path, body)
+
+fn fetch_for_url(net: Net[Connect, Tcp], request_url: String) -> Fetch:
+    net.fetch(http.origin(request_url))
+
+fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Clock, rand: Rand, args: List(String)):
+    // The root signing key is the store's `signing` secret (`--signing-key <seed>` is
+    // sugar for `--secret-file signing=<path>`); it backs sessions + OAuth state. The
+    // GitHub OAuth client secret, when present, is a second named secret.
+    let key = secrets.require("signing")
+    let listen_addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8080"
+    let upstream = if list.length(args) > 1: list.at(args, 1) else: "127.0.0.1:8787"
+    // The WebAuthn relying-party origin + id the server checks every assertion against.
+    let origin = if list.length(args) > 2: list.at(args, 2) else: "http://${listen_addr}"
+    let rp_id = if list.length(args) > 3: list.at(args, 3) else: "localhost"
+    // "Log in with GitHub" config. `gh_client_id` empty => login disabled. The base URLs
+    // are overridable (GitHub Enterprise, or a test's mock) and default to github.com.
+    let gh_client_id = if list.length(args) > 4: list.at(args, 4) else: ""
+    let gh_base = if list.length(args) > 5: list.at(args, 5) else: "https://github.com"
+    let gh_api = if list.length(args) > 6: list.at(args, 6) else: "https://api.github.com"
+    let gh_redirect = "${origin}/auth/github/callback"
+    // "Log in with Google" (OIDC) config. `google_client_id` empty => disabled. Google's
+    // authorize/token/JWKS live on three different hosts, so each is its own (overridable
+    // for a test mock) URL; the issuer is the fixed well-known `accounts.google.com`.
+    let google_client_id = if list.length(args) > 7: list.at(args, 7) else: ""
+    let google_authorize = if list.length(args) > 8: list.at(args, 8) else: "https://accounts.google.com/o/oauth2/v2/auth"
+    let google_token = if list.length(args) > 9: list.at(args, 9) else: "https://oauth2.googleapis.com/token"
+    let google_jwks = if list.length(args) > 10: list.at(args, 10) else: "https://www.googleapis.com/oauth2/v3/certs"
+    let google_redirect = "${origin}/auth/google/callback"
+
+    var app = server.router()
+    app = app.get("/", h_index_html(assets))
+    app = app.get("/index.html", h_index_html(assets))
+    app = app.get("/app.js", h_asset(assets, "app.js", "text/javascript; charset=utf-8"))
+    app = app.get("/styles.css", h_asset(assets, "styles.css", "text/css; charset=utf-8"))
+    // `source-sandbox.js` is the in-sandbox renderer; the glamour highlighter WASM
+    // is base64-INLINED into that bundle at build time (witchy's Dir `read` is
+    // UTF-8-only and cannot serve binary; inlining also keeps the wasm riding along
+    // with the renderer the parent already fetches same-origin and injects as TEXT,
+    // so no new binary route or frame fetch is introduced — `connect-src 'none'`
+    // on the frame stays intact). It runs under the pure-compute host, footprint-empty.
+    app = app.get("/source-sandbox.js", h_asset(assets, "source-sandbox.js", "text/javascript; charset=utf-8"))
+    app = app.get("/sandbox-frame", h_sandbox_frame())
+    // A foreign-code COMPARTMENT renderer (RFC-0015): the d3-style "runes over time" chart.
+    // Loaded by the glamour host shell into a sandboxed, opaque-origin iframe; served HERE
+    // with a locked `connect-src 'none'` compartment CSP (see `csp_for`). The renderer is
+    // self-contained (inline script) because an opaque-origin frame can't load external
+    // modules — the same reason source-sandbox inlines. Even compromised it is contained.
+    app = app.get("/compartments/d3-runes-chart/", h_asset(assets, "compartments/d3-runes-chart/index.html", "text/html; charset=utf-8"))
+    // Read API reverse-proxy — one explicit route per allowlisted coven endpoint
+    // (the route table IS the SSRF allowlist; decoded query values are re-encoded).
+    app = app.get("/api/coven/index", h_proxy(net, upstream, "/coven/index"))
+    app = app.get("/api/coven/catalog", h_proxy(net, upstream, "/coven/catalog"))
+    app = app.get("/api/coven/versions", h_proxy(net, upstream, "/coven/versions"))
+    app = app.get("/api/coven/record", h_proxy(net, upstream, "/coven/record"))
+    app = app.get("/api/coven/source", h_proxy(net, upstream, "/coven/source"))
+    app = app.get("/api/coven/doc", h_proxy(net, upstream, "/coven/doc"))
+    app = app.get("/api/coven/compartments", h_proxy(net, upstream, "/coven/compartments"))
+    app = app.get("/api/coven/rootpub", h_proxy(net, upstream, "/coven/rootpub"))
+    app = app.get("/api/coven/snapshot", h_proxy(net, upstream, "/coven/snapshot"))
+    app = app.get("/api/coven/timestamp", h_proxy(net, upstream, "/coven/timestamp"))
+    // Write endpoints (the only state-changing surface): the two-phase promote and
+    // yank. There is NO plain, session-only write route — a bearer session (mintable
+    // by any social login) is not sufficient authority to change registry state, and
+    // an anonymous upstream coven trusts a client-chosen promoter/yanker verbatim. So
+    // EVERY state-changing route below verifies a fresh, single-use WebAuthn assertion
+    // server-side (h_wa_promote / h_wa_yank) before forwarding to coven — a human at a
+    // passkey, not just a session. They still sit behind the Sec-Fetch CSRF layer.
+    // WebAuthn: register a credential, fetch a single-use challenge, sign IN (an
+    // assertion the server verifies, minting a session token), and the second-factor
+    // promote + yank that verify the assertion server-side before forwarding.
+    app = app.post("/api/webauthn/register", h_wa_register(assets))
+    // BUG-372: minting a challenge WRITES `_wa_challenge.json` (server state), so it must be a
+    // POST — a GET is CSRF-exempt (`is_state_changing` only flags unsafe methods), which would
+    // let a cross-site page silently rotate the outstanding challenge. As a POST it sits behind
+    // the Sec-Fetch CSRF layer like every other state change. The body binds it to an operation.
+    app = app.post("/api/webauthn/challenge", h_wa_challenge(assets, rand))
+    app = app.post("/api/webauthn/login", h_wa_login(assets, key, clock, origin, rp_id))
+    app = app.post("/api/coven/promote-2fa", h_wa_promote(assets, net, key, clock, upstream, origin, rp_id))
+    app = app.post("/api/coven/yank-2fa", h_wa_yank(assets, net, upstream, origin, rp_id))
+    // "Log in with GitHub" (OAuth2 Authorization Code) — registered only when a client
+    // id is configured. `/login` redirects to GitHub with a signed anti-CSRF state;
+    // `/callback` verifies the state, trades the code for a token, reads the user, and
+    // mints the same bearer session a passkey sign-in would (composition over std/oauth).
+    if gh_client_id != "":
+        app = app.get("/auth/github/login", h_github_login(key, clock, rand, gh_base, gh_client_id, gh_redirect))
+        app = app.get("/auth/github/callback", h_github_callback(assets, net, key, clock, secrets, gh_base, gh_api, gh_client_id, gh_redirect))
+    // "Log in with Google" (OIDC) — same shape, but the callback VERIFIES the id_token (a
+    // JWT) against Google's JWKS rather than fetching a user endpoint.
+    if google_client_id != "":
+        app = app.get("/auth/google/login", h_google_login(key, clock, rand, google_authorize, google_client_id, google_redirect))
+        app = app.get("/auth/google/callback", h_google_callback(assets, net, key, clock, secrets, google_token, google_jwks, google_client_id, google_redirect))
+    // Layer order (innermost -> outermost): spa_fallback rewrites a router 404 on a CLIENT
+    // route to the SPA shell (so a deep link / reload of /v/… loads the app, then the glamour
+    // rune routes from the URL), sec_fetch_csrf rejects cross-site writes before the handler,
+    // and security_headers is outer (so even a 403 carries the full stack).
+    app = app.layer(spa_fallback(assets))
+    app = app.layer(sec_fetch_csrf())
+    app = app.layer(security_headers())
+
+    console.print("coven-web serving http://${listen_addr}  -> coven ${upstream}")
+    server.serve(net, listen_addr, app)
+
+// ---- Static assets ----------------------------------------------------------
+fn h_index_html(assets: Dir) -> fn(Request) -> Response:
+    fn(req: Request): if assets.exists("index.html"): server.html(200, assets.read("index.html")) else: server.not_found()
+
+fn h_asset(assets: Dir, file: String, ctype: String) -> fn(Request) -> Response:
+    fn(req: Request): if assets.exists(file): Response(200, [("content-type", ctype)], assets.read(file)) else: server.not_found()
+
+// ---- The double-iframe sandbox bootstrap ------------------------------------
+// Served from a real same-origin URL so it gets its OWN CSP (sandbox CSP with
+// `connect-src 'none'`) from the response headers. The outer frame is loaded by
+// the parent with `sandbox="allow-scripts"` (opaque origin). This bootstrap then
+// creates a second, inner opaque-origin `srcdoc` iframe and relays a MessagePort
+// to it; all real rendering traffic flows over the private MessageChannel.
+fn h_sandbox_frame() -> fn(Request) -> Response:
+    fn(req: Request): server.html(200, sandbox_bootstrap())
+
+fn sandbox_bootstrap() -> String:
+    "<!doctype html><html><head><meta charset='utf-8'></head><body><script>if(window.origin!=='null'){document.body.textContent='This page must be loaded inside a sandboxed iframe.';}else{var d=document.documentElement.style;d.margin='0';d.height='100%';d.background='#0f0b16';document.body.style.margin='0';document.body.style.height='100%';window.addEventListener('message',function h(e){if(e.source!==window.parent)return;if(!e.data||e.data.type!=='init'||!e.ports.length)return;window.removeEventListener('message',h);var port=e.ports[0];var f=document.createElement('iframe');f.setAttribute('sandbox','allow-scripts');f.style.cssText='width:100%;height:100%;border:0;display:block';f.addEventListener('load',function(){f.contentWindow.postMessage({type:'port'},'*',[port]);});f.srcdoc=e.data.html;document.body.appendChild(f);});}</script></body></html>"
+
+// ---- Reverse proxy ----------------------------------------------------------
+fn h_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        match req:
+            // SEC-021: query values are forwarded verbatim into the upstream HTTP
+            // request line; a CR/LF would inject headers / smuggle a request. Rune
+            // names/versions never contain control characters, so refuse them.
+            Request(_m, _p, _pa, q, _h, _b) ->
+                if query_has_control(q):
+                    server.bad_request("{\"error\":\"invalid query\"}")
+                else:
+                    let qs = encode_query(q)
+                    let path = if qs == "": base else: "${base}?${qs}"
+                    let (host, port) = split_host_port(upstream)
+                    match upstream_try_get(net, host, port, path):
+                        Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                        Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+
+// SEC-021: true if any query key/value contains a CR or LF — the bytes that would
+// break out of the forwarded request line into header/request smuggling upstream.
+fn query_has_control(pairs: List((String, String))) -> Bool:
+    var bad = false
+    for k, v in pairs:
+        if k.contains("\n") || k.contains("\r") || v.contains("\n") || v.contains("\r"):
+            bad = true
+    bad
+
+// ---- WebAuthn 2FA for promote -----------------------------------------------
+// Credential + challenge state live in UNROUTED `_wa_*` files in the served Dir
+// (no route serves a `_wa_*` file). A challenge is derived from the Secret (so it
+// is unforgeable without it) over a Clock reading, and is single-use. The browser
+// hex-encodes the assertion's ArrayBuffers; the server re-derives and verifies
+// everything via `webauthn.verify_assertion` — trusting nothing from the client.
+// Untrusted browser/provider JSON uses absence as a failed credential claim. Keep
+// that fail-closed policy named once instead of repeating defaulting at every check.
+fn string_field_or_empty(doc: Json, name: String) -> String:
+    match json.get_string(doc, name):
+        Some(s) -> s
+        None -> ""
+
+// Malformed credential/challenge state has no usable fields and therefore cannot
+// authorize an operation. This default is fail-closed, not a parse recovery path.
+fn decode_state_or_empty(s: String) -> Json:
+    match json.decode(s):
+        Ok(doc) -> doc
+        Err(_e) -> JsonObject([])
+
+fn h_wa_register(store: Dir) -> fn(Request) -> Response:
+    fn(req: Request):
+        // SEC-001: registration is UNAUTHENTICATED, so it may only BOOTSTRAP the first
+        // passkey — never overwrite an existing one. Otherwise an anonymous attacker could
+        // replace the maintainer's credential and then sign in as them. Rotating a passkey
+        // requires removing `_wa_cred.json` out-of-band (operator action).
+        if store.exists("_wa_cred.json"):
+            server.json(403, "{\"error\":\"a passkey is already registered; rotation requires removing the credential out-of-band\"}")
+        else:
+            match server.json_body(req):
+                Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
+                Ok(doc) ->
+                    let cred = string_field_or_empty(doc, "credentialId")
+                    let pk = string_field_or_empty(doc, "publicKey")
+                    if cred == "" || pk == "":
+                        server.bad_request("{\"error\":\"missing credentialId or publicKey\"}")
+                    else:
+                        store.write("_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(cred)), ("publicKey", JsonString(pk))])))
+                        server.json(200, "{\"ok\":true}")
+
+fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
+    fn(req: Request):
+        // SEC-011: a fresh 32-byte CSPRNG challenge (not a key-derived, time-predictable
+        // value). Stored single-use; the assertion handler clears it after one verify.
+        //
+        // BUG-365: bind the challenge to the OPERATION it is minted for (`op`) and, for
+        // promote/yank, the exact `name@version`. The assertion the browser produces signs
+        // over this challenge, so re-checking the stored op+params in the promote/yank handler
+        // means an assertion minted for one operation can never be redirected to another.
+        let doc = challenge_request(req)
+        let op = string_field_or_empty(doc, "op")
+        let name = string_field_or_empty(doc, "name")
+        let version = string_field_or_empty(doc, "version")
+        let ch_hex = rand.hex(32)
+        let ch_b64 = result.unwrap_or(encoding.hex_to_base64url(ch_hex), "")
+        store.write("_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64)), ("op", JsonString(op)), ("name", JsonString(name)), ("version", JsonString(version))])))
+        server.json(200, json.encode(JsonObject([("challengeHex", JsonString(ch_hex))])))
+
+fn challenge_request(req: Request) -> Json:
+    match server.json_body(req):
+        Ok(d) -> d
+        Err(_e) -> JsonObject([])
+
+fn h_wa_promote(store: Dir, net: Net, key: Secret, clock: Clock, upstream: String, origin: String, rp_id: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        match server.json_body(req):
+            Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
+            Ok(doc) -> wa_do_promote(store, net, upstream, origin, rp_id, doc, session_subject(key, clock, req))
+
+fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json, promoter: String) -> Response:
+    let name = string_field_or_empty(doc, "name")
+    let version = string_field_or_empty(doc, "version")
+    if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
+        server.json(403, "{\"error\":\"no registered credential or outstanding challenge\"}")
+    else if promoter == "":
+        // BUG-278: the promoter identity is the AUTHENTICATED session subject (the signed-in
+        // maintainer), never a client-supplied `promotedBy` body field. No valid session bearer
+        // => no authority to record a promotion (fail closed). coven enforces separation of
+        // duties on this identity, so it must not be attacker-chosen.
+        server.json(403, "{\"error\":\"promote requires a signed-in session\"}")
+    else:
+        let ch = decode_state_or_empty(store.read("_wa_challenge.json"))
+        let pk = string_field_or_empty(decode_state_or_empty(store.read("_wa_cred.json")), "publicKey")
+        let ch_b64 = string_field_or_empty(ch, "b64")
+        if ch_b64 == "":
+            // BUG-421: a consumed challenge is cleared to `{}` (no `b64`); the previous code only
+            // checked file existence, so a cleared challenge was still accepted. Treat a missing
+            // `b64` as no outstanding challenge (single-use enforced by content, not existence).
+            server.json(403, "{\"error\":\"no outstanding challenge\"}")
+        else if string_field_or_empty(ch, "op") != "promote" || string_field_or_empty(ch, "name") != name || string_field_or_empty(ch, "version") != version:
+            // BUG-365: the assertion is only valid for the operation + name@version the challenge
+            // was minted for; refuse one bound to anything else.
+            server.json(403, "{\"error\":\"challenge is not bound to this promote\"}")
+        else:
+            match webauthn.verify_assertion(pk, string_field_or_empty(doc, "authData"), string_field_or_empty(doc, "clientData"), string_field_or_empty(doc, "signature"), ch_b64, origin, rp_id, true):
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: ${webauthn.assertion_error_message(reason)}"))])))
+                Ok(_) ->
+                    store.write("_wa_challenge.json", "{}")
+                    let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(promoter))]))
+                    let (host, port) = split_host_port(upstream)
+                    match upstream_try_post(net, host, port, "/coven/promote", body):
+                        Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                        Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+
+// ---- WebAuthn 2FA for yank --------------------------------------------------
+// Yank is a destructive state change (exclude a version from resolutions), so — like
+// promote — it requires a fresh, single-use WebAuthn assertion verified server-side,
+// NOT merely a session. Mirrors h_wa_promote exactly (same credential + challenge +
+// single-use semantics), then forwards `{name, version}` to coven's yank.
+fn h_wa_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        match server.json_body(req):
+            Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
+            Ok(doc) -> wa_do_yank(store, net, upstream, origin, rp_id, doc)
+
+fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json) -> Response:
+    let name = string_field_or_empty(doc, "name")
+    let version = string_field_or_empty(doc, "version")
+    if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
+        server.json(403, "{\"error\":\"no registered credential or outstanding challenge\"}")
+    else:
+        let ch = decode_state_or_empty(store.read("_wa_challenge.json"))
+        let pk = string_field_or_empty(decode_state_or_empty(store.read("_wa_cred.json")), "publicKey")
+        let ch_b64 = string_field_or_empty(ch, "b64")
+        if ch_b64 == "":
+            // BUG-421: a consumed/cleared challenge (`{}`) has no `b64`; reject by content.
+            server.json(403, "{\"error\":\"no outstanding challenge\"}")
+        else if string_field_or_empty(ch, "op") != "yank" || string_field_or_empty(ch, "name") != name || string_field_or_empty(ch, "version") != version:
+            // BUG-365: bind the assertion to this specific yank.
+            server.json(403, "{\"error\":\"challenge is not bound to this yank\"}")
+        else:
+            match webauthn.verify_assertion(pk, string_field_or_empty(doc, "authData"), string_field_or_empty(doc, "clientData"), string_field_or_empty(doc, "signature"), ch_b64, origin, rp_id, true):
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: ${webauthn.assertion_error_message(reason)}"))])))
+                Ok(_) ->
+                    store.write("_wa_challenge.json", "{}")
+                    let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version))]))
+                    let (host, port) = split_host_port(upstream)
+                    match upstream_try_post(net, host, port, "/coven/yank", body):
+                        Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                        Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+
+// ---- Session (passkey / social sign-in) -------------------------------------
+// A signed-in maintainer holds a short-lived BEARER token, minted only after a
+// passkey assertion (h_wa_login) or a verified social login. It is a client-side
+// "you are signed in" marker the SPA uses to reveal the promote/yank controls — it
+// is NOT the write-authorization gate. Every state-changing route re-runs a fresh,
+// single-use WebAuthn assertion (h_wa_promote / h_wa_yank), which is strictly stronger
+// than a bearer, so a session alone can never change registry state. There is no
+// server-side session store — the token is self-authenticating (a mini-JWT), so
+// nothing to steal at rest and `--signing-key` rotation invalidates all sessions.
+fn session_ttl_ms() -> Int:
+    1800000
+
+// SEC-019: the session bearer is bound to the authenticated subject. The MAC covers
+// `exp:sub`, and `sub` (hex-encoded so it carries no `.` delimiter) travels in the token,
+// so a token minted for one identity cannot be presented as another.
+// idiom-exempt: concatenation defines the signed session-token byte format.
+fn issue_session(key: Secret, clock: Clock, sub: String) -> (String, Int):
+    let exp = clock.now() + session_ttl_ms()
+    let sub_hex = encoding.hex_encode(sub)
+    let tok = "${exp}" + "." + sub_hex + "." + crypto.sign(key, "session:" + "${exp}" + ":" + sub)
+    (tok, exp)
+
+// SEC-010: constant-time string compare for MAC/token verification — iterate ALL
+// characters with no early exit, so the time does not reveal WHERE a mismatch is and
+// an attacker cannot recover a valid session/state signature byte-by-byte by timing.
+fn ct_eq(a: String, b: String) -> Bool:
+    if a.length() != b.length():
+        false
+    else:
+        let ca = a.chars()
+        let cb = b.chars()
+        var same = true
+        var i = 0
+        while i < list.length(ca):
+            if list.at(ca, i) != list.at(cb, i):
+                same = false
+            i = i + 1
+        same
+
+// BUG-278: verify a request's bearer session and return its authenticated subject ("" when
+// absent/invalid/expired). A session token is `exp.sub_hex.sig` with sig = MAC over
+// `session:exp:sub` (see issue_session); we recompute the MAC in constant time and check the
+// expiry. This is the SAME self-authenticating token minted by passkey/social sign-in, so the
+// promoter identity is bound to who is signed in — never to a client-chosen body field.
+fn session_subject(key: Secret, clock: Clock, req: Request) -> String:
+    match server.request_header(req, "authorization"):
+        None -> ""
+        Some(h) -> verify_bearer(key, clock, h)
+
+fn verify_bearer(key: Secret, clock: Clock, header: String) -> String:
+    let bearer: String = if header.starts_with("Bearer "): header.drop(7) else: ""
+    let parts = bearer.split(".")
+    if list.length(parts) != 3:
+        ""
+    else:
+        let exp_s: String = list.at(parts, 0)
+        let sub_hex = list.at(parts, 1)
+        let sig = list.at(parts, 2)
+        match encoding.hex_decode(sub_hex):
+            // idiom-exempt: this reconstructs the signed session bytes above.
+            Err(_e) -> ""
+            Ok(sub) ->
+                if ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s + ":" + sub)) && exp_s.to_int() > clock.now():
+                    sub
+                else:
+                    ""
+
+fn h_wa_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        match server.json_body(req):
+            Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
+            Ok(doc) -> wa_do_login(store, key, clock, origin, rp_id, doc)
+
+fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: String, doc: Json) -> Response:
+    if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
+        server.json(403, "{\"error\":\"no registered passkey or outstanding challenge\"}")
+    else:
+        let ch = decode_state_or_empty(store.read("_wa_challenge.json"))
+        let pk = string_field_or_empty(decode_state_or_empty(store.read("_wa_cred.json")), "publicKey")
+        let ch_b64 = string_field_or_empty(ch, "b64")
+        if ch_b64 == "":
+            // BUG-421: reject a consumed/cleared challenge by content, not existence.
+            server.json(403, "{\"error\":\"no outstanding challenge\"}")
+        else if string_field_or_empty(ch, "op") != "login":
+            // BUG-365: a challenge minted for a promote/yank cannot be spent to mint a session.
+            server.json(403, "{\"error\":\"challenge is not bound to sign-in\"}")
+        else:
+            match webauthn.verify_assertion(pk, string_field_or_empty(doc, "authData"), string_field_or_empty(doc, "clientData"), string_field_or_empty(doc, "signature"), ch_b64, origin, rp_id, true):
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: ${webauthn.assertion_error_message(reason)}"))])))
+                Ok(_) ->
+                    store.write("_wa_challenge.json", "{}")
+                    let (tok, exp) = issue_session(key, clock, "passkey")
+                    server.json(200, json.encode(JsonObject([("token", JsonString(tok)), ("expires", JsonString("${exp}"))])))
+
+// ---- "Log in with GitHub" (OAuth2) ------------------------------------------
+// `/login` redirects to GitHub with a signed, expiring anti-CSRF `state`; `/callback`
+// re-checks it, exchanges the code for an access token (std/oauth, over HTTPS), reads
+// the GitHub user, and mints the same self-authenticating bearer session a passkey
+// sign-in issues. The OAuth client secret is the store's `github_client_secret`.
+fn state_ttl_ms() -> Int:
+    600000
+
+// A signed, expiring OAuth `state` — the same HMAC-over-the-Secret shape as a session
+// token. GitHub echoes it back to `/callback`, where the signature proves we issued it.
+// SEC-007: a per-login nonce ties the OAuth flow to the browser that started it. It is
+// unpredictable (an HMAC under the server Secret), set in a cookie at `/login`, and woven
+// into the `state`; `/callback` accepts only a state whose nonce equals the cookie's, so
+// a state minted for one session can't be replayed into another (login CSRF / fixation).
+fn login_nonce(rand: Rand) -> String:
+    rand.hex(16)
+
+// idiom-exempt: cookie serialization is a byte-level wire format.
+fn nonce_cookie(nonce: String) -> String:
+    "oauth_nonce=" + nonce + "; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600"
+
+// Pull a cookie's value out of a `Cookie:` header ("k=v; k2=v2"); "" if absent.
+fn cookie_value(cookies: String, name: String) -> String:
+    var out = ""
+    for part in cookies.split(";"):
+        let kv = part.trim()
+        if kv.starts_with("${name}="):
+            out = kv.drop(name.char_count() + 1)
+    out
+
+fn cookie_nonce(req: Request) -> String:
+    match server.request_header(req, "cookie"):
+        Some(c) -> cookie_value(c, "oauth_nonce")
+        None -> ""
+
+// A signed, expiring OAuth `state` carrying the per-login nonce. The signature proves we
+// issued it; the nonce binds it to the issuing session's cookie.
+// idiom-exempt: concatenation defines the signed OAuth-state byte format.
+fn sign_state(key: Secret, clock: Clock, nonce: String) -> String:
+    let exp = clock.now() + state_ttl_ms()
+    "${exp}" + "." + nonce + "." + crypto.sign(key, "oauth-state:" + "${exp}" + ":" + nonce)
+
+fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String) -> Bool:
+    let parts = state.split(".")
+    if list.length(parts) != 3:
+        false
+    else:
+        let exp_s: String = list.at(parts, 0)
+        let nonce = list.at(parts, 1)
+        let sig = list.at(parts, 2)
+        // SEC-024: guard `to_int` (it traps on non-numeric input) against the attacker-supplied
+        // expiry half — `&&` short-circuits, so a malformed state is just invalid, never a VM abort.
+        // SEC-007: the nonce must be non-empty AND equal the issuing session's cookie.
+        // idiom-exempt: this reconstructs the signed OAuth-state bytes above.
+        ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s + ":" + nonce)) && exp_s.to_int() > clock.now() && nonce != "" && ct_eq(nonce, expected_nonce)
+
+// BUG-424: server-side single-use of a login nonce. `valid_state` has already proven the nonce
+// is one WE signed and equals the caller's cookie, so it is a server-minted hex string (a safe,
+// unrouted `_oauth_used_*` filename — no route serves `_oauth_*`). The first callback to present
+// it writes the marker and returns true; any replay finds the marker and returns false. An empty
+// nonce fails closed.
+fn consume_nonce(store: Dir, nonce: String) -> Bool:
+    let marker = "_oauth_used_${nonce}.json"
+    if nonce == "" || store.exists(marker):
+        false
+    else:
+        store.write(marker, "{\"used\":true}")
+        true
+
+fn h_github_login(key: Secret, clock: Clock, rand: Rand, gh_base: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        let nonce = login_nonce(rand)
+        let state = sign_state(key, clock, nonce)
+        let url = oauth.authorize_url("${gh_base}/login/oauth/authorize", client_id, redirect_uri, "read:user", state)
+        server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
+
+fn h_github_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+    fn(req: Request): github_callback(store, net, key, clock, secrets, gh_base, gh_api, client_id, redirect_uri, server.query_or(req, "code", ""), server.query_or(req, "state", ""), cookie_nonce(req))
+
+fn github_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
+    if code == "" || !valid_state(key, clock, state, expected_nonce):
+        server.json(403, "{\"error\":\"invalid OAuth state or missing code\"}")
+    else if !consume_nonce(store, expected_nonce):
+        // BUG-424: single-use consumption of the login nonce. A signed state is otherwise valid
+        // until its expiry, so a captured (state, cookie) pair is replayable for the whole TTL;
+        // recording + refusing the nonce makes each login state usable exactly once.
+        server.json(403, "{\"error\":\"OAuth state already used\"}")
+    else:
+        match secretstore.get(secrets, "github_client_secret"):
+            None -> server.json(500, "{\"error\":\"github login is misconfigured (no client secret)\"}")
+            Some(sec) ->
+                let token_url = "${gh_base}/login/oauth/access_token"
+                match oauth.exchange_code(fetch_for_url(net, token_url), token_url, client_id, crypto.reveal(sec), code, redirect_uri):
+                    Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed"))])))
+                    Ok(token) -> github_finish(net, key, clock, gh_api, token)
+
+fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: String) -> Response:
+    let user_url = "${gh_api}/user"
+    match oauth.bearer_get_json(fetch_for_url(net, user_url), user_url, token):
+        // BUG-410: require a non-empty verified provider identity before minting a session.
+        // An empty `login` (a malformed/mock `/user` response) must NOT become a signed-in
+        // session with an empty subject — fail closed.
+        Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("user fetch failed"))])))
+        Ok(user) ->
+            let login = string_field_or_empty(user, "login")
+            if login == "":
+                server.json(403, json.encode(JsonObject([("error", JsonString("GitHub identity missing"))])))
+            else:
+                session_redirect(key, clock, login)
+
+// ---- "Log in with Google" (OIDC) --------------------------------------------
+// Like GitHub, but the token endpoint returns an OIDC `id_token` (a JWT) whose signature
+// we verify against Google's published JWKS — read the user's `email` from the VERIFIED
+// claims, never from anything client-supplied. The issuer is the fixed well-known value.
+fn h_google_login(key: Secret, clock: Clock, rand: Rand, authorize_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        let nonce = login_nonce(rand)
+        let state = sign_state(key, clock, nonce)
+        // SEC-008: also send the nonce as the OIDC `nonce` request param; Google echoes it
+        // into the id_token's `nonce` claim, which we verify (anti-replay).
+        let url = "${oauth.authorize_url(authorize_url, client_id, redirect_uri, "openid email", state)}&nonce=${nonce}"
+        server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
+
+fn h_google_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+    fn(req: Request): google_callback(store, net, key, clock, secrets, token_url, jwks_url, client_id, redirect_uri, server.query_or(req, "code", ""), server.query_or(req, "state", ""), cookie_nonce(req))
+
+fn google_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
+    if code == "" || !valid_state(key, clock, state, expected_nonce):
+        server.json(403, "{\"error\":\"invalid OAuth state or missing code\"}")
+    else if !consume_nonce(store, expected_nonce):
+        // BUG-424: single-use consumption of the login nonce (see github_callback). The id_token
+        // `nonce` claim is still verified in google_finish; this adds server-side replay defense.
+        server.json(403, "{\"error\":\"OAuth state already used\"}")
+    else:
+        match secretstore.get(secrets, "google_client_secret"):
+            None -> server.json(500, "{\"error\":\"google login is misconfigured (no client secret)\"}")
+            Some(sec) ->
+                match oauth.exchange_code_id_token(fetch_for_url(net, token_url), token_url, client_id, crypto.reveal(sec), code, redirect_uri):
+                    Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed"))])))
+                    Ok(id_token) -> google_verify(net, key, clock, jwks_url, client_id, id_token, expected_nonce)
+
+fn google_verify(net: Net, key: Secret, clock: Clock, jwks_url: String, client_id: String, id_token: String, expected_nonce: String) -> Response:
+    match http.try_get(fetch_for_url(net, jwks_url), jwks_url):
+        Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS fetch failed"))])))
+        Ok(resp) ->
+            match json.decode(http.body(resp)):
+                Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS is not JSON"))])))
+                Ok(jwks) -> google_finish(key, clock, jwks, client_id, id_token, expected_nonce)
+
+// Google may send `email_verified` as a JSON boolean or the string "true".
+fn email_is_verified(claims: Json) -> Bool:
+    match json.get_bool(claims, "email_verified"):
+        Some(b) -> b
+        None -> string_field_or_empty(claims, "email_verified") == "true"
+
+fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_token: String, expected_nonce: String) -> Response:
+    match select_and_verify(clock, jwks, client_id, id_token):
+        // SEC-008: the id_token's `nonce` must equal the one we sent (bound to this
+        // session's cookie) — an anti-replay check distinct from the `email_verified`
+        // gate below, which admits only a VERIFIED Google email so an account asserting
+        // an unverified email equal to a maintainer's can't be let in as that maintainer.
+        Err(_) -> server.json(403, json.encode(JsonObject([("error", JsonString("id_token rejected"))])))
+        Ok(claims) ->
+            let email = string_field_or_empty(claims, "email")
+            if expected_nonce == "" || !ct_eq(string_field_or_empty(claims, "nonce"), expected_nonce):
+                server.json(403, json.encode(JsonObject([("error", JsonString("id_token nonce mismatch"))])))
+            else if email != "" && email_is_verified(claims):
+                session_redirect(key, clock, email)
+            else:
+                server.json(403, json.encode(JsonObject([("error", JsonString("Google account email is not verified"))])))
+
+// Pick the signing key for the token's `kid` from the JWKS and verify it (signature +
+// issuer `accounts.google.com` + audience = our client id + expiry). Returns the claims.
+fn select_and_verify(clock: Clock, jwks: Json, client_id: String, id_token: String) -> Result(Json, jwt.JwtError):
+    let key_id = jwt.require_kid(id_token)?
+    let der = jwt.rsa_key_for_kid(jwks, key_id)?
+    // JWT `exp`/`nbf` are unix SECONDS; `clock.now()` is milliseconds.
+    // BUG-068: Google ID tokens carry `iat` and have a one-hour lifetime. Encode
+    // that relying-party policy here, with one minute for issuer clock lead.
+    let claims = jwt.verify_oidc_fresh(id_token, der, "https://accounts.google.com", client_id, clock.now() / 1000, 3600, 60)?
+    Ok(claims)
+
+// Mint a bearer session for `who` and hand it to the SPA in the URL fragment (kept out of
+// logs/Referer) — the shared tail of every social-login callback.
+fn session_redirect(key: Secret, clock: Clock, who: String) -> Response:
+    let (sess, _exp) = issue_session(key, clock, who)
+    server.redirect("/#token=${url.encode(sess)}&login=${url.encode(who)}")
+
+fn split_host_port(hp: String) -> (String, Int):
+    // BUG-226: `string.to_int` traps on non-numeric input. A malformed upstream
+    // authority (config typo, or an upstream string that lost its port) must never
+    // abort a request handler mid-flight — fall back to port 0, which fails the dial
+    // and surfaces as a clean 502 rather than a VM trap.
+    let (h, p) = hp.split_once(":")
+    let port: Int = if ascii.all_digits(p): p.to_int() else: 0
+    (h, port)
+
+fn encode_query(pairs: List((String, String))) -> String:
+    // idiom-exempt: this serializes the canonical upstream query wire format.
+    var s = ""
+    var first = true
+    for k, v in pairs:
+        // The server parser has already percent-decoded each pair. Re-encode both
+        // sides so data containing `&` or `=` cannot become upstream structure.
+        let seg = url.encode(k) + "=" + url.encode(v)
+        if first:
+            s = seg
+            first = false
+        else:
+            s = s + "&" + seg
+    s
+
+// ---- Security headers (the `.layer()` middleware) ---------------------------
+fn security_headers() -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
+    fn(inner: fn(Request) -> Response):
+        fn(req: Request):
+            let resp = inner(req)
+            with_headers(resp, headers_for(server.path(req)))
+
+// SPA history fallback: the client routes the glamour rune owns (/, /v/…, /d/…, /s/…, /trust)
+// are NOT server routes, so a direct load or reload of one would 404. This layer rewrites that
+// 404 to the SPA shell (index.html, 200) for GETs on a client-route prefix only — every real
+// asset/API route still matches first, and anything else (a typo, a missing asset with an
+// extension) keeps its honest 404. security_headers (outer) then stamps the app CSP by path.
+fn is_client_route(p: String) -> Bool:
+    p == "/" || p.starts_with("/v/") || p.starts_with("/d/") || p.starts_with("/s/") || p.starts_with("/trust")
+
+fn spa_fallback(assets: Dir) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
+    fn(inner: fn(Request) -> Response):
+        fn(req: Request):
+            let resp = inner(req)
+            match resp:
+                Response(code, _h, _b) ->
+                    if code == 404 && server.method(req) == "GET" && is_client_route(server.path(req)) && assets.exists("index.html"):
+                        server.html(200, assets.read("index.html"))
+                    else:
+                        resp
+
+// Sec-Fetch CSRF defense for state-changing requests. A browser stamps cross-site
+// requests with `sec-fetch-site: cross-site|same-site`; we admit only `same-origin` and
+// refuse both cross-site AND absent (SEC-020): a missing header means a non-browser
+// client, which must opt in with an explicit `Sec-Fetch-Site: same-origin`. Safe methods
+// (GET/HEAD) pass through untouched.
+fn sec_fetch_csrf() -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
+    fn(inner: fn(Request) -> Response):
+        fn(req: Request):
+            if is_state_changing(server.method(req)):
+                match server.request_header(req, "sec-fetch-site"):
+                    Some(site) -> if site == "same-origin": inner(req) else: server.forbidden("cross-site request refused")
+                    None -> server.forbidden("missing sec-fetch-site on a state-changing request")
+            else:
+                // Fail closed when absent (SEC-020): a browser always sends sec-fetch-site,
+                // so a missing header is a non-browser client — which must opt in explicitly
+                // (`Sec-Fetch-Site: same-origin`) rather than silently bypassing CSRF defense.
+                inner(req)
+
+fn is_state_changing(method: String) -> Bool:
+    method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH"
+
+fn with_headers(resp: Response, hs: List((String, String))) -> Response:
+    var r = resp
+    for k, v in hs:
+        r = server.with_header(r, k, v)
+    r
+
+fn headers_for(p: String) -> List((String, String)):
+    let xfo = if p == "/sandbox-frame": "SAMEORIGIN" else: "DENY"
+    [("content-security-policy", csp_for(p)), ("x-content-type-options", "nosniff"), ("x-frame-options", xfo), ("referrer-policy", "no-referrer"), ("cross-origin-opener-policy", "same-origin"), ("cross-origin-embedder-policy", "require-corp"), ("cross-origin-resource-policy", "same-origin"), ("document-isolation-policy", "isolate-and-require-corp"), ("permissions-policy", permissions_policy()), ("x-permitted-cross-domain-policies", "none"), ("strict-transport-security", "max-age=31536000; includeSubDomains; preload"), ("cache-control", "no-store")]
+
+// HARD INVARIANT — strict cross-origin isolation on EVERY response, never relax:
+// COOP same-origin + COEP require-corp + CORP same-origin (the strictest standard
+// values) => a cross-origin-isolated, own-process document (anti-Spectre) and the
+// strongest iframe isolation. DIP isolate-and-require-corp reinforces it.
+
+// SEC-014: pin this origin to HTTPS (the fronting TLS proxy terminates it). Browsers
+// ignore HSTS over plain HTTP, so sending it always is safe and upgrades the rest.
+fn csp_for(p: String) -> String:
+    if p == "/sandbox-frame":
+        sandbox_csp()
+    else if p.starts_with("/compartments/"):
+        compartment_csp()
+    else if p.starts_with("/api/"):
+        api_csp()
+    else:
+        app_csp()
+
+// A foreign-code compartment renderer: its inline script may run, but it has NO network
+// (`connect-src 'none'`) and is force-sandboxed to an opaque origin (`sandbox
+// allow-scripts`, no `allow-same-origin`), so even a compromised renderer cannot exfiltrate
+// or reach the parent. `'unsafe-inline'` is scoped to this opaque-origin box — exactly the
+// tradeoff `sandbox_csp` makes for the source sandbox.
+fn compartment_csp() -> String:
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+
+// The app shell is now ONE capability-pure glamour rune compiled to WASM and inlined into
+// `app.js`; its host shell (glamour-dom.mjs) builds the DOM with createElement/textContent
+// ONLY — there is no HTML-string sink anywhere — so the app is XSS-immune by construction.
+// `trusted-types 'none'` keeps that browser-enforced: the shell creates NO Trusted Types
+// policy, so any string->HTML sink (a future bug, an injected script) still throws.
+// `'wasm-unsafe-eval'` is added to `script-src` SOLELY so the parent can compile that trusted
+// app module — it permits WebAssembly compilation, NOT JS `eval()`/`Function()` (a strictly
+// narrower grant than `'unsafe-eval'`), and the only module the bootstrap ever compiles is
+// our own inlined rune. `connect-src 'self'` keeps every fetch same-origin (the proxy is why
+// coven is reachable, and there are no ambient cookies — auth is a bearer capability).
+fn app_csp() -> String:
+    // The first literal is a checked fixture consumed by the browser harness.
+    // Runtime output comes from the concrete surface below; drift fails closed.
+    let expected = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'"
+    let derived = app_csp_for([], ["'self'"])
+    if derived == expected:
+        derived
+    else:
+        "default-src 'none'"
+
+fn app_csp_for(fetch_origins: List(String), host_connect: List(String)) -> String:
+    let connect = csp_connect_sources(host_connect, fetch_origins)
+    "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ${connect}; frame-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'"
+
+fn csp_connect_sources(host_connect: List(String), fetch_origins: List(String)) -> String:
+    var sources = []
+    for source in host_connect:
+        sources.push(source)
+    for origin in fetch_origins:
+        sources.push(origin)
+    if sources.is_empty():
+        "'none'"
+    else:
+        list.join(sources, " ")
+
+// The sandbox frame intentionally OMITS Perfect Types so the bootstrap can set
+// `srcdoc` and the renderer can use innerHTML — safe because the frame is
+// opaque-origin (no allow-same-origin) and `connect-src 'none'` (network firewall).
+//
+// `'wasm-unsafe-eval'` is added to `script-src` HERE — and ONLY here — so the
+// frame may instantiate the glamour syntax-highlighter WASM (RFC-0007's
+// pure-compute target). This is the RFC-0007-sanctioned tradeoff: the WASM runs
+// inside this CONTAINED sandbox (opaque origin + `connect-src 'none'`), never in
+// the trusted parent — `app_csp()` deliberately keeps NO `wasm-unsafe-eval`. The
+// wasm bytes are base64-INLINED into `source-sandbox.js` at build time, so they
+// ride along with the renderer the parent already fetches same-origin and injects
+// as TEXT; the frame itself never fetches anything (`connect-src 'none'` holds).
+// The highlighter rune's capability footprint is empty, and the pure-compute host
+// denies every capability import, so the module is I/O-incapable by construction
+// even before the frame's network firewall.
+fn sandbox_csp() -> String:
+    "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'; sandbox allow-scripts; frame-ancestors 'self'"
+
+fn api_csp() -> String:
+    "default-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'"
+
+fn permissions_policy() -> String:
+    // Deny everything except WebAuthn, which the 2FA promote needs. `(self)` grants
+    // it to this origin only — NOT delegated to the opaque-origin sandbox iframes.
+    "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(self), publickey-credentials-create=(self), screen-wake-lock=(), sync-xhr=(), usb=(), xr-spatial-tracking=()"

@@ -1,0 +1,83 @@
+// matrix — integer matrices as a list of rows. Transpose, multiply, and an
+// identity, printed with right-aligned columns. Multiplication is the textbook
+// triple loop (dot each row of A with each column of B). Pure (Console only);
+// identical on both backends. Run:  witchy examples/matrix/src/matrix.witchy
+fn main(console: Console):
+    let a = [[1, 2, 3], [4, 5, 6]]
+    let b = [[7, 8], [9, 10], [11, 12]]
+    console.print("A x B =")
+    show(console, multiply(a, b))
+    console.print("transpose(A) =")
+    show(console, transpose(a))
+    console.print("identity(3) =")
+    show(console, identity(3))
+
+fn show(console: Console, m: List(List(Int))):
+    let width = cell_width(m)
+    for row in m:
+        var cells = []
+        for value in row:
+            cells.push("${value}".pad_left(width, " "))
+        console.print("[ " + cells.join(" ") + " ]")
+
+// The widest decimal cell, so every column lines up.
+pub fn cell_width(m: List(List(Int))) -> Int:
+    var width = 1
+    for row in m:
+        for value in row:
+            let len = "${value}".length()
+            if len > width:
+                width = len
+    width
+
+pub fn transpose(m: List(List(Int))) -> List(List(Int)):
+    let rows = m.length()
+    let cols = m.at(0).length()
+    var out = []
+    var c = 0
+    while c < cols:
+        var column = []
+        var r = 0
+        while r < rows:
+            column.push(m.at(r).at(c))
+            r = r + 1
+        out.push(column)
+        c = c + 1
+    out
+
+pub fn multiply(a: List(List(Int)), b: List(List(Int))) -> List(List(Int)):
+    let rows = a.length()
+    let cols = b.at(0).length()
+    let inner = b.length()
+    var out = []
+    var i = 0
+    while i < rows:
+        var row = []
+        var j = 0
+        while j < cols:
+            var sum = 0
+            var k = 0
+            while k < inner:
+                sum = sum + a.at(i).at(k) * b.at(k).at(j)
+                k = k + 1
+            row.push(sum)
+            j = j + 1
+        out.push(row)
+        i = i + 1
+    out
+
+pub fn identity(n: Int) -> List(List(Int)):
+    var out = []
+    var i = 0
+    while i < n:
+        var row = []
+        var j = 0
+        while j < n:
+            if i == j:
+                row.push(1)
+            else:
+                row.push(0)
+            j = j + 1
+        out.push(row)
+        i = i + 1
+    out

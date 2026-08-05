@@ -1,0 +1,35 @@
+// kv — parse and query "key = value" config text. Pure and Result-based: a
+// lookup returns `Result(String, String)` (an Err naming a missing key), so
+// callers can compose lookups with the `?` operator. No host capabilities.
+
+// Parse "key = value" lines into (key, value) pairs. Blank lines and lines
+// starting with "#" are ignored; only the first "=" splits a line.
+pub fn parse(text: String) -> List((String, String)):
+    var out = []
+    for line in text.lines():
+        let t = line.trim()
+        if is_entry(t):
+            let (k, v) = t.split_once("=")
+            list.push(out, (k.trim(), v.trim()))
+    out
+
+fn is_entry(line: String) -> Bool:
+    if line.is_empty():
+        false
+    else if line.starts_with("#"):
+        false
+    else:
+        line.contains("=")
+
+// Look up a key's value, or an Err naming the missing key.
+pub fn lookup(pairs: List((String, String)), key: String) -> Result(String, String):
+    match find(pairs, key):
+        Some(v) -> Ok(v)
+        None -> Err("missing config key: " + key)
+
+fn find(pairs: List((String, String)), key: String) -> Option(String):
+    for pair in pairs:
+        let (k, v) = pair
+        if k == key:
+            return Some(v)
+    None

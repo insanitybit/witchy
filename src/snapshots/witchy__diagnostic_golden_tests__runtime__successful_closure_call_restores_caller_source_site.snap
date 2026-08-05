@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "trap_pair(\"import list\\n\\nfn make_probe() -> fn() -> Int:\\n    fn(): list.at([7], 0)\\n\\nfn main(console: Console):\\n    let outer = [1]\\n    let probe = make_probe()\\n    console.print(__render(list.at(outer, probe())))\\n\")"
+---
+interp: runtime error: `main`, line 9: list index 7 out of bounds (length 1)
+wasm:   runtime error: `main`, line 9: list index 7 out of bounds (length 1)

@@ -1,0 +1,39 @@
+import reflect
+import testing
+from docs_model import Msg
+from json import Json
+
+fn test_initial_model_has_named_fields():
+    let model = docs_model.initial("/p/tour")
+    testing.assert_eq(model.route, "/p/tour")
+    testing.assert_eq(model.summary, "")
+    testing.assert_eq(model.content, "")
+
+fn test_model_round_trips_through_json():
+    let original = docs_model.initial("/p/tour")
+    let parsed = docs_model.parse(json.from_value(original))
+    testing.assert_eq(parsed.route, original.route)
+    testing.assert_eq(parsed.summary, original.summary)
+    testing.assert_eq(parsed.content, original.content)
+
+fn test_reflected_messages_decode_through_glamour_wire_helpers():
+    match docs_model.parse_msg(json.from_value(GotPage("/p/tour", 200, "chapter"))):
+        GotPage(path, status, body) ->
+            testing.assert_eq(path, "/p/tour")
+            testing.assert_int_eq(status, 200)
+            testing.assert_eq(body, "chapter")
+        _ -> testing.assert(false, "GotPage should round-trip")
+
+fn test_page_responses_apply_only_to_the_current_route():
+    let loading = docs_model.route_started(docs_model.initial("/p/old"), "/p/current")
+    testing.assert_eq(loading.content, "")
+    let stale = docs_model.page_loaded(loading, "/p/old", "stale")
+    testing.assert_eq(stale.content, "")
+    let current = docs_model.page_loaded(stale, "/p/current", "current")
+    testing.assert_eq(current.content, "current")
+
+fn test_unknown_message_is_a_safe_home_route():
+    let value = JsonObject([("\$variant", JsonString("Unknown")), ("\$values", JsonArray([JsonString("/p/unsafe")]))])
+    match docs_model.parse_msg(value):
+        Route(path) -> testing.assert_eq(path, "/")
+        _ -> testing.assert(false, "unknown messages should route home")

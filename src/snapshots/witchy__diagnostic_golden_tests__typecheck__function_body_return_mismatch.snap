@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn f() -> Int:\\n    \\\"nope\\\"\\n\\nfn main(console: Console):\\n    print(console, __render(f()))\\n\")"
+---
+type error: `main.f`, line 2: function `main.f` body: expected `Int`, found `String`

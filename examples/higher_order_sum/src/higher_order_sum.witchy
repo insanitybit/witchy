@@ -1,0 +1,34 @@
+// "Find the sum of all the squared odd numbers under 1000" — the higher-order
+// functions example from Rust by Example, reproduced in witchy two ways: an
+// imperative loop over a range, and a functional pipeline over std/list (the
+// witchy analogue of Rust's iterator adapters: map / take_while / filter / sum).
+// Both compile to WASM and run on the interpreter, and they agree.
+
+import list
+
+pub fn is_odd(n: Int) -> Bool:
+    n % 2 == 1
+
+// Imperative: walk the integers, square, stop at the cap, keep the odd squares.
+pub fn imperative(upper: Int) -> Int:
+    var total = 0
+    var n = 0
+    var sq = 0
+    while sq < upper:
+        sq = n * n
+        if sq < upper:
+            if is_odd(sq):
+                total = total + sq
+        n = n + 1
+    total
+
+// Functional: the same computation as a pipeline of list adapters.
+pub fn functional(upper: Int) -> Int:
+    let squares = list.range(100).map(fn(n: Int): n * n)
+    let under = squares.take_while(fn(sq: Int): sq < upper)
+    list.sum(under.filter(is_odd))
+
+fn main(console: Console):
+    let upper = 1000
+    console.print("imperative: " + "${imperative(upper)}")
+    console.print("functional: " + "${functional(upper)}")

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>witchy glamour — real-browser demo</title>
+  <style>
+    body {
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 2rem auto;
+      max-width: 48rem;
+      padding: 0 1rem;
+      color: #1b1b1f;
+    }
+    h1 { font-size: 1.4rem; }
+    h2 { font-size: 1.1rem; margin-top: 2rem; }
+    .card {
+      border: 1px solid #d8d8e0;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin: 0.75rem 0;
+      background: #fbfbfd;
+    }
+    /* The counter rune renders <div><button>-</button><span>N</span><button>+</button></div>.
+       Give the controls room to breathe; styling is the SHELL's job (the rune is pure). */
+    #counter button {
+      font-size: 1.1rem;
+      min-width: 2.5rem;
+      padding: 0.25rem 0.6rem;
+      margin: 0 0.4rem;
+      cursor: pointer;
+    }
+    #counter span {
+      display: inline-block;
+      min-width: 2rem;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      font-size: 1.2rem;
+    }
+    /* The highlighter rune emits <pre><code> with classed <span> runs. */
+    #highlight pre {
+      margin: 0;
+      padding: 0.75rem 1rem;
+      background: #1e1e2e;
+      color: #cdd6f4;
+      border-radius: 6px;
+      overflow-x: auto;
+      font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace;
+    }
+    #highlight span.kw  { color: #cba6f7; font-weight: 600; }
+    #highlight span.str { color: #a6e3a1; }
+    #highlight span.com { color: #6c7086; font-style: italic; }
+    #highlight span.num { color: #fab387; }
+    /* The runecard rune emits <div class="rune-card"> nodes: a name heading, a
+       version line, a row of capability badges (or the celebrated cap-none
+       state), and a provenance line. Styling is the SHELL's job; the rune is pure. */
+    .rune-card {
+      border: 1px solid #d8d8e0;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      margin: 0.6rem 0;
+      background: #fff;
+    }
+    .rune-card .rune-name {
+      margin: 0 0 0.1rem;
+      font-size: 1rem;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+    }
+    .rune-card .rune-version { color: #6c7086; font-size: 0.85rem; }
+    .rune-card .cap-row { margin: 0.5rem 0; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    .rune-card .cap-badge {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      background: #fde8e8;
+      color: #9a2a2a;
+      border: 1px solid #f3c0c0;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    /* The empty footprint — witchy's headline reward — gets its own green badge. */
+    .rune-card .cap-none {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      background: #e6f6e6;
+      color: #1f7a1f;
+      border: 1px solid #bfe3bf;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .rune-card .rune-provenance { color: #4a4a55; font-size: 0.8rem; }
+    /* The covenbrowser app: an INDEX of clickable rune cards and a DETAIL view
+       (card + highlighted source + a back button). It reuses .rune-card / .cap-*
+       above; these classes style the app chrome. Styling is the SHELL's job; the
+       rune is pure. */
+    #covenbrowser .coven-title { font-size: 1rem; margin: 0 0 0.5rem; }
+    #covenbrowser .coven-index .rune-card { cursor: pointer; transition: border-color 0.1s; }
+    #covenbrowser .coven-index .rune-card:hover { border-color: #7c6cf7; }
+    #covenbrowser .coven-back {
+      cursor: pointer;
+      font-size: 0.85rem;
+      padding: 0.25rem 0.7rem;
+      margin: 0 0 0.6rem;
+      border: 1px solid #d8d8e0;
+      border-radius: 6px;
+      background: #f3f3f7;
+    }
+    #covenbrowser .coven-detail .rune-card { cursor: default; }
+    #covenbrowser pre.coven-source {
+      margin: 0.6rem 0 0;
+      padding: 0.75rem 1rem;
+      background: #1e1e2e;
+      color: #cdd6f4;
+      border-radius: 6px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace;
+    }
+    #covenbrowser pre.coven-source span.kw  { color: #cba6f7; font-weight: 600; }
+    #covenbrowser pre.coven-source span.str { color: #a6e3a1; }
+    #covenbrowser pre.coven-source span.com { color: #6c7086; font-style: italic; }
+    #covenbrowser pre.coven-source span.num { color: #fab387; }
+    /* The detail view's TRUST PANEL (coven-web's security headline): the signature
+       badge (green verified / red unverified), the TUF freshness line, and the
+       provenance line. Every value is a witchy text(...) leaf — inert by construction. */
+    #covenbrowser .trust-panel {
+      margin: 0.6rem 0;
+      padding: 0.6rem 0.85rem;
+      border: 1px solid #d8d8e0;
+      border-radius: 8px;
+      background: #fbfbfd;
+    }
+    #covenbrowser .trust-panel .trust-sig { margin-bottom: 0.35rem; }
+    #covenbrowser .trust-ok {
+      display: inline-block;
+      padding: 0.1rem 0.55rem;
+      border-radius: 999px;
+      background: #e6f6e6;
+      color: #1f7a1f;
+      border: 1px solid #bfe3bf;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    #covenbrowser .trust-warn {
+      display: inline-block;
+      padding: 0.1rem 0.55rem;
+      border-radius: 999px;
+      background: #fde8e8;
+      color: #9a2a2a;
+      border: 1px solid #f3c0c0;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    #covenbrowser .trust-tuf,
+    #covenbrowser .trust-prov { color: #4a4a55; font-size: 0.8rem; }
+    .note { color: #6c7086; font-size: 0.85rem; }
+    code.inline { background: #eee; padding: 0 0.3em; border-radius: 3px; }
+    #status { font-size: 0.85rem; }
+    .err { color: #d20f39; }
+  </style>
+</head>
+<body>
+  <h1>witchy glamour — real-browser demo</h1>
+  <p class="note">
+    Two footprint-empty witchy runes, compiled to WASM, running under the
+    deny-all pure-compute host (RFC-0007) and the glamour DOM shell (RFC-0008).
+    The runes <em>compute</em>; this page holds all the authority and acts.
+  </p>
+
+  <h2>1. Counter (MVU: render → click → update → re-render)</h2>
+  <div class="card">
+    <div id="counter" data-demo="counter"><!-- mount() builds the DOM here --></div>
+    <p class="note">
+      The <code class="inline">+</code>/<code class="inline">-</code> buttons
+      dispatch a <code class="inline">Msg</code> into the rune; the new VNode is
+      diffed into the DOM. No <code class="inline">innerHTML</code> anywhere.
+    </p>
+  </div>
+
+  <h2>2. Highlighter (pure render; <code class="inline">&lt;script&gt;</code> stays inert text)</h2>
+  <div class="card">
+    <div id="highlight" data-demo="highlight"><!-- VNode→DOM render here --></div>
+    <p class="note">
+      The source below includes a comment, a string, and a literal
+      <code class="inline">&lt;script&gt;</code>. The rune routes every token
+      through a <code class="inline">text(...)</code> node, so the script tag
+      renders as four inert characters — never a real element.
+    </p>
+  </div>
+
+  <h2>3. Rune cards (coven's capability footprint, rendered by a witchy rune)</h2>
+  <div class="card">
+    <div id="runecard" data-demo="runecard"><!-- VNode→DOM render here --></div>
+    <p class="note">
+      witchy's OWN capability-footprint model, displayed by a footprint-empty
+      witchy rune. Each registry record (name, version, declared
+      <code class="inline">caps</code>, provenance) becomes a card: a red badge per
+      capability, or a green <code class="inline">cap-none</code> badge for the
+      celebrated <em>empty</em> footprint. The last record's name is a literal
+      <code class="inline">&lt;script&gt;</code> — it routes through a
+      <code class="inline">text(...)</code> node, so it renders as inert text, never
+      a real element.
+    </p>
+  </div>
+
+  <h2>4. Coven browser (capstone MVU app: a navigable multi-view UI)</h2>
+  <div class="card">
+    <div id="covenbrowser" data-demo="covenbrowser"><!-- mount() builds the DOM here --></div>
+    <p class="note">
+      One footprint-empty witchy rune that is a whole <em>application</em>: an
+      INDEX of clickable rune cards, and a DETAIL view (the card + its
+      syntax-highlighted source + a <code class="inline">← back</code> button). A
+      click dispatches a <code class="inline">Show(i)</code>/<code class="inline">Back</code>
+      <code class="inline">Msg</code> into the rune; <code class="inline">update</code>
+      folds it and the new VNode is diffed into the DOM. The
+      <code class="inline">evil/inject</code> rune's source carries a literal
+      <code class="inline">&lt;script&gt;</code> — it routes through a
+      <code class="inline">text(...)</code> node, so it renders as inert text, never
+      a real element. The full MVU navigation loop, end to end, in the browser.
+    </p>
+  </div>
+
+  <p id="status">loading…</p>
+
+  <script type="module" src="./demo.mjs"></script>
+</body>
+</html>

@@ -1,0 +1,94 @@
+// package_page — a coven package-DETAIL page built on glamour (RFC-0015 Phase D). It
+// composes everything the framework offers into the registry's most important view:
+//   * the package identity — name, version, a copy-able install command;
+//   * the capability FOOTPRINT as badges (coven's differentiator — what authority this
+//     package asks for, the thing crates.io/npm cannot show);
+//   * the README and the generated API docs, rendered from Markdown via `markdown.to_vnode`
+//     — UNTRUSTED publisher content shown INLINE, safe by construction (every leaf is a
+//     glamour `text` node; raw HTML is inert; a `javascript:` link is neutralized).
+//
+// A README/Docs tab toggle is the MVU `model` (0 = README, 1 = Docs). In the real
+// coven-web shell the package data arrives from the registry over the HTTP effect (the
+// footprint from `/coven/record`, the docs from `/coven/doc`); here it is baked in so the
+// page renders standalone — this rune is the TEMPLATE the shell's package view is built on.
+// The rune holds NO capability: `witchy caps` reports `export_step (none)`.
+
+import markdown
+import list
+import reflect
+from glamour import VNode, Cmd
+from json import Json
+
+type Msg derive(Reflect):
+    ShowReadme
+    ShowDocs
+
+// --- the (baked) package record this template renders ------------------------
+fn pkg_name() -> String:
+    "acme/charts"
+
+fn pkg_version() -> String:
+    "1.2.0"
+
+fn pkg_caps() -> List(String):
+    ["Net[Connect, Tls]", "Js{d3-runes-chart}"]
+
+fn pkg_readme() -> String:
+    "# acme/charts\n\nPretty **charts** for witchy web apps, powered by an isolated `d3` compartment.\n\n- XSS-immune rendering\n- the d3 bundle runs sandboxed — see [the model](https://example.com/security)\n"
+
+fn pkg_docs() -> String:
+    "## `acme/charts`\n\n#### `fn bar(data: List(Int)) -> VNode(msg)`\n\nRender a bar chart from `data`.\n\n#### `fn line(data: List(Int)) -> VNode(msg)`\n\nRender a line chart.\n"
+
+// --- view --------------------------------------------------------------------
+fn chip(label: String) -> VNode(Msg):
+    glamour.element("span", [glamour.prop("class", "chip cap")], [glamour.text(label)])
+
+fn footprint_chips(caps: List(String)) -> VNode(Msg):
+    if caps.is_empty():
+        glamour.element("div", [glamour.prop("class", "chips")], [glamour.element("span", [glamour.prop("class", "chip cap-none")], [glamour.text("no authority")])])
+    else:
+        var cs = []
+        for c in caps:
+            cs.push(chip(c))
+        glamour.element("div", [glamour.prop("class", "chips")], cs)
+
+fn tab_button(label: String, msg: Msg, active: Bool) -> VNode(Msg):
+    let cls = if active: "tab active" else: "tab"
+    glamour.element("button", [glamour.prop("class", cls), glamour.on("click", msg)], [glamour.text(label)])
+
+fn view(tab: Int) -> VNode(Msg):
+    let body = if tab == 1: glamour.element("section", [glamour.prop("class", "apidocs")], [markdown.to_vnode(pkg_docs())]) else: glamour.element("section", [glamour.prop("class", "readme")], [markdown.to_vnode(pkg_readme())])
+    glamour.element("article", [glamour.prop("class", "package")], [glamour.element("h1", [glamour.prop("class", "package-name")], [glamour.text(pkg_name())]), glamour.element("div", [glamour.prop("class", "package-version")], [glamour.text("v${pkg_version()}")]), footprint_chips(pkg_caps()), glamour.element("pre", [glamour.prop("class", "install")], [glamour.text("witchy add ${pkg_name()}")]), glamour.element("nav", [glamour.prop("class", "tabs")], [tab_button("README", ShowReadme, tab == 0), tab_button("API docs", ShowDocs, tab == 1)]), body])
+
+fn update(tab: Int, msg: Msg) -> (Int, Cmd(Msg)):
+    match msg:
+        ShowReadme -> (0, NoCmd)
+        ShowDocs -> (1, NoCmd)
+
+// --- MVU glue ----------------------------------------------------------------
+fn parse_model(j: Json) -> Int:
+    match json.as_int(j):
+        Some(n) -> n
+        None -> 0
+
+fn parse_msg(j: Json) -> Msg:
+    match json.get_string(j, "\$variant"):
+        Some(v) ->
+            if v == "ShowDocs":
+                ShowDocs
+            else:
+                ShowReadme
+        None -> ShowReadme
+
+fn model_to_json(tab: Int) -> Json:
+    json.from_value(tab)
+
+fn msg_to_json(m: Msg) -> Json:
+    json.from_value(m)
+
+pub fn export_step(input: String) -> String:
+    glamour.step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+
+fn main(console: Console):
+    let output = export_step("{\"model\": 0}")
+    console.print("${output}\n")

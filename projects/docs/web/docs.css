@@ -1,0 +1,152 @@
+/* witchy-book theme (RFC-0041/0107) — a reading UX in the spirit of The Rust Book (mdBook): a fixed,
+   independently-scrolling sidebar and a centered reading column. The docs app is a glamour rune;
+   this is the only styling — the rune emits inert VNodes, never HTML, so nothing here is a sink. */
+:root {
+  color-scheme: dark;
+  --bg: #14141f; --fg: #d7d7e0; --muted: #9797ae; --accent: #c9a4ff;
+  --sidebar-bg: #17171f; --border: #29293a; --code-bg: #1e1e2e; --sidebar-w: 18rem;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  margin: 0; color: var(--fg); background: var(--bg); font-size: 16px; -webkit-font-smoothing: antialiased;
+}
+.book { display: block; }
+
+/* Fixed, independently-scrolling sidebar. */
+.sidebar {
+  position: fixed; top: 0; left: 0; width: var(--sidebar-w); height: 100vh; overflow-y: auto;
+  padding: 1.5rem 1rem; border-right: 1px solid var(--border); background: var(--sidebar-bg);
+}
+/* The sidebar header doubles as the link to the book's cover page. */
+.sidebar-brand {
+  display: block; width: 100%; text-align: left; background: none; border: 0; cursor: pointer;
+  font: inherit; font-size: 1rem; font-weight: 600; letter-spacing: 0.01em;
+  margin: 0 0 1.25rem; padding: 0.2rem 0.6rem; color: var(--accent); border-radius: 6px; text-decoration: none;
+}
+.sidebar-brand:hover { background: #22222f; }
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li { margin: 1px 0; }
+.nav-item {
+  display: block; background: none; border: 0; color: var(--muted); cursor: pointer;
+  padding: 0.35rem 0.6rem; text-align: left; width: 100%; border-radius: 6px; font: inherit;
+  font-size: 0.9rem; line-height: 1.35; text-decoration: none;
+}
+.nav-item:hover { background: #22222f; color: var(--fg); }
+.nav-item.active { color: var(--accent); background: #22222f; box-shadow: inset 2px 0 0 var(--accent); }
+/* Top-level chapters sit at the margin; sub-pages nest beneath them, indented and smaller. */
+.nav-depth-0 { color: #c1c1d2; }
+.nav-depth-1 { padding-left: 1.9rem; font-size: 0.85rem; }
+/* The rule separating the appendices from the main chapters (an empty <li>). */
+.nav-divider { list-style: none; height: 0; margin: 0.7rem 0.6rem; border-top: 1px solid var(--border); }
+
+/* A centered reading column beside the sidebar. */
+.page { margin-left: var(--sidebar-w); max-width: 48rem; padding: 3rem clamp(1.25rem, 5vw, 4rem) 5rem; margin-right: auto; line-height: 1.7; }
+.page h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 1.25rem; }
+.page h2 { font-size: 1.5rem; line-height: 1.25; margin: 2.75rem 0 1rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); }
+.page h3 { font-size: 1.2rem; margin: 2rem 0 0.75rem; }
+.page p { margin: 0 0 1.1rem; }
+.page a { color: var(--accent); text-decoration: none; }
+.page a:hover { text-decoration: underline; }
+.page ul, .page ol { padding-left: 1.5rem; margin: 0 0 1.1rem; }
+.page li { margin: 0.3rem 0; }
+.page blockquote { margin: 1.25rem 0; padding: 0.5rem 1rem; border-left: 3px solid var(--accent); background: #1b1b28; color: var(--muted); border-radius: 0 6px 6px 0; }
+.page hr { border: 0; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+.page table { border-collapse: collapse; margin: 1.25rem 0; width: 100%; }
+.page th, .page td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; }
+.page th { background: #1b1b28; }
+/* Plain (non-highlighted) code blocks — `text` output, untagged. Padding kept at 0.75rem so it
+   never overrides a code cell's highlight/textarea alignment. */
+.page pre { background: var(--code-bg); padding: 0.75rem; overflow-x: auto; border-radius: 8px; }
+.page code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88em; }
+.page :not(pre) > code { background: #23233a; padding: 0.12rem 0.35rem; border-radius: 4px; color: #e6d8ff; }
+
+/* Prev/next chapter navigation at the foot of each page. */
+.nav-chapters { display: flex; justify-content: space-between; gap: 1rem; margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border); }
+.nav-chapter { flex: 1 1 0; min-width: 0; padding: 0.7rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: none; cursor: pointer; font: inherit; color: var(--fg); text-decoration: none; }
+.nav-chapter:hover { background: #1b1b28; border-color: var(--accent); }
+.nav-chapter.next { text-align: right; }
+.nav-chapter .dir { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.2rem; }
+.nav-chapter .title { color: var(--accent); }
+.nav-spacer { flex: 1 1 0; }
+
+@media (max-width: 55rem) {
+  .sidebar { position: static; width: auto; height: auto; }
+  .page { margin-left: 0; }
+}
+
+/* A runnable code cell (RFC-0041 P2), with a syntax-highlight overlay. */
+.witchy-cell { position: relative; margin: 1.25rem 0; border: 1px solid #2a2a3a; border-radius: 8px; overflow: hidden; }
+
+/* Copy-to-clipboard button — top-right of every code cell (runnable and static alike). Subtle
+   until the cell is hovered, so it never competes with the code. */
+.witchy-copy {
+  position: absolute; top: 0.4rem; right: 0.4rem; z-index: 2;
+  font: inherit; font-size: 0.72rem; line-height: 1; padding: 0.3rem 0.55rem;
+  border: 1px solid #2a2a3a; border-radius: 5px; background: #26263a; color: #cfcfe0;
+  cursor: pointer; opacity: 0.55; transition: opacity 0.1s;
+}
+.witchy-copy:hover { opacity: 1; background: #32324a; }
+.witchy-cell:hover .witchy-copy, .witchy-static:hover .witchy-copy { opacity: 0.9; }
+
+/* The highlight <pre> and the editable <textarea> MUST share these box + type metrics so the
+   transparent textarea's caret aligns exactly over the coloured code. */
+.witchy-highlight, .witchy-editor {
+  margin: 0;
+  padding: 0.75rem;
+  border: 0;
+  box-sizing: border-box;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  tab-size: 4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.witchy-editor-wrap { position: relative; }
+/* The <pre> is in normal flow and SIZES the cell — it grows to fit every line, so the whole
+   program is always visible (no scroll, no cutoff). */
+.witchy-highlight { background: #1e1e2e; color: #e6e6ef; min-height: 3rem; }
+/* The textarea overlays the <pre> exactly; its text is transparent so the coloured pre shows
+   through, but the caret + selection are visible. */
+.witchy-editor-wrap > .witchy-editor {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  resize: none; overflow: hidden;
+  background: transparent; color: transparent; caret-color: #c9a4ff;
+}
+.witchy-editor-wrap > .witchy-editor::selection { background: #6b3fa055; }
+/* Fallback (no overlay / headless): the editor is a plain dark, auto-tall box. */
+.witchy-cell > .witchy-editor { display: block; width: 100%; background: #1e1e2e; color: #e6e6ef; resize: vertical; overflow: auto; }
+
+.witchy-run { display: block; margin: 0; padding: 0.45rem 1rem; border: 0; border-top: 1px solid #2a2a3a; background: #6b3fa0; color: #fff; cursor: pointer; font: inherit; width: 100%; }
+.witchy-run:hover { background: #7d4cbb; }
+.witchy-output { margin: 0; padding: 0.75rem; white-space: pre-wrap; background: #17171f; font-family: ui-monospace, monospace; font-size: 0.85rem; }
+.witchy-output.ok { background: #16301c; }
+.witchy-output.err { background: #3a1a1a; }
+.witchy-stats { margin: 0; padding: 0.75rem; white-space: pre-wrap; background: #111822; color: #b9d7ff; border-top: 1px solid #2a2a3a; font-family: ui-monospace, monospace; font-size: 0.82rem; }
+.witchy-stats:empty { display: none; }
+
+/* A NON-runnable witchy example (a capability demo): highlighted, read-only — no Run cell. */
+.witchy-static { position: relative; margin: 1.25rem 0; padding: 0.75rem; border: 1px solid #2a2a3a; border-radius: 8px; background: #1e1e2e; overflow-x: auto; }
+.witchy-static code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88rem; line-height: 1.5; tab-size: 4; white-space: pre-wrap; word-break: break-word; }
+
+/* A live INTERACTIVE glamour demo mounted in the page (RFC-0041). */
+.glamour-app { margin: 1.25rem 0; padding: 1.25rem 1rem; border: 1px solid #2a2a3a; border-radius: 8px; background: #1a1a2a; }
+.counter-demo { display: flex; align-items: center; gap: 0.75rem; justify-content: center; }
+.counter-btn { font: inherit; font-size: 1.2rem; line-height: 1; width: 2.2rem; height: 2.2rem; border: 0; border-radius: 6px; background: #6b3fa0; color: #fff; cursor: pointer; }
+.counter-btn:hover { background: #7d4cbb; }
+.counter-value { min-width: 3rem; text-align: center; font-size: 1.5rem; font-variant-numeric: tabular-nums; color: #c9a4ff; }
+.counter-reset { font: inherit; margin-left: 0.5rem; padding: 0.4rem 0.8rem; border: 1px solid #2a2a3a; border-radius: 6px; background: transparent; color: #cfcfe0; cursor: pointer; }
+.counter-reset:hover { background: #2a2a3a; }
+
+/* Syntax tokens (emitted by web/witchy-highlight.js). */
+.t-comment { color: #6b7089; font-style: italic; }
+.t-str { color: #9ece6a; }
+.t-subst { color: #e0af68; }
+.t-num { color: #ff9e64; }
+.t-kw { color: #bb9af7; }
+.t-lit { color: #ff9e64; }
+.t-builtin { color: #7dcfff; }
+.t-type { color: #2ac3de; }

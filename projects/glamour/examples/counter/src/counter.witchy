@@ -1,0 +1,99 @@
+// counter — the canonical glamour MVU demo (RFC-0008). A capability-pure rune:
+// `Model = Int`, `Msg = Inc | Dec`, a pure `view` projecting the count to a
+// VNode tree, and a pure `update` folding a message into the next count. The rune
+// holds NO capability (no Net/Dir/Clock); the JS DOM host shell
+// (`web/witchy-runtime/glamour-dom.mjs`) diffs the VNode into the DOM and marshals
+// click events back as `Msg` values — events are data, the shell acts.
+//
+// The single JS-callable entry is `export_step` (the `export_` prefix marks it a
+// `String -> String` WASM export — see codegen's `is_string_export`). The host
+// calls it with `{"model": <n>}` to render, and `{"model": <n>, "msg": <m>}`
+// after a click; it returns `{"model": <n'>, "vnode": <tree>}`.
+
+import reflect
+from glamour import Cmd, Program, Start, Sub, Ui, UiRoot
+from json import Json
+
+// `Model = Int` (RFC-0008's example model): the count. A bare `Int` reflects to a
+// JSON integer, so it round-trips through the wire with no wrapper shape to keep in
+// sync — `model_to_json(3)` is `3` and `parse_model(3)` is `3`.
+type Msg derive(Reflect):
+    Inc
+    Dec
+
+// view: a pure projection of the model to a VNode tree, written with glamour's
+// `html` tag — a COMPILE-TIME tagged literal (RFC-0006). The tag runs in the
+// compiler and splices `element`/`text`/`on` calls over the literal, so this is
+// exactly the hand-builder form but ergonomic: `on:click=${Dec}` becomes
+// `on("click", Dec)` (a `Msg` VALUE — events as data), and a `${...}` text hole
+// becomes an inert, escape-on-render `text(...)` node (XSS-immune by construction).
+// This exercises the html → VNode → DOM path end to end (the headless DOM test
+// renders and clicks through it).
+fn view(count: Int) -> Ui(Msg):
+    glamour.ui(jsx"<div><button on:click=${Dec}>-</button><span>${int_to_str(count)}</span><button on:click=${Inc}>+</button></div>")
+
+// update: a pure match from (model, msg) to (model, Cmd). No effects — the rune
+// is capability-denied — so the command is always `NoCmd` here.
+fn update(_auth: Nil, count: Int, msg: Msg) -> (Int, Cmd(Msg)):
+    match msg:
+        Inc -> (count + 1, NoCmd)
+        Dec -> (count - 1, NoCmd)
+
+fn int_to_str(n: Int) -> String:
+    "${n}"
+
+// Parse the model (a JSON integer) back into an `Int`. A non-integer defaults to 0
+// so a bad input renders rather than traps (the host always sends a well-formed
+// model — the integer this rune emitted last step).
+fn parse_model(j: Json) -> Int:
+    match json.as_int(j):
+        Some(n) -> n
+        None -> 0
+
+// Parse a `Msg` from its reflected JSON `{"$variant":"Inc","$values":[]}`. A small
+// match over the app's own message shape — this is the deliberate MVU glue (the
+// shell sends back exactly the JSON `to_json` embedded in the `on` handler).
+fn parse_msg(j: Json) -> Msg:
+    match json.get_string(j, "\$variant"):
+        Some(v) ->
+            if v == "Dec":
+                Dec
+            else:
+                Inc
+        None -> Inc
+
+// The outbound boundary: encode the model / msg to JSON. `json.from_value` works
+// for any `Reflect` type, so these are one-liners (passed to `step_with` as
+// values — see the note there on why serializers are passed, not bound).
+fn model_to_json(count: Int) -> Json:
+    json.from_value(count)
+
+fn msg_to_json(m: Msg) -> Json:
+    json.from_value(m)
+
+fn authorize(_root: UiRoot) -> Nil:
+    Nil
+
+fn initial(_start: Start) -> Int:
+    0
+
+fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+    NoCmd
+
+fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+    glamour.no_sub()
+
+fn app() -> Program(Nil, Int, Msg):
+    glamour.program(authorize, initial, start, update, view, subscriptions)
+
+// The single JS-callable export. `step_with` is glamour's reusable MVU engine:
+// it parses the input, runs `update` when a `msg` is present, then `view`, and
+// returns `{"model": ..., "vnode": ...}`.
+pub fn export_step(root: UiRoot, input: String) -> String:
+    glamour.program_step_with(input, root, app(), parse_model, parse_msg, model_to_json, msg_to_json)
+
+// A `main` so the rune also runs as a CLI program (and the compiled module gets a
+// `run` export): render the initial model (count 0) and print the wire JSON.
+fn main(console: Console, root: UiRoot):
+    let output = export_step(root, "{\"model\": 0}")
+    console.print("${output}\n")

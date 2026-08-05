@@ -1,0 +1,44 @@
+{
+  "action": {
+    "id": "glamour-form1-0000000000000000000000000000000000000000000000000000000000000000",
+    "method": "POST",
+    "action": "/signup",
+    "fields": [
+      {"name": "name", "label": "Name", "kind": "text", "required": true},
+      {"name": "email", "label": "Email", "kind": "email", "required": true},
+      {"name": "password", "label": "Password", "kind": "secret", "required": true}
+    ]
+  },
+  "cases": [
+    {
+      "name": "accepted",
+      "entries": [
+        ["name", "Ada"],
+        ["email", "ada@example.test"],
+        ["password", "s3cret"]
+      ],
+      "public": [
+        ["name", "Ada"],
+        ["email", "ada@example.test"]
+      ],
+      "secrets": [["password", "s3cret"]],
+      "problems": []
+    },
+    {
+      "name": "rejected",
+      "entries": [
+        ["name", "Ada"],
+        ["name", "Grace"],
+        ["extra", "x"]
+      ],
+      "public": [],
+      "secrets": [],
+      "problems": [
+        "duplicate submitted form field `name`",
+        "unexpected submitted form field `extra`",
+        "missing required form field `email`",
+        "missing required form field `password`"
+      ]
+    }
+  ]
+}

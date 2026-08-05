@@ -1,0 +1,54 @@
+// The witchy randomness library. Every draw comes from the `Rand` capability's
+// source: the OS CSPRNG host-side (`getrandom` on the compiled backend), or — when
+// `WITCHY_RAND_SEED` is set — a shared deterministic sequence both backends agree on,
+// so randomness-using programs stay parity-stable and reproducible for tests.
+
+import string
+
+// A fresh 64-bit draw spanning the full `Int` range (it may be negative). The
+// primitive both other helpers build on.
+pub fn u64(rand: Rand) -> Int:
+    rand.rand_u64()
+
+// A non-negative integer in `[0, n)`. `n` must be positive (RFC-0044 rule 3):
+// `[0, 0)` is an impossible range, so a non-positive bound fails loudly naming
+// the bad argument (matching `prng.next_below`) instead of returning a
+// plausible-looking `0`. Clears the sign bit, then takes the remainder; the
+// modulo bias is negligible for ordinary small ranges. For cryptographic
+// uniformity draw bytes with `hex` instead.
+pub fn below(rand: Rand, n: Int) -> Int:
+    if n <= 0:
+        fail("rand.below: bound `${n}` must be positive")
+    (rand.rand_u64() & 9223372036854775807) % n
+
+// A fair coin.
+pub fn bool(rand: Rand) -> Bool:
+    rand.rand_u64() & 1 == 1
+
+// `nbytes` random bytes rendered as lowercase hex (2 chars per byte) — the form a
+// WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit
+// words and truncates to the requested length.
+pub fn hex(rand: Rand, nbytes: Int) -> String:
+    // `nbytes * 2` (the character count) would overflow past `Int.MAX` and wrap
+    // negative, silently yielding an EMPTY string — a catastrophic result for a
+    // token/nonce. Refuse loudly instead (RFC-0044 rule 3).
+    if nbytes > 4611686018427387903:
+        fail("rand.hex: nbytes `${nbytes}` too large")
+    if nbytes <= 0:
+        ""
+    else:
+        var out = ""
+        while out.length() < nbytes * 2:
+            out = out + word_hex(rand.rand_u64())
+        out.substring(0, nbytes * 2)
+
+// The 16 lowercase hex characters of a 64-bit word, most-significant nibble first.
+fn word_hex(n: Int) -> String:
+    let digits = "0123456789abcdef"
+    var out = ""
+    var shift = 60
+    while shift >= 0:
+        let nibble = n >> shift & 15
+        out = out + digits.substring(nibble, nibble + 1)
+        shift = shift - 4
+    out

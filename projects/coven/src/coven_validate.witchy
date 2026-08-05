@@ -1,0 +1,75 @@
+// coven_validate — rune-name and version validation, plus wire-name decoding.
+// Self-contained: a name must be `namespace/name`, lowercase, exactly one `/`,
+// with no `..` traversal; a version must be strict `major.minor.patch`. These
+// guard every path built from a network-supplied name.
+
+// Rune names contain `/`; the wire encodes it as `~` for use in a query value.
+pub fn unwire(n: String) -> String:
+    n.split("~").join("/")
+
+// `namespace/name`: exactly one `/`, each segment a non-empty run of the URL-safe
+// charset `[a-z0-9-]` (lowercase ASCII letters, digits, hyphen). The charset alone
+// forbids `..` traversal, an embedded `/`, uppercase, and any URL-unsafe byte — a name
+// is a path segment and a URL path component, so it must be safe as both.
+pub fn valid_name(name: String) -> Bool:
+    match name.split_once_opt("/"):
+        Some(parts) ->
+            let (ns, nm) = parts
+            valid_segment(ns) && valid_segment(nm)
+        None -> false
+
+// A single name segment: non-empty and every character in the safe charset `[a-z0-9-]`.
+fn valid_segment(s: String) -> Bool:
+    if s.is_empty():
+        false
+    else:
+        var ok = true
+        for ch in s.chars():
+            if !is_name_char(ch):
+                ok = false
+        ok
+
+fn is_name_char(ch: String) -> Bool:
+    ch == "-" || is_digit(ch) || is_lower(ch)
+
+// A single ASCII lowercase letter: it lowercases to itself yet is changed by
+// uppercasing (which digits, `-`, and non-ASCII bytes are not). ASCII-only, matching
+// the byte-wise case folding of `.to_upper`/`.to_lower`.
+fn is_lower(ch: String) -> Bool:
+    ch.to_lower() == ch && ch.to_upper() != ch
+
+// A signed-record field must not contain the canonical payload's line separator
+// (`\n`): a value like `x\npromoted_by=admin` would inject a sibling `key=` line into
+// `coven_record.signing_payload`, making the field→payload encoding ambiguous. Names
+// and versions are already constrained; this guards the free-form identity/provenance
+// fields (`uploaded_by`, `promoted_by`, `factor`, `provenance`). (SEC-013.)
+pub fn single_line(s: String) -> Bool:
+    !s.contains("\n")
+
+// A version is strict `major.minor.patch` — exactly three digit-only components, each
+// non-empty and without a redundant leading zero (`0` is fine, `01` is not), so a
+// version has one canonical form and `01.2.3` cannot masquerade as `1.2.3`.
+pub fn valid_version(version: String) -> Bool:
+    let parts = version.split(".")
+    if list.length(parts) != 3:
+        false
+    else:
+        var ok = true
+        for p in parts:
+            if p.is_empty() || !all_digits(p) || has_leading_zero(p):
+                ok = false
+        ok
+
+// A numeric component with a redundant leading zero (`0` alone is allowed).
+fn has_leading_zero(p: String) -> Bool:
+    p.length() > 1 && p.starts_with("0")
+
+fn all_digits(s: String) -> Bool:
+    var ok = !s.is_empty()
+    for ch in s.chars():
+        if !is_digit(ch):
+            ok = false
+    ok
+
+fn is_digit(ch: String) -> Bool:
+    ch == "0" || ch == "1" || ch == "2" || ch == "3" || ch == "4" || ch == "5" || ch == "6" || ch == "7" || ch == "8" || ch == "9"

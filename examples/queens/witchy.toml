@@ -1,0 +1,5 @@
+[rune]
+name = "queens"
+version = "0.1.0"
+
+[dependencies]

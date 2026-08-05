@@ -1,0 +1,15 @@
+// Negative-literal patterns: a `match` arm can match a negative number directly.
+// Arms are newline-separated, and a `-` that begins a new line starts the next
+// arm's pattern rather than continuing the previous arm's body.
+pub fn step(direction: Int) -> String:
+    match direction:
+        -1 -> "left"
+        1 -> "right"
+        0 -> "stay"
+        _ -> "?"
+
+fn main(console: Console):
+    console.print(step(-1))
+    console.print(step(1))
+    console.print(step(0))
+    console.print(step(2))
