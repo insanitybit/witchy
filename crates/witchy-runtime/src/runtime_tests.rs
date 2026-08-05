@@ -789,7 +789,9 @@ fn concrete_grants_have_one_complete_confinement_policy() {
             FsRule {
                 path: PathBuf::from("/generated"),
                 scope: FsScope::Tree,
-                access: FsAccess::new(false, true, false),
+                // BuildOut is read+write: writing requires opening/traversing the
+                // output tree, and the build host lists it afterward.
+                access: FsAccess::new(true, true, false),
             },
             FsRule {
                 path: PathBuf::from("/lib"),
