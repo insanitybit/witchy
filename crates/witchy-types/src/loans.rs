@@ -1654,6 +1654,24 @@ fn projections_overlap(left: &LoanProjection, right: &LoanProjection) -> bool {
     true
 }
 
+/// A parenthetical clause naming the interior field/slot of a borrowed aggregate
+/// whose live use keeps the owner borrowed (RFC-0112 row 7 diagnostics). Only a
+/// fixed borrowed aggregate carries a non-empty `borrower_projection`; an
+/// ordinary whole-owner direct view has an empty one and yields no clause, so
+/// existing scalar-view messages are unchanged. The clause names only the
+/// user-visible field path — never a view address or hidden root local — so it
+/// tells the author exactly which projected field to shorten, destructure, or
+/// materialize with `.owned()`.
+fn aggregate_locus(loan: &Loan) -> String {
+    if loan.borrower_projection.steps.is_empty() {
+        return String::new();
+    }
+    format!(
+        " (through its borrowed-aggregate field `{}`)",
+        projection_display(&loan.borrower_projection)
+    )
+}
+
 fn projection_display(projection: &LoanProjection) -> String {
     if projection.steps.is_empty() {
         return "<root>".to_string();
@@ -2931,13 +2949,14 @@ impl LoanCtx<'_> {
 
     fn conflict(&self, loan: &Loan, what: &str) -> TypeError {
         terr(format!(
-            "in `{}`: owner `{}` is {what} while the borrowed view `{}` (from `{}`) is still \
+            "in `{}`: owner `{}` is {what} while the borrowed view `{}` (from `{}`){} is still \
              live — a view keeps its owner borrowed until its last use. End the view's use \
              first, or materialize it with `{}.owned()` before touching `{}`",
             short_name(self.fn_name),
             loan.owner,
             loan.view,
             short_name(&loan.origin),
+            aggregate_locus(loan),
             loan.view,
             loan.owner,
         ))
@@ -2945,13 +2964,14 @@ impl LoanCtx<'_> {
 
     fn escape(&self, loan: &Loan) -> TypeError {
         terr(format!(
-            "in `{}`: the borrowed view `{}` (from `{}`) escapes through a closure, task, or \
+            "in `{}`: the borrowed view `{}` (from `{}`){} escapes through a closure, task, or \
              channel, or is stored in an owned aggregate/mutable binding, while it still \
              borrows `{}` — a view cannot outlive its owner. \
              Materialize it with `{}.owned()` first to send an owned value",
             short_name(self.fn_name),
             loan.view,
             short_name(&loan.origin),
+            aggregate_locus(loan),
             loan.owner,
             loan.view,
         ))

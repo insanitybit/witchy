@@ -1057,6 +1057,14 @@
                 && (error.contains("still live") || error.contains("still \n             live")),
             "{error}"
         );
+        // (RFC-0112 row 7) The diagnostic names the interior borrowed-aggregate
+        // field whose live use keeps the owner borrowed — here `Cursor`'s `.view`
+        // field — so the author knows exactly which projection to shorten,
+        // destructure, or materialize with `.owned()`.
+        assert!(
+            error.contains("borrowed-aggregate field `.view`"),
+            "row-7 aggregate field locus missing: {error}"
+        );
     }
 
     #[test]
