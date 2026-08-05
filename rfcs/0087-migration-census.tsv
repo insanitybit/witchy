@@ -11,8 +11,8 @@ projects/glamour/src/glamour.witchy	541	auxiliary-result-discard	dict.insert	-	-
 projects/glamour/src/glamour.witchy	543	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	21	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	27	auxiliary-result-discard	dict.__insert_extract	-	-
-std/dict.witchy	63	auxiliary-result-discard	dict.remove	-	-
-std/dict.witchy	66	auxiliary-result-discard	dict.__remove_extract	-	-
+std/dict.witchy	74	auxiliary-result-discard	dict.remove	-	-
+std/dict.witchy	77	auxiliary-result-discard	dict.__remove_extract	-	-
 std/list.witchy	38	auxiliary-result-discard	list.__pop_extract	-	-
 std/list.witchy	83	auxiliary-result-discard	list.__pop_extract	-	-
 std/prng.witchy	92	expression-position-mutator	prng.advance	-	-
