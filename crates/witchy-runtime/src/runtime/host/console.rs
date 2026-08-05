@@ -87,7 +87,13 @@ fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()>
     let text = String::from_utf8_lossy(bytes);
     let id = caller.data().id;
     if !caller.data().caps.quiet {
+        use std::io::Write;
         print!("[vm {id}] {text}");
+        // A long-running server prints its readiness/log lines and then blocks
+        // in the accept loop without ever exiting, so block-buffered stdout (the
+        // default when stdout is a pipe/file, as under `coven-serve > log`) would
+        // never reach the reader. Flush so "live stdout" is actually live.
+        let _ = std::io::stdout().flush();
     }
     caller
         .data()
@@ -120,7 +126,9 @@ fn host_console_read_len(mut caller: Caller<'_, VmState>) -> Result<i32> {
 
 fn host_print_int(caller: Caller<'_, VmState>, n: i64) -> Result<()> {
     if !caller.data().caps.quiet {
+        use std::io::Write;
         println!("[vm {}] {n}", caller.data().id);
+        let _ = std::io::stdout().flush();
     }
     caller.data().output.lock().unwrap().push(n.to_string());
     Ok(())
@@ -132,7 +140,9 @@ fn host_print_float(caller: Caller<'_, VmState>, x: f64) -> Result<()> {
     // including the trailing `.0` on a whole-valued float.
     let s = witchy_syntax::fmt::render_float(x);
     if !caller.data().caps.quiet {
+        use std::io::Write;
         println!("[vm {}] {s}", caller.data().id);
+        let _ = std::io::stdout().flush();
     }
     caller.data().output.lock().unwrap().push(s);
     Ok(())

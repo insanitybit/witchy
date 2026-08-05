@@ -109,12 +109,17 @@ fn fs_open_syscalls() -> BTreeSet<Sysno> {
     let mut syscalls = BTreeSet::from([
         Sysno::openat,
         Sysno::openat2,
-        Sysno::newfstatat,
         Sysno::statx,
         Sysno::faccessat,
         Sysno::faccessat2,
         Sysno::readlinkat,
     ]);
+    // The directory-relative stat syscall carries a different name per arch in
+    // the `syscalls` table: `newfstatat` on x86_64, `fstatat` on aarch64.
+    #[cfg(target_arch = "x86_64")]
+    syscalls.insert(Sysno::newfstatat);
+    #[cfg(target_arch = "aarch64")]
+    syscalls.insert(Sysno::fstatat);
     #[cfg(target_arch = "x86_64")]
     syscalls.extend([
         Sysno::open,
@@ -128,10 +133,19 @@ fn fs_open_syscalls() -> BTreeSet<Sysno> {
 }
 
 fn process_syscalls() -> BTreeSet<Sysno> {
+    // NOTE: `clone`/`clone3` are deliberately NOT gated here. Thread creation is
+    // runtime infrastructure — the Wasmtime engine (and Witchy's own concurrency
+    // runtime) must spawn threads to execute ANY guest, regardless of the guest's
+    // capabilities, and threads inherit this same seccomp + Landlock confinement,
+    // so they are not an escalation. The real process capability is launching a
+    // NEW, unconfined executable, which is gated by `execve`/`execveat` (and the
+    // bare `fork`/`vfork` copy primitives) below. Denying `clone` here made every
+    // non-`Exec` program fail to start under enforced seccomp.
+    // `mut` is used only on x86_64 (for the bare fork/vfork/pipe primitives that
+    // do not exist on aarch64); allow the unused-mut on other arches.
+    #[allow(unused_mut)]
     let mut syscalls = BTreeSet::from([
         Sysno::socketpair,
-        Sysno::clone,
-        Sysno::clone3,
         Sysno::execve,
         Sysno::execveat,
         Sysno::wait4,
