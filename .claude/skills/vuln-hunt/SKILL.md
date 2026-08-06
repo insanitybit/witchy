@@ -56,7 +56,8 @@ Ranked by severity-of-class. Hunt high to low.
      differential test.
 
 2. **Compiled-WASM memory safety.** The WIR runtime helpers
-   (`crates/witchy-wir/src/wir_helpers.rs`, `wir_prelude.rs`) do **manual heap
+   (`crates/witchy-wir/src/wir_helpers/` — `memory.rs`, `dict/`, `collections/`,
+   `bytes.rs`, …, plus `wir_prelude.rs`) do **manual heap
    management**: `ensure(bytes)` grows linear memory, the `heap` global is
    bump-allocated, structures are hand-laid (e.g. dict = `[count:i32]` + 16-byte
    entries, key@+4 value@+12). Bug classes:
@@ -83,7 +84,8 @@ Ranked by severity-of-class. Hunt high to low.
    - Footprint **under-reporting**: `witchy caps` claims fewer rights than the
      program can actually exercise (the footprint analyzer in `pm`/`compiler`).
 
-4. **Sandbox escape** (`witchy sandbox`, deny-by-omission, `std/confine`).
+4. **Sandbox escape** (`witchy sandbox`, deny-by-omission; enforcement in
+   `crates/witchy-runtime/src/confine.rs` + `crates/witchy-confinement/`).
    A program reaching a capability/host effect that wasn't granted; a net policy
    that lets through a host:port it shouldn't; the WASM sandbox failing to
    confine an effect the footprint claimed was absent.
@@ -179,7 +181,7 @@ callee chain) are how you enumerate the other contexts.
 
 ## witchy-specific high-value targets (no-argument sweep order)
 
-1. **`crates/witchy-wir/src/wir_helpers.rs` + `wir_prelude.rs`** — every helper
+1. **`crates/witchy-wir/src/wir_helpers/` + `wir_prelude.rs`** — every helper
    that calls `ensure` or writes the `heap` global. Check: reserve-past-full-
    allocation, every offset/stride, size-overflow into `ensure`. (W-000a, W-001
    both lived here.)
@@ -189,7 +191,8 @@ callee chain) are how you enumerate the other contexts.
 3. **Parity differential sweep** — pick stdlib ops and language features and diff
    interpreter vs compiled on edge inputs. This is how W-001 surfaced.
 4. **`crates/witchy-caps/src/capabilities.rs` + sealing/narrowing in typeck +
-   `std/confine`** — capability bypass, sealing escape, footprint truth.
+   `crates/witchy-runtime/src/confine.rs`** — capability bypass, sealing escape,
+   footprint truth.
 5. **`projects/coven` + `projects/pm`** — signature verification, caps-diff /
    footprint evasion, trusted-publishing.
 

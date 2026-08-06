@@ -20,8 +20,9 @@ enough that recalled "looks like Python/Rust" intuitions will mislead you.
 
 When sources disagree, trust them in this order. Earlier wins.
 
-1. **`src/` + `std/*.witchy` + the tests** — what actually IS. `src/interpreter.rs`
-   is the reference; `src/example_tests.rs` holds the differential tests.
+1. **`crates/` + `std/*.witchy` + the tests** — what actually IS.
+   `crates/witchy-interp/src/interpreter.rs` is the reference semantics;
+   `src/example_tests.rs` (+ `src/example_tests/`) holds the differential tests.
 2. **`spec/language.md`** — the authoritative syntax + semantics reference. Every
    ` ```witchy ` block in it is a complete program the suite type-checks and runs.
 3. **`spec/capabilities.md`**, **`spec/stdlib.md`** — the security model and the
@@ -38,7 +39,7 @@ over a sentence.
 
 **Fast path — productive in three reads.** Do this first, in order:
 
-1. `spec/language.md` — read it through. It is ~800 lines and is the single best
+1. `spec/language.md` — read it through. It is ~1850 lines and is the single best
    artifact: lexical structure, types, functions, `match`, generics/traits,
    errors, and how capabilities thread through `main`. The examples are real.
 2. `examples/README.md` — the index. It maps every concept to a runnable example

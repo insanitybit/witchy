@@ -1,5 +1,18 @@
 # Working in this repo (agent notes)
 
+**Before you read or write any `.witchy` code: witchy is a NOVEL language that
+is in no training data.** Do not pattern-match it to Python/Rust from memory —
+its off-side layout, capability-passing, and trait/ownership rules are distinct
+and recalled intuitions will mislead you. Learn it from the repo first: invoke
+the **`learn-witchy`** skill, or read in this order — `spec/language.md` (the
+authoritative, executable-example syntax + semantics), `spec/capabilities.md`
+(the security/authority model), `spec/stdlib.md` (generated module API), then
+`book/src/` (narrative tour, ordered by `book/src/SUMMARY.md`). The
+source-of-truth when docs disagree is `crates/witchy-interp/src/interpreter.rs` +
+`std/*.witchy` + the differential tests. To explore from the CLI: `witchy which
+<name>` (find a stdlib symbol), `witchy doc std/*.witchy` (render the API),
+`witchy caps <file>` (a program's capability footprint).
+
 `witchy` is a capability-secure language with twin backends: the interpreter
 (`crates/witchy-interp/src/interpreter.rs`) is the reference, the compiled-WASM
 path (`crates/witchy-lower/src/codegen/`) must match it. **Authoritative docs:**
@@ -7,9 +20,9 @@ path (`crates/witchy-lower/src/codegen/`) must match it. **Authoritative docs:**
 workspace layout). Read those first; this file only adds the things that have
 actually bitten agents.
 
-**The compiler is a Cargo workspace** (RFC-0018): seven stage crates under
-`crates/` (`witchy-syntax`/`-types`/`-wir`/`-lower`/`-runtime`/`-interp`/`-caps`)
-plus the `witchy` binary. Build/lint/test the whole thing with `--workspace`
+**The compiler is a Cargo workspace** (RFC-0018): eleven crates under `crates/`
+(`witchy-syntax`/`-types`/`-wir`/`-lower`/`-runtime`/`-interp`/`-caps`/
+`-cap-model`/`-confinement`/`-test-host`/`-testkit`) plus the `witchy` binary. Build/lint/test the whole thing with `--workspace`
 (`cargo nextest run --workspace`, `cargo clippy --workspace --all-targets`). The
 root lib re-exports every crate's modules, so `crate::{ast,typeck,codegen,…}::…`
 paths still resolve from the binary — but new code belongs in the owning crate.
@@ -36,7 +49,7 @@ Don't file a bug as an RFC or an ad-hoc design doc as a bug; security findings s
   its only stdout; everything else goes to stderr.) For a manual
   `git worktree add`, run `./scripts/worktree-warm.sh <worktree-path>` yourself:
   it APFS-CoW-clones the main tree's `target/` (seconds, ~zero disk), so all
-  dependency crates (wasmtime included) come up warm and only the 8 workspace
+  dependency crates (wasmtime included) come up warm and only the workspace
   crates rebuild. Don't point `CARGO_TARGET_DIR` at a shared dir instead —
   cargo's build lock would serialize concurrent agents. When your worktree's
   work is merged, remove the worktree (its multi-GB `target/` goes with it).

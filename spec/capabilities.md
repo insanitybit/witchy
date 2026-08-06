@@ -46,6 +46,7 @@ audit witchy code by reading signatures, not by tracing call graphs.
 | `Console`, `Console[Read]`, `Console[Write]` | read stdin and write stdout | `console.read_line() -> String`, `console.print(s)` |
 | `Clock` | read the wall clock | `clock.now() -> Int` (epoch ms) |
 | `Env` | read environment variables | `env.get_env(name) -> Option(String)` |
+| `Rand` | draw cryptographically-seeded random values from the host | `rand.u64() -> Int`, `rand.below(n) -> Int`, `rand.bool() -> Bool`, `rand.hex(nbytes) -> String` (std `rand`) |
 | `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `subtree`, `read_file`/`write_file` (→ `File`) |
 | `File`, `File[Read]`, `File[Write]` | authority to **one file** (the leaf) | `f.read() -> String`, `f.write(data)` (a `Dir` mints one with `read_file`/`write_file`) |
 | `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
