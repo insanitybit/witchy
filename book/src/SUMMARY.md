@@ -47,6 +47,9 @@
   - [Reading and Writing Files](cookbook-files.md)
   - [Working with JSON](cookbook-json.md)
   - [Hashing and Signatures](cookbook-crypto.md)
+  - [Bytes and Binary Data](cookbook-bytes.md)
+  - [Iterator Pipelines](cookbook-iterators.md)
+  - [Error-Handling Patterns](cookbook-errors.md)
 
 ---
 

@@ -1157,6 +1157,39 @@
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
+    "file": "book/src/cookbook-bytes.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "length: 7",
+      "first byte: 87",
+      "head: Wit",
+      "letters: 6"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-bytes.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "decoded text: Hi!",
+      "as hex: 486921",
+      "rejected: bytes.from_list: value 256 is outside 0..=255"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
     "file": "book/src/cookbook-collections.md",
     "footprint": [
       "Console[Read,Write]"
@@ -1250,6 +1283,39 @@
   {
     "block": 1,
     "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-errors.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "total 6",
+      "error: 'x' is not a number",
+      "error: empty input"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-errors.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "5",
+      "-1",
+      "doubled: 10",
+      "stopped at: divide by zero"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/cookbook-files.md",
@@ -1302,6 +1368,39 @@
       "ada: 36",
       "turing: 41",
       "babbage: 49"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-iterators.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "0: ada",
+      "1: bob",
+      "2: cy",
+      "zipped sums: 3 values, total 66"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-iterators.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "5! = 120",
+      "running sums: 4 -> last 10",
+      "squares under 50: 7"
     ],
     "runnable": true
   },

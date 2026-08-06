@@ -1526,7 +1526,7 @@ content-addressed exact-subset manifest, while byte-identical programs share one
 authenticated executable and artifact record across placements. The runnable
 host waits for load activation, adopts the existing editor controls without
 replacing compiler-owned DOM, and sends edited source only to the opaque-frame
-execution boundary. The maintained bundle test builds all 53 canonical routes,
+execution boundary. The maintained bundle test builds all 56 canonical routes,
 authenticates every declared content input, checks each route-manifest/DOM join,
 and requires every editable fence to have one load-activated resumable placement.
 It derives the non-runnable route set from `book/examples.json` and requires
