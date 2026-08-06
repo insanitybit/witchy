@@ -43,6 +43,8 @@
   - [Numbers and Math](cookbook-numbers.md)
   - [Functions as Values](cookbook-functional.md)
   - [Parsing Configuration with TOML](cookbook-config.md)
+  - [Dates, Times, and Durations](cookbook-time.md)
+  - [Reading and Writing Files](cookbook-files.md)
 
 ---
 
