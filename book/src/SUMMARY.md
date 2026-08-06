@@ -37,6 +37,12 @@
   - [Shipping and Deployment](shipping.md)
 - [Idiomatic witchy](idioms.md)
 - [Testing](testing.md)
+- [The Standard Library in Practice](cookbook.md)
+  - [Text, Patterns, and Encodings](cookbook-text.md)
+  - [Sets, Grouping, and Deduplication](cookbook-collections.md)
+  - [Numbers and Math](cookbook-numbers.md)
+  - [Functions as Values](cookbook-functional.md)
+  - [Parsing Configuration with TOML](cookbook-config.md)
 
 ---
 
