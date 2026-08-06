@@ -62,15 +62,28 @@ pub(crate) fn apply(
 }
 
 fn denied_syscalls(policy: &Policy) -> BTreeSet<Sysno> {
-    let mut denied = hard_denied_syscalls();
-    for class in [
+    const GATED: [SyscallClass; 4] = [
         SyscallClass::FsOpen,
         SyscallClass::Network,
         SyscallClass::Listen,
         SyscallClass::Process,
-    ] {
+    ];
+    let mut denied = hard_denied_syscalls();
+    for class in GATED {
         if !policy.syscall_classes.contains(&class) {
             denied.extend(class_syscalls(class));
+        }
+    }
+    // A syscall may belong to more than one class (e.g. recvfrom/sendto are IPC
+    // for `Process`'s spawn error-channel AND appear in `Network`). If ANY
+    // granted class needs it, it must not be denied — so remove every granted
+    // class's syscalls from the denial set after the union above. `hard_denied`
+    // is never in a grantable class, so it is unaffected.
+    for class in GATED {
+        if policy.syscall_classes.contains(&class) {
+            for syscall in class_syscalls(class) {
+                denied.remove(&syscall);
+            }
         }
     }
     denied
@@ -146,6 +159,15 @@ fn process_syscalls() -> BTreeSet<Sysno> {
     #[allow(unused_mut)]
     let mut syscalls = BTreeSet::from([
         Sysno::socketpair,
+        // Rust's `std::process` spawn opens an AF_UNIX SOCK_SEQPACKET socketpair
+        // as the child's exec-error channel and reads/writes it with
+        // recvfrom/sendto. These are IPC over a private local pair, NOT network
+        // access (real networking still needs `socket`+`connect`, gated by the
+        // Network class). Gating them under Network made every `Exec` spawn from
+        // a program without `Net` fail with "the CLOEXEC pipe failed: Operation
+        // not permitted".
+        Sysno::recvfrom,
+        Sysno::sendto,
         Sysno::execve,
         Sysno::execveat,
         Sysno::wait4,
