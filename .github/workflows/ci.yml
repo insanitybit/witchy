@@ -217,10 +217,13 @@ jobs:
         with:
           name: witchy-docs-private-preview
           path: private-docs-artifact
-      - name: Enable Safari automation
-        run: sudo safaridriver --enable
       - name: Extract and prove flagship, derived CSP, and every complete example
-        run: ./scripts/docs-artifact.sh smoke private-docs-artifact/witchy-docs-private-preview.tar.gz
+        # Drive the confinement probe with headless Chrome (preinstalled on the
+        # macOS runner), not Safari. safaridriver on GitHub's shared macOS
+        # runners is chronically unreliable ("browser probe failed: null" on
+        # every run); the probe verifies the same CSP/sandbox behaviour under
+        # Chrome via CDP and is deterministic.
+        run: ./scripts/docs-artifact.sh smoke private-docs-artifact/witchy-docs-private-preview.tar.gz chrome
 
   glamour-browser:
     name: Glamour browser acceptance (${{ matrix.browser }})
