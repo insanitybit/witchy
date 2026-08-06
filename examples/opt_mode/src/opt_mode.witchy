@@ -1,0 +1,51 @@
+mode opt
+
+// `mode opt` holds this whole file — and every module it imports — to witchy's
+// fast-path discipline. Two things change versus an ordinary file:
+//
+//   1. A heap-typed parameter (List, String, Dict, record, …) must declare an
+//      ownership convention: `let` (immutable borrow, no copy), `var` (mutate and
+//      write back), or `own` (take ownership). Scalars and capabilities are exempt.
+//   2. Any accumulation that would silently fall back to O(n²) copying becomes a
+//      compile error instead of a quiet slowdown.
+//
+// `mode opt` is also TRANSITIVE: an `opt` module may only import other `opt`
+// modules (the bundled standard library is exempt), so the guarantee covers the
+// whole reachable graph, not just this one file. See examples/projects/opt_pipeline
+// for a multi-file version, and rfcs/performance-modes.md for the full story.
+fn main(console: Console):
+    // Building a list by self-assign push stays O(n): the uniqueness analysis
+    // proves `xs` is unaliased, so each push mutates in place (capacity doubling)
+    // rather than copying the whole list. In an ordinary file a shape that fell
+    // off this path would just be a note; under `mode opt` it would be an error.
+    var xs = []
+    for i in [1, 2, 3, 4, 5]:
+        xs.push(i * i)
+    console.print("squares: ${xs}")
+    console.print("sum:     ${sum(xs)}")
+
+    // This owner-threaded recursive state machine is checked as an RFC-0089
+    // functional-in-place kernel. Ten thousand transitions add no allocator,
+    // reclaimer, arena-rewind, or control-stack work.
+    let scanned = scan(ScanState(0, 0), 10000)
+    console.print("scanned: ${scanned.offset}, checksum: ${scanned.checksum}")
+
+// `let xs` borrows the list immutably — the type checker proves `sum` never lets
+// it escape, so the caller passes a reference with no defensive copy. Drop the
+// `let` here and `mode opt` rejects the file: heap params must be explicit.
+pub fn sum(let xs: List(Int)) -> Int:
+    var acc = 0
+    for x in xs:
+        acc = acc + x
+    acc
+
+type ScanState:
+    offset: Int
+    checksum: Int
+
+fn scan(own state: unique ScanState, remaining: Int) -> unique ScanState:
+    if remaining == 0:
+        return state
+    state.checksum = (state.checksum * 33 + remaining) % 65521
+    state.offset += 1
+    scan(state, remaining - 1)

@@ -1,0 +1,59 @@
+// traits — define your own trait and write code generic over it. `Shape`
+// declares `area` and `name`; three types implement it; and the `describe` /
+// `total_area` functions work for *any* Shape via a `where s: Shape` bound. Witchy
+// monomorphizes such a generic per concrete type, so trait code stays fast and
+// compiles to WASM identically to the interpreter. Pure (Console only). Run:
+//   witchy examples/traits/src/traits.witchy
+trait Shape:
+    fn area(self) -> Int
+    fn name(self) -> String
+
+type Square:
+    Square(Int)
+
+type Rect:
+    Rect(Int, Int)
+
+type RightTriangle:
+    RightTriangle(Int, Int)
+
+impl Shape for Square:
+    fn area(self) -> Int:
+        match self:
+            Square(side) -> side * side
+
+    fn name(self) -> String:
+        "square"
+
+impl Shape for Rect:
+    fn area(self) -> Int:
+        match self:
+            Rect(w, h) -> w * h
+
+    fn name(self) -> String:
+        "rectangle"
+
+impl Shape for RightTriangle:
+    fn area(self) -> Int:
+        match self:
+            RightTriangle(base, height) -> base * height / 2
+
+    fn name(self) -> String:
+        "right triangle"
+
+// Works for ANY Shape — the trait is the only thing it knows about `s`.
+fn describe(shape: s) -> String where s: Shape:
+    name(shape) + " with area " + "${area(shape)}"
+
+// Generic over a list of one Shape type.
+fn total_area(shapes: List(s)) -> Int where s: Shape:
+    var sum = 0
+    for shape in shapes:
+        sum = sum + area(shape)
+    sum
+
+fn main(console: Console):
+    console.print(describe(Square(5)))
+    console.print(describe(Rect(3, 4)))
+    console.print(describe(RightTriangle(6, 4)))
+    console.print("total of three squares: " + "${total_area([Square(2), Square(3), Square(4)])}")

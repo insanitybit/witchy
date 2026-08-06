@@ -1,0 +1,6 @@
+[rune]
+name = "report"
+version = "0.1.0"
+
+[dependencies]
+"stats" = { path = "../stats" }

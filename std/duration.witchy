@@ -1,0 +1,291 @@
+// Pure helpers for the built-in `Duration` type — a length of time, written as a
+// literal like `30s`, `2hr`, or `500ms`. Durations are combined and compared with
+// the language operators (`a + b`, `d * 3`, `a < b`); this module adds
+// construction from plain numbers, component access, and human formatting.
+// Capability-free, so it compiles to WASM. A Duration is carried as whole
+// milliseconds (`int_to_duration`/`duration_to_int` are the Int<->Duration
+// bridge).
+
+import string
+import option
+import show
+import error
+import convert
+
+// Matchable duration parse failures. The payloads keep the original input, and
+// `UnitWithoutCount` also carries the unit token that caused the failure.
+type DurationParseError:
+    DurationOverflow(String)
+    InvalidDurationShape(String)
+    UnitWithoutCount(String, String)
+    TrailingUnitlessNumber(String)
+    EmptyDuration(String)
+
+pub fn parse_error_message(e: DurationParseError) -> String:
+    match e:
+        DurationOverflow(raw) -> "`" + raw + "` overflows a 64-bit millisecond duration"
+        InvalidDurationShape(raw) -> "`" + raw + "` is not a duration (expected e.g. `1h2m3s`, `500ms`, or a bare-ms number)"
+        UnitWithoutCount(raw, unit) -> "`" + raw + "` has a unit with no count (expected a number before `" + unit + "`)"
+        TrailingUnitlessNumber(raw) -> "`" + raw + "` has a trailing unit-less number (expected a unit like `s`/`m`/`h` after every count)"
+        EmptyDuration(raw) -> "`" + raw + "` is empty (expected a duration like `1h2m3s`, `500ms`, or a bare-ms number)"
+
+impl Show for DurationParseError:
+    fn show(self) -> String:
+        parse_error_message(self)
+
+impl Error for DurationParseError
+
+impl From(DurationParseError) for String:
+    fn from(value: DurationParseError) -> Self:
+        parse_error_message(value)
+
+// Construct from a count of one unit. Numeric constructors are convenience
+// contracts: they return `Duration`, but abort on overflow instead of wrapping.
+// Use `parse` for fallible user input.
+pub fn milliseconds(n: Int) -> Duration:
+    checked_unit("duration.milliseconds", n, 1)
+
+pub fn seconds(n: Int) -> Duration:
+    checked_unit("duration.seconds", n, 1000)
+
+pub fn minutes(n: Int) -> Duration:
+    checked_unit("duration.minutes", n, 60000)
+
+pub fn hours(n: Int) -> Duration:
+    checked_unit("duration.hours", n, 3600000)
+
+pub fn days(n: Int) -> Duration:
+    checked_unit("duration.days", n, 86400000)
+
+pub fn weeks(n: Int) -> Duration:
+    checked_unit("duration.weeks", n, 604800000)
+
+// Build a duration from hours, minutes, and seconds. Components may be negative,
+// but scaling and addition abort if the total millisecond count would overflow.
+pub fn from_clock(h: Int, m: Int, s: Int) -> Duration:
+    let hh = checked_scaled_millis("duration.from_clock", h, 3600000)
+    let mm = checked_scaled_millis("duration.from_clock", m, 60000)
+    let ss = checked_scaled_millis("duration.from_clock", s, 1000)
+    let hm = checked_add_millis("duration.from_clock", hh, mm)
+    int_to_duration(checked_add_millis("duration.from_clock", hm, ss))
+
+fn checked_unit(name: String, n: Int, mult: Int) -> Duration:
+    int_to_duration(checked_scaled_millis(name, n, mult))
+
+fn checked_scaled_millis(name: String, n: Int, mult: Int) -> Int:
+    let max = 9223372036854775807
+    let min = 0 - 9223372036854775807 - 1
+    if n > max / mult || n < min / mult:
+        fail(name + ": `${n}` overflows a 64-bit millisecond duration")
+    n * mult
+
+fn checked_add_millis(name: String, a: Int, b: Int) -> Int:
+    let max = 9223372036854775807
+    let min = 0 - 9223372036854775807 - 1
+    if b > 0 && a > max - b:
+        fail(name + ": components overflow a 64-bit millisecond duration")
+    if b < 0 && a < min - b:
+        fail(name + ": components overflow a 64-bit millisecond duration")
+    a + b
+
+// ---- Total conversions (whole units, truncated toward zero) ----
+pub fn to_milliseconds(d: Duration) -> Int:
+    duration_to_int(d)
+
+pub fn to_seconds(d: Duration) -> Int:
+    duration_to_int(d) / 1000
+
+pub fn to_minutes(d: Duration) -> Int:
+    duration_to_int(d) / 60000
+
+pub fn to_hours(d: Duration) -> Int:
+    duration_to_int(d) / 3600000
+
+pub fn to_days(d: Duration) -> Int:
+    duration_to_int(d) / 86400000
+
+pub fn to_weeks(d: Duration) -> Int:
+    duration_to_int(d) / 604800000
+
+// ---- Combinators ----
+
+// The longer of two durations.
+pub fn max(a: Duration, b: Duration) -> Duration:
+    if a > b:
+        a
+    else:
+        b
+
+// The shorter of two durations.
+pub fn min(a: Duration, b: Duration) -> Duration:
+    if a < b:
+        a
+    else:
+        b
+
+// Whether the duration is exactly zero.
+pub fn is_zero(d: Duration) -> Bool:
+    duration_to_int(d) == 0
+
+// The magnitude of a duration (a negative span, e.g. from subtraction, is made
+// positive). The most-negative representable value has no positive counterpart in
+// 64 bits (negating it would wrap back to itself), so it saturates to the largest
+// positive magnitude rather than staying negative.
+pub fn abs(d: Duration) -> Duration:
+    let ms = duration_to_int(d)
+    if ms == 0 - 9223372036854775807 - 1:
+        int_to_duration(9223372036854775807)
+    else if ms < 0:
+        int_to_duration(0 - ms)
+    else:
+        d
+
+// ---- Components ----
+
+// The hours component (everything an hour and above).
+pub fn part_hours(d: Duration) -> Int:
+    duration_to_int(d) / 3600000
+
+// The minutes component (0..59).
+pub fn part_minutes(d: Duration) -> Int:
+    duration_to_int(d) / 60000 % 60
+
+// The seconds component (0..59).
+pub fn part_seconds(d: Duration) -> Int:
+    duration_to_int(d) / 1000 % 60
+
+// The milliseconds component (0..999).
+pub fn part_milliseconds(d: Duration) -> Int:
+    duration_to_int(d) % 1000
+
+// ---- Formatting ----
+
+// A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a
+// long span reads as e.g. "100:00:00"); the sub-second part is dropped. A
+// negative span renders as a single leading "-" over the absolute components
+// ("-0:00:01"), never as negative fields inside the clock.
+pub fn clock(d: Duration) -> String:
+    if duration_to_int(d) < 0:
+        "-" + clock(abs(d))
+    else:
+        "${part_hours(d)}" + ":" + pad2(part_minutes(d)) + ":" + pad2(part_seconds(d))
+
+fn pad2(n: Int) -> String:
+    "${n}".pad_left(2, "0")
+
+// A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and
+// `500ms` for a pure sub-second span. A negative span (e.g. from subtraction)
+// keeps its sign as a single leading "-" over the absolute magnitude: `-1s`,
+// `-1m30s` — not the truncated-division fields of the raw negative count.
+pub fn human(d: Duration) -> String:
+    if duration_to_int(d) < 0:
+        "-" + human(abs(d))
+    else:
+        let h = part_hours(d)
+        let m = part_minutes(d)
+        let s = part_seconds(d)
+        let r = part_milliseconds(d)
+        if h > 0:
+            "${h}" + "h" + "${m}" + "m" + "${s}" + "s"
+        else if m > 0:
+            "${m}" + "m" + "${s}" + "s"
+        else if s > 0:
+            "${s}" + "s"
+        else:
+            "${r}" + "ms"
+
+// Parse a duration string to a `Duration` — the inverse of `human`. Accepts
+// unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w,
+// and a bare number as plain milliseconds. `Err` on a stray character, a unit with
+// no preceding count ("ms", "1hms"), a dangling unit-less number after units were
+// given ("1h30"), or a value that overflows a 64-bit millisecond count. The
+// typed error lets libraries classify malformed input without parsing display text.
+pub fn parse(s: String) -> Result(Duration, DurationParseError):
+    var total = 0
+    var cur = 0
+    var seen_digit = false
+    var seen_unit = false
+    var i = 0
+    let n = s.char_count()
+    while i < n:
+        let c = s.substring(i, i + 1)
+        let two = if i + 1 < n: s.substring(i, i + 2) else: ""
+        if c >= "0" && c <= "9":
+            match push_digit(cur, c.to_int()):
+                Some(v) -> cur = v
+                None -> return Err(DurationOverflow(s))
+            seen_digit = true
+            i = i + 1
+        else:
+            // A unit token: read its millisecond factor and character width, then
+            // fold the pending count into `total` with the same missing-count and
+            // overflow guards for every unit.
+            match unit_factor(c, two):
+                None -> return Err(InvalidDurationShape(s))
+                Some(uf) ->
+                    let (mult, width) = uf
+                    if !seen_digit:
+                        return Err(UnitWithoutCount(s, s.substring(i, i + width)))
+                    match scale_add(total, cur, mult):
+                        Some(v) -> total = v
+                        None -> return Err(DurationOverflow(s))
+                    cur = 0
+                    seen_digit = false
+                    seen_unit = true
+                    i = i + width
+    if seen_digit:
+        if seen_unit:
+            Err(TrailingUnitlessNumber(s))
+        else:
+            Ok(int_to_duration(cur))
+    else if seen_unit:
+        Ok(int_to_duration(total))
+    else:
+        Err(EmptyDuration(s))
+
+// Parse with String errors for application-style boundaries.
+pub fn parse_string(s: String) -> Result(Duration, String):
+    match parse(s):
+        Ok(d) -> Ok(d)
+        Err(e) -> Err(parse_error_message(e))
+
+// The millisecond factor and character width of the unit token at the cursor: the
+// two-character `ms`/`hr` take precedence over the one-character `s`/`m`/`h`/`d`/`w`;
+// `None` for any other character.
+fn unit_factor(c: String, two: String) -> Option((Int, Int)):
+    if two == "ms":
+        Some((1, 2))
+    else if two == "hr":
+        Some((3600000, 2))
+    else if c == "s":
+        Some((1000, 1))
+    else if c == "m":
+        Some((60000, 1))
+    else if c == "h":
+        Some((3600000, 1))
+    else if c == "d":
+        Some((86400000, 1))
+    else if c == "w":
+        Some((604800000, 1))
+    else:
+        None
+
+// Append decimal digit `d` (0..9) to a non-negative accumulator `cur`, or `None`
+// if the result would exceed the largest 64-bit integer (9223372036854775807).
+fn push_digit(cur: Int, d: Int) -> Option(Int):
+    if cur > (9223372036854775807 - d) / 10:
+        None
+    else:
+        Some(cur * 10 + d)
+
+// Add `cur * mult` to the non-negative running `total`, or `None` if either the
+// scaling or the sum would overflow a 64-bit integer. `mult` is always positive.
+fn scale_add(total: Int, cur: Int, mult: Int) -> Option(Int):
+    if cur > 9223372036854775807 / mult:
+        None
+    else:
+        let scaled = cur * mult
+        if total > 9223372036854775807 - scaled:
+            None
+        else:
+            Some(total + scaled)

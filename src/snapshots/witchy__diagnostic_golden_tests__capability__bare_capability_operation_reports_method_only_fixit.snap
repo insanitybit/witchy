@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console):\\n    print(console, \\\"hi\\\")\\n\")"
+---
+type error: `main`, line 2: capability operation `print` is method-only; write `console.print(message)` instead

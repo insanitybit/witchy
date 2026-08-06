@@ -1,0 +1,22 @@
+from glamour import VNode
+
+type Msg:
+    Open
+    NameChanged(String)
+    UpdatesChanged(Bool)
+    ThemeChanged(String)
+    NotesChanged(String)
+    Submit
+
+fn fixture() -> VNode(Msg):
+    let profile = glamour.labelled_input("display-name", "Display name", "Ada", "profile.name", glamour.event_value(fn(value: String): NameChanged(value)))
+    let updates = glamour.element("div", [], [glamour.element("input", [glamour.attribute("id", "email-updates"), glamour.attribute("type", "checkbox"), glamour.boolean_attribute("checked", true), glamour.on_event("profile.updates", "change", glamour.event_checked(fn(value: Bool): UpdatesChanged(value)))], []), glamour.element("label", [glamour.attribute("for", "email-updates")], [glamour.text("Email updates")])])
+    let choices = [glamour.element("option", [glamour.attribute("value", "system"), glamour.boolean_attribute("selected", true)], [glamour.text("System")]), glamour.element("option", [glamour.attribute("value", "dark")], [glamour.text("Dark")]), glamour.element("option", [glamour.attribute("value", "light")], [glamour.text("Light")])]
+    let theme = glamour.element("div", [], [glamour.element("label", [glamour.attribute("for", "theme")], [glamour.text("Theme")]), glamour.element("select", [glamour.attribute("id", "theme"), glamour.property("value", "system"), glamour.on_event("profile.theme", "change", glamour.event_value(fn(value: String): ThemeChanged(value)))], choices)])
+    let notes = glamour.element("div", [], [glamour.element("label", [glamour.attribute("for", "notes")], [glamour.text("Notes")]), glamour.element("textarea", [glamour.attribute("id", "notes"), glamour.on_event("profile.notes", "input", glamour.event_value(fn(value: String): NotesChanged(value)))], [glamour.text("Ready")])])
+    let preferences = glamour.element("fieldset", [], [glamour.element("legend", [], [glamour.text("Preferences")]), glamour.element("div", [], [updates, theme])])
+    let advanced = glamour.element("details", [], [glamour.element("summary", [], [glamour.text("Advanced settings")]), glamour.element("p", [], [glamour.text("Native disclosure content")])])
+    glamour.element("main", [], [glamour.button("Open panel", Open), glamour.image(glamour.asset_url_or_empty("/witchy.svg"), "Witchy sigil"), profile, preferences, notes, advanced, glamour.submit_button("Save profile", Submit)])
+
+fn main(console: Console):
+    console.print(glamour.to_html(fixture()))

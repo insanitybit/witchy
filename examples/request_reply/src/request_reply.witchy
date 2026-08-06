@@ -1,0 +1,35 @@
+// Request/reply over a reply channel. The client makes its own one-shot channel
+// and sends the Sender end inside the request; the server replies on whatever
+// channel the request carried. No task indices, no hardcoded addresses — the
+// reply path is a first-class value the client chose.
+//
+// Run:  witchy examples/request_reply/src/request_reply.witchy
+//       witchy parity examples/request_reply/src/request_reply.witchy
+
+from chan import Receiver, Sender
+
+type Msg:
+    Square(Int, Sender(Msg))
+    Result(Int)
+
+async fn server(inbox: Receiver(Msg)):
+    chan.serve(inbox, 0, fn(seen, m):
+        match m:
+            Square(n, reply_to) -> chan.and_then(chan.send(reply_to, Result(n * n)), fn(_u): chan.done(seen + 1))
+            Result(_r) -> chan.done(seen)
+    ).await
+
+async fn client(console: Console, srv: Sender(Msg)):
+    let (reply_tx, reply_rx) = chan.channel(1).await
+    chan.send(srv, Square(9, reply_tx)).await
+    let r = chan.recv(reply_rx).await
+    match r:
+        Some(Result(v)) -> console.print("9 squared is ${v}")
+        Some(Square(_n, _s)) -> console.print("(unreachable)")
+        None -> console.print("(no reply)")
+
+async fn main(console: Console):
+    let (srv_tx, srv_rx) = chan.channel(4).await
+    let h = chan.spawn(server(srv_rx)).await
+    client(console, srv_tx).await
+    chan.join(h).await

@@ -1,0 +1,215 @@
+//! RFC-0077 real-capability test tier: CLI grants stay explicit and package-owned.
+
+use std::ffi::OsString;
+use std::process::{Command, Output};
+use witchy::runtime::{Capabilities, Runtime};
+use witchy::{capabilities, codegen, interpreter, parser, pipeline, typeck};
+
+const BIN: &str = env!("CARGO_BIN_EXE_witchy");
+
+use super::temp_dir::TempDir;
+
+fn run(args: impl IntoIterator<Item = OsString>) -> Output {
+    Command::new(BIN).args(args).output().expect("spawn witchy")
+}
+
+fn text(output: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[test]
+fn real_dir_access_requires_integration_and_an_explicit_grant() {
+    let temp = TempDir::new("dir");
+    let granted = temp.mkdir("granted");
+    std::fs::write(granted.join("secret.txt"), "integration-secret").expect("seed real file");
+    let suite = temp.write(
+        "suite.witchy",
+        "import testing\n\nfn test_reads_real_file(root: Dir[Read]):\n    testing.assert_eq(root.read(\"secret.txt\"), \"integration-secret\")\n",
+    );
+
+    let plain = run([OsString::from("test"), suite.clone().into_os_string()]);
+    assert!(!plain.status.success(), "plain test unexpectedly received authority: {}", text(&plain));
+    assert!(text(&plain).contains("--integration"), "plain failure must name the opt-in: {}", text(&plain));
+
+    let missing = run([
+        OsString::from("test"),
+        OsString::from("--integration"),
+        suite.clone().into_os_string(),
+    ]);
+    assert!(!missing.status.success(), "missing Dir grant unexpectedly passed: {}", text(&missing));
+    assert!(
+        text(&missing).contains("requires 1 `Dir` grant") && text(&missing).contains("--dir <root>"),
+        "missing grant must be actionable: {}",
+        text(&missing)
+    );
+
+    let implicit = run([
+        OsString::from("test"),
+        OsString::from("--dir"),
+        granted.clone().into_os_string(),
+        suite.clone().into_os_string(),
+    ]);
+    assert!(!implicit.status.success(), "--dir without --integration unexpectedly passed");
+    assert!(text(&implicit).contains("require `witchy test --integration`"), "{}", text(&implicit));
+
+    let integrated = run([
+        OsString::from("test"),
+        OsString::from("--integration"),
+        OsString::from("--dir"),
+        granted.into_os_string(),
+        suite.into_os_string(),
+    ]);
+    assert!(integrated.status.success(), "explicit integration grant failed: {}", text(&integrated));
+    assert!(text(&integrated).contains("test suite.test_reads_real_file ... ok"), "{}", text(&integrated));
+}
+
+#[test]
+fn net_parameters_require_an_explicit_allowlist() {
+    let temp = TempDir::new("net");
+    let suite = temp.write(
+        "net_suite.witchy",
+        "import testing\n\nfn test_receives_net(net: Net[Connect, Tcp]):\n    testing.assert(true, \"Net parameter was forwarded\")\n",
+    );
+
+    let missing = run([
+        OsString::from("test"),
+        OsString::from("--integration"),
+        suite.clone().into_os_string(),
+    ]);
+    assert!(!missing.status.success(), "missing Net allowlist unexpectedly passed: {}", text(&missing));
+    assert!(text(&missing).contains("requires a `Net` grant") && text(&missing).contains("--net <addr>"), "{}", text(&missing));
+
+    let granted = run([
+        OsString::from("test"),
+        OsString::from("--integration"),
+        OsString::from("--net"),
+        OsString::from("127.0.0.1:9"),
+        suite.into_os_string(),
+    ]);
+    assert!(granted.status.success(), "explicit Net allowlist failed: {}", text(&granted));
+}
+
+#[test]
+fn fixed_clock_and_rand_collaborators_are_deterministic_and_authority_free() {
+    let source = r#"import testing
+
+fn clock_reading(source: c) -> String where c: ClockSource:
+    "${source.wall_ms()}:${source.monotonic_ns()}"
+
+fn rand_reading(source: r) -> Int where r: RandSource:
+    source.draw_u64()
+
+fn main():
+    let clock = testing.fixed_clock(1700000000123, 45000000)
+    let rand = testing.fixed_rand(-7)
+    testing.assert_eq(clock_reading(clock), "1700000000123:45000000")
+    testing.assert_int_eq(rand_reading(rand), -7)
+    testing.assert_int_eq(rand_reading(rand), -7)
+"#;
+    let module = parser::parse_module(source).expect("parse fixed collaborators");
+    let linked = pipeline::link(vec![("main".into(), module)], "main")
+        .expect("link fixed collaborators");
+    typeck::check(&linked).expect("typecheck fixed collaborators");
+    assert!(
+        capabilities::run_grant(&linked).is_empty(),
+        "the nullary test entry must not receive Clock, Rand, or any other authority",
+    );
+
+    assert_eq!(
+        interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
+        Vec::<String>::new(),
+        "interpreter fixed collaborators",
+    );
+
+    let wasm = codegen::compile_module_binary(&linked)
+        .expect_lowered("fixed collaborators support compiled execution");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(&wasm, Capabilities::default(), 64)
+        .expect("spawn without host grants");
+    actor.run().expect("compiled fixed collaborators");
+    assert!(actor.output().is_empty(), "authority-free execution produces no output");
+}
+
+#[test]
+fn real_clock_and_rand_implement_the_same_injection_protocols() {
+    let source = r#"import testing
+
+fn clock_reading(source: c) -> Int where c: ClockSource:
+    source.wall_ms() + source.monotonic_ns()
+
+fn rand_reading(source: r) -> Int where r: RandSource:
+    source.draw_u64()
+
+fn main(clock: Clock, rand: Rand):
+    let _time = clock_reading(clock)
+    let _draw = rand_reading(rand)
+"#;
+    let module = parser::parse_module(source).expect("parse real capability adapters");
+    let linked = pipeline::link(vec![("main".into(), module)], "main")
+        .expect("link real capability adapters");
+    typeck::check(&linked).expect("real Clock and Rand satisfy the testing protocols");
+}
+
+#[test]
+fn resolved_dependency_tests_receive_zero_real_grants() {
+    let temp = TempDir::new("dependency");
+    let granted = temp.mkdir("granted");
+    std::fs::write(granted.join("secret.txt"), "dependency-must-not-read-this")
+        .expect("seed protected file");
+    temp.write(
+        "witchy.toml",
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndep = \"1.0.0\"\n",
+    );
+    temp.write(
+        "witchy.lock",
+        "[[rune]]\nname = \"dep\"\nalias = \"dep\"\nversion = \"1.0.0\"\nsource = \"coven\"\nhash = \"sha256:test\"\nruntime_footprint = []\n",
+    );
+    temp.write(
+        "src/app.witchy",
+        "import testing\n\nfn test_owned_logic():\n    testing.assert_int_eq(2 + 2, 4)\n",
+    );
+    temp.write(
+        "vendor/dep/witchy.toml",
+        "[rune]\nname = \"dep\"\nversion = \"1.0.0\"\n\n[dependencies]\n",
+    );
+    temp.write(
+        "vendor/dep/src/dep.witchy",
+        "import testing\n\nfn test_dependency_reads_real_file(root: Dir[Read]):\n    testing.assert_eq(root.read(\"secret.txt\"), \"dependency-must-not-read-this\")\n",
+    );
+
+    let output = run([
+        OsString::from("test"),
+        OsString::from("--integration"),
+        OsString::from("--dir"),
+        granted.into_os_string(),
+        temp.path().as_os_str().to_owned(),
+    ]);
+    let diagnostic = text(&output);
+    assert!(!output.status.success(), "dependency inherited the caller grant: {diagnostic}");
+    assert!(diagnostic.contains("dependency tests receive zero real grants"), "{diagnostic}");
+    assert!(diagnostic.contains("test app.test_owned_logic ... ok"), "owned test should still run: {diagnostic}");
+}
+
+#[test]
+fn linked_library_capabilities_do_not_widen_a_nullary_test_entry() {
+    let temp = TempDir::new("linked");
+    temp.write(
+        "helper.witchy",
+        "pub fn answer() -> Int:\n    42\n\npub fn effectful(root: Dir[Read]) -> String:\n    root.read(\"secret.txt\")\n",
+    );
+    let suite = temp.write(
+        "suite.witchy",
+        "import helper\nimport testing\n\nfn test_linked_pure_path():\n    testing.assert_int_eq(helper.answer(), 42)\n",
+    );
+    let output = run([
+        OsString::from("test"),
+        OsString::from("--integration"),
+        suite.into_os_string(),
+    ]);
+    assert!(output.status.success(), "linked library widened or broke the entry grant: {}", text(&output));
+}

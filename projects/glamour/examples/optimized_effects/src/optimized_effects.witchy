@@ -1,0 +1,137 @@
+// RFC-0108 end-to-end fixture: Witchy emits binary effect and subscription
+// records while browser authority and asynchronous work remain in the host.
+
+import bytes
+from glamour import UiRoot
+
+type BrowserState:
+    BrowserState(Int, Int)
+
+fn put_u8(var output: List(Int), value: Int):
+    output.push(value % 256)
+
+fn put_u16(var output: List(Int), value: Int):
+    put_u8(output, value)
+    put_u8(output, value / 256)
+
+fn put_u32(var output: List(Int), value: Int):
+    put_u16(output, value % 65536)
+    put_u16(output, value / 65536)
+
+fn put_u64(var output: List(Int), value: Int):
+    put_u32(output, value % 4294967296)
+    put_u32(output, value / 4294967296)
+
+fn put_header(var output: List(Int), total_length: Int, operation_count: Int, sequence: Int, payload_offset: Int):
+    put_u8(output, 71)
+    put_u8(output, 76)
+    put_u8(output, 77)
+    put_u8(output, 82)
+    put_u16(output, 1)
+    put_u16(output, 0)
+    put_u8(output, 18)
+    put_u8(output, 0)
+    put_u16(output, 48)
+    put_u32(output, total_length)
+    put_u32(output, operation_count)
+    put_u32(output, 7)
+    put_u64(output, 72623859790382856)
+    put_u64(output, sequence)
+    put_u32(output, payload_offset)
+    put_u32(output, 0)
+
+fn put_operation(var output: List(Int), tag: Int, length: Int):
+    put_u16(output, tag)
+    put_u16(output, 0)
+    put_u32(output, length)
+
+fn finish(output: List(Int), first: Bytes, second: Bytes) -> Bytes:
+    var complete = output
+    for byte in first.to_list():
+        complete.push(byte)
+    for byte in second.to_list():
+        complete.push(byte)
+    match bytes.from_list(complete):
+        Ok(frame) -> frame
+        Err(_) -> bytes.from_string("")
+
+fn start_and_sync_frame(sequence: Int, instance: Int, request: String, interval: String) -> Bytes:
+    let effect = bytes.from_string(request)
+    let subscription = bytes.from_string(interval)
+    let payload_offset = 100
+    var output: List(Int) = []
+    put_header(output, payload_offset + effect.length() + subscription.length(), 2, sequence, payload_offset)
+    put_operation(output, 256, 28)
+    put_u32(output, instance)
+    put_u32(output, 77)
+    put_u32(output, 37)
+    put_u32(output, payload_offset)
+    put_u32(output, effect.length())
+    put_operation(output, 258, 24)
+    put_u32(output, 201)
+    put_u32(output, 41)
+    put_u32(output, payload_offset + effect.length())
+    put_u32(output, subscription.length())
+    finish(output, effect, subscription)
+
+fn sync_frame(sequence: Int, interval: String) -> Bytes:
+    let payload = bytes.from_string(interval)
+    let payload_offset = 72
+    var output: List(Int) = []
+    put_header(output, payload_offset + payload.length(), 1, sequence, payload_offset)
+    put_operation(output, 258, 24)
+    put_u32(output, 201)
+    put_u32(output, 41)
+    put_u32(output, payload_offset)
+    put_u32(output, payload.length())
+    finish(output, payload, bytes.from_string(""))
+
+fn remove_subscription_frame(sequence: Int) -> Bytes:
+    var output: List(Int) = []
+    put_header(output, 60, 1, sequence, 0)
+    put_operation(output, 259, 12)
+    put_u32(output, 201)
+    finish(output, bytes.from_string(""), bytes.from_string(""))
+
+fn read_u32(input: Bytes, offset: Int) -> Int:
+    if input.length() < offset + 4:
+        0
+    else:
+        input.at(offset) + input.at(offset + 1) * 256 + input.at(offset + 2) * 65536 + input.at(offset + 3) * 16777216
+
+@browser
+pub fn glamour_init(_root: UiRoot, _input: Bytes) -> BrowserState:
+    BrowserState(0, 1)
+
+@browser
+pub fn glamour_dispatch(state: BrowserState, input: Bytes) -> BrowserState:
+    match state:
+        BrowserState(phase, sequence) ->
+            let source = read_u32(input, 56)
+            let instance = read_u32(input, 60)
+            let generation = read_u32(input, 64)
+            let descriptor = read_u32(input, 68)
+            let result_schema = read_u32(input, 72)
+            let status = read_u32(input, 76)
+            let valid_subscription = source == 2 && instance == 201 && descriptor == 41 && result_schema == 47 && status == 0
+            let valid_effect = source == 1 && instance == 102 && generation == 3 && descriptor == 37 && result_schema == 43 && status == 0
+            let next_phase = if phase == 0 && valid_subscription && generation == 2: 1 else: if phase == 1 && valid_effect: 2 else: if phase == 2 && valid_subscription && generation == 4: 3 else: phase
+            BrowserState(next_phase, sequence + 1)
+
+@browser
+pub fn glamour_emit(state: BrowserState) -> Bytes:
+    match state:
+        BrowserState(phase, sequence) ->
+            if phase == 0:
+                start_and_sync_frame(sequence - 1, 101, "first", "10")
+            else if phase == 1:
+                start_and_sync_frame(sequence - 1, 102, "second", "10")
+            else if phase == 2:
+                sync_frame(sequence - 1, "20")
+            else:
+                remove_subscription_frame(sequence - 1)
+
+@browser
+pub fn glamour_release(own state: BrowserState):
+    match state:
+        BrowserState(_, _) -> Nil

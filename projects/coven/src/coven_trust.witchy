@@ -1,0 +1,174 @@
+// Trusted publishing: OIDC identity-token verification. coven does not accept long-lived
+// API tokens (the most-stolen supply-chain credential); a publisher proves identity with a
+// short-lived OIDC JWT from a trusted issuer (a CI system's OIDC token, e.g. GitHub
+// Actions). This module verifies the RS256 signature against the issuer's pinned key, the
+// audience, and the expiry (via `std/jwt`), and derives identity from the VERIFIED claims.
+// Pure (no HTTP, no store): the server maps these results to status codes.
+
+import jwt
+import coven_json
+import show
+import error
+import convert
+from json import Json
+
+// A trusted issuer: a provider id (the token's `iss`) plus the key(s) that sign its
+// tokens. Either a single pinned RSA key (`pubkey`, DER PKCS#1 hex) for a static issuer,
+// or a `jwks` document from which the signing key is selected by the token's `kid` — the
+// rotating form a real OIDC provider (e.g. GitHub Actions) publishes.
+type Issuer:
+    id: String
+    pubkey: String
+    jwks: Option(Json)
+
+// The namespace (first path segment) of a rune name.
+pub fn namespace_of(name: String) -> String:
+    if name.contains("/"):
+        let (ns, _rest) = name.split_once("/")
+        ns
+    else:
+        name
+
+// A provider claim (`repository`, `workflow_ref`, ...) — a top-level field of the JWT
+// payload, as a real GitHub Actions OIDC token carries them. "" if absent.
+pub fn claim(claims: Json, key: String) -> String:
+    coven_json.str(claims, key)
+
+// The second-factor method attested by an ALREADY VERIFIED OIDC token. Real
+// providers encode `amr` as an array; the local IdP harness uses a string claim.
+// Accept only an explicit MFA/WebAuthn method, never a client request marker.
+pub fn second_factor_method(claims: Json) -> Option(String):
+    match json.get(claims, "amr"):
+        Some(JsonString(method)) -> accepted_second_factor(method)
+        Some(JsonArray(methods)) -> list.find_map(methods, second_factor_item)
+        _ -> None
+
+fn second_factor_item(item: Json) -> Option(String):
+    match item:
+        JsonString(method) -> accepted_second_factor(method)
+        _ -> None
+
+fn accepted_second_factor(method: String) -> Option(String):
+    if method == "mfa" || method == "webauthn":
+        Some(method)
+    else:
+        None
+
+// A SLSA-style provenance attestation built from the VERIFIED identity-token claims,
+// bound to the content digest and stamped with the verification time (unix seconds).
+// Byte-identical to the Rust `attestation` (src/pm/server.rs): the field order,
+// separators, and `verified_at` units must match so the signed `provenance` is the
+// same bytes — a record published here verifies under the Rust verifier, and the
+// tamper test that greps the signed record for `trusted-publisher` applies unchanged.
+// idiom-exempt: concatenation defines the signed provenance byte format.
+pub fn attestation(claims: Json, digest: String, now: Int) -> String:
+    "trusted-publisher|issuer=" + coven_json.str(claims, "iss") + "|sub=" + coven_json.str(claims, "sub") + "|repository=" + claim(claims, "repository") + "|workflow_ref=" + claim(claims, "workflow_ref") + "|ref=" + claim(claims, "ref") + "|digest=" + digest + "|verified_at=" + "${now}"
+
+// A durable trust-policy JSON string array (e.g. a namespace's maintainers.json).
+// Unlike coven's request-body helpers, malformed or wrong-shaped policy state is
+// corruption, not an empty policy.
+pub fn string_array(text: String) -> Result(List(String), TrustPolicyError):
+    match json.decode(text):
+        Err(e) -> Err(PolicyInvalidJson(json.decode_error_message(e)))
+        Ok(doc) -> strict_string_array(doc)
+
+// Matchable errors for durable trust-policy state. This is authority-bearing
+// registry state, so malformed JSON and wrong shapes are corruption, not a
+// silent empty policy.
+type TrustPolicyError:
+    PolicyInvalidJson(String)
+    PolicyNotStringArray
+    PolicyNonString(Int)
+
+pub fn trust_policy_error_message(e: TrustPolicyError) -> String:
+    match e:
+        PolicyInvalidJson(reason) -> reason
+        PolicyNotStringArray -> "expected a JSON array of strings"
+        PolicyNonString(index) -> "expected a string at index ${index}"
+
+impl Show for TrustPolicyError:
+    fn show(self) -> String:
+        trust_policy_error_message(self)
+
+impl Error for TrustPolicyError
+
+impl From(TrustPolicyError) for String:
+    fn from(value: TrustPolicyError) -> Self:
+        trust_policy_error_message(value)
+
+fn strict_string_array(doc: Json) -> Result(List(String), TrustPolicyError):
+    match doc:
+        JsonArray(items) -> strict_strings(items)
+        _ -> Err(PolicyNotStringArray)
+
+fn strict_strings(items: List(Json)) -> Result(List(String), TrustPolicyError):
+    var out: List(String) = []
+    var index = 0
+    for item in items:
+        if let JsonString(s) = item:
+            out.push(s)
+        else:
+            return Err(PolicyNonString(index))
+        index = index + 1
+    Ok(out)
+
+// Verify a request's identity token (a compact OIDC JWT): the token's `iss` selects the
+// trusted issuer's pinned key, then `verify_oidc` checks the RS256 signature, that the
+// audience is this registry, and that it is a fresh, short-lived token. Reading `iss` BEFORE verifying
+// is safe — `verify_oidc` re-checks `iss` and the signature, so only a token actually
+// signed by the issuer it names (and trusted here) passes. Returns the verified claims, or
+// a matchable reason the server renders as 401.
+pub fn verify_token(issuers: List(Issuer), token: String, now: Int) -> Result(Json, TokenError):
+    let unverified = jwt.claims_unverified(token).map_err(fn(e: jwt.JwtError): TokenMalformedIdentity(jwt.jwt_error_message(e)))?
+    let iss = coven_json.str(unverified, "iss")
+    match find_issuer(issuers, iss):
+        None -> Err(TokenUntrustedIssuer(iss))
+        Some(entry) ->
+            let pubkey = signing_key(entry, token)?
+            // BUG-068: trusted-publishing identity tokens are intentionally short-lived.
+            // The local IdP defaults to five minutes; permit up to ten minutes plus
+            // 60 seconds of issuer clock lead while rejecting absent `iat` or a longer
+            // signed lifetime.
+            jwt.verify_oidc_fresh(token, pubkey, iss, "coven-registry", now, 600, 60).map_err(fn(e: jwt.JwtError): TokenOidc(jwt.jwt_error_message(e)))
+
+// Matchable trusted-publishing identity-token failures. These sit above
+// `jwt.JwtError`: the registry also owns issuer trust and JWKS key-selection
+// policy, so callers should not have to parse HTTP-facing strings to distinguish
+// malformed tokens, untrusted issuers, missing `kid`, or OIDC rejection.
+type TokenError:
+    TokenMalformedIdentity(String)
+    TokenUntrustedIssuer(String)
+    TokenMissingKid(String)
+    TokenJwksKey(String)
+    TokenOidc(String)
+
+pub fn token_error_message(e: TokenError) -> String:
+    match e:
+        TokenMalformedIdentity(reason) -> "malformed identity token: ${reason}"
+        TokenUntrustedIssuer(iss) -> "issuer `${iss}` is not trusted by this registry"
+        TokenMissingKid(id) -> "issuer `${id}` publishes a JWKS but the token has no `kid` header"
+        TokenJwksKey(reason) -> reason
+        TokenOidc(reason) -> reason
+
+impl Show for TokenError:
+    fn show(self) -> String:
+        token_error_message(self)
+
+impl Error for TokenError
+
+impl From(TokenError) for String:
+    fn from(value: TokenError) -> Self:
+        token_error_message(value)
+
+fn find_issuer(issuers: List(Issuer), iss: String) -> Option(Issuer):
+    list.find_map(issuers, fn(entry: Issuer): if entry.id == iss: Some(entry) else: None)
+
+// The RS256 public key to verify a token against: for a JWKS issuer, the key whose `kid`
+// matches the token header (so key rotation is tolerated); otherwise the single pinned key.
+fn signing_key(entry: Issuer, token: String) -> Result(String, TokenError):
+    match entry.jwks:
+        Some(jwks) ->
+            match jwt.kid(token):
+                Some(k) -> jwt.rsa_key_for_kid(jwks, k).map_err(fn(e: jwt.JwtError): TokenJwksKey(jwt.jwt_error_message(e)))
+                None -> Err(TokenMissingKid(entry.id))
+        None -> Ok(entry.pubkey)

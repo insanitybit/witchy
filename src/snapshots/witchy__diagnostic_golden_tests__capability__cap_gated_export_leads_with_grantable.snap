@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"type Config:\\n    Config(Int)\\n\\npub fn export_step(c: Config, input: String) -> String:\\n    input\\n\")"
+---
+type error: the leading parameter of the exported entrypoint `export_step` is `main.Config`, but a cap-gated export may lead only with a bare `grantable capability` (RFC-0040) — `main.Config` is not grantable

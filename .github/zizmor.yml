@@ -1,0 +1,24 @@
+# zizmor static-analysis config. See scripts/zizmor.sh for the pinned runner
+# and ci.yml for the gating job.
+#
+# We run at --persona=pedantic so the excessive-permissions audit fires and
+# guards the code-execution / privileged-token boundary (untrusted `cargo`
+# builds run in unprivileged jobs; only artifact publishing holds
+# `contents: write`). The audits disabled below are pedantic-only code smells
+# we don't want; disabling them keeps the pedantic run scoped to
+# excessive-permissions plus the regular-severity audits.
+rules:
+  # Every `uses:` must be pinned to a full commit SHA, not a tag or branch.
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin
+
+  undocumented-permissions:
+    disable: true
+  anonymous-definition:
+    disable: true
+  concurrency-limits:
+    disable: true
+  superfluous-actions:
+    disable: true

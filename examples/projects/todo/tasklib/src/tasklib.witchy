@@ -1,0 +1,58 @@
+// tasklib — parse and render a Markdown-style checklist. A *pure* library rune:
+// it imports only `string` and declares no host capabilities, so any program may
+// depend on it without granting filesystem or network authority. `witchy caps`
+// on a consumer confirms this dependency contributes nothing to the footprint.
+
+// A checklist item: whether it is done, and its title.
+type Task:
+    Task(Bool, String)
+
+pub fn is_done(task: Task) -> Bool:
+    match task:
+        Task(done, _) -> done
+
+pub fn title(task: Task) -> String:
+    match task:
+        Task(_, t) -> t
+
+// Parse one line: "- [x] Title" is done, "- [ ] Title" is pending; anything else
+// (a heading, a blank line) is not a task and yields None.
+pub fn parse_line(line: String) -> Option(Task):
+    let t = line.trim()
+    if t.starts_with("- [x] "):
+        Some(Task(true, t.strip_prefix("- [x] ")))
+    else if t.starts_with("- [ ] "):
+        Some(Task(false, t.strip_prefix("- [ ] ")))
+    else:
+        None
+
+// Parse a whole document into its tasks (non-task lines are skipped).
+pub fn parse(text: String) -> List(Task):
+    var out = []
+    for line in text.lines():
+        if let Some(task) = parse_line(line):
+            list.push(out, task)
+    out
+
+// Total number of tasks.
+pub fn count(tasks: List(Task)) -> Int:
+    var n = 0
+    for task in tasks:
+        n = n + 1
+    n
+
+// How many tasks are done.
+pub fn done_count(tasks: List(Task)) -> Int:
+    var n = 0
+    for task in tasks:
+        if is_done(task):
+            n = n + 1
+    n
+
+// Render the checklist as aligned `[x]` / `[ ]` lines.
+pub fn render(tasks: List(Task)) -> String:
+    var out = []
+    for task in tasks:
+        let mark = if is_done(task): "[x]" else: "[ ]"
+        list.push(out, mark + " " + title(task))
+    out.join("\n")

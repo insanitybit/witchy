@@ -1,0 +1,14 @@
+import fixture_showcase
+
+// Only the root package may ask the test runner to assemble this authority
+// record. Dependencies cannot forge or request it.
+capability FixtureWorld:
+    console: Console
+    clock: Clock
+    env: Env
+    args: List(String)
+
+fn test_fixture_world(world: FixtureWorld):
+    match world:
+        FixtureWorld(console, clock, env, args) ->
+            fixture_showcase.emit_release(console, clock, env, args)

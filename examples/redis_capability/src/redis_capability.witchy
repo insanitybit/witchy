@@ -1,0 +1,29 @@
+// A user-defined capability (RFC-0002). `Redis` is declared
+// `capability … from Net` — a SEALED brand:
+//   - there is no `Redis(...)` constructor outside THIS module, so a value of
+//     `Redis` can only be minted by `open` (un-forgeable, like a host cap);
+//   - a caller holding a `Redis` can call `ping` but cannot reach the raw `Net`
+//     (only `redis`'s own module may construct or destructure a `Redis`);
+//   - `witchy caps` still sees through it — `ping` audits as `Net[Connect, Tcp]`.
+//
+// A real client would also confine the network to the server first with
+// `net.only(Net.tcp("host", port))` (and never expose the raw `Net` back), so
+// holding a `Redis` is strictly less authority than the `Net` it was minted from.
+// This demo keeps the full `Net` so it runs without a `--net` grant.
+//
+// Run:   witchy examples/redis_capability/src/redis_capability.witchy
+// Audit: witchy caps examples/redis_capability/src/redis_capability.witchy
+capability Redis from Net[Connect, Tcp]
+
+pub fn open(net: Net[Connect, Tcp]) -> Redis:
+    Redis(net)
+
+// An operation on the capability. Inside this module a `Redis` is usable as its
+// underlying `Net`; outside, only `open`/`ping` are visible.
+pub fn ping(r: Redis) -> Int:
+    match r:
+        Redis(net) -> 1
+
+fn main(console: Console, net: Net):
+    let db = open(net)
+    console.print("redis ping: ${ping(db)}")

@@ -1,0 +1,23 @@
+// In-rune tests for `list_ops`. Each `test_*` function takes no parameters,
+// passes by returning, and fails by aborting. Run them with
+// `witchy test examples/list_ops`.
+
+import list_ops
+import testing
+
+fn test_range():
+    testing.assert_int_eq(list_ops.sum(list_ops.range(0)), 0)
+    testing.assert_int_eq(list_ops.sum(list_ops.range(6)), 15)
+
+fn test_map_squares():
+    let squares = list_ops.map(list_ops.range(6), fn(n: Int): n * n)
+    testing.assert_int_eq(list_ops.sum(squares), 55)
+
+fn test_filter_evens():
+    let evens = list_ops.filter(list_ops.range(6), fn(n: Int): n % 2 == 0)
+    testing.assert_int_eq(list_ops.sum(evens), 6)
+
+fn test_join():
+    let labels = list_ops.map([2, 4], fn(n: Int): "${n}")
+    testing.assert_eq(list_ops.join(labels, "-"), "2-4")
+    testing.assert_eq(list_ops.join([], "-"), "")

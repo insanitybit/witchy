@@ -1,0 +1,18 @@
+// A tiny expression evaluator. `Expr` is a recursive algebraic data type and
+// `eval` walks it with pattern matching — pure computation that needs no
+// capability. Only printing the answer needs the Console.
+type Expr:
+    Num(Int)
+    Add(Expr, Expr)
+    Mul(Expr, Expr)
+
+pub fn eval(e: Expr) -> Int:
+    match e:
+        Num(n) -> n
+        Add(a, b) -> eval(a) + eval(b)
+        Mul(a, b) -> eval(a) * eval(b)
+
+fn main(console: Console):
+    // (2 + 3) * 4
+    let e = Mul(Add(Num(2), Num(3)), Num(4))
+    console.print("${eval(e)}")

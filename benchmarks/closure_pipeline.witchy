@@ -1,0 +1,35 @@
+// Combinator-chain benchmark (RFC-0062): a map -> filter -> reduce pipeline over a
+// large list, each stage a LOCAL closure that captures a free variable and is applied
+// directly per element (never escaping). This is the combinator style the stdlib and
+// `iter` direction encourage, expressed with directly-called closures so the tier-1
+// env-elision applies: with `closure-elide` off, `mapper`/`keeper` each box an
+// environment and reload their capture per element; with it on, no environment is
+// allocated and the captures thread as call arguments.
+//
+// (The lazy `it.map(...).filter(...).fold(...)` form stores its stage closures into
+// `Iter`/`Step` records — those ESCAPE by construction and stay boxed; eliding them is
+// a closure-specialization problem, out of scope for this RFC.)
+fn main(console: Console, clock: Clock):
+    var xs = []
+    var i = 0
+    while i < 200000:
+        list.push(xs, i)
+        i = i + 1
+    let n = list.length(xs)
+
+    let bias = 10
+    let mapper = fn(v: Int): v * 2 + bias
+    let threshold = 150000
+    let keeper = fn(v: Int): v < threshold
+
+    let bench_t0 = clock.now_monotonic()
+    var total = 0
+    var j = 0
+    while j < n:
+        let v = list.at(xs, j)
+        if keeper(v):
+            total = total + mapper(v)
+        j = j + 1
+    let bench_t1 = clock.now_monotonic()
+    console.print("${total}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

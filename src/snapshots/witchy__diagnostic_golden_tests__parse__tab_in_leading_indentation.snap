@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "parse_diag(\"fn main(console: Console):\\n\\tprint(console, \\\"hi\\\")\\n\")"
+---
+parse error at 2:1: tab in leading indentation — witchy's layout counts a tab as one column, making tab/space indentation visually ambiguous; indent with spaces

@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "parse_diag(\"fn f() -> Int:\\n    1\\nimport list\\n\")"
+---
+parse error at 3:1: expected a top-level item (`fn`, `type`, `trait`, `impl`, or `let`), found `import`

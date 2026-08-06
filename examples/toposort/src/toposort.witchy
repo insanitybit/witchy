@@ -1,0 +1,70 @@
+// toposort — topological ordering of a dependency graph. An edge (a, b) means "a
+// must come before b". We repeatedly emit a node whose prerequisites are all
+// already emitted (Kahn's algorithm); if we get stuck with nodes remaining, the
+// graph has a cycle. The graph is just a node list and an edge list, so it stays
+// pure data — and pure (Console only), so it runs identically on both backends.
+// Run:  witchy examples/toposort/src/toposort.witchy
+fn main(console: Console):
+    let nodes = ["boot", "config", "db", "cache", "api", "web"]
+    let edges = [("boot", "config"), ("config", "db"), ("config", "cache"), ("db", "api"), ("cache", "api"), ("api", "web")]
+
+    console.print("build order: " + show(toposort(nodes, edges)))
+
+    let cyclic = ["egg", "chicken"]
+    let cyclic_edges = [("egg", "chicken"), ("chicken", "egg")]
+    console.print("cyclic:      " + show(toposort(cyclic, cyclic_edges)))
+
+fn show(result: Result(List(String), String)) -> String:
+    match result:
+        Ok(order) -> order.join(" -> ")
+        Err(message) -> "error: " + message
+
+// Emit nodes whose prerequisites are all already emitted, one at a time in node
+// order, until done or stuck (a cycle).
+pub fn toposort(nodes: List(String), edges: List((String, String))) -> Result(List(String), String):
+    var order = []
+    var stuck = false
+    while order.length() < nodes.length() && !stuck:
+        match next_ready(nodes, edges, order):
+            Some(node) -> order.push(node)
+            None -> stuck = true
+    if stuck:
+        Err("cycle among " + remaining(nodes, order).join(", "))
+    else:
+        Ok(order)
+
+// The first not-yet-emitted node all of whose prerequisites are already emitted.
+fn next_ready(nodes: List(String), edges: List((String, String)), emitted: List(String)) -> Option(String):
+    var found = None
+    for node in nodes:
+        if is_none(found) && !member(emitted, node) && prerequisites_met(node, edges, emitted):
+            found = Some(node)
+    found
+
+// Whether every node that must come before `node` has already been emitted.
+fn prerequisites_met(node: String, edges: List((String, String)), emitted: List(String)) -> Bool:
+    var met = true
+    for edge in edges:
+        let (before, after) = edge
+        if after == node && !member(emitted, before):
+            met = false
+    met
+
+fn remaining(nodes: List(String), emitted: List(String)) -> List(String):
+    var out = []
+    for node in nodes:
+        if !member(emitted, node):
+            out.push(node)
+    out
+
+fn member(xs: List(String), x: String) -> Bool:
+    var found = false
+    for y in xs:
+        if y == x:
+            found = true
+    found
+
+fn is_none(o: Option(String)) -> Bool:
+    match o:
+        Some(_x) -> false
+        None -> true

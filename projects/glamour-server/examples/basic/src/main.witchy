@@ -1,0 +1,51 @@
+import glamour_server
+import server
+from glamour import FormFieldKind, FormSchema, FormSubmission
+from http import Request, Response
+
+fn post_schema() -> FormSchema:
+    let fallback = FormSchema("invalid", "POST", glamour.form_url_or_root("/"), [])
+    glamour.form_schema("signup", "POST", glamour.form_url_or_root("/signup"), [glamour.form_field("name", "Name", FormText, true), glamour.form_field("password", "Password", FormSecret, true)]).unwrap_or(fallback)
+
+@server
+fn accepted(submission: FormSubmission) -> Response:
+    let count = glamour.form_submission_values(submission).length()
+    let secret = glamour.form_submission_secret(submission, "password") ?? "missing"
+    server.text(200, "values:${count};secret:${secret}")
+
+fn request(method: String, path: String, headers: List((String, String)), body: String) -> Request:
+    Request(method, path, [], [], headers, body)
+
+@server
+fn main(console: Console):
+    let action = glamour_server.form_action(post_schema(), "https://example.test", 128, accepted)
+    let headers = [("content-type", "application/x-www-form-urlencoded"), ("origin", "https://example.test")]
+
+    let ok = action(request("POST", "/signup", headers, "name=Ada&password=s3cret"))
+    console.print("${http.status(ok)} ${http.body(ok)}")
+
+    let cross_origin = action(request("POST", "/signup", [("content-type", "application/x-www-form-urlencoded"), ("origin", "https://evil.test")], "name=Ada&password=s3cret"))
+
+    console.print("${http.status(cross_origin)} ${http.body(cross_origin)}")
+
+    let duplicate = action(request("POST", "/signup", headers, "name=Ada&name=Grace&password=s3cret"))
+    console.print("${http.status(duplicate)} ${http.body(duplicate)}")
+
+    let malformed = action(request("POST", "/signup", headers, "name=%ZZ&password=s3cret"))
+    console.print("${http.status(malformed)} ${http.body(malformed)}")
+
+    let referer = action(request("POST", "/signup", [("content-type", "application/x-www-form-urlencoded"), ("referer", "https://example.test/signup")], "name=Ada&password=s3cret"))
+
+    console.print("${http.status(referer)} ${http.body(referer)}")
+
+    let wrong_method = action(request("GET", "/signup", [], ""))
+    console.print("${http.status(wrong_method)} ${http.body(wrong_method)}")
+
+    let wrong_path = action(request("POST", "/other", headers, "name=Ada&password=s3cret"))
+    console.print("${http.status(wrong_path)} ${http.body(wrong_path)}")
+
+    let wrong_type = action(request("POST", "/signup", [("origin", "https://example.test")], "name=Ada&password=s3cret"))
+    console.print("${http.status(wrong_type)} ${http.body(wrong_type)}")
+
+    let oversized = action(request("POST", "/signup", headers, "name=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&password=s3cret"))
+    console.print("${http.status(oversized)} ${http.body(oversized)}")

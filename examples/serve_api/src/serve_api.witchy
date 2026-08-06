@@ -1,0 +1,32 @@
+// A small JSON API showing the witchy web feel: axum-style routing, tower-style
+// middleware, and the part no other framework has — handlers that are pure by
+// construction. The `logging` layer can print ONLY because `main` captured a
+// Console into it (capture is dependency injection). A plain handler captures
+// nothing, so it structurally cannot log, fetch a URL, or read a file — even if
+// a dependency wrote it. `serve` holds the Net; handlers never do.
+// Run: witchy --net 127.0.0.1:8080 examples/serve_api/src/serve_api.witchy
+
+from http import Request, Response
+from json import Json
+from server import Router
+
+// A request logger (a tower Layer: fn(Handler) -> Handler). The inner closure
+// runs before-and-after work around `next`, all captured in the closure.
+fn logging(console: Console) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
+    fn(next: fn(Request) -> Response):
+        fn(req: Request):
+            console.print(server.method(req) + " " + server.path(req))
+            next(req)
+
+fn home(req: Request) -> Response:
+    server.html(200, "<h1>witchy web</h1>")
+
+// Returns a JSON document built with the std `json` module.
+fn greet(req: Request) -> Response:
+    server.json_value(200, JsonObject([("hello", JsonString(server.param_or(req, "name", "")))]))
+
+fn main(console: Console, net: Net):
+    let app = server.router().get("/", home).get("/hello/:name", greet).layer(logging(console))
+
+    console.print("serving on 127.0.0.1:8080")
+    server.serve(net, "127.0.0.1:8080", app)

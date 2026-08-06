@@ -1,0 +1,7 @@
+// Filesystem capability: `main` receives a `Dir` and narrows it to a subdirectory
+// before reading a file. Authority flows by passing the capability down, never by
+// ambient access — to read elsewhere you would need a `Dir` for that location.
+fn main(console: Console, root: Dir):
+    let examples = root.subtree("examples")
+    let data = examples.subtree("data")
+    console.print(data.read("greeting.txt"))

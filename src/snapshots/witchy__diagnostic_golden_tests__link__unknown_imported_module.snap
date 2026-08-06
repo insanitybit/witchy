@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "link_diag(\"import wibble\\n\\nfn main(console: Console):\\n    print(console, \\\"hi\\\")\\n\")"
+---
+link error: module `main` imports unknown module `wibble`

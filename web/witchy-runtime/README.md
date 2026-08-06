@@ -1,0 +1,238 @@
+# witchy-runtime — a deny-by-default JavaScript host for witchy-WASM
+
+`witchy-runtime.mjs` runs witchyc-compiled WASM in JavaScript (browser or Node).
+With no options, **every capability is denied**. Explicit `opts.capabilities`
+select real or virtual browser providers without adding ambient authority. It is
+the browser analog of the wasmtime host
+in [`crates/witchy-runtime/src/runtime.rs`](../../crates/witchy-runtime/src/runtime.rs), with the capability set fixed to
+empty — the implementation of
+[RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md). The ABI it targets is
+the public contract in [`spec/wasm-abi.md`](../../spec/wasm-abi.md).
+
+This is a *general* witchy-WASM browser runtime, not specific to any one app. It
+is distinct from the `web/witchy-host.js` playground shim, which compiles
+snippets via a Rust-built `witchy.wasm` lib and delegates the pure helpers back
+to that lib; this runtime is standalone and implements the pure helpers in JS.
+The book's `witchy-cell-sandbox.js` imports both inside a fresh opaque-origin
+frame: compilation stays in the trusted parent, while guest execution and its
+derived Fetch CSP stay in the child.
+
+## The guarantee: deny-by-omission
+
+witchyc tree-shakes imports — a module declares only the host functions it
+reaches. A rune that touches the filesystem, network, clock, etc. imports a
+capability function this runtime **does not provide**, so
+`WebAssembly.instantiate` throws a `LinkError` and the module never runs. The
+host therefore admits no authority-bearing module. It is deliberately stricter
+than "all footprint-empty modules": native-only launch and toolchain services
+such as argv and `std/compiler` are absent too. No trap stubs are involved —
+the imports are simply absent.
+
+## API
+
+```js
+import { instantiate } from "./witchy-runtime.mjs";
+
+const { run, output } = await instantiate(wasmBytes, {
+  onPrint: (line) => console.log(line), // optional; else lines collect in `output`
+});
+run();          // synchronous without Fetch/SecretStore; returns the output array
+```
+
+`instantiate(wasmBytes, opts) -> { instance, output, run, callString, memory }`:
+
+- `wasmBytes` — a witchyc-compiled module (`witchy compile foo.witchy --out
+  foo.wasm`).
+- `opts.onPrint(line)` — called once per printed line; if omitted, lines
+  accumulate in the returned `output` array.
+- `opts.nodeCrypto` / `opts.cryptoBackend` — override the crypto backend (Node's
+  `node:crypto` is auto-detected; SHA-256/HMAC/`rune_hash` work with no backend).
+- `opts.capabilities.fetch = { origins: [...] }` — opt into real browser
+  `fetch()` with an explicit canonical-origin allowlist. The returned `run` and
+  `callString` are Promise-returning for a Fetch-enabled instance and must be
+  awaited. Optional positive `timeoutMs` and non-negative `maxResponseBytes`
+  values tighten the 30-second/16-MiB defaults.
+- `opts.capabilities.secrets` — opt into a page-supplied named SecretStore.
+  A string or byte array is revealable; `{ value, useOnly: true }` is usable by
+  Ed25519 signing/public-key operations but cannot be revealed. The provider
+  uses opaque externrefs and WebCrypto through JSPI; bare `Secret` remains
+  denied because `mint_secret` is not provided.
+- `opts.capabilities.vm = true` — opt into fresh zero-authority worker
+  instances for ordered `vm.par_map` and lock-step `vm.serve`. The browser
+  drives them sequentially, matching the interpreter oracle without claiming
+  multi-core execution. Parent authority imports are linked as traps inside
+  each worker.
+- `opts.fetchImpl` — inject a fetch-compatible function for deterministic tests;
+  production defaults to `globalThis.fetch`.
+
+The exported `WITCHY_ABI_VERSION` is the ABI version this runtime implements;
+the Rust catalog test compares it with the compiler-owned version.
+
+### `callString` — the `String -> String` export ABI (RFC-0008)
+
+A `pub fn export_*(s: String) -> String` compiles to a JS-callable export. The
+runtime's `callString` drives it (writes the input String header via `__galloc`,
+calls `__export_*`, reads the result String header back) — pure mechanics over
+guest memory, no capability:
+
+```js
+const { callString } = await instantiate(wasmBytes);
+const out = callString("__export_export_step", '{"model":0}'); // -> result string
+```
+
+`callStringExport(wasmBytes, exportName, str, opts)` is a one-shot convenience
+(instantiate + call). See [`spec/wasm-abi.md`](../../spec/wasm-abi.md)
+§"String-export entry points".
+
+### `glamour-dom.mjs` — the DOM host shell (RFC-0008)
+
+`glamour-dom.mjs` is the capability-holding shell that runs a glamour MVU rune in
+a browser: `mount(wasmBytes, rootElement, opts)` instantiates the rune under this
+pure-compute host, calls its `export_step` to render, diffs the returned VNode
+into the real DOM (`createElement` / `textContent` / `setAttribute` only — never
+`innerHTML`), and wires `on` attributes as `addEventListener` handlers that route
+events back as `Msg` values and re-render. The witchy rune computes; the shell
+acts (holds the DOM, the events, and the effects).
+
+The exact current JSON shapes, lifecycle, and fail-closed behavior are frozen in
+[`projects/glamour/REFERENCE-PROTOCOL.md`](../../projects/glamour/REFERENCE-PROTOCOL.md).
+RFC-0107's reproducible before-measurement is:
+
+```sh
+node web/witchy-runtime/glamour-baseline.mjs target/debug/witchy
+```
+
+### `glamour-optimized.mjs` — checked binary patches and resume
+
+`mountOptimized` validates complete RFC-0108 frames before mutating the DOM. In
+resume mode it first validates a compiler-owned plan that maps numeric node and
+region identities to bounded child paths in the existing static DOM. Every
+declared node and region must be present exactly once, event plans must match
+their event classes and compiler-owned island registry, and malformed identity
+fails before Wasm instantiation.
+
+The compiler-owned `__glamour_resume` entry installs private Wasm state but
+emits no initial frame. The host rejects any attempted initial output and starts
+the output validator at the manifest's next sequence. Subsequent delegated
+events and the activation loader's first scalar snapshot must match an adopted
+node, event class, and plan before their binary frame is dispatched. Patches
+update the adopted nodes in place, including keyed moves that preserve
+browser-owned state. Resume plans may also name an initial set of checked
+subscription identities, descriptors, and bounded requests; the host starts
+those only after private Wasm state is live and cancels them on disposal.
+
+Development metadata names compiler-authenticated public model fields while
+keeping every value inside Wasm. The inspection bridge reports field names,
+kinds, and change bits with each value fixed to `<redacted>`. The island
+scheduler admits that model summary only from an active application's checked
+development inspector, revalidates its bounded schema, and never exposes the
+application, DOM, dispatch handle, or model value.
+
+### `glamour-forms.mjs` — progressive forms
+
+`decodeProgressiveForm(action, entries)` validates bounded browser form entries
+against the static action manifest with the same fixture corpus and problem
+order as Witchy's `decode_form_entries`. Public values are inert strings.
+Secret values remain in a private `ProgressiveFormSubmission` map: JSON
+serialization throws, and `takeSecret(name)` erases the value on first read.
+
+`installProgressiveForms(options)` adds one delegated submit listener. Checked
+same-origin forms move through `Validating`, `Submitting`, `Succeeded`,
+`Failed`, and `Cancelled` records. A newer submission aborts and invalidates
+the older generation. The host publishes public values only, sends secret
+values directly through the same-origin request path, refuses secret GET
+schemas, uses manual redirect handling, and leaves cross-origin or
+submitter-overridden forms to native browser behavior. The optimized host
+installs and disposes this boundary when its checked manifest declares
+actions. Protocol 1.4 binds every action to compiler-owned input and result
+schema identities. The host encodes public submitted fields into `ActionInput`
+frames, omits secret fields, and sends closed status-only `ActionCompletion`
+frames through the ordinary Wasm dispatch entry. Glamour derives the same
+identities from `FormSchema` and decodes those bytes into closed
+`ClientActionInput`/`ClientActionCompletion` values. Applications match typed
+field-kind and completion-status variants; they never name a transport schema
+ID or install a JavaScript callback.
+
+### `glamour-islands.mjs` — deferred island activation
+
+`installIslands(options)` validates a closed per-page island manifest against
+the existing DOM, then schedules `load`, `idle`, `visible`, `media`,
+`interaction`, or manual activation. `options.load` is the first callback
+allowed to fetch or instantiate application code, so interaction islands load
+none before a matching checked event. Delegated events are reduced to bounded
+value/key/checked/composition records; the browser `Event`, target, and DOM
+handles never enter application state.
+
+The activating event is handed to `artifact.resume` exactly once. Events that
+arrive while loading enter a bounded per-island queue, sibling islands retain
+separate state machines, and disposal removes observers/listeners and disposes
+only applications that were activated. A build or artifact identity mismatch
+uses controlled fresh mounting only through an explicit `freshMount` callback
+and `IslandResumeMismatch`; other failures remain failures. Static publication
+will include this loader only on pages whose authenticated `Site` declares an
+island.
+
+Program-mode tests use
+[`glamour-host-simulator.mjs`](glamour-host-simulator.mjs), a logical clock
+whose same-deadline tasks run in creation order. It supplies injectable timeout
+and interval authority without sleeping or consulting wall time.
+
+**Effects as data.** Each `export_step` also returns a `cmd` — the effect the rune
+*described* but cannot perform (it holds no capability). The shell interprets it:
+`{"cmd":"none"}` does nothing; `{"cmd":"after","ms":N,"msg":…}` arms a timer
+(`opts.setTimeout`, defaulting to the global `setTimeout`, injectable for tests)
+and dispatches the deferred `msg` back into the loop when it fires;
+`{"cmd":"batch","cmds":[…]}` interprets each. The timer is the *shell's* authority;
+the rune only emitted the description. The [`autocounter` example](../../projects/glamour/examples/autocounter/) demonstrates this — its count
+auto-increments once a second via `After(1000, Tick)`, with a footprint-empty rune.
+[`glamour-dom-timer.test.mjs`](glamour-dom-timer.test.mjs) proves it headlessly
+with a fake, controllable clock.
+
+## What it provides — and refuses
+
+**Provides (no authority):** `print` / `print_int` / `print_float` (capturable
+output), `fill_pending` / `write_pending_list` (the string bridge),
+`float_to_str`, `string_from_code`, `encoding` (hex/base64/base64url),
+`regex_match_spans_len`, the `crypto.*` digests/verifies, launch-provided
+`user_cap_field_len`, the reflection field-length stubs, and runtime abort
+diagnostics. The exported `WITCHY_BROWSER_IMPORTS` list is checked against both
+the compiler catalog and the actual JavaScript import object.
+
+**Opt-in providers:** real browser `Clock`; immutable page-supplied `Env`;
+per-run in-memory `Dir`; real browser `Fetch`, constrained to explicit origins;
+page-supplied `SecretStore`; and fresh sequential VM instances. Fetch sends no
+credentials, refuses redirects, and bounds buffered responses. Fetch,
+SecretStore signing, and VM creation use WebAssembly JSPI to suspend and resume
+the guest around asynchronous platform calls.
+
+**Refuses (absent):** unrequested capability imports and unsupported families
+including raw `Net`, `Exec`, bare root `Secret`, build authority, and native
+launch/toolchain services such as `compiler_*`. A module importing any of these
+cannot instantiate.
+
+See [`spec/wasm-abi.md`](../../spec/wasm-abi.md) for the full import table and the
+pending-buffer protocol.
+
+## Crypto
+
+The host functions are synchronous (the guest expects results written before the
+call returns), so the async WebCrypto `subtle.digest` cannot back them. This
+runtime carries a self-contained synchronous **SHA-256** (enough for
+`crypto.sha256`, `crypto.hmac_sha256`, and `crypto.rune_hash` with zero
+dependencies) and defers the wider set (`sha512`, `sha3_256`, the verifies) to an
+injected backend — Node's `node:crypto` by default. In a plain browser those
+wider algorithms need an injected `cryptoBackend`; using one without it raises a
+clear error rather than producing wrong output.
+
+## Spike
+
+`spike.mjs` is the RFC-0007 proof, runnable directly:
+
+```sh
+node web/witchy-runtime/spike.mjs            # uses ./target/debug/witchy
+node web/witchy-runtime/spike.mjs path/to/witchy
+```
+
+It compiles a footprint-empty rune, runs it under this runtime, asserts the
+output matches the native interpreter run byte-for-byte, and confirms a
+capability-using rune is refused with a `LinkError`.

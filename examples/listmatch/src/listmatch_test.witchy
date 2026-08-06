@@ -1,0 +1,16 @@
+// In-rune tests for `listmatch`. Each `test_*` function takes no parameters,
+// passes by returning, and fails by aborting. Run them with
+// `witchy test examples/listmatch`.
+
+import listmatch
+import testing
+
+fn test_sum():
+    testing.assert_int_eq(listmatch.sum([]), 0)
+    testing.assert_int_eq(listmatch.sum([42]), 42)
+    testing.assert_int_eq(listmatch.sum([3, 7, 11]), 21)
+
+fn test_describe():
+    testing.assert_eq(listmatch.describe([]), "empty")
+    testing.assert_eq(listmatch.describe([42]), "one: 42")
+    testing.assert_eq(listmatch.describe([3, 7, 11]), "starts with 3")

@@ -1,0 +1,8 @@
+// Imports the strutil library and calls it with a qualified name. The import
+// brings `shout` into scope but confers no authority; `main` (the root actor)
+// holds the Console and decides what to do with the library's pure result.
+
+import strutil
+
+fn main(console: Console):
+    console.print(strutil.shout("witchy"))

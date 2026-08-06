@@ -1,0 +1,46 @@
+// coven_meta — the TUF snapshot + timestamp roles (rollback + freeze protection),
+// regenerated and re-signed whenever the registry changes. The snapshot pins every
+// current record's signed-payload digest, version-numbered; the timestamp points at
+// it with a 24h expiry. Both are signed over canonical JSON byte-identical to the
+// Rust roles — the snapshot's targets are key-sorted to match the Rust BTreeMap.
+
+import crypto
+import coven_store
+from json import Json
+
+// Rebuild + re-sign both roles. `created` is the unix-seconds timestamp to stamp them
+// with (the caller's clock); the snapshot version monotonically increments.
+pub fn rebuild(store: Dir, key: Secret, created: Int):
+    let version = current_version(store) + 1
+    let targets = json.object_sorted(coven_store.all_target_digests(store))
+    let snapshot = JsonObject([("version", JsonInt(version)), ("created", JsonInt(created)), ("targets", targets)])
+    let snap_canonical = json.encode(snapshot)
+    store.write("snapshot.json", json.encode(JsonObject([("signed", snapshot), ("sig", JsonString(crypto.sign(key, snap_canonical)))])))
+    let timestamp = JsonObject([("snapshot_version", JsonInt(version)), ("snapshot_hash", JsonString("sha256:${crypto.sha256(snap_canonical)}")), ("expires", JsonInt(created + 86400))])
+    let ts_canonical = json.encode(timestamp)
+    store.write("timestamp.json", json.encode(JsonObject([("signed", timestamp), ("sig", JsonString(crypto.sign(key, ts_canonical)))])))
+
+// The current snapshot version (0 before the first build), read from snapshot.json. If
+// snapshot.json EXISTS but cannot be parsed to a `signed.version` integer, that is
+// corruption/tampering — fail loudly rather than default to 0, which would RESET the
+// monotonic counter and defeat the snapshot's rollback protection.
+pub fn current_version(store: Dir) -> Int:
+    if store.exists("snapshot.json"):
+        match json.decode(store.read("snapshot.json")):
+            Ok(doc) ->
+                match json.get(doc, "signed"):
+                    Some(signed) ->
+                        match json.get_int(signed, "version"):
+                            Some(v) -> v
+                            None -> refuse_reset("has no integer `signed.version`")
+                    None -> refuse_reset("is missing its `signed` object")
+            Err(e) -> refuse_reset("is corrupt (${json.decode_error_message(e)})")
+    else:
+        0
+
+// Abort a snapshot rebuild rather than let a corrupt snapshot.json reset the version.
+// `fail` aborts, so the trailing `0` is unreachable — it only gives this the `Int` type
+// the callers need.
+fn refuse_reset(reason: String) -> Int:
+    fail("coven: snapshot.json ${reason} — refusing to reset the monotonic snapshot counter")
+    0

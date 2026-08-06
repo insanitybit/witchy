@@ -1,0 +1,35 @@
+import money
+from chan import Receiver, Sender
+
+// A bank account as a server task: its balance threads through `chan.serve`,
+// reachable only by sending it a message. The driver sends Deposit/Withdraw
+// operations on the account's channel; the account handles them in FIFO order.
+// Amounts are formatted by the `money` library rune (a path dependency).
+type Op:
+    Deposit(Int)
+    Withdraw(Int)
+
+async fn account(console: Console, rx: Receiver(Op)):
+    chan.serve(rx, 0, fn(cents, op):
+        match op:
+            Deposit(amount) ->
+                let bal = cents + amount
+                console.print("deposit  " + money.format(amount) + "  -> balance " + money.format(bal))
+                chan.done(bal)
+            Withdraw(amount) ->
+                let bal = cents - amount
+                console.print("withdraw " + money.format(amount) + "  -> balance " + money.format(bal))
+                chan.done(bal)
+    ).await
+
+async fn driver(tx: Sender(Op)):
+    chan.send(tx, Deposit(1250)).await
+    chan.send(tx, Deposit(375)).await
+    chan.send(tx, Withdraw(500)).await
+    chan.send(tx, Deposit(99)).await
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(8).await
+    let h = chan.spawn(account(console, rx)).await
+    driver(tx).await
+    chan.join(h).await

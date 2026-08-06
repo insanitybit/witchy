@@ -1,0 +1,596 @@
+// toml — a TOML reader written in pure witchy (no native code). Two ways in:
+// `toml.decode(text)` parses a whole document into a structured `Toml` tree (the
+// `json.decode` shape); or look individual values up by a `section.key` path with
+// `toml.get`/`get_array`/`table`/... It supports top-level and `[section]` (and
+// dotted `[a.b]`) tables, `key = value` for string/int/bool values, and
+// `["a", "b"]` arrays. Comments (`#`) — whole-line and trailing — and blank lines
+// are ignored. (Floats/dates decode as `TomlString`: witchy has no string->float
+// primitive yet.)
+
+import string
+import show
+import error
+import convert
+
+// A decoded TOML value (`toml.decode`), the structured counterpart of the
+// string-query API below. A document decodes to a `TomlTable`. Floats, dates, and
+// other values witchy can't type are kept as `TomlString` (witchy has no
+// string->float primitive yet), so a round-trip never loses data.
+type Toml:
+    TomlString(String)
+    TomlInt(Int)
+    TomlBool(Bool)
+    TomlArray(List(Toml))
+    TomlTable(List((String, Toml)))
+
+type TomlDecodeError:
+    message: String
+
+pub fn decode_error_message(e: TomlDecodeError) -> String:
+    match e:
+        TomlDecodeError(message) -> message
+
+impl Show for TomlDecodeError:
+    fn show(self) -> String:
+        decode_error_message(self)
+
+impl Error for TomlDecodeError
+
+impl From(TomlDecodeError) for String:
+    fn from(value: TomlDecodeError) -> Self:
+        decode_error_message(value)
+
+fn decode_error(message: String) -> TomlDecodeError:
+    TomlDecodeError(message)
+
+// Parse a whole TOML document into a `Toml` tree (always a `TomlTable`).
+// Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments,
+// and `string`/`int`/`bool`/array values. Genuinely fallible (RFC-0044 rule 2):
+// a non-blank, non-comment line that is neither a `[section]` header nor a
+// `key = value` pair is structurally malformed, so decoding returns `Err`
+// naming the offending line.
+pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
+    var root = TomlTable([])
+    var section = []
+    var aot = ""
+    var in_aot = false
+    var aot_seq = 0
+    var seen_keys: List(String) = []
+    var seen_tables: List(String) = []
+    var scalar_paths: List(String) = []
+    for line in text.lines():
+        let t = line.trim()
+        if is_array_header(t):
+            aot = array_header_name(t)
+            let _path = header_path(aot)?
+            if list.contains(scalar_paths, aot):
+                return Err(decode_error("`" + aot + "` is already defined as a value, cannot redefine as `[[" + aot + "]]`"))
+            in_aot = true
+            aot_seq = aot_seq + 1
+            section = []
+            root = append_aot_table(root, aot)
+        else if is_header(t):
+            let path = header_path(header_name(t))?
+            let id = list.join(path, ".")
+            if list.contains(seen_tables, id):
+                return Err(decode_error("duplicate TOML table `[" + id + "]`"))
+            if let Some(conflict) = ns_prefix_collision(path, scalar_paths):
+                return Err(decode_error("`" + conflict + "` is already defined as a value, cannot redefine as a table"))
+            list.push(seen_tables, id)
+            section = path
+            in_aot = false
+        else if !(t.is_empty() || t.starts_with("#")):
+            match key_value(t):
+                Some(pair) ->
+                    let (k, raw) = pair
+                    let value = parse_value(raw)?
+                    if in_aot:
+                        let id = "A" + "${aot_seq}" + "\n" + k
+                        if list.contains(seen_keys, id):
+                            return Err(decode_error("duplicate key `" + k + "` in `[[" + aot + "]]`"))
+                        list.push(seen_keys, id)
+                        root = insert_into_last_aot(root, aot, k, value)
+                    else:
+                        let id = "S" + list.join(section, ".") + "\n" + k
+                        if list.contains(seen_keys, id):
+                            return Err(decode_error("duplicate key `" + k + "` in TOML"))
+                        list.push(seen_keys, id)
+                        let full_path = if list.length(section) == 0: k else: list.join(section, ".") + "." + k
+                        if list.contains(seen_tables, full_path):
+                            return Err(decode_error("`" + full_path + "` is already defined as a table, cannot redefine as a value"))
+                        list.push(scalar_paths, full_path)
+                        root = insert_kv(root, section, k, value)
+                None -> return Err(decode_error("`" + t + "` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)"))
+    Ok(root)
+
+// --- structured navigation over a decoded `Toml` -----------------------------
+//
+// These read a value ALREADY produced by `decode`, so there is exactly one TOML
+// grammar behind them (unlike the lenient string-query `get`/`get_array` below,
+// which re-scan raw text). They distinguish the three ways a lookup can fail —
+// a MISSING key, a value of the WRONG kind, and (inherited from `decode`) a
+// MALFORMED document — so a trust boundary like a lockfile reader can fail closed
+// with a precise message instead of silently falling back to an empty/default set.
+
+// The value stored at `key` in a `TomlTable`, or `None` when the key is absent or
+// the node is not a table. Preserves the decoded declaration order (first match).
+pub fn table_field(node: Toml, key: String) -> Option(Toml):
+    match node:
+        TomlTable(pairs) ->
+            var found = None
+            var have = false
+            for pair in pairs:
+                let (k, v) = pair
+                if k == key && !have:
+                    found = Some(v)
+                    have = true
+            found
+        _ -> None
+
+// The `String` a `Toml` leaf holds, or `Err(context)` when it is a different kind
+// (`TomlInt`/`TomlBool`/`TomlArray`/`TomlTable`). `context` names the field so the
+// caller's message points at the offending entry.
+pub fn as_string(node: Toml, context: String) -> Result(String, TomlDecodeError):
+    match node:
+        TomlString(s) -> Ok(s)
+        _ -> Err(decode_error(context + " is not a string (found " + kind_name(node) + ")"))
+
+// The elements of a `TomlArray`, or `Err(context)` when the value is not an array.
+pub fn as_array(node: Toml, context: String) -> Result(List(Toml), TomlDecodeError):
+    match node:
+        TomlArray(xs) -> Ok(xs)
+        _ -> Err(decode_error(context + " is not an array (found " + kind_name(node) + ")"))
+
+// The pairs of a `TomlTable`, or `Err(context)` when the value is not a table.
+pub fn as_table(node: Toml, context: String) -> Result(List((String, Toml)), TomlDecodeError):
+    match node:
+        TomlTable(pairs) -> Ok(pairs)
+        _ -> Err(decode_error(context + " is not a table (found " + kind_name(node) + ")"))
+
+// The `[[key]]` array-of-tables entries of a document node, in declaration order,
+// with every repeated entry kept distinct. `Ok([])` when `key` is absent (a
+// lockfile with no dependencies is well-formed); `Err` when `key` is present but
+// not an array, or an element is not a table (a corrupted array-of-tables). This
+// is how a `witchy.lock`'s `[[rune]]` entries are enumerated through the one
+// structured parser.
+pub fn array_of_tables(node: Toml, key: String) -> Result(List(Toml), TomlDecodeError):
+    match table_field(node, key):
+        None -> Ok([])
+        Some(value) ->
+            let xs = as_array(value, "`[[" + key + "]]`")?
+            var out = []
+            for elem in xs:
+                let _pairs = as_table(elem, "an entry of `[[" + key + "]]`")?
+                list.push(out, elem)
+            Ok(out)
+
+// A required string field of a decoded table `entry`: `Err` when the field is
+// absent, empty, or the wrong TOML kind — the three failure classes kept distinct
+// (BUG-373). `label` names the entry kind for the message (e.g. "a registry
+// [[rune]] entry").
+pub fn required_string(entry: Toml, field: String, label: String) -> Result(String, TomlDecodeError):
+    match table_field(entry, field):
+        None -> Err(decode_error(label + " has no `" + field + "` field"))
+        Some(value) ->
+            let s = as_string(value, label + "'s `" + field + "` field")?
+            if s.is_empty():
+                Err(decode_error(label + " has an empty `" + field + "` field"))
+            else:
+                Ok(s)
+
+// An optional string field of a decoded table `entry`: `Ok(None)` when absent,
+// `Ok(Some(s))` when a string, `Err` when present but the wrong kind.
+pub fn optional_string(entry: Toml, field: String) -> Result(Option(String), TomlDecodeError):
+    match table_field(entry, field):
+        None -> Ok(None)
+        Some(value) ->
+            let s = as_string(value, "`" + field + "`")?
+            Ok(Some(s))
+
+// The string elements of an array-valued field of a decoded table `entry`:
+// `Ok([])` when absent; `Err` when the field is not an array, or an element is not
+// a string. Used to read a `[[rune]]` capability array (`runtime_footprint`).
+pub fn string_array_field(entry: Toml, field: String) -> Result(List(String), TomlDecodeError):
+    match table_field(entry, field):
+        None -> Ok([])
+        Some(value) ->
+            let xs = as_array(value, "`" + field + "`")?
+            var out = []
+            for elem in xs:
+                list.push(out, as_string(elem, "an element of `" + field + "`")?)
+            Ok(out)
+
+// The kind of a `Toml` value, for wrong-kind diagnostics.
+fn kind_name(node: Toml) -> String:
+    match node:
+        TomlString(_) -> "a string"
+        TomlInt(_) -> "an integer"
+        TomlBool(_) -> "a boolean"
+        TomlArray(_) -> "an array"
+        TomlTable(_) -> "a table"
+
+fn ns_prefix_collision(path: List(String), scalars: List(String)) -> Option(String):
+    var prefix = ""
+    for seg in path:
+        prefix = if prefix.is_empty(): seg else: prefix + "." + seg
+        if list.contains(scalars, prefix):
+            return Some(prefix)
+    None
+
+// Append a fresh empty table to the array-of-tables at `key` (creating the array
+// if absent) — the effect of encountering a `[[key]]` header.
+fn append_aot_table(node: Toml, key: String) -> Toml:
+    match node:
+        TomlTable(pairs) ->
+            var tables = aot_array(pairs, key)
+            list.push(tables, TomlTable([]))
+            TomlTable(upsert(pairs, key, TomlArray(tables)))
+        _ -> node
+
+// Insert `(kv_key -> value)` into the LAST table of the array-of-tables at `key`
+// (the entry the current `[[key]]` block is filling).
+fn insert_into_last_aot(node: Toml, key: String, kv_key: String, value: Toml) -> Toml:
+    match node:
+        TomlTable(pairs) -> TomlTable(upsert(pairs, key, TomlArray(update_last(aot_array(pairs, key), kv_key, value))))
+        _ -> node
+
+// The `List(Toml)` currently stored as an array at `key`, or [] when absent.
+fn aot_array(pairs: List((String, Toml)), key: String) -> List(Toml):
+    var out = []
+    for p in pairs:
+        let (k, v) = p
+        if k == key:
+            if let TomlArray(xs) = v:
+                out = xs
+    out
+
+// Replace the last element of `arr` (a `TomlTable`) with one that has
+// `(kv_key -> value)` upserted into it.
+fn update_last(arr: List(Toml), kv_key: String, value: Toml) -> List(Toml):
+    let last = list.length(arr) - 1
+    var out = []
+    var i = 0
+    for elem in arr:
+        if i == last:
+            if let TomlTable(pairs) = elem:
+                list.push(out, TomlTable(upsert(pairs, kv_key, value)))
+            else:
+                list.push(out, elem)
+        else:
+            list.push(out, elem)
+        i = i + 1
+    out
+
+// "a.b.c" -> ["a", "b", "c"]. Strict decode rejects empty unquoted segments
+// (`[]`, `[a..b]`, `[a.]`, `[.a]`) rather than normalizing them away.
+fn header_path(name: String) -> Result(List(String), TomlDecodeError):
+    // (BUG-447) Split dotted table paths on `.` OUTSIDE quotes, so a quoted
+    // literal-dot key `["a.b"]` stays one segment `a.b` rather than nesting into
+    // `a` -> `b`. Shares the one quote-aware grammar with values/arrays.
+    var out = []
+    for seg in split_outside_quotes(name, "."):
+        let s = seg.trim()
+        if s.is_empty():
+            return Err(decode_error("malformed TOML table header `" + name + "` (empty path segment)"))
+        else:
+            list.push(out, unquote_key(s))
+    Ok(out)
+
+// Type a raw value string into a Toml leaf, or `Err` when the value is malformed
+// — an opening `"` with no closing `"`, or an opening `[` with no closing `]`
+// (a truncated line the old lenient parser silently accepted).
+fn parse_value(raw: String) -> Result(Toml, TomlDecodeError):
+    let v = raw.trim()
+    if v.starts_with("\""):
+        if has_closing_quote(v):
+            Ok(TomlString(unquote(v)))
+        else:
+            Err(decode_error("unterminated string in TOML value `" + v + "`"))
+    else if v.starts_with("["):
+        if !v.contains("]"):
+            Err(decode_error("unterminated array in TOML value `" + v + "`"))
+        else:
+            var elems = []
+            for e in parse_array(v):
+                list.push(elems, parse_value(e)?)
+            Ok(TomlArray(elems))
+    else:
+        let bare = unquote(v)
+        if bare == "true":
+            Ok(TomlBool(true))
+        else if bare == "false":
+            Ok(TomlBool(false))
+        else:
+            match bare.parse_int():
+                Some(n) -> Ok(TomlInt(n))
+                None -> Ok(TomlString(bare))
+
+// Whether a value that opens with `"` also has a closing `"`.
+fn has_closing_quote(v: String) -> Bool:
+    v.strip_prefix("\"").contains("\"")
+
+// Insert (key -> value) into `node` at the table reached by `path`, creating
+// intermediate tables as needed.
+fn insert_kv(node: Toml, path: List(String), key: String, value: Toml) -> Toml:
+    match node:
+        TomlTable(pairs) ->
+            if list.length(path) == 0:
+                TomlTable(upsert(pairs, key, value))
+            else:
+                let head = list.at(path, 0)
+                let sub = subtable(pairs, head)
+                TomlTable(upsert(pairs, head, insert_kv(sub, drop_first(path), key, value)))
+        _ -> node
+
+// Replace `key`'s pair if present, else append it.
+fn upsert(pairs: List((String, Toml)), key: String, value: Toml) -> List((String, Toml)):
+    var out = []
+    var found = false
+    for p in pairs:
+        let (k, _v) = p
+        if k == key:
+            list.push(out, (key, value))
+            found = true
+        else:
+            list.push(out, p)
+    if found:
+        out
+    else:
+        list.push(out, (key, value))
+        out
+
+// The existing sub-table at `head`, or a fresh empty one.
+fn subtable(pairs: List((String, Toml)), head: String) -> Toml:
+    var result = TomlTable([])
+    for p in pairs:
+        let (k, v) = p
+        if k == head:
+            if let TomlTable(_inner) = v:
+                result = v
+            else:
+                result = TomlTable([])
+    result
+
+fn drop_first(xs: List(String)) -> List(String):
+    var out = []
+    var i = 0
+    for x in xs:
+        if i > 0:
+            list.push(out, x)
+        i = i + 1
+    out
+
+// The string value of `path` (e.g. "rune.name"), or None if absent. Surrounding
+// double quotes are stripped.
+pub fn get(text: String, path: String) -> Option(String):
+    match lookup(text, path):
+        Some(raw) -> Some(unquote(raw))
+        None -> None
+
+// The string-array value of `path` (e.g. "capabilities.runtime"), or [] if
+// absent. Each element is unquoted.
+//
+// LENIENT BY DESIGN (RFC-0044): an absent path and a malformed/empty array both
+// return `[]`, so this cannot tell "not declared" from "declared wrong" —
+// convenient for reading config, but wrong for a trust boundary. Where a
+// malformed array must be an ERROR, use the strict path: `decode(text)` (a
+// `Result`) then match the `TomlArray` at the path.
+pub fn get_array(text: String, path: String) -> List(String):
+    match lookup(text, path):
+        Some(raw) -> parse_array(raw)
+        None -> []
+
+// Every `key = value` pair defined directly under `[section]`, in file order.
+// Keys are unquoted (`"acme/money"` -> `acme/money`); values are raw (trimmed,
+// still quoted/inline) — feed an inline-table value to `inline_get`. Use this to
+// enumerate a table whose keys you don't know ahead of time, like `[dependencies]`.
+pub fn table(text: String, section: String) -> List((String, String)):
+    var in_section = section == ""
+    var out = []
+    for line in text.lines():
+        let t = line.trim()
+        if is_header(t):
+            in_section = header_name(t) == section
+        else if in_section:
+            if let Some(pair) = key_value(t):
+                list.push(out, pair)
+    out
+
+// Just the keys of `[section]` (unquoted), in file order.
+pub fn keys(text: String, section: String) -> List(String):
+    var out = []
+    for pair in table(text, section):
+        let (k, _v) = pair
+        list.push(out, k)
+    out
+
+// Read `key` from an inline table value like `{ path = "../money", version = "1" }`.
+// Returns the unquoted value, or None if the key is absent.
+pub fn inline_get(inline: String, key: String) -> Option(String):
+    let body = inline.trim().strip_prefix("{").strip_suffix("}")
+    var found = None
+    // Split on commas OUTSIDE quotes, so a quoted value that itself contains a
+    // comma (`path = "../foo,bar"`) is not truncated at the embedded comma.
+    for part in split_outside_quotes(body, ","):
+        if let Some((k, v)) = key_value(part.trim()):
+            if k == key:
+                found = Some(unquote(v))
+    found
+
+// Read a string-array field from an inline table. This is the array counterpart
+// to `inline_get`, used by nested policy values such as
+// `{ programs = ["git"], child-paths = ["~/.gitconfig"] }`.
+pub fn inline_get_array(inline: String, key: String) -> List(String):
+    let body = inline.trim().strip_prefix("{").strip_suffix("}")
+    var found = []
+    for part in split_outside_quotes(body, ","):
+        if let Some((k, v)) = key_value(part.trim()):
+            if k == key:
+                found = parse_array(v)
+    found
+
+// Split `s` on `sep` only where `sep` occurs outside a double-quoted span.
+fn split_outside_quotes(s: String, sep: String) -> List(String):
+    var parts = []
+    var current = ""
+    var in_quotes = false
+    var square_depth = 0
+    var brace_depth = 0
+    for ch in s.chars():
+        if ch == "\"":
+            in_quotes = !in_quotes
+            current = current + ch
+        else if !in_quotes && ch == "[":
+            square_depth = square_depth + 1
+            current = current + ch
+        else if !in_quotes && ch == "]":
+            square_depth = square_depth - 1
+            current = current + ch
+        else if !in_quotes && ch == "{":
+            brace_depth = brace_depth + 1
+            current = current + ch
+        else if !in_quotes && ch == "}":
+            brace_depth = brace_depth - 1
+            current = current + ch
+        else if ch == sep && !in_quotes && square_depth == 0 && brace_depth == 0:
+            list.push(parts, current)
+            current = ""
+        else:
+            current = current + ch
+    list.push(parts, current)
+    parts
+
+// (BUG-447) Split `s` at the FIRST `sep` that falls OUTSIDE double quotes,
+// returning `(before, after)` or `None` when no unquoted `sep` exists. Lets a
+// quoted key hold the separator literally — `"a=b" = 1` splits at the second
+// `=`, not the one inside the key. One grammar with `split_outside_quotes`.
+fn split_once_outside_quotes(s: String, sep: String) -> Option((String, String)):
+    var before = ""
+    var in_quotes = false
+    var found = false
+    var rest = ""
+    for ch in s.chars():
+        if found:
+            rest = rest + ch
+        else if ch == "\"":
+            in_quotes = !in_quotes
+            before = before + ch
+        else if ch == sep && !in_quotes:
+            found = true
+        else:
+            before = before + ch
+    if found:
+        Some((before, rest))
+    else:
+        None
+
+// If `line` is `key = value` (and not a comment), return (unquoted key, raw value).
+fn key_value(line: String) -> Option((String, String)):
+    if line.starts_with("#"):
+        None
+    else:
+        match split_once_outside_quotes(line, "="):
+            Some((k, v)) -> Some((unquote_key(k.trim()), v.trim()))
+            None -> None
+
+// A bare key is itself; a quoted key has its surrounding quotes stripped (so a
+// scoped name like `"acme/money"` reads back as `acme/money`).
+fn unquote_key(k: String) -> String:
+    if k.starts_with("\"") && k.ends_with("\""):
+        k.strip_prefix("\"").strip_suffix("\"")
+    else:
+        k
+
+// The raw (trimmed, still-quoted) value for `path`, scanning section by section.
+fn lookup(text: String, path: String) -> Option(String):
+    let (section, key) = split_path(path)
+    var in_section = section == ""
+    var result = None
+    for line in text.lines():
+        let t = line.trim()
+        if is_header(t):
+            in_section = header_name(t) == section
+        else if in_section:
+            if let Some(v) = match_key(t, key):
+                result = Some(v)
+    result
+
+// "rune.name" -> ("rune", "name"); a bare "name" -> ("", "name").
+// (BUG-447) Split on the last `.` OUTSIDE quotes, so a quoted literal-dot key
+// (`get(text, "\"a.b\"")`) stays one key with an empty section, and a section
+// that itself contains a quoted dot is preserved — one grammar with header_path.
+fn split_path(path: String) -> (String, String):
+    let segs = split_outside_quotes(path, ".")
+    if list.length(segs) <= 1:
+        ("", path)
+    else:
+        let key = list.at(segs, list.length(segs) - 1)
+        let section = list.take(segs, list.length(segs) - 1).join(".")
+        (section, key)
+
+fn is_header(line: String) -> Bool:
+    line.starts_with("[") && header_no_comment(line).ends_with("]")
+
+fn header_name(line: String) -> String:
+    header_no_comment(line).strip_prefix("[").strip_suffix("]")
+
+// Whether `line` is a `[[name]]` array-of-tables header (checked before the
+// single-table `is_header`, which a `[[...]]` line also matches).
+fn is_array_header(line: String) -> Bool:
+    header_no_comment(line).starts_with("[[") && header_no_comment(line).ends_with("]]")
+
+// The `name` inside a `[[name]]` array-of-tables header.
+fn array_header_name(line: String) -> String:
+    header_no_comment(line).strip_prefix("[[").strip_suffix("]]")
+
+// A header line with any trailing `# comment` dropped: the header runs to its
+// closing `]`, and a `#` after that begins a comment. A `#` before the first `]`
+// (e.g. inside a quoted key) is left intact, so `[section] # note` reads as
+// `[section]` while `["a#b"]` keeps its key.
+fn header_no_comment(line: String) -> String:
+    let close = line.index_of("]") ?? -1
+    if close < 0:
+        line
+    else:
+        let rest = line.substring(close + 1, line.char_count())
+        match rest.index_of("#"):
+            Some(h) -> line.substring(0, close + 1 + h).trim()
+            None -> line
+
+// If `line` is `key = value`, return the trimmed raw value (still quoted).
+// (BUG-447) Split on the first `=` OUTSIDE quotes and compare keys by their
+// UNQUOTED canonical form, so a query for `a.b` matches a line `"a.b" = v` and a
+// key holding `=` isn't mis-split — the same grammar `key_value`/`split_path` use.
+fn match_key(line: String, key: String) -> Option(String):
+    match split_once_outside_quotes(line, "="):
+        Some((k, v)) ->
+            if unquote_key(k.trim()) == unquote_key(key):
+                Some(v.trim())
+            else:
+                None
+        None -> None
+
+// The value of `s`, with surrounding double quotes removed and any trailing
+// `# comment` dropped. For a quoted value we take the text up to the closing
+// quote, so a `#` *inside* the string is preserved; for a bare value we cut at
+// the first `#`.
+fn unquote(s: String) -> String:
+    if s.starts_with("\""):
+        let (inner, _rest) = s.strip_prefix("\"").split_once("\"")
+        inner
+    else:
+        let (bare, _comment) = s.split_once("#")
+        bare.trim()
+
+// Parse `["a", "b"]` into ["a", "b"] (unquoted, blanks dropped). Splits at the
+// last `]` so a trailing comment is dropped while `]` inside an element (e.g.
+// "Dir[Read]") is kept.
+fn parse_array(raw: String) -> List(String):
+    let (body, _comment) = raw.trim().rsplit_once("]")
+    let inner = body.strip_prefix("[")
+    var out = []
+    for part in split_outside_quotes(inner, ","):
+        let t = part.trim()
+        if !t.is_empty():
+            list.push(out, unquote(t))
+    out

@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+assertion_line: 295
+expression: "type_diag(\"fn add(a: Int, b: Int) -> Int:\\n    a + b\\n\\nfn main(console: Console):\\n    print(console, __render(add(1, 2, 3)))\\n\")"
+---
+type error: `main`, line 5: `main.add` expects 2 argument(s) (Int, Int) but got 3

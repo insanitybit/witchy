@@ -1,0 +1,431 @@
+name: Private 0.1.0 release
+
+# A tag push creates an immutable PRIVATE DRAFT release after every gate and
+# native installed-artifact smoke passes. Publishing that draft is a separate
+# explicit workflow dispatch. This workflow never changes repository visibility
+# and never uploads outside this repository's Actions/release storage.
+on:
+  push:
+    tags: ["v0.1.0"]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Verify a candidate, verify the existing draft, or publish after approval
+        required: true
+        type: choice
+        default: verify-candidate
+        options:
+          - verify-candidate
+          - verify-draft
+          - publish
+      commit:
+        description: Exact 40-character candidate or tagged commit SHA
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: v0.1.0
+
+jobs:
+  version:
+    name: Private tag and workspace version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      source_date_epoch: ${{ steps.release.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.commit || 'v0.1.0' }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse a public repository or the wrong event tag
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+        run: |
+          test "$REPOSITORY_PRIVATE" = true || {
+            echo "::error::release workflow is private-repository only"
+            exit 1
+          }
+          if [ "$EVENT_NAME" = push ] && [ "$EVENT_REF" != refs/tags/v0.1.0 ]; then
+            echo "::error::release tag must be exactly v0.1.0"
+            exit 1
+          fi
+      - name: Verify annotated tag, exact checkout, and every Cargo version
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ACTION: ${{ inputs.action }}
+          INPUT_COMMIT: ${{ inputs.commit }}
+        run: |
+          commit="$(git rev-parse HEAD)"
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            [[ "$INPUT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::manual verification requires an exact 40-character lowercase commit SHA"
+              exit 1
+            }
+            test "$commit" = "$INPUT_COMMIT" || {
+              echo "::error::checkout $commit is not requested commit $INPUT_COMMIT"
+              exit 1
+            }
+          fi
+          if [ "$EVENT_NAME" = push ] || [ "$ACTION" != verify-candidate ]; then
+            test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag || {
+              echo "::error::$RELEASE_TAG must be an annotated tag"
+              exit 1
+            }
+            tagged="$(git rev-parse "$RELEASE_TAG^{commit}")"
+            test "$commit" = "$tagged" || {
+              echo "::error::checkout is not the exact tagged commit"
+              exit 1
+            }
+          fi
+          test "$(git rev-parse HEAD)" = "$commit" || {
+            echo "::error::checkout moved during release verification"
+            exit 1
+          }
+          ./scripts/release-version.sh "$RELEASE_TAG"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$(git show -s --format=%ct "$commit")" >> "$GITHUB_OUTPUT"
+
+  workflow-security:
+    name: Workflow security audit
+    needs: version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - name: Audit workflows
+        run: ./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows
+
+  test:
+    name: Build, lint, test
+    needs: version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+        with:
+          components: clippy
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: nextest
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+      # Same conservative deny-set as the gate and CI (see check.sh
+      # CLIPPY_GATE_LINTS): genuine-bug tiers only. A release must not fail on a
+      # style lint the merge gate already let through.
+      - name: Clippy (bug lints)
+        run: cargo clippy --workspace --all-targets --locked -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
+      - name: Unit, integration, and e2e tests
+        run: cargo nextest run --workspace --profile ci --all-targets --locked
+
+  heap-check:
+    name: Checked heap differential fuzz
+    needs: version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: nextest
+      - name: Differential fuzzer under WITCHY_HEAP_CHECK
+        env:
+          WITCHY_HEAP_CHECK: "1"
+        run: cargo nextest run --profile ci --locked --test differential_fuzz
+
+  parity:
+    name: Backend parity sweep
+    needs: version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Build release binary
+        run: cargo build --release --locked
+      - name: Differential check every runnable example
+        run: |
+          set -uo pipefail
+          bin=./target/release/witchy
+          fail=0
+          files=0
+          compared=0
+          ctrl=""
+          for f in examples/*/src/*.witchy; do
+            grep -q 'fn main' "$f" || continue
+            [ -z "$ctrl" ] && ctrl="$f"
+            files=$((files + 1))
+            out=$("$bin" parity "$f" 2>&1)
+            code=$?
+            n=$(printf '%s\n' "$out" | grep '^parity-stats ' | tail -1 | sed -n 's/.*compared=\([0-9][0-9]*\).*/\1/p')
+            compared=$((compared + ${n:-0}))
+            if [ "$code" -ne 0 ]; then
+              echo "PARITY FAIL (exit $code): $f"
+              echo "$out"
+              fail=1
+            fi
+          done
+          test "$files" -gt 0 || { echo "parity sweep found no runnable files" >&2; exit 1; }
+          test "$compared" -gt 0 || { echo "parity sweep compared no output" >&2; exit 1; }
+          if WITCHY_SEEDED_DIVERGENCE=1 "$bin" parity "$ctrl" >/dev/null 2>&1; then
+            echo "seeded divergence did not fail parity" >&2
+            exit 1
+          fi
+          echo "parity-sweep: $files files, $compared compared lines, positive control OK"
+          exit "$fail"
+
+  acceptance:
+    name: From-scratch acceptance
+    needs: version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Whole-system acceptance
+        run: ./scripts/e2e-full.sh --quick
+
+  fmt:
+    name: Witchy source formatting
+    needs: version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Build formatter
+        run: cargo build --locked -p witchy
+      - name: Format check
+        run: |
+          files=(std/*.witchy examples/*/src/*.witchy)
+          while IFS= read -r f; do files+=("$f"); done < <(find projects -type f -path '*/src/*.witchy' -print | sort)
+          ./target/debug/witchy fmt --check "${files[@]}"
+
+  playground:
+    name: Browser compiler, runnable book, and docs bundle
+    needs: version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build native docs compiler
+        run: cargo build --release --locked
+      - name: Build browser compiler
+        run: cargo build --release --locked --lib --no-default-features --target wasm32-unknown-unknown
+      - name: Validate runnable book
+        env:
+          WITCHY_WASM_PATH: target/wasm32-unknown-unknown/release/witchy.wasm
+        run: node scripts/validate_book_examples.mjs
+      - name: Assemble docs without publishing them
+        run: ./scripts/build-docs.sh dist
+
+  build:
+    name: Native artifact ${{ matrix.target }}
+    needs: [version, workflow-security, test, heap-check, parity, acceptance, fmt, playground]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    env:
+      TARGET: ${{ matrix.target }}
+      WITCHY_BUILD_COMMIT: ${{ needs.version.outputs.commit }}
+      SOURCE_DATE_EPOCH: ${{ needs.version.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Prove this is a native runner for the advertised target
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          test "$host" = "$TARGET" || {
+            echo "::error::runner host $host cannot natively verify $TARGET"
+            exit 1
+          }
+      - name: Build exact release binary
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Package with canonical logic
+        run: |
+          ./scripts/release-package.sh \
+            --binary "target/$TARGET/release/witchy" \
+            --target "$TARGET" \
+            --commit "$WITCHY_BUILD_COMMIT" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH" \
+            --output-dir dist
+          ./scripts/release-checksums.sh --output dist/SHA256SUMS "dist/witchy-0.1.0-$TARGET.tar.gz"
+      - name: Installed-archive and trusted-exe smoke
+        run: |
+          ./scripts/release-smoke.sh \
+            --archive "dist/witchy-0.1.0-$TARGET.tar.gz" \
+            --checksums dist/SHA256SUMS \
+            --commit "$WITCHY_BUILD_COMMIT" \
+            --target "$TARGET"
+      - name: Upload private workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: witchy-0.1.0-${{ matrix.target }}
+          path: dist/witchy-0.1.0-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 5
+
+  manifest:
+    name: Exact release asset manifest
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - name: Download all natively verified archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: witchy-0.1.0-*
+          merge-multiple: true
+      - name: Require the exact target set and generate SHA256SUMS
+        run: |
+          expected="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu"
+          actual="$(for f in dist/witchy-0.1.0-*.tar.gz; do basename "$f" | sed 's/^witchy-0.1.0-//; s/\.tar\.gz$//'; done | sort | tr '\n' ' ' | sed 's/ $//')"
+          test "$actual" = "$expected" || {
+            echo "::error::incomplete or unexpected target set: $actual"
+            exit 1
+          }
+          ./scripts/release-checksums.sh --output dist/SHA256SUMS dist/witchy-0.1.0-*.tar.gz
+      - name: Upload exact private release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: witchy-0.1.0-release-assets
+          path: |
+            dist/witchy-0.1.0-*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 5
+
+  publish:
+    name: Create or explicitly publish private release
+    needs: [version, manifest]
+    if: ${{ github.event_name == 'push' || inputs.action != 'verify-candidate' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download exact release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witchy-0.1.0-release-assets
+          path: dist
+      - name: Verify asset bytes without executing them
+        run: |
+          cd dist
+          test "$(find . -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4
+          sha256sum -c SHA256SUMS
+      - name: Create immutable draft or publish an identical approved draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          private="$(gh api "repos/$GH_REPO" --jq .private)"
+          test "$private" = true || {
+            echo "::error::refusing to release from a public repository"
+            exit 1
+          }
+
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            test "$EVENT_NAME" = push || {
+              echo "::error::manual publication requires an existing verified draft"
+              exit 1
+            }
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "Witchy 0.1.0" \
+              --notes "Private 0.1.0 release candidate. Verify SHA256SUMS before extraction." \
+              dist/witchy-0.1.0-*.tar.gz dist/SHA256SUMS
+            echo "private draft created; publication requires a separate workflow_dispatch action=publish"
+            exit 0
+          fi
+
+          rm -rf existing
+          mkdir existing
+          gh release download "$RELEASE_TAG" --dir existing
+          test "$(find existing -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4 || {
+            echo "::error::existing release has an incomplete or unexpected asset set"
+            exit 1
+          }
+          for asset in SHA256SUMS witchy-0.1.0-aarch64-apple-darwin.tar.gz witchy-0.1.0-x86_64-apple-darwin.tar.gz witchy-0.1.0-x86_64-unknown-linux-gnu.tar.gz; do
+            cmp "dist/$asset" "existing/$asset" || {
+              echo "::error::existing release asset differs: $asset"
+              exit 1
+            }
+          done
+
+          draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$ACTION" = publish ]; then
+            if [ "$draft" = true ]; then
+              gh release edit "$RELEASE_TAG" --draft=false
+              echo "private release published after explicit workflow dispatch"
+            else
+              echo "release is already published with identical immutable assets"
+            fi
+          else
+            test "$draft" = true || {
+              echo "::error::release is already published; tag reruns may not replace it"
+              exit 1
+            }
+            echo "existing private draft is byte-identical and remains unpublished"
+          fi

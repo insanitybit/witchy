@@ -1,0 +1,21 @@
+fn steps(start: Int) -> Int:
+    var n = start
+    var c = 0
+    while n > 1:
+        if n % 2 == 0:
+            n = n / 2
+        else:
+            n = 3 * n + 1
+        c = c + 1
+    c
+
+fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    var total = 0
+    var i = 1
+    while i < 1000000:
+        total = total + steps(i)
+        i = i + 1
+    let bench_t1 = clock.now_monotonic()
+    console.print("${total}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

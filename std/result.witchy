@@ -1,0 +1,186 @@
+// The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are
+// prelude names and never need an import; `import result` brings in the qualified
+// helper forms such as `result.map_ok`. Pure and capability-free.
+
+// For the `ok`/`err` conversions to Option.
+
+import option
+
+type Result:
+    Ok(a)
+    Err(e)
+
+// --- The compiler-referenced `map_err` (the `?`-operator desugar lowers
+// through `result.map_err`) and the receiver-less List collectors `all` and
+// `partition` stay module-level; every other helper is methods-only
+// (RFC-0099). ---
+
+// Transform the Err value, leaving an Ok untouched.
+pub fn map_err(r: Result(a, e), f: fn(e) -> g) -> Result(a, g):
+    match r:
+        Ok(v) -> Ok(v)
+        Err(x) -> Err(f(x))
+
+// Methods are the primary surface (RFC-0099). `map_err` delegates to the kept
+// module function; the rest own their implementation.
+impl Result(a, e):
+    // True if the result is an Ok.
+    pub fn is_ok(self) -> Bool:
+        match self:
+            Ok(_) -> true
+            Err(_) -> false
+
+    // True if the result is an Err.
+    pub fn is_err(self) -> Bool:
+        match self:
+            Ok(_) -> false
+            Err(_) -> true
+
+    // True if the result is Ok and its value satisfies `pred`. An Err is always
+    // false, so `pred` runs only on a success value.
+    pub fn is_ok_and(self, pred: fn(a) -> Bool) -> Bool:
+        match self:
+            Ok(v) -> pred(v)
+            Err(_) -> false
+
+    // True if the result is an Err whose value satisfies `pred`. An Ok is always
+    // false, so `pred` runs only on an error value.
+    pub fn is_err_and(self, pred: fn(e) -> Bool) -> Bool:
+        match self:
+            Ok(_) -> false
+            Err(x) -> pred(x)
+
+    // The Ok value, or `default` if it's an Err.
+    pub fn unwrap_or(self, default: a) -> a:
+        match self:
+            Ok(v) -> v
+            Err(_) -> default
+
+    // The Ok value, or the result of calling `f` (a lazily-computed default).
+    pub fn unwrap_or_else(self, f: fn() -> a) -> a:
+        match self:
+            Ok(v) -> v
+            Err(_) -> f()
+
+    // The Err value, or `default` if it's Ok. This is the error-side counterpart
+    // of `unwrap_or`: it is a defaulting helper, not a strict assertion that the
+    // result is Err.
+    pub fn unwrap_err_or(self, default: e) -> e:
+        match self:
+            Ok(_) -> default
+            Err(x) -> x
+
+    // Transform the Ok value, leaving an Err untouched.
+    pub fn map_ok(self, f: fn(a) -> b) -> Result(b, e):
+        match self:
+            Ok(v) -> Ok(f(v))
+            Err(x) -> Err(x)
+
+    // Transform the Err value, leaving an Ok untouched.
+    pub fn map_err(self, f: fn(e) -> g) -> Result(a, g):
+        result.map_err(self, f)
+
+    // Apply `f` to the Ok value, or return `default` for an Err — `map_ok` then
+    // `unwrap_or` in one step.
+    pub fn map_or(self, default: b, f: fn(a) -> b) -> b:
+        match self:
+            Ok(v) -> f(v)
+            Err(_) -> default
+
+    // Chain a fallible step: apply `f` (which itself yields a Result) to the Ok
+    // value, or propagate the Err unchanged.
+    pub fn and_then(self, f: fn(a) -> Result(b, e)) -> Result(b, e):
+        match self:
+            Ok(v) -> f(v)
+            Err(x) -> Err(x)
+
+    // The result if it is Ok, otherwise the `alt` result.
+    pub fn or(self, alt: Result(a, e)) -> Result(a, e):
+        match self:
+            Ok(v) -> Ok(v)
+            Err(_) -> alt
+
+    // The result if it is Ok, otherwise the result produced by applying `f` to
+    // the error — a lazy, error-aware recovery step.
+    pub fn or_else(self, f: fn(e) -> Result(a, e)) -> Result(a, e):
+        match self:
+            Ok(v) -> Ok(v)
+            Err(x) -> f(x)
+
+    // The Ok value as `Some`, or `None` for an Err — discards the error, turning
+    // a Result into an Option.
+    pub fn ok(self) -> Option(a):
+        match self:
+            Ok(v) -> Some(v)
+            Err(_) -> None
+
+    // The Err value as `Some`, or `None` for an Ok.
+    pub fn err(self) -> Option(e):
+        match self:
+            Ok(_) -> None
+            Err(x) -> Some(x)
+
+impl Result(a, e) where a: Eq:
+    // Whether the result is Ok holding a value equal to `target`, by the Ok type's
+    // `Eq` impl. An Err never contains a success value. The `where a: Eq` bound
+    // makes the equality content-correct on both backends.
+    pub fn contains(self, target: a) -> Bool:
+        match self:
+            Ok(v) -> v == target
+            Err(_) -> false
+
+impl Result(a, e) where e: Eq:
+    // Whether the result is Err holding a value equal to `target`, by the Err
+    // type's `Eq` impl. An Ok never contains an error value. The error-side
+    // counterpart of `contains`.
+    pub fn contains_err(self, target: e) -> Bool:
+        match self:
+            Ok(_) -> false
+            Err(x) -> x == target
+
+impl Result(Result(a, e), e):
+    // Collapse one layer of nesting: `Ok(Ok(v))` becomes `Ok(v)`; `Ok(Err(e))`
+    // and `Err(e)` become `Err(e)`. The Result counterpart of `option.flatten`.
+    pub fn flatten(self) -> Result(a, e):
+        match self:
+            Ok(inner) -> inner
+            Err(x) -> Err(x)
+
+// Collect a list of Results into a Result of the list: `Ok` of every value in
+// order, or the first `Err` encountered (the "sequence" of fallible steps).
+pub fn all(xs: List(Result(a, e))) -> Result(List(a), e):
+    var acc = Ok([])
+    for x in xs:
+        acc = combine(acc, x)
+    acc
+
+fn combine(acc: Result(List(a), e), x: Result(a, e)) -> Result(List(a), e):
+    match acc:
+        Err(e) -> Err(e)
+        Ok(vs) ->
+            match x:
+                Ok(v) ->
+                    var out = vs
+                    list.push(out, v)
+                    Ok(out)
+                Err(e) -> Err(e)
+
+// Split a list of Results into the Ok values and the Err values, each in order —
+// for batch work that reports every failure, not just the first.
+pub fn partition(xs: List(Result(a, e))) -> (List(a), List(e)):
+    var acc = ([], [])
+    for x in xs:
+        acc = partition_step(acc, x)
+    acc
+
+fn partition_step(acc: (List(a), List(e)), x: Result(a, e)) -> (List(a), List(e)):
+    let (oks, errs) = acc
+    match x:
+        Ok(v) ->
+            var out = oks
+            list.push(out, v)
+            (out, errs)
+        Err(er) ->
+            var out = errs
+            list.push(out, er)
+            (oks, out)

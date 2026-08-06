@@ -1,0 +1,58 @@
+// PublicState is a checked boundary proof for data that may cross into static
+// HTML, resumable state, or another public Glamour artifact. It is intentionally
+// narrower than Reflect: capabilities, functions, Bytes, host handles, streams,
+// and secrets have no implementation.
+
+import json
+import reflect
+
+trait PublicState:
+    fn public_state_proof(self)
+
+pub fn check(value: a) where a: PublicState:
+    value.public_state_proof()
+
+pub fn to_json(value: a) -> json.Json where a: PublicState, a: Reflect:
+    check(value)
+    json.from_value(value)
+
+impl PublicState for Nil:
+    fn public_state_proof(self):
+        Nil
+
+impl PublicState for Bool:
+    fn public_state_proof(self):
+        Nil
+
+impl PublicState for Int:
+    fn public_state_proof(self):
+        Nil
+
+impl PublicState for Float:
+    fn public_state_proof(self):
+        Nil
+
+impl PublicState for Duration:
+    fn public_state_proof(self):
+        Nil
+
+impl PublicState for String:
+    fn public_state_proof(self):
+        Nil
+
+impl PublicState for List(a) where a: PublicState:
+    fn public_state_proof(self):
+        for value in self:
+            check(value)
+
+impl PublicState for Option(a) where a: PublicState:
+    fn public_state_proof(self):
+        match self:
+            Some(value) -> check(value)
+            None -> Nil
+
+impl PublicState for Result(a, e) where a: PublicState, e: PublicState:
+    fn public_state_proof(self):
+        match self:
+            Ok(value) -> check(value)
+            Err(error) -> check(error)

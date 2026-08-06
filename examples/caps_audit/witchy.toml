@@ -1,0 +1,5 @@
+[rune]
+name = "caps_audit"
+version = "0.1.0"
+
+[dependencies]

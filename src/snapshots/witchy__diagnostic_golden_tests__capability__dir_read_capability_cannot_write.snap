@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(dir: Dir[Read]):\\n    dir.write(\\\"x\\\", \\\"y\\\")\\n\")"
+---
+type error: `main`, line 2: `write` needs `Write` but the capability is `Dir[Read]`

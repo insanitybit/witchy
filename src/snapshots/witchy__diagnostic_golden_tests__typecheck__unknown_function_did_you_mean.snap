@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console):\\n    let xs = [1, 2, 3]\\n    print(console, __render(lenght(xs)))\\n\")"
+---
+type error: `main`, line 3: call to unknown function `lenght` — did you mean `length` (`import list`)?

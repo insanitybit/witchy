@@ -1,0 +1,92 @@
+// RFC-0107 typed composition and resumable-island source contract.
+
+import reflect
+from glamour import Cmd, Interactive, Program, Resource, Site, Start, Sub, Ui, UiRoot
+from json import Json
+
+type Msg derive(Reflect):
+    Increment
+
+type ChildMsg derive(Reflect):
+    ChildIncrement
+
+type ParentMsg derive(Reflect):
+    Child(ChildMsg)
+
+fn lift(message: ChildMsg) -> ParentMsg:
+    Child(message)
+
+fn child_ui() -> Ui(ChildMsg):
+    glamour.ui(glamour.element("button", [glamour.on("click", ChildIncrement)], [glamour.text("child")]))
+
+fn parent_msg_to_json(message: ParentMsg) -> Json:
+    json.from_value(message)
+
+fn authorize(_root: UiRoot) -> Nil:
+    Nil
+
+fn initial(_start: Start) -> Int:
+    0
+
+fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+    NoCmd
+
+fn update(_auth: Nil, model: Int, msg: Msg) -> (Int, Cmd(Msg)):
+    match msg:
+        Increment -> (model + 1, NoCmd)
+
+fn view(model: Int) -> Ui(Msg):
+    glamour.ui(glamour.element("button", [glamour.on_event("counter.increment", "click", glamour.event_msg(Increment))], [glamour.text("${model}")]))
+
+fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+    glamour.no_sub()
+
+fn msg_to_json(msg: Msg) -> Json:
+    json.from_value(msg)
+
+fn parse_model(document: Json) -> Int:
+    json.as_int(document) ?? 0
+
+fn parse_msg(_document: Json) -> Msg:
+    Increment
+
+fn model_to_json(model: Int) -> Json:
+    json.from_value(model)
+
+fn trace(console: Console, model: Int):
+    console.print("${model}\t${glamour.to_json(glamour.ui_node(view(model)), msg_to_json)}")
+
+fn app() -> Program(Nil, Int, Msg):
+    glamour.program(authorize, initial, start, update, view, subscriptions)
+
+pub fn counter_region() -> Interactive:
+    glamour.interactive(app(), 0)
+
+pub fn fresh_counter_region() -> Interactive:
+    glamour.client_region(app(), glamour.static_ui(html"<p>Counter loading…</p>"))
+
+pub fn web() -> Site:
+    glamour.site([glamour.static_page("/", glamour.ui(html"<main>${glamour.embed(counter_region())}${glamour.embed(fresh_counter_region())}</main>"))])
+
+pub fn export_step(root: UiRoot, input: String) -> String:
+    glamour.program_step_with(input, root, app(), parse_model, parse_msg, model_to_json, msg_to_json)
+
+fn main(console: Console):
+    let _site = web()
+    let _interactive = counter_region()
+    let _fresh = fresh_counter_region()
+    let mapped = child_ui().map(lift)
+    let child_command: Cmd(ChildMsg) = NoCmd
+    let _parent_command = child_command.map(lift)
+    let child_subscription: Sub(ChildMsg) = glamour.no_sub()
+    let _parent_subscription = child_subscription.map(lift)
+    let resource_value: Resource(Int, String) = Ready(7)
+    let _resource = resource_value
+    console.print("mapped\t${glamour.to_json(glamour.ui_node(mapped), parent_msg_to_json)}")
+    trace(console, 0)
+    let (one, _cmd1) = update(Nil, 0, Increment)
+    trace(console, one)
+    let (two, _cmd2) = update(Nil, one, Increment)
+    trace(console, two)
+    let (three, _cmd3) = update(Nil, two, Increment)
+    trace(console, three)

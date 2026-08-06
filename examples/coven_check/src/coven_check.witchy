@@ -1,0 +1,56 @@
+// coven_check — a manifest-vs-code consistency check, written entirely in witchy.
+// It reads a rune's witchy.toml manifest and its source (with a read-only Dir
+// capability), asks the compiler what capabilities the code actually demands
+// (`compiler.footprint`), and verifies the manifest's `[capabilities]` admits
+// them — *rights-precisely*. A capability the code can use but the manifest
+// under-admits is the dangerous supply-chain case. This is the package
+// manager's `check_declared`, self-hosted, composing std `toml` + `compiler` +
+// `json`. Run:  witchy examples/coven_check/src/coven_check.witchy
+
+import toml
+import compiler
+import rights
+from json import Json
+
+fn main(console: Console, root: Dir[Read]) -> Int:
+    let manifest = root.read("examples/data/rune_manifest.toml")
+    let source = root.read("examples/data/sample_rune_v2.witchy")
+    let declared = toml.get_array(manifest, "capabilities.runtime")
+    match total_caps(compiler.footprint(source)):
+        Err(e) ->
+            console.print("FAIL: " + e)
+            1
+        Ok(demanded) ->
+            // The demanded capabilities the manifest does not admit, rights-precisely
+            // (std/rights): a declared `Net[Connect]` does NOT cover a demanded full `Net`.
+            let missing = rights.uncovered(declared, demanded).join(", ")
+            if missing.is_empty():
+                console.print("OK: manifest admits everything the code demands")
+                0
+            else:
+                console.print("UNDER-DECLARED: code demands " + missing + " not admitted by [capabilities]")
+                1
+
+// The capability names in a footprint report's "total" array. Fails closed: a
+// compiler error or malformed JSON is a fatal error, never an empty footprint.
+fn total_caps(report: String) -> Result(List(String), String):
+    match json.decode(report):
+        Ok(doc) ->
+            match json.get(doc, "error"):
+                Some(_) -> Err("compiler error: " + error_message(doc))
+                None -> Ok(string_items(json.get(doc, "total")))
+        Err(e) -> Err("footprint report is not valid JSON: " + json.decode_error_message(e))
+
+fn error_message(doc: Json) -> String:
+    match json.get_string(doc, "error"):
+        Some(m) -> m
+        None -> "source does not compile"
+
+fn string_items(field: Option(Json)) -> List(String):
+    var out = []
+    if let Some(j) = field:
+        if let Some(items) = json.as_array(j):
+            for it in items:
+                if let Some(s) = json.as_string(it):
+                    out.push(s)
+    out

@@ -1,0 +1,19 @@
+// The `Show` trait is Witchy's public display protocol. Implement it for your own
+// types, and interpolation, `show.render`, and `show.say` use the same rendering
+// model. A blanket `impl Show for List(a) where a: Show` means lists render
+// through each element's Show impl too, with the same output whether interpreted
+// or compiled.
+
+import show
+
+type Coord:
+    Coord(Int, Int)
+
+impl Show for Coord:
+    fn show(self) -> String:
+        match self:
+            Coord(x, y) -> "(${x}, ${y})"
+
+fn main(console: Console):
+    show.say(console, [1, 2, 3])
+    show.say(console, [Coord(0, 0), Coord(3, 4)])

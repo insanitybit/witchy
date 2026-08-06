@@ -1,0 +1,19 @@
+// Conversion traits, following Rust's `std::convert`. `From(a)` builds the
+// implementing type from an `a`; `Into(b)` consumes `self` into a `b`. Implementing
+// `From` is enough, since the blanket impl below derives the matching `Into`:
+//
+//   Celsius.from(deg)   build via From
+//   value.into()        convert via the derived Into
+//
+// `from` takes no `self`, so the blanket impl calls it on the target type as
+// `b.from(self)`. The `where` bound decides which `from` to call when the use site
+// is monomorphized.
+trait From(a):
+    fn from(value: a) -> Self
+
+trait Into(b):
+    fn into(self) -> b
+
+impl Into(b) for a where b: From(a):
+    fn into(self) -> b:
+        b.from(self)

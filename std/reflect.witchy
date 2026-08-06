@@ -1,0 +1,306 @@
+// Reflection: a value's structure as data, so one function can work over any type.
+// `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum
+// type's variant, a list's elements, or a scalar. Code that would otherwise need a
+// per-type `derive` (JSON encoding, debug rendering, structural diffing) is written
+// once against `Mirror`. `MNil` is the unit value and maps to JSON null. Scalars,
+// `Bytes`, `Ordering`, and the built-in containers (`List`, `Option`, `Result`, `Set`,
+// tuples through arity 8, `Dict`) are reflectable out of the box. Container
+// reflection is an encoding/debug protocol, not a promise that `derive(Deserialize)`
+// can rebuild every container shape: `Dict` reflects as a string-keyed object. A
+// user `type` becomes reflectable when you add `derive(Reflect)` to it (which needs
+// `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so
+// `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type
+// derives it.
+//
+// `reflect` is a trait method; `derive(Reflect)` generates `impl Reflect for T`,
+// building the `Mirror` from the declared fields and variants. The scalar impls
+// below are the leaves.
+
+import list
+import string
+import dict
+import duration
+import cmp
+import set
+import bytes
+
+// The reflected shape of a value.
+type Mirror:
+    MInt(Int)
+    MFloat(Float)
+    MBool(Bool)
+    MString(String)
+    MList(List(Mirror))
+    MTuple(List(Mirror))
+    MRecord(String, List((String, Mirror)))
+    MVariant(String, String, List(Mirror))
+    MNil
+
+// Compiler-authenticated field projection payload. The two descriptor IDs bind
+// the accessor's concrete receiver and returned field to the runtime shape plan;
+// `dynamic.field` validates both before constructing a new Dynamic envelope.
+type DynamicFieldValue:
+    DynamicFieldValue(Int, Int, dyn Reflect)
+
+// A list's elements, reflected.
+
+// A tuple's slots, reflected (a fixed-arity heterogeneous sequence).
+
+// A record: its type name and (field name, reflected value) pairs in order.
+
+// A sum-type value: type name, variant name, reflected payloads in order.
+
+// Values that can describe themselves as a `Mirror`.
+trait Reflect:
+    fn reflect(self) -> Mirror
+    fn __dynamic_field(self, name: String) -> Option(DynamicFieldValue):
+        // Record derives override this internal slot. Other reflectable values have
+        // no readable named fields, so the default is deliberately empty.
+        None
+
+impl Reflect for Int:
+    fn reflect(self) -> Mirror:
+        MInt(self)
+
+impl Reflect for Float:
+    fn reflect(self) -> Mirror:
+        MFloat(self)
+
+impl Reflect for Bool:
+    fn reflect(self) -> Mirror:
+        MBool(self)
+
+impl Reflect for String:
+    fn reflect(self) -> Mirror:
+        MString(self)
+
+// Bytes are binary data, not text. Reflection exposes their raw byte values as a
+// list of Ints, so JSON/debug consumers can inspect payloads without a lossy
+// UTF-8 decode.
+pub fn reflect_bytes(b: Bytes) -> Mirror:
+    var out = []
+    for n in bytes.to_list(b):
+        list.push(out, MInt(n))
+    MList(out)
+
+impl Reflect for Bytes:
+    fn reflect(self) -> Mirror:
+        reflect_bytes(self)
+
+impl Reflect for Nil:
+    fn reflect(self) -> Mirror:
+        MNil
+
+impl Reflect for Duration:
+    fn reflect(self) -> Mirror:
+        MInt(duration.to_milliseconds(self))
+
+impl Reflect for Ordering:
+    fn reflect(self) -> Mirror:
+        match self:
+            Less -> MVariant("Ordering", "Less", [])
+            Equal -> MVariant("Ordering", "Equal", [])
+            Greater -> MVariant("Ordering", "Greater", [])
+
+// Reflect a single value through a generic helper. Generated record/tuple impls use
+// this at heterogeneous field sites so each call specializes independently.
+pub fn reflect_one(x: a) -> Mirror where a: Reflect:
+    reflect(x)
+
+// Reflect an `Option` to a `Some`/`None` `MVariant`. Match bindings retain the
+// constructor field's generic type, so the payload dispatches directly.
+pub fn reflect_option(o: Option(a)) -> Mirror where a: Reflect:
+    match o:
+        Some(value) -> MVariant("Option", "Some", [reflect(value)])
+        None -> MVariant("Option", "None", [])
+
+// Reflect a list of `Reflect` elements. This is a free function rather than an
+// `impl Reflect for List(a)` because method dispatch on a `List` receiver binds to
+// the `list` module, so the generated `reflect` for a record's List field calls this.
+pub fn reflect_list(xs: List(a)) -> Mirror where a: Reflect:
+    var out = []
+    for x in xs:
+        list.push(out, reflect(x))
+    MList(out)
+
+// `List` and `Option` reflect through generic impls, so `reflect(x)` (and therefore
+// `json.stringify`, `debug`, and any other reflective consumer) works on a bare list
+// or option, not only on one held in a record field. Each impl specializes per
+// element: dispatch falls back from `List<Int>` to the generic `List` impl, and the
+// element type resolves through the `where` bound.
+impl Reflect for List(a) where a: Reflect:
+    fn reflect(self) -> Mirror:
+        reflect_list(self)
+
+impl Reflect for Option(a) where a: Reflect:
+    fn reflect(self) -> Mirror:
+        reflect_option(self)
+
+// Reflect a `Result` to an `Ok`/`Err` `MVariant`, dispatching directly on the
+// typed constructor binding.
+pub fn reflect_result(r: Result(a, e)) -> Mirror where a: Reflect, e: Reflect:
+    match r:
+        Ok(value) -> MVariant("Result", "Ok", [reflect(value)])
+        Err(error) -> MVariant("Result", "Err", [reflect(error)])
+
+impl Reflect for Result(a, e) where a: Reflect, e: Reflect:
+    fn reflect(self) -> Mirror:
+        reflect_result(self)
+
+// A `Set` reflects to the same `MList` shape as its insertion-order `to_list`
+// view. Reflection is an encoding protocol, not a reconstruction protocol, so
+// JSON sees a set as an array and `derive(Deserialize)` remains per-type.
+pub fn reflect_set(s: Set(a)) -> Mirror where a: Reflect:
+    var out = []
+    for x in set.to_list(s):
+        list.push(out, reflect(x))
+    MList(out)
+
+impl Reflect for Set(a) where a: Reflect:
+    fn reflect(self) -> Mirror:
+        reflect_set(self)
+
+// A `Dict` reflects to an `MRecord` — the same string-keyed shape a record uses,
+// so `json` encodes it as an object and `debug` renders it record-style. Each key
+// is rendered to a string (an object/record key is always a string), each value
+// reflects through the `v: Reflect` bound. This is intentionally one-way for
+// encoding/debug: reflection does not preserve enough key structure for a general
+// `Dict(k, v)` deserialize round trip. A free function for the same reason
+// `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict`
+// module, so the generated `reflect` for a `Dict` field routes here.
+pub fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect:
+    var fields = []
+    for pair in dict.pairs(d):
+        let (key, val) = pair
+        list.push(fields, (key_string(reflect_one(key)), reflect_one(val)))
+    MRecord("Dict", fields)
+
+// The string form of a reflected key: an `MString`'s raw text (unquoted, since it
+// is a field name, not a value), any other key its structural rendering.
+fn key_string(m: Mirror) -> String:
+    match m:
+        MString(s) -> s
+        _ -> render(m)
+
+impl Reflect for Dict(k, v) where k: Reflect, v: Reflect:
+    fn reflect(self) -> Mirror:
+        reflect_dict(self)
+
+// Tuples reflect to `MTuple` (a JSON array, or a parenthesized debug). Each
+// supported arity has its own impl; `reflect_one` on the destructured slots
+// dispatches per slot type. The protocol surface is explicit through arity 8;
+// larger tuples remain structural values but do not carry blanket `Reflect`.
+impl Reflect for (a, b) where a: Reflect, b: Reflect:
+    fn reflect(self) -> Mirror:
+        let (x0, x1) = self
+        MTuple([reflect_one(x0), reflect_one(x1)])
+
+impl Reflect for (a, b, c) where a: Reflect, b: Reflect, c: Reflect:
+    fn reflect(self) -> Mirror:
+        let (x0, x1, x2) = self
+        MTuple([reflect_one(x0), reflect_one(x1), reflect_one(x2)])
+
+impl Reflect for (a, b, c, d) where a: Reflect, b: Reflect, c: Reflect, d: Reflect:
+    fn reflect(self) -> Mirror:
+        let (x0, x1, x2, x3) = self
+        MTuple([reflect_one(x0), reflect_one(x1), reflect_one(x2), reflect_one(x3)])
+
+impl Reflect for (a, b, c, d, e) where a: Reflect, b: Reflect, c: Reflect, d: Reflect, e: Reflect:
+    fn reflect(self) -> Mirror:
+        let (x0, x1, x2, x3, x4) = self
+        MTuple([reflect_one(x0), reflect_one(x1), reflect_one(x2), reflect_one(x3), reflect_one(x4)])
+
+impl Reflect for (a, b, c, d, e, f) where a: Reflect, b: Reflect, c: Reflect, d: Reflect, e: Reflect, f: Reflect:
+    fn reflect(self) -> Mirror:
+        let (x0, x1, x2, x3, x4, x5) = self
+        MTuple([reflect_one(x0), reflect_one(x1), reflect_one(x2), reflect_one(x3), reflect_one(x4), reflect_one(x5)])
+
+impl Reflect for (a, b, c, d, e, f, g) where a: Reflect, b: Reflect, c: Reflect, d: Reflect, e: Reflect, f: Reflect, g: Reflect:
+    fn reflect(self) -> Mirror:
+        let (x0, x1, x2, x3, x4, x5, x6) = self
+        MTuple([reflect_one(x0), reflect_one(x1), reflect_one(x2), reflect_one(x3), reflect_one(x4), reflect_one(x5), reflect_one(x6)])
+
+impl Reflect for (a, b, c, d, e, f, g, h) where a: Reflect, b: Reflect, c: Reflect, d: Reflect, e: Reflect, f: Reflect, g: Reflect, h: Reflect:
+    fn reflect(self) -> Mirror:
+        let (x0, x1, x2, x3, x4, x5, x6, x7) = self
+        MTuple([reflect_one(x0), reflect_one(x1), reflect_one(x2), reflect_one(x3), reflect_one(x4), reflect_one(x5), reflect_one(x6), reflect_one(x7)])
+
+// --- a second consumer: structural debug rendering ---------------------------
+// `debug(x)` renders any value from its reflection, using the same `reflect` that
+// backs `json`.
+pub fn debug(x: a) -> String where a: Reflect:
+    render(reflect(x))
+
+fn render(m: Mirror) -> String:
+    match m:
+        MInt(n) -> "${n}"
+        MFloat(f) -> "${f}"
+        MBool(b) -> if b: "true" else: "false"
+        MString(s) -> "\"" + escape_string(s) + "\""
+        MNil -> "nil"
+        MList(xs) -> "[" + join_rendered(xs) + "]"
+        MTuple(xs) -> "(" + join_rendered(xs) + ")"
+        MRecord(name, fields) ->
+            if name == "":
+                "{ " + render_fields(fields) + " }"
+            else:
+                name + " { " + render_fields(fields) + " }"
+        MVariant(_tyname, variant, payload) ->
+            if list.is_empty(payload):
+                variant
+            else:
+                variant + "(" + join_rendered(payload) + ")"
+
+// Escape a string value for `debug`'s quoted rendering: backslash, double quote,
+// and every C0 control become escapes, so debug output stays single-line and
+// parseable-looking instead of smuggling terminal controls into structural text.
+fn escape_string(s: String) -> String:
+    var out = ""
+    for c in s.chars():
+        if c == "\\":
+            out = out + "\\\\"
+        else if c == "\"":
+            out = out + "\\\""
+        else if c == "\n":
+            out = out + "\\n"
+        else if c == "\t":
+            out = out + "\\t"
+        else if c == "\r":
+            out = out + "\\r"
+        else if c < " ":
+            out = out + escape_control(c)
+        else:
+            out = out + c
+    out
+
+fn escape_control(c: String) -> String:
+    let code = control_code(c)
+    if code == 8:
+        "\\b"
+    else if code == 12:
+        "\\f"
+    else:
+        "\\u00" + hex_digit(code / 16) + hex_digit(code % 16)
+
+fn control_code(c: String) -> Int:
+    var k = 0
+    while k < 32:
+        if c == string.from_code(k):
+            return k
+        k = k + 1
+    0
+
+fn hex_digit(v: Int) -> String:
+    "0123456789abcdef".substring(v, v + 1)
+
+fn join_rendered(xs: List(Mirror)) -> String:
+    var parts = []
+    for m in xs:
+        list.push(parts, render(m))
+    list.join(parts, ", ")
+
+fn render_fields(fields: List((String, Mirror))) -> String:
+    var parts = []
+    for k, m in fields:
+        list.push(parts, k + ": " + render(m))
+    list.join(parts, ", ")

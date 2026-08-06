@@ -1,0 +1,21 @@
+// Per-iteration capturing-closure benchmark (RFC-0062): a closure that CAPTURES a
+// free variable is created fresh on every loop iteration and invoked once, never
+// escaping. With `closure-elide` off, each iteration heap-allocates (and, under the
+// region lever, reclaims) a one-slot environment record and recovers the capture `k`
+// from it; with the lever on, NO environment is allocated at all — the capture is
+// threaded straight to a direct call. This isolates the per-iteration allocation the
+// elision removes (the dominant closure cost the RFC targets).
+
+fn main(console: Console, clock: Clock):
+    let scale = 3
+    let bench_t0 = clock.now_monotonic()
+    var total = 0
+    var i = 0
+    while i < 5000000:
+        let k = (i * scale) + 7
+        let f = fn(x: Int): (x + k) % 101
+        total = total + f(i)
+        i = i + 1
+    let bench_t1 = clock.now_monotonic()
+    console.print("${total}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

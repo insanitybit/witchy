@@ -1,0 +1,26 @@
+host = "build-step"
+axis = "build"
+
+[enforcement]
+filesystem = "linux-landlock"
+syscalls = "linux-seccomp"
+
+[grants.BuildOut]
+provider = "confined-output"
+determinism = "deterministic"
+
+[grants.BuildRead]
+provider = "project-snapshot"
+determinism = "deterministic"
+
+[grants.BuildEnv]
+provider = "granted-environment"
+determinism = "deterministic"
+
+[grants.BuildNet]
+provider = "host-allowlist"
+determinism = "nondeterministic"
+
+[grants.BuildExec]
+provider = "tool-allowlist"
+determinism = "nondeterministic"

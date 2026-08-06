@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console):\\n    let x = if true: 1 else: \\\"two\\\"\\n    print(console, __render(x))\\n\")"
+---
+type error: `main`, line 2: `if` branches disagree: expected `Int`, found `String`

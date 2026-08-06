@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"import show\\n\\nfn main(console: Console):\\n    let f = show\\n    print(console, \\\"x\\\")\\n\")"
+---
+type error: `main`, line 4: trait method `show` has no single function value to reference — wrap the receiver dispatch in a lambda, e.g. `fn(x): x.show()`

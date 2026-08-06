@@ -1,0 +1,16 @@
+// bars — the shared rendering base: integer percentages and fixed-width progress
+// bars. A pure library rune (no host capabilities). Both `tasks` and `coverage`
+// depend on it, so the app's dependency graph is a diamond and `witchy tree`
+// resolves `bars` once.
+
+// Integer percent of done/total (0 when total is 0).
+pub fn pct(done: Int, total: Int) -> Int:
+    if total == 0:
+        0
+    else:
+        done * 100 / total
+
+// A fixed-width progress bar like "[####----]" for done/total.
+pub fn bar(done: Int, total: Int, width: Int) -> String:
+    let filled = if total == 0: 0 else: done * width / total
+    "[" + "#".repeat(filled) + "-".repeat(width - filled) + "]"

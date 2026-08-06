@@ -1,0 +1,284 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Least privilege by default: grant nothing at the top level, opt each job in.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  zizmor:
+    name: Workflow security audit (zizmor)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Audit workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows
+
+  test:
+    name: Build, lint, test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+        with:
+          components: clippy
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: nextest
+      - name: Build
+        run: cargo build --workspace --all-targets
+      # Deny only the genuine-bug tiers (see scripts/check.sh CLIPPY_GATE_LINTS):
+      # correctness + suspicious + dropped-must-use. Style/complexity/perf lints
+      # still print but do not fail CI — a needless borrow is not a merge blocker.
+      - name: Clippy (bug lints)
+        run: cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
+      - name: Unit + integration tests
+        run: cargo nextest run --workspace --profile ci --all-targets
+
+  heap-check:
+    name: Checked heap (RFC-0023)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: nextest
+      # The opt-in checked heap (redzones + a post-run shadow sweep) makes
+      # intra-linear-memory corruption loud — out-of-object writes wasmtime cannot see.
+      # The differential fuzzer is the coverage engine (random heap-heavy programs run
+      # through the real runtime); under the flag it becomes the depth oracle too, turning
+      # "is our codegen/allocator memory-safe?" into a property the run checks. (Scoped to
+      # real-runtime behavior tests: codegen unit tests hand-roll minimal wasmtime linkers
+      # that don't define the checked-heap imports, so they run unflagged in `test`.)
+      - name: Differential fuzzer under WITCHY_HEAP_CHECK
+        env:
+          WITCHY_HEAP_CHECK: "1"
+        run: cargo nextest run --profile ci --test differential_fuzz
+
+  parity:
+    name: Backend parity sweep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Build release binary
+        run: cargo build --release
+      - name: Differential check every runnable example on both backends
+        # FAIL-CLOSED on any non-zero parity exit (RFC-0058 §2, BUG-002): no `|| true`,
+        # no `grep DIVERGE`. Classify on the exit code (0 = agree/both-error-agree,
+        # 2 = unexpected-error, 3 = diverge) + the machine `parity-stats` line. Vacuity
+        # guard: compared > 0 lines. Positive control: the seeded-divergence lever MUST
+        # fail parity, proving the gate can fail.
+        run: |
+          set -uo pipefail
+          bin=./target/release/witchy
+          fail=0
+          files=0
+          compared=0
+          ctrl=""
+          for f in examples/*/src/*.witchy; do
+            # Runnable programs only (parity needs a `main`); libs and *_test.witchy
+            # suites are covered by `witchy test` / example_tests.
+            grep -q 'fn main' "$f" || continue
+            [ -z "$ctrl" ] && ctrl="$f"
+            files=$((files + 1))
+            out=$("$bin" parity "$f" 2>&1)
+            code=$?
+            n=$(printf '%s\n' "$out" | grep '^parity-stats ' | tail -1 | sed -n 's/.*compared=\([0-9][0-9]*\).*/\1/p')
+            compared=$((compared + ${n:-0}))
+            if [ "$code" -ne 0 ]; then
+              echo "PARITY FAIL (exit $code): $f"
+              echo "$out"
+              fail=1
+            fi
+          done
+          if [ "$files" -eq 0 ]; then
+            echo "parity-sweep VACUOUS: no runnable example files discovered (BUG-002)" >&2
+            exit 1
+          fi
+          if [ "$compared" -eq 0 ]; then
+            echo "parity-sweep VACUOUS: compared 0 output lines across $files files (BUG-002)" >&2
+            exit 1
+          fi
+          if WITCHY_SEEDED_DIVERGENCE=1 "$bin" parity "$ctrl" >/dev/null 2>&1; then
+            echo "parity-sweep POSITIVE CONTROL FAILED: seeded divergence did NOT fail parity on $ctrl" >&2
+            exit 1
+          fi
+          echo "parity-sweep: $files files, $compared compared lines, positive control OK"
+          exit $fail
+
+  acceptance:
+    name: From-scratch acceptance (e2e-full)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Run the acceptance script (test suites run in their own job)
+        run: ./scripts/e2e-full.sh --quick
+
+  # RFC-0041: the book IS a witchy/glamour app (empty host footprint), compiled to
+  # wasm and served client-side. Build the complete bundle as a private workflow
+  # artifact so authorized collaborators can verify the eventual public site without
+  # publishing it. Public documentation deployment remains disabled until the owner
+  # explicitly approves launch.
+  docs-build:
+    name: Build private docs bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build the release binary (compiles the docs app to wasm via build-docs.sh)
+        run: cargo build --release
+      - name: Build the browser compiler wasm (the Run buttons)
+        run: cargo build --release --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown
+      - name: Assemble the deployable bundle
+        run: WITCHY_BROWSER_WASM=target/wasm32-unknown-unknown/release/witchy.wasm ./scripts/build-docs.sh dist
+      - name: Package the exact private preview bytes
+        run: ./scripts/docs-artifact.sh package dist witchy-docs-private-preview.tar.gz
+      - name: Upload private docs preview artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: witchy-docs-private-preview
+          path: witchy-docs-private-preview.tar.gz
+          if-no-files-found: error
+          retention-days: 5
+
+  playground:
+    name: Playground wasm build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build the interpreter for the browser
+        run: cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
+      - name: Stage the wasm next to the page
+        run: |
+          mkdir -p web
+          cp target/wasm32-unknown-unknown/release/witchy.wasm web/witchy.wasm
+      # RFC-0041 P3: run every `runnable` book block through the SHIPPED browser wasm and assert
+      # its output equals the committed manifest oracle — the no-silent-drift gate for the
+      # runnable book (an in-book Run can never diverge from the toolchain).
+      - name: Validate the runnable book against the manifest oracle
+        run: node scripts/validate_book_examples.mjs
+
+  browser-confinement:
+    name: Extracted docs artifact, browser confinement, and runnable book
+    needs: [docs-build]
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Download the exact private docs artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witchy-docs-private-preview
+          path: private-docs-artifact
+      - name: Extract and prove flagship, derived CSP, and every complete example
+        # Drive the confinement probe with headless Chrome (preinstalled on the
+        # macOS runner), not Safari. safaridriver on GitHub's shared macOS
+        # runners is chronically unreliable ("browser probe failed: null" on
+        # every run); the probe verifies the same CSP/sandbox behaviour under
+        # Chrome via CDP and is deterministic.
+        run: ./scripts/docs-artifact.sh smoke private-docs-artifact/witchy-docs-private-preview.tar.gz chrome
+
+  glamour-browser:
+    name: Glamour browser acceptance (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Build Witchy
+        run: cargo build --bin witchy
+      - name: Install pinned browser test tools
+        working-directory: tests/browser
+        env:
+          GLAMOUR_BROWSER: ${{ matrix.browser }}
+        run: |
+          npm ci
+          npx playwright install --with-deps "$GLAMOUR_BROWSER"
+      - name: Run browser acceptance
+        working-directory: tests/browser
+        env:
+          GLAMOUR_BROWSER: ${{ matrix.browser }}
+          WITCHY_BIN: ${{ github.workspace }}/target/debug/witchy
+        run: npx playwright test --project="$GLAMOUR_BROWSER"
+      - name: Retain browser evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: glamour-browser-${{ matrix.browser }}
+          path: tests/browser/test-results/acceptance.json
+          if-no-files-found: error
+          retention-days: 14
+
+  fmt:
+    name: Formatting check (std + examples + projects)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Build binary
+        run: cargo build -p witchy
+      - name: witchy fmt --check
+        run: |
+          files=(std/*.witchy examples/*/src/*.witchy)
+          while IFS= read -r f; do
+            files+=("$f")
+          done < <(find projects -type f -path '*/src/*.witchy' -print | sort)
+          ./target/debug/witchy fmt --check "${files[@]}"

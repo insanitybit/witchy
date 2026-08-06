@@ -1,0 +1,1863 @@
+    use super::*;
+
+    fn connect_loopback(addr: &str) -> std::net::TcpStream {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Ok(stream) = std::net::TcpStream::connect(addr) {
+                return stream;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "server did not accept a request within 10 seconds",
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn loopback_addr() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        format!("127.0.0.1:{}", listener.local_addr().expect("local address").port())
+    }
+
+    fn spawn_loopback_program(
+        source: String,
+        root: &str,
+        addr: &str,
+    ) -> std::thread::JoinHandle<()> {
+        let parsed = witchy_syntax::parser::parse_module(&source).expect("parse");
+        let linked =
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let root = root.to_string();
+        let allow = vec![addr.to_string()];
+        std::thread::spawn(move || {
+            run_module(linked, &root, allow).expect("run server");
+        })
+    }
+
+    fn http_request(addr: &str, raw: &str) -> String {
+        use std::io::{Read, Write};
+        let mut stream = connect_loopback(addr);
+        stream.write_all(raw.as_bytes()).expect("write request");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read response");
+        response
+    }
+
+    fn minimal_interpreter() -> Interpreter {
+        let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
+            .expect("parse minimal module");
+        Interpreter::new(module)
+    }
+
+    #[test]
+    fn checked_evaluation_accepts_and_returns_only_owned_compiler_values() {
+        let source = "\
+type Page:
+    Page(String)
+
+fn web() -> List(Page):
+    [Page(\"/\"), Page(\"/about\")]
+
+fn echo(page: Page) -> Page:
+    page
+";
+        let module = witchy_syntax::parser::parse_module(source).expect("parse");
+        let application = witchy_types::runtime_type::PackageCoordinate::new(
+            witchy_types::runtime_type::PackageSource::Workspace,
+            "test/site",
+            "0.0.0",
+        )
+        .expect("application coordinate");
+        let toolchain = witchy_types::runtime_type::PackageCoordinate::new(
+            witchy_types::runtime_type::PackageSource::Toolchain,
+            "witchy/stdlib",
+            "0.0.0",
+        )
+        .expect("toolchain coordinate");
+        let mut assignments = vec![(
+            "site".to_string(),
+            witchy_types::runtime_type::ModuleLoadIdentity::new(
+                application,
+                ["site"],
+            )
+            .expect("site owner"),
+        )];
+        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| {
+            (
+                (*name).to_string(),
+                witchy_types::runtime_type::ModuleLoadIdentity::new(
+                    toolchain.clone(),
+                    ["std", *name],
+                )
+                .expect("stdlib owner"),
+            )
+        }));
+        let owners =
+            crate::pipeline::AuthenticatedModuleOwners::from_loader_assignments(assignments)
+                .expect("owners");
+        let checked = crate::pipeline::link_checked_authenticated(
+            vec![("site".to_string(), module)],
+            "site",
+            owners,
+        )
+        .expect("check");
+        let value = evaluate_checked_noargs(&checked, "site.web").expect("evaluate web");
+        assert_eq!(
+            value,
+            CompilerValue::List(vec![
+                CompilerValue::Constructor {
+                    name: "site.Page".into(),
+                    fields: vec![CompilerValue::String("/".into())],
+                },
+                CompilerValue::Constructor {
+                    name: "site.Page".into(),
+                    fields: vec![CompilerValue::String("/about".into())],
+                },
+            ])
+        );
+
+        let page = CompilerValue::Constructor {
+            name: "site.Page".into(),
+            fields: vec![CompilerValue::String("/input".into())],
+        };
+        assert_eq!(
+            evaluate_checked(&checked, "site.echo", vec![page.clone()])
+                .expect("evaluate compiler data argument"),
+            page,
+        );
+        let arity = evaluate_checked(&checked, "site.echo", Vec::new()).unwrap_err();
+        assert!(
+            arity
+                .message
+                .contains("expects 1 compiler argument(s), received 0")
+        );
+
+        let error = evaluate_checked_noargs(&checked, "missing").unwrap_err();
+        assert!(error.message.contains("unknown function `missing`"));
+    }
+
+    #[test]
+    fn every_cataloged_string_operation_has_runtime_dispatch() {
+        let mut interpreter = minimal_interpreter();
+
+        for name in intrinsics::STRING_OPERATIONS {
+            let args = match *name {
+                intrinsics::STRING_FROM_CODE => vec![Value::Int(65)],
+                intrinsics::STRING_REPLACE => vec![
+                    Value::str("12"),
+                    Value::str("1"),
+                    Value::str("x"),
+                ],
+                intrinsics::STRING_SUBSTRING => {
+                    vec![Value::str("12"), Value::Int(0), Value::Int(1)]
+                }
+                intrinsics::STRING_SPLIT
+                | intrinsics::STRING_CONTAINS
+                | intrinsics::STRING_STARTS_WITH
+                | intrinsics::STRING_ENDS_WITH
+                | intrinsics::STRING_FIND => {
+                    vec![Value::str("12"), Value::str("1")]
+                }
+                _ => vec![Value::str("12")],
+            };
+            let result = interpreter
+                .call_builtin(name, &args)
+                .unwrap_or_else(|error| panic!("{} failed: {}", name, error.message));
+            assert!(result.is_some(), "{} fell through runtime dispatch", name);
+        }
+    }
+
+    #[test]
+    fn every_cataloged_math_operation_has_runtime_dispatch() {
+        let mut interpreter = minimal_interpreter();
+
+        for name in intrinsics::MATH_OPERATIONS {
+            let args = match *name {
+                intrinsics::MATH_TO_FLOAT => vec![Value::Int(4)],
+                intrinsics::MATH_TO_INT | intrinsics::MATH_SQRT => vec![Value::Float(4.0)],
+                _ => unreachable!("uncataloged math operation"),
+            };
+            let result = interpreter
+                .call_builtin(name, &args)
+                .unwrap_or_else(|error| panic!("{} failed: {}", name, error.message));
+            assert!(result.is_some(), "{} fell through runtime dispatch", name);
+        }
+    }
+
+    #[test]
+    fn cataloged_regex_operation_has_interpreter_native_dispatch() {
+        let mut interpreter = minimal_interpreter();
+        let result = interpreter
+            .call_builtin(
+                intrinsics::REGEX_MATCH_SPANS,
+                &[Value::str("a+"), Value::str("caaat")],
+            )
+            .expect("regex dispatch");
+        assert_eq!(result, Some(Value::str("1,4")));
+    }
+
+    fn run_exit(source: &str) -> i32 {
+        let module = witchy_syntax::parser::parse_module(source).expect("parse runtime source");
+        run_module_exit(module, ".", Vec::new(), Vec::new(), None)
+            .expect("run runtime source")
+            .1
+    }
+
+    #[test]
+    fn existential_dispatch_uses_the_closed_witness_plan() {
+        let source = r#"
+trait Render:
+    fn render(let self) -> Int
+
+type Label:
+    Label(Int)
+
+type Badge:
+    Badge(Int)
+
+impl Render for Label:
+    fn render(let self) -> Int:
+        match self:
+            Label(value) -> value
+
+impl Render for Badge:
+    fn render(let self) -> Int:
+        match self:
+            Badge(value) -> value + 10
+
+fn main() -> Int:
+    let items: List(dyn Render) = [Label(2), Badge(3)]
+    items[0].render() + items[1].render()
+"#;
+        assert_eq!(run_exit(source), 15);
+    }
+
+    #[test]
+    fn existential_var_receiver_commits_after_each_structured_return() {
+        let source = r#"
+trait Tick:
+    fn tick(var self) -> Int
+
+type Counter:
+    Counter(Int)
+
+impl Tick for Counter:
+    fn tick(var self) -> Int:
+        let Counter(value) = self
+        self = Counter(value + 1)
+        value + 1
+
+fn main() -> Int:
+    var counter: dyn Tick = Counter(4)
+    counter.tick() + counter.tick()
+"#;
+        assert_eq!(run_exit(source), 11);
+    }
+
+    #[test]
+    fn existential_var_receiver_commits_on_callee_try_return() {
+        let source = r#"
+trait Tick:
+    fn tick(var self) -> Result(Int, String)
+    fn value(let self) -> Int
+
+type Counter:
+    Counter(Int)
+
+impl Tick for Counter:
+    fn tick(var self) -> Result(Int, String):
+        let Counter(value) = self
+        self = Counter(value + 1)
+        Err("stopped")?
+    fn value(let self) -> Int:
+        match self:
+            Counter(value) -> value
+
+fn main() -> Int:
+    var counter: dyn Tick = Counter(4)
+    let ignored = counter.tick()
+    counter.value()
+"#;
+        assert_eq!(run_exit(source), 5);
+    }
+
+    #[test]
+    fn existential_values_stay_opaque_when_the_oracle_skips_source_checking() {
+        let module = witchy_syntax::parser::parse_module("fn main() -> Nil:\n    Nil\n")
+            .expect("parse minimal module");
+        let mut interpreter = Interpreter::new(module);
+        let opaque = Value::Existential {
+            payload: Box::new(Value::Int(1)),
+            witness: 0,
+        };
+        let error = interpreter
+            .values_equal(&Value::list(vec![opaque]), &Value::list(vec![Value::Int(1)]))
+            .expect_err("existential equality must stay unavailable");
+        assert!(error.message.contains("do not support equality"), "{error:?}");
+    }
+
+    #[test]
+    fn every_cataloged_list_operation_has_runtime_dispatch() {
+        let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
+            .expect("parse minimal module");
+        let mut interpreter = Interpreter::new(module);
+
+        let list = || Value::list(vec![Value::Int(1)]);
+        let some_one = || Value::ctor("Some", vec![Value::Int(1)]);
+        let cases = vec![
+            (intrinsics::LIST_LENGTH, vec![list()], Value::Int(1)),
+            (intrinsics::LIST_AT, vec![list(), Value::Int(0)], Value::Int(1)),
+            (
+                intrinsics::LIST_PUSH,
+                vec![list(), Value::Int(2)],
+                Value::list(vec![Value::Int(1), Value::Int(2)]),
+            ),
+            (
+                intrinsics::LIST_SET_AT,
+                vec![list(), Value::Int(0), Value::Int(2)],
+                Value::list(vec![Value::Int(2)]),
+            ),
+            (
+                intrinsics::LIST_CONCAT,
+                vec![list(), list()],
+                Value::list(vec![Value::Int(1), Value::Int(1)]),
+            ),
+            (
+                intrinsics::LIST_POP_EXTRACT,
+                vec![list()],
+                Value::tuple(vec![Value::list(Vec::new()), some_one()]),
+            ),
+        ];
+        for (name, args, expected) in cases {
+            let result = interpreter
+                .call_builtin(name, &args)
+                .unwrap_or_else(|error| panic!("{} failed: {}", name, error.message));
+            assert_eq!(result, Some(expected), "{} runtime semantics drifted", name);
+        }
+
+        let special = match interpreter
+            .call_interpreter_special(intrinsics::LIST_POP_EXTRACT, &[list()])
+        {
+            Ok(Some(outcome)) => outcome,
+            Ok(None) => panic!("pop special dispatch fell through"),
+            Err(_) => panic!("pop special dispatch failed"),
+        };
+        assert_eq!(special, (some_one(), vec![Value::list(Vec::new())]));
+
+        for index in [-1, 1] {
+            for (name, args) in [
+                (intrinsics::LIST_AT, vec![list(), Value::Int(index)]),
+                (
+                    intrinsics::LIST_SET_AT,
+                    vec![list(), Value::Int(index), Value::Int(2)],
+                ),
+            ] {
+                let error = interpreter.call_builtin(name, &args).expect_err("out of bounds");
+                assert!(error.message.contains("out of bounds"), "{}: {}", name, error.message);
+            }
+        }
+    }
+
+    #[test]
+    fn every_cataloged_dict_operation_has_runtime_dispatch() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn inc(n: Int) -> Int:\n    n + 1\n\nfn main() -> Int:\n    0\n",
+        )
+        .expect("parse dict runtime probe");
+        let inc = module.items.iter().find_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) if function.name == "inc" => {
+                Some(Value::Closure {
+                    function: closure_function(
+                        function.name.clone(),
+                        function.params.clone(),
+                        function.body.clone(),
+                    ),
+                    env: Box::new(Env::new()),
+                })
+            }
+            _ => None,
+        });
+        let inc = inc.expect("inc closure");
+        let mut interpreter = Interpreter::new(module);
+        let dict = || Value::dict(vec![(Value::Int(1), Value::Int(10))]);
+        let some_ten = || Value::ctor("Some", vec![Value::Int(10)]);
+        let cases = vec![
+            (intrinsics::DICT_NEW, vec![], Value::dict(Vec::new())),
+            (
+                intrinsics::DICT_INSERT,
+                vec![dict(), Value::Int(1), Value::Int(20)],
+                Value::dict(vec![(Value::Int(1), Value::Int(20))]),
+            ),
+            (
+                intrinsics::DICT_INSERT_EXTRACT,
+                vec![dict(), Value::Int(1), Value::Int(20)],
+                Value::tuple(vec![
+                    Value::dict(vec![(Value::Int(1), Value::Int(20))]),
+                    some_ten(),
+                ]),
+            ),
+            (
+                intrinsics::DICT_GET_OR,
+                vec![dict(), Value::Int(1), Value::Int(0)],
+                Value::Int(10),
+            ),
+            (
+                intrinsics::DICT_AT,
+                vec![dict(), Value::Int(1)],
+                Value::Int(10),
+            ),
+            (
+                intrinsics::DICT_CONTAINS_KEY,
+                vec![dict(), Value::Int(1)],
+                Value::Bool(true),
+            ),
+            (
+                intrinsics::DICT_REMOVE,
+                vec![dict(), Value::Int(1)],
+                Value::dict(Vec::new()),
+            ),
+            (
+                intrinsics::DICT_REMOVE_EXTRACT,
+                vec![dict(), Value::Int(1)],
+                Value::tuple(vec![Value::dict(Vec::new()), some_ten()]),
+            ),
+            (
+                intrinsics::DICT_KEYS,
+                vec![dict()],
+                Value::list(vec![Value::Int(1)]),
+            ),
+            (
+                intrinsics::DICT_VALUES,
+                vec![dict()],
+                Value::list(vec![Value::Int(10)]),
+            ),
+            (
+                intrinsics::DICT_PAIRS,
+                vec![dict()],
+                Value::list(vec![Value::tuple(vec![Value::Int(1), Value::Int(10)])]),
+            ),
+            (intrinsics::DICT_LENGTH, vec![dict()], Value::Int(1)),
+        ];
+        for (name, args, expected) in cases {
+            let result = interpreter
+                .call_builtin(name, &args)
+                .unwrap_or_else(|error| panic!("{} failed: {}", name, error.message));
+            assert_eq!(result, Some(expected), "{} runtime semantics drifted", name);
+        }
+
+        for (name, args, expected) in [
+            (
+                intrinsics::DICT_INSERT_EXTRACT,
+                vec![dict(), Value::Int(1), Value::Int(20)],
+                (
+                    some_ten(),
+                    vec![Value::dict(vec![(Value::Int(1), Value::Int(20))])],
+                ),
+            ),
+            (
+                intrinsics::DICT_REMOVE_EXTRACT,
+                vec![dict(), Value::Int(1)],
+                (some_ten(), vec![Value::dict(Vec::new())]),
+            ),
+            (
+                intrinsics::DICT_UPDATE,
+                vec![dict(), Value::Int(1), Value::Int(0), inc],
+                (
+                    Value::dict(vec![(Value::Int(1), Value::Int(11))]),
+                    Vec::new(),
+                ),
+            ),
+        ] {
+            let actual = match interpreter.call_interpreter_special(name, &args) {
+                Ok(Some(outcome)) => outcome,
+                Ok(None) => panic!("{} special dispatch fell through", name),
+                Err(_) => panic!("{} special dispatch failed", name),
+            };
+            assert_eq!(actual, expected, "{} write-back semantics drifted", name);
+        }
+    }
+
+    #[test]
+    fn mints_a_grantable_user_cap() {
+        // (RFC-0038) a `main` binding a bare grantable cap gets a sealed record
+        // minted from the `[user_caps]` grant fields, readable in its own module.
+        let src = "grantable capability UiRoot:\n    policy: String\n\nfn policy_of(u: UiRoot) -> String:\n    match u:\n        UiRoot(p) -> p\n\nfn main(console: Console, ui: UiRoot):\n    console.print(policy_of(ui))\n";
+        let module = witchy_syntax::parser::parse_module(src).unwrap();
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("policy".to_string(), "coven-web".to_string());
+        let mut grants: UserCapGrants = std::collections::BTreeMap::new();
+        grants.insert("ui".to_string(), fields);
+        let out = run_module_user_caps(module, ".", vec![], vec![], vec![], grants).unwrap();
+        assert_eq!(out, vec!["coven-web".to_string()]);
+
+        // Without the grant, minting fails loudly (an under-grant).
+        let module2 = witchy_syntax::parser::parse_module(src).unwrap();
+        let err = run_module_user_caps(module2, ".", vec![], vec![], vec![], Default::default())
+            .unwrap_err();
+        assert!(err.message.contains("UiRoot") && err.message.contains("user_caps"), "{}", err.message);
+    }
+
+    #[test]
+    fn build_step_generates_source_through_confined_caps() {
+        // A build step reads a schema (BuildRead) and writes generated source
+        // (BuildOut). Its authority is exactly the confined grants minted here.
+        let dir = std::env::temp_dir().join(format!("witchy_build_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src_root = dir.join("proj");
+        let out_dir = dir.join("out");
+        std::fs::create_dir_all(&src_root).unwrap();
+        std::fs::write(src_root.join("api.proto"), "service Foo").unwrap();
+
+        let module = witchy_syntax::parser::parse_module(
+            "fn build(out: BuildOut, schema: BuildRead):\n    out.write_out(\"api.witchy\", \"// generated from: \" + schema.read_build(\"api.proto\"))\n",
+        )
+        .expect("parse");
+        let grants = BuildGrants {
+            out_dir: out_dir.clone(),
+            read_roots: vec![src_root.clone()],
+            ..Default::default()
+        };
+        let generated = run_build_step(module, grants).expect("build step runs");
+        assert_eq!(generated, vec!["api.witchy".to_string()]);
+        let body = std::fs::read_to_string(out_dir.join("api.witchy")).unwrap();
+        assert_eq!(body, "// generated from: service Foo");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_step_cannot_escape_or_demand_ungranted_caps() {
+        let dir = std::env::temp_dir().join(format!("witchy_build_esc_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // BuildRead demanded but not granted ⇒ refused before running.
+        let m = witchy_syntax::parser::parse_module(
+            "fn build(out: BuildOut, schema: BuildRead):\n    out.write_out(\"x\", schema.read_build(\"a\"))\n",
+        )
+        .unwrap();
+        let g = BuildGrants { out_dir: dir.join("out"), ..Default::default() };
+        let err = run_build_step(m, g).expect_err("ungranted BuildRead must be refused");
+        assert!(err.message.contains("no read grant"), "{}", err.message);
+        // A confined BuildOut cannot write outside its sandbox.
+        let m2 = witchy_syntax::parser::parse_module(
+            "fn build(out: BuildOut):\n    out.write_out(\"../escape.txt\", \"nope\")\n",
+        )
+        .unwrap();
+        let g2 = BuildGrants { out_dir: dir.join("out2"), ..Default::default() };
+        let err = run_build_step(m2, g2).expect_err("a `..` write must be refused");
+        assert!(err.message.contains("escapes the Dir capability"), "{}", err.message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
+    #[test]
+    fn build_read_spans_multiple_granted_roots() {
+        // A BuildRead grant can name several confined roots; `read_build` resolves
+        // a path against the first root that holds it — and still nothing else.
+        let dir = std::env::temp_dir().join(format!("witchy_build_mr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = dir.join("a");
+        let b = dir.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("from_a.txt"), "ALPHA").unwrap();
+        std::fs::write(b.join("from_b.txt"), "BETA").unwrap();
+
+        let module = witchy_syntax::parser::parse_module(
+            "fn build(out: BuildOut, src: BuildRead):\n    out.write_out(\"g.txt\", src.read_build(\"from_a.txt\") + \"/\" + src.read_build(\"from_b.txt\"))\n",
+        )
+        .unwrap();
+        let grants = BuildGrants {
+            out_dir: dir.join("out"),
+            read_roots: vec![a.clone(), b.clone()],
+            ..Default::default()
+        };
+        run_build_step(module, grants).expect("reads across both roots");
+        assert_eq!(std::fs::read_to_string(dir.join("out/g.txt")).unwrap(), "ALPHA/BETA");
+
+        // A file in neither root is refused.
+        let m2 = witchy_syntax::parser::parse_module(
+            "fn build(out: BuildOut, src: BuildRead):\n    out.write_out(\"g.txt\", src.read_build(\"nope.txt\"))\n",
+        )
+        .unwrap();
+        let g2 = BuildGrants { out_dir: dir.join("out2"), read_roots: vec![a, b], ..Default::default() };
+        let e = run_build_step(m2, g2).expect_err("a path in no granted root must fail");
+        assert!(e.message.contains("not found in any granted read root"), "{}", e.message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_env_reads_only_named_variables() {
+        // A build step never sees the whole environment: `BuildEnv` carries an
+        // allow-list of *named* keys, and reading anything else is refused —
+        // even a variable that exists in the process env.
+        let dir = std::env::temp_dir().join(format!("witchy_build_env_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let granted = witchy_syntax::parser::parse_module(
+            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match env.get_build_env(\"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"g.txt\", v)\n",
+        )
+        .unwrap();
+        let g = BuildGrants {
+            out_dir: dir.join("out"),
+            env: [("WITCHY_BUILD_ALLOWED".to_string(), Some("yes".to_string()))].into(),
+            ..Default::default()
+        };
+        run_build_step(granted, g).expect("a named key reads fine");
+        assert_eq!(std::fs::read_to_string(dir.join("out/g.txt")).unwrap(), "yes");
+
+        // The same grant cannot read a key it didn't name.
+        let denied = witchy_syntax::parser::parse_module(
+            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match env.get_build_env(\"WITCHY_BUILD_SECRET\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"g.txt\", v)\n",
+        )
+        .unwrap();
+        let g2 = BuildGrants {
+            out_dir: dir.join("out2"),
+            env: [("WITCHY_BUILD_ALLOWED".to_string(), Some("yes".to_string()))].into(),
+            ..Default::default()
+        };
+        let err = run_build_step(denied, g2).expect_err("an unlisted key must be refused");
+        assert!(err.message.contains("not in this BuildEnv grant's allow-list"), "{}", err.message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_net_fetches_only_allow_listed_hosts() {
+        // A local one-shot HTTP listener stands in for "the network": the build
+        // step may fetch from it only because the grant allow-lists exactly that
+        // host:port; any other destination is refused before a packet moves.
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf);
+            let body = "schema-v1";
+            let _ = sock.write_all(
+                format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}", body.len())
+                    .as_bytes(),
+            );
+        });
+
+        let dir = std::env::temp_dir().join(format!("witchy_build_net_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let module = witchy_syntax::parser::parse_module(
+            &format!(
+                "fn build(out: BuildOut, dl: BuildNet):\n    out.write_out(\"got.txt\", dl.fetch_build(\"{addr}\", \"/schema\"))\n"
+            ),
+        )
+        .unwrap();
+        let grants = BuildGrants {
+            out_dir: dir.join("out"),
+            net_hosts: vec![addr.clone()],
+            ..Default::default()
+        };
+        run_build_step(module, grants).expect("allow-listed fetch runs");
+        assert_eq!(std::fs::read_to_string(dir.join("out/got.txt")).unwrap(), "schema-v1");
+        server.join().unwrap();
+
+        // A host NOT on the allow-list is refused — even one that exists.
+        let m2 = witchy_syntax::parser::parse_module(
+            &format!(
+                "fn build(out: BuildOut, dl: BuildNet):\n    out.write_out(\"x\", dl.fetch_build(\"{addr}\", \"/\"))\n"
+            ),
+        )
+        .unwrap();
+        let g2 = BuildGrants {
+            out_dir: dir.join("out2"),
+            net_hosts: vec!["allowed.example:80".to_string()],
+            ..Default::default()
+        };
+        let e = run_build_step(m2, g2).expect_err("an un-allow-listed host must be refused");
+        assert!(e.message.contains("not in this BuildNet grant's allow-list"), "{}", e.message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_exec_runs_only_allow_listed_tools() {
+        // `cat` echoes its stdin, so the generated file is exactly the input —
+        // deterministic. The grant allow-lists `cat`; anything else is refused.
+        let dir = std::env::temp_dir().join(format!("witchy_build_exec_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let module = witchy_syntax::parser::parse_module(
+            "fn build(out: BuildOut, cc: BuildExec):\n    out.write_out(\"x.txt\", cc.run_tool(\"cat\", \"piped-input\"))\n",
+        )
+        .unwrap();
+        let grants = BuildGrants {
+            out_dir: dir.join("out"),
+            exec_tools: vec!["cat".to_string()],
+            ..Default::default()
+        };
+        let generated = run_build_step(module, grants).expect("cat is allow-listed");
+        assert_eq!(generated, vec!["x.txt".to_string()]);
+        assert_eq!(std::fs::read_to_string(dir.join("out/x.txt")).unwrap(), "piped-input");
+
+        // A tool NOT on the allow-list is refused before it runs.
+        let m2 = witchy_syntax::parser::parse_module(
+            "fn build(out: BuildOut, cc: BuildExec):\n    out.write_out(\"x.txt\", cc.run_tool(\"rm\", \"-rf /\"))\n",
+        )
+        .unwrap();
+        let g2 = BuildGrants {
+            out_dir: dir.join("out2"),
+            exec_tools: vec!["cat".to_string()],
+            ..Default::default()
+        };
+        let err = run_build_step(m2, g2).expect_err("an un-allow-listed tool must be refused");
+        assert!(err.message.contains("not in this BuildExec grant's allow-list"), "{}", err.message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dir_capability_rejects_path_traversal() {
+        // A Dir capability is confined to its subtree. `resolve` must reject any
+        // path that would escape it, so a holder (e.g. an untrusted library
+        // handed a narrow Dir) can read within the subtree but never above it.
+        let base = witchy_runtime::confine::ConfinedDir::open_ambient(
+            std::path::Path::new("."),
+        )
+        .unwrap();
+        // Positive control: a path inside the subtree resolves (Cargo.toml is at
+        // the crate root, the CWD for tests).
+        assert!(base.file("Cargo.toml", true).is_ok());
+        // `..` is rejected lexically, before any filesystem access.
+        assert!(base.file("../secret", true).is_err());
+        assert!(base.file("src/../../etc/passwd", true).is_err());
+        // Absolute paths are rejected: the capability is a subtree, not root.
+        assert!(base.file("/etc/passwd", true).is_err());
+    }
+
+    #[test]
+    fn reports_unknown_function() {
+        let e = run(r#"
+fn main():
+    nope()
+"#).unwrap_err();
+        assert!(e.message.contains("unknown function"));
+    }
+
+    /// The capability thesis at the language level: a function that was never
+    /// handed the Console capability cannot print, even though `print` exists.
+    #[test]
+    fn function_without_capability_cannot_print() {
+        let src = r#"
+fn leak(secret: String) -> Nil:
+    print(secret)
+
+fn main(console: Console):
+    leak("password")
+"#;
+        let e = run(src).unwrap_err();
+        assert!(
+            e.message.contains("method-only") && e.message.contains("console.print"),
+            "expected a capability-method error, got: {}",
+            e.message
+        );
+    }
+
+    /// Holding the capability, the same effect succeeds — capabilities
+    /// propagate by being passed explicitly.
+    #[test]
+    fn capability_can_be_threaded_to_a_helper() {
+        let src = r#"
+fn announce(console: Console, who: String) -> Nil:
+    console.print(("hello, " + who))
+
+fn main(console: Console):
+    announce(console, "witchy")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["hello, witchy"]);
+    }
+
+    #[test]
+    fn dir_capability_reads_attenuates_and_confines() {
+        let root = std::env::temp_dir().join(format!("witchy_fs_{}", std::process::id()));
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/hi.txt"), "hi!").unwrap();
+
+        // Attenuate to a subdir and read a file within it.
+        let ok = r#"
+fn main(console: Console, root: Dir):
+    let d = root.subtree("sub")
+    console.print(d.read("hi.txt"))
+"#;
+        assert_eq!(run_in(ok, &root).unwrap(), vec!["hi!"]);
+
+        // Confinement: `..` cannot escape the granted subtree.
+        let escape = r#"
+fn main(console: Console, root: Dir):
+    console.print(root.read("../secret"))
+"#;
+        assert!(run_in(escape, &root).is_err());
+
+        // A function with no Dir cannot read (no way to obtain the capability).
+        let no_cap = r#"
+fn sneaky() -> String:
+    root.read("sub/hi.txt")
+
+fn main(console: Console, root: Dir):
+    console.print(sneaky())
+"#;
+        assert!(run_in(no_cap, &root).is_err());
+
+        // Confinement holds against symlinks: a link inside the subtree pointing
+        // outside it must not be followable.
+        #[cfg(unix)]
+        {
+            let outside = std::env::temp_dir().join(format!("witchy_outside_{}", std::process::id()));
+            std::fs::write(&outside, "secret").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("sub/escape")).ok();
+            let via_symlink = r#"
+fn main(console: Console, root: Dir):
+    let d = root.subtree("sub")
+    console.print(d.read("escape"))
+"#;
+            assert!(run_in(via_symlink, &root).is_err());
+            std::fs::remove_file(&outside).ok();
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dir_list_rejects_non_utf8_names() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "witchy_nonutf8_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("normal.txt"), "ok").unwrap();
+        let bad = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![
+            0xbd, 0xb2, b'=', 0xbc,
+        ]));
+        if std::fs::write(root.join(bad), "hidden").is_err() {
+            // Some Unix filesystems (notably macOS APFS/HFS configurations)
+            // reject non-UTF-8 names at creation time; the runtime bug is only
+            // observable where the host filesystem can contain such an entry.
+            std::fs::remove_dir_all(&root).ok();
+            return;
+        }
+
+        let src = r#"
+fn main(console: Console, root: Dir):
+    let names = root.list()
+    console.print("${list.length(names)}")
+"#;
+        let err = run_in(src, &root).expect_err("non-UTF-8 names must be loud");
+        assert!(
+            err.message.contains("not valid UTF-8"),
+            "unexpected error: {}",
+            err.message
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn net_capability_connects_attenuates_and_denies() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        // One-shot loopback echo server.
+        let server = std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut r = BufReader::new(stream);
+                let mut line = String::new();
+                let _ = r.read_line(&mut line);
+                let _ = r.get_mut().write_all(line.as_bytes());
+            }
+        });
+
+        // Attenuate to the one held address, connect, send, receive the echo.
+        let (host, port) = addr.rsplit_once(':').expect("addr is host:port");
+        let ok = format!(
+            r#"
+fn main(console: Console, net: Net):
+    let only = net.only(Net.tcp("{host}", {port}))
+    let s = only.connect("{addr}")
+    s.send_line("ping")
+    console.print(s.recv_line())
+"#
+        );
+        // Link in the bundled std (`policy` is preluded), then run.
+        let linked_ok = crate::pipeline::link(
+            vec![("main".to_string(), witchy_syntax::parser::parse_module(&ok).expect("parse"))],
+            "main",
+        )
+        .expect("link");
+        assert_eq!(run_module(linked_ok, ".", vec![addr.clone()]).unwrap(), vec!["ping"]);
+        server.join().ok();
+
+        // Denied: connecting to an address not in the allow-list.
+        let denied = r#"
+fn main(console: Console, net: Net):
+    let s = net.connect("10.255.255.1:80")
+    s.send_line("x")
+"#;
+        assert!(run_with(denied, ".", vec![addr.clone()]).is_err());
+
+        // Denied: cannot attenuate to an address not already held.
+        let bad_restrict = r#"
+fn main(console: Console, net: Net):
+    let bad = net.only(Net.tcp("10.255.255.1", 80))
+    console.print("unreachable")
+"#;
+        let linked_bad = crate::pipeline::link(
+            vec![("main".to_string(), witchy_syntax::parser::parse_module(bad_restrict).expect("parse"))],
+            "main",
+        )
+        .expect("link");
+        assert!(run_module(linked_bad, ".", vec![addr]).is_err());
+    }
+
+    #[test]
+    fn net_server_listen_accept_roundtrip() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        // A free port to hand the witchy server (bind+drop to discover it).
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let src = format!(
+            r#"
+fn main(console: Console, net: Net):
+    let server = net.listen("{addr}")
+    let sock = server.accept()
+    let line = sock.recv_line()
+    console.print(line)
+    sock.send_bytes("HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello witchy")
+    sock.close()
+"#
+        );
+        let allow = vec![addr.clone()];
+        let server = std::thread::spawn(move || run_with(&src, ".", allow));
+
+        // Connect once the server has bound (retry through the bind race).
+        let mut stream = connect_loopback(&addr);
+        stream.write_all(b"GET /hi HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("200 OK"), "resp: {resp}");
+        assert!(resp.ends_with("hello witchy"), "resp: {resp}");
+
+        let out = server.join().unwrap().unwrap();
+        assert_eq!(out, vec!["GET /hi HTTP/1.1\r"]);
+    }
+
+    #[test]
+    fn recv_bytes_does_not_preallocate_attacker_count() {
+        // (BUG-065) `sock.recv_bytes(n)` must NOT pre-allocate `n` bytes up front —
+        // `n` is an attacker-controlled count (an HTTP Content-Length up to i64::MAX),
+        // so `vec![0u8; n]` before reading a single byte is a remote OOM. The fix reads
+        // in bounded chunks: a huge `n` against a peer that sends only a few bytes then
+        // closes returns exactly the bytes received, without allocating the claimed
+        // count. (The compiled backend already reads chunked — parity.)
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.write_all(b"hi");
+                // dropping `stream` closes the connection => EOF for the reader.
+            }
+        });
+
+        let (host, port) = addr.rsplit_once(':').expect("addr is host:port");
+        // Claim ~2 billion bytes but the peer sends 2 then closes.
+        let src = format!(
+            r#"
+fn main(console: Console, net: Net):
+    let only = net.only(Net.tcp("{host}", {port}))
+    let s = only.connect("{addr}")
+    console.print(s.recv_bytes(2000000000))
+"#
+        );
+        let linked = crate::pipeline::link(
+            vec![("main".to_string(), witchy_syntax::parser::parse_module(&src).expect("parse"))],
+            "main",
+        )
+        .expect("link");
+        assert_eq!(run_module(linked, ".", vec![addr.clone()]).unwrap(), vec!["hi"]);
+        server.join().ok();
+    }
+
+    #[test]
+    fn serve_loopback_roundtrip() {
+        let addr = loopback_addr();
+        let src = format!(
+            r#"
+import http
+import server
+from http import Request, Response
+fn main(console: Console, net: Net):
+    let app = server.router()
+        .get("/", fn(req: Request): server.text(200, "home"))
+        .get("/users/:id", fn(req: Request): server.text(200, "user " + server.param_or(req, "id", "")))
+        .post("/echo", fn(req: Request): server.text(201, server.request_body(req)))
+    server.serve_n(net, "{addr}", app, 3)
+"#
+        );
+        let server = spawn_loopback_program(src, ".", &addr);
+        let r1 = http_request(&addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r1.contains("200 OK") && r1.ends_with("home"), "r1: {r1}");
+        let r2 = http_request(&addr, "GET /users/42 HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r2.ends_with("user 42"), "r2: {r2}");
+        let r3 = http_request(
+            &addr,
+            "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello",
+        );
+        assert!(r3.contains("201 ") && r3.ends_with("hello"), "r3: {r3}");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn http_client_builder_loopback() {
+        // The reqwest-style client builder (get_request().with_header(...).send(fetch))
+        // against a raw TCP server: it sends the method/path/header and parses
+        // the response status and body.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let srv = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                let n = sock.read(&mut tmp).unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nhello!!")
+                .unwrap();
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+
+        let src = format!(
+            r#"
+import http
+fn main(console: Console, net: Net):
+    let req = http.get_request("http://{addr}/path")
+        .with_header("X-Test", "abc")
+        .with_query("q", "hi")
+    match req.send(net.fetch("http://{addr}")):
+        Ok(resp) ->
+            console.print("${{http.status(resp)}}")
+            console.print(http.body(resp))
+            console.print("${{http.is_success(resp)}}")
+        Err(e) -> console.print("err: " + http.http_error_message(e))
+"#
+        );
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
+        let linked =
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let out = run_module(linked, ".", vec![addr.clone()]).expect("run");
+        assert_eq!(out, vec!["200", "hello!!", "true"]);
+        let req = srv.join().unwrap();
+        assert!(req.contains("GET /path?q=hi HTTP/1.1"), "req: {req}");
+        assert!(req.contains("X-Test: abc"), "req: {req}");
+    }
+
+    #[test]
+    fn serve_status_constructors_roundtrip() {
+        // The status-named response constructors (created/bad_request/
+        // unauthorized/no_content) render the right status line and reason.
+        let addr = loopback_addr();
+        let src = format!(
+            r#"
+import http
+import server
+from http import Request, Response
+fn main(console: Console, net: Net):
+    let app = server.router().post("/make", fn(req: Request): server.created("made")).get("/bad", fn(req: Request): server.bad_request("nope")).get("/secret", fn(req: Request): server.unauthorized("auth")).delete("/item", fn(req: Request): server.no_content())
+    server.serve_n(net, "{addr}", app, 4)
+"#
+        );
+        let server = spawn_loopback_program(src, ".", &addr);
+        let r1 = http_request(&addr, "POST /make HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+        assert!(r1.contains("201 Created") && r1.ends_with("made"), "r1: {r1}");
+        let r2 = http_request(&addr, "GET /bad HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r2.contains("400 Bad Request") && r2.ends_with("nope"), "r2: {r2}");
+        let r3 = http_request(&addr, "GET /secret HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r3.contains("401 Unauthorized") && r3.ends_with("auth"), "r3: {r3}");
+        let r4 = http_request(&addr, "DELETE /item HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r4.contains("204 No Content"), "r4: {r4}");
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn serve_method_not_allowed_vs_not_found() {
+        // A known path with the wrong method is a 405; an unknown path is a 404.
+        let addr = loopback_addr();
+        let src = format!(
+            r#"
+import http
+import server
+from http import Request, Response
+fn main(console: Console, net: Net):
+    let app = server.router().post("/items", fn(req: Request): server.created("ok"))
+    server.serve_n(net, "{addr}", app, 3)
+"#
+        );
+        let server = spawn_loopback_program(src, ".", &addr);
+        let ok = http_request(&addr, "POST /items HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+        assert!(ok.contains("201 Created"), "ok: {ok}");
+        let wrong = http_request(&addr, "GET /items HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(wrong.contains("405 Method Not Allowed"), "wrong: {wrong}");
+        let missing = http_request(&addr, "GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(missing.contains("404 Not Found"), "missing: {missing}");
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn serve_var_receiver_method_resolution() {
+        // Method calls on a variable receiver (`var app = router(); app = app.get(...)`)
+        // resolve the overloaded `get`/`post` by the tracked variable type (Router),
+        // even though http/server/json all export `get`.
+        let addr = loopback_addr();
+        let src = format!(
+            r#"
+import http
+import server
+import json
+from http import Request, Response
+fn main(console: Console, net: Net):
+    var app = server.router()
+    app = app.get("/", fn(req: Request): server.ok("home"))
+    app = app.post("/items", fn(req: Request): server.created("made"))
+    server.serve_n(net, "{addr}", app, 2)
+"#
+        );
+        let server = spawn_loopback_program(src, ".", &addr);
+        let g = http_request(&addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(g.contains("200 OK") && g.ends_with("home"), "g: {g}");
+        let p = http_request(&addr, "POST /items HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+        assert!(p.contains("201 Created") && p.ends_with("made"), "p: {p}");
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn serve_any_method_route_roundtrip() {
+        // An `any` route answers every verb (the `*` wildcard method).
+        let addr = loopback_addr();
+        let src = format!(
+            r#"
+import http
+import server
+from http import Request, Response
+fn main(console: Console, net: Net):
+    let app = server.router().any("/ping", fn(req: Request): server.ok(server.method(req)))
+    server.serve_n(net, "{addr}", app, 2)
+"#
+        );
+        let server = spawn_loopback_program(src, ".", &addr);
+        let g = http_request(&addr, "GET /ping HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(g.contains("200 OK") && g.ends_with("GET"), "g: {g}");
+        let d = http_request(&addr, "DELETE /ping HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(d.contains("200 OK") && d.ends_with("DELETE"), "d: {d}");
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn serve_middleware_nest_and_notfound_roundtrip() {
+        let addr = loopback_addr();
+        let src = format!(
+            r#"
+import http
+import server
+from http import Request, Response
+
+// A tower-style Layer that tags every response with a header.
+fn tagger(next: fn(Request) -> Response) -> fn(Request) -> Response:
+    fn(req: Request): tag(next(req))
+
+fn tag(resp: Response) -> Response:
+    server.with_header(resp, "x-by", "witchy")
+
+fn main(console: Console, net: Net):
+    let api = server.router().get("/ping", fn(req: Request): server.text(200, "pong"))
+    let app = server.router().get("/", fn(req: Request): server.text(200, "root")).nest("/api", api).layer(tagger)
+    server.serve_n(net, "{addr}", app, 3)
+"#
+        );
+        let server = spawn_loopback_program(src, ".", &addr);
+        // Middleware tagged the response; root handler ran.
+        let r1 = http_request(&addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r1.contains("x-by: witchy") && r1.ends_with("root"), "r1: {r1}");
+        // Nested route under /api.
+        let r2 = http_request(&addr, "GET /api/ping HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r2.ends_with("pong"), "r2: {r2}");
+        // Unknown path -> 404 (still tagged by the layer).
+        let r3 = http_request(&addr, "GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r3.contains("404 ") && r3.contains("x-by: witchy"), "r3: {r3}");
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn serve_json_handler_roundtrip() {
+        let addr = loopback_addr();
+        let src = format!(
+            r#"
+import http
+import server
+import json
+from http import Request, Response
+from json import Json
+fn greet(req: Request) -> Response:
+    server.json_value(200, JsonObject([("hello", JsonString(server.param_or(req, "name", "")))]))
+fn main(console: Console, net: Net):
+    let app = server.router().get("/hello/:name", greet)
+    server.serve_n(net, "{addr}", app, 1)
+"#
+        );
+        let server = spawn_loopback_program(src, ".", &addr);
+        let resp = http_request(&addr, "GET /hello/witchy HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(resp.contains("application/json"), "resp: {resp}");
+        assert!(resp.contains("\"hello\"") && resp.contains("\"witchy\""), "resp: {resp}");
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn serve_json_body_decode_roundtrip() {
+        let addr = loopback_addr();
+        let src = format!(
+            r#"
+import http
+import server
+import json
+import option
+from http import Request, Response
+from json import Json
+fn name_of(doc: Json) -> String:
+    match json.get(doc, "name"):
+        Some(v) -> option.unwrap_or(json.as_string(v), "?")
+        None -> "?"
+fn echo_name(req: Request) -> Response:
+    match server.json_body_string(req):
+        Ok(doc) -> server.text(200, name_of(doc))
+        Err(e) -> server.text(400, e)
+fn main(console: Console, net: Net):
+    let app = server.router().post("/", echo_name)
+    server.serve_n(net, "{addr}", app, 1)
+"#
+        );
+        let server = spawn_loopback_program(src, ".", &addr);
+        let body = "{\"name\":\"witchy\"}";
+        let req = format!(
+            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let resp = http_request(&addr, &req);
+        assert!(resp.contains("200 OK") && resp.ends_with("witchy"), "resp: {resp}");
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn serve_form_field_roundtrip() {
+        let addr = loopback_addr();
+        let src = format!(
+            r#"
+import http
+import server
+from http import Request, Response
+fn main(console: Console, net: Net):
+    let app = server.router().post("/", fn(req: Request): server.text(200, server.form_field_or(req, "name", "")))
+    server.serve_n(net, "{addr}", app, 1)
+"#
+        );
+        let server = spawn_loopback_program(src, ".", &addr);
+        let body = "name=witchy&lang=rust";
+        let req = format!(
+            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let resp = http_request(&addr, &req);
+        assert!(resp.contains("200 OK") && resp.ends_with("witchy"), "resp: {resp}");
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn serve_static_files_roundtrip() {
+        let addr = loopback_addr();
+        // The handler captures a Dir rooted at examples/data and serves from it.
+        let src = format!(
+            r#"
+import http
+import server
+from http import Request, Response
+fn file_server(dir: Dir) -> fn(Request) -> Response:
+    fn(req: Request): serve_file(dir, server.param_or(req, "path", ""))
+fn serve_file(dir: Dir, p: String) -> Response:
+    if dir.exists(p):
+        server.text(200, dir.read(p))
+    else:
+        server.not_found()
+fn main(console: Console, net: Net, root: Dir):
+    let examples = root.subtree("examples")
+    let data = examples.subtree("data")
+    let app = server.router().get("/files/*path", file_server(data))
+    server.serve_n(net, "{addr}", app, 2)
+"#
+        );
+        let server = spawn_loopback_program(
+            src,
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
+            &addr,
+        );
+        let r1 = http_request(&addr, "GET /files/greeting.txt HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r1.contains("200 OK") && r1.contains("sandboxed Dir"), "r1: {r1}");
+        let r2 = http_request(&addr, "GET /files/nope.txt HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r2.contains("404 "), "r2: {r2}");
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn handlers_cannot_reach_the_network() {
+        // The capability guarantee: a pure handler has no Net, so even trying to
+        // open a socket is a compile-time (type) error — it can't be written.
+        let src = r#"
+import server
+from http import Request, Response
+fn evil(req: Request) -> Response:
+    let s = net.connect("10.0.0.1:80")
+    server.text(200, "leaked")
+fn main(console: Console, net: Net):
+    let app = server.router().get("/", evil)
+    server.serve_n(net, "127.0.0.1:0", app, 0)
+"#;
+        let parsed = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        // Type-check the linked program: `connect` needs a Net the handler lacks.
+        assert!(witchy_types::typeck::check(&linked).is_err());
+    }
+
+    #[test]
+    fn nonexhaustive_match_diagnostic_renders_home_type_bare() {
+        // BUG-292: a home-module type/variant renders bare (the spelling the reader
+        // wrote) in a non-exhaustive-match diagnostic — never the `prog.Color`
+        // file-stem qualifier — and the missing-variant list is backticked.
+        let src = r#"
+type Color:
+    Red
+    Blue
+
+fn pick(c: Color) -> Int:
+    match c:
+        Red -> 1
+
+fn main(console: Console):
+    console.print("${pick(Red)}")
+"#;
+        let parsed = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked =
+            crate::pipeline::link(vec![("prog".to_string(), parsed)], "prog").expect("link");
+        let err = witchy_types::typeck::check(&linked).expect_err("non-exhaustive match");
+        assert!(err.message.contains("non-exhaustive match on `Color`"), "{}", err.message);
+        assert!(err.message.contains("missing `Blue`"), "{}", err.message);
+        assert!(
+            !err.message.contains("prog.Color") && !err.message.contains("prog.Blue"),
+            "home-module file stem leaked: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn modules_qualified_calls() {
+        let strutil = r#"
+pub fn shout(name: String) -> String:
+    ("HELLO, " + name)
+"#;
+        let app = r#"
+import strutil
+
+fn main(console: Console):
+    console.print(strutil.shout("witchy"))
+"#;
+        assert_eq!(
+            run_program(&[("strutil", strutil), ("app", app)], "app").unwrap(),
+            vec!["HELLO, witchy"]
+        );
+    }
+
+    #[test]
+    fn run_program_rejects_reserved_std_module_replacement() {
+        let fake_show = "pub fn render(n: Int) -> String:\n    \"fake\"\n";
+        let app = "import show\n\nfn main(console: Console):\n    console.print(show.render(1))\n";
+        let err = run_program(&[("show", fake_show), ("app", app)], "app").unwrap_err();
+        assert!(
+            err.message.contains("module `show` uses a reserved standard-library name"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn library_uses_only_passed_capabilities() {
+        // The app chooses to hand the logger its Console.
+        let logger = r#"
+pub fn log(console: Console, msg: String):
+    console.print(("[log] " + msg))
+"#;
+        let app = r#"
+import logger
+
+fn main(console: Console):
+    logger.log(console, "hi")
+"#;
+        assert_eq!(
+            run_program(&[("logger", logger), ("app", app)], "app").unwrap(),
+            vec!["[log] hi"]
+        );
+    }
+
+    #[test]
+    fn library_cannot_fabricate_a_capability() {
+        // `steal` references `console` it was never given — caught at compile
+        // time as an unbound variable (no ambient authority to grab).
+        let evil = r#"
+pub fn steal(secret: String) -> String:
+    console.print(secret)
+"#;
+        let app = r#"
+import evil
+
+fn main(console: Console):
+    console.print(evil.steal("data"))
+"#;
+        let linked = crate::pipeline::link(
+            vec![
+                ("evil".into(), parse_module(evil).unwrap()),
+                ("app".into(), parse_module(app).unwrap()),
+            ],
+            "app",
+        )
+        .unwrap();
+        assert!(witchy_types::typeck::check(&linked).is_err());
+    }
+
+    #[test]
+    fn calling_unimported_module_is_a_link_error() {
+        let app = r#"
+fn main(console: Console):
+    console.print(other.foo())
+"#;
+        assert!(run_program(&[("app", app)], "app").is_err());
+    }
+
+    /// Run a no-parameter `main` with a small step ceiling, so an infinite loop
+    /// is caught quickly instead of hanging the test.
+    fn run_capped(src: &str, limit: u64) -> Result<Vec<String>, RuntimeError> {
+        let module = parse_module(src).map_err(|e| RuntimeError { message: e.to_string() })?;
+        let mut interp = Interpreter::new(module);
+        interp.step_limit = limit;
+        interp.call("main", vec![])?;
+        Ok(interp.output)
+    }
+
+    #[test]
+    fn deep_self_tail_recursion_uses_constant_stack() {
+        let src = r#"
+fn rec(n: Int) -> Int:
+    if (n == 0):
+        0
+    else:
+        rec((n - 1))
+
+fn main(console: Console):
+    console.print("${rec(5000000)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["0"]);
+    }
+
+    #[test]
+    fn deep_mutual_tail_recursion_uses_constant_stack() {
+        let src = r#"
+fn even(n: Int) -> Bool:
+    if n == 0:
+        true
+    else:
+        odd(n - 1)
+
+fn odd(n: Int) -> Bool:
+    if n == 0:
+        false
+    else:
+        even(n - 1)
+
+fn main(console: Console):
+    console.print("${even(250000)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["true"]);
+    }
+
+    #[test]
+    fn mutual_tail_edges_stage_arguments_and_honor_explicit_return() {
+        let src = r#"
+fn left(n: Int, a: Int, b: Int) -> Int:
+    if n == 0:
+        return a * 10 + b
+    return right(n - 1, b, a)
+
+fn right(n: Int, a: Int, b: Int) -> Int:
+    if n == 0:
+        return a * 10 + b
+    return left(n - 1, b, a)
+
+fn main(console: Console):
+    console.print("${left(1001, 2, 7)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["72"]);
+    }
+
+    #[test]
+    fn non_tail_recursion_still_reports_the_depth_guard() {
+        let src = r#"
+fn rec(n: Int) -> Int:
+    if (n == 0):
+        0
+    else:
+        (1 + rec((n - 1)))
+
+fn main(console: Console):
+    console.print("${rec(5000000)}")
+"#;
+        let error = run(src).unwrap_err();
+        assert!(error.message.contains("too deep"), "got: {}", error.message);
+    }
+
+    #[test]
+    fn self_tail_arguments_rebind_simultaneously() {
+        let src = r#"
+fn swap_down(n: Int, a: Int, b: Int) -> Int:
+    if (n == 0):
+        ((a * 10) + b)
+    else:
+        swap_down((n - 1), b, a)
+
+fn main(console: Console):
+    console.print("${swap_down(1000001, 2, 7)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["72"]);
+    }
+
+    #[test]
+    fn nested_explicit_return_is_a_tail_position() {
+        let src = r#"
+fn down(n: Int) -> Int:
+    if (n > 0):
+        return down((n - 1))
+    9
+
+fn main(console: Console):
+    console.print("${down(5000000)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["9"]);
+    }
+
+    #[test]
+    fn self_tail_calls_still_consume_the_evaluation_budget() {
+        let src = r#"
+fn forever(n: Int) -> Int:
+    forever((n + 1))
+
+fn main():
+    forever(0)
+"#;
+        let error = run_capped(src, 100).unwrap_err();
+        assert!(error.message.contains("step budget"), "got: {}", error.message);
+    }
+
+    #[test]
+    fn local_closure_shadowing_function_name_is_not_self_recursion() {
+        let src = r#"
+fn apply_once(n: Int) -> Int:
+    let apply_once = fn(x: Int): (x + 1)
+    apply_once(n)
+
+fn main(console: Console):
+    console.print("${apply_once(41)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["42"]);
+    }
+
+    #[test]
+    fn indirect_closure_cycle_uses_one_callable_boundary() {
+        let src = r#"
+type Bounce:
+    Bounce(fn(Bounce, Int) -> Int)
+
+fn drive(bounce: Bounce, n: Int) -> Int:
+    match bounce:
+        Bounce(f) -> f(bounce, n)
+
+fn step(bounce: Bounce, n: Int) -> Int:
+    if n == 0:
+        5000000007
+    else:
+        drive(bounce, n - 1)
+
+fn main(console: Console):
+    let bounce = Bounce(step)
+    console.print("${drive(bounce, 250000)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["5000000007"]);
+    }
+
+    #[test]
+    fn integer_overflow_wraps_like_the_wasm_backend() {
+        // Multiplication that overflows i64 WRAPS (two's complement), identical to
+        // the WASM backend's `i64.mul`, never panicking the host.
+        let src = r#"
+fn main(console: Console):
+    let big = 9999999999
+    console.print("${(big * big)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["7766279611452241921"]);
+    }
+
+    #[test]
+    fn negating_int_min_wraps_not_panics() {
+        // -(i64::MIN) wraps back to i64::MIN (matching the WASM backend), never a
+        // host panic.
+        let src = r#"
+fn main(console: Console):
+    let lo = ((0 - 9223372036854775807) - 1)
+    console.print("${(-lo)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["-9223372036854775808"]);
+    }
+
+    #[test]
+    fn runtime_errors_report_their_source_line() {
+        // Division by zero happens on the third line.
+        let src = "fn main(console: Console):\n    let a = 1\n    console.print(\"${a / 0}\")\n";
+        let e = run(src).unwrap_err();
+        assert!(e.message.contains("line 3"), "got: {}", e.message);
+    }
+
+    #[test]
+    fn runtime_errors_name_the_innermost_function() {
+        // The error must be attributed to `risky`, not the caller `main`.
+        let src = r#"
+fn risky(n: Int) -> Int:
+    (n / 0)
+
+fn main(console: Console):
+    console.print("${risky(5)}")
+"#;
+        let e = run(src).unwrap_err();
+        assert!(e.message.contains("risky"), "got: {}", e.message);
+    }
+
+    #[test]
+    fn assertion_failures_report_the_user_call_site_not_stdlib() {
+        // Regression (M6): a failed `std/testing` assertion used to report the
+        // `fail` line buried inside std/testing (always the same line, for every
+        // failure). It must instead point at the user's call site — and at the
+        // call STATEMENT's line even when an argument is a nested call that moves
+        // the line cursor (`helper(1)` here is on line 3, the assertion on line 5).
+        let src = "import testing\nfn helper(n: Int) -> Int:\n    n + 1\nfn main(console: Console):\n    testing.assert_int_eq(helper(1), 5)\n";
+        let parsed = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked =
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let e = run_module(linked, ".", vec![]).unwrap_err();
+        assert!(e.message.contains("`main`, line 5"), "got: {}", e.message);
+        assert!(!e.message.contains("testing."), "should not name the stdlib frame: {}", e.message);
+        assert!(e.message.contains("got 2, want 5"), "got: {}", e.message);
+    }
+
+    #[test]
+    fn runaway_loop_is_bounded_not_hung() {
+        let src = r#"
+fn main() -> Int:
+    var i = 0
+    while true:
+        i = (i + 1)
+    i
+"#;
+        let e = run_capped(src, 100_000).unwrap_err();
+        assert!(e.message.contains("step budget"), "got: {}", e.message);
+    }
+
+    #[test]
+    fn normal_program_runs_within_budget() {
+        // A finite loop well under the ceiling completes normally.
+        let src = r#"
+fn main() -> Int:
+    var sum = 0
+    var i = 0
+    while (i < 1000):
+        sum = (sum + i)
+        i = (i + 1)
+    sum
+"#;
+        assert!(run_capped(src, 100_000).is_ok());
+    }
+
+    #[test]
+    fn let_bindings_are_immutable() {
+        let src = r#"
+fn main(console: Console):
+    let x = 1
+    x = 2
+"#;
+        let e = run(src).unwrap_err();
+        assert!(e.message.contains("immutable"), "got: {}", e.message);
+    }
+
+    #[test]
+    fn var_requires_a_mutable_variable() {
+        let src = r#"
+fn bump(var n: Int):
+    n = (n + 1)
+
+fn main(console: Console):
+    let x = 41
+    bump(x)
+"#;
+        let e = run(src).unwrap_err();
+        assert!(
+            e.message.contains("var") || e.message.contains("immutable"),
+            "got: {}",
+            e.message
+        );
+    }
+
+    // --- Drift guard for the `eval_call` builtin fast path -------------------
+    //
+    // `eval_call` (and the tail-call site) skip both `call_builtin` and
+    // `call_interpreter_special` whenever `is_interpreter_builtin(name)` is
+    // false — the win is not re-scanning the intrinsic table on every plain
+    // user-function call. Correctness requires the predicate to be a SUPERSET
+    // of the names those two functions can dispatch: if a builtin name is not
+    // covered, the fast path skips it and the call falls through to "unknown
+    // function". This test scans the two functions' source for their
+    // dispatch-position string literals and asserts every one is covered.
+    //
+    // Coverage of the intrinsic table and cap-ops is by construction (the
+    // predicate calls `intrinsics::lookup` / `cap_ops::is_op_name`). The only
+    // drift-prone arms are hand-written string literals — which this catches.
+    // NOTE: a `name == intrinsics::SOME_CONST` arm is covered only if that
+    // const is a real cataloged intrinsic; adding a const arm for a name that
+    // is NOT in the table would need a matching `matches!` entry (and this
+    // test can't see the const's value to check it).
+
+    fn scan_fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let start = src.find(sig).unwrap_or_else(|| panic!("missing `{sig}` in interpreter source"));
+        let tail = &src[start + sig.len()..];
+        // End at the method's own closing brace — the first `}` at exactly the
+        // 4-space impl-method indent. Robust to the callee's visibility keyword
+        // (the old "next `\n    fn `" heuristic missed `pub(super) fn` neighbors)
+        // and to brace-bearing string literals inside the body (those are never
+        // at a 4-space line start).
+        let end = tail.find("\n    }").map(|i| i + "\n    }".len()).unwrap_or(tail.len());
+        &tail[..end]
+    }
+
+    fn is_name_shaped(s: &str) -> bool {
+        let mut chars = s.chars();
+        match chars.next() {
+            Some(c) if c.is_ascii_lowercase() || c == '_' => {}
+            _ => return false,
+        }
+        s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
+    }
+
+    /// Name-shaped string literals in dispatch position: `name == "x"`, an
+    /// `"x" =>` match arm, or an `"x" |` / `| "x"` arm alternative.
+    fn dispatch_literals(body: &str) -> Vec<String> {
+        let bytes = body.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] != b'"' {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'"' {
+                // A backslash escape means this is not a bare name literal.
+                if bytes[j] == b'\\' {
+                    j += 2;
+                    continue;
+                }
+                j += 1;
+            }
+            if j >= bytes.len() {
+                break;
+            }
+            let lit = &body[i + 1..j];
+            if is_name_shaped(lit) {
+                let before = body[..i].trim_end();
+                let after = body[j + 1..].trim_start();
+                let dispatch = before.ends_with("==")
+                    || before.ends_with('|')
+                    || after.starts_with("=>")
+                    || after.starts_with('|');
+                if dispatch {
+                    out.push(lit.to_string());
+                }
+            }
+            i = j + 1;
+        }
+        out
+    }
+
+    #[test]
+    fn interpreter_builtin_names_are_covered() {
+        let builtins_src = include_str!("interpreter/builtins.rs");
+        let calls_src = include_str!("interpreter/calls.rs");
+        let mut names: Vec<String> = [
+            (builtins_src, "    pub(super) fn call_builtin("),
+            (calls_src, "    pub(super) fn call_interpreter_special("),
+        ]
+        .into_iter()
+        .flat_map(|(source, sig)| dispatch_literals(scan_fn_body(source, sig)))
+        .collect();
+        names.sort();
+        names.dedup();
+        // Sanity: the scan actually found the known dispatch arms (guards against
+        // a refactor that moves the functions or changes their shape so the scan
+        // silently matches nothing and the guard becomes vacuous).
+        assert!(
+            names.contains(&"print".to_string()) && names.contains(&"fail".to_string()),
+            "dispatch-literal scan found nothing recognizable ({} names) — the \
+             scan is stale, fix scan_fn_body/dispatch_literals",
+            names.len()
+        );
+        let uncovered: Vec<&String> = names
+            .iter()
+            .filter(|name| !is_interpreter_builtin(name))
+            .collect();
+        assert!(
+            uncovered.is_empty(),
+            "these builtin dispatch names are not covered by `is_interpreter_builtin` — the \
+             eval_call fast path would skip them and report `unknown function`: {uncovered:?}. \
+             Add each to the `matches!` list in `is_interpreter_builtin` (or, if it is a real \
+             intrinsic/cap-op, ensure it is in the intrinsic table / cap_ops::OPS).",
+        );
+    }

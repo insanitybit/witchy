@@ -1,0 +1,23 @@
+# highlighter — a witchy SOURCE-CODE syntax highlighter built on glamour
+# (RFC-0008). It takes witchy source TEXT and produces a glamour `VNode` tree:
+# a `<pre><code>` whose tokens are classed `<span class="kw|str|com|num">` runs,
+# with plain text for the rest. There are no events (a highlighter is a pure
+# render), so it has no `Msg` and emits no `on` bindings — every token's text
+# flows through a `text(...)` node, so source like `<script>` renders inert.
+#
+# Like glamour itself, the rune's view core holds NO runtime authority. Its only
+# host call is `print` from `main` (Console = output, not authority); the
+# JS-callable `export_render` export is capability-EMPTY:
+#   `witchy caps .../highlighter.witchy` reports `export_render  (none)`.
+# The JS shell (web/witchy-runtime/glamour-dom.mjs) diffs the returned VNode JSON
+# into the DOM with createElement/textContent/setAttribute ONLY — no HTML-string
+# sink — so the highlighted, untrusted source is structurally injection-free.
+[rune]
+name = "highlighter"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]
+
+[dependencies]
+"glamour" = { path = "../.." }

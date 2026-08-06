@@ -1,0 +1,18 @@
+# autocounter — the glamour EFFECTS-AS-DATA demo (RFC-0008). A capability-pure
+# rune whose count climbs once per second with NO user click: `update` returns the
+# DESCRIPTION `After(1000, Tick)`, and the JS DOM host shell
+# (web/witchy-runtime/glamour-dom.mjs) — which alone holds the timer authority —
+# reads it, calls setTimeout, and dispatches `Tick` back as a msg. The rune decides
+# WHAT happens; the shell decides WHETHER and DOES it. The rune holds NO `Clock`.
+[rune]
+name = "autocounter"
+version = "0.1.0"
+
+[capabilities]
+# Like glamour itself, the app's view/update core holds NO runtime authority — the
+# timer is the SHELL's. Its only host call is `print` from `main` (Console = output,
+# not authority); the `After` effect is data, performed at the capability edge.
+runtime = ["Console"]
+
+[dependencies]
+"glamour" = { path = "../.." }

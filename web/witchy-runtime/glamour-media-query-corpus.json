@@ -1,0 +1,14 @@
+[
+  { "query": "(min-width: 40rem)", "valid": true },
+  { "query": "screen and (orientation: landscape)", "valid": true },
+  { "query": "print", "valid": true },
+  { "query": "(prefers-reduced-motion: reduce)", "valid": true },
+  { "query": "not screen and (color)", "valid": true },
+  { "query": "", "valid": false },
+  { "query": "(min-width: 40rem", "valid": false },
+  { "query": "min-width: 40rem)", "valid": false },
+  { "query": "screen, print", "valid": false },
+  { "query": "(width > 40rem)", "valid": false },
+  { "query": "@media print", "valid": false },
+  { "query": "(inline-size: ∞)", "valid": false }
+]

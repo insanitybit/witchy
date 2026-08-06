@@ -1,0 +1,14 @@
+fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    var d = dict.new()
+    var i = 0
+    while i < 3000000:
+        let k = i % 1000
+        dict.insert(d, k, dict.get_or(d, k, 0) + 1)
+        i = i + 1
+    var total = 0
+    for k in dict.keys(d):
+        total = total + dict.get_or(d, k, 0)
+    let bench_t1 = clock.now_monotonic()
+    console.print("${total}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

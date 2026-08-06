@@ -1,0 +1,41 @@
+path	line	category	callee	parameter	root
+benchmarks/dict_count.witchy	5	auxiliary-result-discard	dict.insert	-	-
+examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
+examples/maze/src/maze.witchy	83	auxiliary-result-discard	dict.insert	-	-
+examples/wordcount/src/wordcount.witchy	9	auxiliary-result-discard	dict.insert	-	-
+projects/glamour/src/glamour.witchy	573	expression-position-mutator	dict.insert__String__Int	-	-
+projects/glamour/src/glamour.witchy	579	expression-position-mutator	dict.insert__String__Int	-	-
+projects/glamour/src/glamour.witchy	490	auxiliary-result-discard	dict.insert	-	-
+projects/glamour/src/glamour.witchy	498	auxiliary-result-discard	dict.insert	-	-
+projects/glamour/src/glamour.witchy	541	auxiliary-result-discard	dict.insert	-	-
+projects/glamour/src/glamour.witchy	543	auxiliary-result-discard	dict.insert	-	-
+std/dict.witchy	21	auxiliary-result-discard	dict.insert	-	-
+std/dict.witchy	27	auxiliary-result-discard	dict.__insert_extract	-	-
+std/dict.witchy	74	auxiliary-result-discard	dict.remove	-	-
+std/dict.witchy	77	auxiliary-result-discard	dict.__remove_extract	-	-
+std/list.witchy	38	auxiliary-result-discard	list.__pop_extract	-	-
+std/list.witchy	83	auxiliary-result-discard	list.__pop_extract	-	-
+std/prng.witchy	92	expression-position-mutator	prng.advance	-	-
+std/prng.witchy	67	expression-position-mutator	prng.draw_below	-	-
+std/prng.witchy	52	expression-position-mutator	prng.advance	-	-
+std/prng.witchy	97	auxiliary-result-discard	prng.choice	-	-
+std/prng.witchy	76	auxiliary-result-discard	prng.advance	-	-
+std/prng.witchy	88	auxiliary-result-discard	prng.draw_below	-	-
+book/src/mutating-methods.md#block-1	7	expression-position-mutator	main.take_last	-	-
+book/src/mutating-methods.md#block-1	2	auxiliary-result-discard	list.pop	-	-
+book/src/mutating-methods.md#block-4	3	expression-position-mutator	dict.insert__String__Int	-	-
+book/src/mutating-methods.md#block-4	4	expression-position-mutator	dict.insert__String__Int	-	-
+book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__String__Int	-	-
+spec/language.md#block-16	7	expression-position-mutator	main.bump	-	-
+
+witchy-files	287
+markdown-blocks	191
+checked	478
+rejected	0
+var-declarations	40
+resolved-var-calls	704
+mechanical-self-reassignment	0
+expression-position-mutator	11
+immutable-var-argument	0
+temporary-var-argument	0
+auxiliary-result-discard	17

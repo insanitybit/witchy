@@ -1,0 +1,97 @@
+// A small deterministic PRNG: the Park-Miller "minimal
+// standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits
+// in i64 (no overflow), so it is content-correct on both backends. State is
+// threaded explicitly — the same seed always replays the same sequence, which is
+// what you want for tests, sampling, and games. NOT for cryptography. Pure and
+// capability-free.
+
+import option
+
+sealed type Rng:
+    Rng(Int)
+
+fn modulus() -> Int:
+    2147483647
+
+// Map any Int into the valid seed/state range [1, modulus). 0 is forbidden (the
+// LCG is stuck at 0) and a negative would replay an out-of-range sequence, so
+// both are folded in — this is the PRNG contract every state must satisfy.
+fn normalize(s: Int) -> Int:
+    let m = modulus()
+    var v = s % m
+    if v < 0:
+        v = v + m
+    if v == 0:
+        v = 1
+    v
+
+// A generator from seed `s` (any Int is mapped into the valid range 1..modulus).
+pub fn seed(s: Int) -> Rng:
+    Rng(normalize(s))
+
+// --- Private cores. The draw machinery stays as free functions with
+// non-colliding names: the kept `choice` free function below (and the methods,
+// which cannot call each other's `var self` forms through the pre-mono pass)
+// all thread the Rng through here. ---
+
+// Advance the generator and return the raw draw — the core behind `next`.
+fn advance(var r: Rng) -> Int:
+    match r:
+        Rng(state) ->
+            let n = normalize(state) * 16807 % modulus()
+            r = Rng(n)
+            n
+
+// Validate `bound` and reduce a draw into [0, bound) — the core behind
+// `next_below` and `choice`.
+fn draw_below(var r: Rng, bound: Int) -> Int:
+    if bound <= 0:
+        fail("prng.next_below: bound `${bound}` must be positive")
+    if bound >= modulus():
+        fail("prng.next_below: bound `${bound}` is at or above the generator range (2^31-1) and cannot be covered")
+    advance(r) % bound
+
+// A pseudo-randomly chosen element of `xs` (`None` if empty).
+// The index comes from `next_below`, whose `% len` reducer carries a negligible
+// modulo bias for ordinary list lengths — plenty for tests, sampling, and games,
+// but not a strict uniform distribution (see `next_below`). Module-level with
+// the list FIRST for historical callers: the method form is `r.choice(xs)`, and
+// deleting this function would flip the qualified call's argument order to the
+// alias's `prng.choice(r, xs)`, silently breaking existing `prng.choice(xs, r)`
+// call sites.
+pub fn choice(xs: List(a), var r: Rng) -> Option(a):
+    let len = list.length(xs)
+    if len == 0:
+        None
+    else:
+        Some(list.at(xs, draw_below(r, len)))
+
+// Methods are the primary surface (RFC-0099).
+impl Rng:
+    // Advance the generator and return a pseudo-random Int in [1, 2^31-1).
+    // The incoming state is normalized first, so a hand-built `Rng(0)` / `Rng(-5)`
+    // (which bypasses `seed`) still yields an in-range draw instead of sticking
+    // at 0 or going negative.
+    pub fn next(var self) -> Int:
+        advance(self)
+
+    // A pseudo-random Int in [0, bound). `bound` must be positive
+    // (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails
+    // loudly naming the bad argument rather than dividing by zero. It must also
+    // be below the generator range `2^31-1` (`next`'s cardinality): the reducer
+    // is `n % bound`, so a `bound` at or above that range cannot produce every
+    // value in `[0, bound)` and would silently under-cover it — that impossible
+    // case fails loudly too. For a `bound` well below the range the modulo bias
+    // is negligible; for a strictly uniform bounded draw, use the `Rand`
+    // capability's byte-oriented helpers.
+    pub fn next_below(var self, bound: Int) -> Int:
+        draw_below(self, bound)
+
+    // A pseudo-random Bool (true ~half the time).
+    pub fn next_bool(var self) -> Bool:
+        advance(self) % 2 == 0
+
+    // A pseudo-randomly chosen element of `xs` (`None` if empty) — see the
+    // module-level `choice`.
+    pub fn choice(var self, xs: List(a)) -> Option(a):
+        choice(xs, self)

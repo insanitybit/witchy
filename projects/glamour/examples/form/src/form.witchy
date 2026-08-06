@@ -1,0 +1,33 @@
+// A progressive, typed signup form. The same schema supplies HTML method/action
+// facts and validation; event decoders return typed messages, and the view never
+// receives browser handles or ambient authority.
+
+from glamour import FormFieldKind, FormSchema, FormValue, VNode
+
+type Model:
+    Model(String, String)
+
+type Msg:
+    NameChanged(String)
+    EmailChanged(String)
+    Submit
+
+fn signup() -> FormSchema:
+    let fields = [glamour.form_field("name", "Name", FormText, true), glamour.form_field("email", "Email", FormEmail, true)]
+
+    let fallback = FormSchema("invalid", "POST", glamour.form_url_or_root("#"), [])
+    glamour.form_schema("signup", "POST", glamour.form_url_or_root("/signup"), fields).unwrap_or(fallback)
+
+fn view(model: Model) -> VNode(Msg):
+    match model:
+        Model(name, email) ->
+            glamour.element("form", glamour.form_attributes(signup()), [glamour.labelled_input("signup-name", "Name", name, "signup.name", glamour.event_value(fn(value: String): NameChanged(value))), glamour.labelled_input("signup-email", "Email", email, "signup.email", glamour.event_value(fn(value: String): EmailChanged(value))), glamour.submit_button("Create account", Submit)])
+
+fn values(model: Model) -> List(FormValue):
+    match model:
+        Model(name, email) -> [FormValue("name", name), FormValue("email", email)]
+
+fn main(console: Console):
+    let model = Model("Ada", "ada@example.com")
+    console.print(glamour.to_html(view(model)))
+    console.print("${glamour.validate_form(signup(), values(model)).length()}")

@@ -1,0 +1,10 @@
+[rune]
+name = "glamour-server-basic"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]
+
+[dependencies]
+"glamour_server" = { path = "../.." }
+"glamour" = { path = "../../../glamour" }

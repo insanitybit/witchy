@@ -1,0 +1,27 @@
+// Ergonomic async/await: write straight-line `async fn` code with `await`; the
+// compiler lowers it to cooperative tasks (CPS over closures). `chan.spawn` starts
+// a concurrent task — no channel required — and the deterministic round-robin
+// schedule makes the interleaved output byte-identical on the interpreter and the
+// compiled WASM.
+//
+// Each `ticker` prints a line, then `await chan.yield_now()` hands control back to
+// the scheduler so the other task runs — hence the A/B interleaving.
+//
+// Run:  witchy examples/async_tasks/src/async_tasks.witchy
+//       witchy parity examples/async_tasks/src/async_tasks.witchy
+
+import chan
+
+async fn ticker(console: Console, name: String, n: Int):
+    if n <= 0:
+        console.print(name + " done")
+    else:
+        console.print("${name} ${n}")
+        chan.yield_now().await
+        ticker(console, name, n - 1).await
+
+async fn main(console: Console):
+    let a = chan.spawn(ticker(console, "A", 3)).await
+    let b = chan.spawn(ticker(console, "B", 3)).await
+    chan.join(a).await
+    chan.join(b).await

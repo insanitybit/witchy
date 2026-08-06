@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(file: File[Read]):\\n    file.write(\\\"x\\\")\\n\")"
+---
+type error: `main`, line 2: `write` needs `Write` but the file is `File[Read]`

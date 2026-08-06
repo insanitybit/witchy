@@ -1,0 +1,40 @@
+// User-defined capabilities (RFC-0002) — a SEALED brand around a host capability
+// that records intent and refines the footprint. `ConfigDir` is a `Dir` you can
+// only obtain through
+// `config_dir` (a checked smart constructor); `load` then *statically* demands
+// the brand, not just any `Dir`. The capability auditor sees through the brand —
+// `ConfigDir` still audits as `Dir`, so authority can't hide — while reporting
+// the refinement. Run from the repo root:
+//   witchy examples/branded_caps/src/branded_caps.witchy
+//   witchy caps examples/branded_caps/src/branded_caps.witchy     # load: Dir (refined: ConfigDir)
+
+import option
+
+// A `Dir` confined to the app's config directory, declared as a `capability` so
+// it is SEALED: its constructor lives only in this module, so no other rune can
+// forge a `ConfigDir` — a value of this type provably came through `config_dir`.
+capability ConfigDir from Dir
+
+// Checked smart constructor — the *only* way to make a `ConfigDir`. It verifies
+// the `data/` subtree actually exists, returning `None` if not; so holding a
+// `ConfigDir` is runtime proof the directory is there, captured as a static
+// brand. Public, so `witchy caps` lists it: it takes a raw `Dir` (no refinement).
+pub fn config_dir(root: Dir) -> Option(ConfigDir):
+    if root.exists("data"):
+        Some(ConfigDir(root.subtree("data")))
+    else:
+        None
+
+// Reads only from the config dir — the signature requires the brand, and the
+// `Dir` inside is confined to that subtree, so this can touch nothing else.
+// Public, so `witchy caps` shows it auditing as `Dir`, refined as `ConfigDir`.
+pub fn load(c: ConfigDir, name: String) -> String:
+    match c:
+        ConfigDir(dir) -> dir.read(name)
+
+fn main(console: Console, root: Dir):
+    // `if let` only proceeds once the directory has been confirmed and branded.
+    if let Some(cfg) = config_dir(root.subtree("examples")):
+        console.print("config says: " + load(cfg, "greeting.txt"))
+    else:
+        console.print("no config directory found")

@@ -1,0 +1,54 @@
+// A binary search tree: a recursive algebraic data type walked with pattern
+// matching and recursion — a real data structure in a handful of pure functions.
+// Inserting a list and reading it back in order is a tree sort. Pure (only `main`
+// touches the Console), so it runs identically interpreted, compiled, and
+// sandboxed:
+//   witchy parity examples/bst/src/bst.witchy
+//   witchy sandbox examples/bst/src/bst.witchy
+
+import list
+
+type Tree:
+    Leaf
+    Node(Tree, Int, Tree)
+
+pub fn insert(t: Tree, x: Int) -> Tree:
+    match t:
+        Leaf -> Node(Leaf, x, Leaf)
+        Node(l, v, r) ->
+            if x < v:
+                Node(insert(l, x), v, r)
+            else if x > v:
+                Node(l, v, insert(r, x))
+            else:
+                t
+
+pub fn contains(t: Tree, x: Int) -> Bool:
+    match t:
+        Leaf -> false
+        Node(l, v, r) ->
+            if x == v:
+                true
+            else if x < v:
+                contains(l, x)
+            else:
+                contains(r, x)
+
+// In-order traversal flattens the tree into a sorted list.
+pub fn inorder(t: Tree) -> List(Int):
+    match t:
+        Leaf -> []
+        Node(l, v, r) -> inorder(l).concat([v].concat(inorder(r)))
+
+pub fn from_list(xs: List(Int)) -> Tree:
+    var t = Leaf
+    for x in xs:
+        t = insert(t, x)
+    t
+
+fn main(console: Console):
+    let tree = from_list([5, 3, 8, 1, 4, 7, 9, 2, 6])
+    let sorted = inorder(tree)
+    console.print(sorted.map(fn(n: Int): "${n}").join(" "))
+    console.print("contains 7: " + "${contains(tree, 7)}")
+    console.print("contains 10: " + "${contains(tree, 10)}")

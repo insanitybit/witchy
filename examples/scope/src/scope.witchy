@@ -1,0 +1,46 @@
+// Structured concurrency: run a batch of tasks concurrently with a guaranteed
+// join. `chan.gather` fans out result-producing tasks and hands back all results
+// once they ALL finish; `chan.scope` does the same for side-effecting tasks. No
+// task handle escapes either call, so a worker can't outlive the scope and nothing
+// leaks — the safe form to prefer over a bare `spawn` you must remember to `join`.
+// The cooperative executor schedules deterministically, so the run is
+// byte-identical on both backends.
+
+import list
+import option
+from chan import Sender
+
+async fn square(n: Int) -> Int:
+    n * n
+
+async fn announce(tx: Sender(Int), n: Int):
+    chan.send(tx, n).await
+
+async fn main(console: Console):
+    // Fan out result-producing tasks and collect every result, leak-free.
+    let squares = chan.gather([square(1), square(2), square(3), square(4), square(5)]).await
+    console.print("sum of squares: ${list.sum(squares)}")
+
+    // `par_map` is the level-1 combinator: map a task over a list concurrently and
+    // get the results back in INPUT order (deterministic regardless of which task
+    // finished first). The tasks are never visible — nothing to leak or forget to join.
+    let mapped = chan.par_map([1, 2, 3, 4, 5], fn(n): square(n)).await
+    console.print("par_map squares: ${mapped}")
+
+    // `par_reduce` folds those results with an associative combine.
+    let total = chan.par_reduce([1, 2, 3, 4, 5], fn(n): square(n), 0, fn(a, b): a + b).await
+    console.print("par_reduce total: ${total}")
+
+    // `race` runs two tasks and returns the first result, cancelling the loser. A
+    // tie favours the first racer, deterministically — so this is parity-safe.
+    let winner = chan.race(square(7), square(8)).await
+    let best = option.unwrap_or(winner, 0)
+    console.print("race winner: ${best}")
+
+    // `scope` is the side-effecting form: run them all, join them all.
+    let (tx, rx) = chan.channel(0).await
+    chan.scope([announce(tx, 10), announce(tx, 20), announce(tx, 30)]).await
+    let a = chan.recv(rx).await
+    let b = chan.recv(rx).await
+    let c = chan.recv(rx).await
+    console.print("announced: ${[a, b, c].length()} workers")

@@ -1,0 +1,17 @@
+# package_page — the coven package-DETAIL view, built on glamour (RFC-0015 Phase D).
+# Composes the framework into the registry's key page: name + version + a copy-able
+# install command, the capability FOOTPRINT as badges (coven's differentiator), and the
+# README + generated API docs rendered from Markdown via `markdown.to_vnode` (untrusted
+# publisher content shown inline, safe by construction). A README/Docs tab toggle is the
+# MVU model. In the real shell the data arrives from the registry over the HTTP effect;
+# here it is baked in so the template renders standalone. The view core holds NO authority
+# (`witchy caps` reports `export_step (none)`).
+[rune]
+name = "package_page"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]
+
+[dependencies]
+"glamour" = { path = "../.." }

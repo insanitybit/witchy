@@ -1,0 +1,8 @@
+// tasks — a dashboard widget: a one-line task-completion summary, rendered with
+// the shared `bars` base (a path dependency). Pure: no host capabilities.
+
+import bars
+
+// "tasks    [####----]  50%"
+pub fn summary(done: Int, total: Int) -> String:
+    "tasks".pad_right(9, " ") + bars.bar(done, total, 8) + " " + "${bars.pct(done, total)}".pad_left(3, " ") + "%"

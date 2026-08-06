@@ -1,0 +1,174 @@
+[package]
+name = "witchy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "A capability-secure language with twin interpreter and WASM backends: a program's authority is a typed, auditable, enforceable artifact"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/insanitybit/witchy"
+keywords = ["language", "capability-security", "wasm", "sandbox", "supply-chain"]
+categories = ["compilers", "development-tools"]
+exclude = [
+    ".claude/",
+    ".github/",
+    "bench/",
+    "benchmarks/",
+    "bugs/",
+    "covenweb-before.png",
+    "editors/",
+    "external-refs/",
+    "justfile",
+    "OVERNIGHT_REPORT.md",
+    "projects/",
+    "proptest-regressions/",
+    "rfcs/",
+    "runecard-demo.png",
+    "scratch/",
+    "scripts/",
+    "security-eval/",
+    "target-*/",
+    "tests/",
+    "web/",
+    "wiki/",
+    "AGENTS.md",
+    "CLAUDE.md",
+]
+
+# RFC-0018: the compiler is being decomposed into stage-aligned crates under
+# crates/. The root `witchy` package is itself a workspace member (the binary +
+# the not-yet-extracted stages); extracted crates are listed here.
+[workspace]
+members = ["crates/witchy-cap-model", "crates/witchy-caps", "crates/witchy-confinement", "crates/witchy-interp", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-test-host", "crates/witchy-testkit", "crates/witchy-types", "crates/witchy-wir"]
+
+[lib]
+name = "witchy"
+# rlib: linked by the `witchy` binary. cdylib: the wasm module for the
+# in-browser playground (`cargo build --lib --no-default-features
+# --target wasm32-unknown-unknown`).
+crate-type = ["rlib", "cdylib"]
+doctest = false
+
+[[bin]]
+name = "witchy"
+path = "src/main.rs"
+required-features = ["native"]
+
+[features]
+# The full native toolchain (wasmtime sandbox, package manager, LSP). On by
+# default; the wasm playground builds the library alone with it OFF.
+default = ["native"]
+native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
+# Shared deterministic fixture sessions for the opaque-frame browser host.
+# Kept out of ordinary library builds; the playground/docs builder enables it.
+browser-fixtures = ["dep:serde_json", "dep:witchy-test-host", "dep:witchy-testkit"]
+
+[dependencies]
+# Stage-aligned crates extracted from the monolith (RFC-0018). Re-exported from
+# lib.rs so existing `crate::{ast,lexer,parser,wir,…}::…` paths keep resolving.
+witchy-caps = { path = "crates/witchy-caps" }
+witchy-confinement = { path = "crates/witchy-confinement" }
+witchy-interp = { path = "crates/witchy-interp" }
+witchy-lower = { path = "crates/witchy-lower" }
+witchy-runtime = { path = "crates/witchy-runtime" }
+witchy-syntax = { path = "crates/witchy-syntax" }
+witchy-test-host = { path = "crates/witchy-test-host", optional = true }
+witchy-testkit = { path = "crates/witchy-testkit", optional = true }
+witchy-types = { path = "crates/witchy-types" }
+witchy-wir = { path = "crates/witchy-wir" }
+# Pure-Rust deps the interpreter library needs on every target (incl. wasm).
+sha2 = "0.11.0"
+ed25519-dalek = "2.2.0"
+regex = "1.11"
+wasm-encoder = "0.251"
+# Reads back the pre-compiled prelude blob + validates the emitted module; pure
+# Rust, so the binary codegen path (WIR -> wasm) runs on the wasm playground too.
+wasmparser = "0.251"
+# Native-only deps (the sandbox/PM/LSP layers); excluded from the wasm build.
+wasmtime = { version = "45.0.0", optional = true }
+lsp-server = { version = "0.7.9", optional = true }
+serde_json = { version = "1", optional = true }
+toml = { version = "1.1.2", optional = true }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
+tiny_http = { version = "0.12.0", optional = true }
+getrandom = { version = "0.4.2", optional = true }   # pm key generation (native)
+# Keys the source→wasm cache (`compile_linked_to_wasm_cached`) — an INTERNAL
+# content-address, not security crypto (sha2/aws-lc stay for everything
+# security-relevant). blake3 because the input is the whole Debug rendering of
+# a linked AST on every run; it hashes large inputs several times faster.
+blake3 = { version = "1.8.3", optional = true }
+
+# ed25519-dalek pulls getrandom transitively; the browser target needs its JS
+# backend to link (our crypto is seed-only, so it is never actually called).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+# aws-lc-rs (the FIPS-capable AWS-LC binding) backs native crypto — SHA-256 and
+# Ed25519 here, FIPS-approved algorithms. It builds a C library (cmake), so it has
+# no wasm32 support; the wasm playground keeps the pure-Rust sha2/ed25519-dalek
+# path above (it never runs security-critical crypto). See native.rs `crypto`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+aws-lc-rs = "1"
+# TLS client for the `tls:` address scheme (RFC-0009). rustls configured with the
+# aws_lc_rs provider keeps ALL crypto on aws-lc (FIPS) — NOT ring — while giving a safe
+# blocking `StreamOwned`. webpki-roots is the Mozilla CA trust anchor set; rustls-pemfile
+# reads any extra/custom roots (env `WITCHY_TLS_EXTRA_ROOTS`).
+rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12", "logging"] }
+webpki-roots = "0.26"
+rustls-pemfile = "2"
+
+[dev-dependencies]
+proptest = "1.11.0"
+# Raw AST lowering is deliberate compiler-test machinery, not a production API.
+witchy-lower = { path = "crates/witchy-lower", features = ["raw-module-test-api"] }
+# Raw AST execution is deliberate oracle/test machinery, not a production API.
+witchy-interp = { path = "crates/witchy-interp", features = ["raw-module-test-api", "test-fixtures"] }
+# Raw WIR encoding is deliberate optimizer/oracle test machinery.
+witchy-wir = { path = "crates/witchy-wir", features = ["raw-encoder-test-api"] }
+# Enables only the concurrency-safe TLS fixture hook for root-package tests.
+# The ordinary runtime dependency does not expose it in production builds.
+witchy-runtime = { path = "crates/witchy-runtime", features = ["test-support"] }
+# Snapshot harness for the diagnostic goldens (RFC-0072): every user-facing
+# error string is captured verbatim in src/snapshots/ and reviewed as a diff.
+insta = "1.48.0"
+# Generates a throwaway self-signed cert for the hermetic TLS client test.
+rcgen = "0.13"
+# A local TLS server for the hermetic TLS/HTTPS/OAuth tests (mock GitHub) — same
+# aws_lc_rs provider as the client, no second crypto stack.
+rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+# Signs a test id_token for the mock-Google OIDC login e2e (same crypto as the client).
+aws-lc-rs = "1"
+
+# Dev builds keep file:line backtraces (so test failures and panics stay
+# legible) but skip full DWARF generation — markedly faster to compile and link
+# for this large single crate. Use a debugger build (`debug = 2`) only when you
+# actually need to step through variables.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+# Tests run these crates hard (tree-walking interpreter, witchy->WASM lowering,
+# wasmtime host glue); unoptimized they dominate suite time. Opt just the hot
+# stage crates; the root crate and everything else keeps fast unopt compiles.
+# Level 2 (was 1): −23% interpreter CPU on call-dense differential tests
+# (rfc0090 5M-transition cycles, measured min-of-3 user time) for ~15s more on
+# a cold stage-crate build. A `package."*"` opt-2 override for external deps
+# was measured too and bought nothing further — cranelift is NOT the wasm-test
+# bottleneck — so deps stay unoptimized for cheap cold builds (CI has no
+# sccache).
+[profile.dev.package.witchy-interp]
+opt-level = 2
+[profile.dev.package.witchy-runtime]
+opt-level = 2
+[profile.dev.package.witchy-lower]
+opt-level = 2
+[profile.dev.package.witchy-wir]
+opt-level = 2
+[profile.dev.package.witchy-types]
+opt-level = 2
+[profile.dev.package.witchy-syntax]
+opt-level = 2
+# foldhash backs the compiler crates' HashMaps; unoptimized it LOSES to std's
+# precompiled SipHash (~2% more instructions on a pm-front-end compile), with
+# this override it wins. Tiny crate — no build-time cost.
+[profile.dev.package.foldhash]
+opt-level = 3

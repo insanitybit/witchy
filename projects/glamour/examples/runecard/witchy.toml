@@ -1,0 +1,25 @@
+# runecard — a coven "rune card" VIEW built on glamour (RFC-0008): witchy's OWN
+# capability-footprint model, rendered by a witchy program in the browser. Given a
+# rune's published metadata as JSON (name, version, declared `caps`, provenance),
+# it produces a glamour `VNode` card — a heading, version, a row of capability
+# BADGES (or the celebrated "no capabilities" state for an EMPTY footprint), and a
+# provenance line. There are no events (a card is a pure render), so it has no
+# `Msg` and emits no `on` bindings — every field flows through a `text(...)` node,
+# so a hostile registry `name` like `<script>` renders inert.
+#
+# Like glamour itself, the rune's view core holds NO runtime authority. Its only
+# host call is `print` from `main` (Console = output, not authority); the
+# JS-callable `export_render` export is capability-EMPTY:
+#   `witchy caps .../runecard.witchy` reports `export_render  (none)`.
+# The JS shell builds the returned VNode JSON with createElement/textContent/
+# setAttribute ONLY — no HTML-string sink — so an untrusted record is structurally
+# injection-free. That empty footprint is itself the thing the card celebrates.
+[rune]
+name = "runecard"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]
+
+[dependencies]
+"glamour" = { path = "../.." }

@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "trap_pair(\"fn explode() -> Int:\\n    let z = 0\\n    10 / z\\n\\nfn main(console: Console):\\n    console.print(__render(explode()))\\n\")"
+---
+interp: runtime error: `main.explode`, line 3: division by zero
+wasm:   runtime error: `main.explode`, line 3: division by zero

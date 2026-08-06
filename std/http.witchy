@@ -1,0 +1,523 @@
+// Portable HTTP request/response types and a Fetch-based client.
+//
+// Client authority is the origin-scoped `Fetch` root. DNS resolution, pinned
+// dialing, redirects, timeouts, and response-size limits are host-provider
+// responsibilities, so browser and native callers share this exact API. The
+// `server` module continues to use the Request/Response types and parsing
+// helpers below; HTTP servers remain on Net[Listen].
+
+import option
+import string
+import url
+import ascii
+import bytes
+import show
+import error
+import convert
+
+// Uniform failures produced by every Fetch provider, plus strict response
+// parsing failures in this module.
+type HttpError:
+    Denied(String)
+    InvalidRequest(String)
+    Timeout
+    Redirect(String)
+    Network(String)
+    ProviderMalformedResponse(String)
+    ResponseTooLarge(String)
+    UnknownProviderFailure(String, String)
+    MalformedResponse(ResponseParseError)
+
+// Matchable strict-response parse failures. These are surfaced through
+// `HttpError.MalformedResponse` by client APIs and `try_parse_response`.
+type ResponseParseError:
+    MissingChunkSizeTerminator
+    InvalidChunkSize(String)
+    MissingFinalChunkDelimiter
+    InvalidChunkUtf8
+    TruncatedChunk
+    MissingChunkDelimiter
+    InternalChunkDecoderState
+
+pub fn response_parse_error_message(e: ResponseParseError) -> String:
+    match e:
+        MissingChunkSizeTerminator -> "chunked response missing chunk-size terminator"
+        InvalidChunkSize(line) -> "chunked response has invalid chunk size `" + line + "`"
+        MissingFinalChunkDelimiter -> "chunked response missing final CRLF"
+        InvalidChunkUtf8 -> "chunked response body is not valid UTF-8"
+        TruncatedChunk -> "chunked response ended before the declared chunk size"
+        MissingChunkDelimiter -> "chunked response missing chunk delimiter"
+        InternalChunkDecoderState -> "unreachable chunked decoder state"
+
+pub fn http_error_message(e: HttpError) -> String:
+    match e:
+        Denied(message) -> message
+        InvalidRequest(message) -> message
+        Timeout -> "Fetch request timed out"
+        Redirect(message) -> message
+        Network(message) -> message
+        ProviderMalformedResponse(message) -> message
+        ResponseTooLarge(message) -> message
+        UnknownProviderFailure(code, message) -> "Fetch provider error `" + code + "`: " + message
+        MalformedResponse(reason) -> response_parse_error_message(reason)
+
+impl Show for ResponseParseError:
+    fn show(self) -> String:
+        response_parse_error_message(self)
+
+impl Error for ResponseParseError
+
+impl From(ResponseParseError) for String:
+    fn from(value: ResponseParseError) -> Self:
+        response_parse_error_message(value)
+
+impl Show for HttpError:
+    fn show(self) -> String:
+        http_error_message(self)
+
+impl Error for HttpError
+
+impl From(HttpError) for String:
+    fn from(value: HttpError) -> Self:
+        http_error_message(value)
+
+// A response: status code, headers (name lowercased for case-insensitive
+// lookup), and body. Shared by the client and the `server` framework.
+type Response:
+    Response(Int, List((String, String)), String)
+
+// A parsed request the server hands to a handler: method, raw path, the path
+// params the router captured (`:id`), the parsed query string, the (lowercased)
+// headers, and the body.
+type Request:
+    Request(String, String, List((String, String)), List((String, String)), List((String, String)), String)
+
+// Canonical origin text for deriving Fetch from Net. Invalid or unsupported
+// URLs are configuration errors here; request-time URL failures remain typed.
+pub fn origin(raw: String) -> String:
+    match url.parse(raw):
+        Err(e) ->
+            fail("invalid HTTP URL: " + url.url_error_message(e))
+            ""
+        Ok(parsed) ->
+            let scheme = url.scheme(parsed)
+            if scheme != "http" && scheme != "https":
+                fail("unsupported HTTP URL scheme `" + scheme + "`")
+            scheme + "://" + url.host(parsed) + ":" + "${url.port(parsed)}"
+
+// Perform one request and trap on a provider/response failure. Use
+// `try_request_with` when network weather belongs in application control flow.
+pub fn request_with(fetch: Fetch, method: String, request_url: String, headers: List((String, String)), body: String) -> Response:
+    match try_request_with(fetch, method, request_url, headers, body):
+        Ok(response) -> response
+        Err(e) ->
+            fail("HTTP request failed: " + http_error_message(e))
+            Response(0, [], "")
+
+pub fn try_request_with(fetch: Fetch, method: String, request_url: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
+    parse_fetch_payload(fetch.send_raw(method, request_url, render_headers(headers), body))
+
+pub fn get(fetch: Fetch, request_url: String) -> Response:
+    request_with(fetch, "GET", request_url, [], "")
+
+pub fn post(fetch: Fetch, request_url: String, body: String) -> Response:
+    request_with(fetch, "POST", request_url, [], body)
+
+pub fn put(fetch: Fetch, request_url: String, body: String) -> Response:
+    request_with(fetch, "PUT", request_url, [], body)
+
+pub fn delete(fetch: Fetch, request_url: String) -> Response:
+    request_with(fetch, "DELETE", request_url, [], "")
+
+pub fn patch(fetch: Fetch, request_url: String, body: String) -> Response:
+    request_with(fetch, "PATCH", request_url, [], body)
+
+pub fn head(fetch: Fetch, request_url: String) -> Response:
+    request_with(fetch, "HEAD", request_url, [], "")
+
+pub fn try_get(fetch: Fetch, request_url: String) -> Result(Response, HttpError):
+    try_request_with(fetch, "GET", request_url, [], "")
+
+pub fn try_post(fetch: Fetch, request_url: String, body: String) -> Result(Response, HttpError):
+    try_request_with(fetch, "POST", request_url, [], body)
+
+fn render_headers(headers: List((String, String))) -> String:
+    var rendered = ""
+    for header in headers:
+        let (name, value) = header
+        check_header(name, value)
+        if rendered != "":
+            rendered = rendered + "\n"
+        rendered = rendered + name + ": " + value
+    rendered
+
+fn parse_fetch_payload(raw: String) -> Result(Response, HttpError):
+    let prefix = "WITCHY_FETCH_ERROR:"
+    if !raw.starts_with(prefix):
+        match parse_response_inner(raw, true, false):
+            Ok(response) -> Ok(response)
+            Err(error) -> Err(MalformedResponse(error))
+    else:
+        let failure = raw.substring(prefix.char_count(), raw.char_count())
+        let separator = failure.index_of(":") ?? -1
+        if separator < 0:
+            Err(UnknownProviderFailure("unknown", failure))
+        else:
+            let code = failure.substring(0, separator)
+            let message = failure.substring(separator + 1, failure.char_count())
+            Err(provider_error(code, message))
+
+fn provider_error(code: String, message: String) -> HttpError:
+    if code == "denied":
+        Denied(message)
+    else if code == "invalid-request":
+        InvalidRequest(message)
+    else if code == "timeout":
+        Timeout
+    else if code == "redirect":
+        Redirect(message)
+    else if code == "network":
+        Network(message)
+    else if code == "malformed-response":
+        ProviderMalformedResponse(message)
+    else if code == "response-too-large":
+        ResponseTooLarge(message)
+    else:
+        UnknownProviderFailure(code, message)
+
+// ---- Request builder (reqwest-style fluent client) ----
+type RequestBuilder:
+    RequestBuilder(String, String, List((String, String)), String)
+
+pub fn build(method: String, request_url: String) -> RequestBuilder:
+    RequestBuilder(method, request_url, [], "")
+
+pub fn get_request(request_url: String) -> RequestBuilder:
+    build("GET", request_url)
+
+pub fn post_request(request_url: String) -> RequestBuilder:
+    build("POST", request_url)
+
+pub fn put_request(request_url: String) -> RequestBuilder:
+    build("PUT", request_url)
+
+pub fn delete_request(request_url: String) -> RequestBuilder:
+    build("DELETE", request_url)
+
+pub fn patch_request(request_url: String) -> RequestBuilder:
+    build("PATCH", request_url)
+
+impl RequestBuilder:
+    pub fn with_header(self, name: String, value: String) -> RequestBuilder:
+        match self:
+            RequestBuilder(method, request_url, headers, body) ->
+                var next = headers
+                list.push(next, (name, value))
+                RequestBuilder(method, request_url, next, body)
+
+    pub fn with_body(self, body: String) -> RequestBuilder:
+        match self:
+            RequestBuilder(method, request_url, headers, _old) -> RequestBuilder(method, request_url, headers, body)
+
+    pub fn with_query(self, key: String, value: String) -> RequestBuilder:
+        match self:
+            RequestBuilder(method, request_url, headers, body) ->
+                match url.parse(request_url):
+                    Ok(parsed) -> RequestBuilder(method, url.format(url.with_query(parsed, key, value)), headers, body)
+                    Err(_e) -> RequestBuilder(method, request_url, headers, body)
+
+    pub fn send(self, fetch: Fetch) -> Result(Response, HttpError):
+        match self:
+            RequestBuilder(method, request_url, headers, body) ->
+                try_request_with(fetch, method, request_url, headers, body)
+
+// Whether the response status is in the 2xx success range.
+pub fn is_success(r: Response) -> Bool:
+    let c = status(r)
+    c >= 200 && c < 300
+
+// The numeric status code, e.g. 200.
+pub fn status(r: Response) -> Int:
+    match r:
+        Response(code, _hdrs, _body) -> code
+
+// The response body.
+pub fn body(r: Response) -> String:
+    match r:
+        Response(_code, _hdrs, b) -> b
+
+// The value of a response header, looked up case-insensitively, or None.
+pub fn header(r: Response, name: String) -> Option(String):
+    match r:
+        Response(_code, hdrs, _body) -> find_header(hdrs, name.to_lower())
+
+// Look up a header by its (already-lowercased) name. Shared with `server`.
+pub fn find_header(hdrs: List((String, String)), name: String) -> Option(String):
+    for p in hdrs:
+        let (k, v) = p
+        if k == name:
+            return Some(v)
+    None
+
+// ---- CRLF / header-injection defense (shared by the client and `server`) ----
+//
+// The request line and headers are built by RAW string concatenation with
+// `\r\n` separators, so a `\r` or `\n` smuggled into a method/path/host/header
+// value would inject an extra header or a whole second request/response
+// (HTTP request/response splitting). These validators are the last line before
+// bytes are rendered: they trap LOUDLY and IDENTICALLY on both backends (via
+// `fail`) rather than emitting a corrupted, attacker-shaped message. A header
+// value/path/host must never carry a control byte; a header name must be a
+// non-empty RFC 7230 token.
+
+// Whether `s` contains a CR or LF — the response/request-splitting bytes.
+pub fn has_crlf(s: String) -> Bool:
+    s.contains("\r") || s.contains("\n")
+
+// A valid HTTP header-name char (RFC 7230 tchar): alphanumeric or one of a small
+// punctuation set. Notably EXCLUDES `:`, space, CR, LF — so a header name can
+// never carry the `:`/CRLF that would break out of the name field.
+fn is_tchar(c: String) -> Bool:
+    ascii.is_alnum(c) || "!#\$%&'*+-.^_`|~".contains(c)
+
+// Whether `name` is a non-empty header-name token (every char a `tchar`).
+fn is_header_name(name: String) -> Bool:
+    if name.char_count() == 0:
+        false
+    else:
+        var ok = true
+        for c in name.chars():
+            if !is_tchar(c):
+                ok = false
+        ok
+
+// Whether `s` contains any control byte that is forbidden in an outbound HTTP
+// field. Header values may contain HTAB; request-line fields may not.
+fn has_forbidden_control(s: String, allow_tab: Bool) -> Bool:
+    var bad = false
+    for c in s.chars():
+        let c0 = c.char_count() == 1 && c < " "
+        let del = c == string.from_code(127)
+        if del || c0 && !(allow_tab && c == "\t"):
+            bad = true
+    bad
+
+// Trap unless `value` (a header value) is free of forbidden controls. HTAB is
+// allowed in header values; all other C0 controls and DEL are rejected. Request
+// method/path/host use `check_request_field`, which is stricter.
+pub fn check_field(what: String, value: String):
+    if has_forbidden_control(value, true):
+        fail("HTTP " + what + " contains a forbidden control character: " + value)
+
+// Trap unless `name` is a valid header-name token (rejects `:`, space, and CR/LF).
+pub fn check_header_name(name: String):
+    if !is_header_name(name):
+        fail("invalid HTTP header name (must be a non-empty RFC 7230 token): " + name)
+
+// Validate one `(name, value)` header pair — the name is a token, the value has
+// no forbidden controls. Shared by the client request builder and server renderer.
+pub fn check_header(name: String, value: String):
+    check_header_name(name)
+    check_field("header value", value)
+
+// (BUG-364/506) Trap unless `value` is safe to splice into the request LINE: no
+// C0 controls, DEL, space, or tab. The request line is space-delimited (`METHOD SP
+// TARGET SP HTTP/1.1`), so a space/tab in method/path/host would split it into
+// extra tokens (request smuggling). Stricter than `check_field`, because header
+// values legitimately contain spaces and may contain HTAB.
+pub fn check_request_field(what: String, value: String):
+    if has_forbidden_control(value, false) || value.contains(" "):
+        fail("HTTP " + what + " contains a whitespace/control character that would break the request line: " + value)
+
+// (BUG-358 / BUG-393) Whether `name` is a message-FRAMING header — Content-Length,
+// Transfer-Encoding, or Connection. The renderer owns framing (it appends its own
+// Content-Length / Connection), so a caller/handler-supplied framing header must be
+// dropped rather than emitted alongside ours: two conflicting framing headers are a
+// request/response-smuggling primitive.
+pub fn is_framing_header(name: String) -> Bool:
+    let n = name.to_lower()
+    n == "content-length" || n == "transfer-encoding" || n == "connection"
+
+// Parse a raw HTTP/1.1 response string into a `Response`: split at the blank line
+// separating headers from body, parse the header lines into (lowercased name,
+// trimmed value) pairs, decode a `chunked` body, and read the status code totally
+// (a non-numeric or overflowing code becomes 0 rather than trapping). Public so a
+// proxy or test can parse a response it obtained by other means. This total helper
+// keeps the historical lossy chunked behavior; use `try_parse_response` at trust
+// boundaries where malformed framing must be an error.
+pub fn parse_response(raw: String) -> Response:
+    match parse_response_inner(raw, false, true):
+        Ok(resp) -> resp
+        Err(_e) -> Response(0, [], "")
+
+// Strict response parsing for public client paths. In particular, malformed
+// `Transfer-Encoding: chunked` bodies return `Err` instead of handing callers a
+// recovered prefix that may look like valid JSON.
+pub fn try_parse_response(raw: String) -> Result(Response, HttpError):
+    match parse_response_inner(raw, true, true):
+        Ok(resp) -> Ok(resp)
+        Err(e) -> Err(MalformedResponse(e))
+
+pub fn try_parse_response_string(raw: String) -> Result(Response, String):
+    match try_parse_response(raw):
+        Ok(resp) -> Ok(resp)
+        Err(e) -> Err(http_error_message(e))
+
+fn parse_response_inner(raw: String, strict_chunked: Bool, decode_transfer: Bool) -> Result(Response, ResponseParseError):
+    let sep = raw.index_of("\r\n\r\n") ?? -1
+    let head: String = if sep < 0: raw else: raw.substring(0, sep)
+    let bdy: String = if sep < 0: "" else: raw.substring(sep + 4, raw.char_count())
+    let lines = head.split("\r\n")
+    let status_line = if list.length(lines) > 0: list.at(lines, 0) else: ""
+    var hdrs = []
+    var i = 1
+    while i < list.length(lines):
+        let line = list.at(lines, i)
+        let colon = line.index_of(":") ?? -1
+        if colon >= 0:
+            let name = line.substring(0, colon).to_lower()
+            let value = line.substring(colon + 1, line.char_count()).trim()
+            list.push(hdrs, (name, value))
+        i = i + 1
+    // (BUG-269) A `Transfer-Encoding: chunked` response frames its body as a series
+    // of hex-sized chunks; returning it verbatim would hand the caller wire framing
+    // instead of the payload. Decode it when the header advertises chunked (a `TE`
+    // value like `gzip, chunked` counts); otherwise pass the body through unchanged.
+    if !decode_transfer:
+        return Ok(Response(status_code(status_line), hdrs, bdy))
+    let body = match find_header(hdrs, "transfer-encoding"):
+        Some(te) ->
+            if te.to_lower().contains("chunked"):
+                if strict_chunked:
+                    match dechunk_strict(bdy):
+                        Ok(decoded) -> decoded
+                        Err(e) -> return Err(e)
+                else:
+                    dechunk(bdy)
+            else:
+                bdy
+        None -> bdy
+
+    Ok(Response(status_code(status_line), hdrs, body))
+
+// Pull the numeric code out of a status line like "HTTP/1.1 200 OK".
+fn status_code(line: String) -> Int:
+    let sp = line.index_of(" ") ?? -1
+    if sp < 0:
+        0
+    else:
+        let rest = line.substring(sp + 1, line.char_count())
+        let sp2 = rest.index_of(" ") ?? -1
+        let code: String = if sp2 < 0: rest else: rest.substring(0, sp2)
+        // (BUG-203) A malformed/non-HTTP response can carry a non-numeric OR an
+        // overflowing code. `string.to_int` TRAPS on i64 overflow — an
+        // attacker-controlled response could crash the client — so parse totally
+        // with `string.parse_int` (None on non-digit, empty, or overflow) → 0.
+        code.parse_int() ?? 0
+
+// Decode a `chunked` transfer-coding body: a sequence of
+// `<hex-size>[;ext]CRLF <size bytes> CRLF`, ending at a `0`-sized chunk. Total —
+// a malformed/truncated stream stops decoding and returns what was recovered
+// rather than trapping. Chunk sizes are byte counts, so framing is decoded on
+// `Bytes`; only the recovered payload is converted back to text.
+fn dechunk(body: String) -> String:
+    let raw = bytes.from_string(body)
+    let crlf = bytes.from_string("\r\n")
+    var out = bytes.from_string("")
+    var i = 0
+    let n = bytes.length(raw)
+    var done = false
+    while !done:
+        let nl = bytes_index_from(raw, crlf, i)
+        if nl < 0:
+            done = true
+        else:
+            let line = bytes.to_string_lossy(bytes.slice(raw, i, nl))
+            match parse_hex_size(chunk_size_hex(line)):
+                None -> done = true
+                Some(sz) ->
+                    if sz <= 0:
+                        done = true
+                    else:
+                        let start = nl + 2
+                        let stop = start + sz
+                        if stop > n:
+                            out = bytes.concat(out, bytes.slice(raw, start, n))
+                            done = true
+                        else:
+                            out = bytes.concat(out, bytes.slice(raw, start, stop))
+                            i = stop + 2
+    bytes.to_string_lossy(out)
+
+fn dechunk_strict(body: String) -> Result(String, ResponseParseError):
+    let raw = bytes.from_string(body)
+    let crlf = bytes.from_string("\r\n")
+    var out = bytes.from_string("")
+    var i = 0
+    let n = bytes.length(raw)
+    while true:
+        let nl = bytes_index_from(raw, crlf, i)
+        if nl < 0:
+            return Err(MissingChunkSizeTerminator)
+        let line = bytes.to_string_lossy(bytes.slice(raw, i, nl))
+        match parse_hex_size(chunk_size_hex(line)):
+            None -> return Err(InvalidChunkSize(line))
+            Some(sz) ->
+                let start = nl + 2
+                if sz <= 0:
+                    if start + 2 > n || bytes.slice(raw, start, start + 2) != crlf:
+                        return Err(MissingFinalChunkDelimiter)
+                    match bytes.decode_utf8(out):
+                        Ok(text) -> return Ok(text)
+                        Err(_e) -> return Err(InvalidChunkUtf8)
+                let stop = start + sz
+                if stop > n:
+                    return Err(TruncatedChunk)
+                if stop + 2 > n || bytes.slice(raw, stop, stop + 2) != crlf:
+                    return Err(MissingChunkDelimiter)
+                out = bytes.concat(out, bytes.slice(raw, start, stop))
+                i = stop + 2
+    Err(InternalChunkDecoderState)
+
+// The byte index of `needle` in `b` at or after `from`, or -1.
+fn bytes_index_from(b: Bytes, needle: Bytes, from: Int) -> Int:
+    if from >= bytes.length(b):
+        -1
+    else:
+        match bytes.index_of(bytes.slice(b, from, bytes.length(b)), needle):
+            Some(k) -> from + k
+            None -> -1
+
+// The hex size of a chunk line, with any `;chunk-extension` and surrounding
+// whitespace stripped.
+fn chunk_size_hex(line: String) -> String:
+    let semi = line.index_of(";") ?? -1
+    let raw: String = if semi < 0: line else: line.substring(0, semi)
+    raw.trim()
+
+// Parse a hex string to an Int, totally: `None` on empty, a non-hex digit, or a
+// size wide enough to risk i64 overflow (>15 hex digits) — so a hostile chunk
+// header can't trap the arithmetic.
+fn parse_hex_size(hex: String) -> Option(Int):
+    if hex == "" || hex.char_count() > 15:
+        None
+    else:
+        var val = 0
+        var ok = true
+        for c in hex.chars():
+            match hex_digit(c):
+                Some(d) -> val = val * 16 + d
+                None -> ok = false
+        if ok:
+            Some(val)
+        else:
+            None
+
+// One hex digit `0-9a-fA-F` as its value, or None.
+fn hex_digit(c: String) -> Option(Int):
+    if c.char_count() != 1:
+        None
+    else:
+        match "0123456789abcdef".index_of(c.to_lower()):
+            Some(k) -> Some(k)
+            None -> None

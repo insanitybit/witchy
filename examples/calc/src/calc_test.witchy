@@ -1,0 +1,18 @@
+// In-rune tests for `calc`. Each `test_*` function takes no parameters, passes by
+// returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/calc`.
+
+import calc
+import testing
+
+fn test_precedence():
+    testing.assert_eq(calc.run("2 + 3 * 4"), "14")
+    testing.assert_eq(calc.run("(2 + 3) * 4"), "20")
+    testing.assert_eq(calc.run("2 * (10 - 1)"), "18")
+
+fn test_left_associative():
+    testing.assert_eq(calc.run("100 - 2 - 3"), "95")
+
+fn test_errors():
+    testing.assert_eq(calc.run("8 / (4 - 4)"), "error: division by zero")
+    testing.assert_eq(calc.run("2 * (3 +"), "error: unexpected end of input")

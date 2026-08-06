@@ -1,0 +1,27 @@
+// A worker pool: three workers share ONE job queue, and whoever is free takes the
+// next job. This is mpmc — many receivers on one channel — which a per-task
+// mailbox model can't express. A Receiver is an ordinary value, so handing the
+// same one to three spawned tasks just works. Results flow back on a second
+// channel to a printer. Deterministic and byte-identical on both backends.
+//
+// Run:  witchy examples/worker_pool/src/worker_pool.witchy
+//       witchy parity examples/worker_pool/src/worker_pool.witchy
+
+from chan import Receiver, Sender
+
+async fn worker(jobs: Receiver(Int), results: Sender(Int)):
+    chan.consume(jobs, fn(n): chan.send(results, n * n)).await
+
+async fn printer(console: Console, results: Receiver(Int)):
+    chan.consume(results, fn(r): chan.done(console.print("result ${r}"))).await
+
+async fn main(console: Console):
+    let (jobs_tx, jobs_rx) = chan.channel(2).await
+    let (res_tx, res_rx) = chan.channel(2).await
+    chan.spawn(worker(jobs_rx, res_tx)).await
+    chan.spawn(worker(jobs_rx, res_tx)).await
+    chan.spawn(worker(jobs_rx, res_tx)).await
+    let p = chan.spawn(printer(console, res_rx)).await
+    for n in [10, 20, 30, 40, 50]:
+        chan.send(jobs_tx, n).await
+    chan.join(p).await

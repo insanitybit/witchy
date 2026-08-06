@@ -1,0 +1,12 @@
+fn fib(n: Int) -> Int:
+    if n < 2:
+        n
+    else:
+        fib(n - 1) + fib(n - 2)
+
+fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    let r = fib(35)
+    let bench_t1 = clock.now_monotonic()
+    console.print("${r}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

@@ -1,0 +1,14 @@
+[rune]
+name = "glamour-interactive"
+version = "0.1.0"
+
+[capabilities]
+runtime = []
+
+[dependencies]
+"glamour" = { path = "../.." }
+
+[web]
+entry = "src/interactive.witchy"
+delivery = "static"
+grants = "web/grants.toml"

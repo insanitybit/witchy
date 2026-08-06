@@ -1,0 +1,13 @@
+// Text processing: the `split`/`replace`/`to_upper` string builtins combined
+// with the `list` and `string` standard libraries. Splitting a row, mapping a
+// transform over the fields, and re-joining is a few lines.
+fn main(console: Console):
+    let row = "alice,bob,carol"
+
+    let fields = row.split(",")
+    let loud = fields.map(fn(name: String): name.to_upper())
+    console.print(loud.join(" | "))
+
+    console.print("=".repeat(3))
+
+    console.print(row.replace("bob", "***"))

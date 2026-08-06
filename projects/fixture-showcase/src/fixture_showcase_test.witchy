@@ -1,0 +1,6 @@
+import fixture_showcase
+import testing
+
+// The pure seam needs no fixture provider.
+fn test_release_line():
+    testing.assert_eq(fixture_showcase.release_line("api", "staging", 1700000000000), "release api at 1700000000000ms in staging")

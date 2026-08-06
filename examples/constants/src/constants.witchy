@@ -1,0 +1,25 @@
+// Top-level constants: `let NAME = EXPR` at module scope names a value once and
+// uses it everywhere. A constant may build on earlier constants, and a local
+// binding of the same name shadows it. Constants are inlined at their use sites
+// before type-checking and code generation, so they cost nothing at runtime and
+// behave identically interpreted, compiled, and inside the capability sandbox:
+//   witchy examples/constants/src/constants.witchy
+//   witchy parity examples/constants/src/constants.witchy
+//   witchy sandbox examples/constants/src/constants.witchy
+let SECONDS_PER_MINUTE = 60
+
+let MINUTES_PER_HOUR = 60
+
+let SECONDS_PER_HOUR = SECONDS_PER_MINUTE * MINUTES_PER_HOUR
+
+let HOURS_PER_DAY = 24
+
+let SECONDS_PER_DAY = SECONDS_PER_HOUR * HOURS_PER_DAY
+
+pub fn to_seconds(days: Int, hours: Int, minutes: Int, seconds: Int) -> Int:
+    days * SECONDS_PER_DAY + hours * SECONDS_PER_HOUR + minutes * SECONDS_PER_MINUTE + seconds
+
+fn main(console: Console):
+    console.print("1 hour      = ${SECONDS_PER_HOUR}s")
+    console.print("1 day       = ${SECONDS_PER_DAY}s")
+    console.print("1d 2h 3m 4s = ${to_seconds(1, 2, 3, 4)}s")

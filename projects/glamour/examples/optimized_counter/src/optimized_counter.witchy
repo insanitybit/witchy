@@ -1,0 +1,214 @@
+// RFC-0108 end-to-end fixture: the model and prior output stay in Wasm and the
+// browser boundary carries only binary start/event/mount/patch frames.
+
+import bytes
+import list
+import reflect
+from glamour import Cmd, FormFieldKind, FormSchema, KeyedEdit, UiRoot, VNode
+from json import Json
+
+type Msg derive(Reflect):
+    Tick
+
+fn item(key: Int) -> VNode(Msg):
+    glamour.keyed("${key}", glamour.element("li", [], [glamour.text("${key}")]))
+
+fn reference_node(count: Int) -> VNode(Msg):
+    let items = if count % 2 == 1: [item(3), item(1), item(2)] else: [item(1), item(2), item(3)]
+    glamour.element("ul", [glamour.on("click", Tick)], list.concat([glamour.text("${count}")], items))
+
+fn reference_fold(count: Int, _message: Msg) -> (Int, Cmd(Msg)):
+    (count + 1, NoCmd)
+
+fn parse_model(value: Json) -> Int:
+    match json.as_int(value):
+        Some(count) -> count
+        None -> 0
+
+fn parse_message(_value: Json) -> Msg:
+    Tick
+
+fn model_to_json(count: Int) -> Json:
+    json.from_value(count)
+
+fn message_to_json(message: Msg) -> Json:
+    json.from_value(message)
+
+fn reference_step(input: String) -> String:
+    glamour.step_with(input, reference_node, reference_fold, parse_model, parse_message, model_to_json, message_to_json)
+
+pub fn export_step(_root: UiRoot, input: String) -> String:
+    reference_step(input)
+
+type BrowserState:
+    BrowserState(Int, Int)
+
+fn put_u8(var output: List(Int), value: Int):
+    output.push(value % 256)
+
+fn put_u16(var output: List(Int), value: Int):
+    put_u8(output, value)
+    put_u8(output, value / 256)
+
+fn put_u32(var output: List(Int), value: Int):
+    put_u16(output, value % 65536)
+    put_u16(output, value / 65536)
+
+fn put_u64(var output: List(Int), value: Int):
+    put_u32(output, value % 4294967296)
+    put_u32(output, value / 4294967296)
+
+fn put_header(var output: List(Int), kind: Int, total_length: Int, operation_count: Int, sequence: Int, payload_offset: Int):
+    put_u8(output, 71)
+    put_u8(output, 76)
+    put_u8(output, 77)
+    put_u8(output, 82)
+    put_u16(output, 1)
+    put_u16(output, 0)
+    put_u8(output, kind)
+    put_u8(output, 0)
+    put_u16(output, 48)
+    put_u32(output, total_length)
+    put_u32(output, operation_count)
+    put_u32(output, 7)
+    put_u64(output, 72623859790382856)
+    put_u64(output, sequence)
+    put_u32(output, payload_offset)
+    put_u32(output, 0)
+
+fn put_operation(var output: List(Int), tag: Int, length: Int):
+    put_u16(output, tag)
+    put_u16(output, 0)
+    put_u32(output, length)
+
+fn finish(output: List(Int), payload: Bytes) -> Bytes:
+    var complete = output
+    for byte in payload.to_list():
+        complete.push(byte)
+    match bytes.from_list(complete):
+        Ok(frame) -> frame
+        Err(_) -> bytes.from_string("")
+
+fn mount_frame(sequence: Int, count: Int) -> Bytes:
+    let payload = bytes.from_string("${count}")
+    let payload_length = payload.length()
+    let payload_offset = 204
+    var output: List(Int) = []
+    put_header(output, 16, payload_offset + payload_length, 5, sequence, payload_offset)
+    put_operation(output, 1, 40)
+    put_u32(output, 3)
+    put_u32(output, 1)
+    put_u32(output, 0)
+    put_u32(output, 0)
+    put_u32(output, 1)
+    put_u32(output, 1)
+    put_u32(output, payload_offset)
+    put_u32(output, payload_length)
+    put_operation(output, 9, 32)
+    put_u32(output, 13)
+    put_u32(output, 1)
+    put_u32(output, 0)
+    put_u32(output, 4)
+    put_u32(output, 101)
+    put_u32(output, 0)
+    put_operation(output, 9, 32)
+    put_u32(output, 13)
+    put_u32(output, 2)
+    put_u32(output, 0)
+    put_u32(output, 5)
+    put_u32(output, 102)
+    put_u32(output, 0)
+    put_operation(output, 9, 32)
+    put_u32(output, 13)
+    put_u32(output, 3)
+    put_u32(output, 0)
+    put_u32(output, 6)
+    put_u32(output, 103)
+    put_u32(output, 0)
+    put_operation(output, 14, 20)
+    put_u32(output, 20)
+    put_u32(output, 29)
+    put_u32(output, 31)
+    finish(output, payload)
+
+fn put_moves(var output: List(Int), edits: List(KeyedEdit)):
+    for edit in edits:
+        match edit:
+            MoveKey(key, before) ->
+                put_operation(output, 10, 20)
+                put_u32(output, 13)
+                put_u32(output, key)
+                put_u32(output, before)
+            RemoveKey(_) -> Nil
+            InsertKey(_, _) -> Nil
+
+fn planned_moves(old_keys: List(Int), new_keys: List(Int)) -> List(KeyedEdit):
+    match glamour.keyed_plan(old_keys, new_keys):
+        Ok(edits) -> edits
+        Err(_) -> []
+
+fn patch_frame(sequence: Int, count: Int) -> Bytes:
+    let payload = bytes.from_string("${count}")
+    let payload_length = payload.length()
+    let edits = if count % 2 == 1: planned_moves([1, 2, 3], [3, 1, 2]) else: planned_moves([3, 1, 2], [1, 2, 3])
+    let payload_offset = 68 + list.length(edits) * 20
+    var output: List(Int) = []
+    put_header(output, 17, payload_offset + payload_length, 1 + list.length(edits), sequence, payload_offset)
+    put_operation(output, 2, 20)
+    put_u32(output, 11)
+    put_u32(output, payload_offset)
+    put_u32(output, payload_length)
+    put_moves(output, edits)
+    finish(output, payload)
+
+fn read_u32(input: Bytes, offset: Int) -> Int:
+    if input.length() < offset + 4:
+        0
+    else:
+        input.at(offset) + input.at(offset + 1) * 256 + input.at(offset + 2) * 65536 + input.at(offset + 3) * 16777216
+
+fn signup_schema() -> FormSchema:
+    let fallback = FormSchema("invalid", "POST", glamour.form_url_or_root("/"), [])
+    glamour.form_schema("signup", "POST", glamour.form_url_or_root("/signup"), [glamour.form_field("email", "Email", FormEmail, true), glamour.form_field("password", "Password", FormSecret, true), glamour.form_field("updates", "Updates", FormCheckbox, false)]).unwrap_or(fallback)
+
+@browser
+pub fn glamour_init(_root: UiRoot, input: Bytes) -> BrowserState:
+    BrowserState(read_u32(input, 48), 1)
+
+@browser
+pub fn glamour_dispatch(state: BrowserState, input: Bytes) -> BrowserState:
+    match state:
+        BrowserState(count, sequence) ->
+            if input.length() > 8 && (input.at(8) == 4 || input.at(8) == 5):
+                match glamour.decode_client_action_frame(signup_schema(), input, 7, 84281096, 16909060, sequence - 1):
+                    glamour.ClientActionInput(_generation, values) ->
+                        match (values.at(0), values.at(1)):
+                            (glamour.ClientActionEmail("email", "ada@example.test"), glamour.ClientActionCheckbox("updates", Some(true))) -> BrowserState(count + 10, sequence + 1)
+                            _ -> BrowserState(count, sequence + 1)
+                    glamour.ClientActionCompletion(_generation, glamour.ClientActionSucceeded, 204) -> BrowserState(count + 100, sequence + 1)
+                    _ -> BrowserState(count, sequence + 1)
+            else if read_u32(input, 56) == 31:
+                let next = count + 1
+                BrowserState(next, sequence + 1)
+            else:
+                BrowserState(count, sequence + 1)
+
+@browser
+pub fn glamour_emit(state: BrowserState) -> Bytes:
+    match state:
+        BrowserState(count, sequence) ->
+            if sequence == 1:
+                mount_frame(0, count)
+            else:
+                patch_frame(sequence - 1, count)
+
+@browser
+pub fn glamour_release(own state: BrowserState):
+    match state:
+        BrowserState(_, _) -> Nil
+
+fn main(console: Console):
+    console.print("${reference_step("{\"model\":0}")}\n")
+    console.print("${reference_step("{\"model\":0,\"msg\":{\"\$variant\":\"Tick\",\"\$values\":[]}}")}\n")
+    console.print("${reference_step("{\"model\":1,\"msg\":{\"\$variant\":\"Tick\",\"\$values\":[]}}")}\n")
+    console.print("${reference_step("{\"model\":2,\"msg\":{\"\$variant\":\"Tick\",\"\$values\":[]}}")}\n")

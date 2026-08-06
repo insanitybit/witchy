@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main():\\n    print(console, \\\"hi\\\")\\n\")"
+---
+type error: `main`, line 2: unbound variable `console`

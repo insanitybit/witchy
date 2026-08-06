@@ -1,0 +1,13 @@
+# coven_web_app — the COMPLETE coven-web frontend as one glamour app (RFC-0015 Phase D): the
+# routed, data-fetched, authenticated shell (catalog/version/docs/trust + login + promote/yank
+# via host ports) that replaces the TypeScript app. Capability-pure: empty footprint; the JS
+# host shell holds all authority (fetch/session/passkey). The suite-tested core of the migration.
+[rune]
+name = "coven_web_app"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]
+
+[dependencies]
+"glamour" = { path = "../.." }

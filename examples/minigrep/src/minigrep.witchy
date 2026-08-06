@@ -1,0 +1,43 @@
+// minigrep — the CLI search tool from chapter 12 of *The Rust Programming
+// Language*, reproduced in witchy. It reads a file with a read-only Dir
+// capability, prints the lines that contain a query string, and switches to
+// case-insensitive search when the IGNORE_CASE environment variable is set —
+// the same shape as the book's version, with witchy's capability-typed entry
+// point (the host grants Console, a read-only Dir, Env, and the args).
+//   witchy examples/minigrep/src/minigrep.witchy nobody examples/data/poem.txt
+//   IGNORE_CASE=1 witchy examples/minigrep/src/minigrep.witchy BODY examples/data/poem.txt
+
+// The lines of `contents` that contain `query`.
+pub fn search(query: String, contents: String) -> List(String):
+    var hits = []
+    for line in contents.lines():
+        if line.contains(query):
+            hits.push(line)
+    hits
+
+// Case-insensitive variant: fold both sides to lower case before comparing.
+pub fn search_insensitive(query: String, contents: String) -> List(String):
+    let needle = query.to_lower()
+    var hits = []
+    for line in contents.lines():
+        if line.to_lower().contains(needle):
+            hits.push(line)
+    hits
+
+// Case-insensitive search is on when IGNORE_CASE is set (to any value).
+fn ignore_case(env: Env) -> Bool:
+    match env.get_env("IGNORE_CASE"):
+        Some(_v) -> true
+        None -> false
+
+fn main(console: Console, root: Dir[Read], env: Env, args: List(String)) -> Int:
+    if args.length() < 2:
+        console.print("usage: minigrep <query> <file>")
+        1
+    else:
+        let query = args.at(0)
+        let contents = root.read(args.at(1))
+        let hits = if ignore_case(env): search_insensitive(query, contents) else: search(query, contents)
+        for line in hits:
+            console.print(line)
+        0

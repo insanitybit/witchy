@@ -1,0 +1,8 @@
+// String handling: literals, `<>` concatenation, and `print` lowering to the
+// host `Console` capability. Granted the `print` capability the program runs;
+// denied it, it cannot — printing is authority, not ambient.
+pub fn shout(name: String) -> String:
+    "hello, " + name
+
+fn main(console: Console):
+    console.print(shout("compiled witchy") + "\n")

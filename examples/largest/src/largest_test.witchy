@@ -1,0 +1,12 @@
+// In-rune tests for `largest`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/largest`.
+
+import largest
+import testing
+
+fn test_largest_ints():
+    testing.assert_int_eq(largest.largest([34, 50, 25, 100, 65]), 100)
+    testing.assert_int_eq(largest.largest([1]), 1)
+    testing.assert_int_eq(largest.largest([-5, -2, -9]), -2)
+    testing.assert_int_eq(largest.largest([5, 4, 3, 2, 1]), 5)

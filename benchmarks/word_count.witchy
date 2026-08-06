@@ -1,0 +1,21 @@
+// Text-processing benchmark: format a word, count its occurrences in a
+// string-keyed dict, then sum the counts. Stresses string formatting and
+// string hashing — the bread-and-butter of Go log/text processors.
+//
+// `dict.update(d, w, 0, fn(n): n + 1)` is the single-lookup upsert — one hash, like
+// Go's `m[w]++`.
+
+fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    var d = dict.new()
+    var i = 0
+    while i < 1000000:
+        let w = f"word{i % 1000}"
+        dict.update(d, w, 0, fn(n: Int): n + 1)
+        i = i + 1
+    var total = 0
+    for v in dict.values(d):
+        total = total + v
+    let bench_t1 = clock.now_monotonic()
+    console.print("${total + dict.length(d)}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

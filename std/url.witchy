@@ -1,0 +1,353 @@
+// Minimal URL parsing — the witchy slice of Go's net/url. Pure and
+// capability-free, so it compiles to WASM. Handles
+// `scheme://host[:port][/path][?query][#fragment]`; the port defaults by scheme
+// (443 for https, else 80) and the path to "/".
+//
+// `parse` returns a matchable `UrlError`; `parse_string` is the String-rendering
+// bridge for application-style callers. Simple scalar parses like
+// `string.parse_int` stay `Option`.
+
+import option
+import result
+import encoding
+import show
+import error
+import convert
+
+sealed type Url:
+    Url(String, String, Int, String, Option(String), Option(String))
+
+// Matchable URL parse failures. The payload is the original raw URL so callers
+// can report or classify without parsing display text.
+type UrlError:
+    MissingSchemeSeparator(String)
+    EmptyScheme(String)
+    UserinfoUnsupported(String)
+    EmptyHost(String)
+    InvalidPort(String)
+    MalformedIpv6Literal(String)
+
+pub fn url_error_message(e: UrlError) -> String:
+    match e:
+        MissingSchemeSeparator(raw) -> "missing `scheme://` in: " + raw
+        EmptyScheme(raw) -> "empty scheme in: " + raw
+        UserinfoUnsupported(raw) -> "userinfo (`user@...`) is not supported in: " + raw
+        EmptyHost(raw) -> "empty host in: " + raw
+        InvalidPort(raw) -> "invalid port in: " + raw
+        MalformedIpv6Literal(raw) -> "malformed IPv6 literal in: " + raw
+
+impl Show for UrlError:
+    fn show(self) -> String:
+        url_error_message(self)
+
+impl Error for UrlError
+
+impl From(UrlError) for String:
+    fn from(value: UrlError) -> Self:
+        url_error_message(value)
+
+// Parse a URL, or a matchable error naming what is malformed. A well-formed URL needs a
+// non-empty scheme and host — an empty either side (`://host`, `https:///path`)
+// is rejected rather than accepted with a blank field. The scheme is
+// case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so
+// `HTTPS://` gets the https default port and formats back canonically.
+pub fn parse(s: String) -> Result(Url, UrlError):
+    let sep = s.index_of("://") ?? -1
+    if sep < 0:
+        Err(MissingSchemeSeparator(s))
+    else:
+        let scheme = s.substring(0, sep).to_lower()
+        if scheme.is_empty():
+            Err(EmptyScheme(s))
+        else:
+            let rest = s.substring(sep + 3, s.char_count())
+            // The authority ends at the first `/`, `?`, or `#` — so a query or
+            // fragment glued straight to the host (`host?x=1`) is not swallowed
+            // into the host. Split the remaining suffix structurally so HTTP
+            // clients never mistake a fragment for request-target bytes.
+            let cut = authority_end(rest)
+            let authority = rest.substring(0, cut)
+            let suffix = if cut >= rest.char_count(): "" else: rest.substring(cut, rest.char_count())
+            let (path, query, fragment) = split_suffix(suffix)
+            // Userinfo (`user@` or `user:pass@`) is outside this minimal
+            // `scheme://host[:port][/path]` grammar; reject it loudly rather
+            // than reinterpret credentials as host/port text (BUG-380).
+            if authority.contains("@"):
+                Err(UserinfoUnsupported(s))
+            else if malformed_ipv6_authority(authority):
+                Err(MalformedIpv6Literal(s))
+            else:
+                // Split host from port at the LAST colon so a bracketed IPv6
+                // literal keeps its inner colons (`[::1]:80` -> host `[::1]`,
+                // matching the Net layer's last-colon split). A bare IPv6
+                // literal has no brackets and no port, so any colon before the
+                // closing `]` is part of the host.
+                let split = host_port_split(authority)
+                let host = authority.substring(0, split)
+                if host.is_empty():
+                    Err(EmptyHost(s))
+                else if split >= authority.char_count():
+                    Ok(Url(scheme, host, default_port(scheme), path, query, fragment))
+                else:
+                    match parse_port(authority.substring(split + 1, authority.char_count())):
+                        Some(p) -> Ok(Url(scheme, host, p, path, query, fragment))
+                        None -> Err(InvalidPort(s))
+
+// Parse a URL with String errors for application-style boundaries.
+pub fn parse_string(s: String) -> Result(Url, String):
+    match parse(s):
+        Ok(u) -> Ok(u)
+        Err(e) -> Err(url_error_message(e))
+
+// The index in `rest` where the authority ends: the earliest of `/`, `?`, `#`,
+// or the end of the string when none is present.
+fn authority_end(rest: String) -> Int:
+    var best = rest.char_count()
+    let slash = rest.index_of("/") ?? -1
+    if slash >= 0 && slash < best:
+        best = slash
+    let query = rest.index_of("?") ?? -1
+    if query >= 0 && query < best:
+        best = query
+    let hash = rest.index_of("#") ?? -1
+    if hash >= 0 && hash < best:
+        best = hash
+    best
+
+// Split the post-authority suffix into its path and optional query /
+// fragment. Presence is retained separately from content, so trailing `?` and
+// `#` round-trip instead of collapsing into absence.
+fn split_suffix(suffix: String) -> (String, Option(String), Option(String)):
+    let hash = suffix.index_of("#") ?? -1
+    let before_fragment: String = if hash < 0: suffix else: suffix.substring(0, hash)
+    let fragment = if hash < 0: None else: Some(suffix.substring(hash + 1, suffix.char_count()))
+    let question = before_fragment.index_of("?") ?? -1
+    let path = if question < 0: before_fragment else: before_fragment.substring(0, question)
+    let query = if question < 0: None else: Some(before_fragment.substring(question + 1, before_fragment.char_count()))
+    (path, query, fragment)
+
+// The index of the port-separating colon in an authority, or the authority's
+// length when there is no explicit port. A bracketed IPv6 literal (`[::1]`,
+// `[::1]:80`) keeps every colon up to and including the closing `]` inside the
+// host: the only port colon is one that follows `]`. An unbracketed authority
+// splits at its last colon, so an ordinary `host:port` is unambiguous and a
+// bare IPv6 literal (`::1`, no port) stays entirely in the host.
+fn host_port_split(authority: String) -> Int:
+    let n = authority.char_count()
+    if authority.starts_with("["):
+        let close = authority.index_of("]") ?? -1
+        if close < 0:
+            n
+        else if close + 1 < n && authority.char_at(close + 1) == Some(":"):
+            close + 1
+        else:
+            n
+    else:
+        let last = last_colon(authority)
+        if last < 0:
+            n
+        else if authority.index_of(":") != Some(last):
+            // More than one colon means an unbracketed IPv6 literal, not a
+            // host followed by a decimal port. An explicit IPv6 port requires
+            // brackets (`[::1]:8080`) so the boundary is unambiguous.
+            n
+        else:
+            last
+
+fn malformed_ipv6_authority(authority: String) -> Bool:
+    let opens = authority.starts_with("[")
+    let close = authority.index_of("]") ?? -1
+    if opens:
+        close <= 1 || close + 1 < authority.char_count() && authority.char_at(close + 1) != Some(":")
+    else:
+        close >= 0
+
+fn last_colon(s: String) -> Int:
+    var i = s.char_count() - 1
+    var found = 0 - 1
+    var scanning = true
+    while scanning && i >= 0:
+        if s.char_at(i) == Some(":"):
+            found = i
+            scanning = false
+        i = i - 1
+    found
+
+fn default_port(scheme: String) -> Int:
+    if scheme == "https":
+        443
+    else:
+        80
+
+// The `:port` digits as an Int in 0..=65535, or None when empty, non-numeric, or
+// out of range — so a malformed authority (`host:abc`) or an oversized port
+// (`host:99999999999999999999`) makes `parse` return an error rather than trap
+// inside `string.to_int` (which panics on an out-of-i64 magnitude).
+fn parse_port(digits: String) -> Option(Int):
+    if !all_decimal_digits(digits):
+        None
+    else:
+        match digits.parse_int():
+            Some(p) -> if p <= 65535: Some(p) else: None
+            None -> None
+
+fn all_decimal_digits(s: String) -> Bool:
+    if s.is_empty():
+        false
+    else:
+        var valid = true
+        for ch in s.chars():
+            if ch < "0" || ch > "9":
+                valid = false
+        valid
+
+pub fn scheme(u: Url) -> String:
+    match u:
+        Url(s, _host, _port, _path, _query, _fragment) -> s
+
+pub fn host(u: Url) -> String:
+    match u:
+        Url(_scheme, h, _port, _path, _query, _fragment) -> h
+
+pub fn port(u: Url) -> Int:
+    match u:
+        Url(_scheme, _host, p, _path, _query, _fragment) -> p
+
+// The path component only, normalized to `/` when the URL omits a path.
+pub fn pathname(u: Url) -> String:
+    match u:
+        Url(_scheme, _host, _port, p, _query, _fragment) -> if p.is_empty(): "/" else: p
+
+// The query text without its leading `?`, retaining `Some("")` for a URL that
+// explicitly ends its query component at `?`.
+pub fn query(u: Url) -> Option(String):
+    match u:
+        Url(_scheme, _host, _port, _path, q, _fragment) -> q
+
+// The fragment text without its leading `#`, retaining `Some("")` for a URL
+// that explicitly ends at `#`.
+pub fn fragment(u: Url) -> Option(String):
+    match u:
+        Url(_scheme, _host, _port, _path, _query, f) -> f
+
+// Add one percent-encoded query pair while preserving the fragment boundary.
+// Existing query pairs remain in order; an explicitly empty query does not gain
+// a leading `&`.
+pub fn with_query(u: Url, key: String, value: String) -> Url:
+    match u:
+        Url(s, h, p, pa, q, f) ->
+            let pair = encode(key) + "=" + encode(value)
+            let next = match q:
+                None -> pair
+                Some(existing) -> if existing.is_empty(): pair else: existing + "&" + pair
+            Url(s, h, p, pa, Some(next), f)
+
+// The HTTP request target: path plus query, deliberately excluding the
+// client-side fragment component (RFC 3986 section 3.5).
+pub fn request_target(u: Url) -> String:
+    match u:
+        Url(_scheme, _host, _port, pa, q, _fragment) ->
+            let path = if pa.is_empty(): "/" else: pa
+            path + query_suffix(q)
+
+fn query_suffix(q: Option(String)) -> String:
+    match q:
+        None -> ""
+        Some(value) -> "?" + value
+
+fn fragment_suffix(f: Option(String)) -> String:
+    match f:
+        None -> ""
+        Some(value) -> "#" + value
+
+fn suffix_absent(q: Option(String), f: Option(String)) -> Bool:
+    match q:
+        Some(_query) -> false
+        None ->
+            match f:
+                Some(_fragment) -> false
+                None -> true
+
+// Render a Url back to its string form — the inverse of `parse`. The port is
+// shown only when it differs from the scheme default, so a parse/format round
+// trip of `https://host/p` stays `https://host/p` rather than gaining `:443`.
+pub fn format(u: Url) -> String:
+    match u:
+        Url(s, h, p, pa, q, f) ->
+            let authority = if p == default_port(s): h else: h + ":" + "${p}"
+            let path = if pa.is_empty() && suffix_absent(q, f): "/" else: pa
+            s + "://" + authority + path + query_suffix(q) + fragment_suffix(f)
+
+impl Show for Url:
+    fn show(self) -> String:
+        format(self)
+
+// Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set
+// (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build
+// query strings safely — e.g. an OAuth `redirect_uri`, `scope`, or `state`.
+pub fn encode(s: String) -> String:
+    var out = ""
+    for ch in s.chars():
+        if is_unreserved(ch):
+            out = out + ch
+        else:
+            out = out + percent(ch)
+    out
+
+fn is_unreserved(ch: String) -> Bool:
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~".contains(ch)
+
+// `%XX` for each UTF-8 byte of a single character (hex of the bytes, split into pairs).
+fn percent(ch: String) -> String:
+    let hex = encoding.hex_encode(ch).to_upper()
+    var out = ""
+    var i = 0
+    while i < hex.length():
+        out = out + "%" + hex.substring(i, i + 2)
+        i = i + 2
+    out
+
+// Percent-decode `s` (RFC 3986 §2.1): each `%XX` becomes the byte it names.
+// Consecutive `%XX` bytes are decoded together so multi-byte UTF-8 escapes
+// (`%E2%82%AC` -> `€`) round-trip. A stray `%` not followed by two hex digits
+// passes through literally (total, lossy). `+` stays literal — for form/query
+// decoding where `+` means space, use `decode_form`.
+pub fn decode(s: String) -> String:
+    pct_decode(s, false)
+
+// Like `decode`, but also maps `+` to a space — the
+// `application/x-www-form-urlencoded` convention for query strings and form
+// bodies (RFC 1866 §8.2.1).
+pub fn decode_form(s: String) -> String:
+    pct_decode(s, true)
+
+fn pct_decode(s: String, plus_space: Bool) -> String:
+    var out = ""
+    var pending = ""
+    var i = 0
+    let n = s.char_count()
+    while i < n:
+        let ch = s.char_at(i) ?? ""
+        if ch == "%" && i + 2 < n && is_hex_digit(s.char_at(i + 1) ?? "") && is_hex_digit(s.char_at(i + 2) ?? ""):
+            pending = pending + s.substring(i + 1, i + 3)
+            i = i + 3
+        else:
+            out = out + flush_hex(pending)
+            pending = ""
+            if plus_space && ch == "+":
+                out = out + " "
+            else:
+                out = out + ch
+            i = i + 1
+    out + flush_hex(pending)
+
+fn flush_hex(hex: String) -> String:
+    if hex == "":
+        ""
+    else:
+        match encoding.hex_decode(hex):
+            Ok(text) -> text
+            Err(_e) -> hex
+
+fn is_hex_digit(c: String) -> Bool:
+    c.char_count() == 1 && "0123456789abcdefABCDEF".contains(c)

@@ -1,0 +1,24 @@
+mode opt
+
+// A pure statistics helper. It is itself `mode opt` — and that is REQUIRED, not a
+// style choice: `main.witchy` is `mode opt`, and an `opt` module may only import
+// other `opt` modules. Delete the `mode opt` line above and the whole program
+// stops compiling. (The bundled std library is the one exemption.)
+
+// `let xs` borrows the list immutably — these functions only read it.
+pub fn total(let xs: List(Int)) -> Int:
+    var acc = 0
+    for x in xs:
+        acc = acc + x
+    acc
+
+pub fn count(let xs: List(Int)) -> Int:
+    xs.length()
+
+// Integer mean (floor); 0 for an empty list rather than dividing by zero.
+pub fn mean(let xs: List(Int)) -> Int:
+    let n = count(xs)
+    if n == 0:
+        0
+    else:
+        total(xs) / n
