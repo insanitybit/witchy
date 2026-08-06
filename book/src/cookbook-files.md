@@ -3,9 +3,15 @@
 File access in witchy flows through the `Dir` capability. A `Dir` is authority
 over a directory *subtree* — never the whole filesystem — and it carries rights
 that say what you may do inside it. You read files with `Dir[Read]`, write them
-with `Dir[Write]`, and take a full `Dir` when you need both. Because the
-examples here perform real I/O, the book type-checks them but does not run them;
-each is a complete program you could hand to `witchy run --dir . program.witchy`.
+with `Dir[Write]`, and take a full `Dir` when you need both.
+
+Unlike the pure examples in earlier chapters, these programs need a real `Dir`
+to run — so the book type-checks them, and in the online edition the **Run**
+button executes them against a fresh *in-memory* `Dir`, one per run, seeded from
+a fixed fixture (it contains a `config.toml`, among other files). Nothing touches
+your actual disk. That same in-memory `Dir` is how you test file code
+deterministically, shown at the end of this chapter. On your own machine you'd
+grant a real subtree with `witchy run --dir . program.witchy`.
 
 ## Reading
 
@@ -60,3 +66,46 @@ only manipulates strings, `Dir` is the unforgeable authority to actually reach
 the filesystem, and `fs` is convenience built from `Dir`. Keep path math in
 `path`, take the narrowest `Dir` you can at the boundary, and the reach of any
 file bug is bounded by the subtree you granted.
+
+## Testing file code with a virtual `Dir`
+
+Because a `Dir` is just a value handed in at the boundary, you never need a real
+filesystem to test file logic. The test runner mints an **in-memory `Dir`** from
+a fixture plan and passes it to any `test_*` function that asks for one — the
+exact mechanism the online book uses for its Run buttons. Reads see the fixture
+files; writes and appends are visible to later reads within the run, then
+discarded. The tests run identically on both backends:
+
+```witchy
+import testing
+
+fn test_reads_a_config_file(dir: Dir[Read]):
+    testing.assert_eq(dir.read("config.toml"), "mode = \"docs\"\n")
+
+fn test_append_then_read(dir: Dir):
+    dir.write("run.txt", "started\n")
+    dir.append("run.txt", "finished\n")
+    testing.assert_eq(dir.read("run.txt"), "started\nfinished\n")
+```
+
+You supply the starting contents in a small JSON fixture plan and run it with
+`witchy test --fixtures plan.json --backend both file.witchy`. The plan for the
+tests above declares `Read`/`Write` rights and one seed file:
+
+```json
+{
+  "version": 1,
+  "filesystem": {
+    "rights": ["Read", "Write"],
+    "entries": {
+      "config.toml": { "kind": "file", "hex": "6d6f6465203d2022646f6373220a" }
+    }
+  }
+}
+```
+
+File contents are given as `hex` so any bytes — text or binary — are expressible
+(`6d6f6465203d2022646f6373220a` is `mode = "docs"\n`). This is the same fixture
+model the [Testing](testing.md) chapter uses for `Clock`, `Env`, and the other
+capabilities: authority comes from an explicit plan, so a unit test is
+hermetic, deterministic, and never touches the real machine.
