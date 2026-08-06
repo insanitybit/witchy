@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 
@@ -138,7 +138,27 @@ const staticServer = createServer((request, response) => {
     response.end(probeSource);
     return;
   }
-  const pathname = new URL(request.url, "http://localhost").pathname;
+  let pathname = new URL(request.url, "http://localhost").pathname;
+  // The deployed bundle can live under a GitHub Pages project subpath
+  // (`/<repo>/…`), so a page whose asset URLs resolve against that base requests
+  // `/<repo>/assets/…`. Strip a leading repo-name segment when the remainder
+  // names a real bundle file, so serving is base-path-agnostic: requests at the
+  // root AND under a subpath both resolve to the same `dist` files. (Only strip
+  // when it helps — a genuine top-level file of that name still resolves.)
+  const stripSubpath = (p) => {
+    const trimmed = p.replace(/^\/+/, "");
+    const slash = trimmed.indexOf("/");
+    if (slash <= 0) return p;
+    const rest = trimmed.slice(slash + 1);
+    const candidate = resolve(root, rest);
+    if ((candidate === root || candidate.startsWith(root + sep)) && existsSync(candidate)) {
+      return `/${rest}`;
+    }
+    return p;
+  };
+  if (pathname !== "/" && !existsSync(resolve(root, pathname.replace(/^\/+/, "")))) {
+    pathname = stripSubpath(pathname);
+  }
   const relative = pathname === "/" ? "index.html" : pathname.slice(1);
   const path = resolve(root, relative);
   if (path !== root && !path.startsWith(root + sep)) {
