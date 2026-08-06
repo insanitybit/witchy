@@ -74,9 +74,20 @@
     #[test]
     fn host_imports_require_generated_layout_metadata_before_linking() {
         let mut runtime = Runtime::batch().expect("runtime");
+        // `print` has generated ABI metadata, so its layout contract
+        // authenticates with no bundle (`validate_layout_metadata` passes). Grant
+        // `print` so the import actually LINKS and the module instantiates —
+        // otherwise the spawn only succeeds when `wasm-opt` happens to be on PATH
+        // and dead-code-eliminates the unused import (true on macOS dev boxes,
+        // false on Linux CI), making the test environment-dependent. The negative
+        // `not_generated` case below still fails closed before linking.
         runtime
-            .spawn(wasm_with_host_import("print"), Capabilities::none(), 4)
-            .expect("the explicit reject-all print contract authenticates without layouts");
+            .spawn(
+                wasm_with_host_import("print"),
+                Capabilities { print: true, ..Default::default() },
+                4,
+            )
+            .expect("print's generated ABI metadata authenticates without a layout bundle");
 
         let error = match runtime.spawn(
             wasm_with_host_import("not_generated"),
