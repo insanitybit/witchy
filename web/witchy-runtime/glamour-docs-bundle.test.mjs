@@ -130,8 +130,8 @@ printf 'fresh browser compiler' >"$out"
 
   const manifest = json(join(completeDist, "witchy-web-manifest.json"));
   ok(manifest.delivery === "static", "the book uses native static delivery");
-  ok(manifest.routes.length === 43, "the book publishes all 43 canonical routes");
-  ok(manifest.contentInputs.length === 43, "the build authenticates all 43 Markdown inputs");
+  ok(manifest.routes.length === 53, "the book publishes all 53 canonical routes");
+  ok(manifest.contentInputs.length === 53, "the build authenticates all 53 Markdown inputs");
   ok(
     manifest.runtime?.javascript === true && manifest.runtime?.wasm === true,
     "the manifest reports runtime code because the book contains an interactive region",
