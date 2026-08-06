@@ -266,6 +266,10 @@ mod tests {
                 FsScope::Path,
                 FsAccess::new(true, false, false),
             );
+            // Production always normalizes before applying: filesystem rules
+            // imply the FsOpen syscall class, without which seccomp denies the
+            // very `openat` that reads the granted file (EPERM). Match that here.
+            policy.normalize_classes();
             let report = apply(&policy, EnforcementMode::Required).unwrap();
             assert!(report.fully_enforced(), "{report:?}");
             assert_eq!(std::fs::read_to_string(allowed.join("value")).unwrap(), "allowed");
