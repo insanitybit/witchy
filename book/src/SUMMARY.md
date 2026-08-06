@@ -45,6 +45,8 @@
   - [Parsing Configuration with TOML](cookbook-config.md)
   - [Dates, Times, and Durations](cookbook-time.md)
   - [Reading and Writing Files](cookbook-files.md)
+  - [Working with JSON](cookbook-json.md)
+  - [Hashing and Signatures](cookbook-crypto.md)
 
 ---
 
