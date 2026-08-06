@@ -54,8 +54,13 @@ test("published resumable and fresh regions activate their authenticated Wasm", 
     }
   });
 
+  // The island manifest the runtime fetches is content-hashed for cache-busting
+  // (`/islands-<hash>.json`); `witchy-islands-manifest.json` is an identical
+  // stable-named copy that the page does NOT request. Match the hashed name the
+  // boot actually loads (a bare `/islands-<hash>.json` at the root), or the
+  // stable copy if a future build serves that instead.
   const manifests = Promise.all([
-    page.waitForResponse((response) => response.url().endsWith("/witchy-islands-manifest.json")),
+    page.waitForResponse((response) => /\/(islands-[0-9a-f]+|witchy-islands-manifest)\.json$/.test(new URL(response.url()).pathname)),
     page.waitForResponse((response) => response.url().endsWith("/witchy-island-artifacts.json")),
   ]);
   await page.goto("http://witchy.test/");
