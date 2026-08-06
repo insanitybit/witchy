@@ -108,6 +108,36 @@ fn apply_filesystem(
             .add_rule(PathBeneath::new(path, access))
             .map_err(error)?;
     }
+    // When execution is granted (the Process syscall class is present), a
+    // dynamically-linked program's `execve` invokes the kernel's interpreter
+    // (`/lib/.../ld-linux`) which then reads/execs `libc.so` etc. Those live
+    // OUTSIDE any granted program directory, so without rules covering them
+    // Landlock denies the load with EACCES *after* execve begins — the failure
+    // is the loader, not the program binary. Grant read+execute on the
+    // conventional loader/library roots. This is enforcement-layer loader
+    // infrastructure (kept out of the pure `confinement_policy()` so the policy
+    // stays deterministic): read+execute only, applied only when exec is already
+    // permitted, and rules for absent paths are skipped.
+    if policy.syscall_classes.contains(&crate::SyscallClass::Process) {
+        let loader_access =
+            fs_access(FsScope::Tree, FsAccess::new(true, false, true));
+        for root in [
+            "/lib",
+            "/lib64",
+            "/usr/lib",
+            "/usr/lib64",
+            "/lib/x86_64-linux-gnu",
+            "/lib/aarch64-linux-gnu",
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib/aarch64-linux-gnu",
+        ] {
+            if let Ok(path) = PathFd::new(root) {
+                created = created
+                    .add_rule(PathBeneath::new(path, loader_access))
+                    .map_err(error)?;
+            }
+        }
+    }
     let status = created.restrict_self().map_err(error)?;
     Ok(layer_report(Layer::Filesystem, status))
 }
