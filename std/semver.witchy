@@ -1,7 +1,7 @@
-// semver — semantic versions and constraints, for dependency resolution.
+// semver - semantic versions and constraints, for dependency resolution.
 //
 // Intentionally minimal (matching the package manager's needs): `major.minor.patch`
-// versions and the `^`, `~`, exact, `>=`, and `*` constraints — enough for
+// versions and the `^`, `~`, exact, `>=`, and `*` constraints - enough for
 // deterministic resolution without a full SemVer grammar. A missing component
 // parses as 0 (`1.2` is `1.2.0`); a non-numeric component is an error.
 
@@ -12,11 +12,11 @@ import show
 import error
 import convert
 
-// A version orders by major, then minor, then patch — exactly the lexicographic
+// A version orders by major, then minor, then patch - exactly the lexicographic
 // order `derive(Ord)` gives the fields in declaration order, so `<`, `>`, and
 // `==` compare versions directly. `Version` is sealed (RFC-0065): external code
 // cannot forge one with the raw data constructor, so a `Version` can only be
-// built through this module — `parse`, which rejects negative components, or
+// built through this module - `parse`, which rejects negative components, or
 // `version`. This closes the arbitrary-raw-construction vector of BUG-191
 // (`semver.Version(-1, 2, 3)` from another module is now a compile error).
 sealed type Version derive(PartialEq, Eq, PartialOrd, Ord):
@@ -207,7 +207,7 @@ fn caret_matches(r: Version, precision: Int, v: Version) -> Bool:
         v.major == 0 && v.minor == 0 && v.patch == r.patch
 
 // The highest version in `versions` that satisfies `req`, or None if none do.
-// Keep the matching versions and fold to the highest — dogfoods std/iter.
+// Keep the matching versions and fold to the highest - dogfoods std/iter.
 pub fn best(versions: List(Version), req: Req) -> Option(Version):
     let ok = iter.from_list(versions).filter(fn(v: Version): matches(req, v))
     ok.fold(None, fn(chosen: Option(Version), v: Version): if higher_than(v, chosen): Some(v) else: chosen)

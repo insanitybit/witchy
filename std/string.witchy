@@ -98,7 +98,7 @@ impl String:
     pub fn char_count(self) -> Int:
         string.char_count(self)
 
-    // The characters, each as a single-character String — one O(n) pass, so
+    // The characters, each as a single-character String - one O(n) pass, so
     // callers can index characters in O(1).
     pub fn chars(self) -> List(String):
         string.chars(self)
@@ -321,8 +321,8 @@ impl String:
             Some((string.substring(self, 0, i), string.substring(self, i + string.char_count(sep), string.char_count(self))))
 
     // Split at the first occurrence of `sep` into `(before, after)`, with `sep`
-    // itself dropped. Compatibility wrapper: when `sep` is absent — including the
-    // empty separator, which matches nothing (mirroring `rsplit_once`) — returns
+    // itself dropped. Compatibility wrapper: when `sep` is absent - including the
+    // empty separator, which matches nothing (mirroring `rsplit_once`) - returns
     // `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to
     // distinguish absence from a present empty side. Counted by Unicode scalar.
     pub fn split_once(self, sep: String) -> (String, String):
@@ -351,7 +351,7 @@ impl String:
 
     // Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once`
     // of `"a.b.c"` on `"."` is `("a.b", "c")`. Compatibility wrapper: when `sep`
-    // is absent the whole string is the right part: `("", s)` — mirroring
+    // is absent the whole string is the right part: `("", s)` - mirroring
     // `split_once`'s `(s, "")`. Prefer `rsplit_once_opt` when absence matters.
     pub fn rsplit_once(self, sep: String) -> (String, String):
         match self.rsplit_once_opt(sep):
@@ -360,7 +360,7 @@ impl String:
 
     // Safely parse a base-10 integer: an optional leading `-`/`+` then one or more
     // digits. Returns None for empty, sign-only, non-digit, or out-of-range (beyond
-    // the i64 range) input — so it never traps the way the raw `string_to_int`
+    // the i64 range) input - so it never traps the way the raw `string_to_int`
     // builtin can.
     pub fn parse_int(self) -> Option(Int):
         let n = string.char_count(self)

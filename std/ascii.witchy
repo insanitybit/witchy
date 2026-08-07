@@ -40,7 +40,7 @@ pub fn to_digit(c: String) -> Option(Int):
     else:
         None
 
-// True when `s` is non-empty and every character is an ASCII digit — a safe
+// True when `s` is non-empty and every character is an ASCII digit - a safe
 // guard before `string_to_int`, which traps on non-numeric input.
 pub fn all_digits(s: String) -> Bool:
     let n = s.char_count()

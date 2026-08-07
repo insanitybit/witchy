@@ -1,4 +1,4 @@
-// Minimal URL parsing — the witchy slice of Go's net/url. Pure and
+// Minimal URL parsing - the witchy slice of Go's net/url. Pure and
 // capability-free, so it compiles to WASM. Handles
 // `scheme://host[:port][/path][?query][#fragment]`; the port defaults by scheme
 // (443 for https, else 80) and the path to "/".
@@ -47,7 +47,7 @@ impl From(UrlError) for String:
         url_error_message(value)
 
 // Parse a URL, or a matchable error naming what is malformed. A well-formed URL needs a
-// non-empty scheme and host — an empty either side (`://host`, `https:///path`)
+// non-empty scheme and host - an empty either side (`://host`, `https:///path`)
 // is rejected rather than accepted with a blank field. The scheme is
 // case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so
 // `HTTPS://` gets the https default port and formats back canonically.
@@ -61,7 +61,7 @@ pub fn parse(s: String) -> Result(Url, UrlError):
             Err(EmptyScheme(s))
         else:
             let rest = s.substring(sep + 3, s.char_count())
-            // The authority ends at the first `/`, `?`, or `#` — so a query or
+            // The authority ends at the first `/`, `?`, or `#` - so a query or
             // fragment glued straight to the host (`host?x=1`) is not swallowed
             // into the host. Split the remaining suffix structurally so HTTP
             // clients never mistake a fragment for request-target bytes.
@@ -180,7 +180,7 @@ fn default_port(scheme: String) -> Int:
         80
 
 // The `:port` digits as an Int in 0..=65535, or None when empty, non-numeric, or
-// out of range — so a malformed authority (`host:abc`) or an oversized port
+// out of range - so a malformed authority (`host:abc`) or an oversized port
 // (`host:99999999999999999999`) makes `parse` return an error rather than trap
 // inside `string.to_int` (which panics on an out-of-i64 magnitude).
 fn parse_port(digits: String) -> Option(Int):
@@ -268,7 +268,7 @@ fn suffix_absent(q: Option(String), f: Option(String)) -> Bool:
                 Some(_fragment) -> false
                 None -> true
 
-// Render a Url back to its string form — the inverse of `parse`. The port is
+// Render a Url back to its string form - the inverse of `parse`. The port is
 // shown only when it differs from the scheme default, so a parse/format round
 // trip of `https://host/p` stays `https://host/p` rather than gaining `:443`.
 pub fn format(u: Url) -> String:
@@ -284,7 +284,7 @@ impl Show for Url:
 
 // Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set
 // (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build
-// query strings safely — e.g. an OAuth `redirect_uri`, `scope`, or `state`.
+// query strings safely - e.g. an OAuth `redirect_uri`, `scope`, or `state`.
 pub fn encode(s: String) -> String:
     var out = ""
     for ch in s.chars():
@@ -310,12 +310,12 @@ fn percent(ch: String) -> String:
 // Percent-decode `s` (RFC 3986 §2.1): each `%XX` becomes the byte it names.
 // Consecutive `%XX` bytes are decoded together so multi-byte UTF-8 escapes
 // (`%E2%82%AC` -> `€`) round-trip. A stray `%` not followed by two hex digits
-// passes through literally (total, lossy). `+` stays literal — for form/query
+// passes through literally (total, lossy). `+` stays literal - for form/query
 // decoding where `+` means space, use `decode_form`.
 pub fn decode(s: String) -> String:
     pct_decode(s, false)
 
-// Like `decode`, but also maps `+` to a space — the
+// Like `decode`, but also maps `+` to a space - the
 // `application/x-www-form-urlencoded` convention for query strings and form
 // bodies (RFC 1866 §8.2.1).
 pub fn decode_form(s: String) -> String:

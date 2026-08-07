@@ -1,4 +1,4 @@
-// std/task — the cooperative task substrate and its executor.
+// std/task - the cooperative task substrate and its executor.
 //
 // A `Task(a)` is a CPS-over-closures computation that, when stepped, either
 // completes (`Done`) or yields an effect back to the executor: cooperate
@@ -6,7 +6,7 @@
 // (`Open`/`Push`/`Pull`/`PullAny`, produced by `std/chan`). `run` drives a task
 // (and everything it spawns) to completion on a deterministic round-robin
 // schedule, so a concurrent run is byte-identical on the interpreter and the
-// compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
+// compiled WebAssembly - no scheduler state in the runtime, no `Pin`.
 //
 // This module is the scheduling core: the `Task` monad, `spawn`/`join`/
 // `yield_now`, and the executor. First-class channels are layered on top in
@@ -15,7 +15,7 @@
 //
 // Messages: the executor is ERASED (RFC-0055). Its buffers, `Step`, and `Slot`
 // carry the opaque `__Msg`, so ONE program can run channels of many different
-// message types — a library may use channels privately without forcing its type
+// message types - a library may use channels privately without forcing its type
 // on the whole program. The typed channel endpoints (`Sender(m)`/`Receiver(m)`
 // in `std/chan`) erase a message on `send` and recover it on `recv`; the
 // erasure is representationally the identity on both backends (a message already
@@ -33,7 +33,7 @@ import option
 // What a task yields to the executor when stepped. `a` is the task's own result.
 // The channel effects (`Open`/`Push`/`Pull`/`PullAny`) are produced by the private
 // bridge below; the executor interprets every variant. Messages are the erased
-// `__Msg` (RFC-0055) — std/chan's typed endpoints (un)wrap at the boundary.
+// `__Msg` (RFC-0055) - std/chan's typed endpoints (un)wrap at the boundary.
 sealed type Step(a):
     Done(a)
     Yield(Task(a))
@@ -62,7 +62,7 @@ fn unit():
 pub fn done(x: a) -> Task(a):
     Task(fn(): Done(x))
 
-// An already-complete `Task(Nil)` — the async/await lowering target for a body
+// An already-complete `Task(Nil)` - the async/await lowering target for a body
 // that falls off its end.
 pub fn ready_unit() -> Task(Nil):
     Task(fn(): Done(unit()))
@@ -72,7 +72,7 @@ pub fn yield_now() -> Task(Nil):
     Task(fn(): Yield(Task(fn(): Done(unit()))))
 
 // Sequence: run `t`, then continue with `k` applied to its result. This is what
-// `await` lowers to — the continuation `k` is the rest of the body.
+// `await` lowers to - the continuation `k` is the rest of the body.
 pub fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b):
     Task(fn(): and_then_step(poll(t), k))
 
@@ -99,7 +99,7 @@ pub fn map(t: Task(a), f: fn(a) -> b) -> Task(b):
 pub fn lazy(thunk: fn() -> Task(a)) -> Task(a):
     Task(fn(): poll(thunk()))
 
-// Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an
+// Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an
 // `await` inside a `for x in xs:` loop.
 pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
     if list.is_empty(xs):
@@ -192,8 +192,8 @@ fn is_parked(s: Slot) -> Bool:
 // tuple `(buf, head, count, cap)`: `buf` is a physical list of `physcap` slots; the
 // `count` live messages are `buf[(head + i) % physcap]` for `i in 0..count`, in FIFO
 // order; `cap` is the logical capacity (0 = unbounded). Send writes at the tail slot
-// with `list.set_at` (in place — no per-message allocation and no growth), and recv
-// just advances `head` — so the O(buffer) `list.tail` rebuild the growable buffer did
+// with `list.set_at` (in place - no per-message allocation and no growth), and recv
+// just advances `head` - so the O(buffer) `list.tail` rebuild the growable buffer did
 // on EVERY recv is gone. FIFO order and the ready/room predicates are byte-identical
 // to the old buffer, so the deterministic round-robin schedule is preserved.
 
@@ -208,7 +208,7 @@ fn ring_new(cap: Int) -> (List(__Msg), Int, Int, Int):
 // Grow a physically-full ring: relayout its `count` live messages to the front of a
 // doubled buffer (FIFO preserved), append `msg`, and return the new
 // `(buf, head, count, cap)`. Reached only when a physically full buffer must still
-// accept a message — an unbounded channel at its physical limit, or the shutdown
+// accept a message - an unbounded channel at its physical limit, or the shutdown
 // drain releasing a blocked sender past a bounded `cap`.
 fn ring_grow(buf: List(__Msg), head: Int, count: Int, msg: __Msg, cap: Int) -> (List(__Msg), Int, Int, Int):
     let physcap = list.length(buf)
@@ -249,8 +249,8 @@ pub fn run(root: Task(Nil)):
     // (RFC-0036 Design B) The scheduler OWNS its state: `slots` and `channels` are
     // confined-unique local `var` accumulators, mutated in place with
     // (`list.set_at(slots, …)` / `list.push(…)`). Every effect is inlined
-    // here so each mutation lands on these locals — never on a borrowed param rebuilt
-    // through a tuple return — which is the shape the uniqueness + reclamation
+    // here so each mutation lands on these locals - never on a borrowed param rebuilt
+    // through a tuple return - which is the shape the uniqueness + reclamation
     // machinery reclaims per step, so the heap high-water stays flat as messages flow
     // instead of growing per message. The schedule is unchanged and thus byte-identical
     // on both backends: each round steps slots `0..n` with `n` fixed at the round's

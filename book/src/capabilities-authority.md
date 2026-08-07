@@ -91,4 +91,5 @@ program. The same applies to environment variables (`Env`) and randomness. A
 function whose result depends on any of these values lists the corresponding
 capability in its signature.
 
-Authority is an unforgeable value that travels through arguments.
+You can't conjure a `Clock` from an integer, and there's no global to reach
+for. If a function has authority, someone handed it over.

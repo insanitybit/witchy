@@ -6,7 +6,7 @@
 pub fn identity(x: a) -> a:
     x
 
-// `compose(f, g)` is the function `x -> f(g(x))` — apply `g`, then `f`.
+// `compose(f, g)` is the function `x -> f(g(x))` - apply `g`, then `f`.
 pub fn compose(f: fn(b) -> c, g: fn(a) -> b) -> fn(a) -> c:
     fn(x): f(g(x))
 
@@ -14,7 +14,7 @@ pub fn compose(f: fn(b) -> c, g: fn(a) -> b) -> fn(a) -> c:
 pub fn flip(f: fn(a, b) -> c) -> fn(b, a) -> c:
     fn(x, y): f(y, x)
 
-// `on_key(op, key)` is the function `(x, y) -> op(key(x), key(y))` — run a
+// `on_key(op, key)` is the function `(x, y) -> op(key(x), key(y))` - run a
 // two-argument `op` on the projections of two values. Pairs with the
 // comparator-taking list functions: `list.sort_by(people,
 // func.on_key(fn(a, b): a < b, person_age))` sorts by age. (Named `on_key`
@@ -26,7 +26,7 @@ pub fn on_key(op: fn(b, b) -> c, key: fn(a) -> b) -> fn(a, a) -> c:
 pub fn constant(x: a) -> fn(b) -> a:
     fn(y): x
 
-// The first / second component of a pair — handy for the tuples `iter.zip` and
+// The first / second component of a pair - handy for the tuples `iter.zip` and
 // `iter.enumerate` produce, without writing a `match` each time.
 pub fn first(p: (a, b)) -> a:
     match p:

@@ -1,11 +1,11 @@
-// std/future — cooperative single-threaded futures via CPS over closures.
+// std/future - cooperative single-threaded futures via CPS over closures.
 //
 // A `Future(a)` is a thunk that, when polled, either completes (`Done`) or hands
 // back the rest of the work (`More`). It is a standalone building block for
-// racing and joining independent computations (`select`, `join_all`) — NOT what
+// racing and joining independent computations (`select`, `join_all`) - NOT what
 // the `async`/`await` surface lowers onto (that targets `std/task`, which points
 // here for `select`). A future's live state is the captured values of its
-// continuation closure — owned values, never internal references, so unlike Rust
+// continuation closure - owned values, never internal references, so unlike Rust
 // there is nothing self-referential and no `Pin`. Pure structure (closures + sum
 // types), so it runs byte-identically on both backends.
 //
@@ -33,7 +33,7 @@ pub fn poll(f: Future(a)) -> Poll(a):
 pub fn ready(x: a) -> Future(a):
     Future(fn(): Done(x))
 
-// Completes with `x`, but yields control once first — a cooperative scheduling
+// Completes with `x`, but yields control once first - a cooperative scheduling
 // point an executor can interleave other tasks across.
 pub fn pending(x: a) -> Future(a):
     Future(fn(): More(ready(x)))
@@ -41,7 +41,7 @@ pub fn pending(x: a) -> Future(a):
 // ---- combinators ----
 
 // Sequence: run `f` to completion, then continue with `k` applied to its result.
-// The CPS analogue of `let y = await f; k(y)` — continuation-passing over futures.
+// The CPS analogue of `let y = await f; k(y)` - continuation-passing over futures.
 pub fn and_then(f: Future(a), k: fn(a) -> Future(b)) -> Future(b):
     Future(fn(): and_then_step(poll(f), k))
 
@@ -72,7 +72,7 @@ pub fn lazy(thunk: fn() -> Future(a)) -> Future(a):
 fn unit():
     let _ignore = 0
 
-// An already-complete `Future(Nil)` — the lowering target for an async body that
+// An already-complete `Future(Nil)` - the lowering target for an async body that
 // falls off its end.
 pub fn ready_unit() -> Future(Nil):
     ready(unit())
@@ -121,8 +121,8 @@ fn slot_value(s: Slot(a)) -> a:
         Running(f) -> block_on(f)
 
 // Drive every task in `tasks` concurrently to completion, returning their results
-// in the original order. The schedule is a deterministic round-robin — one poll
-// step per task per round — so it is single-threaded and fixed-order, and both
+// in the original order. The schedule is a deterministic round-robin - one poll
+// step per task per round - so it is single-threaded and fixed-order, and both
 // backends produce byte-identical output. Tasks interleave at their `pending`/
 // `await` points. This is the structured-concurrency primitive (`scope`/`join`):
 // hand it the task list and it fans them out, joining all before it returns.
@@ -133,7 +133,7 @@ pub fn join_all(tasks: List(Future(a))) -> List(a):
     list.map(slots, fn(s): slot_value(s))
 
 // Race `tasks`: drive them concurrently until the FIRST one finishes, and return
-// its index and value; the losers are simply dropped (no further polling — and
+// its index and value; the losers are simply dropped (no further polling - and
 // because futures are pure and lazy, dropping is cancellation, no cleanup hook
 // needed). On a tie within a round the lowest index wins, so the result is
 // deterministic and both backends agree. This is the `select` of structured
@@ -141,7 +141,7 @@ pub fn join_all(tasks: List(Future(a))) -> List(a):
 pub fn select(tasks: List(Future(a))) -> (Int, a):
     if list.is_empty(tasks):
         // No task can win a race with no entrants, and the `(Int, a)` result has
-        // no `a` to fabricate — so fail loudly rather than recurse forever.
+        // no `a` to fabricate - so fail loudly rather than recurse forever.
         fail("future.select: cannot race an empty task list")
     let polled = list.map(tasks, fn(f): poll(f))
     match first_done(polled, 0):

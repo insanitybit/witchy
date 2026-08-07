@@ -1,7 +1,13 @@
 # Errors as Values
 
-witchy has no `null` and no exceptions. Two standard enums cover absence and
-failure, and a single operator makes them ergonomic.
+An exception lets a function fail without saying so in its signature, which is
+the same complaint this book makes about ambient authority: you can't see it
+from the outside, so you audit the body, and then everything the body calls.
+`null` is worse. It makes *every* type quietly mean "or nothing at all".
+
+witchy has neither. Two standard enums cover absence and failure, and a single
+operator keeps them from being tedious - because errors-as-values is only
+bearable if the plumbing is short.
 
 ## `Option`: maybe a value
 

@@ -1,8 +1,12 @@
 # Data: Records and Enums
 
-One keyword, `type`, defines all of witchy's user types. It covers three shapes
-that other languages give separate syntax: records (structs), enums, and tagged
-unions (sum types).
+Most statically typed languages give you a `struct`, an `enum`, and some third
+construct for sum types, each with its own syntax and its own rules. That's
+three things to learn for what is underneath one idea: a type is a shape, or a
+choice between shapes.
+
+witchy has one keyword. `type` covers records (structs), enums, and tagged
+unions, and what distinguishes them is what you write inside.
 
 ## Records
 

@@ -1,7 +1,13 @@
 # Execution Backends: One Meaning
 
-witchy has one production run path and one independent semantic oracle. Their
-agreement explains several of the language's design constraints.
+Shipping two implementations of one language is normally a bad idea. You pay
+for every feature twice, and the second one is always slightly wrong in a way
+nobody notices until it matters.
+
+witchy does it anyway. There's one production run path and one independent
+semantic oracle, and every compiled run can be checked against the oracle. That
+choice is expensive, and it's why several of the language's design constraints
+look the way they do - this chapter is the argument for paying it.
 
 | Backend | How | Role |
 |---|---|---|

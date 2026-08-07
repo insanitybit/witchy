@@ -1,4 +1,4 @@
-// std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator,
+// std/iter - lazy, pull-based iterators: the witchy take on Rust's Iterator,
 // minus the part Rust most regrets. Because witchy values are "data" (no
 // borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is
 // just a thunk that produces the next `Step`. Adapters (`map`/`filter`/
@@ -11,7 +11,7 @@
 //
 // Adapters and consumers are METHODS on `Iter` (`it.map(f).take(3)`), so
 // pipelines read left-to-right. The module level keeps only what has no
-// receiver — the constructors (`iter.range`, `iter.from_list`, ...) — plus
+// receiver - the constructors (`iter.range`, `iter.from_list`, ...) - plus
 // `iter.collect` (whose polymorphic return type dispatches on the EXPECTED
 // type; keeping it a free function also avoids a measured mono-pass blowup)
 // and the pull primitive `iter.next` (also a method; the free form drives the
@@ -48,7 +48,7 @@ pub fn once(x: a) -> Iter(a):
 
 // Build an iterator from a `seed` by repeatedly applying `f`, which returns
 // `Some((value, next_seed))` to yield a value or `None` to stop. The general
-// generator primitive — count/fibonacci/range are all unfolds.
+// generator primitive - count/fibonacci/range are all unfolds.
 pub fn unfold(seed: s, f: fn(s) -> Option((a, s))) -> Iter(a):
     Iter(fn(): unfold_step(seed, f))
 
@@ -93,7 +93,7 @@ fn from_gen_step(f: fn(Int) -> Option(a), i: Int) -> Step(a):
 
 // ---- lazy adapter cores (private) ----
 // Each adapter method delegates to one of these free functions, which rebuild
-// the lazy tail by calling THEMSELVES — the quiet pre-mono pass cannot resolve
+// the lazy tail by calling THEMSELVES - the quiet pre-mono pass cannot resolve
 // a method on a pattern-bound `rest`, so the recursion must be a direct call.
 // The scans are iterative loops, so the pipeline stays stack-safe.
 fn map(it: Iter(a), f: fn(a) -> b) -> Iter(b):
@@ -251,7 +251,7 @@ fn scan_step(it: Iter(a), state: s, f: fn(s, a) -> (s, b)) -> Step(b):
                 (next_state, y) -> Item(y, scan(rest, next_state, f))
 
 // The consumer core shared by `count`/`sum`/`min`/`max` and the `fold`
-// method — free so it can run on pattern-bound tails.
+// method - free so it can run on pattern-bound tails.
 fn fold(it: Iter(a), init: b, f: fn(b, a) -> b) -> b:
     var acc = init
     var cur = it
@@ -268,7 +268,7 @@ fn fold(it: Iter(a), init: b, f: fn(b, a) -> b) -> b:
 
 // A type an iterator can be collected INTO. `from_iter` mentions the
 // implementing type only in its result, so a call dispatches on the EXPECTED
-// type — an ascribed binding, a typed parameter, a for-loop — not on any
+// type - an ascribed binding, a typed parameter, a for-loop - not on any
 // argument.
 trait FromIterator(e):
     fn from_iter(it: Iter(e)) -> Self
@@ -329,7 +329,7 @@ impl FromIterator(String) for String:
         out
 
 // Collect into any FromIterator type, chosen by the call site's expected
-// type (drives the iterator to exhaustion — don't call on an unbounded one):
+// type (drives the iterator to exhaustion - don't call on an unbounded one):
 //     let xs: List(Int) = iter.collect(it)
 //     let joined: String = iter.collect(pieces)
 //     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Eq`
@@ -353,7 +353,7 @@ impl Iter(a):
         Iter(fn(): filter_step(next(self), keep))
 
     // Apply `f` to each element, keeping every `Some(y)` and dropping every
-    // `None` — a `map` and `filter` fused into one pass (Rust's
+    // `None` - a `map` and `filter` fused into one pass (Rust's
     // `Iterator::filter_map`).
     pub fn filter_map(self, f: fn(a) -> Option(b)) -> Iter(b):
         Iter(fn(): filter_map_step(next(self), f))
@@ -367,7 +367,7 @@ impl Iter(a):
         Iter(fn(): take_while_step(next(self), pred))
 
     // Skip the first `k` elements. Lazy like every adapter: nothing is pulled
-    // from the source at construction — the skip runs inside the returned
+    // from the source at construction - the skip runs inside the returned
     // iterator's thunk on first pull, and iteratively, so a large `k` cannot
     // exhaust the stack.
     pub fn drop(self, k: Int) -> Iter(a):
@@ -397,7 +397,7 @@ impl Iter(a):
         Iter(fn(): flat_map_step(next(self), f))
 
     // Concatenate an iterator OF iterators into one flat iterator, lazily and
-    // in order — `flatten` is `flat_map` with the identity function.
+    // in order - `flatten` is `flat_map` with the identity function.
     pub fn flatten(self: Iter(Iter(b))) -> Iter(b):
         flat_map(self, fn(inner): inner)
 
@@ -409,7 +409,7 @@ impl Iter(a):
         scan(self, state, f)
 
     // Call `f` on every element for its effect (drives to exhaustion). The
-    // right consumer for a generator when you don't need to early-exit — no
+    // right consumer for a generator when you don't need to early-exit - no
     // list is built.
     pub fn for_each(self, f: fn(a) -> Nil):
         var cur = self
@@ -456,7 +456,7 @@ impl Iter(a):
                     cur = rest
         None
 
-    // Whether at least one element satisfies `pred` — stops (short-circuits) at
+    // Whether at least one element satisfies `pred` - stops (short-circuits) at
     // the first match, so it terminates on an unbounded iterator once one is
     // found. `false` for the empty iterator.
     pub fn any(self, pred: fn(a) -> Bool) -> Bool:
@@ -474,7 +474,7 @@ impl Iter(a):
                         cur = rest
         found
 
-    // Whether every element satisfies `pred` — stops at the first failure.
+    // Whether every element satisfies `pred` - stops at the first failure.
     // `true` for the empty iterator (vacuously). Don't call on an unbounded
     // iterator whose elements all satisfy `pred`: it never stops.
     pub fn all(self, pred: fn(a) -> Bool) -> Bool:
@@ -493,7 +493,7 @@ impl Iter(a):
         ok
 
     // The last element (drives the iterator to exhaustion), or None if it is
-    // empty. Don't call on an unbounded iterator — it never stops.
+    // empty. Don't call on an unbounded iterator - it never stops.
     pub fn last(self) -> Option(a):
         var cur = self
         var result = None

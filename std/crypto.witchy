@@ -1,9 +1,9 @@
-// crypto — cryptographic hashing and signatures.
+// crypto - cryptographic hashing and signatures.
 //
 // Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and
 // Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve
 // field arithmetic), so they are implemented in Rust. They are reachable only
-// through this module — there is no global builtin. The function bodies below
+// through this module - there is no global builtin. The function bodies below
 // are placeholders the runtime never executes for native-backed functions: the
 // interpreter intercepts their qualified names (`crypto.sha256`,
 // `crypto.__ed25519_verify_status`, ...), and the WASM backend bridges them to
@@ -48,10 +48,10 @@ pub fn sha256(data: String) -> String:
     data
 
 // The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass
-// parallel lists — one entry per file (`witchy.toml` plus each `src/**/*.witchy`):
+// parallel lists - one entry per file (`witchy.toml` plus each `src/**/*.witchy`):
 // `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and
 // length-prefixed before hashing, so the result is the rune's stable content
-// address — the package manager's tamper-evident identity.
+// address - the package manager's tamper-evident identity.
 pub fn rune_hash(paths: List(String), contents: List(String)) -> String:
     ""
 
@@ -66,11 +66,11 @@ pub fn ed25519_verify(public_key: String, message: String, signature: String) ->
 pub fn sign(key: Secret, message: String) -> String:
     message
 
-// The hex Ed25519 public key for a `Secret` — what verifiers check against.
+// The hex Ed25519 public key for a `Secret` - what verifiers check against.
 pub fn public_key(key: Secret) -> String:
     ""
 
-// Reveal a `Secret`'s raw bytes as a string — for revealable value secrets
+// Reveal a `Secret`'s raw bytes as a string - for revealable value secrets
 // (tokens, passwords) that must be handed to an external sink. Errors on secrets
 // that are not revealable: signing keys (granted with `--signing-key`, used via
 // `sign`/`public_key`) and any secret granted use-only (`--secret-file
@@ -78,7 +78,7 @@ pub fn public_key(key: Secret) -> String:
 pub fn reveal(key: Secret) -> String:
     ""
 
-// Verify an ECDSA P-256 / SHA-256 signature — WebAuthn "ES256" (COSE alg -7).
+// Verify an ECDSA P-256 / SHA-256 signature - WebAuthn "ES256" (COSE alg -7).
 // `public_key` is the hex SEC1 uncompressed point (`04 || x || y`); `signature` is
 // the hex ASN.1-DER signature; `message` is the raw bytes it covers. Malformed
 // inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`.
@@ -86,13 +86,13 @@ pub fn reveal(key: Secret) -> String:
 pub fn ecdsa_p256_verify(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError):
     verify_result(__ecdsa_p256_verify_status(public_key, message, signature), "ECDSA P-256")
 
-// Like `ecdsa_p256_verify` but the message is also hex — for binary messages such
+// Like `ecdsa_p256_verify` but the message is also hex - for binary messages such
 // as WebAuthn's `authenticatorData || SHA256(clientDataJSON)`. Malformed message
 // hex is `Err`, not a false signature. (Native-only.)
 pub fn ecdsa_p256_verify_hex(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError):
     verify_result(__ecdsa_p256_verify_hex_status(public_key, message, signature), "ECDSA P-256")
 
-// Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature — JWT/OIDC "RS256" (the algorithm
+// Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature - JWT/OIDC "RS256" (the algorithm
 // GitHub Actions and Google sign their identity tokens with). `public_key` is the hex
 // of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`); `signature` is hex; `message`
 // is the raw signed bytes (`header.payload` for a JWT). Malformed inputs are `Err`;
@@ -127,7 +127,7 @@ impl Error for ShakeError
 
 // SHAKE128 (FIPS 202) extendable-output function. Absorbs raw `input` bytes and
 // squeezes exactly `output_len` bytes. `output_len` must be `0..=1048576` (a
-// megabyte ceiling, far past any key/nonce/commitment use — a stream needs
+// megabyte ceiling, far past any key/nonce/commitment use - a stream needs
 // repeated domain-separated calls), else `Err(InvalidOutputLength)`. Native-only:
 // the browser target omits this and a module that reaches it cannot instantiate
 // in the browser host (RFC-0106/0007).

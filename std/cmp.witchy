@@ -1,7 +1,7 @@
 // The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`:
 // `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar
 // through these traits, so `a == b` and `x < y` work on your own types once you
-// implement (or derive) them — there is no separate `compare`/`greater` to call
+// implement (or derive) them - there is no separate `compare`/`greater` to call
 // by name. Built-in impls cover the primitives; `Self` in a method signature
 // stands for the implementing type. Pure and capability-free.
 
@@ -16,7 +16,7 @@ type Ordering:
     Greater
 
 // `==` and `!=`. The minimal equality trait: implement `eq` and `ne` comes free.
-// `Float` is `PartialEq` but NOT `Eq` — `NaN != NaN`, so equality is not
+// `Float` is `PartialEq` but NOT `Eq` - `NaN != NaN`, so equality is not
 // reflexive.
 trait PartialEq:
     fn eq(self, other: Self) -> Bool
@@ -57,7 +57,7 @@ trait PartialOrd: PartialEq:
 trait Ord: Eq + PartialOrd:
     fn compare(self, other: Self) -> Ordering
 
-// Flip an ordering — `Less` <-> `Greater`, `Equal` unchanged — for reverse sorts.
+// Flip an ordering - `Less` <-> `Greater`, `Equal` unchanged - for reverse sorts.
 pub fn reverse(o: Ordering) -> Ordering:
     match o:
         Less -> Greater
@@ -111,7 +111,7 @@ impl PartialEq for Bool:
 
 impl Eq for Bool
 
-// Lexicographic ordering by code point — the same order `<` gives on strings, and
+// Lexicographic ordering by code point - the same order `<` gives on strings, and
 // content-correct in compiled code (both backends compare bytes, not pointers).
 impl PartialEq for String:
     fn eq(self, other: Self) -> Bool:
@@ -371,7 +371,7 @@ pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord:
         x
 
 // The largest element of `xs`, or `default` when `xs` is empty. `default` is
-// only the empty fallback — it never participates in the comparison, so it is
+// only the empty fallback - it never participates in the comparison, so it is
 // returned unchanged only for an empty list (a small `default` no longer wins
 // over the elements, nor a large one lose to them).
 pub fn maximum(xs: List(a), default: a) -> a where a: Ord:

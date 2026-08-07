@@ -1,8 +1,12 @@
 # Capabilities: The Heart of witchy
 
-Pure functions cannot print, read a file, or touch the network because their
-signatures grant none of those capabilities. This chapter covers code that does
-need host authority and how witchy bounds and enforces it.
+Pure functions are easy. They can't print, read a file, or touch the network,
+because nothing in their signatures grants any of that - and a language where
+every function is pure is a language that can't do anything useful.
+
+These chapters are about the other kind of code: the code that does need host
+authority, and what it costs to keep that authority visible instead of
+ambient.
 
 The chapters develop one rule:
 

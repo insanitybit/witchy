@@ -1,5 +1,5 @@
 // The `Exec` capability: spawn a confined native subprocess. The executable is
-// named through a `Dir[Read]` — you can only run a file you can read — so `run`
+// named through a `Dir[Read]` - you can only run a file you can read - so `run`
 // takes both the `Exec` right and the `Dir` the binary lives under. Pure data
 // otherwise; the only authority is the `Exec`/`Dir` it is handed.
 //
@@ -12,7 +12,7 @@
 // `(exit_code, output)`.
 pub fn run(e: Exec, dir: Dir[Read], path: String, args: List(String), stdin: String) -> (Int, String):
     // argv is passed to the low-level primitive as a single `\0`-joined string, so
-    // an argument that itself contains a `\0` would be split into two arguments —
+    // an argument that itself contains a `\0` would be split into two arguments -
     // an argument-injection. Reject it loudly (RFC-0044 rule 3).
     for a in args:
         if a.contains("\0"):
@@ -24,6 +24,6 @@ pub fn run(e: Exec, dir: Dir[Read], path: String, args: List(String), stdin: Str
     let output = payload.drop(nl + 1)
     (code, output)
 
-// Run `path` with `args` and no stdin — the common case.
+// Run `path` with `args` and no stdin - the common case.
 pub fn run_args(e: Exec, dir: Dir[Read], path: String, args: List(String)) -> (Int, String):
     run(e, dir, path, args, "")

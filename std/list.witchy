@@ -1,5 +1,5 @@
 // The witchy standard list library. Every function here is pure: the module
-// declares no capability parameters, so importing it grants no authority — it
+// declares no capability parameters, so importing it grants no authority - it
 // can only transform data. This is the capability model in miniature: a library
 // you didn't hand a Console/Dir/Net to literally cannot reach them.
 
@@ -58,7 +58,7 @@ pub fn set_at(var xs: List(a), index: Int, value: a):
 
 // A copy of `xs` with the function `f` applied to the element at `index`. An
 // out-of-range (or negative) index is a runtime error on both backends, exactly
-// like `list.at` — a silently discarded update is a contract violation (RFC-0044
+// like `list.at` - a silently discarded update is a contract violation (RFC-0044
 // rule 3), so it aborts rather than leaving the list unchanged.
 pub fn update_at(var xs: List(a), index: Int, f: fn(a) -> a):
     if index < 0 || index >= list.length(xs):
@@ -123,7 +123,7 @@ pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
         while i < stop:
             list.push(out, i)
             // Stop before `i + step` would overflow past i64::MAX and wrap
-            // negative — otherwise `i < stop` stays true and the loop never ends.
+            // negative - otherwise `i < stop` stays true and the loop never ends.
             if i > 9223372036854775807 - step:
                 break
             i = i + step
@@ -183,7 +183,7 @@ fn merge(a: List(a), b: List(a), less: fn(a, a) -> Bool) -> List(a):
         j = j + 1
     out
 
-// Sort using a caller-supplied "is-less-than" comparator — a stable merge sort
+// Sort using a caller-supplied "is-less-than" comparator - a stable merge sort
 // (O(n log n)), so equal elements keep their original order. Generic over the
 // element type.
 fn sorted_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
@@ -194,7 +194,7 @@ fn sorted_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
         let mid = n / 2
         merge(sorted_by(list.slice(xs, 0, mid), less), sorted_by(list.slice(xs, mid, n), less), less)
 
-// Strict "is-less-than" via the element type's TOTAL order — through `compare`
+// Strict "is-less-than" via the element type's TOTAL order - through `compare`
 // (not `<`, which needs only `PartialOrd`), matching `cmp`'s own `Ord` helpers.
 fn before(x: a, y: a) -> Bool where a: Ord:
     match compare(x, y):
@@ -241,7 +241,7 @@ impl List(a):
         self = reversed(self)
         return
 
-    // Sort using a caller-supplied "is-less-than" comparator — a stable merge
+    // Sort using a caller-supplied "is-less-than" comparator - a stable merge
     // sort (O(n log n)), so equal elements keep their original order. Generic
     // over the element type.
     pub fn sort_by(var self, less: fn(a, a) -> Bool):
@@ -287,7 +287,7 @@ impl List(a):
     pub fn slice(self, start: Int, end: Int) -> List(a):
         list.slice(self, start, end)
 
-    // The element at `index` as `Some`, or `None` when `index` is out of range —
+    // The element at `index` as `Some`, or `None` when `index` is out of range -
     // a total, bounds-checked alternative to the `at` builtin.
     pub fn get(self, index: Int) -> Option(a):
         if index >= 0 && index < list.length(self):
@@ -362,7 +362,7 @@ impl List(a):
         true
 
     // The index of the first element satisfying `pred` as `Some`, or `None` if
-    // none do — the by-predicate search (`index_of` is the by-value search). One
+    // none do - the by-predicate search (`index_of` is the by-value search). One
     // name per axis, both `Option`, no sentinel (RFC-0044/0049).
     pub fn position(self, pred: fn(a) -> Bool) -> Option(Int):
         var i = 0
@@ -388,7 +388,7 @@ impl List(a):
         acc
 
     // Combine the elements left to right using the first as the seed, as `Some`;
-    // `None` for the empty list. (A `fold` that needs no initial value — handy
+    // `None` for the empty list. (A `fold` that needs no initial value - handy
     // for max/min/sum over a non-empty list with a plain binary op.)
     pub fn reduce(self, f: fn(a, a) -> a) -> Option(a):
         if list.length(self) == 0:
@@ -419,7 +419,7 @@ impl List(a):
             total = total + x
         total
 
-    // The sum of `f` applied to each element (0 for the empty list) — e.g. a
+    // The sum of `f` applied to each element (0 for the empty list) - e.g. a
     // total over a record field: `cart.sum_by(fn(it): it.price * it.qty)`.
     pub fn sum_by(self, f: fn(a) -> Int) -> Int:
         var total = 0
@@ -578,7 +578,7 @@ impl List(a):
             i = i + 1
         out
 
-    // Split a list of pairs into a pair of lists — the inverse of `zip`.
+    // Split a list of pairs into a pair of lists - the inverse of `zip`.
     pub fn unzip(self: List((x, y))) -> (List(x), List(y)):
         var firsts = []
         var seconds = []
@@ -611,7 +611,7 @@ impl List(a):
         out
 
     // Split the list into (matching, non-matching) by `pred`, each preserving
-    // the original order. A single pass — the dual of running `filter` twice.
+    // the original order. A single pass - the dual of running `filter` twice.
     pub fn partition(self, pred: fn(a) -> Bool) -> (List(a), List(a)):
         var yes = []
         var no = []
@@ -624,7 +624,7 @@ impl List(a):
 
     // The maximum element under a caller-supplied "is-less-than" comparator, as
     // `Some` (the first of equal maxima), or `None` for the empty list. Generic,
-    // so it works for any type — e.g. max by a record field.
+    // so it works for any type - e.g. max by a record field.
     pub fn max_by(self, less: fn(a, a) -> Bool) -> Option(a):
         if list.length(self) == 0:
             None
@@ -649,7 +649,7 @@ impl List(a):
 impl List(a) where a: Eq:
     // Whether `target` appears in the list, by the element type's `Eq` impl. The
     // `where a: Eq` bound monomorphizes the equality per element type, so the
-    // comparison is content-correct on both backends — including user record
+    // comparison is content-correct on both backends - including user record
     // element types, which the compiled backend cannot compare through an
     // unbounded generic `==` (RFC-0046).
     pub fn contains(self, target: a) -> Bool:
@@ -707,7 +707,7 @@ impl List(a) where a: Eq:
         out
 
 impl List(a) where a: Ord:
-    // Sort any list whose elements are `Ord` ascending — a stable merge sort
+    // Sort any list whose elements are `Ord` ascending - a stable merge sort
     // (O(n log n)) that dispatches through the element type's total order, so
     // `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord`
     // records, content-correct on both backends (RFC-0046). A merely-partial type
@@ -717,7 +717,7 @@ impl List(a) where a: Ord:
         return
 
     // The smallest element as `Some`, or `None` for the empty list. Generic over
-    // any `Ord` element type (like `sort`), dispatching through the total order —
+    // any `Ord` element type (like `sort`), dispatching through the total order -
     // so `xs.min()` works for `Int`, `String`, `Duration`, or a derived-`Ord`
     // record. For a merely-partial type or a custom criterion, use `min_by`.
     pub fn min(self) -> Option(a):
@@ -731,7 +731,7 @@ impl List(a) where a: Ord:
             Some(best)
 
     // The largest element as `Some`, or `None` for the empty list. Generic over
-    // any `Ord` element type — see `min`.
+    // any `Ord` element type - see `min`.
     pub fn max(self) -> Option(a):
         if list.length(self) == 0:
             None

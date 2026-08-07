@@ -1,6 +1,6 @@
-// std/bytes — immutable byte buffers.
+// std/bytes - immutable byte buffers.
 //
-// A `Bytes` is a flat, UTF-8-free sequence of bytes — the type for binary data
+// A `Bytes` is a flat, UTF-8-free sequence of bytes - the type for binary data
 // (file contents, network frames, hashes, serialized payloads) that `String` (which
 // is always valid UTF-8) cannot faithfully hold. It shares `String`'s in-memory
 // layout (`[length][bytes…]`), so the bridge operations (`from_string`/`to_string`)
@@ -80,7 +80,7 @@ pub fn slice(b: Bytes, start: Int, end: Int) -> Bytes:
 
 // --- Private cores (non-colliding names, shared by the methods below). ---
 
-// The bytes as a list of Ints — the core behind the `to_list` method, also used
+// The bytes as a list of Ints - the core behind the `to_list` method, also used
 // by `decode_utf8`'s strict round-trip check.
 fn int_list(b: Bytes) -> List(Int):
     var out = []

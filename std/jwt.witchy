@@ -1,6 +1,6 @@
-// jwt — verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy
+// jwt - verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy
 // over `crypto` (RS256), `encoding` (base64url), and `json`. Verification is
-// computation, so this module has no host capability of its own — fetching the
+// computation, so this module has no host capability of its own - fetching the
 // signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
 //
 // A compact JWT is `header.payload.signature`, each base64url. The signature covers
@@ -118,7 +118,7 @@ pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String,
     else:
         // Pin the algorithm: the JOSE header's `alg` MUST be exactly `RS256`. An
         // attacker-chosen `alg` (`none`, a symmetric alg, a downgrade) is refused
-        // here rather than trusted — algorithm confusion is defended by failing
+        // here rather than trusted - algorithm confusion is defended by failing
         // closed on anything but RS256, never by honouring the header (BUG-250,
         // RFC 8725 §3.1).
         let alg = header_alg(list.at(parts, 0))?
@@ -126,7 +126,7 @@ pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String,
             Err(UnsupportedAlg(alg))
         else:
             let signed = list.at(parts, 0) + "." + list.at(parts, 1)
-            // A malformed signature segment is a distinct, reachable error — not a
+            // A malformed signature segment is a distinct, reachable error - not a
             // silent truncation to garbage bytes that would later read as "signature
             // invalid". Rejecting on the decode error is the safe direction.
             let sig_hex = encoding.base64url_to_hex(list.at(parts, 2)).map_err(fn(e: encoding.EncodingError): SignatureSegmentBase64(encoding.encoding_error_message(e)))?
@@ -191,8 +191,8 @@ fn aud_array_matches(items: List(Json), audience: String) -> Result(Bool, JwtErr
 
 // The generic OIDC relying-party check: verify the RS256 signature AND that the token was
 // minted by the expected `issuer` for the expected `audience`, and is valid now
-// (`exp`/`nbf`). Returns the identity claims — `sub` plus provider-specific fields like
-// GitHub's `repository` or Google's `email` — for the caller to authorize. This is the
+// (`exp`/`nbf`). Returns the identity claims - `sub` plus provider-specific fields like
+// GitHub's `repository` or Google's `email` - for the caller to authorize. This is the
 // base check once it holds the issuer's JWKS key (`rsa_key_from_jwk`). Login and
 // trusted-publishing flows should use `verify_oidc_fresh`, which adds their explicit
 // `iat` and maximum-lifetime policy. The issuer check is what binds a token to a
@@ -299,7 +299,7 @@ fn require_string_claim(claims: Json, name: String) -> Result(String, JwtError):
                 Some(s) -> Ok(s)
                 None -> Err(StringClaimExpected(name))
 
-// The decoded JOSE header of a compact JWT (its first segment), or an error — so a
+// The decoded JOSE header of a compact JWT (its first segment), or an error - so a
 // verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
 pub fn header(token: String) -> Result(Json, JwtError):
     let parts = token.split(".")
@@ -311,7 +311,7 @@ pub fn header(token: String) -> Result(Json, JwtError):
             Err(e) -> Err(HeaderJson(json.decode_error_message(e)))
             Ok(doc) -> Ok(doc)
 
-// The payload claims of a compact JWT WITHOUT verifying its signature — for reading the
+// The payload claims of a compact JWT WITHOUT verifying its signature - for reading the
 // routing fields (`iss`, and `kid` via `header`) needed to SELECT the verification key
 // before `verify_oidc`. DANGER: never authorize on these claims; verify the signature
 // first and read the claims `verify_oidc` returns.
@@ -325,7 +325,7 @@ pub fn claims_unverified(token: String) -> Result(Json, JwtError):
             Err(e) -> Err(PayloadJson(json.decode_error_message(e)))
             Ok(doc) -> Ok(doc)
 
-// Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) from a
+// Build the DER PKCS#1 `RSAPublicKey` (as hex - the shape `verify_rs256` wants) from a
 // JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS
 // entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER
 // `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit

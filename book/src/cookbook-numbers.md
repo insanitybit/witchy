@@ -1,10 +1,16 @@
 # Numbers and Math
 
-witchy has two numeric types and keeps them strictly apart: `Int` is a
-64-bit signed integer, `Float` is a 64-bit IEEE double. There is **no implicit
-coercion** between them - `1 + 2.0` is a type error, not a silent promotion. You
-convert deliberately with `math.to_float` and `math.to_int`. That strictness is
-what lets integer code stay exact and float code stay predictable.
+Most languages quietly promote your `Int` to a `Float` when you mix them, and
+most of the time that's fine. The times it isn't are the ones that hurt: money
+that drifts a cent, a total that stops being exact somewhere past 2^53, a
+comparison that fails for reasons you can't see in the source. witchy won't do
+it. `1 + 2.0` is a type error.
+
+There are two numeric types and they stay apart: `Int` is a 64-bit signed
+integer, `Float` is a 64-bit IEEE double. You convert deliberately with
+`math.to_float` and `math.to_int`. That's a few extra characters at the
+boundary, and in exchange integer code stays exact and float code stays
+predictable.
 
 The `math` module holds the operations the operators don't: number theory,
 integer roots, base conversion, and the float companions of each.

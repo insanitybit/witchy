@@ -122,7 +122,7 @@ pub fn is_even(n: Int) -> Bool:
 pub fn is_odd(n: Int) -> Bool:
     n % 2 != 0
 
-// `n!` — the product 1*2*...*n (1 for n in {0, 1}). Watch the 64-bit range:
+// `n!` - the product 1*2*...*n (1 for n in {0, 1}). Watch the 64-bit range:
 // factorial is exact through 20!; 21! overflows and wraps. `n < 0` has no
 // factorial, so it is a contract violation (RFC-0044 rule 3): abort naming the
 // bad argument rather than silently returning 1.
@@ -200,7 +200,7 @@ fn to_base_pos(n: Int, base: Int) -> String:
         to_base_pos(n / base, base) + base_digit(n % base)
 
 // Digits of a NEGATIVE `n`, computed on `n` directly rather than negating it
-// first — so `Int.MIN` (whose negation overflows back to itself) renders
+// first - so `Int.MIN` (whose negation overflows back to itself) renders
 // correctly. Each step takes the negated low remainder as a digit and divides
 // toward zero; both `n % base` and `n / base` stay in range for any negative `n`.
 fn to_base_neg(n: Int, base: Int) -> String:
@@ -247,7 +247,7 @@ pub fn float_clamp(x: Float, lo: Float, hi: Float) -> Float:
 // format_float(2.0, 0) = "2". Built from float arithmetic, so unlike the
 // `to_string` builtin it works on the compiled WASM backend too (which has no
 // float formatting). Best for a fixed number of places; very large magnitudes
-// lose precision to the Float itself. `decimals` is capped at 18 — the most
+// lose precision to the Float itself. `decimals` is capped at 18 - the most
 // places the `Int` scale `pow(10, decimals)` can hold without overflowing.
 pub fn format_float(x: Float, decimals: Int) -> String:
     let d = if decimals < 0: 0 else: if decimals > 18: 18 else: decimals

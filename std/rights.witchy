@@ -1,10 +1,10 @@
-// rights — rights-precise reasoning over capability footprints.
+// rights - rights-precise reasoning over capability footprints.
 //
 // A capability is rendered the way the compiler's footprint prints it: "Console",
 // "Dir[Read]", "Net[Connect, Tcp]". A *declared* capability covers a *demanded*
 // one when they share a base kind AND the declared authority is at least as
 // broad: a bare "Net" admits any rights of that kind, while "Net[Connect]" admits
-// only a subset — so Net[Connect] does NOT cover full Net. This rights-precision
+// only a subset - so Net[Connect] does NOT cover full Net. This rights-precision
 // is what the package manager's declared-vs-actual check and the block-on-widening
 // gate both rely on, so it lives in one tested place.
 
@@ -31,7 +31,7 @@ pub fn any_covers(declared: List(String), demanded: String) -> Bool:
             ok = true
     ok
 
-// The demanded capabilities no declared capability covers — the gap a gate blocks
+// The demanded capabilities no declared capability covers - the gap a gate blocks
 // on (an under-declaration, or a widening of authority). Empty means admitted.
 pub fn uncovered(declared: List(String), demanded: List(String)) -> List(String):
     var missing = []

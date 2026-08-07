@@ -1,12 +1,19 @@
 # Testing
 
-witchy has a built-in test runner. A test is a function named `test_*`; it
-passes by returning and fails by aborting. A plain test runs with zero real
-authority. It may be pure, use ordinary collaborators, or receive deterministic
-fixture-backed capabilities from an external plan. An integration test may
-instead receive real `Dir` or `Net` grants, but only through the explicit
-integration tier. The `testing` module provides assertions and small ordinary
-collaborators; it does not mint capabilities.
+A test suite is the least audited code you run, and in most languages it runs
+with your full ambient authority. A stray unit test can delete a directory or
+call a live API, and from the outside it looks exactly like one that can't.
+
+In witchy a plain test runs with **zero** real authority. The point isn't that
+tests *shouldn't* touch the filesystem by convention - it's that nothing hands
+them a `Dir`, so they structurally can't.
+
+The runner is built in. A test is a function named `test_*`; it passes by
+returning and fails by aborting. It may be pure, use ordinary collaborators, or
+receive deterministic fixture-backed capabilities from an external plan. An
+integration test may instead receive real `Dir` or `Net` grants, but only
+through the explicit integration tier. The `testing` module provides assertions
+and small ordinary collaborators; it doesn't mint capabilities.
 
 ```witchy
 import testing

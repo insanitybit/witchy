@@ -1,4 +1,4 @@
-// Pure helpers for the built-in `Duration` type — a length of time, written as a
+// Pure helpers for the built-in `Duration` type - a length of time, written as a
 // literal like `30s`, `2hr`, or `500ms`. Durations are combined and compared with
 // the language operators (`a + b`, `d * 3`, `a < b`); this module adds
 // construction from plain numbers, component access, and human formatting.
@@ -176,7 +176,7 @@ fn pad2(n: Int) -> String:
 // A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and
 // `500ms` for a pure sub-second span. A negative span (e.g. from subtraction)
 // keeps its sign as a single leading "-" over the absolute magnitude: `-1s`,
-// `-1m30s` — not the truncated-division fields of the raw negative count.
+// `-1m30s` - not the truncated-division fields of the raw negative count.
 pub fn human(d: Duration) -> String:
     if duration_to_int(d) < 0:
         "-" + human(abs(d))
@@ -194,7 +194,7 @@ pub fn human(d: Duration) -> String:
         else:
             "${r}" + "ms"
 
-// Parse a duration string to a `Duration` — the inverse of `human`. Accepts
+// Parse a duration string to a `Duration` - the inverse of `human`. Accepts
 // unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w,
 // and a bare number as plain milliseconds. `Err` on a stray character, a unit with
 // no preceding count ("ms", "1hms"), a dangling unit-less number after units were

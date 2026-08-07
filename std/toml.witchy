@@ -1,9 +1,9 @@
-// toml — a TOML reader written in pure witchy (no native code). Two ways in:
+// toml - a TOML reader written in pure witchy (no native code). Two ways in:
 // `toml.decode(text)` parses a whole document into a structured `Toml` tree (the
 // `json.decode` shape); or look individual values up by a `section.key` path with
 // `toml.get`/`get_array`/`table`/... It supports top-level and `[section]` (and
 // dotted `[a.b]`) tables, `key = value` for string/int/bool values, and
-// `["a", "b"]` arrays. Comments (`#`) — whole-line and trailing — and blank lines
+// `["a", "b"]` arrays. Comments (`#`) - whole-line and trailing - and blank lines
 // are ignored. (Floats/dates decode as `TomlString`: witchy has no string->float
 // primitive yet.)
 
@@ -107,9 +107,9 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
 //
 // These read a value ALREADY produced by `decode`, so there is exactly one TOML
 // grammar behind them (unlike the lenient string-query `get`/`get_array` below,
-// which re-scan raw text). They distinguish the three ways a lookup can fail —
+// which re-scan raw text). They distinguish the three ways a lookup can fail -
 // a MISSING key, a value of the WRONG kind, and (inherited from `decode`) a
-// MALFORMED document — so a trust boundary like a lockfile reader can fail closed
+// MALFORMED document - so a trust boundary like a lockfile reader can fail closed
 // with a precise message instead of silently falling back to an empty/default set.
 
 // The value stored at `key` in a `TomlTable`, or `None` when the key is absent or
@@ -165,7 +165,7 @@ pub fn array_of_tables(node: Toml, key: String) -> Result(List(Toml), TomlDecode
             Ok(out)
 
 // A required string field of a decoded table `entry`: `Err` when the field is
-// absent, empty, or the wrong TOML kind — the three failure classes kept distinct
+// absent, empty, or the wrong TOML kind - the three failure classes kept distinct
 // (BUG-373). `label` names the entry kind for the message (e.g. "a registry
 // [[rune]] entry").
 pub fn required_string(entry: Toml, field: String, label: String) -> Result(String, TomlDecodeError):
@@ -218,7 +218,7 @@ fn ns_prefix_collision(path: List(String), scalars: List(String)) -> Option(Stri
     None
 
 // Append a fresh empty table to the array-of-tables at `key` (creating the array
-// if absent) — the effect of encountering a `[[key]]` header.
+// if absent) - the effect of encountering a `[[key]]` header.
 fn append_aot_table(node: Toml, key: String) -> Toml:
     match node:
         TomlTable(pairs) ->
@@ -277,7 +277,7 @@ fn header_path(name: String) -> Result(List(String), TomlDecodeError):
     Ok(out)
 
 // Type a raw value string into a Toml leaf, or `Err` when the value is malformed
-// — an opening `"` with no closing `"`, or an opening `[` with no closing `]`
+// - an opening `"` with no closing `"`, or an opening `[` with no closing `]`
 // (a truncated line the old lenient parser silently accepted).
 fn parse_value(raw: String) -> Result(Toml, TomlDecodeError):
     let v = raw.trim()
@@ -371,7 +371,7 @@ pub fn get(text: String, path: String) -> Option(String):
 // absent. Each element is unquoted.
 //
 // LENIENT BY DESIGN (RFC-0044): an absent path and a malformed/empty array both
-// return `[]`, so this cannot tell "not declared" from "declared wrong" —
+// return `[]`, so this cannot tell "not declared" from "declared wrong" -
 // convenient for reading config, but wrong for a trust boundary. Where a
 // malformed array must be an ERROR, use the strict path: `decode(text)` (a
 // `Result`) then match the `TomlArray` at the path.
@@ -382,7 +382,7 @@ pub fn get_array(text: String, path: String) -> List(String):
 
 // Every `key = value` pair defined directly under `[section]`, in file order.
 // Keys are unquoted (`"acme/money"` -> `acme/money`); values are raw (trimmed,
-// still quoted/inline) — feed an inline-table value to `inline_get`. Use this to
+// still quoted/inline) - feed an inline-table value to `inline_get`. Use this to
 // enumerate a table whose keys you don't know ahead of time, like `[dependencies]`.
 pub fn table(text: String, section: String) -> List((String, String)):
     var in_section = section == ""
@@ -462,7 +462,7 @@ fn split_outside_quotes(s: String, sep: String) -> List(String):
 
 // (BUG-447) Split `s` at the FIRST `sep` that falls OUTSIDE double quotes,
 // returning `(before, after)` or `None` when no unquoted `sep` exists. Lets a
-// quoted key hold the separator literally — `"a=b" = 1` splits at the second
+// quoted key hold the separator literally - `"a=b" = 1` splits at the second
 // `=`, not the one inside the key. One grammar with `split_outside_quotes`.
 fn split_once_outside_quotes(s: String, sep: String) -> Option((String, String)):
     var before = ""
@@ -518,7 +518,7 @@ fn lookup(text: String, path: String) -> Option(String):
 // "rune.name" -> ("rune", "name"); a bare "name" -> ("", "name").
 // (BUG-447) Split on the last `.` OUTSIDE quotes, so a quoted literal-dot key
 // (`get(text, "\"a.b\"")`) stays one key with an empty section, and a section
-// that itself contains a quoted dot is preserved — one grammar with header_path.
+// that itself contains a quoted dot is preserved - one grammar with header_path.
 fn split_path(path: String) -> (String, String):
     let segs = split_outside_quotes(path, ".")
     if list.length(segs) <= 1:
@@ -560,7 +560,7 @@ fn header_no_comment(line: String) -> String:
 // If `line` is `key = value`, return the trimmed raw value (still quoted).
 // (BUG-447) Split on the first `=` OUTSIDE quotes and compare keys by their
 // UNQUOTED canonical form, so a query for `a.b` matches a line `"a.b" = v` and a
-// key holding `=` isn't mis-split — the same grammar `key_value`/`split_path` use.
+// key holding `=` isn't mis-split - the same grammar `key_value`/`split_path` use.
 fn match_key(line: String, key: String) -> Option(String):
     match split_once_outside_quotes(line, "="):
         Some((k, v)) ->
