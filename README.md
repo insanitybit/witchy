@@ -1,9 +1,13 @@
 # witchy
 
-Witchy is an experimental capability-secure language. A function can only touch
-the outside world through capability values it is explicitly handed - so what a
-program *can do* is visible in its types, inspectable from its artifacts, and
-enforceable at the host boundary.
+Every mainstream language hands your code ambient authority. A function you call
+can read `~/.ssh`, open a socket, or shell out, and its signature won't tell you.
+You find out by auditing the implementation, and then everything it calls.
+
+witchy is an experimental capability-secure language that doesn't work that way.
+A function can only touch the outside world through capability values it's
+explicitly handed - so what a program *can do* is visible in its types,
+inspectable from its artifacts, and enforceable at the host boundary.
 
 ```witchy
 // This helper receives read authority, not write authority.
@@ -16,7 +20,7 @@ fn main(console: Console, dir: Dir):
 ```
 
 A web API where handlers are pure by construction - `serve` holds the `Net`,
-and a handler that captures no capabilities structurally cannot log, fetch a
+and a handler that captures no capabilities structurally can't log, fetch a
 URL, or read a file, even if a dependency wrote it:
 
 ```witchy
@@ -33,7 +37,7 @@ fn main(console: Console, net: Net):
     server.serve(net, "127.0.0.1:8080", app)
 ```
 
-An HTTP client holds an origin-scoped `Fetch`, not the raw network:
+An HTTP client holds an origin-scoped `Fetch`, never the raw network:
 
 ```witchy
 import http
@@ -44,14 +48,14 @@ fn main(console: Console, fetch: Fetch):
         Response(status, headers, body) -> console.print("status ${status}: ${body.length()} bytes")
 ```
 
-And the toolchain makes authority a first-class, checkable fact:
+And the toolchain makes authority a checkable fact rather than a claim:
 
 ```sh
 $ witchy caps api.witchy          # what can this program touch?
   main   Console, Net
   total  Console, Net
 $ witchy --net 127.0.0.1:8080 api.witchy      # grant exactly that, run it
-$ witchy sandbox api.witchy                   # or run it confined in a WASM VM —
+$ witchy sandbox api.witchy                   # or run it confined in a WASM VM -
                                               # ungranted authority fails closed
 ```
 
@@ -99,12 +103,15 @@ surfaces.
 
 ## Why capabilities?
 
-A witchy function cannot exercise host authority absent from its typed inputs,
+A witchy function can't exercise host authority absent from its typed inputs,
 and `witchy caps` / `caps-diff` / `grants-check` / `sandbox` make that footprint
-inspectable and enforceable. This is a bounded guarantee, not a claim that
-arbitrary witchy software is safe: the compiler, runtime, host bindings, and
-distributor remain trusted. The [capabilities guide](spec/capabilities.md)
-states the exact model and its limits.
+inspectable and enforceable.
+
+That's a bounded guarantee, and the bound is worth being precise about. You
+still trust the compiler, the runtime, whichever host bindings you link, and
+whoever shipped you the binary. What you stop having to trust is the body of
+every function you call. The [capabilities guide](spec/capabilities.md) states
+the exact model and its limits.
 
 ## Status
 
@@ -113,15 +120,15 @@ period. The dependable path is deliberately small - language fundamentals,
 capability inspection, check/format/test, interpreter-versus-WASM parity,
 portable WASM sandboxing, and self-contained
 [`trusted-exe`](rfcs/0092-trusted-application-executables.md) builds. Everything
-else (packages + the Coven registry, the Glamour frontend, the in-browser
+else (runes + the Coven registry, the Glamour frontend, the in-browser
 playground, editor tooling) is experimental dogfood.
 [PRODUCT-STATUS.md](PRODUCT-STATUS.md) is the evidence-backed boundary.
 
-Witchy is developed extensively with AI assistance; human judgment owns the
-language, capability-model, and product decisions. Supported behavior is
-determined by executable evidence - the parity, sandbox, and artifact test
-suites - not by who or what wrote the code. Contributions should disclose
-material AI use.
+witchy is developed extensively with AI assistance; human judgment owns the
+language, capability-model, and product decisions. What determines supported
+behavior is executable evidence - the parity, sandbox, and artifact test suites -
+rather than who or what wrote the code. Contributions should disclose material
+AI use.
 
 ## Learn more
 
