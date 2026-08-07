@@ -1,24 +1,31 @@
 ---
 status: implemented
-note: Imported from docs/ under RFC-0001. Shipped — core PM, TUF snapshot/timestamp, and keyless trusted-publishing are all built (see §15), the last via an Ed25519 claims-envelope stand-in. Remaining = a live RS256/ES256 + JWKS-over-https IdP adapter and per-namespace delegated TUF signing keys. Now self-hosted in projects/pm + projects/coven (src/pm deleted), not the src/pm/*.rs files §15 names. Frozen — current behavior lives in spec/ and the code.
+note: Imported from docs/ under RFC-0001. Shipped — core PM, TUF snapshot/timestamp, and keyless trusted-publishing are all built (see §15); token verification is real RS256 JWT verification with per-`kid` key selection against pinned or inline-JWKS issuer keys. Remaining = live JWKS-over-HTTPS issuer discovery (RFC-0116 M1, in flight) and per-namespace delegated TUF signing keys (deferred past M1). Self-hosted in projects/pm + projects/coven (src/pm deleted); §15's file references reflect that. Frozen — current behavior lives in spec/ and the code.
 ---
 
 # The witchy package manager — design spec
 
-> **2026-06-23 — status correction.** The §0/below line "full TUF /
-> trusted-publishing is the main remaining work" is out of date: §15 already
-> marks **TUF snapshot+timestamp** and **keyless trusted-publishing** as *Built*
-> (the latter via an Ed25519 claims-envelope stand-in for OIDC). What actually
-> remains is narrower — a live RS256/ES256 + JWKS-over-https IdP adapter, and
+> **2026-06-23 status correction, refreshed 2026-08-07.** The §0/below line
+> "full TUF / trusted-publishing is the main remaining work" is out of date:
+> §15 marks **TUF snapshot+timestamp** and **keyless trusted-publishing** as
+> *Built*. Token verification is real RS256 JWT verification, selecting the
+> signing key by `kid` from a pinned issuer key or an inline JWKS document
+> (`projects/coven/src/coven_trust.witchy`). What actually remains is
+> narrower — **live JWKS-over-HTTPS issuer discovery** (in scope for
+> [RFC-0116 milestone 1](0116-hosted-coven-registry-m1.md), in flight, along
+> with scheme-aware HTTPS client addressing and Fly.io deploy artifacts) and
 > per-namespace *delegated* TUF signing keys (today one registry root key signs
-> all roles). Also: the implementation is now **self-hosted** in `projects/pm` +
-> `projects/coven`; the `src/pm/*.rs` file map in §15 is stale (`src/pm` was
-> deleted, commit eae5276). Body left as the historical record per rfcs/README.
+> all roles; explicitly deferred past M1). The implementation is
+> **self-hosted** in `projects/pm` + `projects/coven` (`src/pm` was deleted,
+> commit eae5276); §15's file references reflect the self-hosted tree. Body
+> left as the historical record per rfcs/README.
 
 Status: design spec — the core is **shipped** (CLI, resolver, content-addressed
-store, signing, the capability-widening gate, and a self-hosted `coven`
-registry); full TUF / trusted-publishing is the main remaining work. See §15 for
-the built-vs-pending breakdown.
+store, signing, TUF snapshot/timestamp, keyless trusted-publishing, the
+capability-widening gate, and a self-hosted `coven` registry); hosting that
+registry as a real service is the main remaining work
+([RFC-0116](0116-hosted-coven-registry-m1.md)). See §15 for the
+built-vs-pending breakdown.
 
 The registry is **coven**; a published package is a **rune**. The management
 commands (`witchy add`, `witchy publish`, …) fold into the existing `witchy`
@@ -656,24 +663,30 @@ explicit, recorded approval. No ambient-authority ecosystem can offer this.
 
 ## 15. Implementation status
 
-A working implementation lives in `src/pm/` (folded into the `witchy` binary)
-with unit tests per module and `tests/e2e.rs` driving the real CLI through the
-full lifecycle. What is built vs. modelled-for-later:
+The implementation is **self-hosted in witchy**: `projects/pm/src/pm.witchy` is
+the client (embedded into the `witchy` binary and bootstrapped by
+`src/commands/embedded_pm.rs`), and `projects/coven/src/` is the registry —
+`coven.witchy` (HTTP server + publish/promote/yank lifecycle) with
+`coven_trust.witchy`, `coven_record.witchy`, `coven_meta.witchy`,
+`coven_store.witchy`, `coven_client.witchy`, and friends. The e2e suites under
+`tests/e2e/` (`pm_coven_lifecycle.rs`, `trust_and_publishing.rs`,
+`capability_widening.rs`, `sandbox_grants.rs`, `build_steps.rs`) drive the real
+CLI through the full lifecycle. What is built vs. modelled-for-later:
 
 | Area | Status |
 |---|---|
-| Footprint engine (§4) | **Built.** `src/pm/footprint.rs` — static runtime+build footprint from the typed AST, transitive taint through user types. |
-| Block-on-widening gate (§10) | **Built.** `src/pm/gate.rs` + enforced in `add`/`update`; blocks silent widening, `--allow-cap`/`--allow-build-cap` to consent. |
+| Footprint engine (§4) | **Built.** `projects/pm/src/pm.witchy` (`rune_footprint`, driving `audit`/`check`/`guard`) with server-side recomputation in `projects/coven/src/coven_footprint.witchy` — static runtime+build footprint, never trusting uploaded metadata. |
+| Block-on-widening gate (§10) | **Built.** `projects/pm/src/pm.witchy` — `guard` plus enforcement in `add`/`update`; blocks silent widening, `--allow-cap`/`--allow-build-cap` to consent. |
 | Manifest / lockfile / semver / store (§5,6,7) | **Built.** `witchy.toml`, `witchy.lock` (pins hash+footprint+provenance), content-addressed store, PubGrub-lite resolution. |
 | Two-phase publish (§8.1) | **Built (local).** stage → second-factor `promote`, immutability, separation of duties, server-side footprint recomputation. |
 | Determinism tiering (§7.2) | **Built.** computed class surfaced by `audit`. |
 | Build-grant enforcement (§7.1) | **Built.** All five build capability types (`BuildOut`/`BuildRead`/`BuildEnv`/`BuildNet`/`BuildExec`) exist in the language, are footprinted on their own axis, and execute confined; grants are enforced per-rune (grant ⊇ demand), default-deny — even `BuildOut` alone requires an explicit `[build.grants."name"]` section. |
 | CLI (§11) | **Built.** new/init/add/build/run/update/audit/why/why-cap/tree/outdated/publish/promote/yank/list/verify/vendor. Never executes dependency code. |
-| **Cryptographic record signing** (§8 targets role) | **Built.** `src/pm/keys.rs` — every registry record is **Ed25519-signed** by the registry root key; `fetch`/`build`/`verify` reject any record whose signature fails (catches metadata tampering that content-hashing alone would miss). The client **pins the key fingerprint (TOFU)** in `witchy.lock` and refuses to build if the registry's key changes. |
-| **Networked registry server** (§8) | **Built.** `witchy coven-serve` (`src/pm/server.rs`, tiny_http) serves a JSON wire protocol; `src/pm/remote.rs` is the zero-trust HTTP client (verifies every record signature + source hash). `COVEN_URL` switches the CLI from the local model to a remote server. |
-| **TUF snapshot + timestamp roles** (§8) | **Built.** `src/pm/tuf.rs` — the server regenerates/re-signs a version-numbered snapshot + a short-lived timestamp on every mutation; the client verifies the full chain (signatures, freshness ⇒ no freeze, version ≥ pinned ⇒ no rollback, per-record snapshot consistency). The snapshot version is pinned in `witchy.lock`. |
-| **Trusted Publishing — keyless OIDC** (§8, §12) | **Built.** No long-lived API tokens exist. `src/pm/trusted.rs`: short-lived identity tokens (a JWT stand-in) from trusted issuers (a JWKS stand-in) carry CI/human claims; the server verifies them and matches a per-namespace **trust policy** (first trusted publish TOFU-binds issuer + `repository` + `workflow_ref`; later publishes must match). The publisher identity and a signed SLSA-style **provenance attestation** are derived from the *verified* claims, and **separation of duties** is enforced (the human who promotes ≠ the machine that staged). Bearer auth is rejected outright. `coven-gen-issuer`/`coven-mint-token` model the IdP/CI side. |
-| Remaining registry refinements | **Modelled, not built.** A live-IdP adapter (real RS256/ES256 JWT parsing + JWKS fetched over https, e.g. GitHub Actions / Sigstore Fulcio+Rekor) in place of the Ed25519 stand-in, and full TUF **key separation** (per-namespace *delegated signing* keys — today all roles are signed by the one registry root key). |
+| **Cryptographic record signing** (§8 targets role) | **Built.** `projects/coven/src/coven_record.witchy` — every registry record is **Ed25519-signed** by the registry root key (signed payload byte-identical to the earlier Rust roles); `fetch`/`build`/`verify` reject any record whose signature fails (catches metadata tampering that content-hashing alone would miss). The client **pins the root key (TOFU)** in `witchy.lock` (`registry_rootpub`) and refuses to build if the registry's key changes. |
+| **Networked registry server** (§8) | **Built.** `witchy coven-serve` (`projects/coven/src/coven.witchy`, on the std `server` module) serves the JSON wire protocol; `projects/coven/src/coven_client.witchy` + the pm client are the zero-trust HTTP side (every record signature + source hash verified). `COVEN_URL` switches the CLI from the local model to a remote server. |
+| **TUF snapshot + timestamp roles** (§8) | **Built.** `projects/coven/src/coven_meta.witchy` — the server regenerates/re-signs a version-numbered snapshot + a short-lived timestamp on every mutation; the client (`projects/pm/src/pm.witchy`) verifies the full chain (signatures, freshness ⇒ no freeze, version ≥ pinned ⇒ no rollback, per-record snapshot consistency). The snapshot version is pinned in `witchy.lock`. |
+| **Trusted Publishing — keyless OIDC** (§8, §12) | **Built.** No long-lived API tokens exist. `projects/coven/src/coven_trust.witchy`: short-lived OIDC JWTs from trusted issuers carry CI/human claims; the server verifies the **RS256 signature** (key selected by `kid` from a pinned issuer key or an inline JWKS document) and matches a per-namespace **trust policy** (first trusted publish TOFU-binds issuer + `repository` + `workflow_ref`; later publishes must match). The publisher identity and a signed SLSA-style **provenance attestation** are derived from the *verified* claims, and **separation of duties** is enforced (the human who promotes ≠ the machine that staged). Bearer auth is rejected outright. `coven-gen-issuer`/`coven-mint-token` (Rust path, test-only key tooling) model the IdP/CI side. |
+| Remaining registry refinements | **Modelled, not built.** Live **JWKS-over-HTTPS discovery** from a real IdP (e.g. GitHub Actions, `https://token.actions.githubusercontent.com`) in place of pinned/inline issuer keys, and full TUF **key separation** (per-namespace *delegated signing* keys — today all roles are signed by the one registry root key). [RFC-0116 milestone 1](0116-hosted-coven-registry-m1.md) is **in flight** and covers the first, alongside scheme-aware HTTPS client addressing and Fly.io deploy artifacts; delegated TUF keys are explicitly deferred past M1. |
 | Sandboxed **build-step execution** (§7.1) | **Built.** Build steps auto-run during `witchy build` under exactly their grants; a **deterministic** step runs in the zero-ambient WASM sandbox (only its `write_out`/`read_build` host functions are linked) and its output is cached by a hash over the build source and granted inputs; exec/net steps run on the interpreter behind the allow-lists and re-run every time. Generated source is re-footprinted and gated against the locked baseline. |
 
 The invariant holds today: **no dependency code is ever executed during
