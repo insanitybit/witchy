@@ -118,7 +118,7 @@ missing host
 
 Anonymous-record identity is exact: `.{x: Int, y: Int}` and
 `.{y: Int, x: Int}` are the same type. At a place that explicitly expects a
-smaller anonymous shape, however, Witchy can project a richer record to that
+smaller anonymous shape, however, witchy can project a richer record to that
 exact target. Extra fields are really removed; they aren't hidden dynamic
 properties.
 

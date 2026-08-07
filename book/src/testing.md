@@ -85,7 +85,7 @@ linking a function that mentions `Dir`, `Fetch`, or `Exec` doesn't grant it.
 
 ## Stubs, fakes, strict mocks, and fixtures
 
-Witchy uses these terms deliberately:
+witchy uses these terms deliberately:
 
 | Term | Meaning |
 |---|---|
@@ -103,7 +103,7 @@ Use a fixture capability when the provider contract itself matters: rights,
 narrowing, call order, failure injection, filesystem state, origin checks, or
 the proof that no undeclared operation occurred.
 
-Witchy doesn't monkeypatch statically bound functions. There's no global mock
+witchy doesn't monkeypatch statically bound functions. There's no global mock
 registry and no source-level interception syntax.
 
 ## Deterministic capability fixtures
@@ -231,7 +231,7 @@ trait-bounded value, while the test chooses the concrete fake and its canned
 result.
 
 Function parameters work the same way when a one-method trait would add no
-clarity. The important part is the explicit injection seam: Witchy doesn't
+clarity. The important part is the explicit injection seam: witchy doesn't
 monkeypatch or intercept a statically bound top-level function for tests. The
 test and production program exercise the same dispatch rules.
 
@@ -243,7 +243,7 @@ type's production constructors intentionally reject. Production commands
 remain strict, and imported dependency modules don't inherit this ability.
 
 This relaxation doesn't manufacture authority. Sealed host capabilities such
-as `Dir`, `Net`, and `Clock` still can't be constructed from Witchy source, and
+as `Dir`, `Net`, and `Clock` still can't be constructed from witchy source, and
 plain tests still receive zero real host grants. Fixture handles are minted only
 by the runner from a validated plan. The old `testing.mock_dir` constructor and
 its separate native/interpreter filesystem backends were deleted; the shared
@@ -283,7 +283,7 @@ Three project-level checks run alongside your tests:
   same wrong answer. Its positive-control mutation deliberately preserves
   interpreter/Wasm agreement while changing a result, then proves the
   independently stated expectation still fails.
-- The documentation you're reading is tested. Every Witchy block is extracted
+- The documentation you're reading is tested. Every witchy block is extracted
   and checked. Complete examples execute through compiled Wasm in fresh opaque
   browser frames with explicit providers and derived CSP; runnable examples are
   also checked against committed output and backend parity.

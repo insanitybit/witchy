@@ -11,10 +11,10 @@ inventing observable differences.
 
 ## Universal Slot
 
-Compiled Witchy carries ordinary values in an 8-byte slot. The WIR type
+Compiled witchy carries ordinary values in an 8-byte slot. The WIR type
 `Kind` says how a slot is viewed at a typed boundary:
 
-| Witchy value | WIR kind | Compiled representation |
+| witchy value | WIR kind | Compiled representation |
 |---|---|---|
 | `Int` | `I64` | signed `i64` |
 | `Float` | `F64`/slot | IEEE `f64`, bit-reinterpreted through an `i64` slot when stored generically |

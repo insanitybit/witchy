@@ -108,10 +108,10 @@ relative path to inspect one elsewhere (`witchy tree path/to/app`,
 `witchy why path/to/app genlib`).
 
 `trusted-exe` is an installation artifact, not an untrusted sandbox. Running it
-trusts the application, its embedded Witchy runtime, and its distributor. The
+trusts the application, its embedded witchy runtime, and its distributor. The
 application author must bind each resource parameter of `main` in
 `[targets.trusted-exe]`; a directory binding selects exactly one launch-time
-root such as cwd or `/`, and Witchy operations still accept only paths relative
+root such as cwd or `/`, and witchy operations still accept only paths relative
 to that root. Use portable `.wasm` with consumer-supplied grants when the person
 running the code doesn't want to trust the application beyond a sandbox.
 

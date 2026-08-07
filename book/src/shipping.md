@@ -9,7 +9,7 @@ first distribution decision unusually easy:
 - Ship a **static browser bundle** when the browser is the host and its
   capability menu is sufficient.
 
-These forms share compiled Witchy semantics, but their host and trust boundaries
+These forms share compiled witchy semantics, but their host and trust boundaries
 are intentionally different.
 
 ## Portable WebAssembly
@@ -93,7 +93,7 @@ witchy --release build --target trusted-exe
 ```
 
 The default output is `target/release/<rune-name>`. The destination doesn't
-need a Witchy toolchain or separate `.wasm`, but running the file trusts the
+need a witchy toolchain or separate `.wasm`, but running the file trusts the
 application, its embedded runtime, and its distributor. It's an installation
 artifact, not a way to make an untrusted author safe.
 
@@ -191,7 +191,7 @@ part of the API, or expose host-specific entrypoints with distinct footprints.
 
 The package manager, Coven registry, trusted publishing, and hosted browser
 deployment are substantial dogfood, but they aren't a supported public
-distribution service. Witchy 0.1.0 is still a private release candidate until
+distribution service. witchy 0.1.0 is still a private release candidate until
 the exact queue-settled commit passes the release workflow and native platform
 matrix and receives explicit publication approval.
 

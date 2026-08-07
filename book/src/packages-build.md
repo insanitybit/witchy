@@ -88,7 +88,7 @@ build OK: `app` (1 dependency resolved, linked + type-checked)
 name, even if it exists in your environment.)
 
 `child-paths` are read-only outer-fence needs inherited by the named tool; they
-aren't `BuildRead` grants and never become visible to the Witchy build program.
+aren't `BuildRead` grants and never become visible to the witchy build program.
 
 ## Gated against the future: the widening
 
@@ -167,5 +167,5 @@ the output, so an unchanged step never re-runs - while a step that touches the
 outside world re-runs every time, since its output may depend on external
 state.
 
-Runtime and build-time authority are typed, computed, granted explicitly, and
-pinned in the lock. A widening on either axis requires review.
+Both axes work the same way: the compiler computes the authority, you grant it
+explicitly, the lock pins it. Widen either one and somebody has to look.

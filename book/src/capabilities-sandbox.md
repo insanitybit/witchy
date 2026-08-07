@@ -135,7 +135,7 @@ witchy sandbox --confine=required --dir . main.witchy
 ```
 
 On supported Linux architectures the outer policy also installs a
-thread-synchronized seccomp filter. Witchy maintains promise classes rather
+thread-synchronized seccomp filter. witchy maintains promise classes rather
 than a brittle full syscall allowlist: without filesystem authority the open
 family returns `EPERM`; without network authority socket creation returns
 `EPERM`; without `Net[Listen]`, bind/listen/accept return `EPERM`; and without
@@ -146,12 +146,12 @@ when ordinary grants are present. Filters are narrowing-only, apply to every
 existing thread, and are inherited by executable children.
 
 Executable selection uses descriptor execution or an already-open private
-snapshot. On macOS, platform binaries may instead use a path only after Witchy
+snapshot. On macOS, platform binaries may instead use a path only after witchy
 verifies that its opened identity still matches and that every ancestor is
 root-owned and non-writable; mutable grant paths can't redirect execution.
 
 Third-party build steps use the same outer boundary without irreversibly
-restricting the compiler process. Witchy checks and compiles `build.witchy`
+restricting the compiler process. witchy checks and compiles `build.witchy`
 first, then sends the compiled module and resolved `[build.grants]` to a fresh
 child over a private stdin protocol. That child receives only the granted
 environment values and arms its derived filesystem, network, and process policy
@@ -160,7 +160,7 @@ opened through the same descriptor-confined executable path; build code never
 gets ambient `PATH` lookup or the compiler's full environment.
 
 Native children inherit the outer fence. If an allowed tool needs host files
-that aren't Witchy grants, declare them as child-only read authority:
+that aren't witchy grants, declare them as child-only read authority:
 
 ```toml
 [exec]
@@ -175,7 +175,7 @@ runner = { from = "allow", programs = ["git"], child-paths = ["~/.gitconfig"] }
 ```
 
 These paths widen only the kernel fence inherited by the child. They don't mint
-an additional `Dir` or `File` for Witchy code, and omitted paths remain denied.
+an additional `Dir` or `File` for witchy code, and omitted paths remain denied.
 
 ## The browser's outer fence
 
@@ -241,5 +241,5 @@ The boundary has explicit limits:
   handle-anchored per-operation confinement, report the absent outer layer in
   best-effort mode, and fail before `main` in required mode.
 
-Within these boundaries, a program's blast radius is written in its type and
-enforced by the machine.
+Inside those boundaries you don't have to trust the program. You read its type
+and the VM holds it to that.

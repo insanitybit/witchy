@@ -109,6 +109,5 @@ you the path-plus-query string an HTTP request line needs, and `format` renders
 the whole thing back to a string. For form and query-string escaping without a
 full URL, `url.encode` / `url.decode` operate directly on component strings.
 
-Together these three modules cover the everyday text-wrangling that would
-otherwise tempt you into hand-rolled parsing - the kind that quietly mishandles
-an empty field or an unescaped character. Let the module own the edge cases.
+Hand-rolled parsing is where the empty field and the unescaped character go to
+hide. Let the module own the edge cases.

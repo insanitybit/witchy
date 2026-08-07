@@ -55,7 +55,7 @@ fields.
 ## Richer values at expected-type sites
 
 When an expression has a richer anonymous-record type and the surrounding
-source explicitly expects a poorer anonymous-record type, Witchy constructs the
+source explicitly expects a poorer anonymous-record type, witchy constructs the
 exact target shape. Every target field must exist at exactly the required type.
 
 ```witchy
@@ -145,7 +145,7 @@ a layout cast, a nominal relabel, or a conversion through an untyped slot.
 
 ## Inference stays exact
 
-Width conformance is directed only by an explicit expected type. Witchy does
+Width conformance is directed only by an explicit expected type. witchy does
 not guess a common smaller shape for an unannotated branch, container, function
 value, or generic argument. This keeps inference local and avoids an extra
 field from disappearing merely because another expression lacks it.
@@ -210,7 +210,7 @@ own done
 
 Using `moved` afterward is a use-after-move error. A `var Public` parameter is
 different: it may replace its argument with any `Public`, so a `Private` caller
-place could not regain the omitted `secret` during write-back. Witchy therefore
+place could not regain the omitted `secret` during write-back. witchy therefore
 rejects `var Private -> var Public` for direct bindings, fields, indexes, and
 nested places before reserving or mutating the caller place.
 

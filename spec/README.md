@@ -17,7 +17,7 @@ The authoritative, always-current description of what witchy **is** today. If
   recording the last commit its claims were checked against. Run
   `./scripts/check-spec-freshness.sh` to validate those commits and report their
   age, or add `--strict` to fail when a stamp is more than 250 commits behind
-  `HEAD`. Age is advisory by default because a stamp does not declare which
+  `HEAD`. Age is advisory by default because a stamp doesn't declare which
   source files can invalidate its claims; runnable examples and generated
   references remain the hard freshness gates.
 

@@ -52,9 +52,9 @@ audit witchy code by reading signatures, not by tracing call graphs.
 | `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
 | `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, `only`, `deny`, … |
 | `SecretStore` | named secrets provisioned by the host (`--secret`/`--secret-file`/`--signing-key`) | `require(store, name) -> Secret`, `get(store, name) -> Option(Secret)` |
-| `Secret` | opaque host-held secret material obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key` (Ed25519 signing keys); `server.serve_tls`/`serve_tls_n` consume a TLS private key by opaque reference; `crypto.reveal` (revealable value secrets only - signing keys and use-only secrets are not revealable) |
+| `Secret` | opaque host-held secret material obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key` (Ed25519 signing keys); `server.serve_tls`/`serve_tls_n` consume a TLS private key by opaque reference; `crypto.reveal` (revealable value secrets only - signing keys and use-only secrets aren't revealable) |
 
-A `Dir` is not "the filesystem" - it is one subtree. `dir.read(path)` resolves
+A `Dir` isn't "the filesystem" - it's one subtree. `dir.read(path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and
 symlinks that point outside the subtree. `dir.subtree("sub")` mints a new,
 smaller capability - handing a callee `dir.subtree("uploads")` gives it that
@@ -87,7 +87,7 @@ port)`, `Net.cidr_any(block)`, and `Net.union(a, b)` for a multi-endpoint set.
 already be admitted); `net.deny(policy)` subtracts one (set difference). Both are
 **monotone** - refinement can only ever shrink the set - and enforced **at the
 syscall by the runtime** on both backends, so a narrowed `Net` cannot dial
-elsewhere. Policy patterns are **scheme-agnostic `host:port`**: HTTPS is not a
+elsewhere. Policy patterns are **scheme-agnostic `host:port`**: HTTPS isn't a
 right and not an allowlist scheme but a *connect-time* `tls:` choice on the
 address you dial (`net.connect("tls:github.com:443")`), terminated on the host -
 see [RFC-0009](../rfcs/0009-https-tls-client.md).
@@ -126,7 +126,7 @@ historical socket-level design and
 [RFC-0102](../rfcs/0102-portable-roots-and-the-fetch-capability.md) for Fetch.
 
 `Exec` is the right to spawn a native subprocess - the runtime analog of the
-build-time `BuildExec`. It is right-less, and its opaque host value carries an
+build-time `BuildExec`. It's right-less, and its opaque host value carries an
 optional executable-name allowlist. A bare host-minted `Exec` is unrestricted;
 `exec.only(List(String))` returns the intersection of its receiver's policy and
 the requested names. Grant-document `[exec]` entries establish same-named root
@@ -135,7 +135,7 @@ confinement as `read`, so **you can only execute a file you can read**. The std
 `exec` module wraps the low-level primitive as
 `exec.run(e, dir, path, args: List(String), stdin) -> (Int, String)`, returning
 the child's `(exit_code, stdout-then-stderr)`. `Exec` is the most dangerous
-capability - it escapes the WASM sandbox by running native code - so it is
+capability - it escapes the WASM sandbox by running native code - so it's
 footprinted and gated like any other, the `Dir[Read]` confinement and
 argv-only (no shell string) call shape are load-bearing, and almost nothing
 should hold it. It exists chiefly so the self-hosted `witchy` package manager
@@ -190,7 +190,7 @@ capability Postgres:
 
 `Postgres` holds a `Net` confined to one host (hard, audited authority) plus a
 `table` filter the library enforces in its own queries (a soft policy). Because it
-is `capability`, it is **sealed**: only its module can mint, refine, or destructure
+is `capability`, it's **sealed**: only its module can mint, refine, or destructure
 one, and its fields are private - reachable with `match`, never `.field`, so an
 alias can never leak the underlying `Net` past the policy. The footprint analyzer
 sums the record's capability fields, so it still audits as exactly `Net` - carried
@@ -239,7 +239,7 @@ root, so the `Net` is visible in the signature.
 Because bare grantable caps carry no host authority, they are invisible to the
 host-capability footprint - so they get their own axis. `witchy caps` reports a
 `user caps` line, and the footprint diff treats a newly-required grantable cap as a
-**widening**: it is new library-defined authority, and it puts the declaring
+**widening**: it's new library-defined authority, and it puts the declaring
 package in the policy trust base, both of which a review (or the coven gate) must
 see. This lets a domain like a UI framework define its own reviewable authority
 vocabulary (which fetches, which secret inputs, which host ports a component may
@@ -318,7 +318,7 @@ The patterns above narrow along *calls*. To deny a capability to a region of
 code outright, give that work its own function and don't pass the capability: a
 function or closure that never receives a capability cannot use it, alias it, or
 forge it. This is capture-as-dependency-injection - the strongest firewall witchy
-has, because there is no name to reach and no value to smuggle.
+has, because there's no name to reach and no value to smuggle.
 
 ```witchy
 fn audit_log(console: Console, body: String):
@@ -337,7 +337,7 @@ never a parameter. The absence of a parameter *is* the boundary.
 ## Auditing - and what it actually defends
 
 First, be precise about where the *enforcement* lives. At **runtime**, the type
-system is the defense, and it is complete on its own: a dependency cannot use a
+system is the defense, and it's complete on its own: a dependency cannot use a
 capability you don't pass it, and it cannot change what it demands without
 changing its signatures - which breaks your compile. A malicious version bump
 either fails to type-check or sits there unable to act.
@@ -348,7 +348,7 @@ witchy caps program.witchy
 
 recomputes the capability footprint **from source**, on two axes - the runtime
 authority each public entry point demands, and the **build footprint** (what the
-rune's `build` step may do). It is not declared metadata; it cannot drift or lie.
+rune's `build` step may do). It isn't declared metadata; it cannot drift or lie.
 For the runtime axis this is *reporting and governance* over what the types
 already guarantee: a one-shot answer to "what would I have to grant this code?"
 
@@ -402,8 +402,8 @@ WebAssembly and executes it under the same wasmtime runtime, granting the
 footprint its `main` demands from the ambient environment - a convenience run
 for code you trust, not a boundary for code you don't. `witchy sandbox` is the
 explicit untrusted-code boundary: it grants nothing by default and links only the
-host functions named on its command line. The tree-walking interpreter is not a
-user run path - it is the parity oracle, the `comptime` evaluator, the
+host functions named on its command line. The tree-walking interpreter isn't a
+user run path - it's the parity oracle, the `comptime` evaluator, the
 in-language test runner, and the build-step executor; it confines `Dir` paths
 through the same checks so its oracle runs match.
 

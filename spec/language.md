@@ -85,7 +85,7 @@ fn main(console: Console):
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
 ordinary data values - scalars, record fields, lists, tuples, records, sum types,
 dicts, and their supported nesting - identically on both backends. Function
-values are not data rendering targets and are rejected before runtime. `Show`
+values aren't data rendering targets and are rejected before runtime. `Show`
 is preluded, so interpolation always honors a relevant implementation; imports
 never select rendering semantics. Thus
 `"${90000ms}"`, `show.render(90000ms)`, and `show.say(console, 90000ms)` all
@@ -144,14 +144,14 @@ data. Its first shipped class contains `Int`, `Float`, `Bool`, `Duration`, neste
 packed records or tuples, and fixed-layout packed sums; a reference,
 capability, open type variable, existential, String, or dynamically sized list
 cannot be an inline packed field. Logical behavior is unchanged: reflection and
-type identity do not expose offsets, padding, headers, or destination state.
+type identity don't expose offsets, padding, headers, or destination state.
 
 With the optimized compiled layout enabled, each closed packed shape has one
 versioned canonical `LayoutId`. Packed records, `List(P)`, tuples containing a
 packed component, and fixed-layout packed sums retain that descriptor through
 local construction and direct named calls, including calls linked across user
 modules. Lists use one descriptor-strided buffer; sums use the descriptor's tag
-width and aligned payload band. The source signature does not mention the
+width and aligned payload band. The source signature doesn't mention the
 physical pointer ABI.
 
 The current boundary matrix is exact and fail-closed:
@@ -198,7 +198,7 @@ function types `fn(A) -> B`, anonymous records `.{field: Type}`, and anonymous
 tagged unions `.[Tag | Tag(Payload)]`.
 
 Anonymous-record identity remains exact. You can write the type in parameters,
-returns, fields, aliases, and generic arguments, and field order does not affect
+returns, fields, aliases, and generic arguments, and field order doesn't affect
 identity: `.{x: Int, y: Int}` and `.{y: Int, x: Int}` are the same type.
 
 A richer anonymous record may flow to a poorer expected anonymous-record type
@@ -317,7 +317,7 @@ constraint, so it pins type variables the value leaves open (`let xs:
 List(Int) = []`, a return-position type variable) and a disagreeing value
 errors at the binding line. Locals stay inferred by default - ascribe for
 ambiguous literals, checked documentation, and catching a wrong assumption
-where it is made.
+where it's made.
 
 Top-level `let` declares a module constant (inlined at compile time).
 Assigning to a `let` is a check-time error. A closure also cannot assign to a
@@ -489,7 +489,7 @@ witchy's firewall; see [the capability reference](capabilities.md).
 
 A `region:` block (optionally `region -> T:`) is a user-controlled allocation
 scope: everything allocated inside is reclaimed at the block's end, and the
-block's VALUE is what escapes - on the compiled backend it is deep-copied out,
+block's VALUE is what escapes - on the compiled backend it's deep-copied out,
 except sub-values from outside the region, which are shared rather than
 copied. Assigning a non-scalar variable declared outside the region is a type
 error (the value is the only pointer escape; scalar assignments are fine), and
@@ -717,7 +717,7 @@ fn main(console: Console):
 
 `bump` writes `42` back to `counter` and independently returns `42`. The same
 convention appears in function types (`fn(var Int) -> Int`) and is part of type
-identity: `fn(Int) -> Int` is not interchangeable with it. A `var` parameter may
+identity: `fn(Int) -> Int` isn't interchangeable with it. A `var` parameter may
 not have a default, and async/generator functions may not declare one because a
 suspension could outlive the caller's place.
 
@@ -728,7 +728,7 @@ parameter marks it moved, so a later use is a check-time error
 ends `x` *whatever the callee's convention is* - into a default, `let`, or `own`
 parameter alike - so a later use of `x` is the same check-time error even when the
 parameter only took an ordinary copy. The two compose: `f(move x)` into an `own`
-parameter is a hand-off both sides spell out, and on the compiled backend it is a
+parameter is a hand-off both sides spell out, and on the compiled backend it's a
 guaranteed no-copy move. `move` is **not** accepted into a **procedure-channel**
 `var` parameter - that argument must be a live mutable place, since the callee
 writes it back. On both backends `move` is
@@ -757,7 +757,7 @@ control-flow joins, and pattern bindings all use that rule; parameter
 conventions and generic bounds are preserved. Result-only type variables can be
 fixed by the expected function type, and a generic function may return another
 generic or bounded function value; specialization follows those references to a
-fixpoint. Unannotated parameters that do not carry a type variable do not block
+fixpoint. Unannotated parameters that don't carry a type variable don't block
 specialization. Scalar-only parameters and results retain the universal scalar
 ABI, but the function value itself always uses the uniform GC closure wrapper.
 A boxed lambda's captures live in a per-lambda typed GC struct, so direct
@@ -821,9 +821,9 @@ fn main(console: Console):
 **Where a mutation reaches.** A `var` is a *local* mutable binding, nothing more.
 witchy has value semantics: every boundary that carries a value out of a scope -
 a default call argument, a closure capture, a task message - carries a **copy**,
-so a mutation is never observed through that copy and there is no shared mutable
+so a mutation is never observed through that copy and there's no shared mutable
 state to reason about. The one mechanism that writes back to a caller is a `var`
-*parameter* (above), and even that is a single handed-over variable with no
+*parameter* (above), and even that's a single handed-over variable with no
 aliasing. Concretely:
 
 - A **closure** captures by value and so cannot assign to a captured variable
@@ -851,7 +851,7 @@ change observable behavior; they only let the checker enforce, and a library
 |---|---|
 | `frozen T` | deeply immutable - sharing is safe; declaring it mutable (`var`/`own`) is a check-time error |
 | `unique T` | the sole reference - may be mutated in place and returned as `unique` |
-| `local unique T` | unique within this call only - may be mutated but **may not escape** (returning it is a check-time error) |
+| `local unique T` | unique within this call only - may be mutated but **may not escape** (returning it's a check-time error) |
 | `View(T, 'a)` | a read-only view whose lifetime is tied to an input `let('a) T`; available in `mode opt` |
 
 ```witchy
@@ -868,7 +868,7 @@ fn main(console: Console):
     show.say(console, "${total(table)}")
 ```
 
-The qualifiers do not change values or representation, but they can strengthen
+The qualifiers don't change values or representation, but they can strengthen
 the performance contract. For a `var` parameter typed `unique` or `local unique`,
 `mode opt` rejects a missing ownership proof and names the alias, move, or loan
 that invalidated it. Normal mode remains value-correct through the collection's
@@ -923,7 +923,7 @@ type Parser(a, 'input):
 Each declared lifetime must be unique and used by at least one field, and each
 lifetime used by a field must appear in the nominal type's parameter list. This
 form is available for records and single-variant positional types; a
-lifetime-parameterized multi-variant sum is not supported. Applying the type
+lifetime-parameterized multi-variant sum isn't supported. Applying the type
 requires a type argument for each ordinary parameter and a lifetime argument
 for each lifetime parameter in the declared order.
 
@@ -945,9 +945,9 @@ use. During that interval the owner may be read, but it may not be moved,
 reassigned, mutated, or passed to a `var`/`own` parameter, and the view may not
 escape through a closure, task, channel, mutable binding, or owned aggregate.
 Forwarding a bound view preserves its original owner loan. Persisting a view of
-a temporary is rejected because there is no stable owner; immediately calling
+a temporary is rejected because there's no stable owner; immediately calling
 `.owned()` on that result is allowed. A projection of an already-bound view
-must likewise be materialized before it is persisted, so the new alias cannot
+must likewise be materialized before it's persisted, so the new alias cannot
 lose the projected storage layout. A live view may not cross `await`, `break`,
 or `continue`, and lambda bodies are checked as independent scopes. Last-use
 precision is statement-level within a straight-line block; an enclosing loan is
@@ -960,7 +960,7 @@ owners until the checked final use and releases it on normal, explicit-return,
 and `?` paths. Opening the loan also invalidates the owner's uniqueness token,
 so later update/extract operations copy and re-own rather than mutating storage
 still observed by the materialized value. Host-backed views and capability
-leases require a capability-specific API and are not introduced by this rule.
+leases require a capability-specific API and aren't introduced by this rule.
 
 ## 8. Generics and traits
 
@@ -1033,7 +1033,7 @@ fn main(console: Console):
 ```
 
 Each `impl Trait` parameter introduces its own type variable, so two of them are
-two independent types. It is argument-position only (not a return type), and it
+two independent types. It's argument-position only (not a return type), and it
 composes with an explicit `where` clause. The std library uses it for
 `show.say(console, x: impl Show)` - a `Show`-accepting `print`. The `show`
 module is preluded; `from show import say` is needed only when you want the bare
@@ -1042,7 +1042,7 @@ module is preluded; `from show import say` is needed only when you want the bare
 ### Existential trait types - `dyn Trait` ([RFC-0081](../rfcs/0081-existential-trait-values.md))
 
 `dyn Render` / `dyn Convert(Int)` is an existential trait type: a value whose
-concrete type is hidden behind a trait's callable surface. It is an owned value:
+concrete type is hidden behind a trait's callable surface. It's an owned value:
 the interpreter carries the concrete value plus an authenticated witness, while
 compiled Wasm uses a typed payload box plus an immutable witness-table index.
 Both backends select witnesses from the same closed linked program and agree on
@@ -1061,7 +1061,7 @@ dispatch, write-back, failures, and supertrait upcasts.
   A `var dyn Trait` argument is invariant: its caller place must already have
   that existential type, because callee write-back may contain a different
   concrete witness. Read-only and `own` arguments retain directed erasure.
-  `??` does not map an `Option`/`Result` payload implicitly: its payload and
+  `??` doesn't map an `Option`/`Result` payload implicitly: its payload and
   fallback still have one concrete type. Convert both paths explicitly, or use
   an existential payload type, when their original concrete types differ.
 - Identity is the resolved trait declaration plus its fully substituted
@@ -1073,8 +1073,8 @@ dispatch, write-back, failures, and supertrait upcasts.
   alternatives. The comparison traits and preluded `Show` retain their ambient
   bare identities.
 - A trait must be existential-safe to be used as `dyn Trait`: every method has
-  a receiver, introduces no method-local type parameters, does not return bare
-  `Self`, mentions `Self` nowhere but the receiver, and does not return a
+  a receiver, introduces no method-local type parameters, doesn't return bare
+  `Self`, mentions `Self` nowhere but the receiver, and doesn't return a
   result borrowed from the hidden receiver; every trait type parameter must be
   fixed by concrete arguments. One unsafe method blocks the trait, and the
   diagnostic names every blocking method and rule (`dyn PartialEq` is rejected:
@@ -1097,7 +1097,7 @@ dispatch, write-back, failures, and supertrait upcasts.
   explicitly declared on the existential-safe trait are callable. A domain that
   needs comparison or a stable key declares that operation as a trait method.
 - Constructing an owned existential may allocate its payload box. `mode opt`
-  preserves exactly the same values and traps but does not promise allocation
+  preserves exactly the same values and traps but doesn't promise allocation
   removal or devirtualization; either optimization is optional and unobservable.
 
 Heterogeneous values dispatch through their own witnesses:
@@ -1135,7 +1135,7 @@ the module before type-checking, so both backends and the footprint analysis tre
 it like handwritten code. The supported derives are `Show`, `PartialEq`, `Eq`,
 `PartialOrd`, `Ord`, `Reflect`, `Deserialize`, and `PublicState`. `Reflect` needs
 `import reflect` and makes a user type reflectable (scalars and the built-in
-containers already are); it is what lets
+containers already are); it's what lets
 `json.stringify` / `json.from_value` encode the type with no per-type code.
 `Deserialize` generates `from_json(j) -> Result(Self, String)` for scalars,
 lists, options, and nested records, and - because the generated body names them
@@ -1154,7 +1154,7 @@ trait is a sealed compiler boundary: handwritten and user-generated impls are
 rejected; only the canonical standard foundations and the authenticated built-in
 derive may produce a proof.
 `public_state.to_json` additionally requires `Reflect`; public-state eligibility
-does not by itself define a serialization format.
+doesn't by itself define a serialization format.
 
 ```witchy
 import show
@@ -1235,7 +1235,7 @@ of any reflectable type.
 ### `comptime:` - compile-time item generation
 
 A top-level `comptime:` block runs **at compile time** with no capabilities
-reachable (there is no parameter list to receive one), making it
+reachable (there's no parameter list to receive one), making it
 deterministic by construction. Legacy `emit(line)` output, and direct
 `console.print(line)` for compatibility, are parsed as witchy source and
 **appended** to the module before type checking and footprint analysis.
@@ -1336,8 +1336,8 @@ structural slices land.
 ownership-qualified, capability-right, anonymous structural, and borrowed-view
 types.
 `witchy expand <file.witchy>` prints the entry module after `comptime:` item
-generation and tagged-literal expansion, rendered as canonical Witchy source.
-It is an inspection tool: it does not type-check, compile, or dump bundled
+generation and tagged-literal expansion, rendered as canonical witchy source.
+It's an inspection tool: it doesn't type-check, compile, or dump bundled
 standard-library implementation modules.
 
 Generated code is analyzed exactly like handwritten code, and nothing existing
@@ -1360,7 +1360,7 @@ fn main(console: Console):
 ### Tagged literals - compile-time `tag"…"`
 
 A string literal written **immediately after an identifier**, `tag"a${x}b"`, is a
-*tagged literal*. It is expanded **at compile time**, like `comptime:`, but in
+*tagged literal*. It's expanded **at compile time**, like `comptime:`, but in
 **expression** position: the lexer splits the literal into its static fragments
 and its `${…}` hole sources, and the compiler calls the `tag` function
 
@@ -1375,11 +1375,11 @@ A tag may accept a third `String` parameter. The compiler supplies
 comptime fn tag(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax
 ```
 
-The metadata is not a stable semantic identity. A tag derives stable IDs from
+The metadata isn't a stable semantic identity. A tag derives stable IDs from
 its normalized static parts and slot structure, keeping source location separate.
 
 with `parts` = the static fragments and `holes` = an **opaque marker** per hole -
-a token the tag *places* where that hole's value belongs (the tag does not read
+a token the tag *places* where that hole's value belongs (the tag doesn't read
 the hole's source). A tag returns `meta.ExprSyntax`; String-returning tags are
 rejected. A compiler-owned expression transfers its AST through the expansion
 event directly. A tag that must construct source dynamically uses the explicit
@@ -1393,7 +1393,7 @@ Direct function, type, and constructor
 references in compiler-owned output resolve in the tag's definition module,
 including private function helpers and directly imported public declarations; an
 invocation-site declaration with the same spelling cannot capture them.
-Definition-site identity does not bypass sealed-type construction rules. The
+Definition-site identity doesn't bypass sealed-type construction rules. The
 compiler then **substitutes** the real hole
 expression - parsed once at the call site, carrying its source position - at each
 marker and splices the result over the literal before type checking. So both
@@ -1402,11 +1402,11 @@ marker may be placed zero, once, or many times. The tag is local or imported;
 only its module-qualified reachable closure runs at expansion time, including
 reachable comptime helpers, constants, constructors, traits, and implementations
 in directly imported modules. Two direct imports exporting the same tag name are
-ambiguous and rejected. Bundled standard-library modules do not export tag entry
+ambiguous and rejected. Bundled standard-library modules don't export tag entry
 points; library tags live in ordinary imported runes.
 
 Because a tag emits *code*, interpolation holes are typed **by position** (the
-substituted expression is type-checked normally) and there is no runtime string
+substituted expression is type-checked normally) and there's no runtime string
 parser. Hole expressions resolve at the **call site** (hygiene), while direct
 functions, types, constructors, and constructor patterns written in
 compiler-owned typed output resolve at the **definition site**. A generator can
@@ -1415,7 +1415,7 @@ resolution by passing `meta.call_site("name")` to `meta.expr_name`,
 `meta.type_named`, or `meta.pattern_ctor`. A type error
 in a hole points back **into the literal** at that `${…}`, not at generated code.
 The `html` tag in the `glamour` rune uses this: a `${userInput}` in text position
-becomes a `text(…)` **node**, never markup, so it is XSS-immune by construction.
+becomes a `text(…)` **node**, never markup, so it's XSS-immune by construction.
 
 ```witchy
 import meta
@@ -1500,13 +1500,13 @@ division by zero, unparseable `string.to_int`, NaN ordering, and the `fail(msg)`
 primitive all abort (a runtime error interpreted, a trap compiled). The parity
 invariant covers these too - a program that errors on one backend errors on
 both. An abort is terminal for that VM instance: it cannot be resumed after a
-partially unwound call. Structured `return` and `?` paths are not aborts and run
+partially unwound call. Structured `return` and `?` paths aren't aborts and run
 their ordinary ownership cleanup.
 
 **Unwrapping with `??`.** For a quick value-or-default, `Option(T) ?? T` unwraps
 to a bare `T` (§4): `Some(x) ?? d` is `x`, `None ?? d` is `d` (with `d` evaluated
 only when absent). `Result(T, e) ?? T` unwraps `Ok` likewise, discarding the
-error. It is `unwrap_or` with operator syntax - handy on the `Option`-returning
+error. It's `unwrap_or` with operator syntax - handy on the `Option`-returning
 lookups (`d.get(key)`, `list.head`, …).
 
 ```witchy
@@ -1586,7 +1586,7 @@ operations are **methods** (`xs.map(f)`, see §4) - the primary form for the dat
 libraries. Every public inherent method also has an equivalent module-qualified
 alias (`list.map(xs, f)`), so the qualified spelling always works too; the
 remaining module-level functions - constructors such as `iter.range` and
-`dict.from_pairs`, and helpers whose argument is not the module's own type, such
+`dict.from_pairs`, and helpers whose argument isn't the module's own type, such
 as `json.stringify(x)` - are called module-qualified. A module's `pub`
 **types and their constructors** are module-scoped
 the same way: after `import json` you name them qualified (`json.Json`,
@@ -1661,7 +1661,7 @@ of [capabilities.md](capabilities.md) and
 ### 13.1 The build entrypoint
 
 A rune may ship a **build step**: a top-level `fn build` whose first parameter is
-a build capability. It is the root of *build-time* authority, exactly as `main`
+a build capability. It's the root of *build-time* authority, exactly as `main`
 is the root of runtime authority - and the two capability sets never mix: `build`
 may take **only** build capabilities, and `main` may take none of them.
 
@@ -1763,7 +1763,7 @@ The policy constructors are `Net.tcp(host, port)`, `Net.any_port(host)`,
 internal IP ranges (loopback, RFC-1918, link-local incl. the `169.254.169.254`
 metadata IP, CGNAT) for the one-line SSRF/rebinding guard
 `net.deny(Net.private())`. A CIDR/IP policy is
-checked against the *resolved* IP, so it is rebinding-safe. TLS is not a right or a
+checked against the *resolved* IP, so it's rebinding-safe. TLS isn't a right or a
 policy scheme but a connect-time `tls:` prefix on the address you dial
 (`net.connect("tls:host:443")`); see
 [0003-network-address-scoping.md](../rfcs/0003-network-address-scoping.md) and
@@ -1798,13 +1798,13 @@ async fn main(console: Console):
     chan.consume(rx, fn(n): chan.done(console.print("got ${n}"))).await
 ```
 
-`chan.channel(cap)` is a bounded channel - the sender blocks when it is full
+`chan.channel(cap)` is a bounded channel - the sender blocks when it's full
 while the executor can make progress; pass `0`, or use `chan.unbounded()`, for no
 backpressure. If every live task parks with no progress, the executor runs its
 quiescence close pass: parked receives/selects resume as `None`, parked sends are
 released, and parked joins resume. That is the close condition
-`chan.recv(rx).await` and `chan.consume` observe; witchy does not refcount sender
-values, so "closed" does not mean no `Sender` value can ever be used again. A
+`chan.recv(rx).await` and `chan.consume` observe; witchy doesn't refcount sender
+values, so "closed" doesn't mean no `Sender` value can ever be used again. A
 channel can be shared by many receivers (a worker pool) or many senders. Each
 channel is typed independently - a program may use channels of many different
 message types (the executor carries messages erased and each endpoint recovers

@@ -43,7 +43,7 @@ that a transformed AST remains checked.
 There is **one user-program run path: the compiled WASM backend.** `witchy
 <file>`, `witchy run`, and `witchy sandbox` all compile to a wasm binary and
 execute it under wasmtime, so dev == deploy by construction. The tree-walking
-interpreter is *not* a run path - it is the differential oracle (`witchy
+interpreter is *not* a run path - it's the differential oracle (`witchy
 parity`), the `comptime:` evaluator, the in-language test runner, and the
 effectful build-step executor.
 
@@ -61,7 +61,7 @@ The compiler is a **Cargo workspace**: eleven stage-aligned library crates under
 `crates/`, plus the `witchy` root package (the CLI, the wasm-playground
 `cdylib`, and the native-only LSP/PM/idp tooling). Package dependencies enforce
 the coarse stage DAG. Some stage internals and migration re-exports remain
-public within the workspace, so module-level interfaces are not yet uniformly
+public within the workspace, so module-level interfaces aren't yet uniformly
 narrow. The executable dependency ceiling and the remaining decomposition work
 are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 
@@ -103,7 +103,7 @@ The consequence for contributors: **any observable behavior you add must land
 on both backends in the same change**, or be a loud error on the one that
 lacks it. The codebase treats a "documented divergence" as a bug.
 
-Parity is not a specification oracle: the interpreter and compiled backend
+Parity isn't a specification oracle: the interpreter and compiled backend
 share parsing, linking, type checking, and parts of lowering policy, so a
 common-mode defect can preserve agreement. New semantics therefore need an
 independent expected result or rejection in addition to parity. The
@@ -132,10 +132,10 @@ descriptor vocabulary:
 |---|---|
 | Local construction, field/index access, packed-list traversal and mutation, and fixed-sum matching | Uses descriptor offsets, stride, tag width, and payload bands. No per-element record boxes are introduced. |
 | Direct named function calls and linked user-module calls | Packed records, packed lists, packed-containing tuples, and fixed-layout packed sums cross as the exact descriptor-shaped pointer ABI. Parameter/result ownership still comes from the checked RFC-0110 access envelope. |
-| Direct generic calls | Each closed instance is keyed by logical type identity, the RFC-0110 access envelope, exact parameter/result `LayoutId`s, and the optimization schema. Packed construction, indexed traversal, mutation, recursive/direct helper calls, and return retain that instance; open or unsupported crossings do not guess a layout. |
-| Function values, lambdas/closure captures, and trait/existential calls | Reject before the legacy indirect ABI can box or reshape the value. Exact callable-layout diagnostics name the `LayoutId`; there is no packed indirect-call ABI yet. |
+| Direct generic calls | Each closed instance is keyed by logical type identity, the RFC-0110 access envelope, exact parameter/result `LayoutId`s, and the optimization schema. Packed construction, indexed traversal, mutation, recursive/direct helper calls, and return retain that instance; open or unsupported crossings don't guess a layout. |
+| Function values, lambdas/closure captures, and trait/existential calls | Reject before the legacy indirect ABI can box or reshape the value. Exact callable-layout diagnostics name the `LayoutId`; there's no packed indirect-call ABI yet. |
 | Host import boundary | ABI version 8 authenticates an accepted-`LayoutId` set against `witchy.layouts`. Every production import currently publishes an empty set, so a structured specialized crossing rejects. A future marshal must name its accepted descriptor and reshaped-byte counter. Capability references remain `externref` and can never be inline scalar fields. |
-| `region:` result, isolated worker, channel, and other unsupported dynamic boundaries | Reject rather than copying through the universal-slot path. Artifact descriptor transport does not by itself authorize packed value transport between VMs. |
+| `region:` result, isolated worker, channel, and other unsupported dynamic boundaries | Reject rather than copying through the universal-slot path. Artifact descriptor transport doesn't by itself authorize packed value transport between VMs. |
 | Whole-value equality | Fixed-layout packed sums with derived/default structural equality use their descriptor's equality operation, tag width, variant child layouts, and physical payload offsets. Custom `PartialEq`, other specialized equality, and all specialized rendering remain fail-closed. |
 
 Destination passing is also descriptor-gated. A private direct function whose
@@ -145,7 +145,7 @@ result written into compatible dead caller storage and a fixed packed sum writte
 into a proven nonescaping immediate-consumer scratch. Public entry points,
 own/`var` capacity envelopes, nested allocating payloads, incomplete constructor
 returns, escaping old values, and layout mismatches retain the allocating path.
-The observable value and write-back order do not change.
+The observable value and write-back order don't change.
 
 RC-header elision has one conservative admitted class: in `mode opt`, with
 `unbox` and `rc-elide` enabled, a nonempty immutable local `List(Packed)` may use
@@ -178,7 +178,7 @@ instance lowered to a Wasm GC struct, or in a closure's per-lambda GC
 environment. The nominal category includes generic and non-generic sealed
 capabilities, plain
 named-field records, positional wrappers, and multi-variant sums. Capability
-tuples are interned by their recursively typed field shape; qualifiers do not
+tuples are interned by their recursively typed field shape; qualifiers don't
 change that shape, and tuples may nest in other tuples or nominal GC
 aggregates. A sum stores its tag and each variant's payload in disjoint typed
 field bands, with inactive reference fields null; mixed and recursive nesting
@@ -276,11 +276,11 @@ Tracked honestly rather than hidden:
   unspecialized generic function, or a *recursive* generic ADT - stays a loud
   compile error, never a silent pointer compare.
 - Spawned tasks return `Nil` and report results over channels (the Go model):
-  there is no typed `JoinHandle(T)` - one would force a native runtime and
+  there's no typed `JoinHandle(T)` - one would force a native runtime and
   break the byte-identical executor, so the structured forms (`chan.scope`,
   `chan.gather`, `chan.par_map`) cover the join-with-result shapes. `await`
   is supported in loop bodies, including `while` bodies that carry mutable
-  locals across the await; it is still not supported in loop/branch
+  locals across the await; it's still not supported in loop/branch
   conditions or match scrutinees. See
   [concurrency-design.md](../rfcs/concurrency-design.md).
 - The LSP has diagnostics, completion, hover, and expansion-aware document

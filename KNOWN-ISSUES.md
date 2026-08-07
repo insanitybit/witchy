@@ -1,20 +1,25 @@
-# Witchy supported-preview issue ledger
+# witchy supported-preview issue ledger
 
-This is the tracked product-facing issue ledger for Witchy's
-[supported-preview contract](PRODUCT-STATUS.md). It answers a narrow question:
-what known defect, accepted limitation, or missing evidence affects the journey
-Witchy intends new users to depend on?
+A project's bug tracker will tell you everything that's ever been wrong with it.
+That's the wrong question for someone deciding whether to depend on the thing.
 
-Evidence snapshot: `9abf6debde7edae41a3f1db254a2e4f5dd2b0d1e`.
-Entries must be re-verified when their evidence is likely to have changed.
+This ledger answers a narrow one instead: what known defect, accepted
+limitation, or missing evidence affects the journey witchy's
+[supported-preview contract](PRODUCT-STATUS.md) asks new users to rely on?
 
-The local `bugs/` and `security-eval/` trees are engineering intake. They may
-contain sensitive reproductions, historical findings, duplicate identifiers,
-and stale status prose, so their raw OPEN/FIXED counts are not product status.
-A finding from either tree becomes product truth here only after it is checked
-against current master and classified against the supported-preview boundary.
-This separation must never be used to hide a shared compiler, runtime, or host
-defect merely because it was discovered while testing an experimental feature.
+Evidence snapshot: `9abf6debde7edae41a3f1db254a2e4f5dd2b0d1e`. Re-verify an
+entry when its evidence has likely moved.
+
+The local `bugs/` and `security-eval/` trees are engineering intake. They hold
+sensitive reproductions, historical findings, duplicate identifiers, and stale
+status prose, so their raw OPEN/FIXED counts aren't product status. A finding
+from either tree becomes product truth here only after somebody checks it
+against current master and classifies it against the supported-preview
+boundary.
+
+That separation is not a place to hide things. A shared compiler, runtime, or
+host defect belongs here even when an experimental feature is what turned it
+up.
 
 ## Status rules
 

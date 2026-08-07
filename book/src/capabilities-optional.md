@@ -27,8 +27,8 @@ fn main(console: Console, dir: Dir[Write]):
     console.print("${skipped}")
 ```
 
-You construct the values with `Some(dir)` and `None` like any other option - a
-The capability is an ordinary value passed as an argument.
+You construct the values with `Some(dir)` and `None` like any other option. A
+capability is an ordinary value; passing one is just passing an argument.
 
 The important part: **the auditor sees through `Option`.** `witchy caps` reports
 
@@ -70,19 +70,22 @@ fn main(console: Console, dir: Dir):
 `handle` can read or write, so its footprint is the union: `Dir`. The narrower
 helpers still report only what they use (`Dir[Read]` and `Dir[Write]`).
 
-A capability-carrying **aggregate** compiles to a typed wasm GC struct when its
-layout is concrete. This includes a direct structural tuple such as
-`(Dir[Read], String)`, plus each closed instance of a generic or non-generic
-`type` with named fields, positional payloads, or multiple variants, sealed
-`capability` declaration or plain `type` alike. The one exception is a
-transparent single-field capability brand, which stays a direct externref
-instead of allocating a wrapper struct. Concrete tuples and nominal instances
-may nest while keeping the capability an unforgeable reference; nominal types
-may also recurse. Tuple construction, numeric projection, parameter and return
-passing, and `let`/`match` destructuring use that typed representation on both
-backends.
-Concrete and generic type aliases are expanded before representation selection,
-so an alias for one of these tuples has exactly the same GC shape and behavior.
+When an **aggregate** carries a capability and its layout is concrete, the
+compiler gives it a typed wasm GC struct. That covers a direct structural tuple
+like `(Dir[Read], String)`, and every closed instance of a `type` - generic or
+not, named fields or positional payloads, one variant or several, sealed
+`capability` declaration or plain `type` alike.
+
+One case stays outside it: a transparent single-field capability brand keeps its
+direct externref rather than allocating a wrapper struct.
+
+Concrete tuples and nominal instances can nest, and the capability stays an
+unforgeable reference the whole way down; nominal types can also recurse. Both
+backends use that typed representation for tuple construction, numeric
+projection, parameter and return passing, and `let`/`match` destructuring. The
+compiler expands concrete and generic type aliases before it picks a
+representation, so an alias for one of these tuples gets exactly the same GC
+shape and behavior.
 
 Closures may capture capabilities: the compiled backend keeps each boxed
 lambda's captures in a typed GC environment, so the capability remains an

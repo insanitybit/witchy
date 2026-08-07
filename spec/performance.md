@@ -6,12 +6,12 @@ intrinsic cost of the work, not by interpretation or GC overhead.
 **Sandboxing stays non-negotiable:** every optimization below preserves the
 capability model; nothing reaches around the VM boundary.
 
-## Where that target is reachable (and where it is not)
+## Where that target is reachable (and where it isn't)
 
 Wasmtime runs Cranelift-compiled machine code, not an interpreter. Our own
 measurements (2026-06-11): a 4M-op arithmetic loop runs in ~16 ms wall
 including JIT - the same class as the LLVM-compiled native binary. The gaps
-are not "WASM is slow"; they are specific and addressable:
+aren't "WASM is slow"; they are specific and addressable:
 
 | Workload | Today | Reachable at native-class speed? |
 |---|---|---|
@@ -19,7 +19,7 @@ are not "WASM is slow"; they are specific and addressable:
 | Startup / cold runs | validated optimized-WASM + Cranelift caches exist | **Yes** - warm runs skip Binaryen and native recompilation while still validating cached wasm through Wasmtime's safe API |
 | Allocation-heavy (lists, strings) | **Phase 1 complete** - capacity-growth + ownership-driven in-place mutation (was: OOM trap, copy-per-push O(n²)) | **Yes, done** - GC-free throughput; the 300k-push bench runs in constant memory (see Phase 1 below) |
 | Long-running request loops | arena grows until the cap | **Yes** - arena reset points reclaim in bulk with no pauses |
-| Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** - reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), implemented) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there is no pointer-cycle tail to concede. See [RFC-0029](../rfcs/0029-performance-tier-contract.md) |
+| Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** - reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), implemented) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there's no pointer-cycle tail to concede. See [RFC-0029](../rfcs/0029-performance-tier-contract.md) |
 
 The honest summary: witchy should not add a *tracing GC*. Its
 value semantics + ownership conventions + region-scoped arenas, with reference
@@ -39,15 +39,15 @@ A persistent piece of folklore says server and async programs are I/O-bound, so
 runtime CPU and allocation cost are noise. Treat that claim as **false by
 default.** Programs - including the networked, concurrent, `async` ones witchy
 is built for - are routinely bound by CPU, by allocation, by memory bandwidth,
-or by the runtime's own per-event overhead. Optimizing those costs is not
-premature; it is the main event.
+or by the runtime's own per-event overhead. Optimizing those costs isn't
+premature; it's the main event.
 
 The folklore conflates two different things: async *hides* per-operation I/O
-latency by overlapping it - that is the entire point of async - but hiding
-latency does not make the work free. What binds **throughput** is the CPU spent
+latency by overlapping it - that's the entire point of async - but hiding
+latency doesn't make the work free. What binds **throughput** is the CPU spent
 per event: parsing, framing, (de)serialization, TLS, compression, buffer
 copies, allocation, and the scheduler's own poll/waker/state-machine
-transitions. All of that scales with event count and none of it is hidden by
+transitions. All of that scales with event count and none of it's hidden by
 concurrency. A proxy, broker, cache, or database moving millions of small
 operations per second does async I/O and is flatly CPU- and
 memory-bandwidth-bound. Modern I/O (NVMe, io_uring, intra-datacenter RTTs in
@@ -115,14 +115,14 @@ stats` exposes `extract_searches`,
 `extract_drops` so the no-copy and single-search claims are deterministic test
 facts rather than timing inferences. `indirect_ownership_calls` counts the
 state-bearing calls that actually retain typed table dispatch. `reowns` counts
-operation-level copy-on-write entries; it is not a count of repairs at source
+operation-level copy-on-write entries; it isn't a count of repairs at source
 call boundaries.
 
 When a `var`-unique call writes its result back into whole caller locals (no
 field or index projection), the result is committed directly into storage rather
 than staged through a scratch local - the callee already produced the exact
 owner the local must hold, so the extra move is redundant. `direct_storage_var_accesses`
-counts these direct commits; it is exact and lever-invariant (the write-back is
+counts these direct commits; it's exact and lever-invariant (the write-back is
 observationally identical to the staged form on every non-trapping path, and the
 single commit still runs after the multi-result call returns, so a trapped VM
 commits nothing - the same all-or-nothing write-back). When the same envelope
@@ -179,7 +179,7 @@ recorded [benchmark baseline](../bench/BASELINE.md), so regressions fail loudly.
    system already proves uniqueness: when the write-back target is an unaliased
    `var` (the same analysis the native
    backend uses to elide clones), `push` mutates in place. This is the classic
-   linear-update optimization, and it is what turns push from O(n) to
+   linear-update optimization, and it's what turns push from O(n) to
    amortized O(1). Same treatment for `insert` on dicts and string-builder
    accumulation (`s = s <> piece`).
 3. **Dict growth**: verify the 16-byte-entry table doubles rather than
@@ -226,7 +226,7 @@ are prior-art data points in the harness, not a target framing.
    at 64M ops the optimized module is no faster (Cranelift Speed already
    emits ~0.6 ns/op for our loop shapes) and the ~50 ms invocation cost
    dominates every benchmark. Verdict: keep the hook for future
-   inline-heavy code, but it is NOT a current lever - which also validates
+   inline-heavy code, but it's NOT a current lever - which also validates
    deferring the wasmer-LLVM engine.
 2. **Direct calls over `call_indirect`** - SHIPPED when a closure target is
    statically known (`WITCHY_OPT=direct-call`).
@@ -261,7 +261,7 @@ are prior-art data points in the harness, not a target framing.
    reuse rung could not reach). A confined, never-aliased `let`/`var` heap local -
    the `escape` oracle's summary-aware `confined_reassigned_vars`: every whole-use is
    a non-leaking call argument (decided by `Summaries::arg_leaks`, so it generalizes
-   to user functions) or an element read - that is overwritten by a freshly-allocated
+   to user functions) or an element read - that's overwritten by a freshly-allocated
    buffer threading the old one through (`x = f(x, …)`) frees the old buffer into a
    size-classed free-list that the next allocation reuses. This bounds the
    cache-EVICTION case the reuse rung leaks (insert then remove distinct dict keys:
@@ -274,7 +274,7 @@ are prior-art data points in the harness, not a target framing.
    over operations (no per-method code) and over USER types (every record/tuple/ADT
    funnels through the single `$mkN` allocator, already routed through `$rc_alloc`).
    Opt-in `WITCHY_OPT=rc-floor` (the floor adds a per-object header + free-list
-   traffic the default does not pay); proven by the `cache_eviction_bounded_by_rc_floor`
+   traffic the default doesn't pay); proven by the `cache_eviction_bounded_by_rc_floor`
    stats test (off → leaks O(n); on → bounded) plus the `__rc_reused_bytes` counter
    (off 0; on → scales with iterations) and the de-opt sweep. Reclamation currently
    covers the dict allocators and the generic `$mkN` (records/tuples/ADTs); routing
@@ -296,7 +296,7 @@ are prior-art data points in the harness, not a target framing.
    logical type identity, RFC-0110 access envelope, exact parameter/result layout
    IDs, and optimization schema. Their packed construction, indexed traversal,
    mutation, direct/recursive helper calls, and return retain the selected
-   physical instance; open generic or unsupported crossings do not guess a
+   physical instance; open generic or unsupported crossings don't guess a
    layout.
 
    Unsupported boundaries fail closed. Function values, lambda/closure captures,
@@ -309,7 +309,7 @@ are prior-art data points in the harness, not a target framing.
    8 authenticates descriptor metadata, but every production import currently has
    an empty accepted-layout set; therefore structured packed host crossings reject.
    No capability/reference field can enter packed linear-memory storage. Disabling
-   `unbox` selects the boxed differential oracle and is not evidence that a packed
+   `unbox` selects the boxed differential oracle and isn't evidence that a packed
    physical path fired.
 
    **Destination passing.** A private direct producer with a fixed descriptor and

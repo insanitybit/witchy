@@ -147,9 +147,9 @@ witchy code (std/, examples/, projects/): `witchy fmt <file>` - CI runs
 the API reference: `witchy doc std/*.witchy > spec/stdlib.md` (a test asserts it
 is current).
 
-## Witchy house style
+## witchy house style
 
-Witchy source in this repository follows the executable
+witchy source in this repository follows the executable
 [Idiomatic witchy](book/src/idioms.md) chapter. In particular:
 
 - use interpolation for presentation strings, not concatenation;
@@ -245,8 +245,8 @@ truth elsewhere:
   hand-edit it; update the source comments or generator and regenerate it.
 - `wiki/` is derived, disposable synthesis over code, `spec/`, `rfcs/`, and
   `external-refs/`. Regenerate it instead of hand-maintaining pages.
-- `external-refs/` is curated research input, not the current Witchy spec. Keep
-  notes attributed and use RFCs/spec docs for Witchy decisions.
+- `external-refs/` is curated research input, not the current witchy spec. Keep
+  notes attributed and use RFCs/spec docs for witchy decisions.
 
 If a public-facing docs change updates commands, examples, or generated output,
 run the command or generator named by the doc and include that command in the PR.

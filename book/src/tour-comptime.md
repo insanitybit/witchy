@@ -220,7 +220,7 @@ comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
 ```
 
 Tags that generate source-indexed artifacts may accept a third `String`
-parameter. Witchy supplies the invocation as `module:line`; use it for
+parameter. witchy supplies the invocation as `module:line`; use it for
 diagnostics, while deriving stable artifact identity from normalized static
 input:
 

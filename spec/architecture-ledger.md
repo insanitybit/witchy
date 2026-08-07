@@ -2,7 +2,7 @@
 
 This ledger records the implementation boundaries that exist today and the
 small, independently mergeable changes required to make those boundaries
-coherent. It is an execution ledger, not an aspirational architecture diagram.
+coherent. It's an execution ledger, not an aspirational architecture diagram.
 The durable pipeline contract remains in [architecture.md](architecture.md).
 
 Classifications used below:
@@ -67,24 +67,24 @@ identity, arity, ownership, or meaning.
 
 | Contract | Authority | Consumer rule |
 |---|---|---|
-| Source grammar and AST | `witchy-syntax::{lexer,parser,ast}` | Later stages consume AST nodes; they do not reparse source-shaped strings to recover semantics. |
+| Source grammar and AST | `witchy-syntax::{lexer,parser,ast}` | Later stages consume AST nodes; they don't reparse source-shaped strings to recover semantics. |
 | Module graph, source identities, visibility | `witchy-syntax::{linker,type_resolve}` | Downstream stages consume resolved names and declaration provenance. |
 | Source-only semantic proof and provenance | `witchy-syntax::source_check` | Generator/async validation reports item identity before destructive lowering; checked linking retains module and line. |
-| Checked front-end pipeline | `witchy-types::pipeline::CheckedModule`; `witchy-interp::pipeline` supplies expansion | Production sinks accept the proof object. Tooling may stop at a named `LinkedModule`; bare `Module` is not an execution credential. |
+| Checked front-end pipeline | `witchy-types::pipeline::CheckedModule`; `witchy-interp::pipeline` supplies expansion | Production sinks accept the proof object. Tooling may stop at a named `LinkedModule`; bare `Module` isn't an execution credential. |
 | Type judgment and expression facts | `witchy-types::typeck::{TypedModule,TypeTable}` | Arbitrary AST mutation always reannotates; node-preserving mutation is crate-private. |
 | Capability vocabulary | `witchy-cap-model` | Compiler, analyzer, fixtures, and runtime share names/classes/rights vocabulary without depending upward. |
 | Capability operation identity, receiver, arity, and coarse result | `witchy-syntax::cap_ops::OPS` | Type checking and trait lowering use receiver-qualified catalog lookup; operation-specific rights remain checker policy. |
 | Effective nominal type parameters | `witchy-syntax::ast::effective_type_params` | Type checking, reflection, storage, traits, and codegen delegate rather than infer separate parameter order. |
-| Runtime declaration identity and closed shapes | `witchy-types::runtime_type` | Backends consume authenticated declaration catalogs; they do not reconstruct ownership from names. |
+| Runtime declaration identity and closed shapes | `witchy-types::runtime_type` | Backends consume authenticated declaration catalogs; they don't reconstruct ownership from names. |
 | Trait dispatch and monomorphization | `witchy-types::traits` over `TypeTable` | Backends consume resolved calls; string-shape fallback must not become a second type system. |
-| AST-to-WIR lowering and representation | `witchy-lower::codegen` plus `witchy-wir::layout` | The interpreter defines observable semantics, but does not define compiled layout. |
+| AST-to-WIR lowering and representation | `witchy-lower::codegen` plus `witchy-wir::layout` | The interpreter defines observable semantics, but doesn't define compiled layout. |
 | Runtime values and host ABI | `witchy-runtime::{value,native}` with WIR representation constants | Host adapters consume the shared ABI instead of maintaining parallel layouts. |
 | Capability footprint | `witchy-caps::capabilities` | Grants are checked against recomputed source footprint, never trusted metadata. |
-| Confinement policy | `witchy-confinement` | Native providers consume normalized policy; they do not reinterpret source grants. |
+| Confinement policy | `witchy-confinement` | Native providers consume normalized policy; they don't reinterpret source grants. |
 | User execution path | compiled Wasm through `src/commands/{compile,execution,wasm_exec}` | Interpreter execution remains oracle/comptime/test/build infrastructure, not a second user runtime. |
 | Differential oracle | `witchy-interp` | Parity proves backend agreement after shared frontend stages; independent conformance evidence must cover common-mode semantics. |
 | Runtime diagnostic wording and ABI IDs | `witchy-syntax::diag::DiagTemplate` | Interpreter, native Wasm host, and browser mirror share stable identities and exact rendering; existing IDs are never renumbered. |
-| Compiler diagnostic stage identity and provenance | owning structured errors wrapped by `witchy-types::pipeline::PipelineError`, plus `OriginTable` | Preserve the typed stage variant, source location, and generated-node ancestry. A unified cross-stage diagnostic value remains open; do not flatten errors to `String` at new boundaries. |
+| Compiler diagnostic stage identity and provenance | owning structured errors wrapped by `witchy-types::pipeline::PipelineError`, plus `OriginTable` | Preserve the typed stage variant, source location, and generated-node ancestry. A unified cross-stage diagnostic value remains open; don't flatten errors to `String` at new boundaries. |
 
 ## Stage dependency contract
 
@@ -100,7 +100,7 @@ stage crates have this maximum direct-dependency graph:
 | `witchy-types` | `cap-model`, `syntax` | KEEP | Expose checked modules and stable type/witness identities instead of pass internals. |
 | `witchy-wir` | `syntax` | NARROW | Retain only the shared diagnostic-template dependency; keep AST and type-system concepts out of WIR. |
 | `witchy-caps` | `cap-model`, `syntax` | KEEP | Keep source-footprint analysis compiler-side and consume the dependency-bottom capability vocabulary without duplicating it. |
-| `witchy-confinement` | none | KEEP | Own the target-neutral derived filesystem, network, Fetch-origin, and syscall-class policy plus target-gated enforcement providers, without depending on compiler stages, Wasmtime, or browsers. The safe Linux Landlock dependency is not a stage edge. |
+| `witchy-confinement` | none | KEEP | Own the target-neutral derived filesystem, network, Fetch-origin, and syscall-class policy plus target-gated enforcement providers, without depending on compiler stages, Wasmtime, or browsers. The safe Linux Landlock dependency isn't a stage edge. |
 | `witchy-lower` | `syntax`, `types`, `wir` | KEEP | Lower typed source to WIR through explicit checked/type-information inputs. |
 | `witchy-runtime` | `cap-model`, `caps`, `confinement`, `syntax`, `test-host`, `testkit`, `wir` | EXTRACT | Derive one target-neutral outer policy from concrete runtime grants; keep platform providers outside the Wasmtime kernel. The optional fixture adapter consumes the authority-free test host and testkit; compiler implementation and Wasmtime bridging have distinct `native/compiler.rs` and `runtime/compiler.rs` seams. Inject the service implementation from above until post-compilation enforcement has no parser/type/WIR implementation dependency. |
 | `witchy-interp` | `caps`, `runtime`, `syntax`, `test-host`, `testkit`, `types` | NARROW | Consume runtime values and policy interfaces without importing the native Wasm sandbox. Its optional fixture adapter delegates to the same test host and testkit as Wasmtime. |
@@ -116,12 +116,12 @@ shrink during the runtime-kernel phase. Its dependency on
 |---|---|---|---|
 | Compiler trust boundary | lexer through type checking and lowering/codegen | KEEP | Source safety depends on these stages producing valid, capability-correct Wasm. Differential tests and Wasm validation adjudicate the result. |
 | Runtime enforcement TCB | the `witchy-runtime::runtime` kernel plus its `runtime::host::*` family registrars, `witchy-confinement` policy/provider boundary, and Wasmtime; launch activation remains open | EXTRACT | Every capability host family registers through a task-shaped `host::*` registrar with private handlers. `Capabilities::confinement_policy` is the single concrete-grant derivation boundary; the Linux Landlock provider consumes its normalized output rather than reinterpreting grants. The Wasm kernel coordinates admission (`link_capability_imports`), grants, VM construction, resource limits, and execution. Next: activate providers only at single-guest process launch boundaries and inject the compiler-service interface so post-compilation enforcement drops its parser/type/WIR implementation dependencies. |
-| Compiler services offered to trusted Witchy programs | the compiler-native impl (`footprint`/`diff`/`doc`/`try_doc`) lives in `witchy-interp::compiler_natives`, above the kernel; it installs a fn-pointer vtable into `witchy-runtime::native` that both `native::lookup` (interpreter) and the compiled `CompilerServices` default read | KEEP | Done: `witchy-runtime` no longer depends on `witchy-types` (DAG test narrowed); the impl carries the parser/type/caps deps above the kernel. `witchy-caps`/`-syntax`/`-wir` edges remain load-bearing (host address/path policy, `intrinsics`, `layout`). Both backends verified to agree on `compiler.footprint`. |
-| Shared host ABI and runtime values | `witchy-runtime::{native,value}` plus representation constants in WIR/lowering | CONSOLIDATE | Define one narrow ABI/policy vocabulary. Do not duplicate representation catalogs while breaking the dependency cycle. |
+| Compiler services offered to trusted witchy programs | the compiler-native impl (`footprint`/`diff`/`doc`/`try_doc`) lives in `witchy-interp::compiler_natives`, above the kernel; it installs a fn-pointer vtable into `witchy-runtime::native` that both `native::lookup` (interpreter) and the compiled `CompilerServices` default read | KEEP | Done: `witchy-runtime` no longer depends on `witchy-types` (DAG test narrowed); the impl carries the parser/type/caps deps above the kernel. `witchy-caps`/`-syntax`/`-wir` edges remain load-bearing (host address/path policy, `intrinsics`, `layout`). Both backends verified to agree on `compiler.footprint`. |
+| Shared host ABI and runtime values | `witchy-runtime::{native,value}` plus representation constants in WIR/lowering | CONSOLIDATE | Define one narrow ABI/policy vocabulary. Don't duplicate representation catalogs while breaking the dependency cycle. |
 
-The compiler remains part of Witchy's overall language-security TCB. Isolating
+The compiler remains part of witchy's overall language-security TCB. Isolating
 the runtime kernel reduces the code required to enforce an already compiled
-program; it does not make compiler correctness untrusted or optional.
+program; it doesn't make compiler correctness untrusted or optional.
 
 ## Public and compatibility interfaces
 
@@ -132,7 +132,7 @@ program; it does not make compiler correctness untrusted or optional.
 | Binary `src/main.rs` façade | Re-exports the root façade again so the monolithic binary can use old crate-relative paths. | DELETE | Command extraction imports its actual dependencies; tests move beside owners. |
 | Browser library API | `resolve_std_only_checked`, compile/run playground functions, formatting and documentation entrypoints | KEEP | Treat these task-shaped functions as intentional. Browser build and runnable-book checks guard them. |
 | CLI/compiler pipeline API | Linking, checking, compilation, caching, execution, and parity are private functions mixed into `main.rs`. | EXTRACT | Give each workflow one native module and test its output, exit status, diagnostics, and artifacts. |
-| Raw AST execution and compilation APIs | Production codegen and interpreter sinks require `CheckedModule`; raw-module helpers are test-feature-only. The AST remains cloneable through the documented read-only view, and low-level linker/tooling APIs still expose earlier phase artifacts. | NARROW | Continue migrating production linker/load callers to checked task APIs. Keep raw rejection fixtures absent from ordinary dependency builds; do not misrepresent the cloneable AST view as a closed capability boundary. |
+| Raw AST execution and compilation APIs | Production codegen and interpreter sinks require `CheckedModule`; raw-module helpers are test-feature-only. The AST remains cloneable through the documented read-only view, and low-level linker/tooling APIs still expose earlier phase artifacts. | NARROW | Continue migrating production linker/load callers to checked task APIs. Keep raw rejection fixtures absent from ordinary dependency builds; don't misrepresent the cloneable AST view as a closed capability boundary. |
 
 Compatibility exports are migration aids, not permanent stage APIs. Removal is
 incremental: every slice includes a resolved call-site census and deletes the
@@ -149,7 +149,7 @@ old path after its callers move.
 | Compiled execution and parity | `src/commands/execution.rs` (`run_linked_compiled`, `parity_check`) + `src/commands/wasm_exec.rs` (`run_wasm_*`, trusted-app launch) | KEEP | Extracted from the composition root; differential and exact-error tests remain authoritative. |
 | Sandbox, grants, trusted apps | `src/commands/sandbox.rs`, `trusted_exe`, `witchy-runtime::runtime` | KEEP | Policy adapters extracted from the composition root above the runtime kernel; denial/confinement/trust/e2e tests unchanged. |
 | Build-step execution | `src/commands/build_steps.rs` | KEEP | Dedicated build-step service extracted from the composition root; compiled build-step tests preserve behavior. |
-| Embedded PM and Coven integration | `src/commands/embedded_pm.rs` + self-hosted `projects/` sources | KEEP | Native launcher extracted from the composition root; the Witchy programs remain product source. E2E workflows guard it. |
+| Embedded PM and Coven integration | `src/commands/embedded_pm.rs` + self-hosted `projects/` sources | KEEP | Native launcher extracted from the composition root; the witchy programs remain product source. E2E workflows guard it. |
 
 There must ultimately be one canonical path for loading, checked compilation,
 execution, bundled lookup, capability policy, test lifecycle, and WIR helper
@@ -160,7 +160,7 @@ registration. Adapters may vary inputs; they must not copy the implementation.
 | Evidence | Current state | Classification | Target boundary |
 |---|---|---|---|
 | Differential language matrix | `src/example_tests.rs` (~25k lines) + `src/example_tests/` domain submodules | EXTRACT | The module root owns the shared parity harness (`link_run`/`wasm_run`/`interp`/…); six domain submodules extracted so far (concurrency, traits, records, comptime, quote, ownership - 99 tests, byte-identical, inventory-accounted). Continue moving topical runs (capabilities, pm/coven, crypto/net, stdlib) per the handoff; the interleaved front of the file is last, per-test. |
-| Product workflows | `tests/e2e.rs` (48 lines) + `tests/e2e/` domain modules over `tests/support/*` | EXTRACT | Decomposed into 8 domain modules (trust_and_publishing, capability_widening, resolution, build_steps, example_workspaces, coven_web, pm_coven_lifecycle, sandbox_grants); 82-test inventory byte-identical. Note: the merge gate does not run e2e (BUG-577/578), so moves are compile+inventory adjudicated. |
+| Product workflows | `tests/e2e.rs` (48 lines) + `tests/e2e/` domain modules over `tests/support/*` | EXTRACT | Decomposed into 8 domain modules (trust_and_publishing, capability_widening, resolution, build_steps, example_workspaces, coven_web, pm_coven_lifecycle, sandbox_grants); 82-test inventory byte-identical. Note: the merge gate doesn't run e2e (BUG-577/578), so moves are compile+inventory adjudicated. |
 | CLI tests | Presentation and secret-decoding tests live beside `src/cli.rs`; expansion tests live beside `src/source.rs`; four command/service test modules remain inline in `main.rs` | EXTRACT | Move each remaining suite with its command/service owner; preserve assertions and test intent. |
 | Independent semantic conformance | `tests/misc/semantic_conformance.rs` | GROW DELIBERATELY | Reviewable exact values, rejection diagnostics, and capability footprints complement parity. A seeded shared semantic mutation must keep backend agreement while failing the external expectation, proving the corpus covers parity's common-mode blind spot. |
 | Stage tests | Unit/integration suites under each owning crate | KEEP | New regressions live at the narrowest stage, plus differential evidence for observable semantics. |
@@ -168,7 +168,7 @@ registration. Adapters may vary inputs; they must not copy the implementation.
 
 Before moving a test corpus, record the fully qualified test inventory. After
 the move, account for every addition, deletion, and intentional path rename;
-test counts alone are not coverage evidence.
+test counts alone aren't coverage evidence.
 
 The first CLI slice accounts for its complete test movement:
 
@@ -217,7 +217,7 @@ distributed mechanically.
 |---|---:|---|---|
 | `src/example_tests{.rs,/**}` | 681-line root + 56 domain modules | KEEP | Root owns only the shared parity harness; every test is extracted into 56 responsibility-named domain modules (zero residual `#[test]` in the root). Assertion strength preserved; each domain's path rename is recorded in its commit. |
 | `witchy-lower/codegen/mod.rs` | ~7,345 + ten modules | EXTRACT | Reduced 12,084 → ~7,345. Responsibility modules under `codegen/`: `assembly`, `builtins`, `helpers`, `passes`, `types`, `loans` (loan-root/event collection), `type_vars` (type-variable/devirtualization analysis), `expr_lower` (the ~2k-line `lower_expr` expression→WIR method), `match_lower` (pattern/match lowering), and `block_lower` (block-statement lowering) - each an `impl Codegen` continuation or free-function owner. What remains in mod.rs is the cohesive lowering core: the `Codegen` struct + its private lowering context, function/signature emission, and the type/representation/layout helpers that share that context intimately - JUSTIFIED-CORE for size. The one open refinement is grouping the `Codegen` struct's *state fields* into typed scope/local, representation/layout, capability-import, ownership, and structural-metadata contexts (a typed-context change, not a further file split). |
-| `witchy-types/typeck.rs` | ~8,268 + five modules | EXTRACT | Reduced 9,727 → ~8,268. Extracted side-concern passes under `typeck/`: `coverage` (pattern-exhaustiveness), `cap_rights` (capability rights-set parsing), `uniqueness` (duplicate-declaration checks), `existential` (RFC-0081 `dyn Trait` dyn-safety validation), and `compiler_syntax` (`meta.*` compile-time-syntax gating). What remains is the cohesive type-checking/inference engine - the mutually-recursive check/infer/unify judgment that is one responsibility; every separable side-concern pass has been lifted out. JUSTIFIED-CORE for size. |
+| `witchy-types/typeck.rs` | ~8,268 + five modules | EXTRACT | Reduced 9,727 → ~8,268. Extracted side-concern passes under `typeck/`: `coverage` (pattern-exhaustiveness), `cap_rights` (capability rights-set parsing), `uniqueness` (duplicate-declaration checks), `existential` (RFC-0081 `dyn Trait` dyn-safety validation), and `compiler_syntax` (`meta.*` compile-time-syntax gating). What remains is the cohesive type-checking/inference engine - the mutually-recursive check/infer/unify judgment that's one responsibility; every separable side-concern pass has been lifted out. JUSTIFIED-CORE for size. |
 | `witchy-interp/interpreter{.rs,/**}` | ~2,114 + eleven modules | KEEP | Reduced 6,899 → ~2,114 (a 69% reduction). Responsibility modules under `interpreter/`: `reflection` (syntax-reflection payload decoding), `capability_values` (Dir/File/Net capability adapters), `ast_walk` (analysis helpers), `assignment_plan` + `places` (memory-place planning, capture, read/store, write-back), `environment` (the lexical environment), `tail_analysis` (tail-edge/tail-position analysis), `value_ops` (pattern match, binary ops, comparison, native conversion), `calls` (call/closure evaluation dispatch), `builtins` (the ~2.5k-line builtin-call dispatcher), and `runners` (the public `run_*` execution façade). What remains in interpreter.rs is the core evaluator (`eval`/`eval_block`/`eval_tail_expr`/`eval_function_block`), value/error types, the `Interpreter` struct + construction, and rendering - a cohesive evaluator core. |
 | `witchy-wir/wir_helpers/**` | 34-line facade; domain modules ~18-1,210 | NARROW | The facade now only declares and re-exports responsibility modules. The typed registry, runtime diagnostics, memory/RC, byte buffers, list operations, dictionary projections, numeric operations, string inspection/transformation and host construction/output, encoding/crypto, filesystem/process/environment, networking, VM, and helper-builder domains each have an explicit owner. Dictionary mutation/capacity and registry catalogs remain deliberately cohesive. The public surface is narrowed after a resolved-call-site census (`scratch/wir-helper-census.md`): only the typed registry entry points (`wir_helper`, `WirHelperSpec`), `abort_nodes`, the memory check gates (`heap_check_enabled`, `type_check_enabled`), the VM trampolines (`galloc_helper`, `call_idx_helper`, `call2_helper`), and `print_str_helper` remain `pub`; every other constructor is `pub(crate)` (in-crate test consumers) or module-tree-local, and the facade globs carry matching visibility. |
 | `witchy-types/traits.rs` | ~4,296 + three modules | EXTRACT | Reduced 5,524 → ~4,296. Extracted under `traits/`: `conversions` (From/TryFrom error-conversion rewrite), `anon_union` (anonymous-union impl synthesis), and `mono` (the `impl Mono` substitution-directed monomorphization walk). What remains is trait validation and method resolution - the core RFC-0046 typed-dispatch judgment. JUSTIFIED-CORE for size. |
@@ -229,7 +229,7 @@ distributed mechanically.
 
 Active worktree overlap is an admission check, not checked-in ownership. Before
 every hotspot slice, run `scripts/worktree-status.sh`, inspect branch diffs, and
-state owned files. A worktree's existence is not a lock, but overlapping dirty
+state owned files. A worktree's existence isn't a lock, but overlapping dirty
 or recently active semantic work requires coordination or selection of another
 slice. The RFC-0080/0081 semantic worktrees that previously overlapped
 interpreter, traits, type checking, and lowering/codegen are no longer active,

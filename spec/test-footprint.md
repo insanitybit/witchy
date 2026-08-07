@@ -10,8 +10,9 @@ Use `--files` when reviewing ownership or a proposed deletion.
 - Crate unit tests localize parser, formatter, type-checker, WIR, interpreter,
   runtime, and lowering contracts.
 - `src/example_tests/` supplies independently expected semantics and compares
-  the interpreter with compiled Wasm. Parity is evidence of agreement, not an
-  independent specification oracle.
+  the interpreter with compiled Wasm. Parity tells you the two backends agree.
+  It can't tell you they're right - for that you need an oracle that doesn't
+  come from either one.
 - `tests/misc/semantic_conformance.rs` states exact values, rejection
   diagnostics, and capability footprints independently. Its seeded shared-stage
   mutation proves that parity can agree on a wrong implementation while the
@@ -21,11 +22,19 @@ Use `--files` when reviewing ownership or a proposed deletion.
 - Mutation and fault-injection tests remain required for retained semantic and
   ABI authorities.
 
-Security, provenance, authentication, capability denial, diagnostics, source
-locations, ABI shapes, historical regressions, Unicode and malformed-input
-boundaries, and real TCP behavior require an explicit retained authority. A
-fixture helper is worthwhile only when it removes more setup than it adds and
-does not hide the contract under test.
+Some contracts always need an explicit retained authority, because nothing else
+in the suite adjudicates them:
+
+- security, provenance, and authentication;
+- capability denial;
+- diagnostics and source locations;
+- ABI shapes;
+- historical regressions;
+- Unicode and malformed-input boundaries;
+- real TCP behavior.
+
+A fixture helper earns its place only when it removes more setup than it adds
+and doesn't hide the contract under test.
 
 ## Routing and current measurement
 
@@ -53,7 +62,7 @@ to 2,539 s, with CPU contention explaining the outliers.
 The normalized reduction is currently 5,047 explicit lines and 5,114 lines
 including support; the remaining distance to 40,000 explicit lines is 11,937.
 The footprint reduction remains in progress. This document records the
-retained evidence model and current measurement; it does not waive the goal's
+retained evidence model and current measurement; it doesn't waive the goal's
 15,000-line deletion, API-shrink, or final-gate requirements.
 
 ## Current retained-census record

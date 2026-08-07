@@ -51,7 +51,7 @@ service such as `compiler_footprint_len`.
 
 This is what makes the browser target's containment **structural**. The browser
 host (`web/witchy-runtime/`) provides only entries marked `browser: provided`
-below. Per the WebAssembly spec, a module that imports a function the host does not supply
+below. Per the WebAssembly spec, a module that imports a function the host doesn't supply
 **fails to instantiate** with a `LinkError`. So:
 
 - an authority-free rune using only browser-provided services instantiates and
@@ -59,7 +59,7 @@ below. Per the WebAssembly spec, a module that imports a function the host does 
 - an impure rune imports a capability function the host does **not** provide →
   `WebAssembly.instantiate` throws, and the module never runs.
 
-The host is a sieve that admits no authority-bearing module. It is deliberately
+The host is a sieve that admits no authority-bearing module. It's deliberately
 stricter than "all footprint-empty modules": native-only launch and toolchain
 services are omitted too. This is **deny-by-omission**: capabilities are denied
 by simply not being on offer, the strongest "structurally incapable of I/O"
@@ -153,7 +153,7 @@ and the explicit metadata rendered below. The classes are:
 `browser: provided` is the exact deny-by-omission surface implemented by the
 JavaScript host. `omitted` means a browser module importing that function cannot
 instantiate. `authority` is the concrete grant family used by launchers for
-precompiled `.wasm` classification; `none` means the import is not a capability
+precompiled `.wasm` classification; `none` means the import isn't a capability
 grant. Regenerate the table with `cargo run -p witchy-wir --example abi_catalog`;
 the test suite compares the committed block with the compiler catalog
 byte-for-byte and instantiates an all-import probe against the native host.
@@ -319,7 +319,7 @@ a self-contained synchronous implementation needing none.
 
 - **`crates/witchy-runtime/src/runtime.rs`** - the wasmtime host. Defines every
   non-authority import and defines capability-authority imports only when the
-  corresponding grant is present; it is the reference implementation of every
+  corresponding grant is present; it's the reference implementation of every
   signature and the pending-buffer protocol above.
 - **`web/witchy-runtime/witchy-runtime.mjs`** - the JavaScript pure-compute host
   ([RFC-0007](../rfcs/0007-witchy-wasm-browser-target.md)). Provides exactly the imports marked `browser: provided` above and
@@ -351,12 +351,12 @@ message, not merely on the fact of erroring.
   packed site, returns nothing to the guest, and its only effect is to terminate
   execution with a diagnostic label - an ability the guest already has via
   `unreachable`. Like the checked-heap imports
-  (`heap_register`, [RFC-0023](../rfcs/0023-checked-heap.md)), it is therefore defined unconditionally on
+  (`heap_register`, [RFC-0023](../rfcs/0023-checked-heap.md)), it's therefore defined unconditionally on
   every host (the pure-compute shim included) and is **excluded from the
   capability footprint** (`witchy caps` and the coven widening gate never see it).
 - **Rust message text has one owner** in `crates/witchy-syntax/src/diag.rs`
   (`DiagTemplate`). `template` is the stable `DiagTemplate::id()` (part of the
-  compiled ABI - do not renumber); `a`/`b` are integer holes and `str_ptr` is a
+  compiled ABI - don't renumber); `a`/`b` are integer holes and `str_ptr` is a
   witchy-string pointer (or `0`). The interpreter and native host use the same
   renderer. The dependency-free browser host mirrors the small table, pinned by
   a compiled test matrix covering every pure template.
@@ -372,5 +372,5 @@ message, not merely on the fact of erroring.
   missing location, or backend-specific host error is a divergence.
 - **`WITCHY_WASM_BACKTRACE`** - set this environment variable to also dump the
   full named-frame wasm backtrace beneath the message (the emitted name section
-  makes frames readable). It is a debugging add-on for *frames*; the message
+  makes frames readable). It's a debugging add-on for *frames*; the message
   itself now always prints regardless.

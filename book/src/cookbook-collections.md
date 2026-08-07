@@ -91,7 +91,7 @@ fig: 1
 pear: 2
 ```
 
-Two habits are worth forming here. First, `get_or` (and `get_or_insert`) spare
+Two habits worth forming. First, `get_or` (and `get_or_insert`) spare
 you an `Option` match when a sensible default exists. Second, a `Dict` has no
 guaranteed iteration order - so when output must be deterministic (as every book
 example must, to run on both backends), sort the keys first. That isn't a

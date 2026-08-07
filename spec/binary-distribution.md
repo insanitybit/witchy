@@ -1,6 +1,6 @@
 # Binary backend & distribution
 
-Witchy compiles to a WebAssembly **binary**. Codegen lowers the checked AST to a
+witchy compiles to a WebAssembly **binary**. Codegen lowers the checked AST to a
 typed IR (`WirModule`) and `wir_encode` emits the `.wasm` bytes directly
 (`compile_module_binary` in `crates/witchy-lower/src/codegen/assembly.rs`); there
 is no WAT text stage and no `wat` crate. A compiled program is a portable `.wasm`
@@ -13,7 +13,7 @@ There is one user-program run path: the compiled WASM backend. `witchy <file>`,
 `witchy run`, and `witchy sandbox` all compile to a wasm binary and execute it
 under wasmtime, so dev == deploy by construction.
 
-The tree-walking interpreter is **not** a user run path. It is the parity oracle
+The tree-walking interpreter is **not** a user run path. It's the parity oracle
 (`witchy parity`), the `comptime:` const-evaluator, the in-language test runner,
 and the effectful build-step executor. Because `comptime` blocks are evaluated at
 compile time through the interpreter (`interpreter::run_module_budgeted`, called
@@ -27,7 +27,7 @@ wasm library and dropped by `wasm-opt`, but the core evaluator stays linked.
 The compile artifact is **`app.wasm`**: the program module, importing the
 `"witchy"` capability host and carrying a versioned `witchy.launch` custom
 section with `main`'s source-derived host-capability contract. Imports are the
-executable authority floor - a module cannot call a host op it does not import -
+executable authority floor - a module cannot call a host op it doesn't import -
 while the launch section preserves declared capability parameters even when
 lowering eliminates every use.
 
@@ -55,7 +55,7 @@ trusted:  target/release/app                           host = embedded Witchy ru
   to instantiate. `precompiled_wasm_runs_like_the_source` checks that a
   precompiled module runs like its source. Legacy and external wasm modules with
   no launch section retain import-derived classification; malformed or unknown
-  Witchy launch metadata is rejected instead of silently ignored.
+  witchy launch metadata is rejected instead of silently ignored.
 - **Browser host.** Ship `app.wasm` + `web/witchy-host.js` as the loader. The
   pure-compute JS host provides only infrastructure imports and omits every
   capability import, so a capability-using module fails to instantiate
@@ -63,7 +63,7 @@ trusted:  target/release/app                           host = embedded Witchy ru
 - **Trusted application executable.** `witchy --release build --target
   trusted-exe` packages the same WASM and `witchy.launch` bytes with a native
   launcher and a versioned, digested binding plan. The result is one ordinary
-  host-platform executable and does not need Witchy installed. Running it means
+  host-platform executable and doesn't need witchy installed. Running it means
   trusting the application, the embedded runtime, and the distributor, exactly
   as for another native application. Its `main` receives only the resources
   named by `[targets.trusted-exe]`: for example, a `Dir[Read]` parameter may bind
@@ -75,11 +75,11 @@ trusted:  target/release/app                           host = embedded Witchy ru
 The capability guarantee travels with the artifact: the host links only the
 imported families, grants are launch-time, and secret bytes and `Dir`/`Net`
 confinement go through the same `runtime.rs`/`confine.rs` as `witchy sandbox`. A
-"binary" does not trade away the security model - it is `witchy sandbox` frozen.
+"binary" doesn't trade away the security model - it's `witchy sandbox` frozen.
 
 The two forms make different trust promises. An untrusted portable program must
 not provide the runtime claimed to confine it: ship `.wasm`, and let the consumer
-run it with their trusted Witchy host and explicit grants. A trusted application
+run it with their trusted witchy host and explicit grants. A trusted application
 may provide its runtime: executing its standalone binary accepts the complete
 artifact. Capability typing remains useful inside that trusted app because its
 dependencies still receive authority only when the root passes a capability.
@@ -87,7 +87,7 @@ dependencies still receive authority only when the root passes a capability.
 ## Invariants
 
 - **Two independent semantics + the parity gate.** The interpreter oracle is the
-  independent check on the hand-written codegen; it is never replaced by running
+  independent check on the hand-written codegen; it's never replaced by running
   the same wasm on a second engine.
 - **One confinement implementation, shared.** The `Dir`/`Net` escape checks
   (`resolve`/`resolve_write`) live in one module,
@@ -112,10 +112,10 @@ dependencies still receive authority only when the root passes a capability.
 
 - **WASI retarget** - mapping the effect imports onto WASI preview 2
   (`wasi:filesystem`/`sockets`/`clocks`) so a witchy `.wasm` runs on generic
-  runtimes (wasmtime CLI, jco, wasmCloud) with no witchy host. Witchy's
+  runtimes (wasmtime CLI, jco, wasmCloud) with no witchy host. witchy's
   `Dir`/`Net` grants map onto WASI's own capability model. Buys ecosystem
   portability; the distribution story above needs none of it.
-- **Slim/AOT launcher.** The first trusted-exe template reuses the native Witchy
+- **Slim/AOT launcher.** The first trusted-exe template reuses the native witchy
   launcher and canonical WASM payload. A smaller runtime-only template or
   engine-specific AOT image is an additive optimization; portable distribution
-  remains `app.wasm` plus the consumer's trusted Witchy host.
+  remains `app.wasm` plus the consumer's trusted witchy host.

@@ -27,11 +27,11 @@ You can see both halves - a pure `VNode` render and a full live MVU counter whos
 network authority is denied - running right in the page in
 [Appendix: Recipes](appendix-recipes.md).
 
-## Templates are Witchy tagged literals
+## Templates are witchy tagged literals
 
 Glamour doesn't add JavaScript JSX to the language. `html"..."` and
 `jsx"..."` are ordinary compile-time tags, in the same family as `sql"..."`:
-Glamour parses the static text and the compiler preserves each Witchy `${...}`
+Glamour parses the static text and the compiler preserves each witchy `${...}`
 hole as typed syntax. Both spellings produce the same checked template plan.
 
 ```text

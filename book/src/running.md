@@ -1,11 +1,11 @@
-# Running Witchy Code
+# Running witchy Code
 
 Once a program type-checks there are several ways to run it, and the difference
 between them isn't convenience - it's who supplies the authority and how tightly
 the host is wrapped around the guest. All of them honour the same capability
 contract.
 
-Witchy's production execution path compiles to WebAssembly. The tree-walking
+witchy's production execution path compiles to WebAssembly. The tree-walking
 interpreter is an independent semantic oracle used by `witchy parity` and the
 test suite; a normal run doesn't pay for executing both backends.
 
