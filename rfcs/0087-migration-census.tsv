@@ -30,8 +30,8 @@ book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__
 spec/language.md#block-16	7	expression-position-mutator	main.bump	-	-
 
 witchy-files	287
-markdown-blocks	219
-checked	506
+markdown-blocks	221
+checked	508
 rejected	0
 var-declarations	40
 resolved-var-calls	708
