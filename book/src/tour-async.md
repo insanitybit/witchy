@@ -297,8 +297,8 @@ async fn main(console: Console):
 One restriction: an `async fn` may not be a *trait* method (neither declared in a
 `trait` nor implementing one in an `impl Trait for T`) — the compiler rejects it
 at parse time. A trait that wants an asynchronous operation declares a plain
-`fn … -> Task(a)`; the implementing method declares the same `Task(a)` return
-type and delegates to an inherent async method.
+`fn … -> Task(a)`; the implementing method inherits the trait's return type
+(no need to repeat the annotation) and delegates to an inherent async method.
 
 ```witchy
 from task import Task
@@ -314,7 +314,7 @@ impl FakeFetcher:
         "${self.prefix}: ${url}"
 
 impl Fetcher for FakeFetcher:
-    fn fetch(self, url: String) -> Task(String):
+    fn fetch(self, url: String):
         self.get(url)
 
 async fn main(console: Console):

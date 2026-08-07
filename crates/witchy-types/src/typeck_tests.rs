@@ -1221,6 +1221,25 @@ fn wrapper() -> Result(Int, AppError):
             "type R:\n    R(Int)\ntrait Ranked:\n    fn compare(self, other: Self) -> Int\n    fn greater(self, other: Self) -> Bool:\n        compare(self, other) > 0\nimpl Ranked for R:\n    fn compare(self, other: R) -> Int:\n        1\n    fn greater(self, other: R) -> Bool:\n        true\n",
         )
         .expect("required methods plus default overrides are valid");
+
+        // (BUG-604) An OMITTED return annotation inherits the trait's declared
+        // return type — like unannotated parameters — instead of being read as
+        // unit and rejected as a contract mismatch.
+        check_str(
+            "type R:\n    R(Int)\ntrait Label:\n    fn label(self) -> String\nimpl Label for R:\n    fn label(self):\n        \"r\"\n",
+        )
+        .expect("an unannotated impl return inherits the trait's return type");
+
+        // The inherited return type still binds the body: a wrong body fails
+        // the ordinary function-body check, not silently.
+        let wrong_body = check_str(
+            "type R:\n    R(Int)\ntrait Label:\n    fn label(self) -> String\nimpl Label for R:\n    fn label(self):\n        1\n",
+        )
+        .unwrap_err();
+        assert!(
+            wrong_body.contains("expected `String`, found `Int`"),
+            "{wrong_body}"
+        );
     }
 
     #[test]

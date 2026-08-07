@@ -118,6 +118,21 @@ test-group = 'perf-serial'
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
+# The docs-bundle proof builds the FULL book (every route) through the static
+# publisher, so its runtime scales with book size: ~7s at 43 routes, ~72-74s
+# at 56 routes after the 2026-08-06 cookbook expansion. Under a busy gate that
+# tips the default 135s slow-kill (sole timeout on an otherwise-green gate,
+# 2026-08-06 — same failure shape as the census on 07-18 and web::tests on
+# 08-04). Same remedy: widen the period so one uninterrupted run clears the
+# real runtime with headroom, keeping a bounded 480s (2 x 240s) hard cap. It
+# already runs in gate-cold-heavy via binary_id(witchy::glamour); this override
+# only widens its timeout.
+[[profile.default.overrides]]
+filter = 'test(/glamour_docs_bundle_renders_the_real_book/)'
+test-group = 'gate-cold-heavy'
+slow-timeout = { period = "240s", terminate-after = 2 }
+priority = 85
+
 # Serial-tail elimination: these tests are slow AND sort late by name, so at
 # default priority they were the last to COMPLETE every gate — `wir_binary_path`
 # (~9s) and the heavy differential/example-matrix tests trailed the bulk. (The
