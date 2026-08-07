@@ -227,6 +227,15 @@ Expect the first boot after a deploy to take ~15-30 seconds before the port
 opens (the toolchain compiles the embedded server to wasm once, then caches
 it); the health check's grace period covers this.
 
+One failure mode verified on a real 512 MB Fly machine: a crash loop with
+`could not start the interpreter thread: Resource temporarily unavailable`
+before the port ever opens. The compile/interpreter path reserves a 4 GiB
+*virtual* stack (lazily committed — real usage is tiny), and small VMs'
+default overcommit heuristic refuses the mapping. The entrypoint sets
+`vm.overcommit_memory=1` to admit it; if you run the server outside this
+image, carry that setting (or give the VM ≥ 4 GiB of address-space headroom
+via swap/overcommit policy).
+
 ## Client side (read before announcing a URL)
 
 `COVEN_URL=https://witchy-coven.fly.dev` does NOT work with the shipped pm

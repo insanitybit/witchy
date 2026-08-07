@@ -61,6 +61,14 @@ $COVEN_TRUST_ISSUERS
 EOF
 fi
 
+# The interpreter/compile path reserves a 4 GiB virtual (lazily committed)
+# stack for its deep-recursion thread (crates/witchy-interp runners.rs). On a
+# small VM the kernel's default overcommit heuristic refuses that mapping and
+# the server crash-loops with `pthread_create ... Resource temporarily
+# unavailable` before binding — observed on a 512 MB Fly machine, fixed by
+# always-overcommit (the reservation is never actually committed).
+echo 1 > /proc/sys/vm/overcommit_memory || true
+
 # setpriv preserves the environment; point HOME at the runtime user's home so
 # witchy's embedded-wasm cache (~/.cache/witchy) is writable (it is best-effort
 # - a miss only costs a recompile at boot - but there is no reason to miss).
