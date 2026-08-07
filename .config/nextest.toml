@@ -118,6 +118,15 @@ test-group = 'perf-serial'
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
+# GitHub-hosted runners are several times slower than the dev machines: the
+# census hit the 480s hard cap there while 2,731 other tests passed (public CI,
+# 2026-08-07). Widen only the ci profile so the local gate keeps its bound.
+[[profile.ci.overrides]]
+filter = 'test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)'
+test-group = 'perf-serial'
+slow-timeout = { period = "600s", terminate-after = 2 }
+priority = 90
+
 # The docs-bundle proof builds the FULL book (every route) through the static
 # publisher, so its runtime scales with book size: ~7s at 43 routes, ~72-74s
 # at 56 routes after the 2026-08-06 cookbook expansion. Under a busy gate that
