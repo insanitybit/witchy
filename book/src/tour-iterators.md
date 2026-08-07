@@ -6,8 +6,8 @@ value at a time.
 
 ## Lazy iterators
 
-`import iter` brings in `Iter(a)`, a lazy stream. Its combinators — `map`,
-`filter`, `take`, `range`, and friends — build a *description* of a computation;
+`import iter` brings in `Iter(a)`, a lazy stream. Its combinators - `map`,
+`filter`, `take`, `range`, and friends - build a *description* of a computation;
 nothing runs until a consumer pulls it: `collect`, `fold`, `count`, `find`, or
 `iter.for_each`.
 
@@ -135,13 +135,13 @@ fn main(console: Console):
 ```
 
 One restriction: a `gen fn` may not be a *trait* method (neither declared in a
-`trait` nor implementing one in an `impl Trait for T`) — the compiler rejects it
+`trait` nor implementing one in an `impl Trait for T`) - the compiler rejects it
 at parse time. A trait that wants a lazy sequence declares a plain
 `fn … -> Iter(a)`, and the impl can delegate to an inherent generator method.
 
 ## Collecting into an expected type
 
-`collect` builds **whatever the call site expects** — any type implementing
+`collect` builds **whatever the call site expects** - any type implementing
 `FromIterator`. The ascription chooses: a `List(Int)`, a
 `Dict(String, Int)` from an iterator of pairs, or a `String` from an
 iterator of pieces. With no expected type (say, collecting just to print),
@@ -149,7 +149,7 @@ the compiler asks you to ascribe the binding rather than guess.
 
 `Iter(a)` yields owned values; it is not a lending iterator. A `gen fn` is lowered to an
 ordinary function behind the scenes. The same generator runs identically on the
-interpreter and the compiled backend — laziness is a library and a lowering, not
+interpreter and the compiled backend - laziness is a library and a lowering, not
 a special runtime.
 
 A `gen fn` may mutate `var` across a `yield`; `a`, `b`, and `n` above all carry
@@ -160,7 +160,7 @@ restriction is placement: `await` works in loop bodies, but not in branch
 conditions or match scrutinees.
 
 A generator with no capability parameters is also, by construction, **pure**: a
-`gen fn` that takes no `Console`/`Dir`/`Net` provably cannot do I/O — it computes
+`gen fn` that takes no `Console`/`Dir`/`Net` provably cannot do I/O - it computes
 the next value.
 
 Modules organize these definitions; compile-time code can generate more of them

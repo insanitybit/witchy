@@ -2,7 +2,7 @@
 
 Most programs spend their time turning bytes into meaning and back: matching a
 pattern, pulling fields out of a URL, or moving a value through base64. witchy
-keeps each of these jobs in its own small module — `regex`, `url`, `encoding` —
+keeps each of these jobs in its own small module - `regex`, `url`, `encoding` -
 so you import exactly the surface you need. None of them require a capability:
 they are pure computation over strings, so the examples below run identically on
 both backends.
@@ -10,7 +10,7 @@ both backends.
 ## Matching with `regex`
 
 `import regex` gives you six functions, all of which take the pattern as an
-ordinary `String`. There is no compiled-pattern type to thread around — pass the
+ordinary `String`. There is no compiled-pattern type to thread around - pass the
 pattern and the text together each time.
 
 ```witchy
@@ -39,7 +39,7 @@ GET /a xxx, POST /b xxx, GET /c xxx
 - `replace_all` and `split` transform the whole string.
 
 Reach for `regex` when the shape of the input is genuinely irregular. For fixed
-structure — splitting on a comma, checking a prefix — the `string` methods
+structure - splitting on a comma, checking a prefix - the `string` methods
 (`split`, `starts_with`, `trim`) are clearer and faster.
 
 ## Encodings with `encoding`
@@ -47,7 +47,7 @@ structure — splitting on a comma, checking a prefix — the `string` methods
 `import encoding` covers the two encodings programs reach for constantly: hex
 and base64 (including the URL-safe `base64url` variant). Encoding never fails,
 so those functions return a `String`. Decoding *can* fail on malformed input, so
-the decoders return a `Result` — match it and you cannot forget the bad-input
+the decoders return a `Result` - match it and you cannot forget the bad-input
 case.
 
 ```witchy
@@ -110,5 +110,5 @@ the whole thing back to a string. For form and query-string escaping without a
 full URL, `url.encode` / `url.decode` operate directly on component strings.
 
 Together these three modules cover the everyday text-wrangling that would
-otherwise tempt you into hand-rolled parsing — the kind that quietly mishandles
+otherwise tempt you into hand-rolled parsing - the kind that quietly mishandles
 an empty field or an unescaped character. Let the module own the edge cases.

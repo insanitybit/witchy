@@ -1,7 +1,7 @@
 # Iterator Pipelines
 
 The tour introduced `iter` as lazy streams with `map`, `filter`, and `take`.
-This chapter is the working reference for the rest of the combinator set — the
+This chapter is the working reference for the rest of the combinator set - the
 ones that pair, accumulate, and terminate a pipeline. The theme throughout:
 build a *description* of a computation with lazy combinators, then realize it
 once with a *consumer* (`collect`, `fold`, `sum`, `count`, `find`).
@@ -35,7 +35,7 @@ zipped sums: 3 values, total 66
 
 Note the annotation `let sums: List(Int) = iter.collect(...)`. `collect` is
 generic over the target type (`c where c: FromIterator`), so it needs to know
-what you're collecting *into* — a `List(Int)` here, but a `Set(Int)` if you
+what you're collecting *into* - a `List(Int)` here, but a `Set(Int)` if you
 wanted distinct values. Annotate the binding and the checker specializes it.
 
 ## Accumulating: `fold` and `scan`
@@ -67,7 +67,7 @@ running sums: 4 -> last 10
 squares under 50: 7
 ```
 
-`scan`'s function returns a `(new_state, emitted_value)` tuple — here both are
+`scan`'s function returns a `(new_state, emitted_value)` tuple - here both are
 the running sum, so you get `[1, 3, 6, 10]`. And `take_while` shows the payoff of
 laziness: `iter.count_from(1)` is an *infinite* stream, but `take_while` stops
 pulling the moment a square reaches 50, so the pipeline terminates. An eager
@@ -80,7 +80,7 @@ A pipeline does nothing until a consumer pulls it. Besides `collect` and `fold`,
 the terminal operations answer common questions directly: `sum` and `count`
 reduce to a number, `find` returns the first `Some` match, `any` / `all` test a
 predicate across the stream, `min` / `max` find extremes, and `position` gives
-the index of the first match. Reaching for the specific consumer — `xs.any(p)`
-rather than `xs.filter(p).count() > 0` — is both clearer and lets the stream
+the index of the first match. Reaching for the specific consumer - `xs.any(p)`
+rather than `xs.filter(p).count() > 0` - is both clearer and lets the stream
 stop early. Choose lazy combinators for the pipeline, then one consumer to make
 it run.

@@ -28,7 +28,7 @@ witchy
 true
 ```
 
-`Int` arithmetic *wraps* on overflow (two's complement) on every backend — a
+`Int` arithmetic *wraps* on overflow (two's complement) on every backend - a
 deliberate choice for portability, which we'll revisit when we talk about
 backends. Division or modulo by zero is a runtime error, loudly, on every
 backend.
@@ -56,18 +56,18 @@ hello, world
 n is 3, doubled 6
 ```
 
-`${expr}` renders *any* value — scalars, lists, tuples, records, sum types,
+`${expr}` renders *any* value - scalars, lists, tuples, records, sum types,
 dicts, and any nesting. Tuple `Show` and `Reflect` impls are provided through
 arity 8; for wider heterogeneous data, use a named record so the protocol
 surface stays explicit.
 Strings are UTF-8 and the common operations (`.length()`, `.char_count()`,
-`.split(sep)`, `.contains(sub)`, …) are methods on `String` — part of the
+`.split(sep)`, `.contains(sub)`, …) are methods on `String` - part of the
 prelude, so no import line is needed; the [stdlib reference](appendix-stdlib.md)
 has the full list.
 
 ## Conversions
 
-Crossing between types is always explicit — there's no silent coercion:
+Crossing between types is always explicit - there's no silent coercion:
 
 ```witchy
 fn main(console: Console):
@@ -86,7 +86,7 @@ fn main(console: Console):
 
 `string.to_int` is strict: it **aborts the program** on non-numeric input or
 on a value that won't fit in an `Int`, rather than silently returning a wrong
-number — it does not return an `Err`. When bad input is expected (user input,
+number - it does not return an `Err`. When bad input is expected (user input,
 file contents), use `string.parse_int`, which returns `Option(Int)`.
 
 ## Lists, tuples, and dicts
@@ -126,7 +126,7 @@ fn main(console: Console):
 
 These details affect parsing and inference:
 
-- Interpolation renders compounds directly on every backend — `"${xs}"` prints
+- Interpolation renders compounds directly on every backend - `"${xs}"` prints
   `[1, 2, 3]`, `"${pair}"` prints `(1, one)`, and a dict prints `{ada: 36}`.
   The hand-rolled `show` above exists for when you want a **custom** format
   (here, space-separated and unbracketed) instead of that structural
@@ -171,8 +171,8 @@ For *lazy* pipelines over large or infinite sequences, reach for
 
 ## Equality is structural
 
-`==` compares *contents*, recursively, for every type that can be compared —
-lists, tuples, records, enums, `Option`, dicts — not identity:
+`==` compares *contents*, recursively, for every type that can be compared -
+lists, tuples, records, enums, `Option`, dicts - not identity:
 
 ```witchy
 fn main(console: Console):

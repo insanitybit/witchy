@@ -7,28 +7,28 @@ maps the repository.
 
 ## The pieces
 
-- **coven** — the package **registry**. It stores signed records, recomputes
+- **coven** - the package **registry**. It stores signed records, recomputes
   each package's capability footprint from source (never trusting declared
   metadata), and *blocks any publish that widens authority*. Publishing is
   two-phase: stage, then a human-2FA promote. The promotion gate enforces the
   rule that a dependency cannot quietly gain authority. (Chapter:
   [Sharing Code: Runes and the Registry](packages.md).)
 
-- **pm** — the package-manager **client** ("cargo for witchy"): resolve, fetch,
+- **pm** - the package-manager **client** ("cargo for witchy"): resolve, fetch,
   verify, add, build, run. It talks to coven over a small HTTP contract.
 
-- **glamour** — a capability-pure **frontend framework** (Model-View-Update).
+- **glamour** - a capability-pure **frontend framework** (Model-View-Update).
   Your app is a pure function from state to a `VNode` tree, and it emits effects
   as inert `Cmd` *data*; a capability-holding host interprets them. The app
-  itself holds no DOM, network, or storage authority — so a witchy UI has the
+  itself holds no DOM, network, or storage authority - so a witchy UI has the
   same deny-by-default footprint story as any other witchy program.
 
-- **coven-web** — the **web console** for coven: a pure-witchy server plus a
+- **coven-web** - the **web console** for coven: a pure-witchy server plus a
   thin host shell that holds the browser-side authority a pure-compute guest
   can't (network, session, credentials). It serves a glamour app same-origin
   with strict cross-origin isolation.
 
-- **docs** — this book, rendered as a glamour app.
+- **docs** - this book, rendered as a glamour app.
 
 ## Shared rule
 

@@ -254,7 +254,7 @@ The `testing` module gives you:
 | `assert_int_eq(got, want)` | the two `Int`s are equal |
 | `assert_value_eq(got, want)` | the two values are equal (`where a: PartialEq, a: Show`) |
 | `assert_value_ne(got, other)` | the two values differ (`where a: PartialEq, a: Show`) |
-| `fail_with(msg)` | (always — an unconditional failure) |
+| `fail_with(msg)` | (always - an unconditional failure) |
 
 `assert_value_eq` / `assert_value_ne` are the idiomatic choice for records,
 enums, and other typed values: they compare with `==` and render the mismatch
@@ -269,7 +269,7 @@ the same whichever backend runs it.
 Three project-level checks run alongside your tests:
 
 - **`witchy parity`** (from the last chapter) is differential testing for the
-  *language itself* — it catches either backend disagreeing with the other.
+  *language itself* - it catches either backend disagreeing with the other.
 - **The independent conformance corpus** pins exact language results,
   rejections, and capability footprints without deriving its expectations from
   either backend. This matters because two implementations can agree on the

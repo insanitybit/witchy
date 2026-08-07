@@ -21,8 +21,8 @@ Know that `fmt` canonicalizes *forms*, not just whitespace: a
 pre-migration rendering call prints back as the interpolation `"a ${x}"`,
 escaped quotes inside `${...}` become bare, nullary constructors lose their
 `()`, single-statement match arms go inline, and `if let` survives as
-`if let`. Every rewrite is meaning-preserving — the formatter refuses to emit
-anything that doesn't parse back to the same program — but the bytes may
+`if let`. Every rewrite is meaning-preserving - the formatter refuses to emit
+anything that doesn't parse back to the same program - but the bytes may
 change more than you expect the first time you run it.
 
 ## Seeing and enforcing authority
@@ -37,7 +37,7 @@ witchy grants-check program.witchy app.grants.toml   # check a grant doc against
 witchy build-step gen.witchy --out gen/     # run a build step under confined grants
 ```
 
-`caps` prints what the program is allowed to do, per function and per right —
+`caps` prints what the program is allowed to do, per function and per right -
 and, when a rune ships a `build` step, what that step may do at *build time*,
 on its own axis. `caps-diff` is the CI gate against silent privilege growth on
 either axis. `sandbox` compiles to WebAssembly and runs the program in a VM
@@ -50,7 +50,7 @@ granted exactly its footprint:
 - `--grants <file>` reads the whole grant from a reviewable TOML document.
 
 `grants-check` validates such a document against the program's computed footprint
-without running it — exit 2 if the grant withholds authority the code needs (or
+without running it - exit 2 if the grant withholds authority the code needs (or
 warns if it over-grants). The capabilities chapters use these commands heavily.
 
 ## Compiling

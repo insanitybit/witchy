@@ -26,8 +26,8 @@ The entry point and its `Console` parameter establish the capability model.
 value for it.
 
 In witchy, printing is an effect, and effects require authority. `Console` is a
-**capability**: a value that grants the right to write to standard output — and
-one your code cannot forge. There is no way to conjure one — you can't write
+**capability**: a value that grants the right to write to standard output - and
+one your code cannot forge. There is no way to conjure one - you can't write
 `let c = Console()`.
 The only `Console` in the whole program is the one the *host* hands to `main`
 when the program starts.
@@ -67,7 +67,7 @@ zero
 ```
 
 `double` and `classify` are **provably pure**. They cannot print, cannot read a
-file, cannot get the time — there is no parameter that would let them, and they
+file, cannot get the time - there is no parameter that would let them, and they
 can't fabricate one. This is not documentation or a naming convention you hope
 people follow. It is a property the type checker guarantees. Most of any real
 witchy program is functions like these; capabilities flow only to the few places

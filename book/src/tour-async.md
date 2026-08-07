@@ -11,7 +11,7 @@ interpreter and compiled WebAssembly backends.
 
 An `async fn` is a function that can suspend at an `await`. Awaiting another async
 call runs it and yields its value. An `async fn main` is the program's entry into
-the executor — it is driven to completion automatically.
+the executor - it is driven to completion automatically.
 
 ```witchy
 async fn double(n: Int) -> Int:
@@ -25,9 +25,9 @@ async fn main(console: Console):
 ## Spawning tasks
 
 `chan.spawn` starts a task running concurrently and returns a handle; `chan.join`
-waits for it while the executor can make progress. No channel is involved —
+waits for it while the executor can make progress. No channel is involved -
 spawning is just concurrency. Each task yields control at `chan.yield_now().await`,
-so the others get a turn — that is what interleaves their output. If every live
+so the others get a turn - that is what interleaves their output. If every live
 task parks with no progress, the executor runs its quiescence close pass; a
 parked join resumes then, even if the joined task has a continuation that will
 run afterward.
@@ -52,7 +52,7 @@ async fn main(console: Console):
 
 ## Channels: sending and receiving
 
-`chan.channel(cap)` creates a channel and returns a `(Sender, Receiver)` pair —
+`chan.channel(cap)` creates a channel and returns a `(Sender, Receiver)` pair -
 two ends of the same conduit, which you pass to whichever tasks need them. A
 bounded channel blocks the sender when it is full while some task can make
 progress (backpressure); pass `0`, or use `chan.unbounded()`, for no limit. If
@@ -79,7 +79,7 @@ async fn main(console: Console):
 
 A server is a task that owns a `Receiver` and loops on it. `chan.serve` writes that
 loop and threads a piece of state through every message. A request that needs an
-answer carries a reply `Sender` the client made — the reply comes back on a channel
+answer carries a reply `Sender` the client made - the reply comes back on a channel
 the caller chose, with no shared addresses.
 
 ```witchy
@@ -125,7 +125,7 @@ before carrying `sum` forward. The server runs until its channel closes, then th
 
 Because a `Receiver` is an ordinary value, you can hand the *same* one to several
 tasks: they share a queue, and whoever is free takes the next message. That is a
-worker pool (many receivers on one channel) — something a per-task mailbox cannot
+worker pool (many receivers on one channel) - something a per-task mailbox cannot
 express. Results flow back on a second channel.
 
 ```witchy
@@ -146,7 +146,7 @@ async fn main(console: Console):
 
 ## Structured concurrency: the form to reach for first
 
-A bare `chan.spawn` hands you a task handle you must remember to `join` — forget
+A bare `chan.spawn` hands you a task handle you must remember to `join` - forget
 it, or return early past it, and the worker outlives the code that started it.
 The `chan` module gives you a *structured* layer on top, where the tasks are
 never visible and the join is guaranteed. Prefer these over a raw `spawn`:
@@ -160,8 +160,8 @@ never visible and the join is guaranteed. Prefer these over a raw `spawn`:
 - `chan.scope(tasks)` runs a batch of side-effecting tasks and joins them all.
 
 No task handle escapes any of these, so nothing leaks. And because the executor
-schedules deterministically — `par_map` reorders results back to input order, a
-`race` tie favours the first racer — the run is byte-identical on both backends.
+schedules deterministically - `par_map` reorders results back to input order, a
+`race` tie favours the first racer - the run is byte-identical on both backends.
 
 ```witchy
 import list
@@ -199,18 +199,18 @@ scoped: 2 workers ran
 ```
 
 Reach for a bare `spawn`/`join` (or the worker-pool pattern above) only when you
-need a long-lived task whose lifetime genuinely outlives a single scope — a
+need a long-lived task whose lifetime genuinely outlives a single scope - a
 server loop, say. For fan-out-and-collect, the structured combinators are the
 idiom.
 
 ## Iterating with `await`
 
 A `for` loop may `await` in its body. Each iteration runs to completion before the
-next begins, so a batch of asynchronous steps reads as an ordinary loop — that is
+next begins, so a batch of asynchronous steps reads as an ordinary loop - that is
 how `source` above sends several messages with `for n in [...]`.
 
 `for await x in rx:` is the receiver form: it loops over a channel, binding each
-message in turn and stopping when the channel closes — and its body may `await`
+message in turn and stopping when the channel closes - and its body may `await`
 too, so a stage can receive, transform, and forward in a few plain lines:
 
 ```witchy
@@ -233,7 +233,7 @@ async fn main(console: Console):
 ```
 
 A `while` loop may `await` in its body too, and a `var` local may cross an
-`await` — the compiler lowers each `async fn` to a resumable state machine, so
+`await` - the compiler lowers each `async fn` to a resumable state machine, so
 evolving state rides the machine rather than a captured-by-value closure. That
 also lets a `for await` loop **fold**: mutate an accumulator each message and read
 the total once the channel closes.
@@ -295,7 +295,7 @@ async fn main(console: Console):
 ```
 
 One restriction: an `async fn` may not be a *trait* method (neither declared in a
-`trait` nor implementing one in an `impl Trait for T`) — the compiler rejects it
+`trait` nor implementing one in an `impl Trait for T`) - the compiler rejects it
 at parse time. A trait that wants an asynchronous operation declares a plain
 `fn … -> Task(a)`; the implementing method inherits the trait's return type
 (no need to repeat the annotation) and delegates to an inherent async method.
@@ -329,7 +329,7 @@ fetched: /docs
 
 Calling `f.fetch(...)` returns the `Task(String)` unstarted; the caller decides
 when to `await` it. The inherent `async fn get` is where the suspension actually
-lives — the trait method is just a synchronous function that happens to return a
+lives - the trait method is just a synchronous function that happens to return a
 task.
 
 ## The 0.1 memory ceiling
@@ -355,7 +355,7 @@ schedule.
 The executor is ordinary witchy code (see `std/task`): it owns the channel buffers
 and polls tasks in a fixed round-robin order. `std/chan` is the ergonomic channel
 surface over that task executor. No scheduler state lives in the
-runtime, no operating-system threads are involved, and nothing is shared mutably —
+runtime, no operating-system threads are involved, and nothing is shared mutably -
 so the interleaving is identical on both backends. Each channel carries its own
 message type (the executor moves messages erased and every endpoint recovers its
 type), and a spawned task returns `()` (it reports results by sending them),

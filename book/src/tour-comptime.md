@@ -1,7 +1,7 @@
 # Compile-Time Code: `comptime`
 
 Sometimes the most honest way to write repetitive code is to *generate* it. A
-top-level `comptime:` block is witchy's tool for that — a block that runs **at
+top-level `comptime:` block is witchy's tool for that - a block that runs **at
 compile time** and emits new source:
 
 ```witchy
@@ -33,7 +33,7 @@ exactly the same rules as handwritten code.
 `comptime` keeps the capability model intact through three rules:
 
 - **No capabilities.** A `comptime:` block has no parameter list, so there is
-  nothing to receive a `Console`, `Dir`, or `Net` through — and capabilities
+  nothing to receive a `Console`, `Dir`, or `Net` through - and capabilities
   cannot be forged. No filesystem, no network, no clock: the block is
   **deterministic by construction**. The same source always generates the
   same code, which is also what makes builds cacheable.
@@ -210,7 +210,7 @@ fn main(console: Console):
 
 ## Tagged literals: `comptime` in expression position
 
-A string literal written *immediately after an identifier* — `tag"…"` — is a
+A string literal written *immediately after an identifier* - `tag"…"` - is a
 **tagged literal**. Like `comptime` it runs at compile time, but in *expression*
 position: the lexer splits the literal into its static fragments and its `${…}`
 holes. Tags use the typed signature
@@ -232,8 +232,8 @@ String-returning tags are rejected. With `parts` = the static fragments and `hol
 **opaque marker** per hole,
 The tag returns the typed expression that replaces the literal. Convert a marker
 to its explicit expression category with `meta.expr_raw`, or compose it through
-a structural quote or builder. The compiler substitutes the real hole expression
-— resolved at the call site — and splices the result before type-checking.
+a structural quote or builder. The compiler substitutes the real hole expression -
+resolved at the call site - and splices the result before type-checking.
 Reachable tag evaluator items do not invoke tagged literals in their bodies or
 initializers; to compose tags, return nested tagged-literal syntax. Dynamic source is parsed with
 the tag definition's direct imports, while hole expressions use the invocation
@@ -309,12 +309,12 @@ Holes are typed by position (the substituted expression is type-checked normally
 so a type error points back *into the literal* at that `${…}`, and a marker may be
 placed zero, once, or many times. This preserves structural safety: the
 `glamour` rune's `html` tag turns a `${userInput}` in text position into a
-`text(…)` **node**, never markup — so interpolated input is **XSS-immune**, not
+`text(…)` **node**, never markup - so interpolated input is **XSS-immune**, not
 escaped-after-the-fact.
 
 ## When to reach for it
 
-Use `comptime` for families of declarations that follow a pattern — lookup
+Use `comptime` for families of declarations that follow a pattern - lookup
 tables, wrapper functions, enumerated constants. Reach for a **tagged literal**
 when you want a compile-time mini-language in expression position (typed
 templates, safe HTML/SQL). For generating code from *files* (a schema, a protocol

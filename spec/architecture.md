@@ -43,7 +43,7 @@ that a transformed AST remains checked.
 There is **one user-program run path: the compiled WASM backend.** `witchy
 <file>`, `witchy run`, and `witchy sandbox` all compile to a wasm binary and
 execute it under wasmtime, so dev == deploy by construction. The tree-walking
-interpreter is *not* a run path — it is the differential oracle (`witchy
+interpreter is *not* a run path - it is the differential oracle (`witchy
 parity`), the `comptime:` evaluator, the in-language test runner, and the
 effectful build-step executor.
 
@@ -76,8 +76,8 @@ are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 | `witchy-lower` | `codegen`, `analysis` | Lowers the checked AST to WIR, selecting ordinary slots, typed references, or canonical specialized layouts before Wasm-kind erasure; `analysis` is the uniqueness / cap-token pass the in-place and destination paths depend on. |
 | `witchy-confinement` | normalized policy plus platform providers | Target-neutral filesystem, network, Fetch-origin, and syscall-class confinement policy; Linux Landlock/seccomp enforcement consumes this policy without depending on compiler stages or Wasmtime. |
 | `witchy-runtime` | `value`, `native`, `net`, `confine`, `runtime` *(native-only)* | The runtime `Value` (shared by interpreter + host), native-function registry (FFI-as-capability), runtime adapters over shared confinement policy, and the Wasmtime sandbox (capability-gated host functions, memory caps, epoch preemption). The non-`runtime` modules are wasm-safe; `runtime` sits behind the `native` feature. |
-| `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking reference semantics — the parity ORACLE (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) — plus compile-time `comptime:` / `tag"…"` evaluation and the task-shaped checked-link service that injects the compile-time expander. |
-| `witchy-caps` | `capabilities`, `grants` | The footprint analyzer (`witchy caps`, `caps-diff`) — recomputed from source, never trusted metadata — and grant-document (`--grants` TOML) parsing + cross-check (`witchy grants-check`). |
+| `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking reference semantics - the parity ORACLE (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) - plus compile-time `comptime:` / `tag"…"` evaluation and the task-shaped checked-link service that injects the compile-time expander. |
+| `witchy-caps` | `capabilities`, `grants` | The footprint analyzer (`witchy caps`, `caps-diff`) - recomputed from source, never trusted metadata - and grant-document (`--grants` TOML) parsing + cross-check (`witchy grants-check`). |
 | `witchy` *(root package)* | `main`, `cli`, `source`, `lib` (the wasm-playground `cdylib`), `lsp`, `idp` | The composition package: browser entrypoints, diagnostics LSP, trusted-publishing IdP *test* simulator, and native CLI orchestration. `cli` owns help/version presentation and shared flag/secret decoding; `source` owns native project discovery, bundled lookup, dependency-aware file loading/linking, and source expansion. Dispatch and command execution remain concentrated in `main.rs` and are tracked in the architecture ledger rather than described here as already thin. |
 
 `std/` is the standard library, written in witchy; `projects/pm`, `projects/coven`
@@ -85,7 +85,7 @@ are the package manager and registry, self-hosted in witchy.
 
 ## The parity discipline
 
-The interpreter defines the semantics; the compiled backend must agree —
+The interpreter defines the semantics; the compiled backend must agree -
 **zero silent divergence**, including error paths. This is the project's core
 engineering invariant, enforced by:
 
@@ -195,20 +195,20 @@ the linked host import and launch grant carry the runtime authority.
 
 ## Memory model
 
-The compiled backend is a **bump arena with structured reclamation** — no
+The compiled backend is a **bump arena with structured reclamation** - no
 tracing GC, no free lists; instead, memory is reclaimed at well-defined
 lifetimes the compiler can prove (or the user declares):
 
-- **Program exit** — the whole arena is discarded with the VM; linear memory
+- **Program exit** - the whole arena is discarded with the VM; linear memory
   is capped (1 GiB ceiling for `run`), so a runaway program traps rather than
   consuming the host.
-- **Per loop iteration** — escape-free loops get a watermark reset: the
+- **Per loop iteration** - escape-free loops get a watermark reset: the
   compiler proves nothing allocated inside the body outlives the iteration
   and rewinds the heap each pass.
-- **`region:` blocks** — user-declared allocation scopes. Everything born in
+- **`region:` blocks** - user-declared allocation scopes. Everything born in
   the region dies at its end; the block's VALUE escapes by a shape-directed
   copy-out that short-circuits on parent-side data (a passthrough result
-  copies zero bytes — asserted in tests via the exported
+  copies zero bytes - asserted in tests via the exported
   `__region_copy_bytes` counter). See [regions.md](../rfcs/regions.md).
 
 On top of reclamation, hot mutation paths avoid allocating at all. The
@@ -217,7 +217,7 @@ On top of reclamation, hot mutation paths avoid allocating at all. The
 typed `var` accumulation (`xs.push(e)`, `d.insert(k, v)`) and ordinary linear
 updates (`s = s <> p`, `x = f(move x)`) through a runtime ownership
 token: the analysis finds every statement that can create a live whole-alias
-(the token is zeroed there — path-sensitively) and every site whose own RHS
+(the token is zeroed there - path-sensitively) and every site whose own RHS
 embeds one; everything provably unaliased mutates in place with capacity
 doubling. Function summaries (a bottom-up pass over the call graph) mean a
 read-only helper call doesn't break the chain, `let`-borrow parameters are
@@ -230,13 +230,13 @@ time (`witchy check` notes + LSP hints); `WITCHY_OPT=-inplace` compiles the
 copying paths for differential verification, and the exported
 `__witchy_reowns` counter lets tests assert copy counts. Measured against the
 benchmark baseline: string workloads run at 4–5.7× the reference throughput,
-lists/dicts/compute at parity — see the [benchmark baseline](../bench/BASELINE.md).
+lists/dicts/compute at parity - see the [benchmark baseline](../bench/BASELINE.md).
 
 ## The runtime sandbox
 
 Each program is one wasmtime `Store` (one VM) with its own linear memory and
 its own `Linker`. A capability grant means "this host function is linked";
-everything else is structurally absent — a module importing an ungranted
+everything else is structurally absent - a module importing an ungranted
 function fails at instantiation, before any code runs.
 `link_capability_imports` (over the shared `VmState`) defines only the
 families the grant entitles: a program with no `Console` in its footprint
@@ -258,7 +258,7 @@ a runaway guest.
 Concurrency lives *inside* that single VM. `async`/`await`, `spawn`, and
 channels lower to a cooperative executor written in pure witchy (`std/task`;
 `std/chan` provides the channel surface), so concurrent tasks share one linear
-memory and one capability grant rather than running as separate VMs — and because
+memory and one capability grant rather than running as separate VMs - and because
 the scheduler is ordinary witchy code, a concurrent run is byte-identical on both
 backends. See
 [concurrency-design.md](../rfcs/concurrency-design.md).
@@ -273,11 +273,11 @@ Tracked honestly rather than hidden:
 
 - Generic ADT `==` (including `Result`) is structural when the payload types
   are visible at the comparison site (declared parameter or return types,
-  constructor literals). A payload codegen cannot resolve — e.g. through an
-  unspecialized generic function, or a *recursive* generic ADT — stays a loud
+  constructor literals). A payload codegen cannot resolve - e.g. through an
+  unspecialized generic function, or a *recursive* generic ADT - stays a loud
   compile error, never a silent pointer compare.
 - Spawned tasks return `Nil` and report results over channels (the Go model):
-  there is no typed `JoinHandle(T)` — one would force a native runtime and
+  there is no typed `JoinHandle(T)` - one would force a native runtime and
   break the byte-identical executor, so the structured forms (`chan.scope`,
   `chan.gather`, `chan.par_map`) cover the join-with-result shapes. `await`
   is supported in loop bodies, including `while` bodies that carry mutable

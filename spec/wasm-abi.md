@@ -13,8 +13,8 @@ This is the handshake between the compiler (the import declarations live in
 that satisfies them (`crates/witchy-runtime/src/runtime.rs` is the wasmtime host;
 `web/witchy-runtime/witchy-runtime.mjs` is the JavaScript pure-compute host).
 
-This document is that import surface as a **stable public contract**. A host —
-the browser pure-compute runtime, or any third-party tool — depends on the names,
+This document is that import surface as a **stable public contract**. A host -
+the browser pure-compute runtime, or any third-party tool - depends on the names,
 signatures, and marshaling protocol below; a compiler change to any of them is a
 breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
@@ -63,33 +63,33 @@ The host is a sieve that admits no authority-bearing module. It is deliberately
 stricter than "all footprint-empty modules": native-only launch and toolchain
 services are omitted too. This is **deny-by-omission**: capabilities are denied
 by simply not being on offer, the strongest "structurally incapable of I/O"
-guarantee. No trap stubs are needed (or installed) for capability imports —
+guarantee. No trap stubs are needed (or installed) for capability imports -
 their *absence* is the guarantee.
 
 ## Module exports
 
 A compiled module exports:
 
-- `memory` — the linear memory the host reads/writes for marshaling.
-- `run` — the no-arg entry the host calls to run the program. The compiler
+- `memory` - the linear memory the host reads/writes for marshaling.
+- `run` - the no-arg entry the host calls to run the program. The compiler
   synthesizes it around `main`, supplying `main`'s parameters (a Console is
   type-level; `args`/`Dir` parameters are host-provided). Present only when the
   module has a `main`.
-- `__witchy_reowns`, `__region_copy_bytes` — diagnostic globals (optional).
+- `__witchy_reowns`, `__region_copy_bytes` - diagnostic globals (optional).
 
 ### String-export entry points (the `String -> String` call ABI)
 
 A `pub fn` whose name starts with `export_` and has the shape
 `(String) -> String` is a **JS-callable string export**: the compiler emits a
 stable export wrapper plus a bump allocator so a host (the browser pure-compute
-shim, the glamour DOM shell — [RFC-0008](../rfcs/0008-frontend-framework-rune.md) can call a pure witchy function with a
+shim, the glamour DOM shell - [RFC-0008](../rfcs/0008-frontend-framework-rune.md) can call a pure witchy function with a
 JSON string in and a JSON string out. These are **exports, not imports**: they
-grant **no** authority — the wrapper only reads/writes guest memory.
+grant **no** authority - the wrapper only reads/writes guest memory.
 
-- `__galloc` — `(i32 len) -> i32 ptr`. Reserves `len` bytes on the bump heap
+- `__galloc` - `(i32 len) -> i32 ptr`. Reserves `len` bytes on the bump heap
   (`ensure` + advance `$heap`) and returns the pointer, so the host can write an
   input String header into guest memory before the call.
-- `__export_<name>` — `(i32 in_ptr, i32 in_len) -> i32 out_ptr`, one per string
+- `__export_<name>` - `(i32 in_ptr, i32 in_len) -> i32 out_ptr`, one per string
   export (the linker's `{module}.` prefix is dropped: `export_step` ->
   `__export_export_step`... i.e. `__export_<unqualified-source-name>`). The host
   `__galloc`s `4 + len` bytes, writes a String header `[i32 len][bytes]` at the
@@ -122,14 +122,14 @@ data is read once with no time-of-check/time-of-use gap:
    bytes in a one-slot `pending` buffer**, and returns the byte length.
 2. The guest allocates that many bytes, then calls the matching drain import,
    which copies the staged bytes into guest memory and clears the buffer:
-   - `fill_pending(out_ptr)` — writes the staged **bytes** at `out_ptr` (for
+   - `fill_pending(out_ptr)` - writes the staged **bytes** at `out_ptr` (for
      String results).
-   - `write_pending_list(base_ptr)` — lays a staged **List(String)** out at
+   - `write_pending_list(base_ptr)` - lays a staged **List(String)** out at
      `base_ptr`: the `[count][count × i64 ptr]` header followed by the string
      objects, each slot pointing at its `[len][bytes]`.
 
 Some imports instead take an `out_ptr` and write a **fixed-size** result directly
-(no staging) — e.g. `crypto.sha256` writes 64 hex bytes, `float_to_str` writes the
+(no staging) - e.g. `crypto.sha256` writes 64 hex bytes, `float_to_str` writes the
 decimal and returns its length. The guest reserves a sufficient buffer first.
 
 The browser host implements `fill_pending` (drains a staged String, used by
@@ -307,21 +307,21 @@ a self-contained synchronous implementation needing none.
 > provide it as `opts.args`; omission means an empty argument list.
 
 > The `compiler_*` imports are pure functions of their source arguments and grant
-> no authority — they never appear in the capability footprint (a program that
+> no authority - they never appear in the capability footprint (a program that
 > `import compiler` and calls `compiler.footprint` shows only its real
 > capabilities). The interpreter **and** the native wasmtime host
 > (`crates/witchy-runtime/src/runtime.rs`) both link them, so `std/compiler`'s
 > `footprint`/`diff`/`doc` run on the compiled backend as well as the
-> interpreter. Only the pure-compute browser host omits them — it ships no
-> compiler — so a module importing one cannot instantiate there.
+> interpreter. Only the pure-compute browser host omits them - it ships no
+> compiler - so a module importing one cannot instantiate there.
 
 ## Hosts
 
-- **`crates/witchy-runtime/src/runtime.rs`** — the wasmtime host. Defines every
+- **`crates/witchy-runtime/src/runtime.rs`** - the wasmtime host. Defines every
   non-authority import and defines capability-authority imports only when the
   corresponding grant is present; it is the reference implementation of every
   signature and the pending-buffer protocol above.
-- **`web/witchy-runtime/witchy-runtime.mjs`** — the JavaScript pure-compute host
+- **`web/witchy-runtime/witchy-runtime.mjs`** - the JavaScript pure-compute host
   ([RFC-0007](../rfcs/0007-witchy-wasm-browser-target.md)). Provides exactly the imports marked `browser: provided` above and
   omits every capability-authority import by default. Explicit capability
   options add only the selected browser-menu provider imports. In particular,
@@ -340,23 +340,23 @@ capability rune is refused with a `LinkError`.
 
 ## Runtime aborts ([RFC-0045](../rfcs/0045-compiled-trap-diagnostics.md))
 
-Every runtime abort on the compiled backend — an out-of-bounds `list`/`bytes`
+Every runtime abort on the compiled backend - an out-of-bounds `list`/`bytes`
 index, `string.to_int` on junk or overflow, integer division/modulo failure,
-ordering a `NaN`, or a user `fail(msg)` — carries the interpreter's complete
+ordering a `NaN`, or a user `fail(msg)` - carries the interpreter's complete
 diagnostic out before it traps. The two backends agree on function, line, and
 message, not merely on the fact of erroring.
 
 - **`__witchy_abort(template, a, b, str_ptr)` is always linked** and grants no
   authority: it reads only guest-memory strings named by `str_ptr` and the
   packed site, returns nothing to the guest, and its only effect is to terminate
-  execution with a diagnostic label — an ability the guest already has via
+  execution with a diagnostic label - an ability the guest already has via
   `unreachable`. Like the checked-heap imports
   (`heap_register`, [RFC-0023](../rfcs/0023-checked-heap.md)), it is therefore defined unconditionally on
   every host (the pure-compute shim included) and is **excluded from the
   capability footprint** (`witchy caps` and the coven widening gate never see it).
 - **Rust message text has one owner** in `crates/witchy-syntax/src/diag.rs`
   (`DiagTemplate`). `template` is the stable `DiagTemplate::id()` (part of the
-  compiled ABI — do not renumber); `a`/`b` are integer holes and `str_ptr` is a
+  compiled ABI - do not renumber); `a`/`b` are integer holes and `str_ptr` is a
   witchy-string pointer (or `0`). The interpreter and native host use the same
   renderer. The dependency-free browser host mirrors the small table, pinned by
   a compiled test matrix covering every pure template.
@@ -370,7 +370,7 @@ message, not merely on the fact of erroring.
 - **Exact error parity is enforced** by `witchy parity`: every both-error outcome
   must have byte-for-byte identical complete diagnostics. A bare Wasm trap,
   missing location, or backend-specific host error is a divergence.
-- **`WITCHY_WASM_BACKTRACE`** — set this environment variable to also dump the
+- **`WITCHY_WASM_BACKTRACE`** - set this environment variable to also dump the
   full named-frame wasm backtrace beneath the message (the emitted name section
   makes frames readable). It is a debugging add-on for *frames*; the message
   itself now always prints regardless.

@@ -18,8 +18,8 @@ capabilities:
 | `Rand` | drawing cryptographically-secure randomness |
 | `SecretStore` / `Secret` | named host secrets, and signing with one |
 
-Each is *right-typed* where that matters — `Dir[Read]` vs `Dir[Write]`,
-`Net[Connect, Tcp]` — so the type identifies the resource and the permitted
+Each is *right-typed* where that matters - `Dir[Read]` vs `Dir[Write]`,
+`Net[Connect, Tcp]` - so the type identifies the resource and the permitted
 operations.
 
 The host mints capabilities and hands them to `main`. Capability constructors
@@ -44,7 +44,7 @@ to put there; the program cannot ask for more.
 A capability is an ordinary value once you have it, and code passes it as an
 argument. There are no globals to stash it in and no ambient registry to fetch
 it from. A function's authority is
-*exactly* its capability-typed parameters — visible, local, complete.
+*exactly* its capability-typed parameters - visible, local, complete.
 
 ```witchy
 // `log` can print, because it was given a Console. `compute` cannot, because it
@@ -65,7 +65,7 @@ compute(6): 37
 ```
 
 Read `compute`'s signature: `fn compute(x: Int) -> Int`. No capabilities. It is
-*provably* incapable of any effect — it can only compute. You don't have to read
+*provably* incapable of any effect - it can only compute. You don't have to read
 its body, or its callees' bodies, to know that. Contrast a typical language,
 where `compute` could be doing anything, and the only way to find out is to
 audit the entire call graph.

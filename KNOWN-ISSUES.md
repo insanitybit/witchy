@@ -18,14 +18,14 @@ defect merely because it was discovered while testing an experimental feature.
 
 ## Status rules
 
-- **BLOCKER** — the supported-preview claim is false or unsafe. Fix it or demote
+- **BLOCKER** - the supported-preview claim is false or unsafe. Fix it or demote
   the affected surface before presenting the preview.
-- **OPEN** — a real gap with an explicit disposition. It may be non-blocking
+- **OPEN** - a real gap with an explicit disposition. It may be non-blocking
   only when its severity and product effect are stated here.
-- **ACCEPTED** — a known residual limitation whose boundary is documented and
+- **ACCEPTED** - a known residual limitation whose boundary is documented and
   whose risk is accepted for the preview. Acceptance is not a claim that the
   behavior is correct.
-- **RESOLVED** — executable evidence or a narrowly reviewable documentation
+- **RESOLVED** - executable evidence or a narrowly reviewable documentation
   change closed the issue on a recorded commit.
 
 Any known HIGH or CRITICAL defect in the supported journey is a blocker. A

@@ -35,7 +35,7 @@ only in a: 2
 a subset of either: true
 ```
 
-`insert` returns a `Bool` — `true` if the value was new — which makes it a
+`insert` returns a `Bool` - `true` if the value was new - which makes it a
 one-line deduplication filter. And because a `Set` builds from any iterator, you
 can pipe a lazy `iter` computation straight into one:
 
@@ -64,7 +64,7 @@ has 20: false
 ```
 
 `iter.collect` into a `Set(a)` works through the library's conditional
-`FromIterator` impl, which requires `a: Eq` — the same bound every set operation
+`FromIterator` impl, which requires `a: Eq` - the same bound every set operation
 needs.
 
 ## Counting with `dict.update`
@@ -93,7 +93,7 @@ pear: 2
 
 Two habits are worth forming here. First, `get_or` (and `get_or_insert`) spare
 you an `Option` match when a sensible default exists. Second, a `Dict` has no
-guaranteed iteration order — so when output must be deterministic (as every book
+guaranteed iteration order - so when output must be deterministic (as every book
 example must, to run on both backends), sort the keys first. That is not a
 witchy quirk; it is the same discipline any hash-map-backed program needs, made
 visible.

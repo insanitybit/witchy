@@ -1,7 +1,7 @@
 # The Sandbox
 
 Static checking keeps *your* code honest: a function without a `Net` can't
-connect, and the compiler proves it. But what about code you didn't write — a
+connect, and the compiler proves it. But what about code you didn't write - a
 plugin, a dependency, something you fetched? You can't audit it by hand, and even
 if you could, the binary you run might not match the source you read.
 
@@ -23,7 +23,7 @@ This:
    functions the footprint calls for.
 
 The enforcement is *structural*, not a permission check. A capability isn't a
-flag the runtime consults — it's the *presence* of a host function. A program
+flag the runtime consults - it's the *presence* of a host function. A program
 that wasn't granted `Clock` has no `now` import linked into its module; if it
 asks for one, instantiation fails before any code runs. No clock import exists
 for the program to call.
@@ -85,12 +85,12 @@ because witchy already *computes* a program's footprint, the grant is
 **cross-checked against it**: a grant
 that asks for authority the code never exercises is a warning (the classic
 over-permission smell), and a grant that withholds authority the code needs is a
-hard error before launch — so "approve this program's permissions" becomes a diff
+hard error before launch - so "approve this program's permissions" becomes a diff
 against what the code actually does, not blind trust. The same check runs
 standalone: `witchy grants-check program.witchy app.grants.toml`.
 
-At launch the grant is printed as a reviewable diff — each capability and its
-`dir`/`file`/`net`/`fetch`/`env`/`exec`/`secret` binding — and on an
+At launch the grant is printed as a reviewable diff - each capability and its
+`dir`/`file`/`net`/`fetch`/`env`/`exec`/`secret` binding - and on an
 interactive terminal you are
 prompted to approve it before any authority is handed over. Pass `--accept-grants`
 to skip the prompt for non-interactive launches (CI, installers):
@@ -101,7 +101,7 @@ witchy sandbox --grants app.grants.toml --accept-grants program.witchy
 
 ## Host-held references, not guest pointers
 
-When a program holds a `Dir` inside the sandbox, it doesn't hold a path — it
+When a program holds a `Dir` inside the sandbox, it doesn't hold a path - it
 holds an opaque WebAssembly `externref` to an authority object owned by the
 *host*. Paths, address/name/program allowlists, streams, listeners, and secret
 bytes stay
@@ -230,7 +230,7 @@ The boundary has explicit limits:
 
 - **The compiler and the VM are trusted.** A bug in witchy's type checker, code
   generator, or in wasmtime is a bug in the boundary. The boundary is small and
-  testable, which is the point — but it isn't zero.
+  testable, which is the point - but it isn't zero.
 - **Granted authority is granted.** If you `--dir /` a program, it can read `/`.
   Capabilities make authority *minimal and visible*; they don't make a grant you
   chose to give somehow safe.

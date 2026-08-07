@@ -57,7 +57,7 @@ GitHub.
 
 ## Building from source
 
-To use witchy as a real tool — the sandbox, the package manager — build the
+To use witchy as a real tool - the sandbox, the package manager - build the
 binary. This requires a Rust toolchain (`rustup` recommended):
 
 ```sh

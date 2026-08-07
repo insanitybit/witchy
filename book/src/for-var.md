@@ -1,8 +1,8 @@
-# Mutating elements in a loop — `for var`
+# Mutating elements in a loop - `for var`
 
 `for var x in xs:` binds each element of a list **mutably** and writes it back, so
 you update elements in a loop without index bookkeeping. It is the loop form of
-mutable value semantics: the mutation lands in `xs` — in place, when the
+mutable value semantics: the mutation lands in `xs` - in place, when the
 uniqueness analysis can prove `xs` is unaliased, so it stays O(n).
 
 ```witchy
@@ -26,7 +26,7 @@ fn main(console: Console):
     console.print("${accounts.at(1).balance}")
 ```
 
-A plain `for x in xs:` binds each element read-only — assigning to `x` there is a
+A plain `for x in xs:` binds each element read-only - assigning to `x` there is a
 compile error. Reach for `for var` only when you intend to update elements.
 
 In this first version the body must run straight through: a `break`, `continue`,

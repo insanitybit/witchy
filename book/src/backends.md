@@ -5,7 +5,7 @@ agreement explains several of the language's design constraints.
 
 | Backend | How | Role |
 |---|---|---|
-| **Compiled WebAssembly** | lowered to a structured IR, encoded to a wasm binary, run on wasmtime | the run path: every program runs here — confinement *and* speed, and the browser playground |
+| **Compiled WebAssembly** | lowered to a structured IR, encoded to a wasm binary, run on wasmtime | the run path: every program runs here - confinement *and* speed, and the browser playground |
 | **Interpreter** | tree-walking, in Rust | the *reference* semantics: the independent oracle every compiled run is checked against |
 
 ```sh
@@ -41,12 +41,12 @@ compiler honest.
 Parity includes edge and failure cases:
 
 - `Int` arithmetic **wraps** on overflow everywhere (that's why it wraps rather
-  than being undefined — a portable choice both backends can honor).
+  than being undefined - a portable choice both backends can honor).
 - Float formatting is the shortest round-trip on every backend; `NaN` and
   infinities behave identically; ordering a `NaN` errors on both.
 - Structural equality is deep and identical for every comparable type.
 - Out-of-bounds indexing, divide-by-zero, parse overflow, and `fail` abort on
-  *every* backend — a trap in the VM, a runtime error in the interpreter, never
+  *every* backend - a trap in the VM, a runtime error in the interpreter, never
   a silently different result.
 
 Owned existential values (`dyn Trait`) are part of that parity contract. A
@@ -110,8 +110,8 @@ concrete payload into an explicit trait-method parameter. `dyn PartialEq` and
 implicit downcasts are intentionally unavailable; declare a domain-specific
 comparison/key method, or use a closed enum when concrete recovery is required.
 
-When a backend genuinely can't express something the same way — historically,
-say, comparing certain generic types — witchy makes it a **loud compile-time
+When a backend genuinely can't express something the same way - historically,
+say, comparing certain generic types - witchy makes it a **loud compile-time
 error** rather than letting the two backends diverge. The rule is zero silent
 divergence.
 
@@ -171,10 +171,10 @@ user-declared [`region:` blocks](appendix-performance.md) whose value escapes
 by copy-out. Hot paths
 avoid allocating at all: an ownership analysis proves where accumulation
 (`xs.push(e)`, `s = s + p`, `d.insert(k, v)`,
-`x = f(move x)`) can mutate in place — aliases cost one copy where they
-happen, never the whole loop — and dicts carry a hidden hash index. The result
+`x = f(move x)`) can mutate in place - aliases cost one copy where they
+happen, never the whole loop - and dicts carry a hidden hash index. The result
 runs at native-class throughput: a string builder stays linear instead of
-O(n²), and list/dict/compute loops carry no per-iteration allocation overhead —
+O(n²), and list/dict/compute loops carry no per-iteration allocation overhead -
 all inside the sandbox ([`bench/BASELINE.md`](https://github.com/insanitybit/witchy/blob/master/bench/BASELINE.md)
 has the numbers). The repository's
 `spec/architecture.md` has the full

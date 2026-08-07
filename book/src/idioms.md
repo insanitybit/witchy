@@ -46,12 +46,12 @@ fn main(console: Console):
 [1, 4, 9] 2
 ```
 
-## `Result` + `?` for failure — never `Option(String)`-as-error
+## `Result` + `?` for failure - never `Option(String)`-as-error
 
 Absence is `Option` (the reason doesn't matter); failure is
 `Result(T, String)` (it does). Propagate with `e?`, add context with
 `e? "msg"`. **Do not** encode failure as `Option(String)` with `Some`
-meaning "error" — the polarity is inverted and `?` can't compose with it.
+meaning "error" - the polarity is inverted and `?` can't compose with it.
 
 ```witchy
 import result
@@ -83,7 +83,7 @@ bad endpoint: `banana` is not a number
 
 `while i < n` with manual indexing is the spelling of last resort. Prefer a
 comprehension for map/filter shapes, `for` for iteration, and the
-`list`/`iter` combinators (`fold`, `any`, `all`, `find`) for the rest —
+`list`/`iter` combinators (`fold`, `any`, `all`, `find`) for the rest -
 lazily via `iter` when the pipeline is long or the source is large.
 
 ```witchy
@@ -102,7 +102,7 @@ true
 
 ## Use the stdlib; don't hand-roll beside it
 
-Before writing a helper, check [the stdlib](appendix-stdlib.md) — the gap you
+Before writing a helper, check [the stdlib](appendix-stdlib.md) - the gap you
 are papering over is usually already covered (`json.get_string`,
 `string.split_once_opt`, `list.contains`, `dict.get_or`, …). A private
 wrapper around a std function is a smell: either the std function already
@@ -127,13 +127,13 @@ ada
 
 Capability operations are spelled as methods on the capability
 ([RFC-0076](https://github.com/insanitybit/witchy/blob/master/rfcs/0076-capability-ops-are-methods.md)): `console.print(s)`,
-`dir.read(path)`, `net.connect(addr)`. The receiver *is* the authority — the
+`dir.read(path)`, `net.connect(addr)`. The receiver *is* the authority - the
 spelling keeps that visible.
 
 ## Sealed types for invariants; sealed capabilities for policy
 
 When data carries a rule ("0–100", "a real date", "distinct members"), seal
-the type and let one smart constructor own the rule — a value of the type is
+the type and let one smart constructor own the rule - a value of the type is
 then proof the rule holds. See [Data: Records and Enums](tour-data.md) for
 the mechanics, and [Capabilities](capabilities.md) for the same move applied
 to authority (glamour's `UiFetch` tokens are policy you cannot forge).
@@ -141,8 +141,8 @@ to authority (glamour's `UiFetch` tokens are policy you cannot forge).
 ## The shape of a witchy program
 
 Push effects to the edges. `main` receives capabilities and delegates;
-the middle of the program is pure functions over data (easy to test — no
+the middle of the program is pure functions over data (easy to test - no
 capabilities to fake); the leaves take exactly the capability they use,
 narrowed as far as it will go (`Dir[Read]`, not `Dir`). If a function's
-signature has no capabilities, it provably has no effects — keep as much of
+signature has no capabilities, it provably has no effects - keep as much of
 the program in that state as you can.

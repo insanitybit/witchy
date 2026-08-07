@@ -56,6 +56,6 @@
 [Appendix: The Ecosystem](appendix-ecosystem.md)
 [Appendix: Operators and Keywords](appendix-operators.md)
 [Appendix: Recipes](appendix-recipes.md)
-[Appendix: Performance — the Ownership Knobs](appendix-performance.md)
+[Appendix: Performance - the Ownership Knobs](appendix-performance.md)
   - [Functional-in-Place State Kernels](functional-in-place.md)
 [Appendix: The Standard Library](appendix-stdlib.md)

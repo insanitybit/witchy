@@ -166,7 +166,7 @@ type User:
 let public: .{id: Int} = User(1)
 ```
 
-Add the intended target where the narrowing is deliberate—for example,
+Add the intended target where the narrowing is deliberate - for example,
 `let rows: List(.{id: Int}) = [...]` or
 `let row: .{id: Int} = if ...`.
 

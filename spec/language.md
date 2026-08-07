@@ -8,7 +8,7 @@ identical results. The test suite and a CI sweep (the project's
 including error paths.
 
 Every ` ```witchy ` block below is a complete program that the test suite
-type-checks — and, when it needs nothing beyond `Console`, runs on both
+type-checks - and, when it needs nothing beyond `Console`, runs on both
 backends and confirms the output matches. The examples are executable, not
 illustrative.
 
@@ -66,7 +66,7 @@ types and constructors. A lowercase, argument-less name in type position
 | `3.5`, `0.5` | `Float` | IEEE-754 double; `${...}` renders the shortest round-trip form |
 | `true` / `false` | `Bool` | |
 | `"hi\n"` | `String` | UTF-8; escapes `\n \t \r \0 \\ \" \$` |
-| `"sum: ${a + b}"` | `String` | interpolation — `${expr}` renders data values (see below); inner strings may be bare (`"${f("x")}"`) or escaped (`"${f(\"x\")}"`) |
+| `"sum: ${a + b}"` | `String` | interpolation - `${expr}` renders data values (see below); inner strings may be bare (`"${f("x")}"`) or escaped (`"${f(\"x\")}"`) |
 | `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int`; interpolation uses the prelude `Show` impl (`duration.human`) |
 | `[1, 2, 3]` | `List(Int)` | immutable |
 | `(1, "a")` | tuple | fixed arity, mixed types; elements read by position (`pair.0`, `grid.0.1`) or destructured (`let (n, s) = pair`) |
@@ -83,8 +83,8 @@ fn main(console: Console):
 ```
 
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
-ordinary data values — scalars, record fields, lists, tuples, records, sum types,
-dicts, and their supported nesting — identically on both backends. Function
+ordinary data values - scalars, record fields, lists, tuples, records, sum types,
+dicts, and their supported nesting - identically on both backends. Function
 values are not data rendering targets and are rejected before runtime. `Show`
 is preluded, so interpolation always honors a relevant implementation; imports
 never select rendering semantics. Thus
@@ -103,7 +103,7 @@ type a custom rendering.
 Builtins: `Int`, `Float`, `Bool`, `String`, `Duration`, `Nil` (the unit type),
 `List(a)`, `Dict(k, v)`, tuples `(a, b, ...)`, function types
 `fn(Int, String) -> Bool`, and the capability types (`Console`, `Clock`, `Env`,
-`Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore`, `Secret` — see
+`Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore`, `Secret` - see
 [capabilities.md](capabilities.md)).
 
 **Algebraic data types.** One `type` declaration covers enums, tagged unions,
@@ -184,11 +184,11 @@ emitted/elided header counters for differential tests.
 `Option(a)` (`Some(x)` / `None`) and `Result(a, e)` (`Ok(x)` / `Err(e)`) come
 from `import option` / `import result`.
 
-**Type aliases.** `type X = …` names a shape without creating a new type —
+**Type aliases.** `type X = …` names a shape without creating a new type -
 `type Id = Int` makes `Id` and `Int` fully interchangeable, and the alias may
 be generic (`type Pair(a) = (a, a)`; `Pair(Int)` is `(Int, Int)`). The `=` vs
 `:` distinction is the rule to remember: **`type X = …` names a shape and
-never mints a type; `type X: …` mints a nominal type with constructors** —
+never mints a type; `type X: …` mints a nominal type with constructors** -
 only the latter can be sealed, carry `impl`s, or hold an invariant. Alias
 cycles are a link-time error.
 
@@ -203,8 +203,8 @@ identity: `.{x: Int, y: Int}` and `.{y: Int, x: Int}` are the same type.
 
 A richer anonymous record may flow to a poorer expected anonymous-record type
 when every required field has exactly the required type. This is a directed
-projection at an explicit expected-type site—an annotation, assignment,
-argument, return/tail, typed aggregate slot, or `as`—not general subtyping. It
+projection at an explicit expected-type site - an annotation, assignment,
+argument, return/tail, typed aggregate slot, or `as` - not general subtyping. It
 evaluates the source once and constructs the exact target shape, so rendering,
 reflection, JSON, equality, and runtime type information cannot observe the
 discarded fields. Unconstrained inference, branch joins, containers, function
@@ -264,7 +264,7 @@ fn main(console: Console):
 
 **Sealed types.** Prefixing a declaration with `sealed` makes construction the
 private business of the defining module: outside code cannot call the data
-constructor and must go through the module's public functions — so those
+constructor and must go through the module's public functions - so those
 "smart constructors" are the one place an invariant is established, and a
 value of the type is *proof* the invariant holds. Sealing restricts
 **construction only**: field reads and `match` work from anywhere. A record
@@ -292,7 +292,7 @@ fn main(console: Console):
 
 This is the same mechanism that makes capabilities unforgeable (only the host
 mints a `Net`); `sealed type` opens it to your own types, and the standard
-library uses it widely — `Set` (distinct members), `semver.Version`
+library uses it widely - `Set` (distinct members), `semver.Version`
 (non-negative components), `time.DateTime` (a real calendar date). See
 [capabilities.md](capabilities.md) for the capability-specific form
 (`capability X from U`).
@@ -315,7 +315,7 @@ fn main(console: Console):
 `let x: Type = e` ascribes the binding: the annotation is a unification
 constraint, so it pins type variables the value leaves open (`let xs:
 List(Int) = []`, a return-position type variable) and a disagreeing value
-errors at the binding line. Locals stay inferred by default — ascribe for
+errors at the binding line. Locals stay inferred by default - ascribe for
 ambiguous literals, checked documentation, and catching a wrong assumption
 where it is made.
 
@@ -323,11 +323,11 @@ Top-level `let` declares a module constant (inlined at compile time).
 Assigning to a `let` is a check-time error. A closure also cannot assign to a
 variable it captured: closures capture **by value**, so return the new value or
 use a `var` parameter when a closure-like helper should write through.
-`let _ = expr` evaluates and discards — the same meaning as the bare
+`let _ = expr` evaluates and discards - the same meaning as the bare
 expression statement, which is the form `fmt` prints.
 
 **Assigning to a place.** Beyond a bare variable, the left of `=` may be a
-subscript or a field — `xs[i] = v`, `d[k] = v`, `acct.balance = b` (the binding
+subscript or a field - `xs[i] = v`, `d[k] = v`, `acct.balance = b` (the binding
 must be a `var`). The destination base and projection coordinates are captured
 once, then the right-hand side is evaluated, and finally the updated aggregate is
 written back to the root. This keeps value semantics while reading like in-place
@@ -377,13 +377,13 @@ Everything is an expression; a block's value is its final expression.
 
 | Operators | Meaning |
 |---|---|
-| `+ - * / %` | arithmetic (`Int` wraps; `/ 0` and `Int.MIN / -1` are runtime errors on every backend); `+` on two Strings concatenates — never coerces |
+| `+ - * / %` | arithmetic (`Int` wraps; `/ 0` and `Int.MIN / -1` are runtime errors on every backend); `+` on two Strings concatenates - never coerces |
 
-| `== !=` | equality through `PartialEq`, at **every depth** — the derived/default impl is deep structural equality (lists, tuples, records, enums, `Option`, `Dict` insertion-order-sensitive); a **custom `impl PartialEq`** is honored inside containers too (a `List(P)`/`Option(P)`/tuple/`Dict` value of a type with a hand impl compares by that impl). Function and capability types do **not** compare — `==` on them is a compile-time error |
+| `== !=` | equality through `PartialEq`, at **every depth** - the derived/default impl is deep structural equality (lists, tuples, records, enums, `Option`, `Dict` insertion-order-sensitive); a **custom `impl PartialEq`** is honored inside containers too (a `List(P)`/`Option(P)`/tuple/`Dict` value of a type with a hand impl compares by that impl). Function and capability types do **not** compare - `==` on them is a compile-time error |
 | `< <= > >=` | ordering on `Int`/`Float`/`String`/`Duration` only; ordering a NaN is a runtime error; compounds don't order |
 | `&&` | short-circuit boolean **and** (Bool operands) |
-| `\|\|` | short-circuit boolean **or** (Bool operands only — for a fallback value use `??`) |
-| `??` | the **fallback** operator: `Option(T) ?? T -> T` unwraps `Some` or yields the fallback on `None`; `Result(T, e) ?? T -> T` unwraps `Ok` or yields the fallback on `Err` (the error is discarded — reach for `?` / `match` when it matters). The fallback is evaluated **lazily** (only on `None`/`Err`). Right-associative and the loosest binary operator, so `d.get(k1) ?? d.get(k2) ?? 0` chains and `d.get(k) ?? n + 1` is `d.get(k) ?? (n + 1)`. There is no truthiness: `""` and `[]` are values, not absences — default them with an explicit test (`if name.is_empty(): "anon" else: name`) |
+| `\|\|` | short-circuit boolean **or** (Bool operands only - for a fallback value use `??`) |
+| `??` | the **fallback** operator: `Option(T) ?? T -> T` unwraps `Some` or yields the fallback on `None`; `Result(T, e) ?? T -> T` unwraps `Ok` or yields the fallback on `Err` (the error is discarded - reach for `?` / `match` when it matters). The fallback is evaluated **lazily** (only on `None`/`Err`). Right-associative and the loosest binary operator, so `d.get(k1) ?? d.get(k2) ?? 0` chains and `d.get(k) ?? n + 1` is `d.get(k) ?? (n + 1)`. There is no truthiness: `""` and `[]` are values, not absences - default them with an explicit test (`if name.is_empty(): "anon" else: name`) |
 | `!` | negation |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
 | `xs[i]`, `d[k]` | strict indexing, sugar for `xs.at(i)` / `d.at(k)`; out of bounds or missing-key reads are runtime errors on every backend |
@@ -409,7 +409,7 @@ arguments with the same root are accepted only when their projections are proven
 disjoint (for example `swap(xs[0], xs[1])`); dynamic or prefix-overlapping places
 are rejected.
 | `lo..hi` | a half-open range (for-loop iteration; never materialized) |
-| `x.f(args)` | a method call: an `impl`/trait method on `x` — the primary form for the standard data types; every public method also has an equivalent module-qualified alias (`list.map(xs, f)` is `xs.map(f)`) |
+| `x.f(args)` | a method call: an `impl`/trait method on `x` - the primary form for the standard data types; every public method also has an equivalent module-qualified alias (`list.map(xs, f)` is `xs.map(f)`) |
 | `e?` | unwrap `Ok`/`Some` or return the `Err`/`None` from the enclosing function |
 | `e? "msg"` | like `e?` with context: a `Result` `Err` gets `"msg: "` prepended; an `Option` `None` becomes `Err("msg")` |
 | `cap as Dir[Read]` | capability narrowing (drop rights; never widen) |
@@ -431,7 +431,7 @@ fn main(console: Console):
 Float notes: `0.0 / 0.0` is NaN; `1.0 / 0.0` is infinity; NaN `==` anything is
 `false` (IEEE), while NaN *ordering* errors. Conversions: `math.to_float`,
 `math.to_int` (saturating truncation), `string.to_int` (strict; ABORTS on
-junk or overflow — `string.parse_int` is the `Option`-returning version), `math.sqrt`, and `${...}` for rendering to strings.
+junk or overflow - `string.parse_int` is the `Option`-returning version), `math.sqrt`, and `${...}` for rendering to strings.
 
 ## 5. Control flow
 
@@ -462,7 +462,7 @@ fn main(console: Console):
 
 `for var x in xs:` binds each element of a list variable **mutably** and writes it
 back, so you update elements in place without index bookkeeping (the loop form of
-mutable value semantics) — a mutation of `x` lands in `xs`, in place when the
+mutable value semantics) - a mutation of `x` lands in `xs`, in place when the
 uniqueness analysis proves it unaliased. The v1 form takes a single loop variable
 over a plain list variable and rejects a `break`/`continue`/`return`/`?` that
 belongs to the loop (it would skip the write-back); a plain `for x in xs:` binds
@@ -483,18 +483,18 @@ parameters are still delivered). `return e if cond` is a postfix form of
 `if cond: return e`, for one-line early returns like `return Ok(true) if ok`.
 
 To deny a capability to a region of code, give that work its own function and
-don't pass the capability — a function that never receives a capability cannot
+don't pass the capability - a function that never receives a capability cannot
 use it, alias it, or forge it. That structural boundary (capture-as-DI) is
 witchy's firewall; see [the capability reference](capabilities.md).
 
 A `region:` block (optionally `region -> T:`) is a user-controlled allocation
 scope: everything allocated inside is reclaimed at the block's end, and the
-block's VALUE is what escapes — on the compiled backend it is deep-copied out,
+block's VALUE is what escapes - on the compiled backend it is deep-copied out,
 except sub-values from outside the region, which are shared rather than
 copied. Assigning a non-scalar variable declared outside the region is a type
 error (the value is the only pointer escape; scalar assignments are fine), and
-`yield` is rejected. A region never changes observable behavior — only when
-memory is reclaimed — so the interpreter runs it as a plain block. The
+`yield` is rejected. A region never changes observable behavior - only when
+memory is reclaimed - so the interpreter runs it as a plain block. The
 optional `-> T` ascribes the value's type, guaranteeing the copy-out shape
 when inference cannot see it. See [RFC-0034](../rfcs/regions.md).
 
@@ -516,7 +516,7 @@ fn main(console: Console):
 
 ## 6. Pattern matching
 
-There is **one pattern grammar**, used in every binding position — `match` arms,
+There is **one pattern grammar**, used in every binding position - `match` arms,
 `if let` / `while let`, `let`, `for`, and comprehensions. A pattern is one of:
 
 | Pattern | Example |
@@ -533,15 +533,15 @@ There is **one pattern grammar**, used in every binding position — `match` arm
 Or-patterns and ranges are ordinary sub-patterns: they nest anywhere a pattern
 is allowed (`Some(1 | 2)`, `(0..10, _)`, `[1 | 2, ..rest]`). Every alternative of
 an or-pattern must bind the **same names at the same types** (checked). `Float`
-literals **cannot** be matched — exact float equality is a precision trap
+literals **cannot** be matched - exact float equality is a precision trap
 (bind and guard instead: `x if math.float_abs(x - 1.5) < eps ->`); a `Float`
 *scrutinee* bound to a variable is fine (`match f: x -> …`). `Duration` literals
-**can** be matched — a Duration is an exact millisecond count, and `-1s` is a
+**can** be matched - a Duration is an exact millisecond count, and `-1s` is a
 negative duration literal in both expression and pattern position.
 
 **Contexts differ only by refutability.** `match` / `if let` / `while let`
 accept any pattern. `let` / `for` / comprehensions require an **irrefutable**
-pattern — one the checker proves always matches: `_`, a variable, a tuple of
+pattern - one the checker proves always matches: `_`, a variable, a tuple of
 irrefutable patterns (any nesting), and a single-variant constructor/record
 whose fields are irrefutable. A refutable pattern there (a literal, a range, an
 or-pattern, a list shape, or a multi-variant constructor) is a check-time error
@@ -556,7 +556,7 @@ let Circle(r) = shape
 `match` is exhaustiveness-checked (missing variants are named in the error) and
 unreachable arms are rejected; an or-pattern covers the union of its
 alternatives, while a range is treated as refutable (a range-only match still
-needs a final `_`/binding arm — witchy does no numeric-coverage analysis).
+needs a final `_`/binding arm - witchy does no numeric-coverage analysis).
 Guards (`PAT if cond ->`) don't count toward exhaustiveness. An arm body is an
 expression, a single inline statement (`0 -> return Err("zero")`,
 `Some(v) -> total = total + v`, `_ -> break`), or an indented block of
@@ -698,8 +698,8 @@ signature, direct recursion, and `mode opt` state the contract.
 
 | Convention | Meaning |
 |---|---|
-| (default) | owned, observably immutable value — the callee may read but the caller sees no change |
-| `let` | immutable **borrow**; may not escape — returning a `let`-borrowed parameter is a type error |
+| (default) | owned, observably immutable value - the callee may read but the caller sees no change |
+| `let` | immutable **borrow**; may not escape - returning a `let`-borrowed parameter is a type error |
 | `var` | move-in/move-out write-back: requires a mutable caller place and commits the parameter's final value on every structured return, independently of parameter position or ordinary return type |
 | `own` | ownership transfer; the **callee** consumes the argument, so using the source afterwards is a check-time error |
 | `move e` | use-site ownership transfer; the **caller** consumes the source binding (see below), idiomatically paired with `own` |
@@ -725,20 +725,20 @@ suspension could outlive the caller's place.
 middle. `own` consumes from the **callee** side: passing any variable to an `own`
 parameter marks it moved, so a later use is a check-time error
 (*use of `x` after it was moved*). `move x` consumes from the **caller** side: it
-ends `x` *whatever the callee's convention is* — into a default, `let`, or `own`
-parameter alike — so a later use of `x` is the same check-time error even when the
+ends `x` *whatever the callee's convention is* - into a default, `let`, or `own`
+parameter alike - so a later use of `x` is the same check-time error even when the
 parameter only took an ordinary copy. The two compose: `f(move x)` into an `own`
 parameter is a hand-off both sides spell out, and on the compiled backend it is a
 guaranteed no-copy move. `move` is **not** accepted into a **procedure-channel**
-`var` parameter — that argument must be a live mutable place, since the callee
+`var` parameter - that argument must be a live mutable place, since the callee
 writes it back. On both backends `move` is
 value-neutral (value semantics copy already); it changes only *when* a copy is
 elided, never any result.
 
 **Closures.** `fn(n: Int): n + by` captures by value; you call through a
 `fn(...)` -typed value or parameter. Closures cannot assign to captured
-variables (check-time error). A closure may declare its return type —
-`fn(n: Int) -> Bool: n > 0` — which also makes it a `?` boundary: a `?` inside
+variables (check-time error). A closure may declare its return type -
+`fn(n: Int) -> Bool: n > 0` - which also makes it a `?` boundary: a `?` inside
 the closure propagates to the closure's own `Result`/`Option`, not the enclosing
 function's, so closures can short-circuit on errors just like named functions.
 Failure propagation rebuilds the enclosing return type's `None` or `Err`
@@ -799,7 +799,7 @@ prefix followed by labeled arguments (`connect(host: "x", port: 443)`). Labels
 bind to the declaration's parameter names and may appear in any order, but every
 argument still evaluates in **source order** (left to right as written, not in
 parameter order). A suffix parameter may declare a **closed-constant default**
-(`port: Int = 443` — a literal or other compile-time-constant expression); a call
+(`port: Int = 443` - a literal or other compile-time-constant expression); a call
 that omits it splices the default in. Defaults live at the declaration site: they
 do **not** attach to a function *value*, and labels and defaults are erased before
 either backend runs, so they cost nothing at runtime. Direct calls through a function
@@ -819,8 +819,8 @@ fn main(console: Console):
 ```
 
 **Where a mutation reaches.** A `var` is a *local* mutable binding, nothing more.
-witchy has value semantics: every boundary that carries a value out of a scope —
-a default call argument, a closure capture, a task message — carries a **copy**,
+witchy has value semantics: every boundary that carries a value out of a scope -
+a default call argument, a closure capture, a task message - carries a **copy**,
 so a mutation is never observed through that copy and there is no shared mutable
 state to reason about. The one mechanism that writes back to a caller is a `var`
 *parameter* (above), and even that is a single handed-over variable with no
@@ -841,7 +841,7 @@ aliasing. Concretely:
 
 **Ownership/immutability qualifiers** (`frozen`, `unique`, `local unique`, and
 borrowed `View`) are
-compile-time *contracts* on a type — distinct from the calling conventions above,
+compile-time *contracts* on a type - distinct from the calling conventions above,
 they live on the type and propagate through it. They have no runtime
 representation (both backends lower `frozen T`/`unique T` to `T`), so they never
 change observable behavior; they only let the checker enforce, and a library
@@ -849,9 +849,9 @@ change observable behavior; they only let the checker enforce, and a library
 
 | qualifier | meaning |
 |---|---|
-| `frozen T` | deeply immutable — sharing is safe; declaring it mutable (`var`/`own`) is a check-time error |
-| `unique T` | the sole reference — may be mutated in place and returned as `unique` |
-| `local unique T` | unique within this call only — may be mutated but **may not escape** (returning it is a check-time error) |
+| `frozen T` | deeply immutable - sharing is safe; declaring it mutable (`var`/`own`) is a check-time error |
+| `unique T` | the sole reference - may be mutated in place and returned as `unique` |
+| `local unique T` | unique within this call only - may be mutated but **may not escape** (returning it is a check-time error) |
 | `View(T, 'a)` | a read-only view whose lifetime is tied to an input `let('a) T`; available in `mode opt` |
 
 ```witchy
@@ -983,8 +983,8 @@ Generic functions are checked once and monomorphized per concrete use for the
 compiled backends (both `where`-bounded and unbounded generics). `Self` in an
 impl refers to the implementing type. Trait method calls inside a
 `where a: Trait` function resolve on any expression whose type the checker
-knows — parameters, loop variables, constructor-pattern bindings, destructured
-tuple slots, and the results of calls — so an intermediate expression rarely
+knows - parameters, loop variables, constructor-pattern bindings, destructured
+tuple slots, and the results of calls - so an intermediate expression rarely
 needs a `let` binding to dispatch.
 
 You can define traits and impls too:
@@ -1011,7 +1011,7 @@ bounded collection algorithms live in `list` (`list.contains`, `list.index_of`,
 `list.sort`, ...). The prelude `Show` protocol renders.
 
 **`impl Trait` arguments.** When a parameter is generic only so it can carry a
-trait bound, `impl Trait` says so directly — `x: impl Loud` is sugar for a fresh
+trait bound, `impl Trait` says so directly - `x: impl Loud` is sugar for a fresh
 type variable plus a `where` bound:
 
 ```witchy
@@ -1035,11 +1035,11 @@ fn main(console: Console):
 Each `impl Trait` parameter introduces its own type variable, so two of them are
 two independent types. It is argument-position only (not a return type), and it
 composes with an explicit `where` clause. The std library uses it for
-`show.say(console, x: impl Show)` — a `Show`-accepting `print`. The `show`
+`show.say(console, x: impl Show)` - a `Show`-accepting `print`. The `show`
 module is preluded; `from show import say` is needed only when you want the bare
 `say(...)` spelling.
 
-### Existential trait types — `dyn Trait` ([RFC-0081](../rfcs/0081-existential-trait-values.md))
+### Existential trait types - `dyn Trait` ([RFC-0081](../rfcs/0081-existential-trait-values.md))
 
 `dyn Render` / `dyn Convert(Int)` is an existential trait type: a value whose
 concrete type is hidden behind a trait's callable surface. It is an owned value:
@@ -1051,7 +1051,7 @@ dispatch, write-back, failures, and supertrait upcasts.
 - `dyn` is contextual and only in type position: it must be followed by an
   uppercase trait name or a lowercase module plus uppercase trait name, so a
   bare `dyn` remains an ordinary type variable. Both `dyn Render` and
-  `dyn render.Render` parse in every type position — parameters, returns,
+  `dyn render.Render` parse in every type position - parameters, returns,
   aliases, generic arguments, tuples, function types, `let` annotations, and
   the explicit `value as dyn Trait` cast. A concrete value erases implicitly
   only where an expected type is already existential: annotations, arguments,
@@ -1138,8 +1138,8 @@ it like handwritten code. The supported derives are `Show`, `PartialEq`, `Eq`,
 containers already are); it is what lets
 `json.stringify` / `json.from_value` encode the type with no per-type code.
 `Deserialize` generates `from_json(j) -> Result(Self, String)` for scalars,
-lists, options, and nested records, and — because the generated body names them
-like handwritten code — needs `import json`. `Result`/`Ok`/`Err` and
+lists, options, and nested records, and - because the generated body names them
+like handwritten code - needs `import json`. `Result`/`Ok`/`Err` and
 `Option`/`Some`/`None` are prelude names, so generated deserialize code can use
 them without redundant imports. There is no `Serialize` derive,
 because reflection already encodes any value (`json.from_value`, `json.stringify`,
@@ -1232,7 +1232,7 @@ which the `where` bound resolves when the call is monomorphized. `std/json` adds
 with `x.into()` or `Json.from(x)`, and `server.send(code, value)` encodes a response
 of any reflectable type.
 
-### `comptime:` — compile-time item generation
+### `comptime:` - compile-time item generation
 
 A top-level `comptime:` block runs **at compile time** with no capabilities
 reachable (there is no parameter list to receive one), making it
@@ -1357,7 +1357,7 @@ fn main(console: Console):
     console.print("${lucky_0()} ${lucky_1()} ${lucky_2()}")
 ```
 
-### Tagged literals — compile-time `tag"…"`
+### Tagged literals - compile-time `tag"…"`
 
 A string literal written **immediately after an identifier**, `tag"a${x}b"`, is a
 *tagged literal*. It is expanded **at compile time**, like `comptime:`, but in
@@ -1378,7 +1378,7 @@ comptime fn tag(parts: List(String), holes: List(String), origin: String) -> met
 The metadata is not a stable semantic identity. A tag derives stable IDs from
 its normalized static parts and slot structure, keeping source location separate.
 
-with `parts` = the static fragments and `holes` = an **opaque marker** per hole —
+with `parts` = the static fragments and `holes` = an **opaque marker** per hole -
 a token the tag *places* where that hole's value belongs (the tag does not read
 the hole's source). A tag returns `meta.ExprSyntax`; String-returning tags are
 rejected. A compiler-owned expression transfers its AST through the expansion
@@ -1395,7 +1395,7 @@ including private function helpers and directly imported public declarations; an
 invocation-site declaration with the same spelling cannot capture them.
 Definition-site identity does not bypass sealed-type construction rules. The
 compiler then **substitutes** the real hole
-expression — parsed once at the call site, carrying its source position — at each
+expression - parsed once at the call site, carrying its source position - at each
 marker and splices the result over the literal before type checking. So both
 backends compile the same AST, the tag runs once in the compiler, and a hole's
 marker may be placed zero, once, or many times. The tag is local or imported;
@@ -1498,7 +1498,7 @@ fn main(console: Console):
 Unexpected failure is **loud on every backend**: out-of-bounds indexing,
 division by zero, unparseable `string.to_int`, NaN ordering, and the `fail(msg)`
 primitive all abort (a runtime error interpreted, a trap compiled). The parity
-invariant covers these too — a program that errors on one backend errors on
+invariant covers these too - a program that errors on one backend errors on
 both. An abort is terminal for that VM instance: it cannot be resumed after a
 partially unwound call. Structured `return` and `?` paths are not aborts and run
 their ordinary ownership cleanup.
@@ -1506,7 +1506,7 @@ their ordinary ownership cleanup.
 **Unwrapping with `??`.** For a quick value-or-default, `Option(T) ?? T` unwraps
 to a bare `T` (§4): `Some(x) ?? d` is `x`, `None ?? d` is `d` (with `d` evaluated
 only when absent). `Result(T, e) ?? T` unwraps `Ok` likewise, discarding the
-error. It is `unwrap_or` with operator syntax — handy on the `Option`-returning
+error. It is `unwrap_or` with operator syntax - handy on the `Option`-returning
 lookups (`d.get(key)`, `list.head`, …).
 
 ```witchy
@@ -1572,26 +1572,26 @@ fn main(console: Console):
     console.print(shouted.join("-")) // A-B-C
 ```
 
-The core data modules — `list`, `string`, `dict`, `math`, `option`, `result`,
-`policy`, and `show` — are **the prelude**: always available, no import line needed
+The core data modules - `list`, `string`, `dict`, `math`, `option`, `result`,
+`policy`, and `show` - are **the prelude**: always available, no import line needed
 (`xs.push(1)` and `dict.new()` work anywhere). Pure data operations belong to
-their data type or its module — never bare globals; capability operations are
+their data type or its module - never bare globals; capability operations are
 **methods on the capability that carries the
-authority** (`console.print(msg)`, `dir.read(path)`, `clock.now()`) — the
+authority** (`console.print(msg)`, `dir.read(path)`, `clock.now()`) - the
 authority is loud because it names the capability, and `fail` is the one bare
 global. (Rendering needs no function at all: `${...}` interpolation is the
 rendering.) For other modules,
 `import name` brings the module in under its name. A standard data type's own
-operations are **methods** (`xs.map(f)`, see §4) — the primary form for the data
+operations are **methods** (`xs.map(f)`, see §4) - the primary form for the data
 libraries. Every public inherent method also has an equivalent module-qualified
 alias (`list.map(xs, f)`), so the qualified spelling always works too; the
-remaining module-level functions — constructors such as `iter.range` and
+remaining module-level functions - constructors such as `iter.range` and
 `dict.from_pairs`, and helpers whose argument is not the module's own type, such
-as `json.stringify(x)` — are called module-qualified. A module's `pub`
+as `json.stringify(x)` - are called module-qualified. A module's `pub`
 **types and their constructors** are module-scoped
 the same way: after `import json` you name them qualified (`json.Json`,
 `json.JsonInt(1)`, `json.JsonObject([...])`). To use a type and its constructors
-*unqualified*, name it explicitly with `from json import Json` — a from-imported
+*unqualified*, name it explicitly with `from json import Json` - a from-imported
 type brings its variant constructors into scope bare, so `JsonInt(1)` and
 `JsonObject([...])` then work directly. (In a `match` whose scrutinee type is
 known, bare variant names always resolve against that type, so match arms need
@@ -1601,7 +1601,7 @@ reserved and always resolve to their canonical compiler-shipped source; a local
 module must use another name. Other imports resolve a sibling `name.witchy`
 file or a package dependency. `pub` items are importable; everything else is
 module-private. Package dependencies ("runes")
-come from the manifest — see [package-manager.md](../rfcs/package-manager.md).
+come from the manifest - see [package-manager.md](../rfcs/package-manager.md).
 
 ## 13. Entry point
 
@@ -1616,18 +1616,18 @@ fn main(console: Console, dir: Dir[Read], args: List(String)) -> Int:
 ```
 
 The host mints exactly these capabilities and nothing else. (This block
-type-checks but isn't run by the doc harness, since it needs `Dir` — run it
+type-checks but isn't run by the doc harness, since it needs `Dir` - run it
 with `witchy sandbox --dir <root> prog.witchy a b c`.)
 
-`main` may ask for any of the host capabilities — `Console`, `Clock`, `Env`,
-`Console[...]`, `Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore` — and the launch grant
+`main` may ask for any of the host capabilities - `Console`, `Clock`, `Env`,
+`Console[...]`, `Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore` - and the launch grant
 backs each: `--dir <root>` a `Dir`, `--file <path>` a `File` (the i-th `File`
 parameter ← the i-th `--file`), `--net <host:port>` a `Net` allowlist entry,
 `--secret`/`--signing-key` a `SecretStore`; grant-document `[env]` and `[exec]`
 entries carry the corresponding name allowlists. A `File[Read]` lets a single-file
 program ask for exactly one file instead of a whole `Dir`. A **grant document**
 (`--grants app.grants.toml`) enumerates the whole grant as reviewable TOML and is
-cross-checked against the computed footprint — see
+cross-checked against the computed footprint - see
 [capabilities.md](capabilities.md) and
 [0013-capability-grant-documents.md](../rfcs/0013-capability-grant-documents.md).
 
@@ -1662,7 +1662,7 @@ of [capabilities.md](capabilities.md) and
 
 A rune may ship a **build step**: a top-level `fn build` whose first parameter is
 a build capability. It is the root of *build-time* authority, exactly as `main`
-is the root of runtime authority — and the two capability sets never mix: `build`
+is the root of runtime authority - and the two capability sets never mix: `build`
 may take **only** build capabilities, and `main` may take none of them.
 
 ```witchy
@@ -1673,13 +1673,13 @@ fn build(out: BuildOut, schema: BuildRead, cc: BuildExec):
 
 | Capability | Grants | Operations |
 |---|---|---|
-| `BuildOut` | write generated source into this rune's confined output sandbox (needs no naming once the consumer accepts the build step — execution itself is default-deny) | `out.write_out(name, contents)` |
+| `BuildOut` | write generated source into this rune's confined output sandbox (needs no naming once the consumer accepts the build step - execution itself is default-deny) | `out.write_out(name, contents)` |
 | `BuildRead` | read project files, confined to a granted subtree | `r.read_build(name) -> String` |
-| `BuildEnv` | read env vars — only keys *named* in the grant, never the whole environment | `e.get_build_env(key) -> Option(String)` |
+| `BuildEnv` | read env vars - only keys *named* in the grant, never the whole environment | `e.get_build_env(key) -> Option(String)` |
 | `BuildNet` | HTTP-fetch from hosts on an allow-list (`host:port`, exact) | `n.fetch_build(host, path) -> String` |
 | `BuildExec` | invoke a *named* external tool on an allow-list | `x.run_tool(tool, stdin) -> String` |
 
-The types are kind-only — the specific directory/key/host/tool is the consuming
+The types are kind-only - the specific directory/key/host/tool is the consuming
 project's *grant*, not the type. `witchy caps` reports the build footprint on its
 own axis, `witchy caps-diff` fails on a build-axis widening, and
 `witchy build-step <file> [--out <dir>] [--read <dir>] [--env K]... [--exec tool]...`
@@ -1691,7 +1691,7 @@ runs a build step under those confined grants. See
 
 A library declares its own capability by **refining** the host's, with
 `capability X from U`. `X` is a *sealed brand*: a single-variant wrapper over the
-underlying capability `U` (or several — `from (A, B)`), with one rule — `X` may be
+underlying capability `U` (or several - `from (A, B)`), with one rule - `X` may be
 **constructed or destructured only inside the module that declares it**. Any other
 module may hold, pass, and return a value of `X`, but cannot mint or unwrap one, so
 `X` is un-forgeable exactly like a host capability.
@@ -1710,14 +1710,14 @@ pub fn ping(r: Redis) -> Int:
 
 - **Minting consumes authority.** A `Redis` can only be made by handing a real
   `Net` to `open`; a library can never conjure authority from nothing.
-- **Attenuation is by facet** — declare a narrower capability refining the first
+- **Attenuation is by facet** - declare a narrower capability refining the first
   (`capability ReadOnly from Postgres`) that exposes fewer operations; ordinary
   type-checking enforces it.
 - **The footprint sees through.** `witchy caps` reports a user capability as the
-  host authority it refines — `ping` audits as `Net[Connect, Tcp] (refined: Redis)`
-  — so a library cannot launder `Net` behind a friendly name.
+  host authority it refines - `ping` audits as `Net[Connect, Tcp] (refined: Redis)` -
+  so a library cannot launder `Net` behind a friendly name.
 
-A second form lets a capability **carry state beside** the authority it wraps — a
+A second form lets a capability **carry state beside** the authority it wraps - a
 sealed *record* mixing one or more host capabilities with ordinary policy data:
 
 ```witchy
@@ -1734,7 +1734,7 @@ pub fn scope(p: Postgres) -> String:
         Postgres(_, table) -> table
 ```
 
-The fields are private — reached with `match`, never `.field` — so the underlying
+The fields are private - reached with `match`, never `.field` - so the underlying
 `Net` can never leak past the policy. `witchy caps` sums the record's
 capability-typed fields, so `Postgres` audits as exactly `Net`: carried policy with
 nothing hidden (the hard, runtime-enforced `Net` plus a soft, library-enforced
@@ -1747,8 +1747,8 @@ Rights (§13.1) narrow which *verbs* a `Net` permits; to narrow which *hosts* it
 dial, confine its **address-set** with typed policy values built on the capability
 itself (`Net.tcp(…)`).
 `net.only(policy)` intersects the carried set with `policy` (an endpoint survives
-only if already admitted); `net.deny(policy)` subtracts a slice. Both are monotone —
-refinement only ever shrinks — and host-enforced **at the syscall** on both
+only if already admitted); `net.deny(policy)` subtracts a slice. Both are monotone -
+refinement only ever shrinks - and host-enforced **at the syscall** on both
 backends, the address analog of `dir.subtree` for `Dir`.
 
 ```witchy
@@ -1759,7 +1759,7 @@ fn main(console: Console, net: Net):
 ```
 
 The policy constructors are `Net.tcp(host, port)`, `Net.any_port(host)`,
-`Net.cidr(block, port)`, `Net.cidr_any(block)`, `Net.union(a, b)`, and `Net.private()` — the
+`Net.cidr(block, port)`, `Net.cidr_any(block)`, `Net.union(a, b)`, and `Net.private()` - the
 internal IP ranges (loopback, RFC-1918, link-local incl. the `169.254.169.254`
 metadata IP, CGNAT) for the one-line SSRF/rebinding guard
 `net.deny(Net.private())`. A CIDR/IP policy is
@@ -1772,7 +1772,7 @@ policy scheme but a connect-time `tls:` prefix on the address you dial
 A `Dir` likewise carries an **entry policy** narrowing which entries it may touch:
 `dir.only(Dir.ext(".txt"))` confines it so `read`/`write`/`open` admit only
 matching files (a non-matching name is refused at the access check; a subtree
-inherits the policy) — the filesystem analog of `net.only`. See
+inherits the policy) - the filesystem analog of `net.only`. See
 [0011-capability-refinement.md](../rfcs/0011-capability-refinement.md).
 
 ## 14. Concurrency: async, spawn, and channels
@@ -1780,10 +1780,10 @@ inherits the policy) — the filesystem analog of `net.only`. See
 Concurrency is **cooperative async tasks** that communicate over **channels**. A
 function marked `async` may `await`; calling it yields a task that does nothing
 until driven. `chan.spawn` starts a task concurrently, and a `chan.channel` is a
-first-class value you create and pass to whichever tasks share it — spawning and
+first-class value you create and pass to whichever tasks share it - spawning and
 channels are *independent* (no task has an implicit mailbox). Tasks share no
 memory, so there are no locks or data races, and the round-robin schedule is
-deterministic — identical output on the interpreter and the compiled WebAssembly.
+deterministic - identical output on the interpreter and the compiled WebAssembly.
 
 ```witchy
 from chan import Sender
@@ -1798,7 +1798,7 @@ async fn main(console: Console):
     chan.consume(rx, fn(n): chan.done(console.print("got ${n}"))).await
 ```
 
-`chan.channel(cap)` is a bounded channel — the sender blocks when it is full
+`chan.channel(cap)` is a bounded channel - the sender blocks when it is full
 while the executor can make progress; pass `0`, or use `chan.unbounded()`, for no
 backpressure. If every live task parks with no progress, the executor runs its
 quiescence close pass: parked receives/selects resume as `None`, parked sends are
@@ -1806,7 +1806,7 @@ released, and parked joins resume. That is the close condition
 `chan.recv(rx).await` and `chan.consume` observe; witchy does not refcount sender
 values, so "closed" does not mean no `Sender` value can ever be used again. A
 channel can be shared by many receivers (a worker pool) or many senders. Each
-channel is typed independently — a program may use channels of many different
+channel is typed independently - a program may use channels of many different
 message types (the executor carries messages erased and each endpoint recovers
 its own type). A spawned task returns `Nil`, reporting results over a channel.
 See the book's *Concurrency* chapter and `std/chan` for the full model.
@@ -1841,7 +1841,7 @@ compiled backends, verified by differential tests:
 - Equality goes through `PartialEq` at every depth: the derived/default impl is
   deep structural equality (`Dict` insertion-order-sensitive), and a custom impl
   is honored inside containers too. `==`/`!=` on function or capability types is a
-  compile-time error (no meaningful, stable equality — this replaces a former
+  compile-time error (no meaningful, stable equality - this replaces a former
   backend divergence). `Dict` keys and `Set` members require `Eq`, so a `Float`
   key/member is a compile-time error (closing the NaN-key hole).
 - String operations are byte-precise across backends; `trim`/case-mapping are

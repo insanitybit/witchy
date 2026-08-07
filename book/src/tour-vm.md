@@ -37,7 +37,7 @@ produce the same ordered result.
 Two rules select the parallel fast path. Anything else runs the ordinary sequential
 body with the same ordered-map semantics:
 
-- The element type must be **flat** — a scalar (`Int`/`Bool`/`Float`), a `String`, or
+- The element type must be **flat** - a scalar (`Int`/`Bool`/`Float`), a `String`, or
   `Bytes`. A flat value (`[length][bytes…]`, no internal pointers) copies to a worker
   by a plain byte copy. A pointer-bearing value like `List(String)` would carry
   addresses meaningless in another VM's memory, so it stays sequential.
@@ -71,7 +71,7 @@ worker-VM wire format; once a value leaves its VM, `Bytes` is the dependable bou
 ## `vm.with_dir`: a worker with exactly the authority you pass
 
 `vm.with_dir(dir, f, input)` runs `f` in an isolated worker VM granted **exactly** the
-one directory capability `dir` — and nothing else. The worker can read and write within
+one directory capability `dir` - and nothing else. The worker can read and write within
 `dir` (with `dir`'s own rights) and reach no other host resource. An attempt to use
 ungranted authority traps. This is the sandbox for running partially-trusted code
 with precisely scoped authority.
@@ -87,7 +87,7 @@ fn main(dir: Dir):
 ```
 
 Because the output is a deterministic function of the directory's contents and the
-input, the isolation is a security property invisible to the *result* — so the two
+input, the isolation is a security property invisible to the *result* - so the two
 backends still agree.
 
 The callback must be a bare top-level function name. A closure or local function
@@ -97,7 +97,7 @@ parent-VM call for its promised isolation boundary.
 ## `vm.serve`: a cross-VM channel as a stateful service
 
 The last shape is a worker that stays alive and processes a *stream* of messages while
-keeping state — a service, an actor. `vm.serve(init, requests, handler)` runs that
+keeping state - a service, an actor. `vm.serve(init, requests, handler)` runs that
 service on one long-lived isolated worker VM: it processes `requests` in order,
 threading an accumulator through `handler(state, request) -> new_state`, and emits each
 new state as that request's response.
@@ -132,7 +132,7 @@ the result identical across both backends.
 The same prefork model provides a parallel web server.
 `server.serve(net, addr, app)` spawns one worker VM per core, each re-running your
 program to build the same routes with the same capabilities, all accepting from one
-shared listener — the kernel load-balances connections across them.
+shared listener - the kernel load-balances connections across them.
 
 ```sh
 import server

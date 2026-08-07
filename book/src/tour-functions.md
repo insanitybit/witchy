@@ -16,7 +16,7 @@ fn main(console: Console):
 5
 ```
 
-The body is a block; its value is the last expression — no `return` needed for
+The body is a block; its value is the last expression - no `return` needed for
 the common case (though `return` exists for early exits). Parameters *must* be
 annotated; locals are inferred. A `pub fn` is exported from its module;
 everything else is module-private.
@@ -104,19 +104,19 @@ fn main(console: Console):
 ```
 
 Method-call syntax, `value.method(args)`, is the way to call the
-standard data libraries — `xs.map(f)`, `d.insert(k, v)`, `s.to_upper()` — and it
+standard data libraries - `xs.map(f)`, `d.insert(k, v)`, `s.to_upper()` - and it
 uses the same parameter conventions as free calls. A `var` receiver such as
 `insert` requires a mutable place and writes back; pure transformations such as
 `map` may chain. Build a dictionary value with `dict.from_pairs([("a", 1),
 ("b", 2)])`, since a temporary receiver has no write-back place. Every public
-method on a standard data type also has a module-qualified alias —
-`list.map(xs, f)` is the same call as `xs.map(f)` — so the qualified spelling
+method on a standard data type also has a module-qualified alias -
+`list.map(xs, f)` is the same call as `xs.map(f)` - so the qualified spelling
 still works everywhere; the method form is the documented idiom. Module
 qualification is the primary form only for operations without a receiver of the
 module's type: constructors (`dict.from_pairs`, `iter.range`) and helpers that
-live in a module other than the receiver's type —
+live in a module other than the receiver's type -
 `json.stringify(x)`, `math.to_float(n)`. The same dot syntax also calls
-**methods** you declare in an `impl` block with a `self` parameter — which we'll
+**methods** you declare in an `impl` block with a `self` parameter - which we'll
 meet properly in the types chapter; the shape looks like this:
 
 ```witchy
@@ -140,7 +140,7 @@ fn main(console: Console):
 ```
 
 A method without `self` is a *static*, called on the type itself:
-`Score.zero()` — handy for constructors with defaults.
+`Score.zero()` - handy for constructors with defaults.
 
 ## Labels and defaults
 
@@ -165,7 +165,7 @@ yo, cy
 ```
 
 Two rules keep this predictable. **Arguments always evaluate in source order**,
-left to right, even when labels reorder them relative to the parameter list —
+left to right, even when labels reorder them relative to the parameter list -
 so a call reads the way it runs. And labels/defaults are a feature of *direct*
 free and module calls only: **method calls (`x.f(...)`) and calls through a
 function value are positional in v1**. When in doubt, positional always works;
@@ -215,7 +215,7 @@ between two things.
 
 ## Loops
 
-`for ... in` walks a list, a range (`lo..hi`, half-open), or a dict — iterating a
+`for ... in` walks a list, a range (`lo..hi`, half-open), or a dict - iterating a
 dict directly binds each key/value pair (`for (k, v) in d:`), or use
 `dict.keys(d)` / `dict.values(d)` / `dict.pairs(d)` for an explicit view.
 `while` loops on a condition. `break` and `continue` work as you'd expect.
@@ -243,11 +243,11 @@ fn main(console: Console):
 ```
 
 `var` is the opt-in for mutation; `let` bindings are immutable, and assigning to
-one is a compile error. Ranges are never materialized into a list — `for n in
+one is a compile error. Ranges are never materialized into a list - `for n in
 0..1000000` allocates nothing.
 
 `while let PATTERN = expr:` loops as long as the value keeps matching, binding
-the pattern each turn and stopping the first time it doesn't — the loop form of
+the pattern each turn and stopping the first time it doesn't - the loop form of
 `if let`. It's the natural way to drain something that hands back an `Option`:
 
 ```witchy
@@ -264,7 +264,7 @@ fn main(console: Console):
 1
 ```
 
-A `var` collection updates in place by subscript or field — `xs[i] = v`,
+A `var` collection updates in place by subscript or field - `xs[i] = v`,
 `d[k] = v`, `acct.balance = b` (and compound forms like `xs[i] += v` / `d[k] += v`). It's shorthand for
 the value update (`xs.set_at(i, v)`), so witchy's value semantics hold while
 it reads like mutation, and the optimizer keeps it in place:
@@ -305,7 +305,7 @@ fn main(console: Console):
 ```
 
 "By value" means a closure can't reach back and mutate a variable from the
-enclosing scope — that's a compile error, not a silent surprise. If you need to
+enclosing scope - that's a compile error, not a silent surprise. If you need to
 produce a changed value, return it; if you need to mutate a caller's variable,
 the next section's `var` is the tool.
 
@@ -337,11 +337,11 @@ of the function's ordinary result.
 ## Ownership: borrow and transfer
 
 Every parameter has an *ownership convention* that says what the function may do
-with its argument. The default — no keyword — is an **owned, immutable value**:
+with its argument. The default - no keyword - is an **owned, immutable value**:
 the function reads it but the caller sees no change. Annotate it `let` to make it
 an explicit **borrow**: same read-only meaning, but the compiler guarantees it
-doesn't escape the call — returning a `let`-borrowed parameter is a type
-error — which is what lets backends share it without a defensive copy.
+doesn't escape the call - returning a `let`-borrowed parameter is a type
+error - which is what lets backends share it without a defensive copy.
 
 ```witchy
 fn sum(let xs: List(Int), i: Int) -> Int:
@@ -361,7 +361,7 @@ fn main(console: Console):
 4
 ```
 
-To *take* a value — so the caller can no longer use it — mark the parameter `own`.
+To *take* a value - so the caller can no longer use it - mark the parameter `own`.
 Spell the hand-off `move` at the call site; afterwards,
 touching the original is a compile error, not a dangling reference:
 
@@ -381,11 +381,11 @@ fn main(console: Console):
 ```
 
 `move` is the caller's half of the transfer, and it stands on its own: it ends the
-binding *here* — a later use of `name` is a compile error — whether or not the
+binding *here* - a later use of `name` is a compile error - whether or not the
 callee asked for `own`. (Move it into a plain owned parameter and the binding is
 still consumed; the callee just got a copy.) Pairing `move` with an `own`
 parameter is the idiom, and on the compiled backend that pair is a guaranteed
-copy-free hand-off. You don't write `move` for a `var` parameter, though — there
+copy-free hand-off. You don't write `move` for a `var` parameter, though - there
 you hand the variable over directly and it's written back.
 
 The four conventions are visible in the signature: owned and observably
@@ -413,5 +413,5 @@ recursive-kernel contract, and the operations that use `unique` are covered in
 
 These conventions are also witchy's **performance knobs** (what may alias
 determines what the compiler may mutate in place): see
-[Appendix: Performance — the Ownership Knobs](appendix-performance.md) for
+[Appendix: Performance - the Ownership Knobs](appendix-performance.md) for
 what each one means to the optimizer and when to reach for it.

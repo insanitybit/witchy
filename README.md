@@ -1,7 +1,7 @@
 # witchy
 
 Witchy is an experimental capability-secure language. A function can only touch
-the outside world through capability values it is explicitly handed — so what a
+the outside world through capability values it is explicitly handed - so what a
 program *can do* is visible in its types, inspectable from its artifacts, and
 enforceable at the host boundary.
 
@@ -15,7 +15,7 @@ fn main(console: Console, dir: Dir):
     console.print(load(dir, "notes.txt"))
 ```
 
-A web API where handlers are pure by construction — `serve` holds the `Net`,
+A web API where handlers are pure by construction - `serve` holds the `Net`,
 and a handler that captures no capabilities structurally cannot log, fetch a
 URL, or read a file, even if a dependency wrote it:
 
@@ -109,7 +109,7 @@ states the exact model and its limits.
 ## Status
 
 Pre-1.0 and compatibility-unstable; anything may break without a deprecation
-period. The dependable path is deliberately small — language fundamentals,
+period. The dependable path is deliberately small - language fundamentals,
 capability inspection, check/format/test, interpreter-versus-WASM parity,
 portable WASM sandboxing, and self-contained
 [`trusted-exe`](rfcs/0092-trusted-application-executables.md) builds. Everything
@@ -119,19 +119,19 @@ playground, editor tooling) is experimental dogfood.
 
 Witchy is developed extensively with AI assistance; human judgment owns the
 language, capability-model, and product decisions. Supported behavior is
-determined by executable evidence — the parity, sandbox, and artifact test
-suites — not by who or what wrote the code. Contributions should disclose
+determined by executable evidence - the parity, sandbox, and artifact test
+suites - not by who or what wrote the code. Contributions should disclose
 material AI use.
 
 ## Learn more
 
-- **[The witchy Book](book/src/SUMMARY.md)** — the guided introduction; start here.
-- **[Language reference](spec/language.md)** — full syntax and semantics.
-- **[Capabilities guide](spec/capabilities.md)** — the security model.
-- **[Standard library](spec/stdlib.md)** — the bundled modules.
-- **[Examples](examples/README.md)** — runnable programs for every concept,
+- **[The witchy Book](book/src/SUMMARY.md)** - the guided introduction; start here.
+- **[Language reference](spec/language.md)** - full syntax and semantics.
+- **[Capabilities guide](spec/capabilities.md)** - the security model.
+- **[Standard library](spec/stdlib.md)** - the bundled modules.
+- **[Examples](examples/README.md)** - runnable programs for every concept,
   including the [web API](examples/serve_api/src/serve_api.witchy) above.
-- **[Architecture](spec/architecture.md)** — the twin backends and the parity
+- **[Architecture](spec/architecture.md)** - the twin backends and the parity
   discipline that keeps them honest.
 
 Every ` ```witchy ` block in the book, spec, and this README is a complete

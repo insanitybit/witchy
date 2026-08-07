@@ -1,4 +1,4 @@
-# Appendix: Performance — the Ownership Knobs
+# Appendix: Performance - the Ownership Knobs
 
 The parameter conventions from [the functions chapter](tour-functions.md)
 preserve value semantics and give the compiler facts it can use without a
@@ -14,24 +14,24 @@ can be looking.
 | You write | What it means | What the optimizer gets |
 |---|---|---|
 | `fn f(xs: List(Int))` *(default)* | an owned, observably immutable value | the callee's copy is independent; safe everywhere |
-| `fn f(let xs: List(Int))` | an immutable **borrow** — the type checker rejects returning it, so it cannot outlive the call | the value provably has no new owner after the call; backends share it without a defensive copy |
+| `fn f(let xs: List(Int))` | an immutable **borrow** - the type checker rejects returning it, so it cannot outlive the call | the value provably has no new owner after the call; backends share it without a defensive copy |
 | `fn f(own xs: List(Int))` | ownership transfer; use-after-move is a compile error | the callee may consume the value in place |
 | `fn f(var n: Int)` | the callee mutates and the caller's `var` is written back | mutate-in-place with write-back; no copy-out |
 
 ## The optimizations you get without asking
 
 Most of the compiled tier's speed comes from machinery that needs **no
-annotations** — it triggers on shapes the compiler can prove unaliased:
+annotations** - it triggers on shapes the compiler can prove unaliased:
 
-- **Linear update, analysis-driven.** A uniform `var` accumulation —
+- **Linear update, analysis-driven.** A uniform `var` accumulation -
   `xs.push(e)`, `s = s + piece`, `d.insert(k, v)`,
-  `d.update(k, dflt, f)` — may mutate the collection in place with
+  `d.update(k, dflt, f)` - may mutate the collection in place with
   capacity doubling. The *uniqueness pass* decides when that is sound: an
   alias zeroes the ownership token exactly where it is created (one copy
   re-owns; it does not disqualify the whole function), a **read-only helper
   call in the loop doesn't break the chain** (function summaries prove its
   parameter never escapes), and a `let`-annotated parameter is certified by
-  the type checker. Value semantics never bend — an aliased buffer is
+  the type checker. Value semantics never bend - an aliased buffer is
   copied, and `witchy check` tells you where and why ("`ys` is rebuilt by
   copy on every iteration…"). Both backends apply this.
 - **`own`/`move` pipelines.** A function with one `own` collection parameter
@@ -57,7 +57,7 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
   grows *that* buffer in place; and an `own` record parameter threaded through a
   function (`s = bump(move s)`) keeps the record uniquely owned across the call.
   So a wrapper type carries the same zero-copy behavior as the collection it
-  wraps — a `Stack`'s push is as cheap as a raw `list.push`, with no annotation
+  wraps - a `Stack`'s push is as cheap as a raw `list.push`, with no annotation
   beyond `own` on a threaded parameter. (The same uniqueness pass drives it; an
   aliased field, like an aliased variable, falls back to a copy.)
 - **Functional-in-place state kernels.** In `mode opt`, direct self recursion
@@ -86,11 +86,11 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
   `has`, `get_or`, and upserts are O(1) while iteration order stays
   insertion order.
 - **Loop watermark resets.** A loop body whose allocations provably don't
-  escape the iteration rewinds the arena every pass — a million-iteration
+  escape the iteration rewinds the arena every pass - a million-iteration
   formatting loop runs in constant memory.
 
 The honest summary of where the knobs matter: `let`/`own`/`var` are
-*contracts* the optimizer consumes — `let` certifies a call as
+*contracts* the optimizer consumes - `let` certifies a call as
 chain-preserving, `own`+`move` threads ownership through call boundaries,
 and everything unannotated is still analyzed (summaries are computed for
 every function). Write the default first; reach for annotations when they
@@ -100,7 +100,7 @@ say something true about ownership, and for `region:` when a profile (or a
 ## Regions: scoping your allocations
 
 `region:` is the allocation-lifetime knob. Everything allocated inside the
-block is reclaimed when it ends; the block's value is what survives — and
+block is reclaimed when it ends; the block's value is what survives - and
 only its region-born bytes are copied out (anything from outside the region
 is shared, verifiably: run with `WITCHY_REGION_STATS=1` and a parent-side
 passthrough reports zero bytes copied). Use it around parse-then-summarize
@@ -130,7 +130,7 @@ explicit form for everything else.
 
 By default a `List(Point)` is an array of pointers to separately-boxed records.
 For a fixed-scalar record scanned in a tight loop, declaring the type `packed`
-stores the whole list as ONE flat inline buffer — `[count][x0, y0, x1, y1, …]` —
+stores the whole list as ONE flat inline buffer - `[count][x0, y0, x1, y1, …]` -
 so a pass touches contiguous memory instead of chasing a pointer per element:
 
 ```witchy
@@ -201,7 +201,7 @@ fn main(console: Console):
 
 While a view is live, its owner is *loaned*: you may not move, reassign, or
 mutate the owner, pass it to a `var`/`own` parameter, or let the view escape
-through a closure, task, or channel — the checker rejects each with a diagnostic
+through a closure, task, or channel - the checker rejects each with a diagnostic
 that names the owner, the borrowing call, and the fix. The loan ends at the
 view's last use (as above, `s` is free again on the next line) or when you
 materialize an owned copy with `view.owned()` (from `import borrow`).
@@ -225,7 +225,7 @@ fn main(console: Console):
 ```
 
 `.owned()` is a blanket-impl trait method (`std/borrow`), so it dispatches through
-the ordinary typed method path — on a view it copies out, and on a non-view value
+the ordinary typed method path - on a view it copies out, and on a non-view value
 it is a plain identity. Views are a `mode opt`-only tool: normal witchy keeps
 owned value semantics and never needs the syntax.
 

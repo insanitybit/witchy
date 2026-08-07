@@ -28,7 +28,7 @@ their call sites. Generic dispatch adds no runtime operation.
 
 ## Traits
 
-A type variable on its own can only be moved around — copied, put in a tuple,
+A type variable on its own can only be moved around - copied, put in a tuple,
 returned. To *do* something with it (compare it, show it, order it) the function
 needs to know the type supports that operation. Traits express the requirement.
 
@@ -128,7 +128,7 @@ error type.
 
 ## `impl Trait` and rendering with `Show`
 
-When a parameter is generic *only* to carry a bound, write `x: impl Trait` — it
+When a parameter is generic *only* to carry a bound, write `x: impl Trait` - it
 is exactly a fresh type variable plus a `where` bound, so it reuses everything
 above. The `Show` trait (`fn show(self) -> String`) is the idiomatic case:
 implement it to give a type a custom rendering, and take `impl Show` wherever you
@@ -171,7 +171,7 @@ Imports expose names; they do not change rendering behavior.
 
 ## Deriving the common traits
 
-For a record, the obvious comparison and `Show` impls are mechanical — so the
+For a record, the obvious comparison and `Show` impls are mechanical - so the
 compiler writes them for you. List each trait you want in `derive(...)`, the same
 way Rust does (`PartialEq, Eq, PartialOrd, Ord`):
 
@@ -206,19 +206,19 @@ Score(12, beta)
   **records only** (a single constructor with named fields); deriving them on an
   enum or multi-variant sum type is an error, so order an enum with a
   hand-written `impl Ord`. (`Show`/`PartialEq`/`Eq` derive for any type.) Note a
-  derived `Ord` requires every field's type to be `Ord` too — derive it on the
+  derived `Ord` requires every field's type to be `Ord` too - derive it on the
   field types as well.
 - `derive(Reflect)` (with `import reflect`) makes the record *reflectable*, so
   the reflection-based encoders serialize it with no per-type code:
   `json.stringify(score)` returns `{"points":12,"label":"beta"}` and
   `json.from_value(score)` the `Json` value. Scalars, lists, options, and nested
   `derive(Reflect)` records all map. (There is **no** `derive(Json)` /
-  `to_json`; serialization is reflective, only decoding is generated — next.)
+  `to_json`; serialization is reflective, only decoding is generated - next.)
   When you don't even want a named type, an [anonymous record](tour-data.md)
   (`.{field: expr}`) is reflectable too, so `json.stringify(.{ok: true})` works
   with no declaration at all. [Reflection](tour-reflection.md) covers the full
-  story — the `Mirror` type and writing your own reflective consumers.
-- `derive(Deserialize)` (just `import json` — `Result`, `Option`, and their
+  story - the `Mirror` type and writing your own reflective consumers.
+- `derive(Deserialize)` (just `import json` - `Result`, `Option`, and their
   constructors are prelude names, so no extra imports even when a field is
   `Option`) generates the inverse,
   `from_json(j) -> Result(Self, json.DeserializeError)`, so
@@ -226,7 +226,7 @@ Score(12, beta)
   shape as a matchable typed `Err`.
 
 Because an operator dispatches on its operands' type, a comparison works
-wherever the value comes from — including one you just bound in a `match` arm, an
+wherever the value comes from - including one you just bound in a `match` arm, an
 `if let`, or a tuple destructure:
 
 ```witchy
@@ -254,6 +254,6 @@ true
 ```
 
 Write an explicit `impl` only when you want behavior the mechanical version
-doesn't give you — a custom display format, a comparison that ignores a field.
+doesn't give you - a custom display format, a comparison that ignores a field.
 A derive and a hand-written impl of the same trait on the same type is an
 error, not an override.

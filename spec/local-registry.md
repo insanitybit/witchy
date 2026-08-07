@@ -1,7 +1,7 @@
 # Running the registry locally
 
-The whole package pipeline — registry server, trusted publishing, two-phase
-release, signature-verified consumption, capability auditing — runs on
+The whole package pipeline - registry server, trusted publishing, two-phase
+release, signature-verified consumption, capability auditing - runs on
 localhost with nothing but the `witchy` binary. One command tours all of it:
 
 ```sh
@@ -36,7 +36,7 @@ records. Point clients at it:
 export COVEN_URL=http://127.0.0.1:8470
 ```
 
-That's a usable registry already — publishes are signed by the registry key
+That's a usable registry already - publishes are signed by the registry key
 and clients verify on fetch. For the full **trusted publishing** flow (no
 long-lived credentials; publishers present short-lived identity tokens, the
 way GitHub Actions OIDC works), also generate a demo identity provider and
@@ -72,8 +72,8 @@ Three things happen, none of them on trust:
 
 - the registry **recomputes the rune's capability footprint from source**
   (declared metadata is ignored);
-- the first publish to a namespace **binds it to that repository + workflow**
-  — a valid token from any other repo is refused thereafter;
+- the first publish to a namespace **binds it to that repository + workflow** -
+  a valid token from any other repo is refused thereafter;
 - the version lands **STAGED**: visible, but not resolvable by anyone.
 
 ## 3. Promote (release)
@@ -109,7 +109,7 @@ witchy run
 ```
 
 The lockfile pins the content hash, the registry's signing key fingerprint,
-and the full trusted-publishing provenance chain — `witchy verify` re-checks
+and the full trusted-publishing provenance chain - `witchy verify` re-checks
 all of it offline, while `witchy verify --online` additionally refreshes TUF
 metadata to check freshness and rollback. `witchy vendor` materializes the
 sources if you want zero registry dependence at build time.
@@ -117,15 +117,15 @@ sources if you want zero registry dependence at build time.
 ## 5. Watch the gates work
 
 - Bump the version, mint a token claiming a **different repository**, and
-  `publish` — refused (namespace binding).
+  `publish` - refused (namespace binding).
 - Add a capability parameter (say `net: Net`) to a published function and
-  release the new version — `witchy update` / `witchy outdated` flag the
+  release the new version - `witchy update` / `witchy outdated` flag the
   **footprint widening** and block until you approve it explicitly.
-- Try `witchy add` against a STAGED version — refused until promoted.
+- Try `witchy add` against a STAGED version - refused until promoted.
 
 ## What this is and isn't
 
-This is the real lifecycle, end to end, on your machine — the same code paths
+This is the real lifecycle, end to end, on your machine - the same code paths
 the e2e suite drives. What separates it from a production deployment is
 operational, not functional: TLS termination in front of the server, a real
 OIDC issuer and live JWKS discovery (the demo issuer and pinned-key/JWKS inputs

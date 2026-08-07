@@ -27,7 +27,7 @@ fn main(console: Console, dir: Dir[Write]):
     console.print("${skipped}")
 ```
 
-You construct the values with `Some(dir)` and `None` like any other option — a
+You construct the values with `Some(dir)` and `None` like any other option - a
 The capability is an ordinary value passed as an argument.
 
 The important part: **the auditor sees through `Option`.** `witchy caps` reports
@@ -35,8 +35,8 @@ The important part: **the auditor sees through `Option`.** `witchy caps` reports
 ```text
 record  Dir[Write]
 ```
-
-— because the code *can* write (it matches `Some` and calls `write`). Wrapping a
+ -
+because the code *can* write (it matches `Some` and calls `write`). Wrapping a
 capability in `Option` does not hide it from the footprint; the analysis is
 static and conservative, counting what the code is able to do regardless of
 whether the value is `None` at runtime. Optionality changes the control flow, not
@@ -106,7 +106,7 @@ into an ordinary heap slot.
 
 One restriction: `main` itself may only take *bare* host capabilities (or
 `List(String)`), not `Option(Dir)` or a capability enum. The root grant is always
-concrete — the host either hands `main` a real `Dir` or that parameter doesn't
+concrete - the host either hands `main` a real `Dir` or that parameter doesn't
 exist. So optionality lives *inside* the program, not at the boundary.
 
 To make a capability genuinely conditional on, say, an environment variable,

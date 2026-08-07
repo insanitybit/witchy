@@ -2,7 +2,7 @@
 
 witchy has two numeric types and keeps them strictly apart: `Int` is a
 64-bit signed integer, `Float` is a 64-bit IEEE double. There is **no implicit
-coercion** between them — `1 + 2.0` is a type error, not a silent promotion. You
+coercion** between them - `1 + 2.0` is a type error, not a silent promotion. You
 convert deliberately with `math.to_float` and `math.to_int`. That strictness is
 what lets integer code stay exact and float code stay predictable.
 
@@ -38,7 +38,7 @@ clamp(120, 0, 100) = 100
 
 `isqrt` is the integer square root (floor), distinct from the float `sqrt`.
 `to_hex`, `to_binary`, and the general `to_base` render an `Int` as a string in
-another base — handy for hashing output and bit-twiddling. `pow` and `factorial`
+another base - handy for hashing output and bit-twiddling. `pow` and `factorial`
 work in exact integer arithmetic up to the 64-bit range.
 
 ## Floating-point math

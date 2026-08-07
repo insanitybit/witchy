@@ -53,7 +53,7 @@ counters remain identical. The four allocations are fixed program setup; none
 comes from recursive depth. Completing the deep run also demonstrates that the
 recursive edge became bounded-stack control flow.
 
-These are exact operation counts exported by the compiled Wasm module—not wall
+These are exact operation counts exported by the compiled Wasm module - not wall
 clock timings. Browser speed, JIT warmup, and machine load therefore cannot turn
 the proof green or red.
 

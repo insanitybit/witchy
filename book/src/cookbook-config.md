@@ -2,7 +2,7 @@
 
 witchy programs read configuration through the `toml` module. It offers two
 levels of access: a quick path-based lookup for one-off values, and a typed
-decode for validating a whole document. Both are pure string operations — no
+decode for validating a whole document. Both are pure string operations - no
 capability required to parse text you already hold.
 
 ## Quick lookups with `get`
@@ -38,8 +38,8 @@ The dotted path (`owner.name`) reaches into a `[owner]` table. `get_array` and
 
 ## Typed decoding for whole documents
 
-For real configuration loading — where a wrong type or missing field should be a
-clean error, not a silent default — decode the document once and pull typed
+For real configuration loading - where a wrong type or missing field should be a
+clean error, not a silent default - decode the document once and pull typed
 fields out of the resulting `Toml` tree. Every step returns a `Result`, so a
 malformed file surfaces as an `Err` you can report, and the `?` operator chains
 the whole thing.
@@ -70,6 +70,6 @@ message so a failure tells you *which* field was wrong. The higher-level
 `required_string`, `optional_string`, and `string_array_field` helpers combine a
 lookup and a type check into one call for the common cases.
 
-In a real program the TOML text arrives from a file — read through a `Dir`
-capability — but parsing it is capability-free, which keeps your config-loading
+In a real program the TOML text arrives from a file - read through a `Dir`
+capability - but parsing it is capability-free, which keeps your config-loading
 logic easy to unit-test with an inline string exactly like the examples above.
