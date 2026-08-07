@@ -294,3 +294,76 @@ fn main(console: Console):
         assert_eq!(out, vec!["OK: every locked hash matches the dependency sources"]);
         assert_eq!(code, 0);
     }
+
+    /// RFC-0116 track 1: the registry address is an ORIGIN — `pm.parse_origin`
+    /// preserves the scheme from `https://…`/`http://…` (defaulting the port from
+    /// the scheme when the authority has none), keeps bare `host:port` meaning
+    /// http (loopback compat), and rejects every malformed spelling loudly. The
+    /// probe links the REAL pm module and drives its parser + `registry_origin`
+    /// rendering directly.
+    #[test]
+    fn pm_parse_origin_is_scheme_aware_and_total() {
+        let probe = r#"import pm
+
+fn main(console: Console):
+    let addrs = [
+        "https://coven.example",
+        "https://coven.example/",
+        "https://localhost:8443",
+        "http://coven.example",
+        "http://127.0.0.1:8787/",
+        "127.0.0.1:8787",
+        " 127.0.0.1:8787/ ",
+        "ftp://coven.example",
+        "coven.example",
+        "https://",
+        "https://:8443",
+        "https://h:99999",
+        "h:1:2",
+        "h:x",
+    ]
+    for addr in addrs:
+        match pm.parse_origin(addr):
+            Ok(shp) ->
+                let (scheme, host, port) = shp
+                console.print(addr + " -> " + pm.registry_origin(scheme, host, port))
+            Err(e) -> console.print(addr + " -> err: ${e}")
+"#;
+        let mut modules = vec![(
+            "origin_probe".to_string(),
+            parser::parse_module(probe).expect("parse probe"),
+        )];
+        for (name, path) in [
+            ("pm", "projects/pm/src/pm.witchy"),
+            ("coven_proto", "projects/coven/src/coven_proto.witchy"),
+            ("coven_json", "projects/coven/src/coven_json.witchy"),
+            ("coven_validate", "projects/coven/src/coven_validate.witchy"),
+        ] {
+            let src = std::fs::read_to_string(path).expect("read pm module");
+            modules.push((name.to_string(), parser::parse_module(&src).expect("parse pm module")));
+        }
+        let linked = crate::pipeline::link(modules, "origin_probe").expect("link probe");
+        typeck::check(&linked).expect("typeck probe");
+        let (out, code) =
+            interpreter::run_module_exit(linked, ".", Vec::new(), Vec::new(), None).expect("run probe");
+        assert_eq!(
+            out,
+            vec![
+                "https://coven.example -> https://coven.example:443",
+                "https://coven.example/ -> https://coven.example:443",
+                "https://localhost:8443 -> https://localhost:8443",
+                "http://coven.example -> http://coven.example:80",
+                "http://127.0.0.1:8787/ -> http://127.0.0.1:8787",
+                "127.0.0.1:8787 -> http://127.0.0.1:8787",
+                " 127.0.0.1:8787/  -> http://127.0.0.1:8787",
+                "ftp://coven.example -> err: `ftp://coven.example` has an unsupported scheme `ftp` (expected http or https)",
+                "coven.example -> err: `coven.example` is not a host:port (missing `:<port>`)",
+                "https:// -> err: `https://` has an empty host",
+                "https://:8443 -> err: `https://:8443` has an empty host",
+                "https://h:99999 -> err: `https://h:99999` port 99999 is out of range (1-65535)",
+                "h:1:2 -> err: `h:1:2` has more than one `:` (expected host:port)",
+                "h:x -> err: `h:x` has a non-numeric port `x`",
+            ]
+        );
+        assert_eq!(code, 0);
+    }
