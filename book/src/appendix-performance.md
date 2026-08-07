@@ -113,6 +113,13 @@ fn summarize_text(text: String) -> String:
     region -> String:
         let parsed = text + "!"
         parsed
+
+fn main(console: Console):
+    console.print(summarize_text("processed"))
+```
+
+```text
+processed!
 ```
 
 The compiler already inserts the same machinery for free where it can prove

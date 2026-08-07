@@ -705,13 +705,17 @@
   },
   {
     "block": 1,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/appendix-performance.md",
-    "footprint": [],
-    "output": [],
-    "runnable": false
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "processed!"
+    ],
+    "runnable": true
   },
   {
     "block": 2,
@@ -1054,11 +1058,12 @@
   },
   {
     "block": 10,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
+      "Console[Read,Write]",
       "Dir[Read]"
     ],
     "output": [],
@@ -1814,13 +1819,17 @@
   },
   {
     "block": 3,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/mutating-methods.md",
-    "footprint": [],
-    "output": [],
-    "runnable": false
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "[1, 2, 3]"
+    ],
+    "runnable": true
   },
   {
     "block": 4,
@@ -2153,13 +2162,17 @@
   },
   {
     "block": 10,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
-    "footprint": [],
-    "output": [],
-    "runnable": false
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "fetched: /docs"
+    ],
+    "runnable": true
   },
   {
     "block": 1,
