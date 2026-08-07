@@ -367,7 +367,7 @@ fn main(console: Console):
     var xs = []
     xs.push(1)
     xs.push(2)
-    let _ = xs.length() // explicit discard — `length` is not a mutator
+    let _ = xs.length() // explicit discard - `length` is not a mutator
     console.print("${xs}") // [1, 2]
 ```
 
@@ -1699,7 +1699,7 @@ module may hold, pass, and return a value of `X`, but cannot mint or unwrap one,
 ```witchy
 capability Redis from Net[Connect, Tcp]
 
-// The ONLY way to obtain a `Redis` — its constructor is sealed to this module.
+// The ONLY way to obtain a `Redis` - its constructor is sealed to this module.
 pub fn open(net: Net[Connect, Tcp]) -> Redis:
     Redis(net)
 
@@ -1725,7 +1725,7 @@ capability Postgres:
     net: Net[Connect, Tcp]
     table: String
 
-// Sealed constructor — only this module can mint, refine, or destructure one.
+// Sealed constructor - only this module can mint, refine, or destructure one.
 pub fn open_db(net: Net[Connect, Tcp], table: String) -> Postgres:
     Postgres(net, table)
 
