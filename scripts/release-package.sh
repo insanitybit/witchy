@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
-version="0.1.0"
+version=""
 binary=""
 target=""
 commit=""
@@ -11,14 +11,15 @@ output_dir=""
 source_date_epoch="${SOURCE_DATE_EPOCH:-}"
 
 usage() {
-    echo "usage: release-package.sh --binary <.../witchy> --target <triple> --commit <40-hex-sha> --output-dir <dir> [--source-date-epoch <unix-seconds>]" >&2
+    echo "usage: release-package.sh --version <X.Y.Z> --binary <.../witchy> --target <triple> --commit <40-hex-sha> --output-dir <dir> [--source-date-epoch <unix-seconds>]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --binary | --target | --commit | --output-dir | --source-date-epoch)
+        --version | --binary | --target | --commit | --output-dir | --source-date-epoch)
             [ "$#" -ge 2 ] || { usage; exit 2; }
             case "$1" in
+                --version) version="$2" ;;
                 --binary) binary="$2" ;;
                 --target) target="$2" ;;
                 --commit) commit="$2" ;;
@@ -32,10 +33,14 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ -n "$binary" ] && [ -n "$target" ] && [ -n "$commit" ] && [ -n "$output_dir" ] || {
+[ -n "$version" ] && [ -n "$binary" ] && [ -n "$target" ] && [ -n "$commit" ] && [ -n "$output_dir" ] || {
     usage
     exit 2
 }
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$ ]]; then
+    echo "release-package: --version must look like X.Y.Z or X.Y.Z-pre" >&2
+    exit 1
+fi
 
 case "$target" in
     x86_64-unknown-linux-gnu | aarch64-apple-darwin | x86_64-apple-darwin) ;;
