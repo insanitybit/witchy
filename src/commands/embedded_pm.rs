@@ -50,14 +50,8 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
     // Auto-grant Net to the configured registry (COVEN_URL) so registry commands
     // need no explicit `--net`. The front-end reads COVEN_URL itself (via Env)
     // when no host:port argument is given.
-    if let Ok(u) = std::env::var("COVEN_URL") {
-        let hp = u
-            .trim_start_matches("http://")
-            .trim_start_matches("https://")
-            .trim_end_matches('/');
-        if !hp.is_empty() {
-            net_allow.push(hp.to_string());
-        }
+    if let Some(grant) = std::env::var("COVEN_URL").ok().as_deref().and_then(coven_url_net_grant) {
+        net_allow.push(grant);
     }
     // The embedded front-end's wasm: whole-pipeline cached (parse+link+check+
     // codegen all skipped on a warm hit — the sources are include_str! constants,
@@ -121,6 +115,54 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
             eprintln!("{e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// The Net allow-list entry backing a `COVEN_URL` registry address. The scheme is
+/// stripped for the grant (a Net grant is `host[:port]`), but it still decides the
+/// default port when the URL carries none — `https://coven.example` must grant
+/// `coven.example:443` (and `http://…` `:80`), never a portless entry. An explicit
+/// port is kept as written; a bare `host:port` passes through unchanged.
+fn coven_url_net_grant(u: &str) -> Option<String> {
+    let (default_port, rest) = if let Some(rest) = u.strip_prefix("https://") {
+        (Some(443u16), rest)
+    } else if let Some(rest) = u.strip_prefix("http://") {
+        (Some(80u16), rest)
+    } else {
+        (None, u)
+    };
+    let hp = rest.trim_end_matches('/');
+    if hp.is_empty() {
+        return None;
+    }
+    match default_port {
+        Some(p) if !hp.contains(':') => Some(format!("{hp}:{p}")),
+        _ => Some(hp.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::coven_url_net_grant;
+
+    #[test]
+    fn coven_url_grant_defaults_the_port_from_the_scheme() {
+        assert_eq!(coven_url_net_grant("https://coven.example"), Some("coven.example:443".into()));
+        assert_eq!(coven_url_net_grant("https://coven.example/"), Some("coven.example:443".into()));
+        assert_eq!(coven_url_net_grant("http://coven.example"), Some("coven.example:80".into()));
+    }
+
+    #[test]
+    fn coven_url_grant_keeps_an_explicit_port() {
+        assert_eq!(coven_url_net_grant("https://localhost:8443"), Some("localhost:8443".into()));
+        assert_eq!(coven_url_net_grant("http://127.0.0.1:8787/"), Some("127.0.0.1:8787".into()));
+    }
+
+    #[test]
+    fn coven_url_grant_passes_a_bare_hostport_through() {
+        assert_eq!(coven_url_net_grant("127.0.0.1:8787"), Some("127.0.0.1:8787".into()));
+        assert_eq!(coven_url_net_grant(""), None);
+        assert_eq!(coven_url_net_grant("https://"), None);
     }
 }
 

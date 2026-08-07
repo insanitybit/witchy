@@ -325,6 +325,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         commands::embedded_pm::run_embedded_pm(std::env::args().skip(2).collect());
     }
     // `witchy coven-serve [--addr H:P] [--root DIR] [--trust-issuer iss=pubhex]...
+    // [--trust-issuer-jwks iss=<jwks-file>]... [--trust-issuer-oidc <issuer-url>]...
     // [--signing-key <seed>] [--secret-file signing=<path>]` runs the EMBEDDED witchy
     // registry server (projects/coven/src/coven.witchy) — the self-hosted coven, itself
     // written in witchy and bundled into the toolchain like std + the `pm` front-end.
@@ -339,6 +340,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         let mut addr = "127.0.0.1:8787".to_string();
         let mut root: Option<std::path::PathBuf> = None;
         let mut issuers: Vec<String> = Vec::new();
+        let mut oidc_origins: Vec<String> = Vec::new();
         let mut signing_key: Option<[u8; 32]> = None;
         let mut argv = std::env::args().skip(2);
         while let Some(a) = argv.next() {
@@ -372,6 +374,22 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                         None => { eprintln!("--trust-issuer-jwks needs iss=<jwks-file>"); std::process::exit(1); }
                     },
                     None => { eprintln!("--trust-issuer-jwks needs iss=<jwks-file>"); std::process::exit(1); }
+                },
+                "--trust-issuer-oidc" => match argv.next() {
+                    // `<issuer-url>` (https only): coven resolves the issuer's JWKS at
+                    // startup from its OIDC discovery document — the fetches run inside
+                    // the program through a Fetch derived from its Net grant, so the
+                    // issuer origin joins the Net allow-list here. coven rejects a
+                    // `jwks_uri` that is not same-origin with the issuer, so this one
+                    // grant provably covers both startup fetches.
+                    Some(issuer_url) => match oidc_issuer_authority(&issuer_url) {
+                        Ok(authority) => {
+                            oidc_origins.push(authority);
+                            issuers.push(format!("{issuer_url}=oidc"));
+                        }
+                        Err(e) => { eprintln!("--trust-issuer-oidc: {e}"); std::process::exit(1); }
+                    },
+                    None => { eprintln!("--trust-issuer-oidc needs an https issuer URL"); std::process::exit(1); }
                 },
                 "--signing-key" => match argv.next() {
                     Some(file) => match load_signing_seed(&file) {
@@ -458,7 +476,8 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         // interpreter-only dependency (`compiler.footprint`/`diff`/`doc` all have host
         // functions; networking and live logging work compiled), so a registry server
         // gets the compiled tier's speed and the same capability confinement.
-        let net_allow = vec![addr];
+        let mut net_allow = vec![addr];
+        net_allow.extend(oidc_origins);
         let mut caps = runtime::Capabilities {
             print: true,
             print_int: true,
@@ -505,7 +524,11 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         match vm.run() {
             Ok(()) => std::process::exit(0),
             Err(e) => {
-                eprintln!("{e}");
+                // `{e:?}` prints the anyhow cause chain: a wasm trap's Display is
+                // only the backtrace, while the actual abort reason (e.g. a
+                // startup trust failure's `fail` message) lives in the causes —
+                // a registry must never die without naming why.
+                eprintln!("{e:?}");
                 std::process::exit(1);
             }
         }
@@ -954,4 +977,25 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
     }
+}
+
+/// The `host:port` Net-grant authority for a `--trust-issuer-oidc` issuer URL.
+/// https only — a plaintext-http issuer would let a network attacker install
+/// the registry's trust roots — with the port defaulting to 443. coven itself
+/// re-validates the URL; this parse only has to be strict enough to grant the
+/// right origin and refuse http loudly.
+fn oidc_issuer_authority(issuer_url: &str) -> Result<String, String> {
+    let rest = issuer_url
+        .strip_prefix("https://")
+        .ok_or_else(|| format!("issuer `{issuer_url}` must be an https:// URL"))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return Err(format!("issuer `{issuer_url}` has no host"));
+    }
+    // A bracketed IPv6 literal carries a port only after its closing `]`.
+    let has_port = match authority.rfind(']') {
+        Some(end) => authority[end..].contains(':'),
+        None => authority.contains(':'),
+    };
+    Ok(if has_port { authority.to_string() } else { format!("{authority}:443") })
 }

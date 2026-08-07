@@ -15,6 +15,9 @@ bench/bin/
 
 .claude/scheduled_tasks.lock
 
+# private (untracked) agent skills - personal voice/style profiles, not shared
+.claude/skills/personal/
+
 # coven local registry store + Ed25519 signing keys — never commit
 coven-store/
 *.seed

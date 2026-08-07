@@ -30,6 +30,103 @@ use crate::{ast, interpreter, parser, typeck};
         );
     }
 
+    /// RFC-0116 track 2: the pure validators behind `--trust-issuer-oidc` live
+    /// JWKS discovery. The discovery document's `jwks_uri` must be https and
+    /// same-origin with the issuer (a compromised discovery document must not
+    /// point key fetching at another host), and a JWKS installs only when it
+    /// decodes and carries at least one RSA key — never a silently-empty trust
+    /// set. Pinned on both backends.
+    #[test]
+    fn coven_oidc_discovery_validation_is_strict() {
+        let src = r#"import coven_trust
+
+fn show_url(issuer: String) -> String:
+    match coven_trust.discovery_url(issuer):
+        Ok(u) -> "ok:" + u
+        Err(e) -> "err:" + tag_e(e)
+
+fn show_uri(issuer: String, doc: String) -> String:
+    match coven_trust.jwks_uri_of(issuer, doc):
+        Ok(uri) -> "ok:" + uri
+        Err(e) -> "err:" + tag_e(e)
+
+fn show_jwks(doc: String) -> String:
+    match coven_trust.installed_jwks(doc):
+        Ok(_j) -> "ok"
+        Err(e) -> "err:" + tag_e(e)
+
+fn tag_e(e: coven_trust.DiscoveryError) -> String:
+    match e:
+        coven_trust.IssuerNotHttps(_) -> "issuer-not-https"
+        coven_trust.IssuerInvalidUrl(_) -> "issuer-bad-url"
+        coven_trust.DiscoveryInvalidJson(_) -> "discovery-bad-json"
+        coven_trust.DiscoveryMissingJwksUri -> "missing-jwks-uri"
+        coven_trust.JwksUriInvalidUrl(_) -> "jwks-uri-bad-url"
+        coven_trust.JwksUriNotHttps(_) -> "jwks-uri-not-https"
+        coven_trust.JwksUriCrossOrigin(_, _) -> "jwks-uri-cross-origin"
+        coven_trust.JwksInvalidJson(_) -> "jwks-bad-json"
+        coven_trust.JwksMissingKeys -> "jwks-missing-keys"
+        coven_trust.JwksKeysNotArray -> "jwks-keys-not-array"
+        coven_trust.JwksNoRsaKeys -> "jwks-no-rsa-keys"
+
+fn main(console: Console):
+    let iss = "https://idp.example:8443"
+    console.print(show_url(iss))
+    console.print(show_url("https://idp.example/"))
+    console.print(show_url("http://idp.example"))
+    console.print(show_url("not a url"))
+    console.print(show_url("https://idp.example/tenant?x=1"))
+    console.print(show_uri(iss, "{\"jwks_uri\":\"https://idp.example:8443/keys\"}"))
+    console.print(show_uri(iss, "{\"jwks_uri\":\"http://idp.example:8443/keys\"}"))
+    console.print(show_uri(iss, "{\"jwks_uri\":\"https://evil.example:8443/keys\"}"))
+    console.print(show_uri(iss, "{\"jwks_uri\":\"https://idp.example:9999/keys\"}"))
+    console.print(show_uri(iss, "{\"issuer\":\"x\"}"))
+    console.print(show_uri(iss, "{not json"))
+    console.print(show_jwks("{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"k1\",\"n\":\"AQAB\",\"e\":\"AQAB\"}]}"))
+    console.print(show_jwks("{\"keys\":[]}"))
+    console.print(show_jwks("{\"keys\":[{\"kty\":\"EC\",\"kid\":\"k1\"}]}"))
+    console.print(show_jwks("{\"keys\":\"none\"}"))
+    console.print(show_jwks("{\"other\":1}"))
+    console.print(show_jwks("{not json"))
+"#;
+        let sources = [
+            ("coven_json", include_str!("../../projects/coven/src/coven_json.witchy")),
+            ("coven_trust", include_str!("../../projects/coven/src/coven_trust.witchy")),
+            ("main", src),
+        ];
+        let modules: Vec<(String, ast::Module)> = sources
+            .iter()
+            .map(|(name, source)| ((*name).to_string(), parser::parse_module(source).expect("parse")))
+            .collect();
+        let linked = crate::pipeline::link(modules, "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interp");
+        let wasm = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interp, wasm, "OIDC discovery validation must be backend-stable");
+        assert_eq!(
+            wasm,
+            [
+                "ok:https://idp.example:8443/.well-known/openid-configuration",
+                "ok:https://idp.example/.well-known/openid-configuration",
+                "err:issuer-not-https",
+                "err:issuer-bad-url",
+                "err:issuer-bad-url",
+                "ok:https://idp.example:8443/keys",
+                "err:jwks-uri-not-https",
+                "err:jwks-uri-cross-origin",
+                "err:jwks-uri-cross-origin",
+                "err:missing-jwks-uri",
+                "err:discovery-bad-json",
+                "ok",
+                "err:jwks-no-rsa-keys",
+                "err:jwks-no-rsa-keys",
+                "err:jwks-keys-not-array",
+                "err:jwks-missing-keys",
+                "err:jwks-bad-json",
+            ],
+        );
+    }
+
     #[test]
     fn native_compiler_intrinsics_reject_comptime_source_strings() {
         // The compiler-service natives live above the runtime kernel in

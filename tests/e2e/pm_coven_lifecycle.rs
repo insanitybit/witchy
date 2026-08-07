@@ -8,6 +8,90 @@ use super::package_manager;
 
 use super::support::coven::*;
 
+/// RFC-0116 track 1: the pm client speaks HTTPS to a registry. A loopback TLS
+/// server (rustls, rcgen self-signed `localhost` cert — the coven_web mock
+/// pattern) plays the registry's `/coven/versions` endpoint; `COVEN_URL` is an
+/// `https://localhost:<port>` origin, so the scheme must survive `coven_addr` →
+/// `parse_origin` → `registry_origin` into a rustls dial, and the bootstrap's
+/// auto-grant must admit the host:port. The self-signed cert is trusted via
+/// `WITCHY_TLS_EXTRA_ROOTS`, exactly like the coven-web OAuth e2e.
+#[test]
+fn pm_lists_versions_from_an_https_registry() {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+    let cert_der = ck.cert.der().clone();
+    let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
+    let tls_config = Arc::new(
+        rustls::ServerConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+            .unwrap(),
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let cert_dir = unique("pm-https-cert");
+    let cert_path = cert_dir.join("cert.pem");
+    std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+
+    let (request_tx, request_rx) = std::sync::mpsc::channel::<String>();
+    let server = std::thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        let conn = rustls::ServerConnection::new(tls_config).unwrap();
+        let mut tls = rustls::StreamOwned::new(conn, tcp);
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while tls.read_exact(&mut b).is_ok() {
+            head.push(b[0]);
+            if head.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let request_line = String::from_utf8_lossy(&head).lines().next().unwrap_or_default().to_string();
+        let _ = request_tx.send(request_line);
+        let body = r#"{"records":[{"version":"0.1.0","state":"released"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = tls.write_all(resp.as_bytes());
+        let _ = tls.flush();
+        tls.conn.send_close_notify();
+        let _ = tls.flush();
+    });
+
+    let work = unique("pm-https-list");
+    let out = Command::new(BIN)
+        .current_dir(&work)
+        .env("COVEN_URL", format!("https://localhost:{port}"))
+        .env("WITCHY_TLS_EXTRA_ROOTS", &cert_path)
+        .args(["pm", "list", "demo/x"])
+        .output()
+        .expect("spawn witchy pm list");
+    server.join().unwrap();
+    let _ = std::fs::remove_dir_all(&cert_dir);
+    let _ = std::fs::remove_dir_all(&work);
+
+    let request_line = request_rx.recv_timeout(std::time::Duration::from_secs(8)).unwrap();
+    assert_eq!(
+        request_line, "GET /coven/versions?name=demo~x HTTP/1.1",
+        "the registry request must arrive over the TLS session"
+    );
+    assert!(
+        out.status.success(),
+        "pm list over https failed: stdout={} stderr={}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains("demo/x@0.1.0 released"),
+        "pm list must print the registry's released version: {}",
+        stdout(&out)
+    );
+}
+
 /// `pm new` scaffolds a runnable rune and `pm run` compiles + runs it through the
 /// embedded compiler (the cargo→rustc split of RFC-0004) — no registry needed.
 #[test]

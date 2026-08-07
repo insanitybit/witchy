@@ -32,15 +32,13 @@ from json import Json
 from semver import Version, Req
 from toml import Toml
 
-fn registry_origin(host: String, port: Int) -> String:
-    "http://${host}:${port}"
+pub fn registry_origin(scheme: String, host: String, port: Int) -> String:
+    "${scheme}://${host}:${port}"
 
-fn registry_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
-    let origin = registry_origin(host, port)
+fn registry_get(net: Net[Connect, Tcp], origin: String, path: String) -> Response:
     http.get(net.fetch(origin), origin + path)
 
-fn registry_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response:
-    let origin = registry_origin(host, port)
+fn registry_post(net: Net[Connect, Tcp], origin: String, path: String, body: String) -> Response:
     http.post(net.fetch(origin), origin + path, body)
 
 // `main` takes two `Dir` grants positionally: `root` (handle 0) is the project
@@ -1212,26 +1210,27 @@ fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(Strin
     else:
         let addr = coven_addr(env, arg(args, 2))
         let identity = if arg(args, 3).is_empty(): "ci-bot" else: arg(args, 3)
-        match parse_hostport(addr):
+        match parse_origin(addr):
             Err(m) ->
                 console.print("invalid registry address: ${m}")
                 1
-            Ok(hp) ->
-                let (host, port) = hp
+            Ok(shp) ->
+                let (scheme, host, port) = shp
+                let origin = registry_origin(scheme, host, port)
                 let manifest = root.read(join_path(dir, "witchy.toml"))
                 if has_path_dependency(manifest):
                     console.print("BLOCK: a published rune must be self-contained — it cannot have a path dependency (a published rune resolves only registry deps): ${list.join(path_deps(manifest), ", ")}")
                     1
                 else:
-                    publish_checked(console, net, root, dir, manifest, host, port, identity, env)
+                    publish_checked(console, net, root, dir, manifest, origin, identity, env)
 
 // The wire envelope POST once the manifest has been validated. Split out of
 // `cmd_publish` so its `else` arm stays shallow (the WASM codegen recurses per
 // nesting level).
-fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manifest: String, host: String, port: Int, identity: String, env: Env) -> Int:
+fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manifest: String, origin: String, identity: String, env: Env) -> Int:
     let files = publish_files(root, dir, manifest)
     let token = id_token_from_env(env)
-    let resp = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(manifest, files, identity, token))
+    let resp = registry_post(net, origin, "/coven/publish", coven_proto.publish_body(manifest, files, identity, token))
     let status = http.status(resp)
     let response_body = http.body(resp)
     let error = resp_field(response_body, "error")
@@ -1262,19 +1261,18 @@ fn path_deps(manifest: String) -> List(String):
 fn id_token_from_env(env: Env) -> Option(String):
     env.get_env("COVEN_ID_TOKEN")
 
-// The coven registry host:port: the explicit arg if given, else `COVEN_URL` from
-// the environment (the Rust CLI's convention), else the default. The bootstrap
-// auto-grants Net to `COVEN_URL` so no explicit `--net` is needed.
+// The coven registry address: the explicit arg if given, else `COVEN_URL` from
+// the environment (the Rust CLI's convention), else the default. The scheme is
+// PRESERVED — `https://coven.example` stays an https origin; a bare `host:port`
+// keeps meaning http (loopback compat). The bootstrap auto-grants Net to
+// `COVEN_URL` so no explicit `--net` is needed.
 fn coven_addr(env: Env, arg_addr: String) -> String:
     if !arg_addr.is_empty():
         arg_addr
     else:
         match env.get_env("COVEN_URL"):
-            Some(u) -> strip_scheme(u)
+            Some(u) -> u
             None -> "127.0.0.1:8787"
-
-fn strip_scheme(u: String) -> String:
-    u.replace("https://", "").replace("http://", "")
 
 // promote <name> <version> [host:port] [identity] — release a staged version.
 // Trusted registries require COVEN_ID_TOKEN to carry an IdP-attested MFA/WebAuthn
@@ -1288,14 +1286,15 @@ fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     else:
         let addr = coven_addr(env, arg(args, 3))
         let identity = if arg(args, 4).is_empty(): "release-human" else: arg(args, 4)
-        match parse_hostport(addr):
+        match parse_origin(addr):
             Err(m) ->
                 console.print("invalid registry address: ${m}")
                 1
-            Ok(hp) ->
-                let (host, port) = hp
+            Ok(shp) ->
+                let (scheme, host, port) = shp
+                let origin = registry_origin(scheme, host, port)
                 let body = coven_proto.promote_body(name, version, "local-confirmation", identity, id_token_from_env(env))
-                let resp = registry_post(net, host, port, "/coven/promote", body)
+                let resp = registry_post(net, origin, "/coven/promote", body)
                 console.print("promote: ${http.status(resp)}")
                 if http.status(resp) >= 200 && http.status(resp) < 300:
                     0
@@ -1312,21 +1311,22 @@ fn cmd_outdated(console: Console, net: Net, root: Dir, args: List(String)) -> In
         console.print("usage: pm outdated <dir> <coven-host:port>")
         1
     else:
-        match parse_hostport(addr):
+        match parse_origin(addr):
             Err(m) ->
                 console.print("invalid registry address: ${m}")
                 1
-            Ok(hp) ->
-                let (host, port) = hp
+            Ok(shp) ->
+                let (scheme, host, port) = shp
+                let origin = registry_origin(scheme, host, port)
                 let manifest = root.read(join_path(dir, "witchy.toml"))
                 for pair in toml.table(manifest, "dependencies"):
-                    report_dep_version(console, net, host, port, pair)
+                    report_dep_version(console, net, origin, pair)
                 0
 
-fn report_dep_version(console: Console, net: Net, host: String, port: Int, pair: (String, String)):
+fn report_dep_version(console: Console, net: Net, origin: String, pair: (String, String)):
     let (name, inline) = pair
     if let Some(req) = toml.inline_get(inline, "version"):
-        let resp = registry_get(net, host, port, "/coven/versions?name=${wire(name)}")
+        let resp = registry_get(net, origin, "/coven/versions?name=${wire(name)}")
         console.print("${name}: req ${req}, ${latest_label(http.body(resp), http.status(resp))}")
 
 fn latest_label(body: String, status: Int) -> String:
@@ -1363,13 +1363,14 @@ fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
         1
     else:
         let addr = coven_addr(env, arg(args, 3))
-        match parse_hostport(addr):
+        match parse_origin(addr):
             Err(m) ->
                 console.print("invalid registry address: ${m}")
                 1
-            Ok(hp) ->
-                let (host, port) = hp
-                let resp = registry_post(net, host, port, "/coven/yank", coven_proto.yank_body(name, version, id_token_from_env(env)))
+            Ok(shp) ->
+                let (scheme, host, port) = shp
+                let origin = registry_origin(scheme, host, port)
+                let resp = registry_post(net, origin, "/coven/yank", coven_proto.yank_body(name, version, id_token_from_env(env)))
                 console.print("yank: ${http.status(resp)}")
                 if http.status(resp) >= 200 && http.status(resp) < 300:
                     0
@@ -1387,13 +1388,14 @@ fn cmd_list(console: Console, net: Net, env: Env, args: List(String)) -> Int:
         1
     else:
         let addr = coven_addr(env, arg(args, 2))
-        match parse_hostport(addr):
+        match parse_origin(addr):
             Err(m) ->
                 console.print("invalid registry address: ${m}")
                 1
-            Ok(hp) ->
-                let (host, port) = hp
-                let resp = registry_get(net, host, port, "/coven/versions?name=${wire(name)}")
+            Ok(shp) ->
+                let (scheme, host, port) = shp
+                let origin = registry_origin(scheme, host, port)
+                let resp = registry_get(net, origin, "/coven/versions?name=${wire(name)}")
                 if http.status(resp) != 200:
                     console.print("registry error listing ${name}")
                     1
@@ -1664,16 +1666,17 @@ fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, clock: Clock, dir
         Ok(Some(trust)) ->
             let pinned = trust.0
             let pinned_pub = trust.1
-            match parse_hostport(coven_addr(env, "")):
+            match parse_origin(coven_addr(env, "")):
                 Err(m) ->
                     console.print("invalid registry address: ${m}")
                     2
-                Ok(hp) ->
-                    let (host, port) = hp
-                    verify_chain(console, net, root, dir, host, port, pinned, pinned_pub, clock)
+                Ok(shp) ->
+                    let (scheme, host, port) = shp
+                    let origin = registry_origin(scheme, host, port)
+                    verify_chain(console, net, root, dir, origin, pinned, pinned_pub, clock)
 
-fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String, port: Int, pinned: Int, pinned_pub: String, clock: Clock) -> Int:
-    match fetch_registry_rootpub(net, host, port):
+fn verify_chain(console: Console, net: Net, root: Dir, dir: String, origin: String, pinned: Int, pinned_pub: String, clock: Clock) -> Int:
+    match fetch_registry_rootpub(net, origin):
         Err(e) ->
             console.print("FAIL: TUF chain — ${registry_root_key_error_message(e)}")
             2
@@ -1684,8 +1687,8 @@ fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String
                 console.print("FAIL: TUF chain — registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
                 2
             else:
-                let snap_resp = registry_get(net, host, port, "/coven/snapshot")
-                let ts_resp = registry_get(net, host, port, "/coven/timestamp")
+                let snap_resp = registry_get(net, origin, "/coven/snapshot")
+                let ts_resp = registry_get(net, origin, "/coven/timestamp")
                 if http.status(snap_resp) != 200 || http.status(ts_resp) != 200:
                     console.print("FAIL: TUF chain — registry served no snapshot/timestamp role")
                     2
@@ -2211,22 +2214,23 @@ fn cmd_update(console: Console, net: Net, root: Dir, env: Env, clock: Clock, arg
     let positional = update_positionals(args)
     let only = list.at(positional, 0)
     let addr = coven_addr(env, list.at(positional, 1))
-    match parse_hostport(addr):
+    match parse_origin(addr):
         // BUG-090: honor the staging cooldown on re-resolution (a fresh
         // release inside its cooldown is not resolvable without --allow-fresh),
         // the same compromised-release protection `add` applies.
         Err(m) ->
             console.print("invalid registry address: ${m}")
             1
-        Ok(hp) ->
-            let (host, port) = hp
+        Ok(shp) ->
+            let (scheme, host, port) = shp
+            let origin = registry_origin(scheme, host, port)
             if !root.exists("vendor"):
                 console.print("no vendored dependencies to update")
                 0
             else:
                 let cooldown = cooldown_now(env, clock, args)
                 let manifest = if root.exists("witchy.toml"): root.read("witchy.toml") else: ""
-                update_vendored(console, net, root, host, port, only, allowed, cooldown, manifest)
+                update_vendored(console, net, root, origin, only, allowed, cooldown, manifest)
 
 // `update`'s positional args (`[only, addr]`), skipping the command word and any
 // `--allow-cap <Cap>` flag pairs. Always length 2 (absent positionals are ""), so
@@ -2272,13 +2276,13 @@ fn set_at(xs: List(String), i: Int, v: String) -> List(String):
         j = j + 1
     out
 
-fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: Int, only: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> Int:
+fn update_vendored(console: Console, net: Net, root: Dir, origin: String, only: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> Int:
     var changed = 0
     var blocked = false
     var failed = false
     for entry in root.subtree("vendor").list():
         if only.is_empty() || entry == only:
-            let outcome = update_one(console, net, root, host, port, entry, allowed, cooldown, manifest)
+            let outcome = update_one(console, net, root, origin, entry, allowed, cooldown, manifest)
             changed = changed + outcome.0
             if outcome.1:
                 blocked = true
@@ -2295,7 +2299,7 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
         console.print("BLOCK: an update failed to resolve, fetch, or verify — leaving witchy.lock and the pinned registry key untouched")
         1
     else:
-        match lock_trust_pins(net, root, host, port):
+        match lock_trust_pins(net, root, origin):
             Err(e) ->
                 console.print("BLOCK: cannot pin registry metadata — ${tuf_error_message(e)}")
                 2
@@ -2315,7 +2319,7 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
 // (the gate), `failed` is true if resolution, fetch, or verification failed. The
 // target version is resolved WITHIN the consumer's declared requirement (BUG-092)
 // and past the staging cooldown (BUG-090).
-fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, entry: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> (Int, Bool, Bool):
+fn update_one(console: Console, net: Net, root: Dir, origin: String, entry: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> (Int, Bool, Bool):
     let rune_dir = join_path("vendor", entry)
     if !root.exists(join_path(rune_dir, "coven.json")):
         (0, false, false)
@@ -2329,7 +2333,7 @@ fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, en
         let fullname = vendored.name
         let current = vendored.version
         let req = dep_req(manifest, fullname, entry)
-        match resolve_version(net, host, port, fullname, req, cooldown):
+        match resolve_version(net, origin, fullname, req, cooldown):
             // Cooling and no-match mean there is no eligible update today. Every
             // other resolver error means the registry/manifest could not be
             // trusted, so preserve the lock and report a failed update (BUG-569).
@@ -2342,7 +2346,7 @@ fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, en
                 if latest.is_empty() || latest == current:
                     (0, false, false)
                 else:
-                    gated_refetch(console, net, root, host, port, fullname, current, latest, vendored.runtime_footprint, allowed, cooldown)
+                    gated_refetch(console, net, root, origin, fullname, current, latest, vendored.runtime_footprint, allowed, cooldown)
 
 // The version requirement the consumer's manifest declares for a vendored dep,
 // matched by full registry identity or basename alias; `*` (latest) when the
@@ -2360,14 +2364,14 @@ fn dep_req(manifest: String, fullname: String, alias: String) -> String:
 // signed registry record) against the vendored baseline ∪ the consented caps. Any
 // capability the baseline doesn't already admit is a widening of authority — BLOCK.
 // Only on a clean (non-widening) upgrade do we re-fetch.
-fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, current: String, latest: String, baseline_footprint: List(String), allowed: List(String), cooldown: (Int, Int, Bool)) -> (Int, Bool, Bool):
+fn gated_refetch(console: Console, net: Net, root: Dir, origin: String, fullname: String, current: String, latest: String, baseline_footprint: List(String), allowed: List(String), cooldown: (Int, Int, Bool)) -> (Int, Bool, Bool):
     let baseline = union_all(baseline_footprint, allowed)
     // BUG-232: the widening gate must diff against a VERIFIED footprint, not a raw
     // `/coven/record` body. A hostile mirror could otherwise serve an under-declared
     // (or wrong-coordinate) record to sneak the gate, then serve matching malicious
     // source. Verify the signed record against the pinned root key and bind its
     // coordinate before trusting its footprint; a verification failure blocks.
-    match verified_incoming_footprint(net, root, host, port, fullname, latest):
+    match verified_incoming_footprint(net, root, origin, fullname, latest):
         Err(e) ->
             console.print("BLOCK: cannot verify the registry record for ${fullname}@${latest} — ${record_footprint_error_message(e)}")
             (0, true, false)
@@ -2378,20 +2382,20 @@ fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int,
                 console.print("  re-run with --allow-cap ${list.join(widened, " --allow-cap ")} to consent")
                 (0, true, false)
             else:
-                refetch(console, net, root, host, port, fullname, latest, current, cooldown, allowed)
+                refetch(console, net, root, origin, fullname, latest, current, cooldown, allowed)
 
 // The runtime footprint a registry version declares, read from its signed record at
 // `/coven/record` ONLY AFTER the record is verified against the registry root key
 // (bound to any key pinned in the lock) and its identity is bound to the requested
 // coordinate (BUG-232/266). `Err` on any failure so the gate blocks rather than
 // trusting an unverified/under-declared footprint.
-fn verified_incoming_footprint(net: Net, root: Dir, host: String, port: Int, name: String, version: String) -> Result(List(String), RecordFootprintError):
-    let rootpub = fetch_registry_rootpub(net, host, port)?
+fn verified_incoming_footprint(net: Net, root: Dir, origin: String, name: String, version: String) -> Result(List(String), RecordFootprintError):
+    let rootpub = fetch_registry_rootpub(net, origin)?
     let pinned_pub = pinned_registry_rootpub(root)?
     if pinned_pub != "" && pinned_pub != rootpub:
         Err(RecordRootKeyMismatch)
     else:
-        let resp = registry_get(net, host, port, "/coven/record?name=${wire(name)}&version=${version}")
+        let resp = registry_get(net, origin, "/coven/record?name=${wire(name)}&version=${version}")
         if http.status(resp) != 200:
             Err(RecordMissing)
         else if !record_signature_valid(rootpub, http.body(resp)):
@@ -2477,11 +2481,11 @@ fn strict_strings(items: List(Json)) -> Result(List(String), RecordFootprintErro
 // transitive dependency has it fetched + vendored too — an update is not just the
 // single rune. BUG-371: a failed fetch/verify (or a failed transitive fetch) reports
 // `failed` so the caller does not repin registry metadata.
-fn refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, latest: String, current: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> (Int, Bool, Bool):
-    let code = fetch_source(console, net, root, host, port, fullname, latest, "vendor")
+fn refetch(console: Console, net: Net, root: Dir, origin: String, fullname: String, latest: String, current: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> (Int, Bool, Bool):
+    let code = fetch_source(console, net, root, origin, fullname, latest, "vendor")
     if code != 0:
         (0, false, true)
-    else if add_deps(console, net, root, host, port, fullname, "vendor", cooldown, allowed) != 0:
+    else if add_deps(console, net, root, origin, fullname, "vendor", cooldown, allowed) != 0:
         (0, false, true)
     else:
         console.print("updated ${fullname} ${current} -> ${latest}")
@@ -2497,7 +2501,7 @@ fn refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fulln
 // network.
 // A `--path` argument means "add a local path dependency". That is not wired up
 // here yet (registry `add` is), and without this guard the path string is mistaken
-// for a `host:port` and `hostport` aborts with an opaque "cannot parse" — so report
+// for a registry address and `parse_origin` rejects it with an opaque error — so report
 // it clearly and point at the working manual route.
 fn has_path_flag(args: List(String)) -> Bool:
     var found = false
@@ -2524,13 +2528,14 @@ fn cmd_add_dispatch(console: Console, net: Net, root: Dir, env: Env, clock: Cloc
         let req = arg(pos, 2)
         let addr = arg(pos, 3)
         let dest = arg(pos, 4)
-        match parse_hostport(addr):
+        match parse_origin(addr):
             Err(m) ->
                 console.print("invalid registry address: ${m}")
                 1
-            Ok(hp) ->
-                let (host, port) = hp
-                add_rune(console, net, root, host, port, name, req, dest, cooldown_now(env, clock, args), [])
+            Ok(shp) ->
+                let (scheme, host, port) = shp
+                let origin = registry_origin(scheme, host, port)
+                add_rune(console, net, root, origin, name, req, dest, cooldown_now(env, clock, args), [])
 
 // Cargo-like `add <pkg>[@<ver>]`: resolve the registry from COVEN_URL (or an
 // explicit second `<host:port>` argument), default the requirement to the latest
@@ -2548,13 +2553,14 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
     else:
         let (name, req) = split_spec(spec)
         let addr = coven_addr(env, arg(pos, 2))
-        match parse_hostport(addr):
+        match parse_origin(addr):
             Err(m) ->
                 console.print("invalid registry address: ${m}")
                 1
-            Ok(hp) ->
-                let (host, port) = hp
-                add_pkg_gated(console, net, root, host, port, name, req, cooldown_now(env, clock, args), allowed_caps(args))
+            Ok(shp) ->
+                let (scheme, host, port) = shp
+                let origin = registry_origin(scheme, host, port)
+                add_pkg_gated(console, net, root, origin, name, req, cooldown_now(env, clock, args), allowed_caps(args))
 
 // A direct `add` is the consumer's deliberate choice to take on a dependency, so
 // it is gated: if the rune — OR ANY rune in its resolved dependency closure (SEC-006) —
@@ -2562,8 +2568,8 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
 // what the lock already records ∪ the caps the consumer consented to with `--allow-cap`),
 // the add is BLOCKED. A registry record's footprint is single-rune, so the direct gate
 // alone would miss a transitive dep's capabilities; we re-gate the whole vendored closure.
-fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
-    match resolve_version(net, host, port, name, req, cooldown):
+fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
+    match resolve_version(net, origin, name, req, cooldown):
         // BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
         Err(e) ->
             console.print("${name}: ${version_resolve_error_message(e)}")
@@ -2575,20 +2581,20 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int,
                     2
                 Ok(recorded) ->
                     let baseline = union_all(recorded, allowed)
-                    match verified_incoming_footprint(net, root, host, port, name, chosen):
+                    match verified_incoming_footprint(net, root, origin, name, chosen):
                         Err(e) ->
                             console.print("BLOCK: cannot verify the registry record for ${name}@${chosen} — ${record_footprint_error_message(e)}")
                             2
                         Ok(incoming) ->
-                            add_pkg_gate_widen(console, net, root, host, port, name, req, cooldown, baseline, rights.uncovered(baseline, incoming))
+                            add_pkg_gate_widen(console, net, root, origin, name, req, cooldown, baseline, rights.uncovered(baseline, incoming))
 
-fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String)) -> Int:
+fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String)) -> Int:
     if list.length(widened) > 0:
         console.print("BLOCKED: adding `${name}` would widen your project's capability footprint: ${list.join(widened, ", ")}")
         console.print("  re-run with --allow-cap ${list.join(widened, " --allow-cap ")} to consent")
         2
     else:
-        let code = add_rune(console, net, root, host, port, name, req, "vendor", cooldown, [])
+        let code = add_rune(console, net, root, origin, name, req, "vendor", cooldown, [])
         if code != 0:
             code
         else:
@@ -2607,7 +2613,7 @@ fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, host: String, port:
                         console.print("  re-run with --allow-cap ${list.join(closure_widened, " --allow-cap ")} to consent to the whole dependency tree")
                         2
                     else:
-                        pin_lock(console, net, root, host, port, name)
+                        pin_lock(console, net, root, origin, name)
 
 // The capability authority the project already admits: its own declared runtime
 // caps (from witchy.toml, if any) plus every capability the lockfile already
@@ -2639,8 +2645,8 @@ fn split_spec(spec: String) -> (String, String):
 // content hash, so `build`/`run` can map `import <basename>` to its vendored
 // source and `verify`/`gate` can re-check it. Idempotently rewrites the lock from
 // every currently-vendored rune so repeated `add`s accumulate, not clobber.
-fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name: String) -> Int:
-    match lock_trust_pins(net, root, host, port):
+fn pin_lock(console: Console, net: Net, root: Dir, origin: String, name: String) -> Int:
+    match lock_trust_pins(net, root, origin):
         Err(e) ->
             console.print("BLOCK: cannot pin registry metadata for ${basename(name)} — ${tuf_error_message(e)}")
             2
@@ -2705,8 +2711,8 @@ impl From(RegistryRootKeyError) for TufError:
 // Fetch and verify the snapshot plus its signing key as one operation before lock
 // serialization. The exact root key that verifies the snapshot is the one emitted;
 // there is no second fetch that can race and pin a different key (BUG-571/572).
-fn lock_trust_pins(net: Net, root: Dir, host: String, port: Int) -> Result(String, TufError):
-    let pins = snapshot_pin(net, root, host, port)?
+fn lock_trust_pins(net: Net, root: Dir, origin: String) -> Result(String, TufError):
+    let pins = snapshot_pin(net, root, origin)?
     Ok(pins.0 + "registry_rootpub = \"" + pins.1 + "\"\n")
 
 // The `registry_snapshot_version = N` top-level line pinning the registry's current
@@ -2717,17 +2723,17 @@ fn lock_trust_pins(net: Net, root: Dir, host: String, port: Int) -> Result(Strin
 // agreement — so a malformed/unsigned/split response cannot under- or over-pin the
 // rollback floor. An unavailable snapshot is an error: treating it as "nothing to
 // pin" would erase an existing rollback floor during lock regeneration.
-fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result((String, String), TufError):
-    let snap_resp = registry_get(net, host, port, "/coven/snapshot")
+fn snapshot_pin(net: Net, root: Dir, origin: String) -> Result((String, String), TufError):
+    let snap_resp = registry_get(net, origin, "/coven/snapshot")
     if http.status(snap_resp) != 200:
         Err(SnapshotUnavailable(http.status(snap_resp)))
     else:
-        let rootpub = fetch_registry_rootpub(net, host, port)?
+        let rootpub = fetch_registry_rootpub(net, origin)?
         let pinned_pub = pinned_registry_rootpub(root)?
         if pinned_pub != "" && pinned_pub != rootpub:
             Err(RootKeyMismatch)
         else:
-            let ts_resp = registry_get(net, host, port, "/coven/timestamp")
+            let ts_resp = registry_get(net, origin, "/coven/timestamp")
             if http.status(ts_resp) != 200:
                 Err(SnapshotWithoutTimestamp)
             else:
@@ -2754,8 +2760,8 @@ fn verified_snapshot_line(rootpub: String, snap_env: String, ts_env: String) -> 
     else:
         Ok("registry_snapshot_version = ${signed_field_int(snap_env, "version")}\n")
 
-fn fetch_registry_rootpub(net: Net, host: String, port: Int) -> Result(String, RegistryRootKeyError):
-    let resp = registry_get(net, host, port, "/coven/rootpub")
+fn fetch_registry_rootpub(net: Net, origin: String) -> Result(String, RegistryRootKeyError):
+    let resp = registry_get(net, origin, "/coven/rootpub")
     if http.status(resp) != 200:
         Err(RegistryRootKeyUnavailable(http.status(resp)))
     else if !valid_registry_rootpub(http.body(resp)):
@@ -2887,7 +2893,7 @@ fn recorded_field(record: String, key: String) -> String:
 // vendored under this basename whose FULL name differs is a collision: two distinct
 // runes (`a/util` and `b/util`) would vendor to the same `vendor/util`, so the
 // second silently shadows the first. Refuse it — `import util` cannot name both.
-fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
+fn add_rune(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     let vendored = join_path(dest, basename(name))
     if root.exists(join_path(vendored, "coven.json")):
         match parse_vendored_record(root.read(join_path(vendored, "coven.json"))):
@@ -2901,8 +2907,8 @@ fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name
                 else:
                     0
     else:
-        match resolve_version(net, host, port, name, req, cooldown):
-            Ok(chosen) -> fetch_then_deps(console, net, root, host, port, name, chosen, dest, cooldown, allowed)
+        match resolve_version(net, origin, name, req, cooldown):
+            Ok(chosen) -> fetch_then_deps(console, net, root, origin, name, chosen, dest, cooldown, allowed)
             Err(e) ->
                 console.print("${name}: ${version_resolve_error_message(e)}")
                 1
@@ -2911,8 +2917,8 @@ fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name
 // cooldown: a release younger than the cooldown window is not resolvable (the
 // compromised-release window, §8) unless `--allow-fresh` was passed. If the only
 // matching versions are still cooling, the error explains the window + override.
-fn resolve_version(net: Net, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool)) -> Result(String, VersionResolveError):
-    let resp = registry_get(net, host, port, "/coven/versions?name=${wire(name)}")
+fn resolve_version(net: Net, origin: String, name: String, req: String, cooldown: (Int, Int, Bool)) -> Result(String, VersionResolveError):
+    let resp = registry_get(net, origin, "/coven/versions?name=${wire(name)}")
     if http.status(resp) != 200:
         Err(VersionRegistryFetchFailed(http.status(resp)))
     else:
@@ -2956,19 +2962,19 @@ impl From(VersionResolveError) for String:
 
 // Fetch a resolved version, then recurse into the version deps its manifest
 // declares. The exit code is the first failure (0 if the whole tree resolves).
-fn fetch_then_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
-    let code = fetch_source(console, net, root, host, port, name, version, dest)
+fn fetch_then_deps(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
+    let code = fetch_source(console, net, root, origin, name, version, dest)
     if code != 0:
         code
     else:
-        add_deps(console, net, root, host, port, name, dest, cooldown, allowed)
+        add_deps(console, net, root, origin, name, dest, cooldown, allowed)
 
-fn add_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
+fn add_deps(console: Console, net: Net, root: Dir, origin: String, name: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     let manifest = root.read(join_path(join_path(dest, basename(name)), "witchy.toml"))
     var code = 0
     for depname, inline in toml.table(manifest, "dependencies"):
         if let Some(depreq) = toml.inline_get(inline, "version"):
-            let sub = add_rune(console, net, root, host, port, depname, depreq, dest, cooldown, allowed)
+            let sub = add_rune(console, net, root, origin, depname, depreq, dest, cooldown, allowed)
             if sub != 0:
                 code = sub
     code
@@ -3111,25 +3117,25 @@ fn positionals(args: List(String)) -> List(String):
 // registry's record must be validly signed by its root key, and the fetched
 // source must hash to that signed hash. An untrusted mirror cannot swap the
 // bytes — content addressing + the signature, not the transport, are trusted.
-fn fetch_source(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String) -> Int:
+fn fetch_source(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String) -> Int:
     match pinned_registry_rootpub(root):
         Err(e) ->
             console.print("BLOCK: ${lock_pin_error_message(e)}")
             1
-        Ok(pinned_pub) -> match fetch_registry_rootpub(net, host, port):
+        Ok(pinned_pub) -> match fetch_registry_rootpub(net, origin):
             Err(e) ->
                 console.print("BLOCK: cannot fetch registry root key for ${name}@${version} — ${registry_root_key_error_message(e)}")
                 1
-            Ok(rootpub) -> fetch_source_with_root(console, net, root, host, port, name, version, dest, rootpub, pinned_pub)
+            Ok(rootpub) -> fetch_source_with_root(console, net, root, origin, name, version, dest, rootpub, pinned_pub)
 
-fn fetch_source_with_root(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, rootpub: String, pinned_pub: String) -> Int:
+fn fetch_source_with_root(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, rootpub: String, pinned_pub: String) -> Int:
     // SEC-002: enforce the complete lock trust record on fetch/add too, before
     // source is vendored or a signed record's footprint is trusted.
     if pinned_pub != "" && pinned_pub != rootpub:
         console.print("BLOCK: registry root key for ${name}@${version} does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
         1
     else:
-        let record = registry_get(net, host, port, "/coven/record?name=${wire(name)}&version=${version}")
+        let record = registry_get(net, origin, "/coven/record?name=${wire(name)}&version=${version}")
         if http.status(record) != 200:
             console.print("registry has no record for ${name}@${version}")
             1
@@ -3145,15 +3151,15 @@ fn fetch_source_with_root(console: Console, net: Net, root: Dir, host: String, p
             console.print("BLOCK: registry returned a record for `${recorded_field(http.body(record), "name")}@${recorded_field(http.body(record), "version")}` when `${name}@${version}` was requested — refusing (coordinate mismatch)")
             1
         else:
-            fetch_verified(console, net, root, host, port, name, version, dest, http.body(record))
+            fetch_verified(console, net, root, origin, name, version, dest, http.body(record))
 
 // Whether a signed record's own identity fields match the coordinate it was fetched
 // for — the anti-substitution binding for BUG-266.
 fn record_matches_coordinate(record: String, name: String, version: String) -> Bool:
     recorded_field(record, "name") == name && recorded_field(record, "version") == version
 
-fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, record: String) -> Int:
-    let resp = registry_get(net, host, port, "/coven/source?name=${wire(name)}&version=${version}")
+fn fetch_verified(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, record: String) -> Int:
+    let resp = registry_get(net, origin, "/coven/source?name=${wire(name)}&version=${version}")
     if http.status(resp) != 200:
         console.print("registry has no source for ${name}@${version}")
         1
@@ -3455,17 +3461,39 @@ fn jget_int(doc: Json, key: String) -> Int:
         None -> 0
 
 // --- registry/url helpers ----------------------------------------------------
-// Parse a registry `host:port` address TOTALLY (BUG-199): every ill-formed address
-// — empty host, missing/duplicate/non-numeric/overflowing/out-of-range port — is a
-// caller-level `Err`, never a `string.to_int` runtime abort. A single trailing `/`
-// (a common `COVEN_URL` spelling like `127.0.0.1:8787/`) is tolerated, matching the
+// Parse a registry address TOTALLY (BUG-199) into its (scheme, origin) origin
+// parts. Accepts `https://host[:port][/]`, `http://host[:port][/]`, and bare
+// `host:port` (scheme http — loopback compat). A scheme-carrying address without a
+// port defaults it from the scheme (https -> 443, http -> 80); a bare address still
+// requires an explicit port. Every ill-formed address — unknown scheme, empty host,
+// missing/duplicate/non-numeric/overflowing/out-of-range port — is a caller-level
+// `Err`, never a `string.to_int` runtime abort. A single trailing `/` (a common
+// `COVEN_URL` spelling like `https://coven.example/`) is tolerated, matching the
 // Rust launcher's auto-grant normalization.
-fn parse_hostport(addr: String) -> Result((String, Int), HostPortError):
-    let trimmed = addr.trim().strip_suffix("/")
-    if !trimmed.contains(":"):
+pub fn parse_origin(addr: String) -> Result((String, String, Int), HostPortError):
+    let trimmed = addr.trim()
+    if trimmed.starts_with("https://"):
+        parse_authority(addr, "https", trimmed.strip_prefix("https://"), 443)
+    else if trimmed.starts_with("http://"):
+        parse_authority(addr, "http", trimmed.strip_prefix("http://"), 80)
+    else if trimmed.contains("://"):
+        let (scheme, _rest) = trimmed.split_once("://")
+        Err(HostPortUnknownScheme(addr, scheme))
+    else if !trimmed.strip_suffix("/").contains(":"):
         Err(HostPortMissingPort(addr))
     else:
-        let (host, portstr) = trimmed.split_once(":")
+        parse_authority(addr, "http", trimmed, 80)
+
+// The `host[:port][/]` authority of an already-recognized scheme; `default_port`
+// fills in when the authority carries none.
+fn parse_authority(addr: String, scheme: String, raw_authority: String, default_port: Int) -> Result((String, String, Int), HostPortError):
+    let authority = raw_authority.strip_suffix("/")
+    if authority.is_empty():
+        Err(HostPortEmptyHost(addr))
+    else if !authority.contains(":"):
+        Ok((scheme, authority, default_port))
+    else:
+        let (host, portstr) = authority.split_once(":")
         if host.is_empty():
             Err(HostPortEmptyHost(addr))
         else if portstr.contains(":"):
@@ -3477,7 +3505,7 @@ fn parse_hostport(addr: String) -> Result((String, Int), HostPortError):
                     if p < 1 || p > 65535:
                         Err(HostPortOutOfRange(addr, portstr))
                     else:
-                        Ok((host, p))
+                        Ok((scheme, host, p))
 
 type HostPortError:
     HostPortMissingPort(String)
@@ -3485,6 +3513,7 @@ type HostPortError:
     HostPortMultipleColons(String)
     HostPortNonNumeric(String, String)
     HostPortOutOfRange(String, String)
+    HostPortUnknownScheme(String, String)
 
 fn host_port_error_message(e: HostPortError) -> String:
     match e:
@@ -3493,6 +3522,7 @@ fn host_port_error_message(e: HostPortError) -> String:
         HostPortMultipleColons(addr) -> "`${addr}` has more than one `:` (expected host:port)"
         HostPortNonNumeric(addr, port) -> "`${addr}` has a non-numeric port `${port}`"
         HostPortOutOfRange(addr, port) -> "`${addr}` port ${port} is out of range (1-65535)"
+        HostPortUnknownScheme(addr, scheme) -> "`${addr}` has an unsupported scheme `${scheme}` (expected http or https)"
 
 impl Show for HostPortError:
     fn show(self) -> String:

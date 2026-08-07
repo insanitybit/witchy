@@ -1,0 +1,16 @@
+# Build-context filter for projects/coven/deploy/Dockerfile (built from the
+# repo root). The builder stage compiles the witchy binary from source, so the
+# context needs the workspace sources (Cargo.toml/Cargo.lock, crates/, src/,
+# std/, projects/, web/) - everything else is dead weight or local-only state.
+.git
+target
+target-*
+state
+scratch
+bugs
+security-eval
+coven-store
+tests/browser/node_modules
+tests/browser/test-results
+.claude
+*.log

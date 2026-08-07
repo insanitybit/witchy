@@ -263,6 +263,22 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # RFC-0116 track 3: the coven registry's deploy image must keep building or
+  # the artifact rots. Build only - never pushed, no registry login, no cache
+  # export; the Dockerfile itself is the pin (base images by digest, cargo
+  # --locked).
+  docker-build:
+    name: Coven deploy image build (no push)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Build the coven registry image
+        run: docker build -f projects/coven/deploy/Dockerfile -t witchy-coven:ci .
+
   fmt:
     name: Formatting check (std + examples + projects)
     runs-on: ubuntu-latest
