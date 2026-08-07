@@ -57,6 +57,21 @@ for (const route of manifest.routes) {
       || source.includes('data-glamour-slot-kind="witchy-runnable"')) {
     if (!source.includes("</body>")) throw new Error(`runnable route ${route.path} has no body`);
     if (source.includes("data-witchy-runnables")) throw new Error(`runnable route ${route.path} already has a loader`);
+    // The bundle's recorded contract is `parentContentSecurityPolicy: "omitted"`
+    // on runnable routes: an `about:srcdoc` frame INHERITS the parent page's
+    // CSP, and a parent policy can never allowlist the sandbox frame's per-run
+    // random script nonce (or `trusted-types` its srcdoc mount), so any parent
+    // CSP bricks the opaque-frame runner — the reader sees
+    // "This document requires 'TrustedHTML' assignment" and dead Run buttons.
+    // The publisher stamps its strict meta CSP into every page; strip it from
+    // exactly the routes this packager makes runnable. Isolation on these
+    // routes rides on the frame's own capability-derived meta CSP plus
+    // `sandbox="allow-scripts"` (recorded as `sandboxContentSecurityPolicy:
+    // "capability-derived"`); non-runnable routes keep the strict parent CSP
+    // and ship zero script.
+    const metaCsp = /<meta http-equiv="Content-Security-Policy" content="[^"]*">/;
+    if (!metaCsp.test(source)) throw new Error(`runnable route ${route.path} has no publisher meta CSP to omit`);
+    source = source.replace(metaCsp, "");
     const loader = `<script type="module" src="${basePath}docs-static-boot.js" data-witchy-runnables></script>`;
     source = source.replace("</body>", `${loader}</body>`);
     routes.push(route.path);

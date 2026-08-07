@@ -35,6 +35,39 @@ function classOf(n) {
 
 const adoptedRunnableCells = new WeakSet();
 
+// (RFC-0041) Optional syntax highlighting: overlay the editable textarea on a `<pre>`
+// painted by `opts.highlight` (an XSS-safe `source -> HTML`, e.g. `highlightWitchy`). The
+// textarea stays on top for input + selection; its text is transparent so the coloured pre
+// shows through. Both share identical type metrics (CSS) so the caret aligns. Degrades to
+// the bare textarea where `innerHTML` is unavailable (the headless FakeElement DOM) or no
+// highlighter is supplied, so the tested Run path is unchanged. Shared by BOTH cell shapes:
+// client-built cells (`buildRunnableCell`) and adopted compiler-published cells
+// (`adoptPublishedRunnableCell`), so published pages colour identically to the playground.
+// SECURITY: `opts.highlight` is set to `innerHTML`, so it MUST HTML-escape its input and
+// emit only its own tags. `highlightWitchy` (the only caller-supplied value) does exactly
+// that — `escapeHtml` on every text slice, emitting `<span class="t-*">` — and is teeth-
+// tested for it (`witchy_highlighter_colours_current_syntax`: metacharacters are escaped,
+// no injection). Do NOT pass a highlighter that interpolates raw source into HTML.
+function buildEditorSurface(doc, editor, source, opts) {
+  const highlight = typeof opts.highlight === "function" ? opts.highlight : null;
+  const canHtml = highlight && "innerHTML" in doc.createElement("pre");
+  if (!canHtml) return editor;
+  const wrap = doc.createElement("div");
+  wrap.setAttribute("class", "witchy-editor-wrap");
+  const painted = doc.createElement("pre");
+  painted.setAttribute("class", "witchy-highlight");
+  painted.setAttribute("aria-hidden", "true");
+  // Trailing "\n" so a final empty line in the textarea has matching height in the pre.
+  const paint = () => {
+    painted.innerHTML = highlight(typeof editor.value === "string" ? editor.value : source) + "\n";
+  };
+  paint();
+  if (typeof editor.addEventListener === "function") editor.addEventListener("input", paint);
+  wrap.appendChild(painted);
+  wrap.appendChild(editor);
+  return wrap;
+}
+
 function hasClass(node, name) {
   return classOf(node).split(/\s+/).includes(name);
 }
@@ -129,6 +162,19 @@ function adoptPublishedRunnableCell(element, opts) {
     ? editor.value
     : editor.textContent || "";
   editor.value = source;
+
+  // Overlay the published textarea with the same highlight surface client-built
+  // cells get. The editor node is REUSED (listeners, value, identity retained);
+  // only its position in the cell moves inside the wrap.
+  const doc = element.ownerDocument
+    || (typeof document !== "undefined" ? document : null);
+  // Capture the editor's slot BEFORE buildEditorSurface re-parents it into the wrap.
+  const host = editor.parentNode;
+  const slot = editor.nextSibling;
+  const surface = doc ? buildEditorSurface(doc, editor, source, opts) : editor;
+  if (surface !== editor && host && typeof host.insertBefore === "function") {
+    host.insertBefore(surface, slot);
+  }
 
   const run = async () => {
     const current = typeof editor.value === "string" ? editor.value : source;
@@ -246,27 +292,7 @@ export function buildRunnableCell(doc, source, opts = {}) {
   // that — `escapeHtml` on every text slice, emitting `<span class="t-*">` — and is teeth-
   // tested for it (`witchy_highlighter_colours_current_syntax`: metacharacters are escaped,
   // no injection). Do NOT pass a highlighter that interpolates raw source into HTML.
-  const highlight = typeof opts.highlight === "function" ? opts.highlight : null;
-  const canHtml = highlight && "innerHTML" in doc.createElement("pre");
-  let editable = editor;
-  if (canHtml) {
-    const wrap = doc.createElement("div");
-    wrap.setAttribute("class", "witchy-editor-wrap");
-    const painted = doc.createElement("pre");
-    painted.setAttribute("class", "witchy-highlight");
-    painted.setAttribute("aria-hidden", "true");
-    // Trailing "\n" so a final empty line in the textarea has matching height in the pre.
-    const paint = () => {
-      painted.innerHTML = highlight(typeof editor.value === "string" ? editor.value : source) + "\n";
-    };
-    paint();
-    if (typeof editor.addEventListener === "function") editor.addEventListener("input", paint);
-    wrap.appendChild(painted);
-    wrap.appendChild(editor);
-    editable = wrap;
-  }
-
-  element.appendChild(editable);
+  element.appendChild(buildEditorSurface(doc, editor, source, opts));
   element.appendChild(runButton);
   element.appendChild(output);
   element.appendChild(statsOutput);

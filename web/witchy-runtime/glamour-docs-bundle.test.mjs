@@ -234,6 +234,28 @@ printf 'fresh browser compiler' >"$out"
     }),
     "non-runnable routes ship no script, Wasm loader, runnable marker, or island",
   );
+  // The recorded contract `parentContentSecurityPolicy: "omitted"` must be TRUE
+  // in the bytes: an about:srcdoc frame inherits the parent's CSP, and no parent
+  // policy can allowlist the sandbox frame's per-run script nonce (nor pass
+  // `require-trusted-types-for` for its srcdoc mount) — a parent meta CSP on a
+  // runnable route bricks every Run button (2026-08-07 live regression:
+  // "This document requires 'TrustedHTML' assignment"). Non-runnable routes,
+  // which ship zero script, keep the publisher's strict meta CSP.
+  const cspRunnableRoutes = manifest.routes.filter((route) => {
+    const source = route.path === "/" ? "introduction.md" : `${route.path.slice(3)}.md`;
+    return runnableSources.has(source);
+  });
+  ok(cspRunnableRoutes.length > 0, "the book has runnable routes");
+  ok(
+    cspRunnableRoutes.every((route) => !readFileSync(join(completeDist, route.file), "utf8")
+      .includes('http-equiv="Content-Security-Policy"')),
+    "runnable routes omit the parent meta CSP so the opaque srcdoc frame can mount",
+  );
+  ok(
+    nonRunnableRoutes.every((route) => readFileSync(join(completeDist, route.file), "utf8")
+      .includes('http-equiv="Content-Security-Policy"')),
+    "non-runnable routes retain the strict parent meta CSP",
+  );
 
   const headers = readFileSync(join(completeDist, "_headers"), "utf8");
   ok(
