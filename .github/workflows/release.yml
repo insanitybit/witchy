@@ -265,8 +265,13 @@ jobs:
         env:
           WITCHY_WASM_PATH: target/wasm32-unknown-unknown/release/witchy.wasm
         run: node scripts/validate_book_examples.mjs
+      # Mirror ci.yml: build the fixtures-enabled browser wasm with the pinned
+      # toolchain and hand it to build-docs.sh, which otherwise rebuilds it via
+      # build-playground.sh.
+      - name: Build the browser compiler wasm (the Run buttons)
+        run: cargo build --release --locked --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown
       - name: Assemble docs without publishing them
-        run: ./scripts/build-docs.sh dist
+        run: WITCHY_BROWSER_WASM=target/wasm32-unknown-unknown/release/witchy.wasm ./scripts/build-docs.sh dist
 
   build:
     name: Native artifact ${{ matrix.target }}

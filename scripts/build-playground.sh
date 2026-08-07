@@ -18,11 +18,14 @@ OUT="${WITCHY_PLAYGROUND_OUT:-web/witchy.wasm}"
 # own — if a Homebrew cargo/rustc is first on PATH, cargo still reaches for it and
 # fails. Force the toolchain's own bin dir to the front of PATH and clear any
 # RUSTC/RUSTFLAGS override so the wasm-capable rustc is the one that runs.
+# Resolve the ACTIVE toolchain, not the literal `stable`: CI pins a versioned
+# toolchain (see .github/actions/install-rust) and adds the wasm target to it,
+# while the runner's preinstalled `stable` has no wasm std at all.
 if [ -n "${CARGO:-}" ]; then
     RUN=(env RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= "$CARGO")
 elif command -v rustup >/dev/null; then
     rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-    TC_BIN="$(dirname "$(rustup which --toolchain stable rustc)")"
+    TC_BIN="$(dirname "$(rustup which rustc)")"
     RUN=(env -u RUSTC -u RUSTFLAGS RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= "PATH=$TC_BIN:$PATH" cargo)
 else
     RUN=(env RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= cargo)
