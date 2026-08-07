@@ -8,9 +8,7 @@ authority you must be granted.
 
 ## Hashes and HMACs
 
-`sha256` (and `sha512`, `sha3_256`) return the digest as a lowercase hex string.
-`hmac_sha256` computes a keyed hash — note its key argument is **hex-encoded**,
-so encode a raw string key with `encoding.hex_encode` first:
+`sha256` returns the digest as a lowercase hex string:
 
 ```witchy
 import crypto
@@ -19,9 +17,6 @@ import encoding
 fn main(console: Console):
     let digest = crypto.sha256("witchy")
     console.print("sha256: ${digest}")
-    // hmac_sha256 takes a hex-encoded key.
-    let key = encoding.hex_encode("secret-key")
-    console.print("hmac: ${crypto.hmac_sha256(key, "message")}")
     match encoding.hex_decode_bytes(digest):
         Ok(b) -> console.print("digest bytes: ${b.length()}")
         Err(e) -> console.print("bad hex: ${e}")
@@ -29,13 +24,23 @@ fn main(console: Console):
 
 ```text
 sha256: 0b21a169ba53c957fa074e1e00cd5fdc4e670dd855366bd2a38b413a1ddf88cd
-hmac: 287a3bd8a4fc7731a94c722079055323644d8798bd291bf9878abc9b8fd4b1d0
 digest bytes: 32
 ```
 
 A SHA-256 digest is 32 bytes, which is why decoding its 64-hex-character string
 yields a `Bytes` of length 32. Pair `crypto` with `encoding` whenever you need
 to move a digest between its hex, base64, and raw-byte forms.
+
+`sha512`, `sha3_256`, and `hmac_sha256` work the same way but are native-only —
+a browser-hosted module does not get them. `hmac_sha256` computes a keyed hash;
+note its key argument is **hex-encoded**, so encode a raw string key with
+`encoding.hex_encode` first:
+
+```
+let key = encoding.hex_encode("secret-key")
+let tag = crypto.hmac_sha256(key, "message")
+// tag = "287a3bd8a4fc7731a94c722079055323644d8798bd291bf9878abc9b8fd4b1d0"
+```
 
 ## Verifying signatures
 
