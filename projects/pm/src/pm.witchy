@@ -2501,7 +2501,7 @@ fn refetch(console: Console, net: Net, root: Dir, origin: String, fullname: Stri
 // network.
 // A `--path` argument means "add a local path dependency". That is not wired up
 // here yet (registry `add` is), and without this guard the path string is mistaken
-// for a `host:port` and `hostport` aborts with an opaque "cannot parse" — so report
+// for a registry address and `parse_origin` rejects it with an opaque error — so report
 // it clearly and point at the working manual route.
 fn has_path_flag(args: List(String)) -> Bool:
     var found = false
