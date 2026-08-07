@@ -44,6 +44,13 @@ fn sorted_copy() -> List(Int):
     var sorted = original
     sorted.sort()
     sorted
+
+fn main(console: Console):
+    console.print("${sorted_copy()}")
+```
+
+```text
+[1, 2, 3]
 ```
 
 This keeps one reading rule in expressions too. `let item = xs.pop()`, a call in

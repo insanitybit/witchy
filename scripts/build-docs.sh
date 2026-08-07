@@ -44,7 +44,7 @@ if [ -z "$BIN" ]; then
   if [ -x "$td/release/witchy" ]; then BIN="$td/release/witchy"; else BIN="$td/debug/witchy"; fi
 fi
 
-# Build all 43 routes, the counter island, manifests, runtime graph, CSS, SBOM,
+# Build all 56 routes, the counter island, manifests, runtime graph, CSS, SBOM,
 # headers, and reports through the production static publisher.
 "$BIN" build --web --out "$OUT" projects/docs
 

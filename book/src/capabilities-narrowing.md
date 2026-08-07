@@ -254,6 +254,11 @@ pub fn config_dir(root: Dir[Read]) -> Option(ConfigDir):
 fn load(c: ConfigDir, name: String) -> String:
     match c:
         ConfigDir(dir) -> dir.read(name)
+
+fn main(console: Console, root: Dir[Read]):
+    match config_dir(root):
+        Some(c) -> console.print(load(c, "config.toml"))
+        None -> console.print("no config.toml here")
 ```
 
 `witchy caps` still reports `load` as `Dir[Read] (refined: ConfigDir)`. The brand

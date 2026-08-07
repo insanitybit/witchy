@@ -24,8 +24,14 @@ fn main(console: Console, dir: Dir):
 
 ## Quick start
 
-From an authorized source checkout, build with a Rust toolchain and exercise the
-small supported path:
+Prebuilt `witchy` binaries for x86-64 Linux, x86-64 macOS, and arm64 macOS are
+published on the [releases page](https://github.com/insanitybit/witchy/releases)
+as `witchy-<version>-<target>.tar.gz` archives; verify the accompanying
+`SHA256SUMS` before extraction, then put the archive's `bin/witchy` on your
+`PATH`.
+
+Alternatively, from a source checkout, build with a Rust toolchain and exercise
+the small supported path:
 
 ```sh
 cargo build --release

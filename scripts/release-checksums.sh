@@ -24,19 +24,25 @@ import tempfile
 output = pathlib.Path(sys.argv[1])
 archives = [pathlib.Path(path) for path in sys.argv[2:]]
 pattern = re.compile(
-    r"witchy-0\.1\.0-(x86_64-unknown-linux-gnu|aarch64-apple-darwin|x86_64-apple-darwin)\.tar\.gz"
+    r"witchy-(\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.]*)?)"
+    r"-(x86_64-unknown-linux-gnu|aarch64-apple-darwin|x86_64-apple-darwin)\.tar\.gz"
 )
 if not archives:
     raise SystemExit("release-checksums: no archives supplied")
 by_name = {}
+versions = set()
 for archive in archives:
     if archive.is_symlink() or not archive.is_file():
         raise SystemExit(f"release-checksums: archive is not a regular file: {archive}")
-    if not pattern.fullmatch(archive.name):
+    match = pattern.fullmatch(archive.name)
+    if not match:
         raise SystemExit(f"release-checksums: unexpected archive name: {archive.name}")
+    versions.add(match.group(1))
     if archive.name in by_name:
         raise SystemExit(f"release-checksums: duplicate archive name: {archive.name}")
     by_name[archive.name] = archive
+if len(versions) > 1:
+    raise SystemExit(f"release-checksums: archives span multiple versions: {sorted(versions)}")
 
 lines = []
 for name, archive in sorted(by_name.items()):

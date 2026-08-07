@@ -21,6 +21,7 @@ std/prng.witchy	52	expression-position-mutator	prng.advance	-	-
 std/prng.witchy	97	auxiliary-result-discard	prng.choice	-	-
 std/prng.witchy	76	auxiliary-result-discard	prng.advance	-	-
 std/prng.witchy	88	auxiliary-result-discard	prng.draw_below	-	-
+book/src/cookbook-collections.md#block-2	9	auxiliary-result-discard	Set__insert__String	-	-
 book/src/mutating-methods.md#block-1	7	expression-position-mutator	main.take_last	-	-
 book/src/mutating-methods.md#block-1	2	auxiliary-result-discard	list.pop	-	-
 book/src/mutating-methods.md#block-4	3	expression-position-mutator	dict.insert__String__Int	-	-
@@ -29,13 +30,13 @@ book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__
 spec/language.md#block-16	7	expression-position-mutator	main.bump	-	-
 
 witchy-files	287
-markdown-blocks	191
-checked	478
+markdown-blocks	219
+checked	506
 rejected	0
 var-declarations	40
-resolved-var-calls	704
+resolved-var-calls	708
 mechanical-self-reassignment	0
 expression-position-mutator	11
 immutable-var-argument	0
 temporary-var-argument	0
-auxiliary-result-discard	17
+auxiliary-result-discard	18

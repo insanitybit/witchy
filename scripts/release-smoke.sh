@@ -3,20 +3,21 @@
 # shellcheck disable=SC2016 # Witchy fixture interpolation must remain literal.
 set -euo pipefail
 
-version="0.1.0"
+version=""
 archive=""
 checksums=""
 commit=""
 target=""
 
 usage() {
-    echo "usage: release-smoke.sh --archive <tar.gz> --checksums <SHA256SUMS> --commit <40-hex-sha> --target <triple>" >&2
+    echo "usage: release-smoke.sh --version <X.Y.Z> --archive <tar.gz> --checksums <SHA256SUMS> --commit <40-hex-sha> --target <triple>" >&2
 }
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --archive | --checksums | --commit | --target)
+        --version | --archive | --checksums | --commit | --target)
             [ "$#" -ge 2 ] || { usage; exit 2; }
             case "$1" in
+                --version) version="$2" ;;
                 --archive) archive="$2" ;;
                 --checksums) checksums="$2" ;;
                 --commit) commit="$2" ;;
@@ -28,10 +29,14 @@ while [ "$#" -gt 0 ]; do
         *) echo "release-smoke: unknown argument '$1'" >&2; usage; exit 2 ;;
     esac
 done
-[ -n "$archive" ] && [ -n "$checksums" ] && [ -n "$commit" ] && [ -n "$target" ] || {
+[ -n "$version" ] && [ -n "$archive" ] && [ -n "$checksums" ] && [ -n "$commit" ] && [ -n "$target" ] || {
     usage
     exit 2
 }
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$ ]]; then
+    echo "release-smoke: --version must look like X.Y.Z or X.Y.Z-pre" >&2
+    exit 1
+fi
 if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]]; then
     echo "release-smoke: --commit must be exactly 40 lowercase hexadecimal characters" >&2
     exit 1
@@ -66,7 +71,7 @@ trap cleanup EXIT HUP INT TERM
 
 install="$scratch/install"
 "$MKDIR" -p "$install"
-"$PYTHON" - "$archive" "$checksums" "$install" "$target" <<'PY'
+"$PYTHON" - "$archive" "$checksums" "$install" "$target" "$version" <<'PY'
 import hashlib
 import os
 import pathlib
@@ -79,7 +84,8 @@ archive = pathlib.Path(sys.argv[1])
 checksums = pathlib.Path(sys.argv[2])
 install = pathlib.Path(sys.argv[3])
 target = sys.argv[4]
-root = f"witchy-0.1.0-{target}"
+version = sys.argv[5]
+root = f"witchy-{version}-{target}"
 expected = [
     root,
     f"{root}/bin",

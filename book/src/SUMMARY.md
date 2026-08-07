@@ -37,6 +37,19 @@
   - [Shipping and Deployment](shipping.md)
 - [Idiomatic witchy](idioms.md)
 - [Testing](testing.md)
+- [The Standard Library in Practice](cookbook.md)
+  - [Text, Patterns, and Encodings](cookbook-text.md)
+  - [Sets, Grouping, and Deduplication](cookbook-collections.md)
+  - [Numbers and Math](cookbook-numbers.md)
+  - [Functions as Values](cookbook-functional.md)
+  - [Parsing Configuration with TOML](cookbook-config.md)
+  - [Dates, Times, and Durations](cookbook-time.md)
+  - [Reading and Writing Files](cookbook-files.md)
+  - [Working with JSON](cookbook-json.md)
+  - [Hashing and Signatures](cookbook-crypto.md)
+  - [Bytes and Binary Data](cookbook-bytes.md)
+  - [Iterator Pipelines](cookbook-iterators.md)
+  - [Error-Handling Patterns](cookbook-errors.md)
 
 ---
 

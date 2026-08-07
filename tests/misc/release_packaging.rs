@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const REPO: &str = env!("CARGO_MANIFEST_DIR");
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const TARGET: &str = "x86_64-unknown-linux-gnu";
+const VERSION: &str = "0.2.7";
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Scratch(PathBuf);
@@ -56,6 +57,8 @@ fn fake_binary(scratch: &Scratch, version: &str) -> PathBuf {
 fn package(_scratch: &Scratch, binary: &Path, output: &Path) -> Output {
     run(
         Command::new(Path::new(REPO).join("scripts/release-package.sh"))
+            .arg("--version")
+            .arg(VERSION)
             .arg("--binary")
             .arg(binary)
             .arg("--target")
@@ -74,7 +77,7 @@ fn package(_scratch: &Scratch, binary: &Path, output: &Path) -> Output {
 #[cfg(unix)]
 fn package_is_deterministic_exact_and_checksummed() {
     let scratch = Scratch::new();
-    let binary = fake_binary(&scratch, &format!("witchy 0.1.0 (commit {COMMIT})"));
+    let binary = fake_binary(&scratch, &format!("witchy {VERSION} (commit {COMMIT})"));
     let first = scratch.join("first");
     let second = scratch.join("second");
     let one = package(&scratch, &binary, &first);
@@ -82,14 +85,14 @@ fn package_is_deterministic_exact_and_checksummed() {
     let two = package(&scratch, &binary, &second);
     assert!(two.status.success(), "{}", stderr(&two));
 
-    let name = format!("witchy-0.1.0-{TARGET}.tar.gz");
+    let name = format!("witchy-{VERSION}-{TARGET}.tar.gz");
     let first_archive = first.join(&name);
     let second_archive = second.join(&name);
     assert_eq!(std::fs::read(&first_archive).unwrap(), std::fs::read(&second_archive).unwrap());
 
     let listing = run(Command::new("tar").args(["-tzf"]).arg(&first_archive));
     assert!(listing.status.success(), "{}", stderr(&listing));
-    let root = format!("witchy-0.1.0-{TARGET}");
+    let root = format!("witchy-{VERSION}-{TARGET}");
     assert_eq!(
         String::from_utf8(listing.stdout).unwrap(),
         format!(
@@ -116,7 +119,7 @@ fn package_rejects_wrong_name_version_and_symlink() {
     use std::os::unix::fs::symlink;
 
     let scratch = Scratch::new();
-    let good = fake_binary(&scratch, &format!("witchy 0.1.0 (commit {COMMIT})"));
+    let good = fake_binary(&scratch, &format!("witchy {VERSION} (commit {COMMIT})"));
     let wrong_name = scratch.join("not-witchy");
     std::fs::copy(&good, &wrong_name).unwrap();
     let rejected_name = package(&scratch, &wrong_name, &scratch.join("name-out"));

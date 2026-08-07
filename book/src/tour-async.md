@@ -297,15 +297,40 @@ async fn main(console: Console):
 One restriction: an `async fn` may not be a *trait* method (neither declared in a
 `trait` nor implementing one in an `impl Trait for T`) — the compiler rejects it
 at parse time. A trait that wants an asynchronous operation declares a plain
-`fn … -> Task(a)`; the implementing method leaves its own return type to
-inference and delegates to an inherent async method.
+`fn … -> Task(a)`; the implementing method declares the same `Task(a)` return
+type and delegates to an inherent async method.
 
 ```witchy
 from task import Task
 
 trait Fetcher:
     fn fetch(self, url: String) -> Task(String)
+
+type FakeFetcher:
+    prefix: String
+
+impl FakeFetcher:
+    async fn get(self, url: String) -> String:
+        "${self.prefix}: ${url}"
+
+impl Fetcher for FakeFetcher:
+    fn fetch(self, url: String) -> Task(String):
+        self.get(url)
+
+async fn main(console: Console):
+    let f = FakeFetcher("fetched")
+    let body = f.fetch("/docs").await
+    console.print(body)
 ```
+
+```text
+fetched: /docs
+```
+
+Calling `f.fetch(...)` returns the `Task(String)` unstarted; the caller decides
+when to `await` it. The inherent `async fn get` is where the suspension actually
+lives — the trait method is just a synchronous function that happens to return a
+task.
 
 ## The 0.1 memory ceiling
 

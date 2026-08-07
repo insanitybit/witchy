@@ -1,12 +1,13 @@
-name: Private 0.1.0 release
+name: Release
 
-# A tag push creates an immutable PRIVATE DRAFT release after every gate and
-# native installed-artifact smoke passes. Publishing that draft is a separate
-# explicit workflow dispatch. This workflow never changes repository visibility
-# and never uploads outside this repository's Actions/release storage.
+# A vX.Y.Z tag push runs every gate plus a native installed-artifact smoke on
+# each supported target, then creates an immutable DRAFT release with prebuilt
+# binaries and a SHA256SUMS manifest. Publishing that draft is a separate
+# explicit workflow dispatch (action=publish), so nothing goes live without a
+# human decision after the artifacts already exist and are verifiable.
 on:
   push:
-    tags: ["v0.1.0"]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
   workflow_dispatch:
     inputs:
       action:
@@ -18,6 +19,10 @@ on:
           - verify-candidate
           - verify-draft
           - publish
+      tag:
+        description: Release tag (vX.Y.Z)
+        required: true
+        type: string
       commit:
         description: Exact 40-character candidate or tagged commit SHA
         required: true
@@ -27,44 +32,42 @@ permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
-  RELEASE_TAG: v0.1.0
 
 jobs:
   version:
-    name: Private tag and workspace version
+    name: Tag and workspace version
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
       commit: ${{ steps.release.outputs.commit }}
       source_date_epoch: ${{ steps.release.outputs.source_date_epoch }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.commit || 'v0.1.0' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.commit || github.ref }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Refuse a public repository or the wrong event tag
-        env:
-          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_REF: ${{ github.ref }}
-        run: |
-          test "$REPOSITORY_PRIVATE" = true || {
-            echo "::error::release workflow is private-repository only"
-            exit 1
-          }
-          if [ "$EVENT_NAME" = push ] && [ "$EVENT_REF" != refs/tags/v0.1.0 ]; then
-            echo "::error::release tag must be exactly v0.1.0"
-            exit 1
-          fi
-      - name: Verify annotated tag, exact checkout, and every Cargo version
+      - name: Verify tag shape, annotated tag, exact checkout, and every Cargo version
         id: release
         env:
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
           ACTION: ${{ inputs.action }}
+          INPUT_TAG: ${{ inputs.tag }}
           INPUT_COMMIT: ${{ inputs.commit }}
         run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            release_tag="$INPUT_TAG"
+          else
+            release_tag="${EVENT_REF#refs/tags/}"
+          fi
+          [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$ ]] || {
+            echo "::error::release tag must look like vX.Y.Z; got '$release_tag'"
+            exit 1
+          }
           commit="$(git rev-parse HEAD)"
           if [ "$EVENT_NAME" = workflow_dispatch ]; then
             [[ "$INPUT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
@@ -77,11 +80,11 @@ jobs:
             }
           fi
           if [ "$EVENT_NAME" = push ] || [ "$ACTION" != verify-candidate ]; then
-            test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag || {
-              echo "::error::$RELEASE_TAG must be an annotated tag"
+            test "$(git cat-file -t "refs/tags/$release_tag")" = tag || {
+              echo "::error::$release_tag must be an annotated tag"
               exit 1
             }
-            tagged="$(git rev-parse "$RELEASE_TAG^{commit}")"
+            tagged="$(git rev-parse "$release_tag^{commit}")"
             test "$commit" = "$tagged" || {
               echo "::error::checkout is not the exact tagged commit"
               exit 1
@@ -91,7 +94,9 @@ jobs:
             echo "::error::checkout moved during release verification"
             exit 1
           }
-          ./scripts/release-version.sh "$RELEASE_TAG"
+          ./scripts/release-version.sh "$release_tag"
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "version=${release_tag#v}" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
           echo "source_date_epoch=$(git show -s --format=%ct "$commit")" >> "$GITHUB_OUTPUT"
 
@@ -279,6 +284,7 @@ jobs:
             target: x86_64-apple-darwin
     env:
       TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.version.outputs.version }}
       WITCHY_BUILD_COMMIT: ${{ needs.version.outputs.commit }}
       SOURCE_DATE_EPOCH: ${{ needs.version.outputs.source_date_epoch }}
     steps:
@@ -299,24 +305,26 @@ jobs:
       - name: Package with canonical logic
         run: |
           ./scripts/release-package.sh \
+            --version "$VERSION" \
             --binary "target/$TARGET/release/witchy" \
             --target "$TARGET" \
             --commit "$WITCHY_BUILD_COMMIT" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --output-dir dist
-          ./scripts/release-checksums.sh --output dist/SHA256SUMS "dist/witchy-0.1.0-$TARGET.tar.gz"
+          ./scripts/release-checksums.sh --output dist/SHA256SUMS "dist/witchy-$VERSION-$TARGET.tar.gz"
       - name: Installed-archive and trusted-exe smoke
         run: |
           ./scripts/release-smoke.sh \
-            --archive "dist/witchy-0.1.0-$TARGET.tar.gz" \
+            --version "$VERSION" \
+            --archive "dist/witchy-$VERSION-$TARGET.tar.gz" \
             --checksums dist/SHA256SUMS \
             --commit "$WITCHY_BUILD_COMMIT" \
             --target "$TARGET"
-      - name: Upload private workflow artifact
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: witchy-0.1.0-${{ matrix.target }}
-          path: dist/witchy-0.1.0-${{ matrix.target }}.tar.gz
+          name: witchy-${{ needs.version.outputs.version }}-${{ matrix.target }}
+          path: dist/witchy-${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           retention-days: 5
 
@@ -326,6 +334,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -335,39 +345,42 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
-          pattern: witchy-0.1.0-*
+          pattern: witchy-${{ needs.version.outputs.version }}-*
           merge-multiple: true
       - name: Require the exact target set and generate SHA256SUMS
         run: |
           expected="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu"
-          actual="$(for f in dist/witchy-0.1.0-*.tar.gz; do basename "$f" | sed 's/^witchy-0.1.0-//; s/\.tar\.gz$//'; done | sort | tr '\n' ' ' | sed 's/ $//')"
+          actual="$(for f in dist/witchy-"$VERSION"-*.tar.gz; do basename "$f" | sed "s/^witchy-$VERSION-//; s/\.tar\.gz$//"; done | sort | tr '\n' ' ' | sed 's/ $//')"
           test "$actual" = "$expected" || {
             echo "::error::incomplete or unexpected target set: $actual"
             exit 1
           }
-          ./scripts/release-checksums.sh --output dist/SHA256SUMS dist/witchy-0.1.0-*.tar.gz
-      - name: Upload exact private release assets
+          ./scripts/release-checksums.sh --output dist/SHA256SUMS dist/witchy-"$VERSION"-*.tar.gz
+      - name: Upload exact release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: witchy-0.1.0-release-assets
+          name: witchy-${{ needs.version.outputs.version }}-release-assets
           path: |
-            dist/witchy-0.1.0-*.tar.gz
+            dist/witchy-${{ needs.version.outputs.version }}-*.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 5
 
   publish:
-    name: Create or explicitly publish private release
+    name: Create draft or explicitly publish release
     needs: [version, manifest]
     if: ${{ github.event_name == 'push' || inputs.action != 'verify-candidate' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - name: Download exact release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: witchy-0.1.0-release-assets
+          name: witchy-${{ needs.version.outputs.version }}-release-assets
           path: dist
       - name: Verify asset bytes without executing them
         run: |
@@ -381,22 +394,16 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           ACTION: ${{ inputs.action }}
         run: |
-          private="$(gh api "repos/$GH_REPO" --jq .private)"
-          test "$private" = true || {
-            echo "::error::refusing to release from a public repository"
-            exit 1
-          }
-
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             test "$EVENT_NAME" = push || {
               echo "::error::manual publication requires an existing verified draft"
               exit 1
             }
             gh release create "$RELEASE_TAG" --verify-tag --draft \
-              --title "Witchy 0.1.0" \
-              --notes "Private 0.1.0 release candidate. Verify SHA256SUMS before extraction." \
-              dist/witchy-0.1.0-*.tar.gz dist/SHA256SUMS
-            echo "private draft created; publication requires a separate workflow_dispatch action=publish"
+              --title "Witchy $VERSION" \
+              --notes "Prebuilt \`witchy\` binaries for x86-64 Linux, x86-64 macOS, and arm64 macOS. Verify SHA256SUMS before extraction." \
+              dist/witchy-"$VERSION"-*.tar.gz dist/SHA256SUMS
+            echo "draft created; publication requires a separate workflow_dispatch action=publish"
             exit 0
           fi
 
@@ -407,7 +414,10 @@ jobs:
             echo "::error::existing release has an incomplete or unexpected asset set"
             exit 1
           }
-          for asset in SHA256SUMS witchy-0.1.0-aarch64-apple-darwin.tar.gz witchy-0.1.0-x86_64-apple-darwin.tar.gz witchy-0.1.0-x86_64-unknown-linux-gnu.tar.gz; do
+          for asset in SHA256SUMS \
+            "witchy-$VERSION-aarch64-apple-darwin.tar.gz" \
+            "witchy-$VERSION-x86_64-apple-darwin.tar.gz" \
+            "witchy-$VERSION-x86_64-unknown-linux-gnu.tar.gz"; do
             cmp "dist/$asset" "existing/$asset" || {
               echo "::error::existing release asset differs: $asset"
               exit 1
@@ -418,7 +428,7 @@ jobs:
           if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$ACTION" = publish ]; then
             if [ "$draft" = true ]; then
               gh release edit "$RELEASE_TAG" --draft=false
-              echo "private release published after explicit workflow dispatch"
+              echo "release published after explicit workflow dispatch"
             else
               echo "release is already published with identical immutable assets"
             fi
@@ -427,5 +437,5 @@ jobs:
               echo "::error::release is already published; tag reruns may not replace it"
               exit 1
             }
-            echo "existing private draft is byte-identical and remains unpublished"
+            echo "existing draft is byte-identical and remains unpublished"
           fi
