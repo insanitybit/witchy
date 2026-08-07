@@ -1280,7 +1280,6 @@
     ],
     "output": [
       "sha256: 0b21a169ba53c957fa074e1e00cd5fdc4e670dd855366bd2a38b413a1ddf88cd",
-      "hmac: 287a3bd8a4fc7731a94c722079055323644d8798bd291bf9878abc9b8fd4b1d0",
       "digest bytes: 32"
     ],
     "runnable": true

@@ -112,6 +112,8 @@ jobs:
           ref: ${{ needs.version.outputs.commit }}
           persist-credentials: false
       - name: Audit workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: ./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows
 
   test:
