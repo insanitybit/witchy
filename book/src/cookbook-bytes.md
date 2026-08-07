@@ -73,7 +73,7 @@ rejected: bytes.from_list: value 256 is outside 0..=255
 ```
 
 That rejection is the pattern to notice: witchy's numeric types don't wrap
-silently at a byte boundary, and the library refuses to pretend `256` is a byte.
+silently at a byte boundary, and the library won't pretend `256` is a byte.
 The error tells you the offending value and the valid range.
 
 ## When to reach for `Bytes`

@@ -47,7 +47,7 @@ fn main(console: Console, dir: Dir):
     console.print("wrote logs/run.txt")
 ```
 
-`subtree` is the key to *attenuation*: `logs` is a `Dir` scoped to the `logs/`
+`subtree` is the key to *narrowing*: `logs` is a `Dir` scoped to the `logs/`
 folder, and a helper you pass it to can touch nothing outside. This is how you
 hand a subsystem the narrowest slice of filesystem authority it needs - the same
 principle as narrowing rights, applied to *reach* instead of *verb*.

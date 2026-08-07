@@ -39,7 +39,7 @@ touch the world are reached through the capability that authorizes them. A
 function that receives no `Console` has no printing operation in its signature.
 
 Try deleting `console` from `main`'s parameters and running it again: the
-compiler refuses, because `main`'s body references a `console` that no longer
+compiler rejects it, because `main`'s body references a `console` that no longer
 exists. Authority has to come from somewhere, and the only "somewhere" is the
 parameter list.
 

@@ -145,7 +145,7 @@ a layout cast, a nominal relabel, or a conversion through an untyped slot.
 
 Width conformance is directed only by an explicit expected type. Witchy does
 not guess a common smaller shape for an unannotated branch, container, function
-value, or generic argument. This keeps inference local and prevents an extra
+value, or generic argument. This keeps inference local and avoids an extra
 field from disappearing merely because another expression lacks it.
 
 The following partial examples are intentionally rejected:

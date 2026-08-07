@@ -1,7 +1,8 @@
-# Narrowing and Attenuation
+# Narrowing
 
-A capability can be attenuated before it is passed on: remove rights, or restrict
-the part of the world it can reach. This is **attenuation**.
+A capability can be narrowed before it is passed on: drop rights, or shrink the
+part of the world it can reach. The object-capability literature calls this
+*attenuation*; this book says **narrowing**.
 
 ## Rights: fewer verbs
 
@@ -56,7 +57,7 @@ executable browser example: raw sockets have no honest browser provider.
 ## Naming a narrowed handle: `as`
 
 Implicit narrowing happens at calls. When you want to *name* a weaker handle -
-to keep using it locally, or to make the attenuation obvious - ascribe it with
+to keep using it locally, or to make the narrowing obvious - ascribe it with
 `as`:
 
 ```witchy
@@ -97,7 +98,7 @@ write access to one folder. Narrowing chains and stays confined:
 A `Dir` also carries an **entry policy** that narrows *which entries* it may
 touch, the third axis alongside rights (verbs) and subtree (scope).
 `dir.only(Dir.ext(".log"))` confines a `Dir` so `read`/`write`/`open` only
-admit matching files - a non-matching name is refused at the access check, and a
+admit matching files - a non-matching name is denied at the access check, and a
 subtree inherits the policy. It is the `Dir` analog of `net.only` below:
 
 ```witchy
@@ -149,7 +150,7 @@ is the separate `Exec` capability, below).
 Native directory and file capabilities are open handles, not checked path
 strings. A `File` retains its already-open parent plus one fixed leaf; a subtree
 retains the opened child directory. Renaming or replacing any original path
-component therefore cannot redirect a later operation, and write/append refuse
+component therefore cannot redirect a later operation, and write/append deny
 a symlink leaf. Build input/output roots use the same implementation.
 
 ## Net: a smaller slice of the network
@@ -182,7 +183,7 @@ For the common SSRF / DNS-rebinding guard, `net.deny(Net.private())` excludes
 the internal ranges in one line - loopback, RFC-1918, link-local (including the
 `169.254.169.254` cloud-metadata address), CGNAT, and "this host". It is matched
 against the **resolved** IP, so a hostname that rebinds to an internal address is
-refused at connect time, not just at a check beforehand.
+denied at connect time, not just at a check beforehand.
 
 For portable HTTP clients, narrow the host-granted `Fetch` root to one origin.
 Unlike the raw-socket fragments above, this complete program runs unchanged in
@@ -356,12 +357,12 @@ above, stays non-grantable: you build it *inside* the program from an explicit
 
 Bare grantable caps carry no host authority, so they get their own footprint axis:
 `witchy caps` prints a `user caps` line, and requiring a new one counts as a
-**widening** - new library-defined authority, and a new package in your trust base,
+**widening** - new library-defined authority, and a new rune in your trust base,
 both of which review (and the coven gate) will flag.
 
 ## Withholding authority by structure
 
-Everything above attenuates along *calls* - you weaken a handle as you pass it
+Everything above narrows along *calls* - you weaken a handle as you pass it
 on. The same mechanism gives you the strongest possible way to *deny* authority
 to a stretch of code: don't pass it. A function or closure that never receives a
 capability cannot use it - there is no name to reach, no value to alias, nothing

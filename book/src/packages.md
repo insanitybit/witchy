@@ -35,7 +35,7 @@ as `witchy caps`. Declared metadata that disagrees with the code is ignored in
 favor of the code.
 
 In other ecosystems, "this package only needs network access" may be a README
-claim. witchy derives the footprint from source each time, preventing declared
+claim. witchy derives the footprint from source each time, so a declared
 metadata from drifting away from the code.
 
 ## Adding a dependency gates on widening
@@ -79,7 +79,7 @@ any time - each rune's recorded footprint alongside it - and `witchy why-cap
 Publishing uses short-lived **identity tokens** - the same OIDC shape CI systems
 like GitHub Actions provide -
 so a publish is bound to a specific repository and workflow. The first publish
-to a namespace binds it; a token from any other repository is refused, which
+to a namespace binds it; a token from any other repository is denied, which
 shuts down namespace hijacking.
 
 Release is two-phase. A publish lands **staged** - visible but not resolvable.
@@ -120,7 +120,7 @@ flow with real tool output.
 The repository includes a scripted tour that starts a
 registry, publishes through trusted publishing, promotes with a second factor,
 consumes the rune from a separate project, and demonstrates the widening gate
-refusing an over-reaching upgrade:
+rejecting an over-reaching upgrade:
 
 ```sh
 ./scripts/local-registry-demo.sh

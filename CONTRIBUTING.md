@@ -98,7 +98,7 @@ the authority for the serialized full workspace, e2e, parity, and browser gate.
 scratch, then asserts one program produces identical output on all three
 backends, exercises the formatter, the in-language test framework, capability
 auditing (`caps`/`caps-diff`), sandbox enforcement (confinement + allowlist
-refusals), a complete registry lifecycle (trusted publish → staged → 2FA
+denials), a complete registry lifecycle (trusted publish → staged → 2FA
 promote → verified add → the capability-widening gate → namespace binding), a
 multi-rune example project, and doc extraction - ~30 asserted checks.
 `--quick` skips its test stage, which is redundant once `check.sh` has run the
@@ -209,7 +209,7 @@ analyzer (`crates/witchy-caps/src/capabilities.rs`), the runtime gating
 *enforcement* test (an ungranted module must fail to instantiate).
 
 Terminology in docs and diagnostics: a **capability** is the unforgeable
-value (`Console`, `Dir`); a **right** is a permission within one
+value (`Console`, `Dir`); a **right** is one axis of authority within one
 (`Dir[Read]`); a **verb** is an operation checked against rights (`read`,
 `connect`). Don't use the three interchangeably.
 

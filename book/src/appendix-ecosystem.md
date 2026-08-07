@@ -8,7 +8,7 @@ maps the repository.
 ## The pieces
 
 - **coven** - the package **registry**. It stores signed records, recomputes
-  each package's capability footprint from source (never trusting declared
+  each rune's capability footprint from source (never trusting declared
   metadata), and *blocks any publish that widens authority*. Publishing is
   two-phase: stage, then a human-2FA promote. The promotion gate enforces the
   rule that a dependency cannot quietly gain authority. (Chapter:

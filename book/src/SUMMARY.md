@@ -22,7 +22,7 @@
   - [Compile-Time Code: comptime](tour-comptime.md)
 - [Capabilities: The Heart of witchy](capabilities.md)
   - [Authority as a Value](capabilities-authority.md)
-  - [Narrowing and Attenuation](capabilities-narrowing.md)
+  - [Narrowing](capabilities-narrowing.md)
   - [Optional and Conditional Capabilities](capabilities-optional.md)
   - [The Sandbox](capabilities-sandbox.md)
 - [Concurrency with Async and Channels](tour-async.md)

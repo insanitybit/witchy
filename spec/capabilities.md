@@ -34,7 +34,7 @@ audit witchy code by reading signatures, not by tracing call graphs.
 
 **Vocabulary.** Three words are used precisely throughout the docs: a
 **capability** is the unforgeable value itself (`Console`, `Dir`, `Net`); a
-**right** is a permission parameter *within* one (`Dir[Read]` grants the
+**right** is an authority parameter *within* one (`Dir[Read]` grants the
 `Read` right); a **verb** is an operation checked against rights (`read`,
 `write`, `connect`). So `Dir[Read]` is a capability carrying one right, and
 `dir.read(path)` is a verb call that requires it.
@@ -62,7 +62,7 @@ folder and nothing else. A `Dir` also carries an **entry policy** ([RFC-0011](..
 name-suffix (`dir.only(Dir.ext(".txt"))` - only `.txt` entries) and entry-kind
 (`dir.only(Dir.files())` - only file access, no sub-directory open/create;
 `Dir.dirs()` - the mirror). They AND-compose: `dir.only(Dir.files()).only(Dir.ext(".txt"))`
-touches only `.txt` files. A non-admitted entry is refused at the access check -
+touches only `.txt` files. A non-admitted entry is denied at the access check -
 including opening a sub-directory, so `Dir.files()` genuinely confines traversal - and a
 subtree inherits the policy. An `ext`-only policy still traverses freely (ext gates
 file names, not directories), so `kind` is additive. This is the filesystem analog of
@@ -102,7 +102,7 @@ convenience, *not* rebinding-proof). For the common "deny the internal ranges"
 guard, `net.deny(Net.private())` excludes loopback, RFC-1918, link-local
 (including the `169.254.169.254` cloud-metadata IP), CGNAT, and "this host" -
 enforced on the resolved IP, so a name that rebinds to an internal address is
-refused at connect time.
+denied at connect time.
 
 Portable HTTP uses the narrower `Fetch` root rather than exposing DNS or
 sockets. A Fetch value carries an origin allowlist and can only be narrowed:
@@ -142,7 +142,7 @@ should hold it. It exists chiefly so the self-hosted `witchy` package manager
 can drive the compiler - the same binary's `compile`/`build-step` verbs - as a
 confined subprocess; see [RFC-0004](../rfcs/0004-self-hosted-cli.md).
 
-## Attenuation patterns
+## Narrowing patterns
 
 ```witchy
 // Implicit narrowing at a call: more authority stands in for less.
@@ -307,14 +307,14 @@ the host-held value to a credential port; the rune sees only the result. Because
 `SecretRef` but cannot unwrap it - so it can never read another component's password, by
 construction rather than convention.
 
-Every one of these tokens is a bare grantable cap, so the effect authority a package
+Every one of these tokens is a bare grantable cap, so the effect authority a rune
 actually uses surfaces on the `user caps` footprint axis, and Coven's block-on-widening
 gate covers a dependency that broadens it - the package-manager footprint gate, applied to
 UI effects.
 
 ## Withholding authority by structure
 
-The patterns above attenuate along *calls*. To deny a capability to a region of
+The patterns above narrow along *calls*. To deny a capability to a region of
 code outright, give that work its own function and don't pass the capability: a
 function or closure that never receives a capability cannot use it, alias it, or
 forge it. This is capture-as-dependency-injection - the strongest firewall witchy

@@ -26,7 +26,7 @@ version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
 pending-buffer protocol. Bump it in lockstep with any change to those.
 Version 1 is the baseline frozen for the first 0.1 release. Version 2 adds the
-opaque Fetch grant, attenuation, and staged request imports. Version 3 adds the
+opaque Fetch grant, narrowing, and staged request imports. Version 3 adds the
 Net-to-Fetch derivation import. Version 4 makes Env an opaque, attenuable
 externref rather than ambient host state. Version 5 does the same for Exec.
 Version 6 adds staged `Console[Read]` line input. Version 7 adds exact
@@ -336,7 +336,7 @@ a self-contained synchronous implementation needing none.
 The spike [`web/witchy-runtime/spike.mjs`](../web/witchy-runtime/spike.mjs) (driven by the Rust test
 [`tests/browser/shim.rs`](../tests/browser/shim.rs)) compiles a pure rune, runs it under the JS host, asserts
 its output equals the native interpreter run byte-for-byte, and confirms a
-capability rune is refused with a `LinkError`.
+capability rune is rejected with a `LinkError`.
 
 ## Runtime aborts ([RFC-0045](../rfcs/0045-compiled-trap-diagnostics.md))
 

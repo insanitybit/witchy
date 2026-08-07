@@ -402,7 +402,7 @@ ownership contract about a value:
 |---|---|
 | `frozen T` | deeply immutable; it cannot be bound as mutable or consumed through `own` |
 | `unique T` | the sole reference to the value |
-| `local unique T` | unique within the current call and forbidden from escaping it |
+| `local unique T` | unique within the current call and unable to escape it |
 | `View(T, 'a)` | a read-only view tied to a `let('a) T` input; available in `mode opt` |
 
 The qualifiers have no runtime representation and cannot change a program's

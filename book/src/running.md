@@ -66,7 +66,7 @@ allowlists. Named entries in a grant document bind to same-named parameters of
 `main`, and the document is checked against the footprint before execution.
 The full contract is in [The Sandbox](capabilities-sandbox.md).
 
-For deployments that must refuse execution unless every implemented outer
+For deployments that must deny execution unless every implemented outer
 native layer is active, add `--confine=required`:
 
 ```sh

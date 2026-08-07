@@ -151,7 +151,7 @@ A `SecretStore` is a capability that holds named secrets whose bytes stay
 host-side - the guest asks the host to *use* a secret, never to hand it over.
 The host grants secrets with `--signing-key <path>` (the protected `signing`
 key, usable only for signing) and `--secret name=value` / `--secret-file
-name=path` (ordinary named secrets; append `,use-only` to forbid reading them
+name=path` (ordinary named secrets; append `,use-only` to deny reading them
 back). Ask for a `SecretStore` in `main`, then:
 
 - `secrets.require("name")` returns the `Secret` directly, failing loudly if it

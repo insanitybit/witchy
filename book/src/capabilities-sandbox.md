@@ -84,7 +84,7 @@ and `[exec]` entries likewise bind same-named policy-carrying parameters. And
 because witchy already *computes* a program's footprint, the grant is
 **cross-checked against it**: a grant
 that asks for authority the code never exercises is a warning (the classic
-over-permission smell), and a grant that withholds authority the code needs is a
+over-grant smell), and a grant that withholds authority the code needs is a
 hard error before launch - so "approve this program's permissions" becomes a diff
 against what the code actually does, not blind trust. The same check runs
 standalone: `witchy grants-check program.witchy app.grants.toml`.
@@ -116,7 +116,7 @@ ambient path once to open each root grant; every `subtree`, `File`, read, write,
 append, existence check, directory check/list, and directory creation after that
 resolves relative to an open directory handle. `..` and absolute paths are
 rejected, escaping symlinks are rejected, and replacing any parent path component
-cannot redirect an operation. Writes also refuse a symlink leaf. The interpreter
+cannot redirect an operation. Writes also fail on a symlink leaf. The interpreter
 and compiled host carry the same `ConfinedDir`/`ConfinedFile` objects, so this
 security boundary is shared rather than reimplemented for parity.
 
@@ -142,7 +142,7 @@ family returns `EPERM`; without network authority socket creation returns
 `Exec`, process creation and execution return `EPERM`. High-risk mechanisms
 that could bypass those classes, including `io_uring`, handle-based opens,
 mounts, namespace changes, BPF, and process introspection, remain denied even
-when ordinary grants are present. Filters are restriction-only, apply to every
+when ordinary grants are present. Filters are narrowing-only, apply to every
 existing thread, and are inherited by executable children.
 
 Executable selection uses descriptor execution or an already-open private

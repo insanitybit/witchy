@@ -2,7 +2,7 @@
 
 ## Capability values
 
-A **capability** is a value whose type grants permission to do something. You've
+A **capability** is a value whose type carries the authority to do something. You've
 already met `Console`, which grants printing. There are a handful of these host
 capabilities:
 

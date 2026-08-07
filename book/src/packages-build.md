@@ -51,7 +51,7 @@ directory, which tool, which variable - live in the consumer's grant):
 ## Default deny - for *execution itself*
 
 Suppose `app` depends on `genlib`, and `genlib` ships the build step above. The
-first refusal isn't about which capabilities it wants - it's about the fact that
+first rejection isn't about which capabilities it wants - it's about the fact that
 it wants to run code at all:
 
 ```text
@@ -62,7 +62,7 @@ error: `genlib` ships a build step, and build-time code execution is denied by d
 
 You consent to *any* code execution before you consent to *safe* code execution.
 Even a build step that demands nothing beyond its own confined `BuildOut` sandbox
-is refused until you write the section - an **empty** `[build.grants."genlib"]`
+is rejected until you write the section - an **empty** `[build.grants."genlib"]`
 is that consent, and it permits only `BuildOut`. With the section present, the
 second layer kicks in: every kind beyond `BuildOut` must be named.
 
@@ -84,7 +84,7 @@ build OK: `app` (1 dependency resolved, linked + type-checked)
 ```
 
 (For env vars the same shape applies: `env = ["TARGET"]` lets the step read
-`TARGET` and nothing else - `get_build_env` refuses any key the grant doesn't
+`TARGET` and nothing else - `get_build_env` denies any key the grant doesn't
 name, even if it exists in your environment.)
 
 `child-paths` are read-only outer-fence needs inherited by the named tool; they
@@ -110,9 +110,9 @@ Accepting records the new footprint in the lock as your reviewed baseline.
 (`witchy add` runs the same gate when a dependency *first* introduces a
 build-axis kind - even `BuildOut` alone must be `--allow-build-cap`'d in.) And
 note the **two independent layers**: even after `--allow-build-cap BuildNet`,
-the build *still* refuses until you also add `net = [...]` to the
+the build *still* fails until you also add `net = [...]` to the
 `[build.grants."genlib"]` entry - the gate is "I have seen and accepted this
-demand"; the grant is "and here is the attenuated instance it may actually use."
+demand"; the grant is "and here is the narrowed instance it may actually use."
 A compromised dependency that "needs network at build time" stops cold, twice.
 
 ## Build steps run during `witchy build` - audited before and after
@@ -125,7 +125,7 @@ joins the link like any module - your code can `import` it directly.
 And because **generated code is still code**, the pipeline recomputes the rune's
 footprint over its shipped *plus generated* source and gates it against the
 locked baseline. A build step that tries to smuggle authority in by *generating*
-capability-hungry code is refused:
+capability-hungry code is rejected:
 
 ```text
 error: `genlib`'s build step generated source that WIDENS its footprint (+ Net)
@@ -144,7 +144,7 @@ witchy build-step genlib/src/build.witchy --out gen/ --read proto/ --exec protoc
 
 Either way the step runs with zero ambient authority - only the minted, confined
 caps. A `write_out` to `../escape.txt` is rejected by the same path-confinement
-the runtime `Dir` uses; an un-allow-listed tool is refused before it starts; an
+the runtime `Dir` uses; an un-allow-listed tool is denied before it starts; an
 ungranted `BuildRead` never gets minted at all. Every build step runs the same
 way: it is compiled to WASM and instantiated in the **zero-ambient sandbox** with
 *only* the host functions its granted caps allow. A **deterministic** step (one

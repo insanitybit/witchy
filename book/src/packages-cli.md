@@ -32,7 +32,7 @@ Three sections matter:
 - **`[build.grants."<name>"]`** - the *build-time authority* you, the consumer,
   explicitly hand to one specific dependency's build step: `read`/`exec`/`net`/
   `env` allow-lists. **Default deny applies to execution itself**: a dependency
-  that ships a build step at all is refused until this section exists (an empty
+  that ships a build step at all is rejected until this section exists (an empty
   section accepts execution with only the confined `BuildOut` sandbox), and
   absent kinds are denied.
 
@@ -80,7 +80,7 @@ Commit the lockfile. Same lock ⇒ same bytes, same authority, offline.
 | Command | What it does |
 |---|---|
 | `witchy new <name>` / `init [name]` | scaffold a rune - `new` makes a subdirectory, `init` writes into the current one (namespaced names like `acme/lib` work) |
-| `witchy add <pkg>[@<version>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]` | resolve + add a **registry** dependency - **gated** on widening (either axis), and a release younger than the staging cooldown (72h; `WITCHY_COOLDOWN_SECS`) is refused unless `--allow-fresh`. A local **path** dependency is added by hand in `witchy.toml`; `add --path` is not wired up |
+| `witchy add <pkg>[@<version>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]` | resolve + add a **registry** dependency - **gated** on widening (either axis), and a release younger than the staging cooldown (72h; `WITCHY_COOLDOWN_SECS`) is denied unless `--allow-fresh`. A local **path** dependency is added by hand in `witchy.toml`; `add --path` is not wired up |
 | `witchy build [<file\|dir>]` | resolve, verify hashes, link, type-check; writes/uses the lock (defaults to the current project) |
 | `witchy --release build --target trusted-exe [--out <path>]` | emit one host-native trusted application containing the runtime and compiled WASM (default `target/release/<rune-name>`) |
 | `witchy run [<file\|dir>] [args…]` | `build`, then run the app rune |
@@ -133,7 +133,7 @@ token = { from = "env:APP_TOKEN", use-only = true }
 ```
 
 The target defaults to best-effort native outer confinement. A deployment that
-must refuse unsupported or partial enforcement records the stricter choice in
+must fail on unsupported or partial enforcement records the stricter choice in
 the authenticated binding plan:
 
 ```toml

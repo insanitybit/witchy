@@ -73,7 +73,7 @@ Three things happen, none of them on trust:
 - the registry **recomputes the rune's capability footprint from source**
   (declared metadata is ignored);
 - the first publish to a namespace **binds it to that repository + workflow** -
-  a valid token from any other repo is refused thereafter;
+  a valid token from any other repo is denied thereafter;
 - the version lands **STAGED**: visible, but not resolvable by anyone.
 
 ## 3. Promote (release)
@@ -117,11 +117,11 @@ sources if you want zero registry dependence at build time.
 ## 5. Watch the gates work
 
 - Bump the version, mint a token claiming a **different repository**, and
-  `publish` - refused (namespace binding).
+  `publish` - denied (namespace binding).
 - Add a capability parameter (say `net: Net`) to a published function and
   release the new version - `witchy update` / `witchy outdated` flag the
   **footprint widening** and block until you approve it explicitly.
-- Try `witchy add` against a STAGED version - refused until promoted.
+- Try `witchy add` against a STAGED version - denied until promoted.
 
 ## What this is and isn't
 

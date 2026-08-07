@@ -1149,7 +1149,7 @@ because reflection already encodes any value (`json.from_value`, `json.stringify
 resumable web boundary. Scalars, `List`, `Option`, `Result`, and nested nominal
 types compose when their contained values also satisfy `PublicState`.
 Capabilities, functions, `Bytes`, secrets, and host handles deliberately have
-no implementation, so a forbidden nested field fails during type checking. The
+no implementation, so a rejected nested field fails during type checking. The
 trait is a sealed compiler boundary: handwritten and user-generated impls are
 rejected; only the canonical standard foundations and the authenticated built-in
 derive may produce a proof.
@@ -1710,7 +1710,7 @@ pub fn ping(r: Redis) -> Int:
 
 - **Minting consumes authority.** A `Redis` can only be made by handing a real
   `Net` to `open`; a library can never conjure authority from nothing.
-- **Attenuation is by facet** - declare a narrower capability refining the first
+- **Narrowing is by facet** - declare a narrower capability refining the first
   (`capability ReadOnly from Postgres`) that exposes fewer operations; ordinary
   type-checking enforces it.
 - **The footprint sees through.** `witchy caps` reports a user capability as the
@@ -1771,7 +1771,7 @@ policy scheme but a connect-time `tls:` prefix on the address you dial
 
 A `Dir` likewise carries an **entry policy** narrowing which entries it may touch:
 `dir.only(Dir.ext(".txt"))` confines it so `read`/`write`/`open` admit only
-matching files (a non-matching name is refused at the access check; a subtree
+matching files (a non-matching name is denied at the access check; a subtree
 inherits the policy) - the filesystem analog of `net.only`. See
 [0011-capability-refinement.md](../rfcs/0011-capability-refinement.md).
 
@@ -1828,7 +1828,7 @@ aborting (the `testing` assertions abort with a message). Plain tests receive no
 real authority. Capability-parameterized tests use either validated inert
 fixture plans (`--fixtures`, deterministic and transcripted) or explicit owned
 integration grants (`--integration`); dependency tests never inherit real
-grants or fixture-record construction privilege.
+grants or the ability to construct fixture records.
 
 ## 16. Semantics guarantees (the parity contract)
 

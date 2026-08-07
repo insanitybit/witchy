@@ -245,9 +245,8 @@ family only. Migrated host-held capabilities (`Dir`, `File`, `Net`, `Socket`,
 `Listener`, `Secret`) compile to opaque `externref` values carrying host-side
 authority objects, so paths, allowlists, streams, listeners, and secret bytes
 never enter guest memory and cannot be forged by corrupting an integer handle.
-Attenuation
-(`dir.subtree`, `dir.read_file`/`write_file`, `net.only`/`net.deny`) mints a
-narrower host object and returns a new externref. Zero-representation
+Narrowing (`dir.subtree`, `dir.read_file`/`write_file`, `net.only`/`net.deny`)
+mints a narrower host object and returns a new externref. Zero-representation
 capabilities enforce authority by the same structural import gating without
 passing a runtime handle. The
 grant comes from the host: the dev grant for `run`/`parity`, the computed

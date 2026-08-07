@@ -26,7 +26,7 @@ fn load_count(raw: String) -> Result(Int, String):
 ```
 
 `parser.digit_value` is private and cannot be called from the importing file.
-Qualification makes the owner of a name visible and prevents two imports from
+Qualification makes the owner of a name visible and stops two imports from
 silently choosing between same-named functions.
 
 ## Imports and constructors

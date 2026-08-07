@@ -85,7 +85,7 @@ Witchy uses these terms deliberately:
 | Collaborator | Ordinary data, function, or trait value passed to domain code |
 | Stub | A collaborator or fixture configured to return canned values |
 | Fake | A deterministic implementation with useful behavior, such as an in-memory filesystem |
-| Strict mock | An ordered fixture script that fails on an unexpected, missing, or differently attenuated call |
+| Strict mock | An ordered fixture script that fails on an unexpected, missing, or differently narrowed call |
 | Fixture capability | A sealed capability backed only by validated inert plan data |
 | Integration grant | Real host authority explicitly supplied to an owned integration test |
 | Browser provider | An explicitly enabled browser host provider, either real or fixture-backed |
@@ -93,7 +93,7 @@ Witchy uses these terms deliberately:
 Prefer an ordinary collaborator for a unit-sized seam. `FakeGateway` above is
 cheap, typed, and follows exactly the same dispatch rules as production code.
 Use a fixture capability when the provider contract itself matters: rights,
-attenuation, call order, failure injection, filesystem state, origin checks, or
+narrowing, call order, failure injection, filesystem state, origin checks, or
 the proof that no undeclared operation occurred.
 
 Witchy does not monkeypatch statically bound functions. There is no global mock
@@ -154,11 +154,11 @@ stack; use `Fetch`, an ordinary collaborator, or an explicit integration test.
 rather than minted as roots. VM is a zero-authority facility, not a fixture
 family; its sequential reference behavior remains independently parity-tested.
 
-Fixture capability records are assembled only for the selected package's test
+Fixture capability records are assembled only for the selected rune's test
 module. The compiler flattens a concrete named-field capability record into its
 declared fixture roots, constructs the sealed record at the authenticated test
 boundary, and passes it to the test. Dependency tests cannot inherit that
-construction privilege. Generic or recursive fixture aggregate records are
+ability to construct fixture records. Generic or recursive fixture aggregate records are
 rejected before execution.
 
 Plans are inert data. They cannot name a host path, ambient environment source,
@@ -232,8 +232,8 @@ test and production program exercise the same dispatch rules.
 
 The entry module run by `witchy test` may directly construct a foreign sealed
 *data* type. This lets a test create malformed or boundary-case values that the
-type's production constructors intentionally prevent. Production commands
-remain strict, and imported dependency modules do not inherit this privilege.
+type's production constructors intentionally reject. Production commands
+remain strict, and imported dependency modules do not inherit this ability.
 
 This relaxation does not manufacture authority. Sealed host capabilities such
 as `Dir`, `Net`, and `Clock` still cannot be constructed from Witchy source, and

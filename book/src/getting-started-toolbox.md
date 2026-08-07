@@ -21,7 +21,7 @@ Know that `fmt` canonicalizes *forms*, not just whitespace: a
 pre-migration rendering call prints back as the interpolation `"a ${x}"`,
 escaped quotes inside `${...}` become bare, nullary constructors lose their
 `()`, single-statement match arms go inline, and `if let` survives as
-`if let`. Every rewrite is meaning-preserving - the formatter refuses to emit
+`if let`. Every rewrite is meaning-preserving - the formatter won't emit
 anything that doesn't parse back to the same program - but the bytes may
 change more than you expect the first time you run it.
 
@@ -39,7 +39,7 @@ witchy build-step gen.witchy --out gen/     # run a build step under confined gr
 
 `caps` prints what the program is allowed to do, per function and per right -
 and, when a rune ships a `build` step, what that step may do at *build time*,
-on its own axis. `caps-diff` is the CI gate against silent privilege growth on
+on its own axis. `caps-diff` is the CI gate against silent authority growth on
 either axis. `sandbox` compiles to WebAssembly and runs the program in a VM
 granted exactly its footprint:
 

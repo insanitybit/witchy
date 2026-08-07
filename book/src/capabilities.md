@@ -11,7 +11,7 @@ The chapters develop one rule:
 
 - [**Authority as a Value**](capabilities-authority.md) - what a capability *is*,
   and why it can't be forged.
-- [**Narrowing and Attenuation**](capabilities-narrowing.md) - handing out less
+- [**Narrowing**](capabilities-narrowing.md) - handing out less
   power than you hold.
 - [**Optional and Conditional Capabilities**](capabilities-optional.md) - authority
   a program may or may not be granted.
