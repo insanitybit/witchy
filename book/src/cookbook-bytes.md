@@ -1,8 +1,11 @@
 # Bytes and Binary Data
 
-`String` in witchy is text - a sequence of Unicode characters. When you need
-raw octets - a file's contents, a network frame, a hash digest - you want
-`Bytes`, the binary counterpart. The `bytes` module builds and inspects them,
+Languages that treat text and bytes as one type hand you a bug that surfaces the
+first time a user's name has an accent in it. witchy keeps them apart.
+
+`String` is text: a sequence of Unicode characters. When you need raw octets - a
+file's contents, a network frame, a hash digest - you want `Bytes`, the binary
+counterpart. The `bytes` module builds and inspects them,
 `ascii` classifies byte-sized characters, and `encoding` (from the text chapter)
 moves bytes through hex and base64.
 

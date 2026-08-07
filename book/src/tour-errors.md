@@ -79,7 +79,7 @@ fn main(console: Console):
 
 `??` works on `Result` too - `parse(s) ?? 0` yields the `Ok` value or the
 fallback, discarding the error (when the error matters, use `?`, `e? "msg"`, or
-`match`). There is no truthiness in witchy: an empty string or list is data, not
+`match`). There's no truthiness in witchy: an empty string or list is data, not
 falsehood - to default one, test it honestly
 (`if name.is_empty(): "anon" else: name`).
 
@@ -153,7 +153,7 @@ flow - no exception that unwinds through frames you can't see.
 ## Local error unions
 
 For small, local error sets, you can use an anonymous union directly in
-`Result`. The union is still closed and matchable, but you do not have to name a
+`Result`. The union is still closed and matchable, but you don't have to name a
 new enum while the plumbing is local. A smaller error set widens into a larger
 one through `?`, so helpers can compose without wrapper code:
 

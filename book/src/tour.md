@@ -1,9 +1,13 @@
 # A Tour of the Language
 
-witchy uses familiar expression-oriented syntax around an explicit capability
-model. Readers of Python will recognize indentation-delimited blocks; readers of
-Rust or ML-family languages will recognize algebraic data types, exhaustive
-matching, traits, and `Result`.
+witchy is deliberately unsurprising almost everywhere. Readers of Python will
+recognize the indentation-delimited blocks; readers of Rust or ML-family
+languages will recognize the algebraic data types, exhaustive matching, traits,
+and `Result`.
+
+That's on purpose. A language that asks you to rethink where authority comes
+from shouldn't also ask you to rethink `if`. This tour is the ordinary part;
+the capability model is the one place witchy expects you to learn something.
 
 - **Layout by indentation**, like Python. A block opens with `:` and a newline.
 - **Expression-oriented**: `if`, `match`, and blocks have values.

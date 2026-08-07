@@ -3,13 +3,13 @@
 witchy splits time into three concerns, and keeps them honest with the type
 system and the capability model:
 
-- **`duration`** is a span - three hours, thirty seconds. It is pure arithmetic
+- **`duration`** is a span - three hours, thirty seconds. It's pure arithmetic
   and needs no authority.
 - **`time`** turns an instant (milliseconds since the Unix epoch) into a
   civil `DateTime` you can read fields off, and back. Constructing and
   inspecting a `DateTime` is also pure.
 - **Reading the *current* time** is an *effect*, and so it requires the `Clock`
-  capability. You cannot call "now" without being handed a clock.
+  capability. You can't call "now" without being handed a clock.
 
 That last point is the important one: computing with dates is deterministic and
 testable, while *observing* the present is an explicit, granted power.
@@ -96,6 +96,6 @@ This program's output depends on when you run it, so the book shows it as a
 plain snippet rather than a pinned example - but it type-checks, and
 `witchy caps` reports its footprint as exactly `Clock, Console`. That is the
 capability model doing its job: any function that reads the wall clock announces
-it in its signature, and one that doesn't take a `Clock` structurally *cannot*.
+it in its signature, and one that doesn't take a `Clock` structurally *can't*.
 Keep your date math in pure `time`/`duration` code, take the `Clock` only at the
 edge, and the bulk of your logic stays deterministic and easy to test.

@@ -2,9 +2,14 @@
 
 ## The primitives
 
-witchy has the types you'd expect: `Int` (64-bit, signed), `Float` (IEEE-754
-double), `Bool`, and `String` (UTF-8). It also has one you might not: `Duration`
-is a *distinct* type with literal syntax.
+Most languages make you represent a timeout as a bare integer and remember what
+unit it's in. The parameter is called `timeout_ms`, someone passes seconds, and
+you find out in production. witchy makes `Duration` a *distinct* type with
+literal syntax, so the unit rides along in the value and `30s` and `30ms` are
+different things to the type checker.
+
+The rest is what you'd expect: `Int` (64-bit, signed), `Float` (IEEE-754
+double), `Bool`, and `String` (UTF-8).
 
 ```witchy
 fn main(console: Console):
@@ -86,7 +91,7 @@ fn main(console: Console):
 
 `string.to_int` is strict: it **aborts the program** on non-numeric input or
 on a value that won't fit in an `Int`, rather than silently returning a wrong
-number - it does not return an `Err`. When bad input is expected (user input,
+number - it doesn't return an `Err`. When bad input is expected (user input,
 file contents), use `string.parse_int`, which returns `Option(Int)`.
 
 ## Lists, tuples, and dicts

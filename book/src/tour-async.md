@@ -1,6 +1,11 @@
 # Concurrency with Async and Channels
 
-witchy's concurrency uses **cooperative async tasks** and **channels**. An
+Most concurrency bugs are memory bugs wearing a hat: two threads reach the same
+value and the schedule decides who wins. witchy's tasks share no memory, so
+there's nothing to race over, and the schedule is deterministic, so a test that
+passes once passes every time.
+
+Concurrency here is **cooperative async tasks** and **channels**. An
 `async` function may `await`; calling it produces a *task* that the executor
 drives. Start one with `chan.spawn`; create channels with `chan.channel` and pass
 them to the tasks that communicate. Tasks have separate memory, and the
@@ -11,7 +16,7 @@ interpreter and compiled WebAssembly backends.
 
 An `async fn` is a function that can suspend at an `await`. Awaiting another async
 call runs it and yields its value. An `async fn main` is the program's entry into
-the executor - it is driven to completion automatically.
+the executor - it's driven to completion automatically.
 
 ```witchy
 async fn double(n: Int) -> Int:
@@ -27,7 +32,7 @@ async fn main(console: Console):
 `chan.spawn` starts a task running concurrently and returns a handle; `chan.join`
 waits for it while the executor can make progress. No channel is involved -
 spawning is just concurrency. Each task yields control at `chan.yield_now().await`,
-so the others get a turn - that is what interleaves their output. If every live
+so the others get a turn - that's what interleaves their output. If every live
 task parks with no progress, the executor runs its quiescence close pass; a
 parked join resumes then, even if the joined task has a continuation that will
 run afterward.
@@ -54,12 +59,12 @@ async fn main(console: Console):
 
 `chan.channel(cap)` creates a channel and returns a `(Sender, Receiver)` pair -
 two ends of the same conduit, which you pass to whichever tasks need them. A
-bounded channel blocks the sender when it is full while some task can make
+bounded channel blocks the sender when it's full while some task can make
 progress (backpressure); pass `0`, or use `chan.unbounded()`, for no limit. If
 every live task parks with no progress, the executor runs a quiescence close pass:
 parked receives resume as `None`, parked sends are released, and parked joins
 resume. That is the close condition `chan.recv(rx).await` and `chan.consume` see;
-witchy does not refcount sender values, so "closed" does not mean no `Sender`
+witchy doesn't refcount sender values, so "closed" doesn't mean no `Sender`
 value can ever be used again.
 
 ```witchy
@@ -125,7 +130,7 @@ before carrying `sum` forward. The server runs until its channel closes, then th
 
 Because a `Receiver` is an ordinary value, you can hand the *same* one to several
 tasks: they share a queue, and whoever is free takes the next message. That is a
-worker pool (many receivers on one channel) - something a per-task mailbox cannot
+worker pool (many receivers on one channel) - something a per-task mailbox can't
 express. Results flow back on a second channel.
 
 ```witchy
@@ -206,7 +211,7 @@ idiom.
 ## Iterating with `await`
 
 A `for` loop may `await` in its body. Each iteration runs to completion before the
-next begins, so a batch of asynchronous steps reads as an ordinary loop - that is
+next begins, so a batch of asynchronous steps reads as an ordinary loop - that's
 how `source` above sends several messages with `for n in [...]`.
 
 `for await x in rx:` is the receiver form: it loops over a channel, binding each
@@ -337,14 +342,14 @@ task.
 Channels provide deterministic scheduling and backpressure, but `unbounded`
 describes the channel's logical capacity, not infinite process memory. The 0.1
 compiled executor still boxes a continuation around each task resume. Its
-shell-only reclamation cannot yet recursively reclaim every captured child, so a
+shell-only reclamation can't yet recursively reclaim every captured child, so a
 single long-running producer/consumer loop exhausts the current linear-memory
 arena at roughly 10,000 message resumptions (the exact point varies with the
 program and payload). The interpreter oracle may continue past that point; this
 is a compiled-memory limitation, not a semantic difference in channel order or
 results.
 
-Use the current executor for bounded task graphs and bounded streams. Do not use
+Use the current executor for bounded task graphs and bounded streams. Don't use
 0.1 channels as an indefinitely running service queue. The deferred follow-up is
 a synthesized scalar scheduler for qualifying scalar programs and recursive drop
 for boxed/heap payloads; both retain the same `chan` surface and deterministic

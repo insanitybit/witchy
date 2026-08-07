@@ -1,8 +1,11 @@
 # Generators and Iterators
 
-Lists compute every element when built. For on-demand sequences, use the
-`std/iter` library of lazy iterators and `gen fn` generators that produce one
-value at a time.
+Building a list computes every element, whether or not you end up looking at
+them. That's fine for ten items, wasteful for ten million, and impossible for a
+sequence that doesn't end.
+
+`std/iter` gives you lazy iterators, and a `gen fn` generator produces one value
+at a time, on demand.
 
 ## Lazy iterators
 
@@ -74,7 +77,7 @@ fn main(console: Console):
 The `while true` loop never finishes on its own; `fibs().take(10)` stops
 pulling after ten values, so only ten Fibonacci numbers are ever computed. A
 generator can branch and loop as freely as any function. The Collatz sequence is
-finite, but its length is not known before iteration:
+finite, but its length isn't known before iteration:
 
 ```witchy
 import iter
@@ -147,7 +150,7 @@ at parse time. A trait that wants a lazy sequence declares a plain
 iterator of pieces. With no expected type (say, collecting just to print),
 the compiler asks you to ascribe the binding rather than guess.
 
-`Iter(a)` yields owned values; it is not a lending iterator. A `gen fn` is lowered to an
+`Iter(a)` yields owned values; it isn't a lending iterator. A `gen fn` is lowered to an
 ordinary function behind the scenes. The same generator runs identically on the
 interpreter and the compiled backend - laziness is a library and a lowering, not
 a special runtime.
@@ -160,7 +163,7 @@ restriction is placement: `await` works in loop bodies, but not in branch
 conditions or match scrutinees.
 
 A generator with no capability parameters is also, by construction, **pure**: a
-`gen fn` that takes no `Console`/`Dir`/`Net` provably cannot do I/O - it computes
+`gen fn` that takes no `Console`/`Dir`/`Net` provably can't do I/O - it computes
 the next value.
 
 Modules organize these definitions; compile-time code can generate more of them

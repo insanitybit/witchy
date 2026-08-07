@@ -1,12 +1,13 @@
 # Running Witchy Code
 
-Once a program type-checks, there are several ways to run it. They all use the
-same capability contract, but they differ in who supplies authority and how
-strictly the host is confined around the guest.
+Once a program type-checks there are several ways to run it, and the difference
+between them isn't convenience - it's who supplies the authority and how tightly
+the host is wrapped around the guest. All of them honour the same capability
+contract.
 
 Witchy's production execution path compiles to WebAssembly. The tree-walking
 interpreter is an independent semantic oracle used by `witchy parity` and the
-test suite; a normal run does not pay for executing both backends.
+test suite; a normal run doesn't pay for executing both backends.
 
 ## Run a source file
 
@@ -28,7 +29,7 @@ fn main(console: Console):
 ready to run
 ```
 
-A function that receives no `Dir`, `File`, `Fetch`, `Net`, or `Exec` cannot
+A function that receives no `Dir`, `File`, `Fetch`, `Net`, or `Exec` can't
 perform those effects. Direct development runs provide convenient development
 grants; use the sandbox when the grant itself must be explicit and reviewable.
 
@@ -42,7 +43,7 @@ witchy run . arg1 arg2
 ```
 
 `build` resolves and verifies dependencies, runs accepted confined build steps,
-links, and type-checks. It does not execute the application. `run` performs that
+links, and type-checks. It doesn't execute the application. `run` performs that
 build pipeline and then invokes the rune's application entrypoint.
 
 Commit `witchy.lock`. It records the resolved source identities, hashes,
@@ -102,7 +103,7 @@ The browser has honest providers for pure computation, `Console`, `Clock`,
 page-supplied `Env`, an in-memory `Dir`, origin-scoped `Fetch`, opaque
 `SecretStore`, and sequential `VM`. Raw sockets, native subprocesses, bare
 secrets, and host filesystem roots have no browser provider and remain denied.
-There is no fallback to execution in the main page.
+There's no fallback to execution in the main page.
 
 ## Choose the boundary
 

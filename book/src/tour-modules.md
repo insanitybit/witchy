@@ -1,8 +1,12 @@
 # Modules and Source Files
 
-A `.witchy` file is a module. Its filename supplies the module name: code in
-`parser.witchy` is imported as `parser`. Items are private to their module unless
-declared `pub`.
+Module systems usually make you say the same thing three times: name the file,
+declare the module inside it, then register it in a list somewhere else. Two of
+those can disagree with the third, and one day they will.
+
+witchy has one. A `.witchy` file is a module and its filename is its name - code
+in `parser.witchy` is imported as `parser`. Items are private to their module
+unless declared `pub`.
 
 ```text
 // parser.witchy
@@ -25,7 +29,7 @@ fn load_count(raw: String) -> Result(Int, String):
     parser.parse_count(raw)
 ```
 
-`parser.digit_value` is private and cannot be called from the importing file.
+`parser.digit_value` is private and can't be called from the importing file.
 Qualification makes the owner of a name visible and stops two imports from
 silently choosing between same-named functions.
 
@@ -75,8 +79,8 @@ the one bare effect-free builtin.
 
 ## Module constants
 
-A top-level `let` declares a module constant. It is evaluated and inlined during
-linking, so it does not create mutable global state:
+A top-level `let` declares a module constant. It's evaluated and inlined during
+linking, so it doesn't create mutable global state:
 
 ```text
 let default_port = 443
@@ -85,7 +89,7 @@ pub fn endpoint(host: String) -> String:
     "${host}:${default_port}"
 ```
 
-Top-level `var` is not a global-state escape hatch. Mutable state belongs in a
+Top-level `var` isn't a global-state escape hatch. Mutable state belongs in a
 function, a value threaded through calls, a task, or an explicitly authorized
 external resource.
 

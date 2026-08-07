@@ -2,6 +2,11 @@
 
 ## Functions
 
+witchy asks you to annotate function parameters and lets you leave almost
+everything else to inference. That split is deliberate: a signature is a
+contract other people read, so you write it down; a local is scaffolding, so
+the checker works it out.
+
 A function annotates its parameters and (optionally) its return type:
 
 ```witchy
@@ -25,7 +30,7 @@ everything else is module-private.
 
 When a function's final action is a recursive call, witchy runs that **proper tail
 call** without growing the control stack. This covers self recursion, mutual
-recursion, and calls through function values. It is a language guarantee
+recursion, and calls through function values. It's a language guarantee
 on both backends, not an optimization hint, and it needs no special syntax:
 
 ```witchy
@@ -71,7 +76,7 @@ true
 A recursive call does
 not qualify when the caller must still add to its result, inspect it with `?`,
 rebuild a `var` place, or perform other observable work. The guarantee bounds
-stack; it does not by itself promise zero allocation or constant running time.
+stack; it doesn't by itself promise zero allocation or constant running time.
 A recursive `var` call does qualify when each write-back returns through the
 same parameter root in the same order; an indexed or field place still requires
 caller-side reconstruction and therefore remains non-tail.
@@ -329,7 +334,7 @@ fn main(console: Console):
 42
 ```
 
-This is witchy's write-back convention. It is explicit in the definition
+This is witchy's write-back convention. It's explicit in the definition
 (`var n`), and the argument must be a mutable place. The callee works on the
 handed-over value; its final parameter value returns to that place independently
 of the function's ordinary result.
@@ -400,12 +405,12 @@ ownership contract about a value:
 
 | Qualifier | Contract |
 |---|---|
-| `frozen T` | deeply immutable; it cannot be bound as mutable or consumed through `own` |
+| `frozen T` | deeply immutable; it can't be bound as mutable or consumed through `own` |
 | `unique T` | the sole reference to the value |
 | `local unique T` | unique within the current call and unable to escape it |
 | `View(T, 'a)` | a read-only view tied to a `let('a) T` input; available in `mode opt` |
 
-The qualifiers have no runtime representation and cannot change a program's
+The qualifiers have no runtime representation and can't change a program's
 answer. They let `mode opt` turn a missed ownership proof into a compile error
 instead of taking a copy-correct fallback. Borrowed views, the `own unique`
 recursive-kernel contract, and the operations that use `unique` are covered in

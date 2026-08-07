@@ -1,11 +1,15 @@
 # Multi-Core and Isolated Workers
 
-The [`chan`/`task` model](tour-async.md) provides cooperative concurrency within
-one VM. The `vm` module provides **parallelism** across cores and **isolation** in
-a separate sandbox with explicitly chosen authority.
+The [`chan`/`task` model](tour-async.md) is cooperative, which buys you
+concurrency and exactly one core. When you want the other cores - or you want to
+run something with *less* authority than you currently hold - that's a different
+tool.
+
+The `vm` module gives you **parallelism** across cores and **isolation** in a
+separate sandbox with explicitly chosen authority.
 
 These APIs preserve backend parity by fixing result order and rejecting callback
-shapes that cannot cross an isolated VM boundary.
+shapes that can't cross an isolated VM boundary.
 
 > The online book runs these examples in fresh, zero-authority WebAssembly
 > instances, driven sequentially. Native compiled programs fan eligible maps
@@ -42,7 +46,7 @@ body with the same ordered-map semantics:
   by a plain byte copy. A pointer-bearing value like `List(String)` would carry
   addresses meaningless in another VM's memory, so it stays sequential.
 - `f` must be named directly as a **top-level function** (capture-free): a worker has
-  its own memory, so a captured parent-heap value would not be reachable there. A
+  its own memory, so a captured parent-heap value wouldn't be reachable there. A
   local function value or lambda remains valid, but runs sequentially.
 
 Worker startup adds a per-call cost, so native `vm.par_map` is intended for
@@ -122,7 +126,7 @@ As with `vm.with_dir`, the handler must be a bare top-level function name. Closu
 and local aliases are rejected, so this API always means an isolated worker on the
 compiled backend rather than a shape-dependent parent-VM fallback.
 
-It is deliberately **lock-step**: the worker processes one request at a time, in
+It's deliberately **lock-step**: the worker processes one request at a time, in
 order. A freely racing cross-VM channel would make interleaving timing-dependent,
 which the single-threaded interpreter could not reproduce. Lock-step serving keeps
 the result identical across both backends.

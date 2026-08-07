@@ -37,11 +37,11 @@ the clock is ticking
 ```
 
 `main`'s parameter list is the program's **root grant**. The host decides what
-to put there; the program cannot ask for more.
+to put there; the program can't ask for more.
 
 ## Authority flows only by argument
 
-A capability is an ordinary value once you have it, and code passes it as an
+A capability is an ordinary value once you've it, and code passes it as an
 argument. There are no globals to stash it in and no ambient registry to fetch
 it from. A function's authority is
 *exactly* its capability-typed parameters - visible, local, complete.
@@ -64,7 +64,7 @@ fn main(console: Console):
 compute(6): 37
 ```
 
-Read `compute`'s signature: `fn compute(x: Int) -> Int`. No capabilities. It is
+Read `compute`'s signature: `fn compute(x: Int) -> Int`. No capabilities. It's
 *provably* incapable of any effect - it can only compute. You don't have to read
 its body, or its callees' bodies, to know that. Contrast a typical language,
 where `compute` could be doing anything, and the only way to find out is to

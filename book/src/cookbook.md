@@ -11,7 +11,7 @@ Two things are true of every example here, and worth stating once:
 - **Every example is a real, tested program.** The book's ` ```witchy ` blocks
   are compiled, type-checked, and run on *both* backends as part of the build.
   If a snippet shows an output, that output is what the toolchain produced - it
-  cannot drift out of sync with the language.
+  can't drift out of sync with the language.
 - **A module is one `import` away.** Eight modules form the prelude (`list`,
   `string`, `dict`, `math`, `option`, `result`, `policy`, `show`) and need no
   import. Everything else - `regex`, `set`, `url`, `encoding`, `func`, `toml`,

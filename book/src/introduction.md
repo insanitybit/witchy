@@ -39,10 +39,10 @@ dependency.
 **You can audit by reading signatures.** `witchy caps program.witchy` walks the
 program and reports its complete capability footprint, computed from the source,
 broken down per right (`Dir[Read]` vs `Dir[Write]`, `Net[Connect]` vs
-`Net[Listen]`). It is never self-asserted metadata that could drift or lie.
+`Net[Listen]`). It's never self-asserted metadata that could drift or lie.
 
 **You can gate on growth.** `witchy caps-diff old new` fails when authority
-widened. Put it in CI and a dependency cannot quietly start listening on a
+widened. Put it in CI and a dependency can't quietly start listening on a
 socket between versions. The package manager applies the same gate to the runes
 (packages) you depend on.
 

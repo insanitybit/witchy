@@ -123,9 +123,9 @@ with `net.fetch(origin)`, while browser programs receive `Fetch` directly.
 
 ## Fetch an untrusted URL without DNS rebinding
 
-When a URL comes from outside, do not turn its authority into a new grant.
+When a URL comes from outside, don't turn its authority into a new grant.
 Narrow an existing `Fetch` root to the parsed origin instead. Narrowing rejects
-an origin the host did not grant, so user input cannot expand authority. The
+an origin the host didn't grant, so user input can't expand authority. The
 native provider resolves once and dials only the admitted result; a Fetch
 derived from confined `Net` also retains that network policy as a permanent
 floor.
@@ -155,8 +155,8 @@ name=path` (ordinary named secrets; append `,use-only` to deny reading them
 back). Ask for a `SecretStore` in `main`, then:
 
 - `secrets.require("name")` returns the `Secret` directly, failing loudly if it
-  was not granted - use it when absence is a configuration error.
-- `secrets.get("name")` returns `Option(Secret)` - `None` when it was not
+  wasn't granted - use it when absence is a configuration error.
+- `secrets.get("name")` returns `Option(Secret)` - `None` when it wasn't
   granted - for secrets that are genuinely optional.
 
 A `Secret` is opaque: you pass it to an operation that consumes it. `crypto.sign`
@@ -185,7 +185,7 @@ fn main(console: Console, secrets: SecretStore):
 
 Run it with `witchy run sign.witchy --signing-key key.seed --secret
 api-token=sk-live-abc`. Because the secret bytes live in the host, a program that
-loses the `SecretStore` capability (or was never granted it) cannot sign or
+loses the `SecretStore` capability (or was never granted it) can't sign or
 reveal at all - the authority to use a secret is itself a value you can withhold
 or [narrow](capabilities-narrowing.md).
 
@@ -199,7 +199,7 @@ the same signing and reveal policy as the native host.
 [Glamour](https://github.com/insanitybit/witchy) is witchy's frontend framework
 (this very book is a Glamour app). A view is built as **data** - a tree of `VNode`s,
 never a string - and rendered to HTML. Because `text` is escaped by construction,
-there is no HTML-injection sink: a `<script>` in your data renders as inert text, not
+there's no HTML-injection sink: a `<script>` in your data renders as inert text, not
 markup. This example needs only `Console` and runs in the page:
 
 ```witchy

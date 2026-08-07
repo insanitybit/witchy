@@ -37,7 +37,7 @@ record  Dir[Write]
 ```
  -
 because the code *can* write (it matches `Some` and calls `write`). Wrapping a
-capability in `Option` does not hide it from the footprint; the analysis is
+capability in `Option` doesn't hide it from the footprint; the analysis is
 static and conservative, counting what the code is able to do regardless of
 whether the value is `None` at runtime. Optionality changes the control flow, not
 the authority on paper.
@@ -98,8 +98,8 @@ compiled backend rebuilds the enclosing function's failure value.
 instantiated with capability-bearing values, `region:` copy-out carrying
 capabilities, and isolated-worker callback crossings remain intentionally
 rejected until those boundaries have concrete typed layouts.
-Capability aggregates also cannot be rendered or compared for equality:
-authority is not printable data or identity. No capability is silently boxed
+Capability aggregates also can't be rendered or compared for equality:
+authority isn't printable data or identity. No capability is silently boxed
 into an ordinary heap slot.
 
 ## At the entry point
@@ -130,7 +130,7 @@ fn main(console: Console, dir: Dir[Write], env: Env):
 
 `main` declares the upper bound of its authority (it *may* write), and the rest
 of the program decides, value by value, whether that authority is actually
-exercised. Everything below `run` that holds `None` provably cannot write.
+exercised. Everything below `run` that holds `None` provably can't write.
 
 The type checker establishes this condition statically; the sandbox enforces it
 at runtime.

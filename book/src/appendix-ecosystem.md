@@ -11,7 +11,7 @@ maps the repository.
   each rune's capability footprint from source (never trusting declared
   metadata), and *blocks any publish that widens authority*. Publishing is
   two-phase: stage, then a human-2FA promote. The promotion gate enforces the
-  rule that a dependency cannot quietly gain authority. (Chapter:
+  rule that a dependency can't quietly gain authority. (Chapter:
   [Sharing Code: Runes and the Registry](packages.md).)
 
 - **pm** - the package-manager **client** ("cargo for witchy"): resolve, fetch,

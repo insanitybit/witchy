@@ -1,9 +1,12 @@
 # Project: A Confined Log Scanner
 
-This chapter builds `scan`, a confined command-line tool that searches a log file
-for lines containing a query, with optional case-insensitivity. It exercises a
-pure core, a capability shell, and the sandbox. The organizing rule is: *push
-the effects to the edges, keep the middle pure.*
+*Push the effects to the edges, keep the middle pure.* That's the organizing
+rule of this chapter, and it's worth stating first, because it's what makes the
+last step - running the whole thing in a sandbox - almost boring.
+
+We'll build `scan`, a confined command-line tool that searches a log file for
+lines containing a query, with optional case-insensitivity. It exercises a pure
+core, a capability shell, and the sandbox.
 
 ## Start pure
 

@@ -45,7 +45,7 @@ to_ms` finds `duration.to_milliseconds`.
 
 | Module | What it gives you |
 |---|---|
-| `json` | parse and encode JSON - `json.decode(s)` returns `Result(Json, DecodeError)` (the parsed `Json` sum type, or a structured decode error; `json.decode_error_message(e)` renders it), so thread it with `?`; `json.stringify(x)` / `json.from_value(x)` encode *any* value reflectively (give your own types `derive(Reflect)`); `derive(Deserialize)` generates `from_json` to parse a record back with `json.DeserializeError`. There is no `derive(Json)`. |
+| `json` | parse and encode JSON - `json.decode(s)` returns `Result(Json, DecodeError)` (the parsed `Json` sum type, or a structured decode error; `json.decode_error_message(e)` renders it), so thread it with `?`; `json.stringify(x)` / `json.from_value(x)` encode *any* value reflectively (give your own types `derive(Reflect)`); `derive(Deserialize)` generates `from_json` to parse a record back with `json.DeserializeError`. There's no `derive(Json)`. |
 | `toml` | TOML parsing |
 | `url` | URL parsing |
 | `encoding` | hex and base64 |
@@ -117,10 +117,10 @@ and `crypto`'s hashing. These power the tooling you read about in the packages
 chapter.
 
 The `rights` module compares rendered capability names with rights-aware
-coverage rules (`Dir[Read]`, `Net[Connect, Tcp]`); it is used by supply-chain
+coverage rules (`Dir[Read]`, `Net[Connect, Tcp]`); it's used by supply-chain
 tooling. The preluded `policy` module supplies the sealed policy values built by
 `Net.tcp`, `Net.cidr`, `Net.private`, `Dir.ext`, and related type methods before
-they are passed to `only` or `deny`.
+they're passed to `only` or `deny`.
 
 ## A reminder about portability
 
@@ -133,5 +133,5 @@ appendix. Case conversion and trimming are deliberately ASCII-scoped on both
 backends; other UTF-8 operations, such as character counting and reversal, keep
 their documented character semantics. Native services such as cryptographic
 verification and networking use host imports in a native run and are unavailable
-when a browser host does not provide them. An unavailable operation fails loudly
+when a browser host doesn't provide them. An unavailable operation fails loudly
 at compilation or instantiation; it never changes meaning silently.

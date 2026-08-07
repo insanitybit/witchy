@@ -1,8 +1,12 @@
 # Functional-in-Place State Kernels
 
-Ordinary proper tail calls run in bounded stack space. A
-**functional-in-place** (FIP) kernel adds a stronger `mode opt` promise: recursive
-depth also adds no allocation, reuse, free, or arena-rewind operations.
+Proper tail calls buy you bounded stack space, and most languages stop there -
+which means a recursive function can still allocate on every step and you'd
+never know from the shape of it.
+
+A **functional-in-place** (FIP) kernel goes further with a `mode opt` promise:
+recursive depth also adds no allocation, reuse, free, or arena-rewind
+operations.
 
 Use FIP for state machines that repeatedly update a small scalar record. FIP
 uses no `fip` keyword or attribute: an ordinary function's ownership signature
@@ -54,7 +58,7 @@ comes from recursive depth. Completing the deep run also demonstrates that the
 recursive edge became bounded-stack control flow.
 
 These are exact operation counts exported by the compiled Wasm module - not wall
-clock timings. Browser speed, JIT warmup, and machine load therefore cannot turn
+clock timings. Browser speed, JIT warmup, and machine load therefore can't turn
 the proof green or red.
 
 ## The checked shape
@@ -64,8 +68,8 @@ The initial FIP contract is deliberately narrow:
 - The function is directly self-recursive and has exactly one `own unique`
   owner parameter.
 - The owner is a record containing only scalar fields.
-- Other parameters are scalar and do not carry heap state.
-- The body may inspect and update the owner's fields, but cannot replace or
+- Other parameters are scalar and don't carry heap state.
+- The body may inspect and update the owner's fields, but can't replace or
   escape the owner.
 - Every base path returns the owner directly.
 - The recursive call is in tail position and forwards that same owner.
@@ -129,4 +133,4 @@ for one directly recursive state owner.
 
 The current contract covers scalar-field records. Recursive algebraic data
 structures and heap-valued auxiliary state are future extensions; the compiler
-rejects them rather than implying a guarantee it cannot prove.
+rejects them rather than implying a guarantee it can't prove.

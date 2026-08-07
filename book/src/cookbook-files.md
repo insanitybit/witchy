@@ -1,8 +1,12 @@
 # Reading and Writing Files
 
-File access in witchy flows through the `Dir` capability. A `Dir` is authority
-over a directory *subtree* - never the whole filesystem - and it carries rights
-that say what you may do inside it. You read files with `Dir[Read]`, write them
+Open a file in most languages and you're spending your whole process's
+filesystem authority. The path is just a string, and `../../../etc/passwd` is a
+perfectly good string.
+
+File access in witchy flows through the `Dir` capability instead. A `Dir` is
+authority over a directory *subtree*, never the whole filesystem, and it carries
+rights that say what you may do inside it. You read files with `Dir[Read]`, write them
 with `Dir[Write]`, and take a full `Dir` when you need both.
 
 Unlike the pure examples in earlier chapters, these programs need a real `Dir`
@@ -28,7 +32,7 @@ fn main(console: Console, dir: Dir[Read]):
 ```
 
 Run `witchy caps` on this and the footprint is exactly `Console, Dir[Read]` -
-the signature is a machine-checkable promise that the program cannot write, only
+the signature is a machine-checkable promise that the program can't write, only
 read, and only within the subtree it was granted.
 
 ## Writing and organizing

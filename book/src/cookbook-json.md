@@ -1,16 +1,20 @@
 # Working with JSON
 
-JSON is the format most programs exchange with the outside world, so witchy
-makes both directions first-class. Encoding is *reflective*: any type that
+JSON goes out easily and comes in dangerously. Encoding is mechanical: you have
+a value, you write it down. Decoding is where programs get hurt, because the
+bytes came from somebody else and your type is claiming to know their shape.
+
+witchy splits the two deliberately. Encoding is *reflective*: any type that
 derives `Reflect` serializes with no per-type code. Decoding is *typed*: you
 parse a string into a `Json` value and either navigate it by hand or let a
-derived `Deserialize` pull it into your own record.
+derived `Deserialize` pull it into your own record, failing if it doesn't
+fit.
 
 ## Encoding: `json.stringify`
 
 Give a type `derive(Reflect)` (which needs `import reflect`) and
 `json.stringify` turns any value of it - and any list, option, or nesting of
-them - into a JSON string. There is no `derive(Json)`; serialization rides on
+them - into a JSON string. There's no `derive(Json)`; serialization rides on
 reflection.
 
 ```witchy

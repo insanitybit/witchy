@@ -1,7 +1,8 @@
 # The Toolbox
 
-The `witchy` binary provides the toolchain. The commands below follow a typical
-first use.
+The `witchy` binary is the whole toolchain. There's no separate formatter, test
+runner, or package tool to install and keep version-matched. The commands below
+follow a typical first use.
 
 ## Running and checking
 

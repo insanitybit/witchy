@@ -49,7 +49,7 @@ operators bind tighter than everything: `f(x)?` is `(f(x))?` and `p.x + 1` is
 | | `??` (unwrap-or) | **right** - `a ?? b ?? c` is `a ?? (b ?? c)` |
 | loosest | `lo..hi` `lo..=hi` (range) | - |
 
-Comparison does not chain: write `0 <= x && x < n`, not `0 <= x < n`.
+Comparison doesn't chain: write `0 <= x && x < n`, not `0 <= x < n`.
 
 ## Keywords
 

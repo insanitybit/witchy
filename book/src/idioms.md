@@ -1,8 +1,11 @@
 # Idiomatic witchy
 
-This chapter collects the repository's source conventions. Each section shows
-the preferred form beside a legal alternative, and every example is exercised
-by the test suite.
+Every convention in this chapter has a legal alternative that works fine. They're
+collected here because consistency across a codebase is worth more than any
+individual preference, and because the test suite exercises every example, so
+none of them can quietly rot.
+
+Each section shows the preferred form beside the alternative.
 
 ## Interpolation, not concatenation
 
@@ -50,7 +53,7 @@ fn main(console: Console):
 
 Absence is `Option` (the reason doesn't matter); failure is
 `Result(T, String)` (it does). Propagate with `e?`, add context with
-`e? "msg"`. **Do not** encode failure as `Option(String)` with `Some`
+`e? "msg"`. **Don't** encode failure as `Option(String)` with `Some`
 meaning "error" - the polarity is inverted and `?` can't compose with it.
 
 ```witchy
@@ -136,7 +139,7 @@ When data carries a rule ("0–100", "a real date", "distinct members"), seal
 the type and let one smart constructor own the rule - a value of the type is
 then proof the rule holds. See [Data: Records and Enums](tour-data.md) for
 the mechanics, and [Capabilities](capabilities.md) for the same move applied
-to authority (glamour's `UiFetch` tokens are policy you cannot forge).
+to authority (glamour's `UiFetch` tokens are policy you can't forge).
 
 ## The shape of a witchy program
 

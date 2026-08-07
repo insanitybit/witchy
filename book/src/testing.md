@@ -73,15 +73,15 @@ into CI.
 
 Look at those test functions: none take a capability. That's not a restriction
 the runner imposes arbitrarily: plain `witchy test` instantiates the compiled
-test artifact with zero real host grants. A test therefore cannot accidentally
+test artifact with zero real host grants. A test therefore can't accidentally
 hit the network, write a file, inspect the environment, or depend on the real
 clock. Effectful production functions may live beside the tests, but the runner
-does not grant them authority merely because they were linked into a test.
+doesn't grant them authority merely because they were linked into a test.
 
 Keeping effects at the edges leaves the program's core pure, so plain tests need
-no host setup and cannot accidentally exercise real authority. Unused effectful
+no host setup and can't accidentally exercise real authority. Unused effectful
 production functions are pruned from each synthesized test artifact; merely
-linking a function that mentions `Dir`, `Fetch`, or `Exec` does not grant it.
+linking a function that mentions `Dir`, `Fetch`, or `Exec` doesn't grant it.
 
 ## Stubs, fakes, strict mocks, and fixtures
 
@@ -103,7 +103,7 @@ Use a fixture capability when the provider contract itself matters: rights,
 narrowing, call order, failure injection, filesystem state, origin checks, or
 the proof that no undeclared operation occurred.
 
-Witchy does not monkeypatch statically bound functions. There is no global mock
+Witchy doesn't monkeypatch statically bound functions. There's no global mock
 registry and no source-level interception syntax.
 
 ## Deterministic capability fixtures
@@ -164,11 +164,11 @@ family; its sequential reference behavior remains independently parity-tested.
 Fixture capability records are assembled only for the selected rune's test
 module. The compiler flattens a concrete named-field capability record into its
 declared fixture roots, constructs the sealed record at the authenticated test
-boundary, and passes it to the test. Dependency tests cannot inherit that
+boundary, and passes it to the test. Dependency tests can't inherit that
 ability to construct fixture records. Generic or recursive fixture aggregate records are
 rejected before execution.
 
-Plans are inert data. They cannot name a host path, ambient environment source,
+Plans are inert data. They can't name a host path, ambient environment source,
 socket, executable path, callback, descriptor, or native object. Unknown
 versions and fields, duplicate JSON keys, malformed UTF-8, invalid paths,
 oversized values, forged handles, and inconsistent scripts fail closed before
@@ -216,7 +216,7 @@ they have an explicit CLI grant surface.
 
 Authority follows the test entrypoint, not everything linked beside it. A
 nullary test remains zero-grant even during an integration run, and an imported
-library function cannot widen the synthesized test `main`. When a directory
+library function can't widen the synthesized test `main`. When a directory
 run encounters tests from a manifest/lock-resolved dependency, those tests
 always receive zero real grants even if the caller supplied `--dir` or `--net`
 for the root package.
@@ -231,7 +231,7 @@ trait-bounded value, while the test chooses the concrete fake and its canned
 result.
 
 Function parameters work the same way when a one-method trait would add no
-clarity. The important part is the explicit injection seam: Witchy does not
+clarity. The important part is the explicit injection seam: Witchy doesn't
 monkeypatch or intercept a statically bound top-level function for tests. The
 test and production program exercise the same dispatch rules.
 
@@ -240,10 +240,10 @@ test and production program exercise the same dispatch rules.
 The entry module run by `witchy test` may directly construct a foreign sealed
 *data* type. This lets a test create malformed or boundary-case values that the
 type's production constructors intentionally reject. Production commands
-remain strict, and imported dependency modules do not inherit this ability.
+remain strict, and imported dependency modules don't inherit this ability.
 
-This relaxation does not manufacture authority. Sealed host capabilities such
-as `Dir`, `Net`, and `Clock` still cannot be constructed from Witchy source, and
+This relaxation doesn't manufacture authority. Sealed host capabilities such
+as `Dir`, `Net`, and `Clock` still can't be constructed from Witchy source, and
 plain tests still receive zero real host grants. Fixture handles are minted only
 by the runner from a validated plan. The old `testing.mock_dir` constructor and
 its separate native/interpreter filesystem backends were deleted; the shared

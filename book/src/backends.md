@@ -34,13 +34,13 @@ implementation to the parity obligation, so the project maintains these two.
 The two backends implement *one* language under a single rule:
 
 > Every supported program has identical results and failures on both backends.
-> A construct that cannot meet that contract is rejected loudly.
+> A construct that can't meet that contract is rejected loudly.
 
 The interpreter defines the result; the compiled tier must match it. Hundreds of
 differential tests run the same source through both implementations. Property
 tests generate additional programs, and CI runs the maintained examples through
 `witchy parity`. The CLI exposes that same check so a user can inspect the
-invariant on a particular program. Ordinary `run` does not secretly execute the
+invariant on a particular program. Ordinary `run` doesn't secretly execute the
 interpreter first; the test and parity harnesses are what keep the production
 compiler honest.
 
@@ -85,7 +85,7 @@ fn main(console: Console):
         console.print(value.render())
 ```
 
-Receiver conventions do not change at the dynamic boundary. In particular,
+Receiver conventions don't change at the dynamic boundary. In particular,
 `var self` writes the hidden value back only after the call returns normally:
 
 ```witchy
@@ -109,7 +109,7 @@ fn main(console: Console):
 
 Migration is explicit. Replace a generic `x: impl Render` with `x: dyn Render`
 only when callers need runtime heterogeneity, and add a directed annotation (or
-`as dyn Render`) at construction. A concrete `var` caller place cannot be
+`as dyn Render`) at construction. A concrete `var` caller place can't be
 silently erased because dynamic write-back may select another concrete witness;
 bind `var value: dyn Render` first. Move any capability stored inside the
 concrete payload into an explicit trait-method parameter. `dyn PartialEq` and
@@ -129,11 +129,11 @@ authority the host hands over. Differential coverage checks that the run path
 implements the independent reference semantics, while the sandbox constrains
 which host services that compiled module can reach.
 
-There is no silently divergent portable subset. The concurrency model
+There's no silently divergent portable subset. The concurrency model
 (`async`/`await`, spawning, and channels) runs on a deterministic cooperative
 executor written in witchy. Native services such as networking and cryptography
-are host imports with shared semantics; a browser that does not supply such an
-import cannot run that operation. When a representation or host cannot support a
+are host imports with shared semantics; a browser that doesn't supply such an
+import can't run that operation. When a representation or host can't support a
 construct faithfully, compilation or instantiation fails instead of selecting a
 different meaning.
 

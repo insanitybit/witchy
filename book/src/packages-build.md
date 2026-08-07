@@ -5,9 +5,9 @@ classic supply-chain attack surface, because in those ecosystems the build scrip
 runs with *your* full ambient authority. witchy splits the problem in two:
 
 1. **Resolving and installing a rune executes nothing.** Source is fetched,
-   hash-verified, parsed, and type-checked. There is no install hook to exploit.
+   hash-verified, parsed, and type-checked. There's no install hook to exploit.
 2. **A rune that genuinely needs build-time codegen ships a *build step*** - and
-   a build step is a witchy program, so it is governed by capabilities like
+   a build step is a witchy program, so it's governed by capabilities like
    everything else: typed, footprinted, granted per-rune, gated on widening.
 
 ## The `build.witchy` entry point
@@ -88,7 +88,7 @@ build OK: `app` (1 dependency resolved, linked + type-checked)
 name, even if it exists in your environment.)
 
 `child-paths` are read-only outer-fence needs inherited by the named tool; they
-are not `BuildRead` grants and never become visible to the Witchy build program.
+aren't `BuildRead` grants and never become visible to the Witchy build program.
 
 ## Gated against the future: the widening
 
@@ -146,7 +146,7 @@ Either way the step runs with zero ambient authority - only the minted, confined
 caps. A `write_out` to `../escape.txt` is rejected by the same path-confinement
 the runtime `Dir` uses; an un-allow-listed tool is denied before it starts; an
 ungranted `BuildRead` never gets minted at all. Every build step runs the same
-way: it is compiled to WASM and instantiated in the **zero-ambient sandbox** with
+way: it's compiled to WASM and instantiated in the **zero-ambient sandbox** with
 *only* the host functions its granted caps allow. A **deterministic** step (one
 that only writes generated source and reads project files) gets *just* its
 `write_out` / `read_build` host functions linked, so the dangerous operations

@@ -30,7 +30,7 @@ fn main(console: Console):
     console.print("${accounts.at(1).balance}")
 ```
 
-A plain `for x in xs:` binds each element read-only - assigning to `x` there is a
+A plain `for x in xs:` binds each element read-only - assigning to `x` there's a
 compile error. Reach for `for var` only when you intend to update elements.
 
 In this first version the body must run straight through: a `break`, `continue`,

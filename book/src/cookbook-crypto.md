@@ -1,7 +1,7 @@
 # Hashing and Signatures
 
 The `crypto` module provides the cryptographic primitives a program reaches for:
-hashes, HMACs, and signature verification. Like the other text modules it is
+hashes, HMACs, and signature verification. Like the other text modules it's
 pure computation - hashing a string needs no capability. Signing, by contrast,
 requires a `Secret` (covered with the secret store), because the private key is
 authority you must be granted.
@@ -32,7 +32,7 @@ yields a `Bytes` of length 32. Pair `crypto` with `encoding` whenever you need
 to move a digest between its hex, base64, and raw-byte forms.
 
 `sha512`, `sha3_256`, and `hmac_sha256` work the same way but are native-only -
-a browser-hosted module does not get them. `hmac_sha256` computes a keyed hash;
+a browser-hosted module doesn't get them. `hmac_sha256` computes a keyed hash;
 note its key argument is **hex-encoded**, so encode a raw string key with
 `encoding.hex_encode` first:
 

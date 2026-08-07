@@ -2,8 +2,10 @@
 
 ## Generic functions
 
-A lowercase, argument-less name in a type is a **type variable**. Use one when a
-function accepts any element type:
+Most languages make you declare a type variable before you can use it - `<T>`,
+`[A]`, `forall a.` - which is bookkeeping that exists to tell the parser
+something it could have worked out. witchy skips it. A lowercase, argument-less
+name in a type position *is* a **type variable**, declared by being used:
 
 ```witchy
 fn pair_up(x: a, y: a) -> (a, a):
@@ -167,7 +169,7 @@ count: 42
 usual inline rendering form and always uses the same prelude `Show` path for a
 value with a relevant impl: `console.print("${Temp(5)}")`,
 `show.render(Temp(5))`, and `show.say(console, Temp(5))` all print `5 deg C`.
-Imports expose names; they do not change rendering behavior.
+Imports expose names; they don't change rendering behavior.
 
 ## Deriving the common traits
 
@@ -212,7 +214,7 @@ Score(12, beta)
   the reflection-based encoders serialize it with no per-type code:
   `json.stringify(score)` returns `{"points":12,"label":"beta"}` and
   `json.from_value(score)` the `Json` value. Scalars, lists, options, and nested
-  `derive(Reflect)` records all map. (There is **no** `derive(Json)` /
+  `derive(Reflect)` records all map. (There's **no** `derive(Json)` /
   `to_json`; serialization is reflective, only decoding is generated - next.)
   When you don't even want a named type, an [anonymous record](tour-data.md)
   (`.{field: expr}`) is reflectable too, so `json.stringify(.{ok: true})` works

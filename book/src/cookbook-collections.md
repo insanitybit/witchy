@@ -94,6 +94,6 @@ pear: 2
 Two habits are worth forming here. First, `get_or` (and `get_or_insert`) spare
 you an `Option` match when a sensible default exists. Second, a `Dict` has no
 guaranteed iteration order - so when output must be deterministic (as every book
-example must, to run on both backends), sort the keys first. That is not a
-witchy quirk; it is the same discipline any hash-map-backed program needs, made
+example must, to run on both backends), sort the keys first. That isn't a
+witchy quirk; it's the same discipline any hash-map-backed program needs, made
 visible.

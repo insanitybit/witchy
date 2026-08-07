@@ -3,7 +3,7 @@
 `derive(Show)`, `derive(Eq)`, and friends generate a *new function per type* at
 compile time. Reflection is the other half of the same idea: instead of generating
 code for each type, it exposes a value's **structure as data**, so one function can
-walk a value of *any* type. It is how `json.stringify` serializes a record it has
+walk a value of *any* type. It's how `json.stringify` serializes a record it has
 never seen, with no per-type encoder.
 
 ## Making a type reflectable
@@ -36,7 +36,7 @@ Two different consumers - `json.stringify` (from `import json`) and `reflect.deb
 (a structural string, handy in tests and logs) - both read `Point` with no per-type
 code. One derivation supports every reflective consumer. Reflection is opt-in per
 type (like Zig's `@typeInfo`, but you choose which types
-participate), so reflection never sees a type that did not ask to be seen.
+participate), so reflection never sees a type that didn't ask to be seen.
 
 Sum types reflect too, carrying their variant:
 
@@ -132,17 +132,17 @@ there JSON, a debug string, or whatever you traverse it into. Going the other wa
 *decoding* a parsed value back into a typed record, is generated per type with
 `derive(Deserialize)` (`Type.from_json(j) -> Result(Type, json.DeserializeError)`);
 see
-[Generics and Traits](tour-generics.md). There is deliberately no `derive(Json)`
+[Generics and Traits](tour-generics.md). There's deliberately no `derive(Json)`
 or `to_json` - encoding is reflective and needs nothing generated, while only
 decoding has to be.
 
-## It is ordinary witchy
+## It's ordinary witchy
 
 `Mirror` is a normal sum type, the `Reflect` impls are normal trait impls, and
 `derive(Reflect)` appends normal source before type-checking - so a reflective
 consumer you write runs identically on the interpreter and the compiled backend,
 and audits in `witchy caps` like any other code. Reflection adds no runtime magic:
-it is a trait and a data type, nothing more.
+it's a trait and a data type, nothing more.
 
 ## Checked dynamic values
 
@@ -193,7 +193,7 @@ true
 7
 ```
 
-Dynamic values cannot retain borrowed views: materialize a view with `.owned()`
+Dynamic values can't retain borrowed views: materialize a view with `.owned()`
 before packing it. Capability-requiring methods are excluded from plain
 `dynamic.call`; inspect `dynamic.method_caps` and provide an explicit bundle to
 `dynamic.call_with`. Private or sealed fields remain inaccessible, and unknown

@@ -67,7 +67,7 @@ blocked: acme/logger 1.0.0 -> 1.1.0 widens the footprint
 run `witchy update --allow-cap Net` to accept, or pin the old version
 ```
 
-A dependency cannot silently start touching the network between versions. The
+A dependency can't silently start touching the network between versions. The
 gate forces the new authority to be seen and accepted - a code-review signal
 that's verb-precise (`Net[Listen]` is different from `Net[Connect]`) and
 impossible to miss. `witchy tree` shows the whole dependency tree's authority at
@@ -86,9 +86,9 @@ Release is two-phase. A publish lands **staged** - visible but not resolvable.
 A separate **promote**, by a different identity and with a second factor, makes
 it a real release. On a trusted registry, Coven accepts that proof only from the
 verified identity token's issuer-signed `amr` claim (`mfa` or `webauthn`) and
-consumes the token's `jti`; a request-body marker cannot release anything.
+consumes the token's `jti`; a request-body marker can't release anything.
 Coven Web instead verifies a fresh passkey assertion at the web edge and may
-forward to an internal anonymous-mode Coven that is never exposed directly.
+forward to an internal anonymous-mode Coven that's never exposed directly.
 Separation of duties is enforced: the promoter can't be the uploader. And even
 once released, a version sits out a **staging cooldown**
 (72 hours by default) before `add`/`update` will resolve it - time for a
@@ -99,8 +99,8 @@ tampering, and lockfiles pin content hashes, the registry's key, and the full
 provenance chain, all re-checkable offline with `witchy verify`. Add `--online`
 when you also want to re-fetch TUF metadata and check freshness or rollback.
 
-**Resolving and installing a rune never executes its code**: it is
-read and type-checked, nothing more. There is no `postinstall`, no `build.rs`
+**Resolving and installing a rune never executes its code**: it's
+read and type-checked, nothing more. There's no `postinstall`, no `build.rs`
 running with your ambient authority.
 
 ## Build steps are capabilities too

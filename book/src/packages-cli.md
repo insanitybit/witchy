@@ -1,7 +1,12 @@
 # The Manifest, the Lockfile, and the CLI
 
-This chapter covers the package manager's manifest, lockfile, and command-line
-surface. Command and file formats match the current tool.
+The one thing you won't find in a witchy manifest is a list of the capabilities
+a rune needs. A declared permission is a claim, and a claim can be wrong, stale,
+or a lie; witchy computes the footprint from the source every time instead.
+
+What the manifest does hold is everything else - dependencies, versions, build
+steps. This chapter is its reference, along with the lockfile and the
+command-line surface. Command and file formats match the current tool.
 
 ## The manifest: `witchy.toml`
 
@@ -67,7 +72,7 @@ The lockfile records both capability axes for each rune:
 - **`runtime_footprint` / `build_footprint`** - the rune's authority on each
   axis, **recomputed from its source** at lock time (never read from metadata).
   This is the baseline the widening gate compares against: these footprints are
-  what you have *accepted*.
+  what you've *accepted*.
 - **`determinism`** - the build-reproducibility tier: `guaranteed` for a rune
   whose build (if any) is pure, `pinned-only` once it uses `BuildExec`/`BuildNet`
   (those outputs get content-hashed so rebuilds still pin).
@@ -80,7 +85,7 @@ Commit the lockfile. Same lock ⇒ same bytes, same authority, offline.
 | Command | What it does |
 |---|---|
 | `witchy new <name>` / `init [name]` | scaffold a rune - `new` makes a subdirectory, `init` writes into the current one (namespaced names like `acme/lib` work) |
-| `witchy add <pkg>[@<version>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]` | resolve + add a **registry** dependency - **gated** on widening (either axis), and a release younger than the staging cooldown (72h; `WITCHY_COOLDOWN_SECS`) is denied unless `--allow-fresh`. A local **path** dependency is added by hand in `witchy.toml`; `add --path` is not wired up |
+| `witchy add <pkg>[@<version>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]` | resolve + add a **registry** dependency - **gated** on widening (either axis), and a release younger than the staging cooldown (72h; `WITCHY_COOLDOWN_SECS`) is denied unless `--allow-fresh`. A local **path** dependency is added by hand in `witchy.toml`; `add --path` isn't wired up |
 | `witchy build [<file\|dir>]` | resolve, verify hashes, link, type-check; writes/uses the lock (defaults to the current project) |
 | `witchy --release build --target trusted-exe [--out <path>]` | emit one host-native trusted application containing the runtime and compiled WASM (default `target/release/<rune-name>`) |
 | `witchy run [<file\|dir>] [args…]` | `build`, then run the app rune |
@@ -108,7 +113,7 @@ application author must bind each resource parameter of `main` in
 `[targets.trusted-exe]`; a directory binding selects exactly one launch-time
 root such as cwd or `/`, and Witchy operations still accept only paths relative
 to that root. Use portable `.wasm` with consumer-supplied grants when the person
-running the code does not want to trust the application beyond a sandbox.
+running the code doesn't want to trust the application beyond a sandbox.
 
 ```toml
 [targets.trusted-exe.dirs]
@@ -157,7 +162,7 @@ straight from its code and prints what it demands:
 src/app.witchy demands: Console
 ```
 
-The footprint is derived from the source, never read from the manifest, so it is
+The footprint is derived from the source, never read from the manifest, so it's
 the authority the file actually reaches for - not what it claims. Across a whole
 tree, each rune's runtime and build footprints are pinned per rune in
 `witchy.lock` (the `runtime_footprint` / `build_footprint` fields above), and

@@ -119,7 +119,7 @@ missing host
 Anonymous-record identity is exact: `.{x: Int, y: Int}` and
 `.{y: Int, x: Int}` are the same type. At a place that explicitly expects a
 smaller anonymous shape, however, Witchy can project a richer record to that
-exact target. Extra fields are really removed; they are not hidden dynamic
+exact target. Extra fields are really removed; they aren't hidden dynamic
 properties.
 
 Use `.{..Base, field: Type}` to compose a new exact type from an existing
@@ -149,10 +149,10 @@ ready
 
 Projection is directed by an expected type: annotations, assignments, ordinary
 and `let`/`own` arguments, returns, typed aggregate slots, and `as Summary` can
-request it. Inference remains exact - lists and function values do not become
-covariant, and unannotated branch joins do not silently drop fields. A borrowed
+request it. Inference remains exact - lists and function values don't become
+covariant, and unannotated branch joins don't silently drop fields. A borrowed
 call leaves `detailed` unchanged; an `own` call consumes it. `var` arguments
-stay invariant because a callee could replace the smaller record and there is
+stay invariant because a callee could replace the smaller record and there's
 no sound way to write that replacement back while restoring omitted fields.
 
 Type spread and value spread are different operations. `.{..Summary, note:

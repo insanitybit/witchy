@@ -2,7 +2,7 @@
 
 witchy builds browser UIs the same way it builds everything else: as pure code
 with authority carried explicitly. The framework is **Glamour**, a
-capability-pure Model-View-Update (MVU) library - and this book you are reading
+capability-pure Model-View-Update (MVU) library - and this book you're reading
 is itself a Glamour app.
 
 ## The shape of a Glamour app
@@ -29,7 +29,7 @@ network authority is denied - running right in the page in
 
 ## Templates are Witchy tagged literals
 
-Glamour does not add JavaScript JSX to the language. `html"..."` and
+Glamour doesn't add JavaScript JSX to the language. `html"..."` and
 `jsx"..."` are ordinary compile-time tags, in the same family as `sql"..."`:
 Glamour parses the static text and the compiler preserves each Witchy `${...}`
 hole as typed syntax. Both spellings produce the same checked template plan.
@@ -44,7 +44,7 @@ let view: VNode(Msg) = jsx"""
 ```
 
 Text holes stay text nodes. URL, boolean, property, class, ARIA, and event
-positions use distinct typed sinks, so a plain `String` cannot accidentally
+positions use distinct typed sinks, so a plain `String` can't accidentally
 become a navigation URL. `css"..."` similarly compiles a static, scoped sheet
 with deterministic class handles.
 
@@ -53,7 +53,7 @@ with deterministic class handles.
 A Glamour app compiles to the same witchy WebAssembly as any other program, and
 runs on the browser's own WebAssembly engine. The browser host starts with only
 pure-compute infrastructure imports; no authority is ambient. A module that
-reaches for an unrequested capability cannot instantiate. The page may
+reaches for an unrequested capability can't instantiate. The page may
 explicitly opt into providers published by the browser menu. That is the same
 structural guarantee as the native sandbox, arrived at by omission rather than
 by a runtime check - see
@@ -75,7 +75,7 @@ adds an **opt-in** browser host that backs each capability with *what the browse
 actually has* - the real clock for `Clock`, a default-empty (but page-supplied)
 environment for `Env`, a confined **in-memory scratch tree** for `Dir`,
 origin-scoped browser `Fetch`, and page-supplied opaque secrets for
-`SecretStore`. It is opt-in precisely so it is
+`SecretStore`. It's opt-in precisely so it's
 never an ambient widening: the default host still denies everything by omission,
 and a page enables only the families it explicitly hands over. Those examples then
 run with ordinary, non-deterministic output (fine for a demo).
@@ -102,7 +102,7 @@ reviewable **grantable capability**. An app receives one bare root token,
 
 Each sensitive `Cmd` takes its token as the leading argument, so an unauthorized
 effect is *unrepresentable* rather than merely denied at runtime - a component
-without a `UiFetch` cannot build an HTTP command at all. The tokens gate
+without a `UiFetch` can't build an HTTP command at all. The tokens gate
 construction; the capability-holding shell still re-checks each effect's policy
 before performing it. This is the capability model of
 [Capabilities](capabilities.md) applied to UI effects - the same footprint that
@@ -116,7 +116,7 @@ engine, a syntax highlighter. Glamour lets you embed one **without giving up the
 security model**, through a *compartment*: an isolated foreign-code bundle the
 host mounts in a locked-down, opaque-origin `sandbox="allow-scripts"` iframe with
 `connect-src 'none'`, reachable only over a narrow message channel. The foreign
-code runs, but it cannot touch the network, the parent origin, or the DOM outside
+code runs, but it can't touch the network, the parent origin, or the DOM outside
 its frame.
 
 Spawning foreign code is a real authority - the **`Js`** authority, the browser
@@ -145,7 +145,7 @@ Two shipped apps demonstrate the model end to end:
 
 - **Coven Web** - the web console for the package registry. It pairs a pure-witchy
   server with a thin host shell that holds the browser-side authority a
-  pure-compute guest cannot (network, session, credentials), and serves a Glamour
+  pure-compute guest can't (network, session, credentials), and serves a Glamour
   app same-origin under strict cross-origin isolation.
 - **The docs app** - this book, rendered as a Glamour app that fetches each
   chapter and turns its code blocks into editable, runnable cells.

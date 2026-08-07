@@ -1,5 +1,8 @@
 # Uniform `var` write-back
 
+`var` looks like a reference and isn't one, and almost every surprise in this
+chapter comes from forgetting that.
+
 A `var` parameter means move-in/move-out in every call. Its argument must be a
 mutable place; the function receives the current value and writes its final value
 back on every structured return. The ordinary return value is independent.
@@ -26,7 +29,7 @@ resolves to the same `var`-declared operation. Statement position may discard a
 `var` call's independent result because the write-back is already an effect. A
 non-`var`, non-`()` result still requires a binding or `let _ =`.
 
-An immutable binding or temporary cannot be a write-back target:
+An immutable binding or temporary can't be a write-back target:
 
 ```witchy
 fn main(console: Console):
@@ -59,7 +62,7 @@ expression continues.
 
 ## Returning the old value efficiently
 
-Result-bearing mutators do not need a tuple convention or special call syntax.
+Result-bearing mutators don't need a tuple convention or special call syntax.
 The compiler carries the ordinary result and the final `var` value on separate
 ABI channels:
 
