@@ -10,6 +10,7 @@ import coven_json
 import show
 import error
 import convert
+import url
 from json import Json
 
 // A trusted issuer: a provider id (the token's `iss`) plus the key(s) that sign its
@@ -172,3 +173,121 @@ fn signing_key(entry: Issuer, token: String) -> Result(String, TokenError):
                 Some(k) -> jwt.rsa_key_for_kid(jwks, k).map_err(fn(e: jwt.JwtError): TokenJwksKey(jwt.jwt_error_message(e)))
                 None -> Err(TokenMissingKid(entry.id))
         None -> Ok(entry.pubkey)
+
+// --- live OIDC issuer discovery (pure validation) -----------------------------
+// The `<issuer-url>=oidc` trust form resolves an issuer's JWKS at startup from
+// its OIDC discovery document. This module stays pure: the two HTTPS fetches
+// live in coven.witchy (through a Fetch scoped to the issuer origin); these
+// validators decide what a fetched document may install, so they can be
+// differential-tested without a network.
+
+// Matchable failures resolving live OIDC issuer trust. Every one is
+// startup-fatal in the server: a registry must never come up with
+// silently-empty trust.
+type DiscoveryError:
+    IssuerNotHttps(String)
+    IssuerInvalidUrl(String)
+    DiscoveryInvalidJson(String)
+    DiscoveryMissingJwksUri
+    JwksUriInvalidUrl(String)
+    JwksUriNotHttps(String)
+    JwksUriCrossOrigin(String, String)
+    JwksInvalidJson(String)
+    JwksMissingKeys
+    JwksKeysNotArray
+    JwksNoRsaKeys
+
+pub fn discovery_error_message(e: DiscoveryError) -> String:
+    match e:
+        IssuerNotHttps(u) -> "issuer `${u}` must be an https:// URL — live JWKS discovery refuses plaintext http (a network attacker could install the registry's trust roots)"
+        IssuerInvalidUrl(reason) -> "invalid issuer URL: ${reason}"
+        DiscoveryInvalidJson(reason) -> "malformed OIDC discovery document: ${reason}"
+        DiscoveryMissingJwksUri -> "OIDC discovery document carries no `jwks_uri` string"
+        JwksUriInvalidUrl(reason) -> "invalid `jwks_uri`: ${reason}"
+        JwksUriNotHttps(u) -> "`jwks_uri` `${u}` must be an https:// URL"
+        JwksUriCrossOrigin(uri, origin) -> "`jwks_uri` `${uri}` is not same-origin with the issuer (${origin}) — refusing a discovery document that points key fetching at another host"
+        JwksInvalidJson(reason) -> "malformed JWKS document: ${reason}"
+        JwksMissingKeys -> "JWKS document carries no `keys` field"
+        JwksKeysNotArray -> "JWKS `keys` is not an array"
+        JwksNoRsaKeys -> "JWKS carries no RSA signing keys — RS256 verification needs at least one `kty: RSA` key"
+
+impl Show for DiscoveryError:
+    fn show(self) -> String:
+        discovery_error_message(self)
+
+impl Error for DiscoveryError
+
+impl From(DiscoveryError) for String:
+    fn from(value: DiscoveryError) -> Self:
+        discovery_error_message(value)
+
+// The issuer's canonical origin ("https://host:port") — what the discovery
+// fetches are capability-scoped to. https only; a query or fragment is not an
+// issuer identifier (OIDC Discovery §3) and is refused.
+pub fn issuer_origin(issuer: String) -> Result(String, DiscoveryError):
+    match url.parse(issuer):
+        Err(e) -> Err(IssuerInvalidUrl(url.url_error_message(e)))
+        Ok(u) ->
+            if url.scheme(u) != "https":
+                Err(IssuerNotHttps(issuer))
+            else:
+                match (url.query(u), url.fragment(u)):
+                    (None, None) -> Ok(origin_of(u))
+                    _ -> Err(IssuerInvalidUrl("issuer `${issuer}` must not carry a query or fragment"))
+
+fn origin_of(u: url.Url) -> String:
+    "${url.scheme(u)}://${url.host(u)}:${url.port(u)}"
+
+// The issuer's discovery-document URL (OIDC Discovery): the issuer with
+// `/.well-known/openid-configuration` appended to its path.
+pub fn discovery_url(issuer: String) -> Result(String, DiscoveryError):
+    let _origin = issuer_origin(issuer)?
+    Ok(issuer.strip_suffix("/") + "/.well-known/openid-configuration")
+
+// The `jwks_uri` of a fetched discovery document — required to be an https URL
+// on the SAME ORIGIN as the issuer, so a compromised discovery document cannot
+// point key fetching at an attacker-controlled host (and so the server's Net
+// grant for the issuer origin provably covers both startup fetches).
+pub fn jwks_uri_of(issuer: String, discovery_json: String) -> Result(String, DiscoveryError):
+    let origin = issuer_origin(issuer)?
+    match json.decode(discovery_json):
+        Err(e) -> Err(DiscoveryInvalidJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            match json.get_string(doc, "jwks_uri"):
+                None -> Err(DiscoveryMissingJwksUri)
+                Some(uri) ->
+                    match url.parse(uri):
+                        Err(e) -> Err(JwksUriInvalidUrl(url.url_error_message(e)))
+                        Ok(u) ->
+                            if url.scheme(u) != "https":
+                                Err(JwksUriNotHttps(uri))
+                            else if origin_of(u) != origin:
+                                Err(JwksUriCrossOrigin(uri, origin))
+                            else:
+                                Ok(uri)
+
+// A fetched JWKS document, validated at INSTALL time: it must decode, carry a
+// `keys` array, and hold at least one RSA key — the only key type RS256
+// verification can use. An empty or RSA-less key set would make every later
+// token verification fail 401 while the registry looks healthy; refuse to
+// install it instead.
+pub fn installed_jwks(jwks_json: String) -> Result(Json, DiscoveryError):
+    match json.decode(jwks_json):
+        Err(e) -> Err(JwksInvalidJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            match json.get(doc, "keys"):
+                None -> Err(JwksMissingKeys)
+                Some(keys) ->
+                    match json.as_array(keys):
+                        None -> Err(JwksKeysNotArray)
+                        Some(arr) ->
+                            if has_rsa_key(arr):
+                                Ok(doc)
+                            else:
+                                Err(JwksNoRsaKeys)
+
+fn has_rsa_key(keys: List(Json)) -> Bool:
+    for k in keys:
+        if json.get_string(k, "kty").unwrap_or("") == "RSA":
+            return true
+    false

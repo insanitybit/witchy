@@ -80,6 +80,9 @@ pub(crate) struct RegistryServer {
     pub(crate) regroot: PathBuf,
     home: PathBuf,
     issuer_dir: PathBuf,
+    /// The issuer id minted tokens carry (`iss`) — the local-IdP name for the
+    /// pinned/JWKS forms, the full https issuer URL for the OIDC-discovery form.
+    issuer: String,
 }
 
 const ISSUER: &str = "local-idp";
@@ -147,6 +150,7 @@ impl RegistryServer {
             regroot,
             home,
             issuer_dir,
+            issuer: ISSUER.to_string(),
         }
     }
 
@@ -170,7 +174,7 @@ impl RegistryServer {
             "--issuer-key".into(),
             self.issuer_dir.to_string_lossy().into_owned(),
             "--issuer".into(),
-            ISSUER.into(),
+            self.issuer.clone(),
             "--sub".into(),
             sub.into(),
         ];
@@ -248,7 +252,116 @@ impl RegistryServer {
             std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
         }
         assert!(up, "witchy coven-serve (jwks) never started listening on {addr}");
-        RegistryServer { child, port, regroot, home, issuer_dir }
+        RegistryServer { child, port, regroot, home, issuer_dir, issuer: ISSUER.to_string() }
+    }
+
+    /// Like [`start_jwks`], but the registry trusts the issuer via **live OIDC
+    /// discovery** (`--trust-issuer-oidc <issuer-url>`, RFC-0116 track 2): a
+    /// loopback rustls "IdP" (self-signed `localhost` cert, trusted through
+    /// `WITCHY_TLS_EXTRA_ROOTS`) serves `/.well-known/openid-configuration`
+    /// pointing at its same-origin `/jwks`, and coven-serve fetches both over
+    /// HTTPS at startup — before binding — installing the JWKS for the issuer
+    /// URL. Minted tokens carry that URL as `iss`.
+    pub(crate) fn start_oidc(kid: &str) -> RegistryServer {
+        use std::io::{Read, Write};
+        use std::sync::Arc;
+        let regroot = unique("coven-oidc-regroot");
+        let home = unique("coven-oidc-home");
+        std::fs::create_dir_all(&regroot).unwrap();
+        let seed = regroot.join("root.seed");
+        std::fs::write(&seed, "0000000000000000000000000000000000000000000000000000000000000001").unwrap();
+        let issuer_dir = unique("coven-oidc-issuer");
+        Command::new(BIN)
+            .args(["coven-gen-issuer", "--out", issuer_dir.to_str().unwrap()])
+            .output()
+            .expect("gen issuer");
+        let jwks = Command::new(BIN)
+            .args(["coven-issuer-jwks", "--issuer-key", issuer_dir.to_str().unwrap(), "--kid", kid])
+            .output()
+            .expect("issuer jwks");
+        assert!(jwks.status.success(), "issuer-jwks failed: {}", String::from_utf8_lossy(&jwks.stderr));
+        let jwks_body = String::from_utf8(jwks.stdout).expect("jwks utf8");
+
+        // The loopback HTTPS IdP (the coven_web mock-GitHub pattern).
+        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+        let cert_der = ck.cert.der().clone();
+        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
+        let tls_config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+                .unwrap(),
+        );
+        let idp_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let idp_port = idp_listener.local_addr().unwrap().port();
+        let issuer_url = format!("https://localhost:{idp_port}");
+        let cert_path = regroot.join("idp-cert.pem");
+        std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+        let discovery_body = format!("{{\"jwks_uri\":\"{issuer_url}/jwks\"}}");
+        let idp = std::thread::spawn(move || {
+            // Exactly two startup fetches: the discovery document, then the JWKS.
+            for _ in 0..2 {
+                let (tcp, _) = idp_listener.accept().unwrap();
+                let conn = rustls::ServerConnection::new(tls_config.clone()).unwrap();
+                let mut tls = rustls::StreamOwned::new(conn, tcp);
+                let mut head = Vec::new();
+                let mut b = [0u8; 1];
+                while tls.read_exact(&mut b).is_ok() {
+                    head.push(b[0]);
+                    if head.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request_line = String::from_utf8_lossy(&head);
+                let body = if request_line.starts_with("GET /.well-known/openid-configuration") {
+                    discovery_body.clone()
+                } else {
+                    jwks_body.clone()
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = tls.write_all(resp.as_bytes());
+                let _ = tls.flush();
+                tls.conn.send_close_notify();
+                let _ = tls.flush();
+            }
+        });
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let errlog = regroot.join("coven-serve.stderr");
+        let errfile = std::fs::File::create(&errlog).expect("create server stderr log");
+        let mut child = Command::new(BIN)
+            .args([
+                "coven-serve",
+                "--addr",
+                &addr,
+                "--root",
+                regroot.to_str().unwrap(),
+                "--trust-issuer-oidc",
+                &issuer_url,
+                "--signing-key",
+                seed.to_str().unwrap(),
+            ])
+            .env("WITCHY_HOME", &home)
+            .env("WITCHY_TLS_EXTRA_ROOTS", &cert_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(errfile))
+            .spawn()
+            .expect("spawn coven-serve (oidc)");
+        wait_for_coven_server(&mut child, &addr, &errlog);
+        // The server is up, so discovery completed — both IdP requests were served.
+        idp.join().expect("idp thread");
+        RegistryServer { child, port, regroot, home, issuer_dir, issuer: issuer_url }
+    }
+
+    pub(crate) fn issuer(&self) -> &str {
+        &self.issuer
     }
 
     /// A CI identity token whose JWT header carries `kid` — naming which JWKS key signed
@@ -259,7 +372,7 @@ impl RegistryServer {
             "--issuer-key".into(),
             self.issuer_dir.to_string_lossy().into_owned(),
             "--issuer".into(),
-            ISSUER.into(),
+            self.issuer.clone(),
             "--sub".into(),
             format!("repo:{repository}:ref:refs/heads/main"),
             "--kid".into(),

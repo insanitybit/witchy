@@ -213,7 +213,7 @@ fn main(console: Console, net: Net, root: Dir, secrets: SecretStore, clock: Cloc
 
 fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args: List(String)):
     let addr = if args.length() > 0: args.at(0) else: "127.0.0.1:8787"
-    let issuers = parse_issuers(args)
+    let issuers = parse_issuers(net, args)
     fs.ensure_dir(root, "registry")
     let c = Coven(root.subtree("registry"), key, clock, issuers)
     let app = server.router()
@@ -234,26 +234,65 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
 
     server.serve(net, addr, app)
 
-fn parse_issuers(args: List(String)) -> List(Issuer):
+fn parse_issuers(net: Net, args: List(String)) -> List(Issuer):
     var out = []
     for a in args.drop(1):
-        out.push(parse_issuer_arg(a))
+        out.push(parse_issuer_arg(net, a))
     out
 
 // Every trailing arg is meant to be a trusted-issuer spec. A malformed one (no `=`, or an
 // unparseable JWKS) must FAIL LOUDLY rather than parse to nothing and silently start the
 // registry with fewer — or zero — trusted issuers (which would quietly make it anonymous).
-fn parse_issuer_arg(a: String) -> Issuer:
+fn parse_issuer_arg(net: Net, a: String) -> Issuer:
     if !a.contains("="):
-        fail("coven: malformed trusted-issuer argument `${a}` (expected `issuer=pubkeyhex` or `issuer=jwks:<json>`)")
+        fail("coven: malformed trusted-issuer argument `${a}` (expected `issuer=pubkeyhex`, `issuer=jwks:<json>`, or `<issuer-url>=oidc`)")
     let (id, value) = a.split_once("=")
     if value.starts_with("jwks:"):
         let (_tag, jwks_json) = value.split_once(":")
         match json.decode(jwks_json):
             Ok(jwks) -> Issuer(id, "", Some(jwks))
             Err(e) -> bad_issuer("coven: malformed JWKS for issuer `${id}`: ${json.decode_error_message(e)}")
+    else if value == "oidc":
+        resolve_oidc_issuer(net, id)
     else:
         Issuer(id, value, None)
+
+// `<issuer-url>=oidc` — live JWKS discovery: fetch the issuer's OIDC discovery
+// document, then its `jwks_uri` (required by coven_trust to be https and
+// same-origin with the issuer), and install the JWKS exactly like the inline
+// `jwks:` form. Runs BEFORE the server binds; any failure aborts startup — a
+// registry must never come up with silently-empty trust.
+fn resolve_oidc_issuer(net: Net, issuer: String) -> Issuer:
+    match oidc_issuer(net, issuer):
+        Ok(entry) -> entry
+        Err(msg) -> bad_issuer("coven: cannot trust OIDC issuer `${issuer}`: ${msg}")
+
+fn oidc_issuer(net: Net, issuer: String) -> Result(Issuer, String):
+    let origin = coven_trust.issuer_origin(issuer).map_err(discovery_message)?
+    // The fetches carry exactly the issuer origin's authority; the same-origin
+    // rule on `jwks_uri` keeps the second fetch inside it too.
+    let fetch = net.fetch(origin)
+    let config_url = coven_trust.discovery_url(issuer).map_err(discovery_message)?
+    let discovery = fetched(fetch, config_url, "OIDC discovery document")?
+    let jwks_uri = coven_trust.jwks_uri_of(issuer, discovery).map_err(discovery_message)?
+    let jwks_body = fetched(fetch, jwks_uri, "JWKS")?
+    let jwks = coven_trust.installed_jwks(jwks_body).map_err(discovery_message)?
+    Ok(Issuer(issuer, "", Some(jwks)))
+
+fn discovery_message(e: coven_trust.DiscoveryError) -> String:
+    coven_trust.discovery_error_message(e)
+
+// One startup trust fetch. Provider failures (TLS, DNS, refused — and any
+// redirect: the Fetch provider never follows one) and non-200 statuses are all
+// startup-fatal errors.
+fn fetched(fetch: Fetch, request_url: String, what: String) -> Result(String, String):
+    match http.try_get(fetch, request_url):
+        Err(e) -> Err("fetching the ${what} from ${request_url}: ${http.http_error_message(e)}")
+        Ok(resp) ->
+            if http.status(resp) != 200:
+                Err("fetching the ${what} from ${request_url}: HTTP ${http.status(resp)}")
+            else:
+                Ok(http.body(resp))
 
 // `fail` aborts, so the trailing value is unreachable — it only gives this the `Issuer`
 // type the caller needs where `fail` sits in an expression position.

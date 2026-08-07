@@ -607,3 +607,118 @@ fn signature_detects_runtime_footprint_shape_tampering() {
     assert!(!out.status.success(), "shape-tampered footprint must fail offline verify");
     assert!(stdout(&out).contains("failed pinned-root verification"), "verify: {}", stdout(&out));
 }
+
+/// RFC-0116 track 2, live JWKS-over-HTTPS issuer trust end to end: coven-serve
+/// started with `--trust-issuer-oidc <issuer-url>` fetches the loopback IdP's
+/// OIDC discovery document and its same-origin JWKS over TLS at startup
+/// (self-signed cert trusted via `WITCHY_TLS_EXTRA_ROOTS`), and installs the
+/// discovered keys for that issuer. A token signed by the issuer's key (under
+/// the published `kid`) publishes; a token signed by an UNKNOWN key — same
+/// issuer URL, same `kid`, different RSA key — is refused 401.
+#[test]
+fn coven_serve_trusts_a_live_oidc_issuer_via_https_discovery() {
+    let server = RegistryServer::start_oidc("kid-live");
+    let fe = FrontEnd::new(&server, "oidc");
+    let lib = fe.lib("acme/live", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+
+    let good = server.ci_token_kid("acme-live-repo", "release.yml", "kid-live");
+    let out = fe.pm(&lib, &["publish", "."], Some(&good));
+    assert!(
+        out.status.success() && stdout(&out).contains("publish: 200"),
+        "a token verified by the DISCOVERED JWKS should publish: {}",
+        stdout(&out)
+    );
+
+    // The rogue key: a second issuer keypair minting under the trusted issuer's
+    // URL and kid. Only the discovered JWKS may verify — refused 401.
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/live\"\nversion = \"1.1.0\"\n").unwrap();
+    let rogue_dir = unique("oidc-rogue-issuer");
+    let gen_out = Command::new(BIN).args(["coven-gen-issuer", "--out", rogue_dir.to_str().unwrap()]).output().unwrap();
+    assert!(gen_out.status.success(), "rogue gen-issuer failed");
+    let mint = Command::new(BIN)
+        .args([
+            "coven-mint-token",
+            "--issuer-key",
+            rogue_dir.to_str().unwrap(),
+            "--issuer",
+            server.issuer(),
+            "--sub",
+            "repo:acme-live-repo:ref:refs/heads/main",
+            "--kid",
+            "kid-live",
+            "--claim",
+            "repository=acme-live-repo",
+            "--claim",
+            "workflow_ref=release.yml",
+        ])
+        .output()
+        .unwrap();
+    assert!(mint.status.success(), "rogue mint failed: {}", String::from_utf8_lossy(&mint.stderr));
+    let rogue = String::from_utf8_lossy(&mint.stdout).trim().to_string();
+    let out = fe.pm(&lib, &["publish", "."], Some(&rogue));
+    assert!(!out.status.success(), "a token signed by an unknown key must be refused");
+    assert!(stdout(&out).contains("publish: 401"), "unknown-key publish: {}", stdout(&out));
+    let _ = std::fs::remove_dir_all(&rogue_dir);
+}
+
+/// The fail-loud startup contract: with `--trust-issuer-oidc` pointing at an
+/// unreachable issuer, coven-serve exits nonzero BEFORE binding its listen
+/// address — a registry must never come up with silently-empty trust. The
+/// Rust dispatcher additionally refuses a plaintext-http issuer outright.
+#[test]
+fn coven_serve_refuses_to_start_when_oidc_discovery_fails() {
+    // A port with no listener: the discovery fetch fails immediately.
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let regroot = unique("coven-oidc-dead");
+    std::fs::create_dir_all(&regroot).unwrap();
+    let seed = regroot.join("root.seed");
+    std::fs::write(&seed, "0000000000000000000000000000000000000000000000000000000000000001").unwrap();
+    let addr_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let addr = format!("127.0.0.1:{addr_port}");
+    let home = unique("coven-oidc-dead-home");
+    let out = Command::new(BIN)
+        .args([
+            "coven-serve",
+            "--addr",
+            &addr,
+            "--root",
+            regroot.to_str().unwrap(),
+            "--trust-issuer-oidc",
+            &format!("https://localhost:{dead}"),
+            "--signing-key",
+            seed.to_str().unwrap(),
+        ])
+        .env("WITCHY_HOME", &home)
+        .output()
+        .expect("run coven-serve");
+    assert!(!out.status.success(), "an unreachable issuer must abort startup");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("cannot trust OIDC issuer"), "stderr should name the failure: {err}");
+    // It aborted before ever binding the listen address.
+    assert!(std::net::TcpStream::connect(&addr).is_err(), "the server must not have come up");
+
+    // A plaintext-http issuer never reaches the program at all.
+    let out = Command::new(BIN)
+        .args([
+            "coven-serve",
+            "--addr",
+            &addr,
+            "--root",
+            regroot.to_str().unwrap(),
+            "--trust-issuer-oidc",
+            "http://localhost:1",
+            "--signing-key",
+            seed.to_str().unwrap(),
+        ])
+        .env("WITCHY_HOME", &home)
+        .output()
+        .expect("run coven-serve");
+    assert!(!out.status.success(), "an http issuer must be refused");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("must be an https:// URL"),
+        "http issuer refusal: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&regroot);
+    let _ = std::fs::remove_dir_all(&home);
+}
