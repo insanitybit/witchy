@@ -14,6 +14,32 @@
   },
   {
     "block": 2,
+    "browser_runnable": false,
+    "console_only": false,
+    "expect_error": false,
+    "file": "README.md",
+    "footprint": [
+      "Console[Read,Write]",
+      "Net[Connect,Listen,Tcp,Udp,Uds]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 3,
+    "browser_runnable": true,
+    "console_only": false,
+    "expect_error": false,
+    "file": "README.md",
+    "footprint": [
+      "Console[Read,Write]",
+      "Fetch"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 4,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
