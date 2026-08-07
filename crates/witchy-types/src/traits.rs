@@ -1189,14 +1189,22 @@ fn validate_trait_impl(im: &ImplDef, methods: &[MethodSig], trait_params: &[Stri
             }
         }
 
-        let actual_ret = ret_type(&method.ret, im, &trait_param_map);
-        let expected_ret = ret_type(&sig.ret, im, &trait_param_map);
-        if actual_ret != expected_ret {
-            diags.push(format!(
-                "`impl {trait_bare} for {type_bare}` method `{name}` returns `{}`, but the trait requires `{}`",
-                display_type(&actual_ret),
-                display_type(&expected_ret)
-            ));
+        // An omitted return annotation INHERITS the trait's declared return type
+        // (`instantiate_provided_trait_method_signature` builds the generated
+        // function with the declaration's `ret`, and the body is checked against
+        // it downstream) — the same rule unannotated parameters follow above. So
+        // only a mismatch the author actually WROTE is a contract violation here;
+        // rejecting `ret: None` as unit broke delegation bodies (BUG-604).
+        if method.ret.is_some() {
+            let actual_ret = ret_type(&method.ret, im, &trait_param_map);
+            let expected_ret = ret_type(&sig.ret, im, &trait_param_map);
+            if actual_ret != expected_ret {
+                diags.push(format!(
+                    "`impl {trait_bare} for {type_bare}` method `{name}` returns `{}`, but the trait requires `{}`",
+                    display_type(&actual_ret),
+                    display_type(&expected_ret)
+                ));
+            }
         }
     }
 

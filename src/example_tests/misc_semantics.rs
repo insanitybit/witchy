@@ -364,3 +364,36 @@ fn main(console: Console):
         assert_eq!(interpreted, compiled, "local shadowing a function name diverged");
         assert_eq!(compiled, vec!["7"]);
     }
+
+    // (BUG-604) A trait-impl method that omits its return annotation inherits
+    // the trait's declared return type — here `Task(String)` — so the async
+    // delegation idiom the book teaches ("declare `fn … -> Task(a)` in the
+    // trait, delegate to an inherent async method") type-checks without
+    // repeating the annotation, and runs identically on both backends.
+    #[test]
+    fn trait_impl_return_inherited_from_trait_backends_agree() {
+        let src = r#"
+from task import Task
+
+trait Fetcher:
+    fn fetch(self, url: String) -> Task(String)
+
+type FakeFetcher:
+    prefix: String
+
+impl FakeFetcher:
+    async fn get(self, url: String) -> String:
+        "${self.prefix}: ${url}"
+
+impl Fetcher for FakeFetcher:
+    fn fetch(self, url: String):
+        self.get(url)
+
+async fn main(console: Console):
+    let f = FakeFetcher("fetched")
+    let body = f.fetch("/docs").await
+    console.print(body)
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "inherited trait return diverged");
+        assert_eq!(run_on_wasm(src), vec!["fetched: /docs"]);
+    }
