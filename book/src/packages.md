@@ -26,6 +26,49 @@ pub fn shout(s: String) -> String:
 
 It has no capability parameters, so consumers can verify that the rune is pure.
 
+## Consume your first package
+
+Runes are shared through a **registry**. There's a hosted one at
+`https://witchy.fly.dev`; the client reads its address from the `COVEN_URL`
+environment variable, and with none set it dials the local default
+`127.0.0.1:8787` - so a brand-new user has to point it at the hosted registry
+before anything resolves:
+
+```sh
+export COVEN_URL=https://witchy.fly.dev
+witchy new demo-app && cd demo-app
+witchy add insanitybit/hello --allow-fresh   # --allow-fresh accepts a release still inside its staging cooldown
+```
+
+Why `--allow-fresh`? Every promoted release sits out a **staging cooldown**
+(72 hours by default) before `add` will resolve it - a window in which a
+compromised release can be spotted before anyone installs it. On a young
+registry every release is still inside that window, so the very first `add`
+needs `--allow-fresh` to opt in explicitly. A release older than the cooldown
+resolves with no flag at all; `--allow-fresh` is only the honest first step on a
+fresh registry, not a permanent part of the workflow.
+
+Now import the rune and use it:
+
+```
+// src/demo-app.witchy
+import hello
+
+fn main(console: Console):
+    console.print(hello.greeting())   // whatever the rune exports; `witchy doc` lists it
+```
+
+```sh
+witchy run .
+witchy tree .    # the dependency, plus the capability footprint it pulls in
+```
+
+`witchy tree` prints the resolved dependency tree with each rune's recomputed
+capability footprint alongside it, so before you trust `hello` you can see
+exactly what authority it - and its transitive dependencies - reach for. The
+rest of this chapter is about that footprint: how it's computed, and how adding
+or upgrading a dependency gates on it.
+
 ## The footprint is recomputed, never trusted
 
 The manifest can *declare* a capability footprint, but the registry and the

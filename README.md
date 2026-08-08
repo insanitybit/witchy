@@ -124,6 +124,42 @@ else (runes + the Coven registry, the Glamour frontend, the in-browser
 playground, editor tooling) is experimental dogfood.
 [PRODUCT-STATUS.md](PRODUCT-STATUS.md) is the evidence-backed boundary.
 
+## Consume your first package
+
+Runes are experimental dogfood, but the round trip already works against the
+hosted registry at `https://witchy.fly.dev`. The client picks its registry from
+`COVEN_URL`; with none set it dials the local default `127.0.0.1:8787`, so point
+it at the hosted one first:
+
+```sh
+export COVEN_URL=https://witchy.fly.dev
+witchy new demo-app && cd demo-app
+witchy add insanitybit/hello --allow-fresh   # --allow-fresh accepts a release still inside its staging cooldown
+```
+
+A freshly promoted release sits out a 72-hour **staging cooldown** before `add`
+will resolve it - a window in which a compromised release can be noticed before
+anyone installs it. On a young registry every release is inside that window, so
+the first `add` needs `--allow-fresh` to opt in explicitly; a release past its
+cooldown needs no flag. Then import the rune and use it:
+
+```
+// src/demo-app.witchy
+import hello
+
+fn main(console: Console):
+    console.print(hello.greeting())   // whatever the rune exports; `witchy doc` lists it
+```
+
+```sh
+witchy run .
+witchy tree .    # the dependency and the capability footprint it pulls in
+```
+
+`witchy tree` shows the whole resolved tree's authority, so you can see exactly
+what a dependency reaches for before you trust it. The
+[packages chapter](book/src/packages.md) walks the full model.
+
 witchy is developed extensively with AI assistance; human judgment owns the
 language, capability-model, and product decisions. What determines supported
 behavior is executable evidence - the parity, sandbox, and artifact test suites -

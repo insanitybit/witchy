@@ -80,6 +80,27 @@ The lockfile records both capability axes for each rune:
 
 Commit the lockfile. Same lock ⇒ same bytes, same authority, offline.
 
+## Pointing the client at a registry: `COVEN_URL`
+
+The registry commands (`add`, `update`, `outdated`, `list`, `publish`, …) talk to
+a Coven registry. Which one is set by the `COVEN_URL` environment variable; with
+none set the client dials the local default `127.0.0.1:8787`, which is why an
+undocumented setup silently fails against a dead loopback port. The hosted
+registry lives at `https://witchy.fly.dev`:
+
+```sh
+export COVEN_URL=https://witchy.fly.dev
+witchy add insanitybit/hello --allow-fresh
+```
+
+The scheme is preserved (`https://…` stays TLS; a bare `host:port` means plain
+http for loopback), and the bootstrap auto-grants `Net` to the `COVEN_URL`
+origin, so no explicit `--net` is needed. A one-off registry can also be passed
+as the positional `[host:port]` shown in the `add` row below. `--allow-fresh` is
+the expected first step on a fresh registry: it accepts a release still inside
+its 72-hour staging cooldown (see the [packages chapter](packages.md)); a
+release past its cooldown needs no flag.
+
 ## The everyday commands
 
 | Command | What it does |
