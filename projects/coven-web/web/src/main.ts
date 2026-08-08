@@ -59,6 +59,12 @@ async function boot(): Promise<void> {
   await mount(wasmBytes(), root, {
     initialModel: { route: location.pathname, session, data: "", notice: "" },
     routeTag: "Route",
+    // (RFC-0040/0107) `export_step` takes a `UiRoot`; stage its user-capability grant at
+    // instantiation. Without this the compiled rune's `build_user_cap_field` traps at boot
+    // (`user_cap_field_len — no [user_caps] grant`) and the app mounts blank. The
+    // glamour-coven-web-app.test.mjs reference has always mounted with this grant; the
+    // production host shell had drifted from it (BUG-608).
+    instantiateOpts: { userCaps: [["coven-web"]] },
     // The shell owns the network: fetch same-origin, NEVER with ambient cookies (so a
     // cross-site request carries no credential — CSRF has nothing to ride), and attach the
     // bearer session ITSELF via authHeaders so the rune never holds the token.
