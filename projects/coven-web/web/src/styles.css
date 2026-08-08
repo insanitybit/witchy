@@ -1,21 +1,30 @@
 /* coven-web app stylesheet (BUG-046). Served same-origin under `style-src 'self'` and copied to
  * dist/styles.css by build.sh; index.html links it. The glamour rune emits stable class names
  * (rune-row, badge state-*, chip cap-*, promote, source, …); this styles them. No @import / url()
- * to a foreign origin — everything stays same-origin to satisfy the strict CSP. */
+ * to a foreign origin — everything stays same-origin to satisfy the strict CSP.
+ *
+ * Design: brutally functional. White, high-contrast, flat. No gradients, shadows, glows, blur, or
+ * animation. Monospace for every machine identifier (rune names, versions, hashes, capabilities).
+ * Color is used for ONE thing only — capability danger — because a rune's authority being visible
+ * is the whole point of coven. Everything else is black on white with hairline rules. */
 
 :root {
-  --bg: #0f0b16;
-  --panel: #171221;
-  --panel-2: #1f1830;
-  --ink: #ece7f5;
-  --dim: #a99fc4;
-  --muted: #7d7397;
-  --accent: #b98bff;
-  --accent-ink: #12091f;
-  --line: #2c2340;
-  --ok: #4bd08a;
-  --warn: #e0b341;
-  --danger: #f0688a;
+  --bg: #ffffff;
+  --ink: #111111;
+  --dim: #555555;
+  --faint: #888888;
+  --line: #e3e3e3;
+  --line-strong: #111111;
+  --hover: #f6f6f6;
+  --link: #0b4fd0;
+  /* capability hues — flat, muted, semantic. benign = calm, dangerous = red. */
+  --cap-none: #1f7a45;
+  --cap-plain: #666666;
+  --cap-net: #0b5cad;
+  --cap-fs: #8a5a00;
+  --cap-secret: #6a34a8;
+  --cap-exec: #b3261e;
+  --cap-js: #b3261e;
 }
 
 * { box-sizing: border-box; }
@@ -25,124 +34,149 @@ html, body {
   min-height: 100%;
   background: var(--bg);
   color: var(--ink);
-  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-a { color: var(--accent); text-decoration: none; }
+code, pre, .mono, .rune-name, .ver, .version, .chip, .chip-sm,
+dl.record dd, .srcpath, .session-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
+
+/* ---- static chrome (index.html header / footer) ------------------------- */
+header { padding: 28px 20px 16px; border-bottom: 2px solid var(--line-strong); }
+header > *, main > *, footer > * { max-width: 960px; margin-inline: auto; }
+header h1 { margin: 0; font: 700 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -0.01em; color: var(--ink); }
+.tagline { margin: 6px 0 0; color: var(--dim); font-size: 13px; }
+main { padding: 24px 20px 64px; }
+footer { padding: 20px; margin-top: 40px; border-top: 1px solid var(--line); color: var(--faint); font-size: 12px; }
 
 .app { max-width: 960px; margin: 0 auto; padding: 24px 20px 64px; }
 
+/* ---- top navigation ----------------------------------------------------- */
 .topnav {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 16px;
-  margin-bottom: 20px;
+  display: flex; align-items: center; justify-content: flex-start; gap: 8px;
+  padding-bottom: 14px; margin-bottom: 22px;
   border-bottom: 1px solid var(--line);
 }
-.topnav a { color: var(--ink); font-weight: 600; }
-.nav-auth { display: flex; align-items: center; gap: 10px; }
+.topnav a, .topnav button.link { color: var(--ink); font-weight: 600; }
+.nav-auth { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 .session-id { color: var(--dim); font-size: 13px; }
+.notice:not(:empty) { color: var(--cap-fs); font-size: 13px; }
 
+/* ---- search ------------------------------------------------------------- */
 .field.search { width: 100%; }
-.field.search input,
-input[type="text"], input[type="search"] {
-  width: 100%;
-  padding: 10px 12px;
-  color: var(--ink);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+.field, .field.search input, input[type="text"], input[type="search"], .search {
+  width: 100%; padding: 9px 11px; font: inherit;
+  color: var(--ink); background: #fff;
+  border: 1px solid var(--line-strong); border-radius: 0;
 }
+.field:focus, .search:focus, input:focus { outline: 2px solid var(--ink); outline-offset: -1px; }
+.search::placeholder { color: var(--faint); }
+.count { margin: 10px 0 14px; color: var(--dim); font-size: 13px; }
 
-.button, .button.link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 13px;
-  font: inherit;
-  font-weight: 600;
-  color: var(--accent-ink);
-  background: var(--accent);
-  border: 1px solid transparent;
-  border-radius: 8px;
-  cursor: pointer;
+/* ---- buttons ------------------------------------------------------------ */
+button { font: inherit; cursor: pointer; }
+.button, .button.link, button.link {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 13px; font-weight: 600;
+  color: #fff; background: var(--ink);
+  border: 1px solid var(--ink); border-radius: 0;
 }
-.button:hover { filter: brightness(1.08); }
-.button.link, .button.ghost, .button.link.ghost {
-  color: var(--accent);
-  background: transparent;
-  border-color: var(--line);
+.button:hover { background: #000; }
+.button.link, .button.ghost, .button.link.ghost, button.link {
+  color: var(--ink); background: transparent; border-color: var(--line-strong);
 }
-.viewlinks { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; }
+.button.link:hover, button.link:hover { background: var(--hover); }
+.viewlinks { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0; }
 
-.catalog, .rune-list { display: flex; flex-direction: column; gap: 10px; }
+/* ---- catalog list (a dense, hairline-ruled table, not cards) ------------- */
+.catalog h1, .version h1, .trust h1 { margin: 0 0 14px; font-size: 18px; font-weight: 700; }
+.catalog { display: flex; flex-direction: column; }
+.rune-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--line-strong); border-bottom: 0;
+}
 .rune-row {
-  display: block;
-  padding: 14px 16px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+  padding: 9px 14px; background: #fff; border-bottom: 1px solid var(--line);
 }
-.rune-row:hover { border-color: var(--accent); }
-.rune-main { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.rune-name { font-weight: 700; font-size: 16px; }
-.rune-meta, .version-meta, .meta-by, .meta-date { color: var(--dim); font-size: 13px; }
-.meta-date.dim { color: var(--muted); }
-.ver, .version { color: var(--accent); font-variant-numeric: tabular-nums; }
-.count.muted, .muted { color: var(--muted); }
-.muted.notice, .notice { color: var(--warn); }
+.rune-row:hover { background: var(--hover); }
+.rune-main { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.rune-name { font-weight: 700; font-size: 15px; color: var(--ink); background: none; border: 0; padding: 0; }
+.rune-name:hover { text-decoration: underline; }
+.rune-name .ver, .ver { color: var(--dim); font-weight: 400; font-size: 13px; font-variant-numeric: tabular-nums; margin-left: 6px; }
+.rune-meta, .version-meta { display: flex; flex-direction: row; align-items: baseline; gap: 12px; flex: none; white-space: nowrap; }
+.meta-by { color: var(--dim); font-size: 13px; }
+.meta-date { color: var(--faint); font-size: 12px; }
+.meta-date.dim { font-style: italic; }
+.muted, .count.muted { color: var(--faint); }
 
-.badge, [class^="badge state-"], [class*=" state-"] {
-  display: inline-block;
-  padding: 2px 8px;
-  font-size: 12px;
-  font-weight: 700;
-  border-radius: 999px;
-  border: 1px solid var(--line);
+/* ---- lifecycle badge (flat, uppercase, hairline) ------------------------ */
+.badge, [class*="state-"] {
+  display: inline-block; padding: 1px 6px; margin-right: 2px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  border: 1px solid currentColor; border-radius: 0;
 }
-.state-released { color: var(--ok); border-color: var(--ok); }
-.state-staged { color: var(--warn); border-color: var(--warn); }
-.state-yanked { color: var(--danger); border-color: var(--danger); }
+.state-released { color: var(--cap-none); }
+.state-staged   { color: var(--cap-fs); }
+.state-yanked   { color: var(--cap-exec); }
 
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-.chip, [class^="chip cap"], [class^="chip-sm cap"] {
-  display: inline-block;
-  padding: 2px 8px;
-  font-size: 12px;
-  color: var(--dim);
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+/* ---- capability chips — flat tags, semantic color is the ONLY color ----- */
+.needs, .chips { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: baseline; margin: 0; }
+.chip, .chip-sm {
+  display: inline-block; padding: 1px 6px;
+  font-size: 12px; font-weight: 600;
+  color: var(--cap-plain);
+  border: 1px solid currentColor; border-radius: 0; background: none;
 }
-.cap-none { opacity: 0.7; }
+.chip-sm { font-size: 11px; }
+.cap-none { color: var(--cap-none); }
+.cap-plain { color: var(--cap-plain); }
+.cap-net { color: var(--cap-net); }
+.cap-fs { color: var(--cap-fs); }
+.cap-secret { color: var(--cap-secret); }
+.cap-exec { color: var(--cap-exec); }
+.cap-js { color: var(--cap-js); font-weight: 700; }
 
-.record, .trust, .apidocs, .source, .rune-list, .catalog { margin-top: 18px; }
-.record, .trust, .apidocs {
-  padding: 16px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
+/* ---- version record / trust / api docs ---------------------------------- */
+.version, .trust, .apidocs, .record {
+  margin-top: 4px; padding: 16px 18px;
+  background: #fff; border: 1px solid var(--line-strong); border-radius: 0;
 }
-.needs { color: var(--dim); }
+.version h1 { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.version-meta { flex-direction: row; align-items: center; gap: 12px; margin: -6px 0 14px; }
+dl.record { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 8px 0 14px; }
+dl.record dt { color: var(--dim); font-size: 13px; }
+dl.record dd { margin: 0; font-size: 13px; word-break: break-all; }
+.promote { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 6px; }
+.promote .button:last-child { color: var(--cap-exec); background: transparent; border-color: var(--cap-exec); }
+.version .muted { margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--line-strong); background: var(--hover); }
 
-.promote { display: flex; gap: 10px; margin-top: 14px; }
-.promote .button:last-child { color: var(--danger); background: transparent; border-color: var(--danger); }
+/* ---- api docs (markdown -> real elements) ------------------------------- */
+.apidocs > * > :first-child { margin-top: 0; }
+.apidocs h2 { font-size: 18px; margin: 22px 0 8px; }
+.apidocs h3 { font-size: 15px; margin: 18px 0 6px; }
+.apidocs code { background: var(--hover); border: 1px solid var(--line); border-radius: 0; padding: 1px 5px; font-size: 13px; }
+.apidocs pre { background: var(--hover); border: 1px solid var(--line); }
+.apidocs pre code { background: none; border: 0; padding: 0; }
+.apidocs ul { padding-left: 18px; }
+.error { color: var(--cap-exec); }
 
+/* ---- source viewer ------------------------------------------------------ */
 .source, .src { margin-top: 16px; }
-.srcfile { margin-bottom: 14px; }
-.srcpath { color: var(--dim); font-size: 13px; margin-bottom: 4px; }
-.src, pre, code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px;
-}
-pre {
-  padding: 14px 16px;
-  overflow: auto;
-  color: var(--ink);
-  background: #0b0712;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+.srcfile { margin-bottom: 14px; border: 1px solid var(--line-strong); }
+.srcpath { padding: 6px 12px; color: var(--dim); font-size: 13px; background: var(--hover); border-bottom: 1px solid var(--line); }
+pre, pre.src { margin: 0; padding: 12px 14px; overflow: auto; color: var(--ink); background: #fff; border: 0; border-radius: 0; font-size: 13px; line-height: 1.5; }
+pre.src code, code { font-size: 13px; }
+
+@media (max-width: 560px) {
+  dl.record { grid-template-columns: 1fr; gap: 2px 0; }
+  dl.record dt { margin-top: 8px; }
+  .rune-main { flex-direction: column; }
+  .rune-meta, .version-meta { align-items: flex-start; text-align: left; }
 }

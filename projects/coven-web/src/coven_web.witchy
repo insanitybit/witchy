@@ -95,6 +95,25 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     app = app.get("/api/coven/rootpub", h_proxy(net, upstream, "/coven/rootpub"))
     app = app.get("/api/coven/snapshot", h_proxy(net, upstream, "/coven/snapshot"))
     app = app.get("/api/coven/timestamp", h_proxy(net, upstream, "/coven/timestamp"))
+    // `/coven/*` READ passthrough — the exact same reverse proxy under the bare
+    // registry paths, so a `witchy pm` client pointed at THIS public origin
+    // (`COVEN_URL=https://<host>`) resolves and downloads without knowing it is
+    // talking to the web frontend. One explicit GET route per allowlisted read
+    // endpoint (the route table IS the SSRF allowlist), mirroring the coven
+    // registry's own route table exactly. The state-changing writes
+    // (`/coven/publish|promote|yank`) are deliberately NOT mirrored here — the web
+    // origin exposes no plain write route; its only write surface is the
+    // WebAuthn-2FA `/api/coven/*-2fa` handlers above.
+    app = app.get("/coven/index", h_proxy(net, upstream, "/coven/index"))
+    app = app.get("/coven/catalog", h_proxy(net, upstream, "/coven/catalog"))
+    app = app.get("/coven/versions", h_proxy(net, upstream, "/coven/versions"))
+    app = app.get("/coven/record", h_proxy(net, upstream, "/coven/record"))
+    app = app.get("/coven/source", h_proxy(net, upstream, "/coven/source"))
+    app = app.get("/coven/doc", h_proxy(net, upstream, "/coven/doc"))
+    app = app.get("/coven/compartments", h_proxy(net, upstream, "/coven/compartments"))
+    app = app.get("/coven/rootpub", h_proxy(net, upstream, "/coven/rootpub"))
+    app = app.get("/coven/snapshot", h_proxy(net, upstream, "/coven/snapshot"))
+    app = app.get("/coven/timestamp", h_proxy(net, upstream, "/coven/timestamp"))
     // Write endpoints (the only state-changing surface): the two-phase promote and
     // yank. There is NO plain, session-only write route — a bearer session (mintable
     // by any social login) is not sufficient authority to change registry state, and
