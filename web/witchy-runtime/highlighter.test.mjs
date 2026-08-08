@@ -137,6 +137,7 @@ const work = mkdtempSync(join(tmpdir(), "highlighter-"));
 try {
   // Compile the highlighter rune (glamour as a sibling so the import resolves).
   copyFileSync(join(REPO, "projects/glamour/src/glamour.witchy"), join(work, "glamour.witchy"));
+  copyFileSync(join(REPO, "projects/glamour/src/highlight.witchy"), join(work, "highlight.witchy"));
   copyFileSync(
     join(REPO, "projects/glamour/examples/highlighter/src/highlighter.witchy"),
     join(work, "highlighter.witchy"),

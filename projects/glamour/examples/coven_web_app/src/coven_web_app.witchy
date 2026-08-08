@@ -10,6 +10,7 @@
 // response, and a status notice — because only one view is active at a time.
 
 import markdown
+import highlight
 import list
 import reflect
 import time
@@ -190,10 +191,12 @@ fn version_view(route: String, data: String, sess: String) -> VNode(Msg):
 
     glamour.element("article", [glamour.prop("class", "version")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("← all runes")]), glamour.element("h1", [], [glamour.text(unwire(name)), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text("v${ver}")])]), record_subhead(data), glamour.element("dl", [glamour.prop("class", "record")], rows), controls, glamour.element("div", [glamour.prop("class", "viewlinks")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/d/${name}/${ver}"))], [glamour.text("API documentation →")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/s/${name}/${ver}"))], [glamour.text("source →")])])])
 
-// source: every file of the package, rendered inline as <pre><code> via glamour.text. Untrusted
-// stranger-uploaded source is DATA, and glamour cannot produce an HTML sink, so it is XSS-immune
-// INLINE in the trusted shell — no sandbox/compartment is needed (RFC-0015 §0: foreign *code*
-// gets a compartment; untrusted *data* renders inline, safe by construction).
+// source: every file of the package, rendered inline as <pre><code> and SYNTAX-HIGHLIGHTED by the
+// shared `highlight` module (`.witchy` and `.toml` get classed <span> runs; other files fall back
+// to plain text). Untrusted stranger-uploaded source is DATA, and the highlighter emits only
+// glamour.text nodes — never an HTML sink — so it is XSS-immune INLINE in the trusted shell, no
+// sandbox/compartment needed (RFC-0015 §0: foreign *code* gets a compartment; untrusted *data*
+// renders inline, safe by construction).
 fn source_view(route: String, data: String) -> VNode(Msg):
     let (name, ver) = name_ver(route)
     let files = match json.decode(data):
@@ -206,7 +209,7 @@ fn source_view(route: String, data: String) -> VNode(Msg):
     for f in files:
         let path = json.as_string(json.index(f, 0).unwrap_or(JsonNull)).unwrap_or("?")
         let contents = json.as_string(json.index(f, 1).unwrap_or(JsonNull)).unwrap_or("")
-        blocks.push(glamour.keyed(path, glamour.element("div", [glamour.prop("class", "srcfile")], [glamour.element("div", [glamour.prop("class", "srcpath")], [glamour.text(path)]), glamour.element("pre", [glamour.prop("class", "src")], [glamour.element("code", [], [glamour.text(contents)])])])))
+        blocks.push(glamour.keyed(path, glamour.element("div", [glamour.prop("class", "srcfile")], [glamour.element("div", [glamour.prop("class", "srcpath")], [glamour.text(path)]), glamour.element("pre", [glamour.prop("class", "src")], [glamour.element("code", [], highlight.code_spans(path, contents))])])))
 
     glamour.element("article", [glamour.prop("class", "source")], blocks)
 

@@ -90,6 +90,7 @@ echo "[4/6] witchy compile coven_web_app -> inline into dist/app.js"
 WORK_APP="$(mktemp -d "${TMPDIR:-/tmp}/coven-web-app.XXXXXX")"
 cp "$REPO/projects/glamour/src/glamour.witchy" "$WORK_APP/glamour.witchy"
 cp "$REPO/projects/glamour/src/markdown.witchy" "$WORK_APP/markdown.witchy"
+cp "$REPO/projects/glamour/src/highlight.witchy" "$WORK_APP/highlight.witchy"
 cp "$REPO/projects/glamour/examples/coven_web_app/src/coven_web_app.witchy" "$WORK_APP/coven_web_app.witchy"
 ( cd "$WORK_APP" && "$WITCHY" compile coven_web_app.witchy --out coven_web_app.wasm )
 APP_WASM_PATH="$WORK_APP/coven_web_app.wasm" node -e '
@@ -112,6 +113,7 @@ rm -rf "$WORK_APP"
 echo "[5/6] witchy compile -> highlighter.wasm (glamour highlighter rune)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/coven-web-highlighter.XXXXXX")"
 cp "$REPO/projects/glamour/src/glamour.witchy" "$WORK/glamour.witchy"
+cp "$REPO/projects/glamour/src/highlight.witchy" "$WORK/highlight.witchy"
 cp "$REPO/projects/glamour/examples/highlighter/src/highlighter.witchy" "$WORK/highlighter.witchy"
 ( cd "$WORK" && "$WITCHY" compile highlighter.witchy --out highlighter.wasm )
 

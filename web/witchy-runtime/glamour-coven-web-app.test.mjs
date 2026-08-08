@@ -70,7 +70,7 @@ const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if
 
 const work = mkdtempSync(join(tmpdir(), "glamour-cwa-"));
 try {
-  for (const f of ["src/glamour.witchy", "src/markdown.witchy"]) {
+  for (const f of ["src/glamour.witchy", "src/markdown.witchy", "src/highlight.witchy"]) {
     copyFileSync(join(REPO, "projects/glamour", f), join(work, f.replace("src/", "")));
   }
   copyFileSync(join(REPO, "projects/glamour/examples/coven_web_app/src/coven_web_app.witchy"), join(work, "coven_web_app.witchy"));
@@ -160,6 +160,16 @@ try {
   ok(calls.some((u) => u.includes("/source?name=acme~charts")), "the source route fetches the package source");
   ok(root.textContent.includes("src/charts.witchy") && root.textContent.includes("fn draw():"), "every source file renders inline as <pre><code>");
   ok(qsa(root, "pre").length >= 2, "each file gets its own code block");
+  // The source is SYNTAX-HIGHLIGHTED inline (not plain <code> text): the shared `highlight`
+  // module emits classed <span> runs. `.witchy` files get witchy classes (kw/com), `.toml`
+  // files get TOML classes (section/key/comment) — all still glamour.text nodes (XSS-immune).
+  const spanClass = (cls) => qsa(root, "span").filter((s) => (s.getAttribute("class") || "").split(/\s+/).includes(cls));
+  const spanWith = (cls, text) => spanClass(cls).some((s) => s.textContent === text);
+  ok(spanWith("kw", "fn"), "the .witchy source highlights the keyword `fn` as span.kw");
+  ok(spanWith("com", "// a chart rune"), "the .witchy source highlights the line comment as span.com");
+  ok(spanWith("section", "[rune]"), "the witchy.toml source highlights the `[rune]` header as span.section");
+  ok(spanWith("key", "name"), "the witchy.toml source highlights the `name` key as span.key");
+  ok(!qsa(root, "span").some((s) => s.textContent.includes("\n[rune]\n")), "the source is tokenized into spans, not dumped as one plain-text blob");
   clickPrefix(root, "← acme/charts");
   await settle();
 

@@ -174,6 +174,21 @@ dl.record dd { margin: 0; font-size: 13px; word-break: break-all; }
 pre, pre.src { margin: 0; padding: 12px 14px; overflow: auto; color: var(--ink); background: #fff; border: 0; border-radius: 0; font-size: 13px; line-height: 1.5; }
 pre.src code, code { font-size: 13px; }
 
+/* ---- syntax highlighting (shared highlight module: .witchy + .toml) --------
+ * Flat, muted token colors on white — no neon, no backgrounds. Keywords one
+ * accent, strings one hue, comments grey. Capability tokens reuse the --cap-*
+ * danger palette, because a rune's authority being visible is coven's whole
+ * point. Both languages share these classes (str/num overlap; witchy uses `com`,
+ * TOML uses `comment`), so one set styles the lot. */
+.src .com, .src .comment { color: var(--faint); font-style: italic; }
+.src .kw, .src .section  { color: var(--cap-secret); }
+.src .section            { font-weight: 700; }
+.src .cap                { color: var(--cap-exec); font-weight: 700; }
+.src .str                { color: var(--cap-none); }
+.src .num, .src .bool    { color: var(--cap-fs); }
+.src .key                { color: var(--cap-net); }
+.src .punct              { color: var(--dim); }
+
 @media (max-width: 560px) {
   dl.record { grid-template-columns: 1fr; gap: 2px 0; }
   dl.record dt { margin-top: 8px; }

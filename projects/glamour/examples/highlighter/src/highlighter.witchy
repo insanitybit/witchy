@@ -1,9 +1,13 @@
 // highlighter — a witchy SOURCE-CODE syntax highlighter built on glamour
-// (RFC-0008), the proving ground for coven-web's sandbox highlighter migration
-// (PLAN WS-I/M6). It takes witchy source TEXT and produces a glamour `VNode`
-// tree: a `<pre><code>` whose source is split into classed `<span>` runs by
-// token kind. There are no events — a highlighter is a pure render — so the rune
-// has no `Msg` enum and emits no `on` bindings.
+// (RFC-0008), the proving ground for coven-web's inline highlighter (PLAN WS-I/M6).
+// It takes witchy source TEXT and produces a glamour `VNode` tree: a `<pre><code>`
+// whose source is split into classed `<span>` runs by token kind. There are no
+// events — a highlighter is a pure render — so the rune emits no `on` bindings.
+//
+// The tokenizer + renderer live in the shared `highlight` module
+// (projects/glamour/src/highlight.witchy), so the standalone rune and coven-web's
+// source view share ONE implementation and ONE set of token classes. This rune is
+// the thin JS-callable wrapper around it.
 //
 // SECURITY: every token's text flows through glamour's `text(...)` node, never an
 // HTML-string sink, so a snippet containing `<script>` renders as the four inert
@@ -16,7 +20,7 @@
 // shell (web/witchy-runtime/glamour-dom.mjs) diffs into the DOM. The rune holds NO
 // capability — `witchy caps .../highlighter.witchy` reports `export_render (none)`.
 
-import list
+import highlight
 from glamour import VNode
 from json import Json
 
@@ -32,180 +36,9 @@ fn msg_to_json(m: Msg) -> Json:
     match m:
         NoMsg -> JsonNull
 
-// ---------------------------------------------------------------------------
-// The tokenizer — a pragmatic scanner over the source (NOT a full lexer). It
-// walks character by character, peeling off one classed run at a time:
-//   * `com` — a `//` line comment, to end of line;
-//   * `str` — a `"…"` string literal (with `\"` escapes), including the quotes;
-//   * `num` — a run of digits (a number literal);
-//   * `kw`  — an identifier that is a reserved keyword;
-//   *  ""   — anything else (identifiers, whitespace, punctuation) as plain text.
-// A token is a (class, text) pair; an empty class means plain (unclassed) text.
-// ---------------------------------------------------------------------------
-type Token:
-    Tok(String, String)
-
-// The keyword set. A pragmatic, representative slice of witchy's keywords — the
-// highlighter doesn't need the full grammar, just the words a reader expects in
-// a color. Looked up per identifier; plain identifiers fall through to "".
-fn is_keyword(word: String) -> Bool:
-    keywords().contains(word)
-
-fn keywords() -> List(String):
-    ["fn", "let", "var", "if", "else", "match", "type", "import", "pub", "for", "while", "return", "in", "where", "derive", "and", "or", "not", "true", "false", "async", "await", "spawn", "comptime", "gen", "yield", "as", "capability", "from", "test"]
-
-// witchy's host capabilities — the unforgeable authority a rune may hold. The
-// highlighter gives them their OWN class (`cap`) so a reader's eye lands on
-// exactly the tokens that carry authority — fitting for coven-web, whose whole
-// job is making a rune's capability footprint visible.
-fn is_capability(word: String) -> Bool:
-    capabilities().contains(word)
-
-fn capabilities() -> List(String):
-    ["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "Net", "Exec"]
-
-// Scan the whole source into a flat list of classed tokens.
-fn tokenize(src: String) -> List(Token):
-    let cs = src.chars()
-    let n = cs.length()
-    var toks: List(Token) = []
-    var i = 0
-    while i < n:
-        let c = cs.at(i)
-        if is_slash_slash(cs, i, n):
-            // `//` line comment to end of line (the newline is left for plain text).
-            let (text, j) = read_line_comment(cs, i, n)
-            toks.push(Tok("com", text))
-            i = j
-        else if c == "\"":
-            // A string literal, quotes included; `\"` does not close it.
-            let (text, j) = read_string(cs, i, n)
-            toks.push(Tok("str", text))
-            i = j
-        else if is_digit(c):
-            let (text, j) = read_number(cs, i, n)
-            toks.push(Tok("num", text))
-            i = j
-        else if is_ident_start(c):
-            let (word, j) = read_ident(cs, i, n)
-            let kind = if is_keyword(word): "kw" else: if is_capability(word): "cap" else: ""
-            toks.push(Tok(kind, word))
-            i = j
-        else:
-            // Plain run: anything that is not the start of a
-            // classed token (whitespace, punctuation, operators),
-            // coalesced so the tree stays small.
-            let (text, j) = read_plain(cs, i, n)
-            toks.push(Tok("", text))
-            i = j
-    toks
-
-// `//` at position `i`?
-fn is_slash_slash(cs: List(String), i: Int, n: Int) -> Bool:
-    cs.at(i) == "/" && i + 1 < n && cs.at(i + 1) == "/"
-
-// Read `//` to the end of the line (not including the newline).
-fn read_line_comment(cs: List(String), start: Int, n: Int) -> (String, Int):
-    var i = start
-    var out = ""
-    while i < n && cs.at(i) != "\n":
-        out = out + cs.at(i)
-        i = i + 1
-    (out, i)
-
-// Read a `"…"` string literal including both quotes; `\"` stays inside.
-fn read_string(cs: List(String), start: Int, n: Int) -> (String, Int):
-    var i = start + 1
-    var out = "\""
-    var done = false
-    while i < n && !done:
-        let c = cs.at(i)
-        if c == "\\" && i + 1 < n:
-            // An escape: take the backslash and the escaped char verbatim.
-            out = out + c + cs.at(i + 1)
-            i = i + 2
-        else:
-            out = out + c
-            i = i + 1
-            if c == "\"":
-                done = true
-    (out, i)
-
-// Read a run of decimal digits (and `_` separators / a single `.`), a number.
-fn read_number(cs: List(String), start: Int, n: Int) -> (String, Int):
-    var i = start
-    var out = ""
-    while i < n && is_number_char(cs.at(i)):
-        out = out + cs.at(i)
-        i = i + 1
-    (out, i)
-
-// Read an identifier (letter/`_` start, then letters/digits/`_`).
-fn read_ident(cs: List(String), start: Int, n: Int) -> (String, Int):
-    var i = start
-    var out = ""
-    while i < n && is_ident_cont(cs.at(i)):
-        out = out + cs.at(i)
-        i = i + 1
-    (out, i)
-
-// Read a plain run up to the next char that could start a classed token.
-fn read_plain(cs: List(String), start: Int, n: Int) -> (String, Int):
-    var i = start
-    var out = ""
-    var done = false
-    while i < n && !done:
-        let c = cs.at(i)
-        if c == "\"" || is_digit(c) || is_ident_start(c) || is_slash_slash(cs, i, n):
-            done = true
-        else:
-            out = out + c
-            i = i + 1
-    (out, i)
-
-// ---- character classes ----
-fn is_digit(c: String) -> Bool:
-    c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
-
-fn is_number_char(c: String) -> Bool:
-    is_digit(c) || c == "_" || c == "."
-
-fn is_ident_start(c: String) -> Bool:
-    is_alpha(c) || c == "_"
-
-fn is_ident_cont(c: String) -> Bool:
-    is_alpha(c) || is_digit(c) || c == "_"
-
-fn is_alpha(c: String) -> Bool:
-    let lower = c.to_lower()
-    lower >= "a" && lower <= "z"
-
-// ---------------------------------------------------------------------------
-// The view — tokens to a VNode tree. The dynamic per-token spans use glamour's
-// VNode BUILDERS (`element`/`text`/`prop`); the `html` tag fits STATIC structure,
-// builders fit token loops. A classed token becomes `<span class="kw">text</span>`;
-// a plain token becomes a bare `text(...)` node. Either way the token's text is a
-// `text(...)` node, so it can NEVER form markup (XSS-immune by construction).
-// ---------------------------------------------------------------------------
-fn highlight(src: String) -> VNode(Msg):
-    let toks = tokenize(src)
-    var spans: List(VNode(Msg)) = []
-    for t in toks:
-        spans.push(render_token(t))
-    // <pre><code> … </code></pre> — the conventional code-block structure.
-    let code = glamour.element("code", [], spans)
-    glamour.element("pre", [], [code])
-
-fn render_token(t: Token) -> VNode(Msg):
-    match t:
-        // Plain text — a bare text node (no wrapping span).
-
-        // A classed run — `<span class="kind">text</span>`.
-        Tok(kind, text) ->
-            if kind.is_empty():
-                glamour.text(text)
-            else:
-                glamour.element("span", [glamour.prop("class", kind)], [glamour.text(text)])
+// Highlight witchy source into the conventional `<pre><code>…</code></pre>` block.
+fn render(src: String) -> VNode(Msg):
+    highlight.witchy_pre(src)
 
 // ---------------------------------------------------------------------------
 // The JS-callable export. Parse `{"src": "<source>"}`, highlight, and return the
@@ -220,7 +53,7 @@ pub fn export_render(input: String) -> String:
             match json.get_string(doc, "src"):
                 None -> json.encode(JsonObject([("error", JsonString("missing `src`"))]))
                 Some(src) ->
-                    let tree = highlight(src)
+                    let tree = render(src)
                     glamour.to_json(tree, msg_to_json)
 
 // A `main` so the rune also runs as a CLI program (and the compiled module gets a
