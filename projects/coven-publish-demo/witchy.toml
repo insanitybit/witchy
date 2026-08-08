@@ -1,0 +1,15 @@
+[rune]
+# Namespaced to the GitHub org that owns this repo. The registry binds the
+# namespace to the OIDC token's `repository` org on first trusted publish
+# (coven.witchy: `ns == namespace_of(repository)`), so this MUST equal the
+# `repository_owner` of the workflow that publishes it — `insanitybit`.
+name = "insanitybit/greeter"
+version = "0.1.0"
+
+[capabilities]
+# A pure library: no runtime authority. The registry recomputes this footprint
+# from the uploaded source (coven_footprint) and rejects under-declaration, so
+# keeping it empty is a real, server-checked claim.
+runtime = []
+
+[dependencies]
