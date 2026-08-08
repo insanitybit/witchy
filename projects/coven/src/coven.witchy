@@ -217,6 +217,7 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
     fs.ensure_dir(root, "registry")
     let c = Coven(root.subtree("registry"), key, clock, issuers)
     let app = server.router()
+        .get("/", route_landing())
         .get("/coven/rootpub", c.route_rootpub())
         .get("/coven/index", c.route_index())
         .get("/coven/catalog", c.route_catalog())
@@ -233,6 +234,11 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
     console.print("coven serving at http://${addr}  (root key ${crypto.public_key(key)}; ${issuers.length()} trusted issuer(s))")
 
     server.serve(net, addr, app)
+
+// A human-readable landing page: a browser hitting the registry root should
+// learn what it is and where the machine endpoints live, not see a bare 404.
+fn route_landing() -> fn(Request) -> Response:
+    fn(req: Request): server.html(200, "<h1>coven</h1><p>A package registry for the <a href=\"https://github.com/insanitybit/witchy\">witchy</a> language. Experimental: no availability or durability promises.</p><ul><li><a href=\"/coven/index\">/coven/index</a> &mdash; published rune names</li><li><a href=\"/coven/catalog\">/coven/catalog</a> &mdash; the full catalog</li><li><a href=\"/coven/rootpub\">/coven/rootpub</a> &mdash; the TUF root public key</li></ul><p>Client access: point <code>COVEN_URL</code> at this origin and use <code>witchy pm</code>.</p>")
 
 fn parse_issuers(net: Net, args: List(String)) -> List(Issuer):
     var out = []
