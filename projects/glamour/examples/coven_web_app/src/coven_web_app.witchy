@@ -103,13 +103,18 @@ fn view(m: Model) -> Ui(Msg):
 fn header(sess: String, notice: String) -> VNode(Msg):
     let auth = if sess.is_empty(): glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Login)], [glamour.text("sign in with passkey")]), glamour.element("button", [glamour.prop("class", "button link ghost"), glamour.on("click", Register)], [glamour.text("register")])]) else: glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("span", [glamour.prop("class", "session-id")], [glamour.text("● signed in as ${sess}")])])
 
-    glamour.element("nav", [glamour.prop("class", "topnav")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("Runes")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/trust"))], [glamour.text("Trust")]), auth, glamour.element("span", [glamour.prop("class", "muted notice")], [glamour.text(notice)])])
+    // "Profile" appears only when signed in (session identity is non-empty).
+    let profile_nav = if sess.is_empty(): glamour.text("") else: glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/profile"))], [glamour.text("Profile")])
+
+    glamour.element("nav", [glamour.prop("class", "topnav")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("Runes")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/trust"))], [glamour.text("Trust")]), profile_nav, auth, glamour.element("span", [glamour.prop("class", "muted notice")], [glamour.text(notice)])])
 
 fn body(route: String, data: String, sess: String, query: String) -> VNode(Msg):
     if route.starts_with("/trust"):
         trust_view(data)
+    else if route.starts_with("/profile"):
+        profile_view(data, sess)
     else if route.starts_with("/d/"):
-        docs_view(data)
+        docs_view(route, data)
     else if route.starts_with("/s/"):
         source_view(route, data)
     else if route.starts_with("/v/"):
@@ -136,14 +141,16 @@ fn catalog_view(data: String, query: String) -> VNode(Msg):
             items.push(glamour.keyed(name, rune_card(name, ver, caps, author, st, gi(r, "released_at"))))
     let shown = items.length()
     let total = all.length()
-    let label = if query.is_empty(): "${total} runes" else: "${shown} of ${total} runes"
-    glamour.element("section", [glamour.prop("class", "catalog")], [glamour.element("h1", [], [glamour.text("Runes")]), glamour.element("input", [glamour.prop("class", "field search"), glamour.prop("type", "search"), glamour.prop("placeholder", "search runes by name, author, or capability"), glamour.on_input("input", "Search")], []), glamour.element("p", [glamour.prop("class", "muted count")], [glamour.text(label)]), glamour.element("ul", [glamour.prop("class", "rune-list")], items)])
+    let noun = if total == 1: "rune" else: "runes"
+    let label = if query.is_empty(): "${total} ${noun}" else: "${shown} of ${total} ${noun}"
+    let listing = if items.is_empty() && !query.is_empty(): glamour.element("p", [glamour.prop("class", "empty-state")], [glamour.text("no runes match '${query}'")]) else: glamour.element("ul", [glamour.prop("class", "rune-list")], items)
+    glamour.element("section", [glamour.prop("class", "catalog")], [glamour.element("h1", [], [glamour.text("Runes")]), glamour.element("input", [glamour.prop("class", "field search"), glamour.prop("type", "search"), glamour.prop("placeholder", "search runes by name, author, or capability"), glamour.on_input("input", "Search")], []), glamour.element("p", [glamour.prop("class", "muted count")], [glamour.text(label)]), listing])
 
 // One catalog row (crates.io card): name + version is the link; the right rail carries the
 // lifecycle badge, the author byline, and the release date; the footprint is a quiet "needs" line.
 fn rune_card(name: String, ver: String, caps: List(String), author: String, st: String, released: Int) -> VNode(Msg):
     let date_node = if released > 0: glamour.element("span", [glamour.prop("class", "meta-date")], [glamour.text("published ${fmt_date(released)}")]) else: glamour.element("span", [glamour.prop("class", "meta-date dim")], [glamour.text("not yet released")])
-    glamour.element("li", [glamour.prop("class", "rune-row")], [glamour.element("div", [glamour.prop("class", "rune-main")], [glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Visit("/v/${wire(name)}/${ver}"))], [glamour.text(name), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text("v${ver}")])]), needs(caps)]), glamour.element("div", [glamour.prop("class", "rune-meta")], [state_badge(st), glamour.element("span", [glamour.prop("class", "meta-by")], [glamour.text("by ${author}")]), date_node])])
+    glamour.element("li", [glamour.prop("class", "rune-row")], [glamour.element("div", [glamour.prop("class", "rune-main")], [glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Visit("/v/${wire(name)}/${ver}"))], [glamour.text(name), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text(" v${ver}")])]), needs(caps)]), glamour.element("div", [glamour.prop("class", "rune-meta")], [state_badge(st), glamour.element("span", [glamour.prop("class", "meta-by")], [glamour.text("by ${author}")]), date_node])])
 
 // the quiet, secondary footprint line: small chips, still color-coded by danger but low-key.
 fn needs(caps: List(String)) -> VNode(Msg):
@@ -183,13 +190,49 @@ fn rune_matches(name: String, caps: List(String), author: String, q: String) -> 
                 hit = true
         hit
 
+// profile: the logged-in user's home. Shows WHO you are (the session identity the host handed
+// back after passkey login) and YOUR runes — filtered out of the already-fetched catalog by the
+// publisher/subject that matches your identity, so no new server endpoint is needed. When the
+// session identity is a passkey placeholder that can't be matched to any publisher, we show the
+// identity and an honest empty state rather than faking ownership; it fills in once real SSO
+// carries a publisher-scoped subject.
+fn profile_view(data: String, sess: String) -> VNode(Msg):
+    let all = parse_runes(data)
+    var mine = []
+    for r in all:
+        let name = json.get_string(r, "name").unwrap_or("?")
+        let ver = json.get_string(r, "version").unwrap_or("0.0.0")
+        let caps = json.get_strings(r, "runtime_footprint")
+        let author = json.get_string(r, "uploaded_by").unwrap_or("unknown")
+        let st = json.get_string(r, "state").unwrap_or("staged")
+        if rune_matches_identity(r, sess):
+            mine.push(glamour.keyed(name, rune_card(name, ver, caps, author, st, gi(r, "released_at"))))
+    let listing = if mine.is_empty(): glamour.element("p", [glamour.prop("class", "empty-state")], [glamour.text("You haven't published any runes under this identity yet.")]) else: glamour.element("ul", [glamour.prop("class", "rune-list")], mine)
+    glamour.element("article", [glamour.prop("class", "profile")], [glamour.element("h1", [], [glamour.text("Profile")]), glamour.element("p", [glamour.prop("class", "session-id")], [glamour.text("● signed in as ${sess}")]), glamour.element("h2", [glamour.prop("class", "profile-runes-title")], [glamour.text("Your runes")]), listing])
+
+// A rune belongs to you if its uploader OR its attested provenance subject equals your identity.
+fn rune_matches_identity(r: Json, ident: String) -> Bool:
+    if ident.is_empty():
+        false
+    else:
+        let id = ident.to_lower()
+        let author = json.get_string(r, "uploaded_by").unwrap_or("")
+        let sub = prov_field(json.get_string(r, "provenance").unwrap_or(""), "sub")
+        !author.is_empty() && author.to_lower() == id || !sub.is_empty() && sub.to_lower() == id
+
 // version: the signed record (security audit) + promote/yank (when signed in) + a docs link.
 fn version_view(route: String, data: String, sess: String) -> VNode(Msg):
     let (name, ver) = name_ver(route)
     let rows = record_rows(data)
     let controls = if sess.is_empty(): glamour.element("p", [glamour.prop("class", "muted")], [glamour.text("sign in to promote or yank")]) else: glamour.element("div", [glamour.prop("class", "promote")], [glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Promote)], [glamour.text("promote")]), glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Yank)], [glamour.text("yank")])])
 
-    glamour.element("article", [glamour.prop("class", "version")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("← all runes")]), glamour.element("h1", [], [glamour.text(unwire(name)), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text("v${ver}")])]), record_subhead(data), glamour.element("dl", [glamour.prop("class", "record")], rows), controls, glamour.element("div", [glamour.prop("class", "viewlinks")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/d/${name}/${ver}"))], [glamour.text("API documentation →")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/s/${name}/${ver}"))], [glamour.text("source →")])])])
+    glamour.element("article", [glamour.prop("class", "version")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("← all runes")]), glamour.element("h1", [], [glamour.text(unwire(name)), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text(" v${ver}")])]), record_subhead(data), glamour.element("dl", [glamour.prop("class", "record")], rows), install_block(name), controls, glamour.element("div", [glamour.prop("class", "viewlinks")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/d/${name}/${ver}"))], [glamour.text("API documentation →")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/s/${name}/${ver}"))], [glamour.text("source →")])])])
+
+// UI-01: the "how to install" affordance the record page was missing. A copy-paste command
+// (with the hosted registry pinned via COVEN_URL) plus a one-line note that a release still in
+// its 72h staging cooldown needs `--allow-fresh`. Pure text nodes — no HTML sink.
+fn install_block(name: String) -> VNode(Msg):
+    glamour.element("section", [glamour.prop("class", "install")], [glamour.element("h2", [glamour.prop("class", "install-title")], [glamour.text("install")]), glamour.element("pre", [glamour.prop("class", "install-cmd")], [glamour.element("code", [], [glamour.text("COVEN_URL=https://witchy.fly.dev witchy add ${unwire(name)}")])]), glamour.element("p", [glamour.prop("class", "muted install-note")], [glamour.text("A release still inside its 72h staging cooldown needs --allow-fresh.")])])
 
 // source: every file of the package, rendered inline as <pre><code> and SYNTAX-HIGHLIGHTED by the
 // shared `highlight` module (`.witchy` and `.toml` get classed <span> runs; other files fall back
@@ -231,21 +274,68 @@ fn record_rows(data: String) -> List(VNode(Msg)):
             var rows = []
             rows = rows.concat(dt_chips("footprint", json.get_strings(doc, "runtime_footprint")))
             rows = rows.concat(row("determinism", json.get_string(doc, "determinism").unwrap_or("?")))
-            rows = rows.concat(row("provenance", json.get_string(doc, "provenance").unwrap_or("?")))
+            rows = rows.concat(provenance_rows(json.get_string(doc, "provenance").unwrap_or("")))
             rows = rows.concat(row("hash", json.get_string(doc, "hash").unwrap_or("?")))
             rows
         Err(_e) -> []
 
-fn docs_view(data: String) -> VNode(Msg):
+// UI-02: provenance arrives as a pipe-delimited machine string, e.g.
+// `trusted-publisher|issuer=admin|sub=colin|repository=x/y|verified_at=1786141989`. Parse it
+// into labeled sub-rows, render `verified_at` as a human date, relabel `sub`->subject, and drop
+// empty fields (a bare `ref=`) rather than dumping the raw string at the reader.
+fn provenance_rows(prov: String) -> List(VNode(Msg)):
+    if prov.is_empty() || prov == "?":
+        row("provenance", "unattested")
+    else:
+        var out = []
+        let parts = prov.split("|")
+        for part in parts:
+            if part.contains("="):
+                let (k, v) = part.split_once("=")
+                if !v.is_empty():
+                    out = out.concat(row(prov_label(k), prov_value(k, v)))
+            else if !part.is_empty():
+                out = out.concat(row("provenance", part))
+        out
+
+fn prov_label(k: String) -> String:
+    if k == "sub":
+        "subject"
+    else if k == "verified_at":
+        "verified"
+    else:
+        k
+
+fn prov_value(k: String, v: String) -> String:
+    if k == "verified_at":
+        fmt_date(v.parse_int().unwrap_or(0))
+    else:
+        v
+
+// The provenance subject a rune was published under: the attested `sub`, else the uploader.
+fn prov_field(prov: String, key: String) -> String:
+    var out = ""
+    let parts = prov.split("|")
+    for part in parts:
+        if part.contains("="):
+            let (k, v) = part.split_once("=")
+            if k == key:
+                out = v
+    out
+
+// API docs. Carries the same "← <name> @ <ver>" back button as `source_view`, so the two
+// secondary views a record links to are navigationally consistent (UI-08).
+fn docs_view(route: String, data: String) -> VNode(Msg):
+    let (name, ver) = name_ver(route)
     let md = match json.decode(data):
         Ok(doc) -> json.get_string(doc, "markdown").unwrap_or("(no docs)")
         Err(_e) -> "loading…"
 
-    glamour.element("article", [glamour.prop("class", "apidocs")], [markdown.to_vnode(md)])
+    glamour.element("article", [glamour.prop("class", "apidocs")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/v/${name}/${ver}"))], [glamour.text("← ${unwire(name)} @ ${ver}")]), markdown.to_vnode(md)])
 
 fn trust_view(data: String) -> VNode(Msg):
     let rootpub = if data.is_empty(): "loading…" else: data
-    glamour.element("article", [glamour.prop("class", "trust")], [glamour.element("h1", [], [glamour.text("Registry trust (TUF)")]), glamour.element("dl", [glamour.prop("class", "record")], row("root key", rootpub))])
+    glamour.element("article", [glamour.prop("class", "trust")], [glamour.element("h1", [], [glamour.text("Registry trust (TUF)")]), glamour.element("p", [glamour.prop("class", "muted trust-note")], [glamour.text("This is the registry's TUF root public key — the trust anchor every download is verified against. It changes only when the registry rotates its signing keys, so pinning it lets your client detect a compromised or substituted registry.")]), glamour.element("dl", [glamour.prop("class", "record")], row("root key", rootpub))])
 
 // --- small view helpers ------------------------------------------------------
 fn row(label: String, value: String) -> List(VNode(Msg)):

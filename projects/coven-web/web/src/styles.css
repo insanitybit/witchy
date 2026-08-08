@@ -144,7 +144,7 @@ button { font: inherit; cursor: pointer; }
 .cap-js { color: var(--cap-js); font-weight: 700; }
 
 /* ---- version record / trust / api docs ---------------------------------- */
-.version, .trust, .apidocs, .record {
+.version, .trust, .apidocs, .profile, .record {
   margin-top: 4px; padding: 16px 18px;
   background: #fff; border: 1px solid var(--line-strong); border-radius: 0;
 }
@@ -156,6 +156,28 @@ dl.record dd { margin: 0; font-size: 13px; word-break: break-all; }
 .promote { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 6px; }
 .promote .button:last-child { color: var(--cap-exec); background: transparent; border-color: var(--cap-exec); }
 .version .muted { margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--line-strong); background: var(--hover); }
+
+/* ---- install affordance (UI-01) ----------------------------------------- */
+.install { margin: 16px 0 6px; }
+.install-title { margin: 0 0 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.install-cmd { margin: 0; padding: 10px 12px; background: var(--ink); color: #fff; border: 1px solid var(--ink); border-radius: 0; overflow-x: auto; font-size: 13px; }
+.install-cmd code { color: #fff; background: none; border: 0; padding: 0; }
+.install-note { margin: 6px 0 0; font-size: 12px; }
+
+/* ---- empty states (UI-07, profile) -------------------------------------- */
+.empty-state {
+  margin: 0; padding: 16px 14px;
+  color: var(--dim); font-size: 13px;
+  border: 1px solid var(--line-strong); background: var(--hover);
+}
+
+/* ---- trust explanation (UI-09) ------------------------------------------ */
+.trust-note { margin: 0 0 12px; font-size: 13px; }
+
+/* ---- profile page ------------------------------------------------------- */
+.profile h1 { margin: 0 0 6px; font-size: 18px; font-weight: 700; }
+.profile .session-id { color: var(--dim); font-size: 13px; }
+.profile-runes-title { margin: 18px 0 10px; font-size: 14px; font-weight: 700; }
 
 /* ---- api docs (markdown -> real elements) ------------------------------- */
 .apidocs > * > :first-child { margin-top: 0; }
