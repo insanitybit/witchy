@@ -937,3 +937,14 @@ fn footprint_is_empty(json: &str) -> bool {
     };
     after[open + 1..open + close].trim().is_empty()
 }
+
+#[test]
+fn coven_registry_serves_a_human_landing_page_at_root() {
+    // A browser hitting the registry root must learn what it is — not a 404.
+    let server = RegistryServer::start();
+    let (status, body) = http_get(&format!("127.0.0.1:{}", server.port), "/");
+    assert_eq!(status, 200, "landing page fetch failed: {body}");
+    for expectation in ["coven", "/coven/index", "/coven/rootpub", "COVEN_URL"] {
+        assert!(body.contains(expectation), "landing page is missing `{expectation}`: {body}");
+    }
+}
