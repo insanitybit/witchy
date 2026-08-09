@@ -174,7 +174,8 @@ pub struct SecretFixture {
 pub enum SecretUsage {
     #[default]
     Revealable,
-    UseOnly,
+    /// (RFC-0121) Granted as `Secret[Seal]`: usable by handle, never revealable.
+    Sealed,
     Signing,
 }
 

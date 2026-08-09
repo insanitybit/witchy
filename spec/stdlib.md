@@ -613,17 +613,17 @@ The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass para
 
 Verify an Ed25519 signature. `public_key` and `signature` are hex-encoded; `message` is the raw string. Malformed inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`.
 
-#### `fn sign(key: Secret, message: String) -> String`
+#### `fn sign(key: Secret[Seal], message: String) -> String`
 
-Sign `message` with a `Secret` capability (the host grants it; it cannot be forged), returning the hex signature.
+Sign `message` with a `Secret` capability (the host grants it; it cannot be forged), returning the hex signature. A by-handle operation: it asks only for `Seal`, so a sealed `Secret[Seal]` signs without ever being readable.
 
-#### `fn public_key(key: Secret) -> String`
+#### `fn public_key(key: Secret[Seal]) -> String`
 
-The hex Ed25519 public key for a `Secret` - what verifiers check against.
+The hex Ed25519 public key for a `Secret` - what verifiers check against. By-handle, so `Secret[Seal]` suffices.
 
-#### `fn reveal(key: Secret) -> String`
+#### `fn reveal(key: Secret[Reveal]) -> String`
 
-Reveal a `Secret`'s raw bytes as a string - for revealable value secrets (tokens, passwords) that must be handed to an external sink. Errors on secrets that are not revealable: signing keys (granted with `--signing-key`, used via `sign`/`public_key`) and any secret granted use-only (`--secret-file name=path,use-only`, e.g. a TLS private key).
+Reveal a `Secret`'s raw bytes as a string - for revealable value secrets (tokens, passwords) that must be handed to an external sink. Needs the `Reveal` right, so a `Secret[Seal]` is rejected at check time. Signing keys (granted with `--signing-key`) and secrets granted `sealed` (`--secret-file name=path,sealed`, e.g. a TLS private key) are sealed by the host and refused at run time too.
 
 #### `fn ecdsa_p256_verify(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError)`
 
@@ -1963,9 +1963,9 @@ The stricter relying-party entrypoint for short-lived identity tokens. RFC 7519 
 
 `clock_skew` applies only to a future `iat`. Expiry and nbf remain strict, so this API never extends the token's signed validity interval.
 
-#### `fn sign_eddsa(claims: Json, key: Secret) -> String`
+#### `fn sign_eddsa(claims: Json, key: Secret[Seal]) -> String`
 
-Mint a compact EdDSA (Ed25519) JWT. The JOSE header is `{"alg":"EdDSA","typ": "JWT"}`; the signing input is `base64url(header) + "." + base64url(claims JSON)`; that ASCII is signed with the Ed25519 `Secret` (`crypto.sign`, hex output), and the hex signature is base64url-encoded as the third segment. The caller sets the registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/…) in `claims`.
+Mint a compact EdDSA (Ed25519) JWT. The JOSE header is `{"alg":"EdDSA","typ": "JWT"}`; the signing input is `base64url(header) + "." + base64url(claims JSON)`; that ASCII is signed with the Ed25519 `Secret` (`crypto.sign`, hex output), and the hex signature is base64url-encoded as the third segment. The caller sets the registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/…) in `claims`. Signing is by-handle, so a sealed `Secret[Seal]` mints tokens without being readable.
 
 #### `fn verify_eddsa(token: String, ed25519_pubkey_hex: String, audience: String, now: Int) -> Result(Json, JwtError)`
 
@@ -3377,7 +3377,7 @@ The rights inside "Kind[A, B]" as ["A", "B"] (trimmed, blanks dropped).
 
 ## `secretstore`
 
-secretstore - read named secrets from the host-granted `SecretStore`. The secrets come from `--secret name=value` / `--secret-file name=path` (append `,use-only` to forbid `crypto.reveal`). `--signing-key <path>` grants the `signing` secret as a protected, non-revealable signing key - it is NOT the same as `--secret-file signing=<path>`, which grants an ordinary revealable named secret. Their bytes stay host-side. `get` is intercepted by the runtime, since a `SecretStore` is a capability, not plain data. A `Secret` is opaque host-held material consumed by specific operations: `crypto.sign` / `crypto.public_key` (Ed25519 signing keys), `server.serve_tls` / `serve_tls_n` (a TLS private key, by opaque reference), and `crypto.reveal` - which succeeds only for revealable value secrets, and errors on signing keys and use-only secrets.
+secretstore - read named secrets from the host-granted `SecretStore`. The secrets come from `--secret name=value` / `--secret-file name=path` (append `,sealed` to forbid `crypto.reveal`). `--signing-key <path>` grants the `signing` secret as a protected, non-revealable signing key - it is NOT the same as `--secret-file signing=<path>`, which grants an ordinary revealable named secret. Their bytes stay host-side. `get` is intercepted by the runtime, since a `SecretStore` is a capability, not plain data. A `Secret` is opaque host-held material consumed by specific operations: `crypto.sign` / `crypto.public_key` (Ed25519 signing keys), `server.serve_tls` / `serve_tls_n` (a TLS private key, by opaque reference), and `crypto.reveal` - which succeeds only for revealable value secrets, and errors on signing keys and sealed secrets.
 
 #### `fn get(store: SecretStore, name: String) -> Option(Secret)`
 
@@ -3634,11 +3634,11 @@ Serve `app` on `addr` forever on a SINGLE core (one accept loop, no worker pool)
 
 Serve exactly `n` requests then return - for tests and one-shot servers.
 
-#### `fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router)`
+#### `fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret[Seal], app: Router)`
 
-Serve `app` over HTTPS on `addr` forever, using ALL cores - `serve` with TLS terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text - inline, or read via an ordinary `Dir` grant); `key` is the private key as a `Secret` (`secretstore.require(store, "tls-key")`), consumed by opaque host reference: the key bytes never enter this program's memory, so even a bug in a handler cannot exfiltrate them. Grant the key use-only (`--secret-file tls-key=key.pem,use-only`) and `crypto.reveal` on it errors too. A malformed or mismatched cert/key fails LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad ClientHello) drops that connection and the server keeps serving. Handlers, `Router`, and `Request`/`Response` are unchanged - TLS is transparent above the accepted connection.
+Serve `app` over HTTPS on `addr` forever, using ALL cores - `serve` with TLS terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text - inline, or read via an ordinary `Dir` grant); `key` is the private key as a `Secret` (`secretstore.require(store, "tls-key")`), consumed by opaque host reference: the key bytes never enter this program's memory, so even a bug in a handler cannot exfiltrate them. TLS serving is by-handle, so a `Secret[Seal]` suffices - grant the key sealed (`--secret-file tls-key=key.pem,sealed`) and `crypto.reveal` on it is rejected at check time. A malformed or mismatched cert/key fails LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad ClientHello) drops that connection and the server keeps serving. Handlers, `Router`, and `Request`/`Response` are unchanged - TLS is transparent above the accepted connection.
 
-#### `fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router, n: Int)`
+#### `fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret[Seal], app: Router, n: Int)`
 
 Serve exactly `n` HTTPS requests then return - `serve_tls`'s one-shot/test twin (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
 

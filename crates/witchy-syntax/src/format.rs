@@ -2044,9 +2044,9 @@ pub fn type_str(t: &Type) -> String {
             if args.is_empty() {
                 return n.clone();
             }
-            // Capability rights use bracket syntax (`Dir[Read]`, `Net[Connect]`);
-            // ordinary generic types use parens (`List(Int)`, `Option(T)`).
-            if matches!(n.as_str(), "Console" | "Dir" | "File" | "Net") {
+            // Capability rights use bracket syntax (`Dir[Read]`, `Net[Connect]`,
+            // `Secret[Seal]`); ordinary generic types use parens (`List(Int)`).
+            if witchy_cap_model::bears_rights_markers(n) {
                 format!("{n}[{}]", args.iter().map(type_str).collect::<Vec<_>>().join(", "))
             } else {
                 format!("{n}({})", args.iter().map(type_str).collect::<Vec<_>>().join(", "))

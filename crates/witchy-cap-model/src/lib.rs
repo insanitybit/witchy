@@ -23,6 +23,14 @@ pub enum CapabilityRight {
     Tcp,
     Udp,
     Uds,
+    /// (RFC-0121) A `Secret`'s bytes may be read into guest memory
+    /// (`crypto.reveal`). Implies `Seal`: revealing is strictly more authority
+    /// than using the secret by handle.
+    Reveal,
+    /// (RFC-0121) A `Secret` may be used by opaque handle — signing, deriving a
+    /// public key, serving TLS. The weaker right, and the one every by-handle
+    /// operation asks for, so a narrowed `Secret[Seal]` still does useful work.
+    Seal,
 }
 
 impl CapabilityRight {
@@ -35,6 +43,8 @@ impl CapabilityRight {
             Self::Tcp => "Tcp",
             Self::Udp => "Udp",
             Self::Uds => "Uds",
+            Self::Reveal => "Reveal",
+            Self::Seal => "Seal",
         }
     }
 }
@@ -45,6 +55,10 @@ pub const NET_VERB_RIGHTS: &[CapabilityRight] =
     &[CapabilityRight::Connect, CapabilityRight::Listen];
 pub const NET_TRANSPORT_RIGHTS: &[CapabilityRight] =
     &[CapabilityRight::Tcp, CapabilityRight::Udp, CapabilityRight::Uds];
+/// (RFC-0121) A `Secret`'s rights. `Seal` is by-handle use; `Reveal` additionally
+/// permits reading the bytes. Bare `Secret` is the full set, as with `Dir`.
+pub const SECRET_RIGHTS: &[CapabilityRight] =
+    &[CapabilityRight::Reveal, CapabilityRight::Seal];
 pub const NET_RIGHTS: &[CapabilityRight] = &[
     CapabilityRight::Connect,
     CapabilityRight::Listen,
@@ -136,6 +150,7 @@ impl CapabilityKind {
         match self {
             Self::Console | Self::Dir | Self::File => READ_WRITE_RIGHTS,
             Self::Net => NET_RIGHTS,
+            Self::Secret => SECRET_RIGHTS,
             _ => &[],
         }
     }
@@ -180,6 +195,15 @@ pub fn is_capability_type_name(name: &str) -> bool {
     CapabilityKind::from_name(name).is_some()
 }
 
+/// Whether `name` is a capability whose type arguments are RIGHTS markers rather
+/// than types — `Dir[Read]`, `Net[Connect]`, `Secret[Seal]`. Every consumer that
+/// treats bracket arguments specially (name resolution, formatting, marker
+/// validation, `meta.type_capability`) asks here, so adding a rights vocabulary to
+/// a capability needs no edit at those sites.
+pub fn bears_rights_markers(name: &str) -> bool {
+    CapabilityKind::from_name(name).is_some_and(|kind| !kind.rights().is_empty())
+}
+
 pub fn is_host_capability(name: &str) -> bool {
     CapabilityKind::from_name(name)
         .is_some_and(|kind| kind.class() == CapabilityClass::Host)
@@ -190,8 +214,12 @@ pub fn is_build_capability(name: &str) -> bool {
         .is_some_and(|kind| kind.class() == CapabilityClass::Build)
 }
 
-pub const USE_ONLY_SECRET_REVEAL_ERROR: &str =
-    "this secret is use-only and cannot be revealed; use it by handle (e.g. crypto.sign or server.serve_tls)";
+/// (RFC-0060/0121) The runtime refusal when `crypto.reveal` is applied to a sealed
+/// secret. The checker rejects this statically for source programs (`Secret[Seal]`
+/// lacks `Reveal`); this stays as defense in depth for a precompiled `.wasm` that
+/// no checker ever saw, and for a grant that seals a secret the source typed bare.
+pub const SEALED_SECRET_REVEAL_ERROR: &str =
+    "this secret is sealed and cannot be revealed; use it by handle (e.g. crypto.sign or server.serve_tls)";
 
 const DIR_DENY_ALL: &str = "\u{0}";
 

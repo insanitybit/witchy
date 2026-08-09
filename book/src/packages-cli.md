@@ -155,7 +155,7 @@ network = { from = "allow", addresses = ["api.example.com:443"] }
 runner = { from = "allow", programs = ["git"] }
 
 [targets.trusted-exe.secrets]
-token = { from = "env:APP_TOKEN", use-only = true }
+token = { from = "env:APP_TOKEN", sealed = true }
 ```
 
 The target defaults to best-effort native outer confinement. A deployment that

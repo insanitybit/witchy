@@ -153,7 +153,7 @@ fn playground_examples_are_current_witchy() {
 ///   * a `..`/absolute path is refused by BOTH the shim and the native run (confinement parity);
 ///   * `dir.only(Dir.ext(".log"))` denies a non-matching file (entry policy); and
 ///   * `SecretStore` uses page-supplied opaque grants with native Ed25519/reveal parity and
-///     preserves use-only policy; and
+///     preserves sealed policy; and
 ///   * `vm.par_map`/`vm.serve` use fresh zero-authority instances, preserve the sequential
 ///     oracle, and terminate finite nested vm source; and
 ///   * the DEFAULT host still `LinkError`s on capability programs, while `Exec`/bare `Secret`/

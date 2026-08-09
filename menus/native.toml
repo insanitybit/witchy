@@ -26,6 +26,10 @@ determinism = "nondeterministic"
 provider = "signing-key"
 determinism = "nondeterministic"
 source = "launch"
+# (RFC-0121) The native host can grant either policy: a bare `--secret` is
+# revealable, `--secret …,sealed` and `--signing-key` are by-handle only. Which one
+# a given secret gets is the launch grant's decision, so the menu offers both.
+rights = ["Reveal", "Seal"]
 
 [grants.SecretStore]
 provider = "named-secrets"

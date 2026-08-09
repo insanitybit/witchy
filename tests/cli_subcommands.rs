@@ -1169,29 +1169,29 @@ fn caps_diff_grantable_widening_message_matches_exit_code() {
     assert!(!stdout.contains("no widening"), "must not claim 'no widening': {stdout}");
 }
 
-// ---- BUG-146: grant-document use-only ----
+// ---- BUG-146: grant-document sealed ----
 
 #[test]
-fn grant_document_use_only_blocks_reveal() {
-    // BUG-146: a `[secrets]` entry declared `use-only = true` is unrevealable.
-    let dir = workdir("grant-use-only");
+fn grant_document_sealed_blocks_reveal() {
+    // BUG-146: a `[secrets]` entry declared `sealed = true` is unrevealable.
+    let dir = workdir("grant-sealed");
     let prog = write(
         &dir,
         "r.witchy",
         "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    let s = secretstore.require(store, \"token\")\n    console.print(crypto.reveal(s))\n",
     );
-    let use_only = write(&dir, "use_only.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\", use-only = true }\n");
+    let sealed = write(&dir, "sealed.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\", sealed = true }\n");
     let out = Command::new(BIN)
-        .args(["sandbox", "--grants", &use_only, "--accept-grants", &prog])
+        .args(["sandbox", "--grants", &sealed, "--accept-grants", &prog])
         .env("MY_TOKEN", "hunter2")
         .output()
         .expect("spawn");
     let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    assert!(combined.contains("use-only") || combined.contains("cannot be revealed"), "reveal must be refused: {combined}");
+    assert!(combined.contains("sealed") || combined.contains("cannot be revealed"), "reveal must be refused: {combined}");
     assert!(!combined.contains("hunter2"), "the secret must never be revealed: {combined}");
 
     // A misspelled modifier is a loud parse error (deny_unknown_fields).
-    let bad = write(&dir, "bad.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\", use_only = true }\n");
+    let bad = write(&dir, "bad.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\", sealed = true }\n");
     let out = Command::new(BIN)
         .args(["sandbox", "--grants", &bad, "--accept-grants", &prog])
         .env("MY_TOKEN", "hunter2")
@@ -1204,8 +1204,8 @@ fn grant_document_use_only_blocks_reveal() {
 
 #[test]
 fn grant_approval_row_marks_the_reveal_policy() {
-    // BUG-610: enforcement of `use-only` was already correct, but the approval
-    // prompt printed a revealable and a use-only secret IDENTICALLY — hiding the
+    // BUG-610: enforcement of `sealed` was already correct, but the approval
+    // prompt printed a revealable and a sealed secret IDENTICALLY — hiding the
     // strongest per-secret guarantee at the one point a human decides.
     let dir = workdir("grant-approval-reveal-policy");
     let prog = write(
@@ -1216,7 +1216,7 @@ fn grant_approval_row_marks_the_reveal_policy() {
     let doc = write(
         &dir,
         "g.toml",
-        "[secrets]\napikey = { from = \"env:MY_API_KEY\" }\ntlskey = { from = \"env:MY_TLS_KEY\", use-only = true }\n",
+        "[secrets]\napikey = { from = \"env:MY_API_KEY\" }\ntlskey = { from = \"env:MY_TLS_KEY\", sealed = true }\n",
     );
     let out = Command::new(BIN)
         .args(["sandbox", "--grants", &doc, "--accept-grants", &prog])
@@ -1230,28 +1230,28 @@ fn grant_approval_row_marks_the_reveal_policy() {
         "a revealable secret must say so: {stderr}"
     );
     assert!(
-        stderr.contains("secret tlskey: env:MY_TLS_KEY (use-only)"),
-        "a use-only secret must say so: {stderr}"
+        stderr.contains("secret tlskey: env:MY_TLS_KEY (sealed)"),
+        "a sealed secret must say so: {stderr}"
     );
 
     // The same policy must show up in the cross-check a reviewer/CI runs.
     let check = run(&["grants-check", &prog, &doc]);
     let stdout = String::from_utf8_lossy(&check.stdout);
     assert!(stdout.contains("apikey: env:MY_API_KEY (revealable)"), "grants-check must show the policy: {stdout}");
-    assert!(stdout.contains("tlskey: env:MY_TLS_KEY (use-only)"), "grants-check must show the policy: {stdout}");
+    assert!(stdout.contains("tlskey: env:MY_TLS_KEY (sealed)"), "grants-check must show the policy: {stdout}");
 }
 
 #[test]
 fn grants_diff_flags_a_loosened_reveal_policy() {
-    // BUG-610: dropping `use-only = true` grants the same `SecretStore`, so the
+    // BUG-610: dropping `sealed = true` grants the same `SecretStore`, so the
     // footprint axis cross-checks as "matches exactly" while the program gains the
     // authority to read that secret's bytes. `grants-diff` is the gate for it.
     let dir = workdir("grants-diff-reveal-policy");
-    let tight = write(&dir, "tight.toml", "[secrets]\ntlskey = { from = \"env:MY_TLS_KEY\", use-only = true }\n");
+    let tight = write(&dir, "tight.toml", "[secrets]\ntlskey = { from = \"env:MY_TLS_KEY\", sealed = true }\n");
     let loose = write(&dir, "loose.toml", "[secrets]\ntlskey = { from = \"env:MY_TLS_KEY\" }\n");
 
     let out = run(&["grants-diff", &tight, &loose]);
-    assert_eq!(out.status.code(), Some(2), "dropping use-only must exit 2");
+    assert_eq!(out.status.code(), Some(2), "dropping sealed must exit 2");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("SECRET WIDENING"), "the loosening must be named: {stdout}");
     assert!(stdout.contains("tlskey"), "the secret must be named: {stdout}");
@@ -1260,13 +1260,13 @@ fn grants_diff_flags_a_loosened_reveal_policy() {
     let same = run(&["grants-diff", &tight, &tight]);
     assert_eq!(same.status.code(), Some(0), "an unchanged document must exit 0");
     let tightened = run(&["grants-diff", &loose, &tight]);
-    assert_eq!(tightened.status.code(), Some(0), "tightening to use-only must not be a widening");
+    assert_eq!(tightened.status.code(), Some(0), "tightening to sealed must not be a widening");
 
     // A brand-new revealable secret is new read authority.
     let added = write(
         &dir,
         "added.toml",
-        "[secrets]\ntlskey = { from = \"env:MY_TLS_KEY\", use-only = true }\nnewkey = { from = \"env:NEW\" }\n",
+        "[secrets]\ntlskey = { from = \"env:MY_TLS_KEY\", sealed = true }\nnewkey = { from = \"env:NEW\" }\n",
     );
     let out = run(&["grants-diff", &tight, &added]);
     assert_eq!(out.status.code(), Some(2), "a new revealable secret must exit 2");

@@ -192,13 +192,13 @@ pub(crate) fn run_file_grants(
     let mut exec_child_paths: Vec<std::path::PathBuf> = Vec::new();
     let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
     for (name, s) in &doc.secrets {
-        // BUG-146: carry the document's `use-only` modifier through to the runtime
+        // BUG-146: carry the document's `sealed` modifier through to the runtime
         // grant — otherwise a grant that declares a signing/TLS key as unrevealable
         // was silently lowered to a revealable secret (`crypto.reveal` would leak it).
         named_secrets.push(runtime::SecretGrant {
             name: name.clone(),
             bytes: resolve_secret_from(&s.from)?,
-            use_only: s.use_only,
+            sealed: s.sealed,
         });
     }
     if let Some(ast::Item::Function(main)) =
@@ -346,10 +346,10 @@ pub(crate) fn run_file_grants(
     }
     for (name, s) in &doc.secrets {
         // (RFC-0060/BUG-610) The reveal policy is part of what is being approved:
-        // a revealable secret can be read into guest memory, a use-only one can
+        // a revealable secret can be read into guest memory, a sealed one can
         // only be consumed by handle. Printing both rows identically hid the
         // strongest per-secret guarantee at the one point a human decides.
-        eprintln!("  secret {name}: {}{}", s.from, capabilities::secret_reveal_suffix(s.use_only));
+        eprintln!("  secret {name}: {}{}", s.from, capabilities::secret_reveal_suffix(s.sealed));
     }
     if !accept_grants && std::io::stdin().is_terminal() {
         use std::io::Write;

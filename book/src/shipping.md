@@ -122,7 +122,7 @@ environment = { from = "system", names = ["HOME", "LANG"] }
 runner = { from = "allow", programs = ["git"] }
 
 [targets.trusted-exe.secrets]
-token = { from = "env:APP_TOKEN", use-only = true }
+token = { from = "env:APP_TOKEN", sealed = true }
 ```
 
 Directory and file bindings retain their opened authority from admission

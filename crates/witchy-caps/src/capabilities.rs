@@ -18,9 +18,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use witchy_cap_model::{
-    CapabilityClass, CapabilityKind, CapabilityRight, NET_TRANSPORT_RIGHTS, NET_VERB_RIGHTS,
-};
+use witchy_cap_model::{CapabilityClass, NET_TRANSPORT_RIGHTS, NET_VERB_RIGHTS};
+// The capability catalog itself, re-exported so consumers reached through
+// `witchy-caps` can consult the authoritative rights vocabulary without adding a
+// direct `witchy-cap-model` dependency.
+pub use witchy_cap_model::{CapabilityKind, CapabilityRight};
 use witchy_syntax::ast::{Item, Module, Type};
 
 /// The rights (verbs) a single capability permits. Empty for capabilities such
@@ -261,19 +263,24 @@ pub fn dir_admits(policy: &str, name: &str, is_dir: bool) -> bool {
 }
 
 /// (RFC-0060) The error both backends raise when `crypto.reveal` is called on a
-/// **use-only** secret. A use-only secret (granted `--secret name=value,use-only`,
+/// **sealed** secret. A sealed secret (granted `--secret name=value,sealed`,
 /// or a served TLS key) may be consumed by handle but never read back into guest
 /// memory. Defined once here so the interpreter and the compiled runtime surface
 /// the SAME text and cannot drift on this refusal.
-pub use witchy_cap_model::USE_ONLY_SECRET_REVEAL_ERROR;
+pub use witchy_cap_model::SEALED_SECRET_REVEAL_ERROR;
+
+/// Whether a capability's bracket arguments are RIGHTS markers rather than types
+/// (`Dir[Read]`, `Secret[Seal]`). Re-exported from the capability catalog so
+/// consumers without a direct `witchy-cap-model` dependency share the one answer.
+pub use witchy_cap_model::bears_rights_markers;
 
 /// (RFC-0060/BUG-610) How a secret's reveal policy is spelled on a REVIEWABLE
 /// surface — the grant-approval prompt and the grant cross-check. Enforcement of
 /// the bit was already correct; what was missing was showing it where a human or
-/// CI decides, so a revealable and a use-only secret no longer render identically.
+/// CI decides, so a revealable and a sealed secret no longer render identically.
 /// Defined once so the prompt and the gate cannot drift on the wording.
-pub fn secret_reveal_suffix(use_only: bool) -> &'static str {
-    if use_only { " (use-only)" } else { " (revealable)" }
+pub fn secret_reveal_suffix(sealed: bool) -> &'static str {
+    if sealed { " (sealed)" } else { " (revealable)" }
 }
 
 /// Whether `secret`'s bytes are the host's signing key (the `--signing-key` seed).

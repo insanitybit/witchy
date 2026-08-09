@@ -52,7 +52,7 @@ audit witchy code by reading signatures, not by tracing call graphs.
 | `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
 | `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, `only`, `deny`, … |
 | `SecretStore` | named secrets provisioned by the host (`--secret`/`--secret-file`/`--signing-key`) | `require(store, name) -> Secret`, `get(store, name) -> Option(Secret)` |
-| `Secret` | opaque host-held secret material obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key` (Ed25519 signing keys); `server.serve_tls`/`serve_tls_n` consume a TLS private key by opaque reference; `crypto.reveal` (revealable value secrets only - signing keys and use-only secrets aren't revealable) |
+| `Secret` | opaque host-held secret material obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key` (Ed25519 signing keys); `server.serve_tls`/`serve_tls_n` consume a TLS private key by opaque reference; `crypto.reveal` (needs the `Reveal` right - a `Secret[Seal]` is a check-time error, and signing keys and sealed grants aren't revealable at run time either) |
 
 A `Dir` isn't "the filesystem" - it's one subtree. `dir.read(path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and
@@ -369,18 +369,53 @@ safe-by-default grants - try one with
 `witchy build-step <file> [--out <dir>] [--read <dir>] [--env K]... [--exec tool]...`.
 
 **Secrets carry a per-secret axis the cap-set cannot express.** `SecretStore` is one
-capability, but each granted secret is independently *revealable* or *use-only*, and
+capability, but each granted secret is independently *revealable* or *sealed*, and
 two documents granting the same store are indistinguishable on the footprint axis.
 So the reveal policy is reviewable in its own right: the grant-approval prompt and
-`grants-check` mark every secret `(revealable)` or `(use-only)`, and
+`grants-check` mark every secret `(revealable)` or `(sealed)`, and
 
 ```sh
 witchy grants-diff old.grants.toml new.grants.toml   # exit 2 if a reveal policy loosened
 ```
 
-exits 2 when a newer document drops `use-only = true` from a secret or introduces a
+exits 2 when a newer document drops `sealed = true` from a secret or introduces a
 new revealable one - both of which hand the program authority to read secret bytes
 it previously could only use by handle.
+
+### `Secret` rights: `Seal` and `Reveal`
+
+A `Secret`'s policy is spelled in its type, like every other capability's
+(RFC-0121). `Secret[Seal]` may be used only by opaque handle; bare `Secret` (the
+full set) additionally permits reading the bytes:
+
+| Operation | Requires |
+|---|---|
+| `crypto.sign`, `crypto.public_key` | `Seal` |
+| `jwt.sign_eddsa` | `Seal` |
+| `server.serve_tls`, `serve_tls_n` (the key) | `Seal` |
+| `crypto.reveal` | `Reveal` |
+
+`Seal` is the weaker right and every by-handle operation asks only for it, so a
+narrowed handle still does all the useful work - which is what makes narrowing
+worth performing:
+
+```witchy
+import crypto
+
+// This signature proves the function cannot exfiltrate the key.
+fn fingerprint(key: Secret[Seal]) -> String:
+    key.public_key()
+
+fn main(console: Console, key: Secret):
+    console.print(fingerprint(key))
+```
+
+Narrowing is monotone: a bare `Secret` satisfies a `Secret[Seal]` parameter
+implicitly, and `key as Secret[Seal]` ascribes it explicitly. The reverse is
+rejected - `as` only drops rights. Calling `reveal` on a sealed handle does not
+compile, and the diagnostic names the missing right. The launch grant is the
+floor, so a secret granted `sealed` cannot be widened by any in-language
+operation.
 
 ## Enforcement: the sandbox
 

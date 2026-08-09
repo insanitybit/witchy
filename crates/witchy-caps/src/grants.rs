@@ -144,13 +144,14 @@ pub struct SecretGrant {
     /// Where the host RESOLVES the secret from (e.g. `env:GITHUB_OAUTH`). The
     /// document never carries a secret value.
     pub from: String,
-    /// (RFC-0060) When true the secret is usable by handle (sign/verify) but NOT
-    /// revealable — `crypto.reveal` errors, the same guarantee `--secret …,use-only`
-    /// confers on the CLI. Defaults to revealable. `deny_unknown_fields` above makes a
-    /// misspelled modifier (`use_only`, `useonly`) a loud parse error rather than a
-    /// silently-revealable secret.
-    #[serde(default, rename = "use-only")]
-    pub use_only: bool,
+    /// (RFC-0060/0121) When true the secret is granted as `Secret[Seal]`: usable by
+    /// handle (`crypto.sign`, `server.serve_tls`) but NOT revealable — `crypto.reveal`
+    /// is a check-time error and a runtime refusal, the same guarantee
+    /// `--secret …,sealed` confers on the CLI. Defaults to revealable.
+    /// `deny_unknown_fields` above makes a misspelled key (`seal`, `useonly`) a loud
+    /// parse error rather than a silently-revealable secret.
+    #[serde(default)]
+    pub sealed: bool,
 }
 
 /// RFC-0038: a bare grantable user capability the host mints at the root.

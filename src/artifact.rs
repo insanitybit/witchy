@@ -28,6 +28,11 @@ const CAP_TAGS: [(&str, u8); 11] = [
     ("Fetch", 10),
 ];
 
+// These bit positions are WIRE FORMAT: a trusted executable digests the encoded
+// payload, so an existing right's bit must never be renumbered. New rights take
+// the next free bit. `every_rights_bearing_capability_has_a_bit_table` fails if a
+// capability gains a rights vocabulary without a table here — otherwise its rights
+// would silently encode as empty and a narrowed grant would decode as right-free.
 const CONSOLE_RIGHTS: [(&str, u8); 2] = [("Read", 1 << 0), ("Write", 1 << 1)];
 const DIR_RIGHTS: [(&str, u8); 2] = [("Read", 1 << 0), ("Write", 1 << 1)];
 const NET_RIGHTS: [(&str, u8); 5] = [
@@ -37,6 +42,8 @@ const NET_RIGHTS: [(&str, u8); 5] = [
     ("Udp", 1 << 3),
     ("Uds", 1 << 4),
 ];
+/// (RFC-0121) `Secret[Reveal]`/`Secret[Seal]`.
+const SECRET_RIGHTS: [(&str, u8); 2] = [("Reveal", 1 << 0), ("Seal", 1 << 1)];
 
 /// Append the checked source module's root capability contract to its wasm.
 /// Imports remain the executable authority floor; this section preserves
@@ -200,6 +207,7 @@ fn right_tags(cap: &str) -> &'static [(&'static str, u8)] {
         "Console" => &CONSOLE_RIGHTS,
         "Dir" | "File" => &DIR_RIGHTS,
         "Net" => &NET_RIGHTS,
+        "Secret" => &SECRET_RIGHTS,
         _ => &[],
     }
 }
@@ -289,6 +297,37 @@ mod tests {
 
         let decoded = launch_contract(&wasm).unwrap().expect("launch section");
         assert_eq!(decoded, capabilities::run_grant(&module));
+    }
+
+    /// (RFC-0121) The launch contract's rights tables must cover every capability
+    /// that HAS rights. A missing table is silent: `right_tags` returns `&[]`, so
+    /// `rights_mask` encodes 0 and the contract decodes as right-free — a narrowed
+    /// grant would round-trip as one with no rights at all. `Secret` gaining a
+    /// vocabulary is exactly this hazard, so assert the invariant instead of the
+    /// instance.
+    #[test]
+    fn every_rights_bearing_capability_has_a_bit_table() {
+        for (cap, _) in CAP_TAGS {
+            let catalog = capabilities::CapabilityKind::from_name(cap)
+                .expect("a tagged capability is in the catalog")
+                .rights();
+            let encoded = right_tags(cap);
+            assert_eq!(
+                catalog.len(),
+                encoded.len(),
+                "`{cap}` has {} catalog right(s) but {} encodable — a narrowed grant \
+                 would encode as right-free",
+                catalog.len(),
+                encoded.len(),
+            );
+            for right in catalog {
+                assert!(
+                    encoded.iter().any(|(name, _)| *name == right.name()),
+                    "`{cap}` right `{}` has no wire bit",
+                    right.name(),
+                );
+            }
+        }
     }
 
     #[test]

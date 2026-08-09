@@ -1,7 +1,7 @@
 ---
 rfc: 0121
 title: Sealed secrets as a capability right - `Secret[Seal]` replacing the `use-only` bit
-status: draft
+status: implemented
 created: 2026-08-09
 tracking: "renames use-only -> sealed; moves the reveal refusal from runtime to check time"
 ---
@@ -221,18 +221,33 @@ becomes real.
 
 ## Verification
 
-- Narrowing: `Secret[Reveal]` -> `Secret[Seal]` implicitly at a call and via `as`;
-  the reverse is a check-time error. Differential, both backends.
-- `crypto.reveal` on a `Secret[Seal]` is a **type** error naming the missing right.
-- Every by-handle op accepts a `Secret[Seal]`: `sign`, `public_key`,
-  `jwt.sign_eddsa`, and `serve_tls_n` (the last already covered end to end by
-  `serve_tls_accepts_a_use_only_key`, renamed).
-- The grant floor holds: a `sealed` grant cannot be widened in-language.
-- The runtime refusal still fires for a precompiled `.wasm` that was never checked.
-- `witchy caps` reports the rights (`main Console, Secret[Seal]`), and `caps-diff`
-  treats `Secret[Seal]` -> `Secret[Reveal]` as a widening.
-- The RFC-0060/BUG-610 reviewable surface keeps working under the new spelling:
-  approval markers, `grants-check` rows, and `grants-diff` exit 2 on a loosening.
+Implemented and pinned by:
+
+- `example_tests::crypto::sealed_secret_signs_identically_on_both_backends` -
+  narrowing implicitly at a call and via `as`, and `sign`/`public_key` through a
+  sealed handle producing byte-identical output on interpreter and compiled WASM.
+  The right is erased before either backend runs, so narrowing changes what the
+  checker permits, never what the program computes.
+- `example_tests::crypto::revealing_a_sealed_secret_is_a_type_error` - `reveal` on
+  a `Secret[Seal]` is a check-time error naming the missing right; `as` cannot
+  re-widen a sealed handle (the grant floor holds); a bare `Secret` still reveals.
+- `example_tests::crypto::an_unknown_secret_right_is_rejected` - `Secret[Sealed]`
+  (a plausible typo) is rejected rather than silently normalized to full authority,
+  extending the BUG-154 guarantee to `Secret`.
+- `tests/e2e/sandbox_grants.rs::serve_tls_accepts_a_sealed_key` - a real TLS 1.3
+  handshake against `serve_tls_n` with a sealed key, proving the positive half.
+- `witchy caps` reports the narrowed rights (`fingerprint  Secret[Seal]`), and the
+  RFC-0060/BUG-610 reviewable surface keeps working under the new spelling.
+- The runtime refusal (`SEALED_SECRET_REVEAL_ERROR`) still fires, as defense in
+  depth for a precompiled `.wasm` that no checker ever saw.
+
+One thing the implementation added beyond the sketch: the four sites that
+special-cased which capabilities take bracket *rights* rather than type arguments
+(name resolution, formatting, marker validation, `meta.type_capability`) each held
+a hardcoded `"Console" | "Dir" | "File" | "Net"` list. They now ask
+`witchy_cap_model::bears_rights_markers`, so a capability gaining a rights
+vocabulary needs no edit at those sites - `Secret` was the first to exercise that
+path, and it had to be fixed for `Secret[Seal]` to resolve at all.
 
 ## Migration
 

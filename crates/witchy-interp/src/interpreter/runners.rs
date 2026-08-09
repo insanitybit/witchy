@@ -572,7 +572,7 @@ pub fn run_module_exit(
 }
 
 /// Like [`run_module_exit`], but also grants NAMED secrets to a `main` that binds
-/// a `SecretStore` — each `(name, bytes, use_only)`; a use-only secret (RFC-0060)
+/// a `SecretStore` — each `(name, bytes, sealed)`; a sealed secret (RFC-0060)
 /// is consumable by handle (`crypto.sign`, `server.serve_tls`) but `crypto.reveal`
 /// on it errors. This is the interpreter twin of the compiled runtime's
 /// `Capabilities.secrets`, for differential tests of secret-consuming servers.
@@ -843,13 +843,13 @@ fn run_module_inner_limited_with_catalog(
     // either a `Secret` (the key directly) or a `SecretStore` and `get("signing")`.
     if let Some(seed) = signing_key {
         // The signing key is never revealable, but its non-revealability is enforced
-        // by the signing-key identity check, so it is stored use_only=false.
+        // by the signing-key identity check, so it is stored sealed=false.
         interp.secrets.insert("signing".to_string(), (seed.to_vec(), false));
     }
-    // Named `--secret`/`--secret-file` grants, each `(name, bytes, use_only)` —
-    // a use-only secret (RFC-0060) is consumable by handle; `crypto.reveal` errors.
-    for (name, bytes, use_only) in named_secrets {
-        interp.secrets.insert(name, (bytes, use_only));
+    // Named `--secret`/`--secret-file` grants, each `(name, bytes, sealed)` —
+    // a sealed secret (RFC-0060) is consumable by handle; `crypto.reveal` errors.
+    for (name, bytes, sealed) in named_secrets {
+        interp.secrets.insert(name, (bytes, sealed));
     }
     let root_args = match interp.functions.get("main").cloned() {
         Some(f) => {

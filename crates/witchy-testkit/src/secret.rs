@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use witchy_cap_model::USE_ONLY_SECRET_REVEAL_ERROR;
+use witchy_cap_model::SEALED_SECRET_REVEAL_ERROR;
 
 use crate::{
     FixtureCall, FixtureErrorCode, FixtureFailure, FixtureFamily, FixtureHandle, FixtureOutcome,
@@ -159,8 +159,8 @@ impl FixtureSession {
     ) -> SecretProviderResult<String> {
         let material = self.secret_material(secret)?;
         if material.usage != SecretUsage::Revealable {
-            let message = if material.usage == SecretUsage::UseOnly {
-                USE_ONLY_SECRET_REVEAL_ERROR
+            let message = if material.usage == SecretUsage::Sealed {
+                SEALED_SECRET_REVEAL_ERROR
             } else {
                 "the signing key is not revealable; use crypto.sign / crypto.public_key"
             };
@@ -266,7 +266,7 @@ fn redacted_outcome(length: usize, usage: SecretUsage) -> FixtureOutcome {
                 FixtureValue::String(
                     match usage {
                         SecretUsage::Revealable => "revealable",
-                        SecretUsage::UseOnly => "use_only",
+                        SecretUsage::Sealed => "sealed",
                         SecretUsage::Signing => "signing",
                     }
                     .into(),
@@ -349,7 +349,7 @@ mod tests {
                         "tls".into(),
                         SecretFixture {
                             hex: "00ff".into(),
-                            usage: SecretUsage::UseOnly,
+                            usage: SecretUsage::Sealed,
                         },
                     ),
                     (
@@ -385,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn use_only_and_signing_secrets_cannot_be_revealed() {
+    fn sealed_and_signing_secrets_cannot_be_revealed() {
         let mut session = FixtureSession::new(fixture(Vec::new())).expect("session");
         let store = session.mint_fixture_secret_store(None).expect("store");
         let tls = session
@@ -395,7 +395,7 @@ mod tests {
             .secretstore_require(&store, "signing", None)
             .expect("signing");
         assert_eq!(
-            session.secret_reveal(&tls, None).expect_err("use-only").code,
+            session.secret_reveal(&tls, None).expect_err("sealed").code,
             FixtureErrorCode::PermissionDenied
         );
         assert_eq!(

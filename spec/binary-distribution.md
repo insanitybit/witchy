@@ -101,7 +101,7 @@ dependencies still receive authority only when the root passes a capability.
   material - signing keys, revealable value secrets, and TLS private keys - and
   exposes each only through the operations that consume it (by opaque reference
   for signing and TLS serving; `crypto.reveal` for revealable value secrets,
-  which errors on signing keys and use-only secrets). No secret's raw bytes are
+  which errors on signing keys and sealed secrets). No secret's raw bytes are
   copied into guest linear memory.
 - **No silent capability grants.** A portable host receives concrete resources
   from consumer launch flags. A trusted executable instead resolves the exact,

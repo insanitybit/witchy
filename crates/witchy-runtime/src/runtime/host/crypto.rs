@@ -55,7 +55,7 @@ pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> 
 }
 
 /// Register the checked reveal bridge after secret-store lookup. Revealing a
-/// value needs a non-null Secret ref and applies its own use-only/signing-key
+/// value needs a non-null Secret ref and applies its own sealed/signing-key
 /// checks, so the import itself carries no authority.
 pub(in crate::runtime) fn link_reveal(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "crypto_reveal_len", host_crypto_reveal_len)?;
@@ -415,11 +415,11 @@ fn host_crypto_reveal_len(
         };
     }
     let secret = secret_material_ref(&caller, key)?;
-    // (RFC-0060) A use-only secret is consumable by opaque ref but never revealable.
-    if secret.use_only {
+    // (RFC-0060) A sealed secret is consumable by opaque ref but never revealable.
+    if secret.sealed {
         bail!(
             "{}",
-            witchy_caps::capabilities::USE_ONLY_SECRET_REVEAL_ERROR
+            witchy_caps::capabilities::SEALED_SECRET_REVEAL_ERROR
         );
     }
     if witchy_caps::capabilities::secret_is_signing_key(

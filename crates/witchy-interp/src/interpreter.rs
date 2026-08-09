@@ -153,14 +153,14 @@ pub enum Value {
     #[cfg(feature = "test-fixtures")]
     FixtureSecretStore(HostHandle),
     /// A single secret's raw bytes (a signing seed, or a value secret like a token)
-    /// plus its **use-only** flag (RFC-0060). Unforgeable — minted only by the host
+    /// plus its **sealed** flag (RFC-0060). Unforgeable — minted only by the host
     /// or fetched from a `SecretStore`. The ability to use it *is* authority;
     /// `.sign`/`.public_key` read it as a hex Ed25519 seed. `.reveal` returns it
-    /// verbatim UNLESS `use_only` is set (or it is the signing key), in which case
+    /// verbatim UNLESS `sealed` is set (or it is the signing key), in which case
     /// reveal errors — the key stays usable by handle only.
     Secret(Vec<u8>, bool),
     /// The host-granted store of NAMED secrets (from `--secret`/`--secret-file`/
-    /// `--signing-key`). Each entry is `(bytes, use_only)`; `secret_store.get(name)`
+    /// `--signing-key`). Each entry is `(bytes, sealed)`; `secret_store.get(name)`
     /// yields a `Secret` carrying both.
     SecretStore(std::collections::BTreeMap<String, (Vec<u8>, bool)>),
     /// A connected socket — a handle into the interpreter's socket table.
@@ -602,7 +602,7 @@ pub struct Interpreter {
     /// one. A `main` that declares a `Secret` parameter requires this.
     signing_key: Option<[u8; 32]>,
     /// Named secrets backing the `SecretStore` capability (from
-    /// `--secret`/`--secret-file`/`--signing-key`), each `(bytes, use_only)`.
+    /// `--secret`/`--secret-file`/`--signing-key`), each `(bytes, sealed)`.
     /// `secret_store.get(name)` mints a `Secret` carrying both. (RFC-0060)
     secrets: std::collections::BTreeMap<String, (Vec<u8>, bool)>,
     /// RFC-0038: grant-document `[user_caps]` field values for a `main` that binds
@@ -1087,7 +1087,7 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Exec" => Ok(Value::Cap(Capability::Exec(None))),
             Some(Type::Named(n, _)) if n == "Secret" => match self.signing_key {
                 // The bare `Secret` is the signing key: revealable=false is enforced by
-                // the signing-key identity check, so its `use_only` flag stays false here.
+                // the signing-key identity check, so its `sealed` flag stays false here.
                 Some(seed) => Ok(Value::Secret(seed.to_vec(), false)),
                 None => err("`main` requires a `Secret`, but the host granted none (provide `--signing-key <hex-seed-file>`)"),
             },

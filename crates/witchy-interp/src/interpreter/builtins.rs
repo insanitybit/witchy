@@ -47,9 +47,9 @@ impl Interpreter {
                     }
                 }
                 [Value::SecretStore(map), Value::Str(key)] => Ok(Some(match map.get(key.as_str()) {
-                    Some((bytes, use_only)) => Value::Ctor {
+                    Some((bytes, sealed)) => Value::Ctor {
                         name: "Some".into(),
-                        fields: Rc::new(vec![Value::Secret(bytes.clone(), *use_only)]),
+                        fields: Rc::new(vec![Value::Secret(bytes.clone(), *sealed)]),
                     },
                     None => Value::ctor("None", Vec::new()),
                 })),
@@ -110,7 +110,7 @@ impl Interpreter {
                     }
                 }
                 [Value::SecretStore(map), Value::Str(key)] => match map.get(key.as_str()) {
-                    Some((bytes, use_only)) => Ok(Some(Value::Secret(bytes.clone(), *use_only))),
+                    Some((bytes, sealed)) => Ok(Some(Value::Secret(bytes.clone(), *sealed))),
                     None => err(format!("required secret `{key}` was not granted")),
                 },
                 _ => err(format!(
@@ -135,10 +135,10 @@ impl Interpreter {
                     )),
                 };
             }
-            if let [Value::Secret(bytes, use_only)] = args {
-                // (RFC-0060) A use-only secret is consumable by handle but never revealable.
-                if *use_only {
-                    return err(witchy_caps::capabilities::USE_ONLY_SECRET_REVEAL_ERROR);
+            if let [Value::Secret(bytes, sealed)] = args {
+                // (RFC-0060) A sealed secret is consumable by handle but never revealable.
+                if *sealed {
+                    return err(witchy_caps::capabilities::SEALED_SECRET_REVEAL_ERROR);
                 }
                 if witchy_caps::capabilities::secret_is_signing_key(
                     self.signing_key.as_ref().map(|s| s.as_slice()),
@@ -508,8 +508,11 @@ impl Interpreter {
                         );
                     }
                     let head = compiler_ident_name(head, "meta.type_capability")?;
-                    if !matches!(head.as_str(), "Console" | "Dir" | "File" | "Net") {
-                        return err("meta.type_capability expected Dir, File, or Net");
+                    if !witchy_caps::capabilities::bears_rights_markers(&head) {
+                        return err(
+                            "meta.type_capability expected a rights-bearing capability \
+                             (Console, Dir, File, Net, or Secret)",
+                        );
                     }
                     let hole_ancestry = compiler_direct_hole_origins(
                         rights,

@@ -70,3 +70,32 @@ never as a plain string in your source. `crypto.sign(key, message)` takes that
 store chapter covers how a `Secret` is granted and why it never prints or
 serializes. The shape to remember: verification is public and capability-free,
 signing is gated behind a `Secret`, and the two never blur together.
+
+### Sealing a key you only need to sign with
+
+A `Secret` has two rights. `Reveal` reads its bytes; `Seal` uses it by handle.
+Signing and public-key derivation are by-handle operations, so they need only
+`Seal` - which means a function that just signs can say so in its signature:
+
+```witchy
+import crypto
+
+// `Secret[Seal]` is a promise the checker enforces: this cannot read the key.
+fn endorse(key: Secret[Seal], release: String) -> String:
+    key.sign(release)
+
+fn main(console: Console, key: Secret):
+    // A bare `Secret` has both rights, so it narrows to `Secret[Seal]` here.
+    console.print(endorse(key, "v1.0.0"))
+```
+
+Narrowing only ever drops rights, so `endorse` cannot pass its sealed handle
+somewhere that reveals it, and cannot ascribe its way back to a bare `Secret`.
+Calling `key.reveal()` inside `endorse` does not compile - the error names the
+missing `Reveal` right rather than failing at run time in production.
+
+That is the whole point of the annotation: a reviewer reading `endorse`'s
+signature knows it cannot exfiltrate the key, without reading its body. Revealing
+is still ordinary and correct for the secrets that need it - an API token you send
+to a service is data your program legitimately handles - so bare `Secret` remains
+the default.

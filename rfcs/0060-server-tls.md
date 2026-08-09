@@ -3,10 +3,16 @@ rfc: 0060
 title: Server-side TLS — HTTPS serving with capability-guarded keys
 status: implemented
 created: 2026-07-04
-tracking: "serve_tls/serve_tls_n both backends; use-only secrets; rustls"
+tracking: "serve_tls/serve_tls_n both backends; sealed secrets (superseded by RFC-0121); rustls"
 ---
 
 # RFC-0060: Server-side TLS — HTTPS serving with capability-guarded keys
+
+> The `use-only` grant bit described below is now spelled `sealed` and is a
+> capability right, `Secret[Seal]` — see
+> [RFC-0121](0121-sealed-secret-rights.md). The TLS design here is unchanged;
+> only the policy's spelling and its enforcement point (check time, not just
+> run time) moved.
 
 The host-side listener path is implemented in
 [`crates/witchy-interp/src/interpreter.rs`](../crates/witchy-interp/src/interpreter.rs),

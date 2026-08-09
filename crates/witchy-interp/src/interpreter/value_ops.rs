@@ -183,7 +183,7 @@ pub(super) fn value_to_native(v: &Value) -> Result<witchy_runtime::value::Native
         Value::List(xs) => N::List(
             xs.iter().map(value_to_native).collect::<Result<Vec<_>, RuntimeError>>()?,
         ),
-        // The native crypto op already passed the reveal gate (use-only is checked
+        // The native crypto op already passed the reveal gate (sealed is checked
         // before dispatch), so the raw bytes cross without the flag.
         Value::Secret(s, _) => N::Secret(s.clone()),
         other => {

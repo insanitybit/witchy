@@ -116,7 +116,7 @@ struct ExecPlan {
 struct SecretPlan {
     name: String,
     from: String,
-    use_only: bool,
+    sealed: bool,
 }
 
 /// Host resources resolved from a checked binding plan at process startup.
@@ -211,8 +211,8 @@ enum RawExecBinding {
 #[serde(deny_unknown_fields)]
 struct RawSecretBinding {
     from: String,
-    #[serde(default, rename = "use-only")]
-    use_only: bool,
+    #[serde(default)]
+    sealed: bool,
 }
 
 /// Check the target configuration against `main` and encode the exact launch
@@ -406,7 +406,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
         if variable.is_empty() {
             return Err(format!("trusted-exe secret `{name}` has an empty `env:` provider"));
         }
-        secrets.push(SecretPlan { name, from: binding.from, use_only: binding.use_only });
+        secrets.push(SecretPlan { name, from: binding.from, sealed: binding.sealed });
     }
     let plan = BindingPlan {
         version: PLAN_VERSION,
@@ -513,7 +513,7 @@ pub fn resolve_binding_plan(
         secrets.push(runtime::SecretGrant {
             name: secret.name,
             bytes: value,
-            use_only: secret.use_only,
+            sealed: secret.sealed,
         });
     }
     let exec_child_paths = match plan.exec.as_ref() {

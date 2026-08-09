@@ -494,3 +494,128 @@ use crate::{codegen, interpreter, parser, typeck};
         assert!(interp_out[0].ends_with(" 32"), "long squeeze is 32 bytes: {}", interp_out[0]);
         assert_eq!(run_on_wasm(src), interp_out, "SHAKE prefix/validation parity");
     }
+
+    /// (RFC-0121) `Secret[Seal]` narrowing is a real type-level restriction, and the
+    /// by-handle operations accept it. Signing and public-key derivation through a
+    /// SEALED handle must produce byte-identical results to signing through the bare
+    /// `Secret` on BOTH backends — the right is erased before either backend runs, so
+    /// narrowing changes what the checker permits, never what the program computes.
+    #[test]
+    fn sealed_secret_signs_identically_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = concat!(
+            "import crypto\n",
+            // The narrowed parameter proves this helper cannot reveal the key.
+            "fn fingerprint(key: Secret[Seal]) -> String:\n",
+            "    key.public_key()\n",
+            "fn endorse(key: Secret[Seal], message: String) -> String:\n",
+            "    key.sign(message)\n",
+            "fn main(console: Console, signer: Secret):\n",
+            // Implicit narrowing at the call boundary: bare `Secret` -> `Secret[Seal]`.
+            "    console.print(fingerprint(signer))\n",
+            "    console.print(endorse(signer, \"msg\"))\n",
+            // Explicit `as` ascription narrows to the same thing.
+            "    let sealed = signer as Secret[Seal]\n",
+            "    console.print(fingerprint(sealed))\n",
+            "    console.print(endorse(sealed, \"msg\"))\n",
+        );
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("a sealed handle may sign and derive a public key");
+        let seed = [7u8; 32];
+        let interp_out =
+            interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), Some(seed))
+                .expect("interp");
+        // Narrowing is not observable in the result: the sealed and bare paths agree.
+        assert_eq!(interp_out[0], interp_out[2], "public_key is the same through either handle");
+        assert_eq!(interp_out[1], interp_out[3], "sign is the same through either handle");
+
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    signing_key: Some(seed),
+                    secrets: vec![crate::runtime::SecretGrant::new("signing", seed.to_vec())],
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(
+            actor.output(),
+            interp_out,
+            "a sealed Secret must sign byte-identically on both backends"
+        );
+    }
+
+    /// (RFC-0121) The reveal refusal is a CHECK-time error, not just a runtime trap:
+    /// `crypto.reveal` needs `Reveal`, and a `Secret[Seal]` does not have it. The
+    /// diagnostic names the missing right, in the rights-diagnostic family shared with
+    /// `Dir`/`Console`. Narrowing is also one-directional — `as` cannot re-widen a
+    /// sealed handle back to a revealable one, so the host's grant floor holds.
+    #[test]
+    fn revealing_a_sealed_secret_is_a_type_error() {
+        // Reveal through a narrowed parameter: rejected, naming the right.
+        let sealed_reveal = concat!(
+            "import crypto\n",
+            "fn leak(key: Secret[Seal]) -> String:\n",
+            "    key.reveal()\n",
+            "fn main(console: Console, signer: Secret):\n",
+            "    console.print(leak(signer))\n",
+        );
+        let error = typeck::check_str(sealed_reveal)
+            .expect_err("reveal on a sealed secret must not type-check");
+        assert!(
+            error.contains("needs `Reveal`")
+                && error.contains("`Secret[Seal]`"),
+            "the diagnostic must name the missing right: {}",
+            error
+        );
+
+        // Re-widening is rejected: `as` only drops rights.
+        let widen = concat!(
+            "fn main(console: Console, key: Secret[Seal]):\n",
+            "    let wider = key as Secret\n",
+            "    console.print(\"unreachable\")\n",
+        );
+        let error =
+            typeck::check_str(widen).expect_err("`as` must not widen a sealed secret");
+        assert!(
+            error.contains("can only drop rights"),
+            "unexpected widening error: {}",
+            error
+        );
+
+        // A bare `Secret` still reveals — the default is revealable, unchanged.
+        let bare_reveal = concat!(
+            "import crypto\n",
+            "fn main(console: Console, key: Secret):\n",
+            "    console.print(key.reveal())\n",
+        );
+        typeck::check_str(bare_reveal).expect("a bare Secret may still be revealed");
+    }
+
+    /// (RFC-0121) A capability's rights vocabulary is closed: an unknown marker is a
+    /// check-time error rather than a silently-dropped annotation, so `Secret[Sealed]`
+    /// (a plausible typo for `Secret[Seal]`) cannot masquerade as full authority. This
+    /// is the BUG-154 guarantee, now covering `Secret`.
+    #[test]
+    fn an_unknown_secret_right_is_rejected() {
+        let error = typeck::check_str(
+            "fn main(console: Console, key: Secret[Sealed]):\n    console.print(\"x\")\n",
+        )
+        .expect_err("`Sealed` is not a Secret right");
+        assert!(
+            error.contains("unknown `Secret` right `Sealed`")
+                && error.contains("Reveal")
+                && error.contains("Seal"),
+            "the diagnostic must list the admitted rights: {}",
+            error
+        );
+    }

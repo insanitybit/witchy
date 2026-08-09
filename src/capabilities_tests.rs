@@ -17,6 +17,8 @@
     // Bare `Net` is full on both axes; `Net[Connect]` keeps all transports.
     const CONSOLE_FULL: &[&str] = &["Read", "Write"];
     const NET_FULL: &[&str] = &["Connect", "Listen", "Tcp", "Udp", "Uds"];
+    /// (RFC-0121) A bare `Secret` confers both rights, as a bare `Dir` confers both.
+    const SECRET_FULL: &[&str] = &["Reveal", "Seal"];
     const NET_CONNECT: &[&str] = &["Connect", "Tcp", "Udp", "Uds"];
 
     // RFC-0003: the address-pattern matcher shared by both backends. Exact match,
@@ -166,7 +168,7 @@ impl Client:
 
         assert!(
             fp.per_function.iter().any(|e| e.name == "Client.helper"
-                && e.capabilities == cs(&[("Secret", &[])])),
+                && e.capabilities == cs(&[("Secret", SECRET_FULL)])),
             "private impl helpers should be visible in per_function without widening total"
         );
         assert!(
@@ -209,7 +211,7 @@ fn main(console: Console):
         // total unions every public entry (serve's Net, sign's Secret, main's Console)...
         assert_eq!(
             analyze(&module).total,
-            cs(&[("Console", CONSOLE_FULL), ("Net", NET_FULL), ("Secret", &[])])
+            cs(&[("Console", CONSOLE_FULL), ("Net", NET_FULL), ("Secret", SECRET_FULL)])
         );
         // ...but the run grant is exactly what `main` receives.
         assert_eq!(run_grant(&module), cs(&[("Console", CONSOLE_FULL)]));
@@ -475,14 +477,16 @@ pub fn serve(console: Console) -> Int:
             cs(&[("Fetch", &[])]),
             "http must be exactly Fetch - raw Net would bypass the portable provider boundary",
         );
-        // `server` takes `Net[Listen, Tcp]` plus `Secret` (RFC-0060: `serve_tls`
-        // accepts a private key as a use-only `Secret`) — authority is visible, as
-        // it should be for a module that can serve HTTPS.
+        // `server` takes `Net[Listen, Tcp]` plus `Secret[Seal]` (RFC-0060/0121:
+        // `serve_tls` accepts a private key BY HANDLE, so it needs only `Seal` — the
+        // module cannot read the key's bytes even if it wanted to) — authority is
+        // visible, as it should be for a module that can serve HTTPS.
         let server_fp = footprint(witchy_syntax::linker::std_source("server").expect("bundled module"));
         assert_eq!(
             server_fp.total,
-            cs(&[("Net", &["Listen", "Tcp"]), ("Secret", &[])]),
-            "server must be exactly Net[Listen, Tcp] + Secret — a widening here grants client authority",
+            cs(&[("Net", &["Listen", "Tcp"]), ("Secret", &["Seal"])]),
+            "server must be exactly Net[Listen, Tcp] + Secret[Seal] — a widening here \
+             grants client authority, or lets the TLS key be revealed",
         );
         // `exec` takes an `Exec` (to spawn) plus a `Dir[Read]` (to name and
         // confine the executable) — exactly those two, nothing ambient.

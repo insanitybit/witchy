@@ -266,22 +266,22 @@ pub(crate) fn sandbox_reveal_gates_signing_key_only() {
         stderr(&out)
     );
 
-    // RFC-0060: a NAMED secret granted `,use-only` is usable by opaque ref but
+    // RFC-0060: a NAMED secret granted `,sealed` is usable by opaque ref but
     // NOT revealable — the same `token` program that reveals fine above must
-    // abort when the grant carries the use-only modifier.
+    // abort when the grant carries the sealed modifier.
     let out = Command::new(BIN)
-        .args(["sandbox", "--secret", "token=s3cr3t,use-only", named.to_str().unwrap()])
+        .args(["sandbox", "--secret", "token=s3cr3t,sealed", named.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
         !out.status.success(),
-        "revealing a use-only secret must abort: {}\n{}",
+        "revealing a sealed secret must abort: {}\n{}",
         stderr(&out),
         stdout(&out)
     );
     assert!(
-        stderr(&out).contains("use-only") || stdout(&out).contains("use-only"),
-        "expected a use-only-not-revealable error for the use-only secret: out={} err={}",
+        stderr(&out).contains("sealed") || stdout(&out).contains("sealed"),
+        "expected a sealed-not-revealable error for the sealed secret: out={} err={}",
         stdout(&out),
         stderr(&out)
     );
@@ -543,14 +543,14 @@ pub(crate) fn grant_document_exec_is_name_scoped_monotone_and_typed() {
 
 /// BUG-148/RFC-0060: the POSITIVE half of the TLS-by-opaque-reference claim, which
 /// had no coverage anywhere — only a footprint assertion. `server.serve_tls_n`
-/// really does serve HTTPS with a **use-only** `Secret`: the key is consumed by
+/// really does serve HTTPS with a **sealed** `Secret`: the key is consumed by
 /// opaque reference, its bytes never enter guest memory, and `crypto.reveal` on
 /// that same secret still errors. Both halves are asserted here so a regression
 /// that made the key revealable (or broke serving) fails this test.
-pub(crate) fn serve_tls_accepts_a_use_only_key() {
+pub(crate) fn serve_tls_accepts_a_sealed_key() {
     use std::io::{Read, Write};
 
-    let dir = unique("serve-tls-use-only");
+    let dir = unique("serve-tls-sealed");
     // A self-signed loopback cert, the pattern the coven IdP mock uses.
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
     let cert_path = dir.join("cert.pem");
@@ -585,7 +585,7 @@ pub(crate) fn serve_tls_accepts_a_use_only_key() {
             "--dir",
             dir.to_str().unwrap(),
             "--secret-file",
-            &format!("tlskey={},use-only", key_path.to_str().unwrap()),
+            &format!("tlskey={},sealed", key_path.to_str().unwrap()),
             prog.to_str().unwrap(),
             &addr,
         ])
@@ -619,20 +619,20 @@ pub(crate) fn serve_tls_accepts_a_use_only_key() {
     let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name).unwrap();
     let mut tls = rustls::StreamOwned::new(conn, tcp);
     tls.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .expect("TLS write (handshake) failed — the use-only key was not usable");
+        .expect("TLS write (handshake) failed — the sealed key was not usable");
     let mut response = Vec::new();
     let _ = tls.read_to_end(&mut response);
     let response = String::from_utf8_lossy(&response);
     assert!(
         response.starts_with("HTTP/1.1"),
-        "expected an HTTPS response over the use-only key, got: {response}"
+        "expected an HTTPS response over the sealed key, got: {response}"
     );
 
     let out = child.wait_with_output().expect("server exit");
     let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(combined.contains("serving"), "server never started: {combined}");
 
-    // The SAME use-only secret must remain unrevealable — serving by handle does
+    // The SAME sealed secret must remain unrevealable — serving by handle does
     // not make its bytes readable.
     let reveal = dir.join("reveal.witchy");
     std::fs::write(
@@ -644,16 +644,16 @@ pub(crate) fn serve_tls_accepts_a_use_only_key() {
         .args([
             "sandbox",
             "--secret-file",
-            &format!("tlskey={},use-only", key_path.to_str().unwrap()),
+            &format!("tlskey={},sealed", key_path.to_str().unwrap()),
             reveal.to_str().unwrap(),
         ])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "revealing a use-only TLS key must abort");
+    assert!(!out.status.success(), "revealing a sealed TLS key must abort");
     let combined = format!("{}{}", stdout(&out), stderr(&out));
     assert!(
-        combined.contains("use-only") || combined.contains("cannot be revealed"),
-        "expected a use-only refusal: {combined}"
+        combined.contains("sealed") || combined.contains("cannot be revealed"),
+        "expected a sealed refusal: {combined}"
     );
     assert!(
         !combined.contains("PRIVATE KEY"),

@@ -176,7 +176,7 @@ The first CLI slice accounts for its complete test movement:
   moved to `cli::version_tests::*`.
 - `cli_flag_tests::{mode_flags_before_the_file_are_global,mode_flags_in_guest_argv_are_ignored}`
   moved to `cli::cli_flag_tests::*`.
-- `cli::secret_arg_tests::{inline_secret_preserves_equals_and_use_only,use_only_is_only_an_exact_trailing_modifier}`
+- `cli::secret_arg_tests::{inline_secret_preserves_equals_and_sealed,sealed_is_only_an_exact_trailing_modifier}`
   are new unit contracts.
 - `cli_subcommands::{cli_help_version_and_bare_invocation_are_stable,missing_secret_values_are_exact_usage_errors,secret_file_argument_preserves_exact_bytes}`
   are new process-level contracts for stdout, stderr, exit status, and secret-file bytes.

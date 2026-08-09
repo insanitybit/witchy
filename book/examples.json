@@ -113,6 +113,19 @@
     "runnable": false
   },
   {
+    "block": 6,
+    "browser_runnable": false,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/capabilities.md",
+    "footprint": [
+      "Console[Read,Write]",
+      "Secret[Reveal,Seal]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
     "block": 1,
     "browser_runnable": true,
     "console_only": true,
@@ -1309,6 +1322,19 @@
       "digest bytes: 32"
     ],
     "runnable": true
+  },
+  {
+    "block": 2,
+    "browser_runnable": false,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/cookbook-crypto.md",
+    "footprint": [
+      "Console[Read,Write]",
+      "Secret[Reveal,Seal]"
+    ],
+    "output": [],
+    "runnable": false
   },
   {
     "block": 1,

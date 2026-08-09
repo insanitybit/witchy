@@ -971,9 +971,12 @@ impl<'a> Scope<'a> {
                 if args.is_empty() && crate::ast::is_lifetime_param(name) {
                     return Ok(());
                 }
-                // `Console[Read]` / `Dir[Read]` / `File[Write]` / `Net[Connect]` carry capability
-                // RIGHTS in their arguments, not types — leave them untouched.
-                if matches!(name.as_str(), "Console" | "Dir" | "File" | "Net") {
+                // `Console[Read]` / `Dir[Read]` / `File[Write]` / `Net[Connect]` /
+                // `Secret[Seal]` carry capability RIGHTS in their arguments, not
+                // types — leave them untouched. Asking the capability catalog which
+                // kinds bear rights keeps this in one place: a capability that gains
+                // a rights vocabulary needs no edit here (RFC-0121 added `Secret`).
+                if witchy_cap_model::bears_rights_markers(name) {
                     return Ok(());
                 }
                 for a in args.iter_mut() {

@@ -248,8 +248,9 @@ pub fn verify_oidc_fresh(token: String, rsa_pubkey_der_hex: String, issuer: Stri
 // "JWT"}`; the signing input is `base64url(header) + "." + base64url(claims JSON)`;
 // that ASCII is signed with the Ed25519 `Secret` (`crypto.sign`, hex output), and
 // the hex signature is base64url-encoded as the third segment. The caller sets the
-// registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/…) in `claims`.
-pub fn sign_eddsa(claims: Json, key: Secret) -> String:
+// registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/…) in `claims`. Signing is
+// by-handle, so a sealed `Secret[Seal]` mints tokens without being readable.
+pub fn sign_eddsa(claims: Json, key: Secret[Seal]) -> String:
     let header_b64 = base64url_of_text("{\"alg\":\"EdDSA\",\"typ\":\"JWT\"}")
     let payload_b64 = base64url_of_text(claims.encode())
     let signing_input = header_b64 + "." + payload_b64

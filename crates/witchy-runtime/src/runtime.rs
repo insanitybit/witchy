@@ -266,21 +266,21 @@ pub type VmId = u32;
 
 /// One named secret backing the `SecretStore` capability: its name, its raw bytes
 /// (kept host-side — the guest only ever holds an opaque externref), and whether
-/// it is **use-only** (RFC-0060). A use-only secret is still consumable by
+/// it is **sealed** (RFC-0060). A sealed secret is still consumable by
 /// reference (`crypto.sign`, TLS serving), but `crypto.reveal` on it errors — so
 /// key material a program *serves* with can never be read back into guest memory.
-/// The default (`use_only == false`) is revealable, preserving existing behavior.
+/// The default (`sealed == false`) is revealable, preserving existing behavior.
 #[derive(Clone, Debug, Default)]
 pub struct SecretGrant {
     pub name: String,
     pub bytes: Vec<u8>,
-    pub use_only: bool,
+    pub sealed: bool,
 }
 
 impl SecretGrant {
     /// A revealable named secret (the default grant shape).
     pub fn new(name: impl Into<String>, bytes: Vec<u8>) -> Self {
-        Self { name: name.into(), bytes, use_only: false }
+        Self { name: name.into(), bytes, sealed: false }
     }
 }
 
@@ -665,14 +665,14 @@ struct ListenerResource {
 #[derive(Clone, Debug)]
 struct SecretMaterial {
     bytes: Vec<u8>,
-    use_only: bool,
+    sealed: bool,
 }
 
 impl SecretMaterial {
     fn from_grant(grant: &SecretGrant) -> Self {
         Self {
             bytes: grant.bytes.clone(),
-            use_only: grant.use_only,
+            sealed: grant.sealed,
         }
     }
 }

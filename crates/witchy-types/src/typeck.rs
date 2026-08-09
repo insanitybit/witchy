@@ -35,8 +35,10 @@ use coverage::{
 
 mod cap_rights;
 mod capability_calls;
-pub use cap_rights::{ConsoleRights, DirRights, FileRights, NetRights};
-use cap_rights::{console_rights, dir_rights, file_rights, net_rights, validate_cap_markers};
+pub use cap_rights::{ConsoleRights, DirRights, FileRights, NetRights, SecretRights};
+use cap_rights::{
+    console_rights, dir_rights, file_rights, net_rights, secret_rights, validate_cap_markers,
+};
 
 mod uniqueness;
 use uniqueness::{
@@ -78,7 +80,9 @@ pub enum Ty {
     /// The runtime authority to draw cryptographic randomness (`rand_u64`).
     Rand,
     Env,
-    Secret,
+    /// (RFC-0121) A host-granted secret, decomposed by right: `Secret[Seal]` is
+    /// usable only by opaque handle, bare `Secret` additionally permits `reveal`.
+    Secret(SecretRights),
     /// The runtime authority to spawn a native subprocess. Right-less (one op):
     /// the executable is named and confined through a `Dir[Read]` argument, so
     /// "you can only execute a file you can read". See rfcs/0004-self-hosted-cli.md.
@@ -134,7 +138,7 @@ impl fmt::Display for Ty {
             Ty::Clock => write!(f, "Clock"),
             Ty::Rand => write!(f, "Rand"),
             Ty::Env => write!(f, "Env"),
-            Ty::Secret => write!(f, "Secret"),
+            Ty::Secret(r) => write!(f, "{r}"),
             Ty::Exec => write!(f, "Exec"),
             Ty::Fetch => write!(f, "Fetch"),
             Ty::Dir(r) => write!(f, "{r}"),
@@ -240,7 +244,7 @@ fn collect_callable_lifetime_markers(ty: &Ty, markers: &mut HashMap<String, Stri
         | Ty::Clock
         | Ty::Rand
         | Ty::Env
-        | Ty::Secret
+        | Ty::Secret(_)
         | Ty::Exec
         | Ty::Fetch
         | Ty::Dir(_)
@@ -960,13 +964,14 @@ fn validate_type(
                      lifetime parameter"
                 ));
             }
-            // `Dir`/`File`/`Net` carry capability *rights* markers (`Dir[Read]`,
-            // `Net[Connect]`) in their arguments, not types. Validate the marker
-            // vocabulary here (BUG-154) so a typo (`Dir[Reed]`, `Net[Conect]`) or
-            // a rejected right (`Net[Tls]` — TLS is an endpoint scheme, not a Net
-            // right; RFC-0009) is a clear error instead of a silently-normalized
-            // capability whose authority shape no longer matches the source.
-            if matches!(n.as_str(), "Console" | "Dir" | "File" | "Net") {
+            // `Dir`/`File`/`Net`/`Secret` carry capability *rights* markers
+            // (`Dir[Read]`, `Net[Connect]`, `Secret[Seal]`) in their arguments, not
+            // types. Validate the marker vocabulary here (BUG-154) so a typo
+            // (`Dir[Reed]`, `Secret[Sealed]`) or a rejected right (`Net[Tls]` — TLS is
+            // an endpoint scheme, not a Net right; RFC-0009) is a clear error instead
+            // of a silently-normalized capability whose authority shape no longer
+            // matches the source.
+            if witchy_cap_model::bears_rights_markers(n) {
                 return validate_cap_markers(n, args);
             }
             if known.contains(n.as_str()) || is_synthetic_type_name(n) {
@@ -1953,7 +1958,7 @@ fn ty_externref_cap_name(ty: &Ty) -> Option<&'static str> {
         Ty::Clock => "Clock",
         Ty::Rand => "Rand",
         Ty::Env => "Env",
-        Ty::Secret => "Secret",
+        Ty::Secret(_) => "Secret",
         Ty::Exec => "Exec",
         Ty::Fetch => "Fetch",
         Ty::Dir(_) => "Dir",
@@ -3433,7 +3438,7 @@ impl Checker {
             "Clock" => Ty::Clock,
             "Rand" => Ty::Rand,
             "Env" => Ty::Env,
-            "Secret" => Ty::Secret,
+            "Secret" => Ty::Secret(secret_rights(args)),
             "Exec" => Ty::Exec,
             "Fetch" => Ty::Fetch,
             "Dir" => Ty::Dir(dir_rights(args)),
@@ -3751,7 +3756,7 @@ impl Checker {
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
                 | Ty::Bool | Ty::Unit | Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env
-                | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+                | Ty::Secret(_) | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
                 | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
                 | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
             }
@@ -3789,7 +3794,7 @@ impl Checker {
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
                 | Ty::Bool | Ty::Unit | Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env
-                | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+                | Ty::Secret(_) | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
                 | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
                 | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => false,
             }
@@ -3813,7 +3818,7 @@ impl Checker {
                 Ty::Clock => "Clock",
                 Ty::Rand => "Rand",
                 Ty::Env => "Env",
-                Ty::Secret => "Secret",
+                Ty::Secret(_) => "Secret",
                 Ty::Exec => "Exec",
                 Ty::Fetch => "Fetch",
                 Ty::Dir(_) => "Dir",
@@ -3875,7 +3880,7 @@ impl Checker {
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
                 | Ty::Bool | Ty::Unit | Ty::Var(_) => None,
                 // Direct capabilities were handled by `direct` above.
-                Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Fetch
+                Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret(_) | Ty::Exec | Ty::Fetch
                 | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener
                 | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet
                 | Ty::BuildExec => None,
@@ -3895,7 +3900,7 @@ impl Checker {
                 Ty::Clock => "Clock",
                 Ty::Rand => "Rand",
                 Ty::Env => "Env",
-                Ty::Secret => "Secret",
+                Ty::Secret(_) => "Secret",
                 Ty::Exec => "Exec",
                 Ty::Fetch => "Fetch",
                 Ty::Dir(_) => "Dir",
@@ -4028,7 +4033,7 @@ impl Checker {
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
                 | Ty::Bool | Ty::Unit | Ty::Var(_) => None,
-                Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Fetch
+                Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret(_) | Ty::Exec | Ty::Fetch
                 | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener
                 | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet
                 | Ty::BuildExec => None,
@@ -4063,7 +4068,7 @@ impl Checker {
             Ty::Clock => Some("Clock".to_string()),
             Ty::Rand => Some("Rand".to_string()),
             Ty::Env => Some("Env".to_string()),
-            Ty::Secret => Some("Secret".to_string()),
+            Ty::Secret(_) => Some("Secret".to_string()),
             Ty::Exec => Some("Exec".to_string()),
             Ty::Fetch => Some("Fetch".to_string()),
             Ty::Dir(_) => Some("Dir".to_string()),
@@ -4144,7 +4149,7 @@ impl Checker {
             }
             Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
             | Ty::Bool | Ty::Unit | Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env
-            | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+            | Ty::Secret(_) | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
             | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
             | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => Ok(()),
         }
@@ -4164,7 +4169,7 @@ impl Checker {
             }
             Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
             | Ty::Bool | Ty::Unit | Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env
-            | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+            | Ty::Secret(_) | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
             | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
             | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
         }
@@ -4208,7 +4213,7 @@ impl Checker {
             | Ty::Clock
             | Ty::Rand
             | Ty::Env
-            | Ty::Secret
+            | Ty::Secret(_)
             | Ty::Exec
             | Ty::Fetch
             | Ty::Dir(_)
@@ -4769,11 +4774,11 @@ impl Checker {
             S::BytesIntToBytes => Some((vec![Ty::Bytes, Ty::Int], Ty::Bytes)),
             S::SecretStoreStringToOptionSecret => Some((
                 vec![Ty::Named("SecretStore".into(), Vec::new()), Ty::String],
-                Ty::Named("Option".into(), vec![Ty::Secret]),
+                Ty::Named("Option".into(), vec![Ty::Secret(SecretRights::full())]),
             )),
             S::SecretStoreStringToSecret => Some((
                 vec![Ty::Named("SecretStore".into(), Vec::new()), Ty::String],
-                Ty::Secret,
+                Ty::Secret(SecretRights::full()),
             )),
             S::StringToString => Some((vec![Ty::String], Ty::String)),
             S::StringStringToString => Some((vec![Ty::String, Ty::String], Ty::String)),
@@ -4803,8 +4808,19 @@ impl Checker {
                 ],
                 Ty::String,
             )),
-            S::SecretStringToString => Some((vec![Ty::Secret, Ty::String], Ty::String)),
-            S::SecretToString => Some((vec![Ty::Secret], Ty::String)),
+            // (RFC-0121) By-handle ops ask only for `Seal`. `coerce_arg` lets a bare
+            // `Secret` stand in, so a sealed handle and a full one both work.
+            S::SealedSecretStringToString => {
+                Some((vec![Ty::Secret(SecretRights::sealed()), Ty::String], Ty::String))
+            }
+            S::SealedSecretToString => {
+                Some((vec![Ty::Secret(SecretRights::sealed())], Ty::String))
+            }
+            // `reveal` asks for the full set, so a `Secret[Seal]` argument fails to
+            // coerce and the diagnostic names the rights mismatch.
+            S::RevealSecretToString => {
+                Some((vec![Ty::Secret(SecretRights::full())], Ty::String))
+            }
             S::IntToString => Some((vec![Ty::Int], Ty::String)),
             S::IntToFloat => Some((vec![Ty::Int], Ty::Float)),
             S::FloatToInt => Some((vec![Ty::Float], Ty::Int)),
@@ -4963,7 +4979,7 @@ impl Checker {
             A::String => Ty::String,
             A::Int => Ty::Int,
             A::Bool => Ty::Bool,
-            A::Secret => Ty::Secret,
+            A::Secret => Ty::Secret(SecretRights::full()),
             A::ListString => Ty::List(Box::new(Ty::String)),
             A::Dir => Ty::Dir(DirRights::full()),
             A::DirPolicy => Ty::Named("DirPolicy".into(), Vec::new()),
@@ -5082,12 +5098,23 @@ impl Checker {
             (Ty::Console(s), Ty::Console(t)) => {
                 (!t.read || s.read) && (!t.write || s.write)
             }
+            // (RFC-0121) `Secret[Reveal]`/bare `Secret` narrows to `Secret[Seal]`,
+            // never the reverse: `as` can only drop the reveal right.
+            (Ty::Secret(s), Ty::Secret(t)) => {
+                (!t.reveal || s.reveal) && (!t.seal || s.seal)
+            }
             (Ty::Exec, Ty::Exec) => true,
             (Ty::Fetch, Ty::Fetch) => true,
             // An unconstrained source: pin it to the ascribed capability.
             (
                 Ty::Var(_),
-                Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Console(_) | Ty::Exec | Ty::Fetch,
+                Ty::Dir(_)
+                | Ty::File(_)
+                | Ty::Net(_)
+                | Ty::Console(_)
+                | Ty::Secret(_)
+                | Ty::Exec
+                | Ty::Fetch,
             ) => {
                 return self.unify(src, target).map_err(|e| TypeError {
                     message: format!("in `as` ascription: {}", e.message),
@@ -5132,16 +5159,35 @@ impl Checker {
             (Ty::Console(want), Ty::Console(has)) => {
                 (!want.read || has.read) && (!want.write || has.write)
             }
+            // (RFC-0121) A bare `Secret` satisfies a `Secret[Seal]` parameter — more
+            // authority stands in for less — while the callee stays bounded to `Seal`.
+            (Ty::Secret(want), Ty::Secret(has)) => {
+                (!want.reveal || has.reveal) && (!want.seal || has.seal)
+            }
             _ => false,
         };
         if coercible
             || self.anon_union_widening_ok(expected, actual)?
             || self.record_width_conformance(expected, actual)?
         {
-            Ok(())
-        } else {
-            self.unify(expected, actual)
+            return Ok(());
         }
+        // (RFC-0121) A `Secret` that is too narrow for the parameter is a rights
+        // failure, not a type mismatch. Name the missing right, in the same shape as
+        // the `Dir`/`Console` rights diagnostics, so `reveal` on a sealed secret reads
+        // as the policy decision it is rather than as "expected Secret, found
+        // Secret[Seal]".
+        if let (Ty::Secret(want), Ty::Secret(has)) = (self.resolve(expected), self.resolve(actual))
+            && want.reveal
+            && !has.reveal
+        {
+            return terr(format!(
+                "this needs `Reveal` but the capability is `{has}`; a sealed secret is \
+                 usable by handle (`crypto.sign`, `crypto.public_key`, `server.serve_tls`) \
+                 but its bytes are never readable"
+            ));
+        }
+        self.unify(expected, actual)
     }
 
     /// Check one directed structural-record conversion. Only compiler-owned
@@ -5384,7 +5430,7 @@ impl Checker {
             | Ty::Clock
             | Ty::Rand
             | Ty::Env
-            | Ty::Secret
+            | Ty::Secret(_)
             | Ty::Exec
             | Ty::Fetch
             | Ty::Socket
@@ -8872,7 +8918,21 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::Clock => T::Named("Clock".into(), Vec::new()),
         Ty::Rand => T::Named("Rand".into(), Vec::new()),
         Ty::Env => T::Named("Env".into(), Vec::new()),
-        Ty::Secret => T::Named("Secret".into(), Vec::new()),
+        Ty::Secret(rights) => {
+            if !rights.seal && !rights.reveal {
+                return None;
+            }
+            let mut args = Vec::new();
+            if *rights != SecretRights::full() {
+                if rights.reveal {
+                    args.push(marker("Reveal"));
+                }
+                if rights.seal {
+                    args.push(marker("Seal"));
+                }
+            }
+            T::Named("Secret".into(), args)
+        }
         Ty::Exec => T::Named("Exec".into(), Vec::new()),
         Ty::Fetch => T::Named("Fetch".into(), Vec::new()),
         Ty::Dir(rights) => {

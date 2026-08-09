@@ -41,7 +41,7 @@ fn signing_secret_material(caller: &Caller<'_, VmState>, h: i32) -> Result<Secre
     }
     Ok(SecretMaterial {
         bytes: signing.to_vec(),
-        use_only: false,
+        sealed: false,
     })
 }
 

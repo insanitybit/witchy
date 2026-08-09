@@ -151,7 +151,7 @@ A `SecretStore` is a capability that holds named secrets whose bytes stay
 host-side - the guest asks the host to *use* a secret, never to hand it over.
 The host grants secrets with `--signing-key <path>` (the protected `signing`
 key, usable only for signing) and `--secret name=value` / `--secret-file
-name=path` (ordinary named secrets; append `,use-only` to deny reading them
+name=path` (ordinary named secrets; append `,sealed` to deny reading them
 back). Ask for a `SecretStore` in `main`, then:
 
 - `secrets.require("name")` returns the `Secret` directly, failing loudly if it
@@ -161,7 +161,7 @@ back). Ask for a `SecretStore` in `main`, then:
 
 A `Secret` is opaque: you pass it to an operation that consumes it. `crypto.sign`
 signs a message with an Ed25519 signing key; `crypto.reveal` returns a value
-secret's bytes - but it *errors* on the `signing` key and on any `use-only`
+secret's bytes - but it *errors* on the `signing` key and on any `sealed`
 secret, so a signing key can sign and nothing else.
 
 ```witchy
@@ -190,7 +190,7 @@ reveal at all - the authority to use a secret is itself a value you can withhold
 or [narrow](capabilities-narrowing.md).
 
 In the browser, the page supplies the named-secret map explicitly. This book's
-host grants a deterministic use-only demo signing seed and the revealable
+host grants a deterministic sealed demo signing seed and the revealable
 `api-token` shown above; the provider keeps both outside guest memory and applies
 the same signing and reveal policy as the native host.
 

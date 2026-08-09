@@ -209,8 +209,14 @@ pub enum IntrinsicSignature {
     StringStringStringToInt,
     StringIntIntToString,
     ListStringListStringToString,
-    SecretStringToString,
-    SecretToString,
+    /// (RFC-0121) A by-handle secret op: asks only for `Seal`, so a `Secret[Seal]`
+    /// satisfies it and a bare `Secret` narrows into it (`crypto.sign`).
+    SealedSecretStringToString,
+    /// (RFC-0121) A by-handle secret op of arity one (`crypto.public_key`).
+    SealedSecretToString,
+    /// (RFC-0121) Reading a secret's bytes: needs the `Reveal` right, so a
+    /// `Secret[Seal]` is a check-time error (`crypto.reveal`).
+    RevealSecretToString,
     IntToString,
     IntToFloat,
     FloatToInt,
@@ -258,8 +264,9 @@ impl IntrinsicSignature {
                 | Self::StringStringStringToString
                 | Self::StringIntIntToString
                 | Self::ListStringListStringToString
-                | Self::SecretStringToString
-                | Self::SecretToString
+                | Self::SealedSecretStringToString
+                | Self::SealedSecretToString
+                | Self::RevealSecretToString
                 | Self::IntToString
         )
     }
@@ -2066,7 +2073,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         id: IntrinsicId::CryptoSign,
         name: CRYPTO_SIGN,
         arity: 2,
-        signature: IntrinsicSignature::SecretStringToString,
+        signature: IntrinsicSignature::SealedSecretStringToString,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::UsesSecret,
         lowering: IntrinsicLowering::Builtin,
@@ -2081,7 +2088,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         id: IntrinsicId::CryptoPublicKey,
         name: CRYPTO_PUBLIC_KEY,
         arity: 1,
-        signature: IntrinsicSignature::SecretToString,
+        signature: IntrinsicSignature::SealedSecretToString,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::UsesSecret,
         lowering: IntrinsicLowering::Builtin,
@@ -2096,7 +2103,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         id: IntrinsicId::CryptoReveal,
         name: CRYPTO_REVEAL,
         arity: 1,
-        signature: IntrinsicSignature::SecretToString,
+        signature: IntrinsicSignature::RevealSecretToString,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::UsesSecret,
         lowering: IntrinsicLowering::Builtin,
@@ -3753,6 +3760,12 @@ mod tests {
             Type::Named(name.into(), Vec::new())
         }
 
+        /// (RFC-0121) A rights-bearing `Secret[...]` receiver, so `std/crypto`'s
+        /// source and the catalog agree on the right each primitive requires.
+        fn secret_with(right: &str) -> Type {
+            Type::Named("Secret".into(), vec![named(right)])
+        }
+
         fn expected(signature: IntrinsicSignature) -> (Vec<Type>, Type) {
             match signature {
                 IntrinsicSignature::StringToString => {
@@ -3773,12 +3786,17 @@ mod tests {
                     ],
                     named("String"),
                 ),
-                IntrinsicSignature::SecretStringToString => (
-                    vec![named("Secret"), named("String")],
+                // (RFC-0121) The by-handle ops declare the narrowed receiver;
+                // `reveal` declares the right it actually needs.
+                IntrinsicSignature::SealedSecretStringToString => (
+                    vec![secret_with("Seal"), named("String")],
                     named("String"),
                 ),
-                IntrinsicSignature::SecretToString => {
-                    (vec![named("Secret")], named("String"))
+                IntrinsicSignature::SealedSecretToString => {
+                    (vec![secret_with("Seal")], named("String"))
+                }
+                IntrinsicSignature::RevealSecretToString => {
+                    (vec![secret_with("Reveal")], named("String"))
                 }
                 // (RFC-0106) SHAKE XOFs: __shake128/__shake256(Bytes, Int) -> Bytes.
                 IntrinsicSignature::BytesIntToBytes => {

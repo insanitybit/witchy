@@ -781,14 +781,15 @@ pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
 // inline, or read via an ordinary `Dir` grant); `key` is the private key as a
 // `Secret` (`secretstore.require(store, "tls-key")`), consumed by opaque host
 // reference: the key bytes never enter this program's memory, so even a bug in a
-// handler cannot exfiltrate them. Grant the key use-only
-// (`--secret-file tls-key=key.pem,use-only`) and `crypto.reveal` on it errors too.
+// handler cannot exfiltrate them. TLS serving is by-handle, so a `Secret[Seal]`
+// suffices - grant the key sealed (`--secret-file tls-key=key.pem,sealed`) and
+// `crypto.reveal` on it is rejected at check time.
 // A malformed or mismatched cert/key fails
 // LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad
 // ClientHello) drops that connection and the server keeps serving. Handlers,
 // `Router`, and `Request`/`Response` are unchanged - TLS is transparent above the
 // accepted connection.
-pub fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router):
+pub fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret[Seal], app: Router):
     let server = net.listen_tls(addr, cert_pem, key)
     server.serve_pool()
     let handler = handler_of(app)
@@ -798,7 +799,7 @@ pub fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Sec
 
 // Serve exactly `n` HTTPS requests then return - `serve_tls`'s one-shot/test twin
 // (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
-pub fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router, n: Int):
+pub fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret[Seal], app: Router, n: Int):
     let server = net.listen_tls(addr, cert_pem, key)
     let handler = handler_of(app)
     var i = 0

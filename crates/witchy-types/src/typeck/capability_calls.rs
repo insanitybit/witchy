@@ -2,7 +2,9 @@
 
 use witchy_syntax::{ast::Expr, cap_ops};
 
-use super::{terr, Checker, ConsoleRights, DirRights, FileRights, NetRights, Ty, TypeError};
+use super::{
+    terr, Checker, ConsoleRights, DirRights, FileRights, NetRights, SecretRights, Ty, TypeError,
+};
 
 impl Checker {
     /// Resolve a call's first argument as a `Dir` capability and yield its rights.
@@ -444,10 +446,13 @@ impl Checker {
         } else if name == "listen_tls" {
             // (RFC-0060) mixed trailing args: addr:String, cert_pem:String, key:Secret.
             // The key is a `Secret` — never a String path or raw bytes — so the
-            // private key stays host-side, consumed by handle.
-            for (arg, expected) in args[1..].iter().zip([Ty::String, Ty::String, Ty::Secret]) {
+            // private key stays host-side, consumed by handle. (RFC-0121) TLS serving
+            // is a by-handle op, so it asks only for `Seal`; `coerce_arg` lets a bare
+            // `Secret` stand in, while a `Secret[Seal]` is accepted as-is.
+            let expected_key = Ty::Secret(SecretRights::sealed());
+            for (arg, expected) in args[1..].iter().zip([Ty::String, Ty::String, expected_key]) {
                 let at = self.infer(arg)?;
-                self.unify(&expected, &at).map_err(|e| TypeError {
+                self.coerce_arg(&expected, &at).map_err(|e| TypeError {
                     message: format!("in call to `{name}`: {}", e.message),
                 })?;
             }

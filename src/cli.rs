@@ -115,43 +115,43 @@ pub(crate) fn parse_confinement_mode(
     )
 }
 
-/// Parse a `--secret name=value[,use-only]` spec into a named secret. The value is
+/// Parse a `--secret name=value[,sealed]` spec into a named secret. The value is
 /// taken literally (UTF-8 bytes) — a token, password, or connection string. The
 /// name must be non-empty and contain no `=` (everything after the first `=`, up
-/// to any trailing `,use-only`, is the value, so values may contain `=`). A
-/// trailing `,use-only` (RFC-0060) marks the secret usable by opaque `Secret`
-/// reference but not revealable (`crypto.reveal` errors); the default is revealable.
+/// to any trailing `,sealed`, is the value, so values may contain `=`). A trailing
+/// `,sealed` (RFC-0060/0121) grants the secret as `Secret[Seal]`: usable by opaque
+/// handle but never revealable. The default is revealable (`Secret[Reveal, Seal]`).
 pub(crate) fn parse_secret_inline(spec: &str) -> Result<runtime::SecretGrant, String> {
-    let (body, use_only) = split_use_only(spec);
+    let (body, sealed) = split_sealed(spec);
     match body.split_once('=') {
         Some((name, value)) if !name.is_empty() => {
-            Ok(runtime::SecretGrant { name: name.to_string(), bytes: value.as_bytes().to_vec(), use_only })
+            Ok(runtime::SecretGrant { name: name.to_string(), bytes: value.as_bytes().to_vec(), sealed })
         }
-        _ => Err(format!("`--secret` expects `name=value[,use-only]`, got `{spec}`")),
+        _ => Err(format!("`--secret` expects `name=value[,sealed]`, got `{spec}`")),
     }
 }
 
-/// Parse a `--secret-file name=path[,use-only]` spec, reading the secret's bytes
+/// Parse a `--secret-file name=path[,sealed]` spec, reading the secret's bytes
 /// from the file. Whitespace is NOT trimmed (a secret file holds exactly its
-/// bytes). A trailing `,use-only` (RFC-0060) marks it usable by opaque `Secret`
-/// reference but not revealable — the shape a TLS private key should take.
+/// bytes). A trailing `,sealed` (RFC-0060/0121) grants it as `Secret[Seal]` —
+/// usable by handle, never revealable — the shape a TLS private key should take.
 pub(crate) fn parse_secret_file(spec: &str) -> Result<runtime::SecretGrant, String> {
-    let (body, use_only) = split_use_only(spec);
+    let (body, sealed) = split_sealed(spec);
     match body.split_once('=') {
         Some((name, path)) if !name.is_empty() => {
             let bytes = std::fs::read(path).map_err(|e| format!("`--secret-file {name}`: cannot read `{path}`: {e}"))?;
-            Ok(runtime::SecretGrant { name: name.to_string(), bytes, use_only })
+            Ok(runtime::SecretGrant { name: name.to_string(), bytes, sealed })
         }
-        _ => Err(format!("`--secret-file` expects `name=path[,use-only]`, got `{spec}`")),
+        _ => Err(format!("`--secret-file` expects `name=path[,sealed]`, got `{spec}`")),
     }
 }
 
-/// (RFC-0060) Peel a single trailing `,use-only` grant modifier off a secret spec,
-/// returning the `name=…` body and whether use-only was requested. Only the exact
-/// trailing token is recognized, so a `name=value` whose value happens to contain
-/// commas is unaffected unless it literally ends in `,use-only`.
-fn split_use_only(spec: &str) -> (&str, bool) {
-    match spec.strip_suffix(",use-only") {
+/// (RFC-0060/0121) Peel a single trailing `,sealed` grant modifier off a secret
+/// spec, returning the `name=…` body and whether sealing was requested. Only the
+/// exact trailing token is recognized, so a `name=value` whose value happens to
+/// contain commas is unaffected unless it literally ends in `,sealed`.
+fn split_sealed(spec: &str) -> (&str, bool) {
+    match spec.strip_suffix(",sealed") {
         Some(body) => (body, true),
         None => (spec, false),
     }
@@ -221,19 +221,19 @@ mod cli_flag_tests {
 
 #[cfg(test)]
 mod secret_arg_tests {
-    use super::{parse_secret_inline, split_use_only};
+    use super::{parse_secret_inline, split_sealed};
 
     #[test]
-    fn inline_secret_preserves_equals_and_use_only() {
-        let secret = parse_secret_inline("token=a=b,use-only").expect("valid secret");
+    fn inline_secret_preserves_equals_and_sealed() {
+        let secret = parse_secret_inline("token=a=b,sealed").expect("valid secret");
         assert_eq!(secret.name, "token");
         assert_eq!(secret.bytes, b"a=b");
-        assert!(secret.use_only);
+        assert!(secret.sealed);
     }
 
     #[test]
-    fn use_only_is_only_an_exact_trailing_modifier() {
-        assert_eq!(split_use_only("token=a,use-only"), ("token=a", true));
-        assert_eq!(split_use_only("token=use-only,tail"), ("token=use-only,tail", false));
+    fn sealed_is_only_an_exact_trailing_modifier() {
+        assert_eq!(split_sealed("token=a,sealed"), ("token=a", true));
+        assert_eq!(split_sealed("token=sealed,tail"), ("token=sealed,tail", false));
     }
 }

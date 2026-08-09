@@ -194,7 +194,7 @@ pub(crate) fn report_grant_check(prog_path: &str, grants_path: &str) -> Result<b
         println!(
             "  secret {name}: {}{}",
             s.from,
-            capability_model::secret_reveal_suffix(s.use_only)
+            capability_model::secret_reveal_suffix(s.sealed)
         );
     }
     Ok(!check.sufficient())
@@ -202,7 +202,7 @@ pub(crate) fn report_grant_check(prog_path: &str, grants_path: &str) -> Result<b
 
 /// (RFC-0060/BUG-610) Compare two grant documents and fail when the newer one
 /// LOOSENS a secret's reveal policy. The footprint axis cannot catch this: a
-/// document that deletes `use-only = true` grants the same `SecretStore` and so
+/// document that deletes `sealed = true` grants the same `SecretStore` and so
 /// cross-checks as "matches exactly", while the program gains the authority to
 /// read that secret's bytes. Returns `true` when a loosening was found.
 pub(crate) fn report_grant_diff(old_path: &str, new_path: &str) -> Result<bool, String> {
@@ -216,20 +216,20 @@ pub(crate) fn report_grant_diff(old_path: &str, new_path: &str) -> Result<bool, 
     let mut added_revealable: Vec<String> = Vec::new();
     for (name, new_secret) in &new.secrets {
         match old.secrets.get(name) {
-            // Was use-only, now revealable: a strictly larger authority over the
+            // Was sealed, now revealable: a strictly larger authority over the
             // same secret. This is the case the footprint axis cannot see.
-            Some(old_secret) if old_secret.use_only && !new_secret.use_only => {
+            Some(old_secret) if old_secret.sealed && !new_secret.sealed => {
                 loosened.push(name.clone());
             }
             Some(_) => {}
             // A brand-new revealable secret is also new read authority.
-            None if !new_secret.use_only => added_revealable.push(name.clone()),
+            None if !new_secret.sealed => added_revealable.push(name.clone()),
             None => {}
         }
     }
     if !loosened.is_empty() {
         println!(
-            "  SECRET WIDENING (use-only dropped — the program can now reveal these): {}",
+            "  SECRET WIDENING (sealed dropped — the program can now reveal these): {}",
             loosened.join(", ")
         );
     }

@@ -344,8 +344,8 @@ fn secret_fixtures_keep_material_opaque_and_preserve_scripted_crypto() {
     let use_only_module = parse_module(
         "import crypto\nimport secretstore\n\nfn main(secrets: SecretStore):\n    crypto.reveal(secretstore.require(secrets, \"token\"))\n",
     )
-    .expect("parse use-only fixture program");
-    let use_only = run_module_fixtures(
+    .expect("parse sealed fixture program");
+    let sealed = run_module_fixtures(
         use_only_module,
         FixturePlan {
             version: 1,
@@ -354,7 +354,7 @@ fn secret_fixtures_keep_material_opaque_and_preserve_scripted_crypto() {
                     "token".to_owned(),
                     witchy_testkit::SecretFixture {
                         hex: "736563726574".to_owned(),
-                        usage: witchy_testkit::SecretUsage::UseOnly,
+                        usage: witchy_testkit::SecretUsage::Sealed,
                     },
                 )]),
                 script: Vec::new(),
@@ -363,16 +363,16 @@ fn secret_fixtures_keep_material_opaque_and_preserve_scripted_crypto() {
             ..FixturePlan::default()
         },
     )
-    .expect("run use-only fixture");
-    match use_only.result {
+    .expect("run sealed fixture");
+    match sealed.result {
         FixtureProgramResult::Passed { .. } => {
-            panic!("use-only secret was unexpectedly revealed")
+            panic!("sealed secret was unexpectedly revealed")
         }
         FixtureProgramResult::Failed { error, .. } => {
             assert!(
                 error
                     .message
-                    .contains(witchy_caps::capabilities::USE_ONLY_SECRET_REVEAL_ERROR)
+                    .contains(witchy_caps::capabilities::SEALED_SECRET_REVEAL_ERROR)
             );
         }
     }

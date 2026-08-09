@@ -1,5 +1,5 @@
-//! Capability rights-set parsing and formatting for the `Console`/`Dir`/`File`/`Net`
-//! capability family. Each capability is decomposed by right so the footprint
+//! Capability rights-set parsing and formatting for the
+//! `Console`/`Dir`/`File`/`Net`/`Secret` capability family. Each capability is decomposed by right so the footprint
 //! distinguishes (e.g.) read-only from writing code, and an op that needs a
 //! right it wasn't granted is a compile-time error (RFC-0012/0073).
 
@@ -133,6 +133,62 @@ pub(super) fn file_rights(args: &[ast::Type]) -> FileRights {
         None => FileRights::full(),
         Some((read, write)) => FileRights { read, write },
     }
+}
+
+/// (RFC-0121) The operations a `Secret` capability permits. Unlike `Dir`'s two
+/// independent rights, a `Secret`'s two rights form a *chain*: `Reveal` (read the
+/// bytes into guest memory) is strictly more authority than `Seal` (use the secret
+/// by opaque handle — sign, derive a public key, serve TLS), so holding `Reveal`
+/// implies holding `Seal`. Bare `Secret` is the full set; `Secret[Seal]` is the
+/// sealed handle whose `crypto.reveal` is a compile-time error.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SecretRights {
+    pub reveal: bool,
+    pub seal: bool,
+}
+
+impl SecretRights {
+    pub fn full() -> Self {
+        SecretRights { reveal: true, seal: true }
+    }
+
+    /// The by-handle-only handle: usable, never readable.
+    pub fn sealed() -> Self {
+        SecretRights { reveal: false, seal: true }
+    }
+}
+
+impl fmt::Display for SecretRights {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.reveal, self.seal) {
+            (true, true) => write!(f, "Secret"),
+            // `Reveal` implies `Seal`, so this pairing is unreachable from source;
+            // print it faithfully rather than lying if it ever arises.
+            (true, false) => write!(f, "Secret[Reveal]"),
+            (false, true) => write!(f, "Secret[Seal]"),
+            (false, false) => write!(f, "Secret[]"),
+        }
+    }
+}
+
+/// Interpret a `Secret`'s type arguments as its rights. Bare `Secret` (no args) is
+/// the full set. `Secret[Reveal]` implies `Seal` (the chain), so it is equivalent
+/// to bare `Secret`; `Secret[Seal]` drops `Reveal`.
+pub(super) fn secret_rights(args: &[ast::Type]) -> SecretRights {
+    if args.is_empty() {
+        return SecretRights::full();
+    }
+    let mut rights = SecretRights { reveal: false, seal: false };
+    for a in args {
+        if let ast::Type::Named(n, _) = a {
+            match CapabilityKind::Secret.right(n) {
+                Some(CapabilityRight::Reveal) => (rights.reveal, rights.seal) = (true, true),
+                Some(CapabilityRight::Seal) => rights.seal = true,
+                _ => {}
+            }
+        }
+    }
+    rights
 }
 
 /// The rights a `Net` capability permits, on two independent axes. **Verbs**:
