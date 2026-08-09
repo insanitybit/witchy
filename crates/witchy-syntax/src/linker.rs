@@ -318,7 +318,7 @@ pub const STD_MODULES: &[&str] = &[
     "show", "http", "json", "url", "duration", "prng", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "time", "encoding", "path", "testing",
     "future", "task", "chan", "webauthn", "secretstore", "reflect", "dynamic", "meta", "convert", "exec",
-    "policy", "jwt", "oauth", "rand", "vm", "bytes", "error", "borrow", "public_state",
+    "policy", "jwt", "oauth", "rand", "vm", "bytes", "error", "borrow", "public_state", "cbor",
 ];
 
 /// Bundled modules linked into every program and usable without an explicit
@@ -591,6 +591,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "vm" => Some(include_str!("../../../std/vm.witchy")),
         "bytes" => Some(include_str!("../../../std/bytes.witchy")),
         "error" => Some(include_str!("../../../std/error.witchy")),
+        "cbor" => Some(include_str!("../../../std/cbor.witchy")),
         "public_state" => Some(include_str!("../../../std/public_state.witchy")),
         // (RFC-0041) `glamour` is a published RUNE, not std — deliberately ABSENT from
         // `STD_MODULES` so it is not advertised as std and a project still declares it as a

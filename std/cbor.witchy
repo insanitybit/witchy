@@ -1,0 +1,169 @@
+// cbor - a minimal CBOR (RFC 8949) decoder for the WebAuthn subset: the values a
+// registration `attestationObject` and its embedded COSE_Key use. Supports
+// unsigned/negative integers, byte strings, text strings, arrays, and definite-
+// length maps. Indefinite-length items, tags, floats, and simple values are
+// rejected - they do not occur in a WebAuthn attestation. Pure (no capability).
+
+import bytes
+import show
+import error
+import convert
+
+// A decoded CBOR value, restricted to the WebAuthn subset.
+type Cbor:
+    CInt(Int)
+    CBytes(Bytes)
+    CText(String)
+    CArray(List(Cbor))
+    CMap(List((Cbor, Cbor)))
+
+// A decode failure. `Truncated` means the input ended mid-item; `Unsupported`
+// carries the offending major type; indefinite-length framing is refused outright.
+type CborError:
+    Truncated
+    Unsupported(Int)
+    IndefiniteLength
+
+pub fn cbor_error_message(e: CborError) -> String:
+    match e:
+        Truncated -> "CBOR input ended mid-item"
+        Unsupported(major) -> "unsupported CBOR major type ${major}"
+        IndefiniteLength -> "indefinite-length CBOR items are not supported"
+
+impl Show for CborError:
+    fn show(self) -> String:
+        cbor_error_message(self)
+
+impl Error for CborError
+
+impl From(CborError) for String:
+    fn from(value: CborError) -> Self:
+        cbor_error_message(value)
+
+// Decode exactly one CBOR item from the front of `b`, ignoring any trailing bytes.
+pub fn decode(b: Bytes) -> Result(Cbor, CborError):
+    let (value, _next) = decode_item(b, 0)?
+    Ok(value)
+
+// Decode the item at offset `i`, returning it paired with the offset just past it.
+pub fn decode_item(b: Bytes, i: Int) -> Result((Cbor, Int), CborError):
+    if i >= bytes.length(b):
+        Err(Truncated)
+    else:
+        let head = bytes.at(b, i)
+        let major = head / 32
+        let minor = head - major * 32
+        let (arg, next) = read_arg(b, i, minor)?
+        decode_by_major(b, major, arg, next)
+
+// Read a major type's argument (the length or immediate value) starting at the
+// initial byte `i`, returning (value, offset-past-the-argument).
+fn read_arg(b: Bytes, i: Int, minor: Int) -> Result((Int, Int), CborError):
+    if minor < 24:
+        Ok((minor, i + 1))
+    else if minor == 24:
+        need(b, i + 2)?
+        Ok((bytes.at(b, i + 1), i + 2))
+    else if minor == 25:
+        need(b, i + 3)?
+        Ok((read_uint(b, i + 1, 2), i + 3))
+    else if minor == 26:
+        need(b, i + 5)?
+        Ok((read_uint(b, i + 1, 4), i + 5))
+    else if minor == 27:
+        need(b, i + 9)?
+        Ok((read_uint(b, i + 1, 8), i + 9))
+    else:
+        Err(IndefiniteLength)
+
+fn need(b: Bytes, upto: Int) -> Result(Nil, CborError):
+    if upto > bytes.length(b):
+        Err(Truncated)
+    else:
+        Ok(Nil)
+
+// A big-endian unsigned integer of `n` bytes starting at `start`.
+fn read_uint(b: Bytes, start: Int, n: Int) -> Int:
+    var acc = 0
+    for k in 0..n:
+        acc = acc * 256 + bytes.at(b, start + k)
+    acc
+
+fn decode_by_major(b: Bytes, major: Int, arg: Int, next: Int) -> Result((Cbor, Int), CborError):
+    if major == 0:
+        Ok((CInt(arg), next))
+    else if major == 1:
+        Ok((CInt(0 - 1 - arg), next))
+    else if major == 2:
+        need(b, next + arg)?
+        Ok((CBytes(bytes.slice(b, next, next + arg)), next + arg))
+    else if major == 3:
+        need(b, next + arg)?
+        Ok((CText(bytes.to_string(bytes.slice(b, next, next + arg))), next + arg))
+    else if major == 4:
+        let (items, pos) = read_items(b, arg, next, [])?
+        Ok((CArray(items), pos))
+    else if major == 5:
+        let (pairs, pos) = read_pairs(b, arg, next, [])?
+        Ok((CMap(pairs), pos))
+    else:
+        Err(Unsupported(major))
+
+fn read_items(b: Bytes, count: Int, pos: Int, acc: List(Cbor)) -> Result((List(Cbor), Int), CborError):
+    if count <= 0:
+        Ok((acc, pos))
+    else:
+        let (v, np) = decode_item(b, pos)?
+        read_items(b, count - 1, np, acc.concat([v]))
+
+fn read_pairs(b: Bytes, count: Int, pos: Int, acc: List((Cbor, Cbor))) -> Result((List((Cbor, Cbor)), Int), CborError):
+    if count <= 0:
+        Ok((acc, pos))
+    else:
+        let (k, p1) = decode_item(b, pos)?
+        let (v, p2) = decode_item(b, p1)?
+        read_pairs(b, count - 1, p2, acc.concat([(k, v)]))
+
+// --- accessors for the shapes WebAuthn needs -------------------------------
+
+// The value bound to text key `key` in a CBOR map (the attestationObject keys
+// `fmt`/`attStmt`/`authData`), or None.
+pub fn map_get_text(value: Cbor, key: String) -> Option(Cbor):
+    match value:
+        CMap(pairs) -> pairs_find_text(pairs, key)
+        _ -> None
+
+fn pairs_find_text(pairs: List((Cbor, Cbor)), key: String) -> Option(Cbor):
+    match pairs:
+        [] -> None
+        [pair, ..rest] ->
+            match pair.0:
+                CText(k) -> if k == key: Some(pair.1) else: pairs_find_text(rest, key)
+                _ -> pairs_find_text(rest, key)
+
+// The value bound to integer key `key` in a CBOR map (the COSE_Key labels: 1=kty,
+// 3=alg, -1=crv, -2=x, -3=y), or None.
+pub fn map_get_int(value: Cbor, key: Int) -> Option(Cbor):
+    match value:
+        CMap(pairs) -> pairs_find_int(pairs, key)
+        _ -> None
+
+fn pairs_find_int(pairs: List((Cbor, Cbor)), key: Int) -> Option(Cbor):
+    match pairs:
+        [] -> None
+        [pair, ..rest] ->
+            match pair.0:
+                CInt(k) -> if k == key: Some(pair.1) else: pairs_find_int(rest, key)
+                _ -> pairs_find_int(rest, key)
+
+// The byte string a `Cbor` holds, or None.
+pub fn as_bytes(value: Cbor) -> Option(Bytes):
+    match value:
+        CBytes(b) -> Some(b)
+        _ -> None
+
+// The integer a `Cbor` holds, or None.
+pub fn as_int(value: Cbor) -> Option(Int):
+    match value:
+        CInt(n) -> Some(n)
+        _ -> None

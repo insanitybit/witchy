@@ -16,6 +16,7 @@
 import crypto
 import bytes
 import encoding
+import cbor
 import show
 import error
 import convert
@@ -111,3 +112,181 @@ fn check_auth_bytes(stored_pubkey_hex: String, auth_data: Bytes, client_data_jso
                 Err(e) -> Err(SignatureInputMalformed(crypto.verify_error_message(e)))
                 Ok(true) -> Ok(true)
                 Ok(false) -> Err(SignatureInvalid)
+
+// --- registration (the credential "create" ceremony) - RFC-0099 -------------
+
+// The credential a verified registration yields: the credential id and the ES256
+// public key (uncompressed SEC1, `04||x||y`, hex) to store for later assertions,
+// plus the initial signature counter.
+type RegisteredCredential:
+    credential_id_hex: String
+    public_key_hex: String
+    sign_count: Int
+
+// Matchable registration-verification failures. Malformed wire (hex/CBOR/COSE) is
+// kept distinct from semantic rejection of a well-formed but replayed, phishing,
+// wrong-RP, or non-ES256 ceremony.
+type RegistrationError:
+    RegClientDataJson(String)
+    RegWrongClientType
+    RegChallengeMismatch
+    RegOriginMismatch
+    RegAttestationHex(String)
+    RegAttestationMalformed(String)
+    RegNoAuthData
+    RegAuthDataTooShort
+    RegRpIdHashMismatch
+    RegUserPresenceRequired
+    RegUserVerificationRequired
+    RegNoAttestedCredential
+    RegCoseMalformed(String)
+    RegUnsupportedKey
+
+pub fn registration_error_message(e: RegistrationError) -> String:
+    match e:
+        RegClientDataJson(r) -> "clientDataJSON did not parse: " + r
+        RegWrongClientType -> "clientData.type is not webauthn.create"
+        RegChallengeMismatch -> "challenge mismatch (replay?)"
+        RegOriginMismatch -> "origin mismatch (phishing?)"
+        RegAttestationHex(r) -> "attestationObject is not valid hex: " + r
+        RegAttestationMalformed(r) -> "attestationObject CBOR malformed: " + r
+        RegNoAuthData -> "attestationObject has no authData byte string"
+        RegAuthDataTooShort -> "authenticatorData too short"
+        RegRpIdHashMismatch -> "rpIdHash mismatch (wrong relying party)"
+        RegUserPresenceRequired -> "user-presence flag not set"
+        RegUserVerificationRequired -> "user-verification required but flag not set"
+        RegNoAttestedCredential -> "authenticatorData carries no attested credential (AT flag unset)"
+        RegCoseMalformed(r) -> "COSE public key malformed: " + r
+        RegUnsupportedKey -> "credential public key is not COSE ES256 (P-256, alg -7)"
+
+impl Show for RegistrationError:
+    fn show(self) -> String:
+        registration_error_message(self)
+
+impl Error for RegistrationError
+
+impl From(RegistrationError) for String:
+    fn from(value: RegistrationError) -> Self:
+        registration_error_message(value)
+
+// Verify a WebAuthn *registration* (credential create) ceremony server-side and
+// return the credential to persist. Mirrors `verify_assertion`'s independent
+// re-derivation - it trusts nothing the browser claims about the key. It parses
+// clientDataJSON (type/challenge/origin), CBOR-decodes the attestationObject to
+// its authenticatorData, checks rpIdHash + presence/verification flags, then parses
+// the attested credential's COSE ES256 key into an uncompressed SEC1 point. The
+// self-attestation statement (`fmt` "none"/"packed") is accepted; device provenance
+// beyond that is out of scope for the self-attestation contract (RFC-0099).
+pub fn verify_registration(client_data_json: String, attestation_object_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(RegisteredCredential, RegistrationError):
+    match json.decode(client_data_json):
+        Err(e) -> Err(RegClientDataJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            if json_str(doc, "type") != "webauthn.create":
+                Err(RegWrongClientType)
+            else if json_str(doc, "challenge") != expected_challenge:
+                Err(RegChallengeMismatch)
+            else if json_str(doc, "origin") != expected_origin:
+                Err(RegOriginMismatch)
+            else:
+                reg_from_attestation(attestation_object_hex, expected_rp_id, require_uv)
+
+fn reg_from_attestation(attestation_object_hex: String, expected_rp_id: String, require_uv: Bool) -> Result(RegisteredCredential, RegistrationError):
+    match encoding.hex_decode_bytes(attestation_object_hex):
+        Err(e) -> Err(RegAttestationHex(encoding.encoding_error_message(e)))
+        Ok(att_bytes) ->
+            match cbor.decode(att_bytes):
+                Err(e) -> Err(RegAttestationMalformed(cbor.cbor_error_message(e)))
+                Ok(att) ->
+                    match cbor_auth_data(att):
+                        None -> Err(RegNoAuthData)
+                        Some(auth_data) -> reg_from_auth_data(auth_data, expected_rp_id, require_uv)
+
+fn cbor_auth_data(att: cbor.Cbor) -> Option(Bytes):
+    match cbor.map_get_text(att, "authData"):
+        Some(v) -> cbor.as_bytes(v)
+        None -> None
+
+fn reg_from_auth_data(auth_data: Bytes, expected_rp_id: String, require_uv: Bool) -> Result(RegisteredCredential, RegistrationError):
+    // authData = rpIdHash[32] || flags[1] || signCount[4] || attestedCredentialData[>=18].
+    if bytes.length(auth_data) < 55:
+        Err(RegAuthDataTooShort)
+    else if encoding.hex_encode_bytes(bytes.slice(auth_data, 0, 32)) != crypto.sha256(expected_rp_id):
+        Err(RegRpIdHashMismatch)
+    else:
+        let flags = bytes.at(auth_data, 32)
+        let up = flags - flags / 2 * 2
+        let uv = flags / 4 - flags / 8 * 2
+        let at = flags / 64 - flags / 128 * 2
+        if up != 1:
+            Err(RegUserPresenceRequired)
+        else if require_uv && uv != 1:
+            Err(RegUserVerificationRequired)
+        else if at != 1:
+            Err(RegNoAttestedCredential)
+        else:
+            reg_from_attested(auth_data)
+
+fn reg_from_attested(auth_data: Bytes) -> Result(RegisteredCredential, RegistrationError):
+    // attestedCredentialData at offset 37: aaguid[16] || credIdLen[2] || credId[L] || COSE key.
+    let sign_count = be_u32(auth_data, 33)
+    let cred_id_len = bytes.at(auth_data, 53) * 256 + bytes.at(auth_data, 54)
+    let cose_start = 55 + cred_id_len
+    if bytes.length(auth_data) < cose_start:
+        Err(RegAuthDataTooShort)
+    else:
+        let cred_id = bytes.slice(auth_data, 55, cose_start)
+        match cbor.decode_item(auth_data, cose_start):
+            Err(e) -> Err(RegCoseMalformed(cbor.cbor_error_message(e)))
+            Ok(parsed) ->
+                let (cose, _next) = parsed
+                cose_to_credential(cose, encoding.hex_encode_bytes(cred_id), sign_count)
+
+fn cose_to_credential(cose: cbor.Cbor, cred_id_hex: String, sign_count: Int) -> Result(RegisteredCredential, RegistrationError):
+    if cbor_int_or(cose, 1, 0) != 2 || cbor_int_or(cose, 3, 0) != -7 || cbor_int_or(cose, -1, 0) != 1:
+        Err(RegUnsupportedKey)
+    else:
+        match cose_xy(cose):
+            None -> Err(RegCoseMalformed("missing or wrong-length x/y coordinate"))
+            Some(xy) ->
+                let (x_hex, y_hex) = xy
+                Ok(RegisteredCredential(credential_id_hex: cred_id_hex, public_key_hex: "04" + x_hex + y_hex, sign_count: sign_count))
+
+fn cose_xy(cose: cbor.Cbor) -> Option((String, String)):
+    match coord32(cose, -2):
+        None -> None
+        Some(x_hex) ->
+            match coord32(cose, -3):
+                None -> None
+                Some(y_hex) -> Some((x_hex, y_hex))
+
+fn coord32(cose: cbor.Cbor, label: Int) -> Option(String):
+    match cbor.map_get_int(cose, label):
+        None -> None
+        Some(v) ->
+            match cbor.as_bytes(v):
+                None -> None
+                Some(b) -> if bytes.length(b) == 32: Some(encoding.hex_encode_bytes(b)) else: None
+
+fn cbor_int_or(cose: cbor.Cbor, key: Int, fallback: Int) -> Int:
+    match cbor.map_get_int(cose, key):
+        Some(v) ->
+            match cbor.as_int(v):
+                Some(n) -> n
+                None -> fallback
+        None -> fallback
+
+fn be_u32(b: Bytes, start: Int) -> Int:
+    bytes.at(b, start) * 16777216 + bytes.at(b, start + 1) * 65536 + bytes.at(b, start + 2) * 256 + bytes.at(b, start + 3)
+
+// The signature counter an assertion's authenticatorData reports (bytes 33..37,
+// big-endian). RFC-0099: the caller compares this against the stored counter and
+// rejects a regression (a cloned authenticator). A reported `0` means the
+// authenticator implements no counter and is never treated as a regression.
+pub fn assertion_sign_count(auth_data_hex: String) -> Result(Int, AssertionError):
+    match encoding.hex_decode_bytes(auth_data_hex):
+        Err(e) -> Err(AuthenticatorDataHex(encoding.encoding_error_message(e)))
+        Ok(auth_data) ->
+            if bytes.length(auth_data) < 37:
+                Err(AuthenticatorDataTooShort)
+            else:
+                Ok(be_u32(auth_data, 33))

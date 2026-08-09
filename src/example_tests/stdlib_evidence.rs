@@ -288,6 +288,47 @@ fn main(console: Console):
     );
 }
 
+/// `std/webauthn.verify_registration` (RFC-0099) verifies a server-challenged
+/// WebAuthn *create* ceremony: it CBOR-decodes the attestationObject (via the new
+/// `std/cbor` decoder), checks rpIdHash + presence/verification flags, and extracts
+/// the attested COSE ES256 key as an uncompressed SEC1 point. Built from a
+/// synthetic-but-well-formed attestation (rpIdHash re-derived in-program) so it
+/// needs no live authenticator, and it agrees on BOTH backends.
+#[test]
+fn webauthn_verify_registration_parses_the_create_ceremony() {
+    let prog = |challenge: &str| {
+        format!(
+"import webauthn
+import crypto
+fn xrep(h: String, n: Int) -> String:
+    var out = \"\"
+    for _i in 0..n:
+        out = out + h
+    out
+fn main(console: Console):
+    let rp = \"coven.example\"
+    let cose = \"a5010203262001215820\" + xrep(\"ab\", 32) + \"225820\" + xrep(\"cd\", 32)
+    let auth = crypto.sha256(rp) + \"45\" + \"00000000\" + xrep(\"00\", 16) + \"0004\" + \"01020304\" + cose
+    let att = \"a363666d74646e6f6e656761747453746d74a06861757468446174615888\" + auth
+    let cdj = \"{{\\\"type\\\":\\\"webauthn.create\\\",\\\"challenge\\\":\\\"{challenge}\\\",\\\"origin\\\":\\\"https://coven.example\\\"}}\"
+    match webauthn.verify_registration(cdj, att, \"c\", \"https://coven.example\", rp, true):
+        Ok(cred) -> console.print(cred.public_key_hex)
+        Err(e) -> console.print(webauthn.registration_error_message(e))
+"
+        )
+    };
+    let expected = format!("04{}{}", "ab".repeat(32), "cd".repeat(32));
+    assert_eq!(
+        link_run(&prog("c")),
+        vec![expected],
+        "a valid create ceremony yields the attested ES256 public key"
+    );
+    assert!(
+        link_run(&prog("WRONG")).join("").contains("challenge"),
+        "a create ceremony whose clientData challenge != the server's must be rejected"
+    );
+}
+
 /// `encoding.hex_to_base64url` — base64url (no padding) of bytes given as hex.
 #[test]
 fn encoding_base64url_of_hex_matches() {

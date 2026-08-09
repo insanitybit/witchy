@@ -155,6 +155,66 @@ Whether the buffer ends with `suffix`.
 
 - `fn from(value: BytesError) -> Self`
 
+## `cbor`
+
+cbor - a minimal CBOR (RFC 8949) decoder for the WebAuthn subset: the values a registration `attestationObject` and its embedded COSE_Key use. Supports unsigned/negative integers, byte strings, text strings, arrays, and definite- length maps. Indefinite-length items, tags, floats, and simple values are rejected - they do not occur in a WebAuthn attestation. Pure (no capability).
+
+#### `type Cbor`
+
+A decoded CBOR value, restricted to the WebAuthn subset.
+
+- `CInt(Int)`
+- `CBytes(Bytes)`
+- `CText(String)`
+- `CArray(List(Cbor))`
+- `CMap(List((Cbor, Cbor)))`
+
+#### `type CborError`
+
+A decode failure. `Truncated` means the input ended mid-item; `Unsupported` carries the offending major type; indefinite-length framing is refused outright.
+
+- `Truncated`
+- `Unsupported(Int)`
+- `IndefiniteLength`
+
+#### `fn cbor_error_message(e: CborError) -> String`
+
+#### `fn decode(b: Bytes) -> Result(Cbor, CborError)`
+
+Decode exactly one CBOR item from the front of `b`, ignoring any trailing bytes.
+
+#### `fn decode_item(b: Bytes, i: Int) -> Result((Cbor, Int), CborError)`
+
+Decode the item at offset `i`, returning it paired with the offset just past it.
+
+#### `fn map_get_text(value: Cbor, key: String) -> Option(Cbor)`
+
+The value bound to text key `key` in a CBOR map (the attestationObject keys `fmt`/`attStmt`/`authData`), or None.
+
+#### `fn map_get_int(value: Cbor, key: Int) -> Option(Cbor)`
+
+The value bound to integer key `key` in a CBOR map (the COSE_Key labels: 1=kty, 3=alg, -1=crv, -2=x, -3=y), or None.
+
+#### `fn as_bytes(value: Cbor) -> Option(Bytes)`
+
+The byte string a `Cbor` holds, or None.
+
+#### `fn as_int(value: Cbor) -> Option(Int)`
+
+The integer a `Cbor` holds, or None.
+
+### Trait implementations
+
+#### `impl Show for CborError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for CborError`
+
+#### `impl From(CborError) for String`
+
+- `fn from(value: CborError) -> Self`
+
 ## `chan`
 
 std/chan - decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent - you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a pure-witchy cooperative executor with a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly - no scheduler state in the runtime, no `Pin`.
@@ -4563,6 +4623,31 @@ Matchable assertion-verification failures. Malformed wire inputs are distinct fr
 - `SignatureInputMalformed(String)`
 - `SignatureInvalid`
 
+#### `type RegisteredCredential`
+
+The credential a verified registration yields: the credential id and the ES256 public key (uncompressed SEC1, `04||x||y`, hex) to store for later assertions, plus the initial signature counter.
+
+- `RegisteredCredential { credential_id_hex: String, public_key_hex: String, sign_count: Int }`
+
+#### `type RegistrationError`
+
+Matchable registration-verification failures. Malformed wire (hex/CBOR/COSE) is kept distinct from semantic rejection of a well-formed but replayed, phishing, wrong-RP, or non-ES256 ceremony.
+
+- `RegClientDataJson(String)`
+- `RegWrongClientType`
+- `RegChallengeMismatch`
+- `RegOriginMismatch`
+- `RegAttestationHex(String)`
+- `RegAttestationMalformed(String)`
+- `RegNoAuthData`
+- `RegAuthDataTooShort`
+- `RegRpIdHashMismatch`
+- `RegUserPresenceRequired`
+- `RegUserVerificationRequired`
+- `RegNoAttestedCredential`
+- `RegCoseMalformed(String)`
+- `RegUnsupportedKey`
+
 #### `fn assertion_error_message(e: AssertionError) -> String`
 
 Human-readable assertion failure text for logs and HTTP responses.
@@ -4570,6 +4655,16 @@ Human-readable assertion failure text for logs and HTTP responses.
 #### `fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError)`
 
 Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_json` is the exact clientDataJSON text the browser signed over (it must be re-hashed verbatim, never re-serialized). `require_uv` demands user verification - pass `true` for a genuine second-factor gate. Returns `Ok(true)` when every check passes, or a typed `Err`.
+
+#### `fn registration_error_message(e: RegistrationError) -> String`
+
+#### `fn verify_registration(client_data_json: String, attestation_object_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(RegisteredCredential, RegistrationError)`
+
+Verify a WebAuthn *registration* (credential create) ceremony server-side and return the credential to persist. Mirrors `verify_assertion`'s independent re-derivation - it trusts nothing the browser claims about the key. It parses clientDataJSON (type/challenge/origin), CBOR-decodes the attestationObject to its authenticatorData, checks rpIdHash + presence/verification flags, then parses the attested credential's COSE ES256 key into an uncompressed SEC1 point. The self-attestation statement (`fmt` "none"/"packed") is accepted; device provenance beyond that is out of scope for the self-attestation contract (RFC-0099).
+
+#### `fn assertion_sign_count(auth_data_hex: String) -> Result(Int, AssertionError)`
+
+The signature counter an assertion's authenticatorData reports (bytes 33..37, big-endian). RFC-0099: the caller compares this against the stored counter and rejects a regression (a cloned authenticator). A reported `0` means the authenticator implements no counter and is never treated as a regression.
 
 ### Trait implementations
 
@@ -4582,3 +4677,13 @@ Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_j
 #### `impl From(AssertionError) for String`
 
 - `fn from(value: AssertionError) -> Self`
+
+#### `impl Show for RegistrationError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for RegistrationError`
+
+#### `impl From(RegistrationError) for String`
+
+- `fn from(value: RegistrationError) -> Self`
