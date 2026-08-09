@@ -1,6 +1,6 @@
 # RFC-0120: Opt-in installs of staged (unreleased) versions in `pm`
 
-- Status: Draft
+- Status: Implemented (2026-08-09)
 - Author: pm / registry track
 - Depends on: the staged/released lifecycle in `projects/coven` (publish → `Staged`,
   human promote → `Released`), RFC-0119 (human-gated release)
@@ -153,3 +153,33 @@ dependency graph released-only.
 - **No confirmation, flag alone.** Rejected: the user requirement is that this be
   hard to do by accident and visible every time; the prompt + persistent lock warning
   deliver that.
+
+## Implementation notes (2026-08-09)
+
+Implemented entirely in `projects/pm/src/pm.witchy` (no `coven` change). Key points:
+
+- **`pm` has no `install` command.** Its lock-consuming commands are `build`, `run`,
+  `verify`, `gate`. The RFC's "re-warn on every `install`" is therefore wired into the
+  lock-consuming path: `warn_staged_lock_pins` runs at the top of `pm build`/`pm run`
+  and prints `! using STAGED <name>@<ver>` for each `staged = "true"` lock entry.
+- **The lock marker derives from the vendored record's state,** not a threaded flag:
+  `vendor_lock_entry` emits `staged = "true"` iff the vendored `coven.json` state is
+  `staged`. `parse_vendored_record` now accepts `released` **or** `staged`; `yanked`
+  and anything else stay refused. Self-heal is automatic — a re-vendor after release
+  rewrites the record and the marker disappears.
+- **`--allow-staged` is exact-only:** `resolve_staged_exact` requires a canonical
+  `X.Y.Z` (range/caret/`*` → hard error), fetches all records for the coordinate, and
+  refuses `yanked`. The released-only default path (`resolve_version`) is untouched.
+- **Confirm via an explicit flag, not an interactive prompt.** A staged install
+  requires `--yes` (or `PM_ASSUME_YES=1`) in addition to `--allow-staged`; without
+  it, pm prints the staged warning and refuses. This double-flag gate delivers the
+  "explicit + hard to do by accident" requirement without an interactive prompt.
+  Rationale: an interactive `console.read_line()` would make the compiled pm module
+  *declare* the `console_read_len` wasm import unconditionally (imports resolve at
+  instantiation, not call-time), but the embedded-pm host grants `Console` without
+  the `Read` right, so every `pm` invocation would fail to instantiate. pm also runs
+  non-interactively (CI, the embedded frontend, e2e) where stdin is EOF. Wiring
+  `Console.Read` into the embedded-pm host is a possible follow-up if an interactive
+  prompt is later wanted.
+- **Publish refusal:** `pm publish` refuses when the rune's own lock carries any
+  `staged = "true"` pin (the public dependency graph stays released-only).

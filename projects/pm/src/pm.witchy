@@ -144,6 +144,7 @@ fn cmd_info(console: Console, root: Dir, dir: String):
 // the front-end decides *what* to compile (entry + deps from the lock) and
 // `witchyc` does the compiling/running.
 fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
+    warn_staged_lock_pins(console, root)
     let target = arg(args, 1)
     let dir = if target.is_empty(): "." else: target
     // BUG-102: everything after `run <file|dir>` is the program's own argv and must
@@ -206,6 +207,7 @@ fn build_options(args: List(String)) -> BuildOptions:
 
 // build <file|dir> — compile a program (and its vendored deps) to verify it builds.
 fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args: List(String)) -> Int:
+    warn_staged_lock_pins(console, root)
     let options = build_options(args)
     let dir = options.dir
     if !options.error.is_empty():
@@ -1221,6 +1223,12 @@ fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(Strin
                 if has_path_dependency(manifest):
                     console.print("BLOCK: a published rune must be self-contained — it cannot have a path dependency (a published rune resolves only registry deps): ${list.join(path_deps(manifest), ", ")}")
                     1
+                else if list.length(staged_lock_pins(root, join_path(dir, "witchy.lock"))) > 0:
+                    // RFC-0120: you may CONSUME a staged version locally, but a published rune
+                    // must not SHIP a dependency on one — the public dependency graph stays
+                    // released-only. Refuse the publish until the staged dep is released.
+                    console.print("BLOCK: a published rune must not depend on a STAGED (unreleased) version: ${list.join(staged_pin_labels(root, join_path(dir, "witchy.lock")), ", ")}")
+                    1
                 else:
                     publish_checked(console, net, root, dir, manifest, origin, identity, env)
 
@@ -2013,6 +2021,32 @@ fn optional_lock_string(entry: Toml, field: String, fallback: String) -> String:
 fn entry_hash(entry: Toml) -> String:
     optional_lock_string(entry, "hash", "(no-hash)")
 
+// RFC-0120: the staged (unreleased) pins a lockfile records — each a `[[rune]]`
+// carrying `staged = "true"`, written when it was accepted via `--allow-staged`.
+// Returned as (name, version) so callers can warn or refuse. A malformed lock
+// yields no pins (the integrity commands report that fault separately).
+fn staged_lock_pins(root: Dir, lock_rel: String) -> List((String, String)):
+    var out = []
+    if root.exists(lock_rel):
+        match lock_rune_entries(root.read(lock_rel)):
+            Err(_e) -> Nil
+            Ok(entries) ->
+                for entry in entries:
+                    if optional_lock_string(entry, "staged", "") == "true":
+                        out.push((optional_lock_string(entry, "name", "?"), optional_lock_string(entry, "version", "?")))
+    out
+
+// Warn (loudly, on every lock-consuming command) about each staged pin. A staged
+// pin is a standing property of the project, so the reminder is repeated and never
+// becomes invisible.
+fn warn_staged_lock_pins(console: Console, root: Dir):
+    for name, version in staged_lock_pins(root, "witchy.lock"):
+        console.print("! using STAGED ${name}@${version} (unreleased; accepted via --allow-staged)")
+
+// Staged pins from a lock rendered as `name@version` labels, for a refusal message.
+fn staged_pin_labels(root: Dir, lock_rel: String) -> List(String):
+    staged_lock_pins(root, lock_rel).map(fn(pin: (String, String)): "${pin.0}@${pin.1}")
+
 // --- gate: block any dependency that demands new authority -------------------
 // The supply-chain gate (§10), rights-aware. It recomputes the footprint the
 // dependency sources actually demand and blocks any capability the lockfile's
@@ -2586,7 +2620,7 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
     let pos = positionals(args)
     let spec = arg(pos, 1)
     if spec.is_empty():
-        console.print("usage: pm add <pkg>[@<ver>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]")
+        console.print("usage: pm add <pkg>[@<ver>] [host:port] [--allow-cap <Cap>]... [--allow-fresh] [--allow-staged --yes]")
         1
     else:
         let (name, req) = split_spec(spec)
@@ -2598,7 +2632,19 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
             Ok(shp) ->
                 let (scheme, host, port) = shp
                 let origin = registry_origin(scheme, host, port)
-                add_pkg_gated(console, net, root, origin, name, req, cooldown_now(env, clock, args), allowed_caps(args))
+                add_pkg_gated(console, net, root, origin, name, req, cooldown_now(env, clock, args), allowed_caps(args), has_flag(args, "--allow-staged"), assume_yes(env, args))
+
+// Whether a staged-install prompt should be auto-confirmed (RFC-0120): the
+// `--yes` flag, or `PM_ASSUME_YES=1`/`true` in the environment. In CI a prompt
+// must never hang, so `--allow-staged` there is paired with one of these; without
+// either, an unconfirmed staged install refuses rather than blocking on stdin.
+fn assume_yes(env: Env, args: List(String)) -> Bool:
+    if has_flag(args, "--yes"):
+        true
+    else:
+        match env.get_env("PM_ASSUME_YES"):
+            Some(v) -> v == "1" || v == "true"
+            None -> false
 
 // A direct `add` is the consumer's deliberate choice to take on a dependency, so
 // it is gated: if the rune — OR ANY rune in its resolved dependency closure (SEC-006) —
@@ -2606,25 +2652,49 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
 // what the lock already records ∪ the caps the consumer consented to with `--allow-cap`),
 // the add is BLOCKED. A registry record's footprint is single-rune, so the direct gate
 // alone would miss a transitive dep's capabilities; we re-gate the whole vendored closure.
-fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
-    match resolve_version(net, origin, name, req, cooldown):
-        // BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
+fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, cooldown: (Int, Int, Bool), allowed: List(String), allow_staged: Bool, yes: Bool) -> Int:
+    // RFC-0120: `--allow-staged` opts into installing an unreleased (staged) version.
+    // It requires an EXACT version, prompts for confirmation, and refuses yanked. The
+    // released-only default path (no flag / any range) is unchanged.
+    if allow_staged:
+        match resolve_staged_exact(net, origin, name, req):
+            Err(e) ->
+                console.print("${name}: ${version_resolve_error_message(e)}")
+                1
+            Ok(resolved) ->
+                let (chosen, is_staged) = resolved
+                if is_staged && !yes:
+                    console.print("! ${name}@${chosen} is STAGED, not released — its authors have not blessed it for release.")
+                    console.print("  It is immutable and signed, but may never be released, or may be yanked.")
+                    console.print("  refusing to install an unreleased version without confirmation — re-run with --yes (or PM_ASSUME_YES=1) to accept it")
+                    1
+                else:
+                    if is_staged:
+                        console.print("! installing STAGED ${name}@${chosen} (unreleased, accepted via --allow-staged --yes)")
+                    add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed)
+    else:
+        match resolve_version(net, origin, name, req, cooldown):
+            Err(e) ->
+                console.print("${name}: ${version_resolve_error_message(e)}")
+                1
+            Ok(chosen) ->
+                add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed)
+
+// The capability-widening gate + finalize, shared by the released and staged
+// resolution paths. BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
+fn add_pkg_after_resolve(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
+    match project_baseline(root):
         Err(e) ->
-            console.print("${name}: ${version_resolve_error_message(e)}")
-            1
-        Ok(chosen) ->
-            match project_baseline(root):
+            console.print("BLOCK: cannot read witchy.lock — ${lock_integrity_error_message(e)}")
+            2
+        Ok(recorded) ->
+            let baseline = union_all(recorded, allowed)
+            match verified_incoming_footprint(net, root, origin, name, chosen):
                 Err(e) ->
-                    console.print("BLOCK: cannot read witchy.lock — ${lock_integrity_error_message(e)}")
+                    console.print("BLOCK: cannot verify the registry record for ${name}@${chosen} — ${record_footprint_error_message(e)}")
                     2
-                Ok(recorded) ->
-                    let baseline = union_all(recorded, allowed)
-                    match verified_incoming_footprint(net, root, origin, name, chosen):
-                        Err(e) ->
-                            console.print("BLOCK: cannot verify the registry record for ${name}@${chosen} — ${record_footprint_error_message(e)}")
-                            2
-                        Ok(incoming) ->
-                            add_pkg_gate_widen(console, net, root, origin, name, req, chosen, cooldown, baseline, rights.uncovered(baseline, incoming))
+                Ok(incoming) ->
+                    add_pkg_gate_widen(console, net, root, origin, name, req, chosen, cooldown, baseline, rights.uncovered(baseline, incoming))
 
 fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String)) -> Int:
     if list.length(widened) > 0:
@@ -2928,7 +2998,11 @@ fn vendor_lock(root: Dir, snapshot_line: String) -> Result(String, VendoredRecor
 fn vendor_lock_entry(root: Dir, alias: String, rune_dir: String) -> Result(String, VendoredRecordError):
     let record = parse_vendored_record(root.read(join_path(rune_dir, "coven.json")))?
     let fp = footprint_toml(record.runtime_footprint)
-    Ok("\n[[rune]]\nname = \"" + record.name + "\"\nalias = \"" + alias + "\"\nversion = \"" + record.version + "\"\nsource = \"coven\"\nhash = \"" + record.hash + "\"\nruntime_footprint = [" + fp + "]\n")
+    // RFC-0120: mark a staged pin so `pm build`/`run`/`verify` re-warn every run and
+    // `pm publish` can refuse it. The marker self-heals: once the version is released,
+    // a re-vendor rewrites the record's state and this line disappears.
+    let staged_marker = if record.state == "staged": "staged = \"true\"\n" else: ""
+    Ok("\n[[rune]]\nname = \"" + record.name + "\"\nalias = \"" + alias + "\"\nversion = \"" + record.version + "\"\nsource = \"coven\"\nhash = \"" + record.hash + "\"\n" + staged_marker + "runtime_footprint = [" + fp + "]\n")
 
 // The strict subset of a signed coven record needed by update and lock
 // regeneration. Local vendor metadata is trust state: malformed fields are an
@@ -2957,7 +3031,7 @@ fn vendored_record_error_message(e: VendoredRecordError) -> String:
         VendoredRecordMissingString(field) -> "vendored coven.json has no string `${field}` field"
         VendoredRecordEmptyString(field) -> "vendored coven.json has an empty `${field}` field"
         VendoredRecordInvalidVersion(version) -> "vendored coven.json has noncanonical version `${version}`"
-        VendoredRecordInvalidState(state) -> "vendored coven.json has non-released state `${state}`"
+        VendoredRecordInvalidState(state) -> "vendored coven.json has non-installable state `${state}` (only `released`, or a `--allow-staged` `staged` pin, is accepted)"
         VendoredRecordInvalidHash(hash) -> "vendored coven.json has malformed content hash `${hash}`"
         VendoredRecordMissingFootprint -> "vendored coven.json has no `runtime_footprint` field"
         VendoredRecordFootprintNotArray -> "vendored coven.json `runtime_footprint` is not an array"
@@ -2985,7 +3059,10 @@ fn parse_vendored_record(text: String) -> Result(VendoredRecord, VendoredRecordE
             match canonical_version(version):
                 None -> Err(VendoredRecordInvalidVersion(version))
                 Some(_parsed) ->
-                    if state != "released":
+                    // RFC-0120: a `staged` vendored record is accepted (it can only
+                    // reach the lock via an explicit `--allow-staged` add, and the lock
+                    // marks it + re-warns); `yanked` and any other state stay refused.
+                    if state != "released" && state != "staged":
                         Err(VendoredRecordInvalidState(state))
                     else if !hash.starts_with("sha256:"):
                         Err(VendoredRecordInvalidHash(hash))
@@ -3083,6 +3160,8 @@ type VersionResolveError:
     VersionBadRequirement(String, String)
     VersionCooling(String, Int)
     VersionNoMatch(String)
+    VersionExactNotFound(String)
+    VersionYanked(String)
 
 fn version_resolve_error_message(e: VersionResolveError) -> String:
     match e:
@@ -3091,6 +3170,8 @@ fn version_resolve_error_message(e: VersionResolveError) -> String:
         VersionBadRequirement(req, cause) -> "bad requirement `${req}`: ${cause}"
         VersionCooling(req, remaining_secs) -> "a release satisfying `${req}` is inside its staging cooldown and not resolvable for another ${humanize_wait(remaining_secs)} (compromised-release protection) — re-run with --allow-fresh to accept it now"
         VersionNoMatch(req) -> "no released version satisfies `${req}`"
+        VersionExactNotFound(req) -> "no published version `${req}` exists on the registry (staged or released)"
+        VersionYanked(req) -> "version `${req}` has been yanked and is never installable"
 
 impl Show for VersionResolveError:
     fn show(self) -> String:
@@ -3101,6 +3182,51 @@ impl Error for VersionResolveError
 impl From(VersionResolveError) for String:
     fn from(value: VersionResolveError) -> Self:
         version_resolve_error_message(value)
+
+// RFC-0120: resolve an EXACT staged-or-released version for `--allow-staged`. The
+// requirement MUST be a single canonical `X.Y.Z` — staged never satisfies a range,
+// so nothing can float onto an unreleased version. Returns `(version, is_staged)`;
+// a `yanked` record for that coordinate is always refused, with or without the flag.
+fn resolve_staged_exact(net: Net, origin: String, name: String, req: String) -> Result((String, Bool), VersionResolveError):
+    match canonical_version(req):
+        None -> Err(VersionBadRequirement(req, "--allow-staged requires an exact version `name@X.Y.Z` (it never satisfies a range)"))
+        Some(_v) ->
+            let resp = registry_get(net, origin, "/coven/versions?name=${wire(name)}")
+            if http.status(resp) != 200:
+                Err(VersionRegistryFetchFailed(http.status(resp)))
+            else:
+                match exact_record_state(http.body(resp), req):
+                    Err(e) -> Err(e)
+                    Ok(state) ->
+                        if state == "yanked":
+                            Err(VersionYanked(req))
+                        else:
+                            Ok((req, state == "staged"))
+
+// The lifecycle state (`staged`/`released`/`yanked`) of the exact `req` coordinate
+// in the registry's versions response, or a typed boundary error. Malformed JSON or
+// a missing coordinate is never a silent empty.
+fn exact_record_state(body: String, req: String) -> Result(String, VersionResolveError):
+    match json.decode(body):
+        Err(e) -> Err(VersionMalformedResponse(json.decode_error_message(e)))
+        Ok(doc) ->
+            match json.get(doc, "records"):
+                None -> Err(VersionMalformedResponse("missing `records` array"))
+                Some(field) ->
+                    match json.as_array(field):
+                        None -> Err(VersionMalformedResponse("`records` is not an array"))
+                        Some(items) -> find_exact_state(items, req)
+
+fn find_exact_state(items: List(Json), req: String) -> Result(String, VersionResolveError):
+    var found = None
+    for rec in items:
+        let raw = json.get_string(rec, "version") ?? ""
+        if let Some(v) = canonical_version(raw):
+            if semver.format(v) == req:
+                found = json.get_string(rec, "state")
+    match found:
+        Some(s) -> Ok(s)
+        None -> Err(VersionExactNotFound(req))
 
 // Fetch a resolved version, then recurse into the version deps its manifest
 // declares. The exit code is the first failure (0 if the whole tree resolves).
