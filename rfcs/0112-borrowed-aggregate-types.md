@@ -4,7 +4,7 @@ title: "Borrowed aggregate types and projection-aware loans"
 status: accepted
 created: 2026-08-01
 updated: 2026-08-09
-tracking: "Design accepted; no open questions (non-goals fixed: no mutable/shared refs, no pointer identity, no loan across await/yield initially). Adds lifetime parameters to nominal type declarations; shared read-only borrows only. Criteria 1-5 PROVEN; criteria 6,7,8,9 PARTIAL; and 10,11 MISSING. Row 6 transports exact before/after root sets through scalar updates and declared borrowed-field replacement. Row 8 has explicit-return, branch, loop, and ? cleanup coverage but lacks checked-heap/UAF evidence. Row 9 supports direct List(B('a)) construction, copy, list.at reads, and for traversal with checked hidden root companions, but lacks overwrite, drop, nesting, and erasure coverage. Remaining before implemented: owned-companion materialization (row 7), aggregate checked-heap/UAF evidence (row 8), the remainder of List(B('a)) lifecycle (row 9), a runnable zero-copy parser + borrowed iterator with zero-materialization counters (row 10), and the complete shipped-contract reflection/docs evidence (row 11). Rust-class performance remains a measured target: the point-based fact interface is stable, while the solver and lowering must continue to be replaced or specialized where corpus evidence warrants it. Per rfcs/0110-0112-acceptance-ledger.md."
+tracking: "Design accepted; no open questions (non-goals fixed: no mutable/shared refs, no pointer identity, no loan across await/yield initially). Adds lifetime parameters to nominal type declarations; shared read-only borrows only. Criteria 1-5 PROVEN; criteria 6,7,8,9 PARTIAL; and 10,11 MISSING. Row 6 transports exact before/after root sets through scalar updates and declared borrowed-field replacement. Row 8 has explicit-return, branch, loop, and ? cleanup coverage but lacks checked-heap/UAF evidence. Row 9 supports direct List(B('a)) construction, copy, list.at reads, and for traversal with checked hidden root companions, but lacks overwrite, drop, nesting, and erasure coverage. Remaining before implemented: owned-companion materialization (row 7), aggregate checked-heap/UAF evidence (row 8), the remainder of List(B('a)) lifecycle (row 9), a runnable zero-copy parser + borrowed iterator with zero-materialization counters (row 10), and the complete shipped-contract reflection/docs evidence (row 11). Rust-class scalar performance is the long-term target: accepted opt-path borrows add no dynamic checker and no payload materialization, while the stable point-based facts permit the solver and lowering to be replaced or specialized when corpus evidence warrants it. Per rfcs/0110-0112-acceptance-ledger.md."
 predecessors:
   - "[0024](0024-unified-facts-lattice.md) (shared facts and confinement lattice)"
   - "[0083](0083-opt-mode-lifetimes.md) (`let('a)` inputs, `View(T, 'a)` results, and owner loans)"
@@ -205,14 +205,22 @@ This allows conditional returns, branches, and loops to become more precise
 without weakening the owner-root contract or requiring a whole-program
 re-analysis on every borrow.
 
-The performance objective is Rust-class predictable overhead for zero-copy
-`mode opt` programs, measured rather than assumed. Each precision milestone
-must record compile time, loan count, constraint-edge count, and generated
-allocation/retain/drop counters on a pinned corpus. The first benchmark report
-sets the project thresholds; it must compare equivalent scalar and zero-copy
-workloads, publish percentile results and outliers, and separate analysis cost
-from Wasm code generation. No RFC claim of Rust parity is valid until that
-repeatable baseline exists.
+The long-term performance objective is near Rust-class scalar performance for
+zero-copy `mode opt` programs, measured rather than assumed and explicitly
+independent of SIMD. Accepted borrows are compile-time facts: generated code
+contains no dynamic borrow checker, and the only runtime work attributable to a
+live borrowed aggregate is the ownership-root retain/drop required to keep its
+storage valid. A zero-copy workload must therefore show no payload
+materialization or avoidable allocation. This is a target, not a current
+parity claim.
+
+Each precision milestone must record compile time, loan count, constraint-edge
+count, generated allocation/retain/drop counters, and end-to-end scalar
+throughput on a pinned corpus. The first benchmark report sets the project
+thresholds; it must compare equivalent Rust and Witchy scalar workloads, publish
+percentile results and outliers, separate analysis cost from Wasm code
+generation, and report steady-state execution separately from compilation. No
+RFC claim of Rust parity is valid until that repeatable baseline exists.
 
 The implementation must preserve a scaling boundary: bodies with no borrowed
 aggregate facts take the existing cheap path, and a body with borrowed facts
@@ -227,9 +235,14 @@ new user-visible syntax.
 
 The fact interface is deliberately stable while its engine is not: an
 implementation may replace the initial worklist algorithm with a differential
-or Datalog-style solver, provided it preserves the same point-indexed facts and
+or Datalog-style solver, add incremental summaries/caching, or specialize a
+proven hot fact shape, provided it preserves the same point-indexed facts and
 diagnostics. This keeps algorithmic improvements available without a language
-redesign or a second, divergent loan model.
+redesign or a second, divergent loan model. Rust's Polonius work remains useful
+evidence here: it is provisionally available on nightly but still calls out
+analysis completion and optimization before broad use, so Witchy must treat
+solver selection as a measured implementation choice rather than cargo-culting
+an algorithm or freezing one prematurely.
 
 Future work may add more precision in this order:
 
