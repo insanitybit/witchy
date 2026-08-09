@@ -212,7 +212,7 @@ implemented as `witchy doctor --web --deployment <url>`.
 
 | Open row | Owning RFC | Bucket | Note |
 | --- | --- | --- | --- |
-| Typed HTTP/nav/storage/port/secret completion descriptors | 0107 | in-sandbox (implemented) | Production credential exchange is now allowed only when the host provides `globalThis.__witchyHostPorts` entries; this code slice is now implemented locally, with remaining non-local work around relying-party payload contract alignment and policy governance. |
+| Typed HTTP/nav/storage/port/secret completion descriptors | 0107 | PROVEN | `web.rs` credential host-port callback bridge is implemented behind policy-checked callback lookup, and `projects/glamour/RFC-0107-ACCEPTANCE.md` row tests are green in merge-queue (commit `f968de57`). Remaining non-local work is around relying-party payload contract alignment and policy governance. |
 | Complete browser accessibility matrix | 0107 | external | All three engines pass locally; only a successful public-CI run (an approved push) is missing. |
 | Static-host and production-vitals evidence | 0107 | external | `CARGO_TARGET_DIR=target-codex ./target-codex/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-09.json` was run and reports all checks passing under `portable/degraded` profile semantics (route-wise skips for strict header checks). Remaining externally-owned work is controlled Core Web Vitals and release-host browser evidence. |
 | Release-channel browser matrix | 0108 | external | Local production matrix is green in Chromium/Firefox/WebKit for lifecycle and islands (`9/9` passing tests); release-CI matrix is still required before RFC-0108 phase exit. |
