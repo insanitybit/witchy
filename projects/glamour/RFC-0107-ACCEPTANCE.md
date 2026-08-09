@@ -214,7 +214,7 @@ implemented as `witchy doctor --web --deployment <url>`.
 | --- | --- | --- | --- |
 | Typed HTTP/nav/storage/port/secret completion descriptors | 0107 | PROVEN | `web.rs` credential host-port callback bridge is implemented behind policy-checked callback lookup, and `projects/glamour/RFC-0107-ACCEPTANCE.md` row tests are green in merge-queue (commit `f968de57`). Remaining non-local work is around relying-party payload contract alignment and policy governance. |
 | Complete browser accessibility matrix | 0107 | external | All three engines pass locally; only a successful public-CI run (an approved push) is missing. |
-| Static-host and production-vitals evidence | 0107 | external | `CARGO_TARGET_DIR=target-codex ./target-codex/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-10.json` was run and reports all checks passing under `portable/degraded` profile semantics (route-wise skips for strict header checks). Remaining externally-owned work is controlled Core Web Vitals and release-host browser evidence. |
+| Static-host and production-vitals evidence | 0107 | external | `./target/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-10.json` was run and reports all checks passing under `portable/degraded` profile semantics (route-wise skips for strict header checks). Remaining externally-owned work is controlled Core Web Vitals and release-host browser evidence. |
 | Release-channel browser matrix | 0108 | external | Local production matrix is green in Chromium/Firefox/WebKit for lifecycle and islands (`9/9` passing tests); release-CI matrix is still required before RFC-0108 phase exit. |
 | Controlled release-host timing report | 0108 | external | Needs pinned macOS-arm64 + Linux-x86-64 release-host records. |
 | Build-authenticated mount grants and browser policy | 0109 | external | `witchy doctor --web --deployment <url>` validates deployed-host browser-policy headers locally; only the approved WebAuthn exchange remains for completion. |
@@ -241,8 +241,8 @@ As of the latest local closeout evidence run on this checkout:
 
 - `node scripts/audit-browser-runnable.mjs` → 148/148 complete examples, ALL PASS.
 - `node scripts/validate_book_examples.mjs` → 165 runnable blocks in manifest lockstep, 56 non-runnable.
-- `CARGO_TARGET_DIR=target-codex ./target-codex/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-10.json` → all checks passed (portable/degraded mode, `deployed-headers` route-wise skip behavior).
-- `CARGO_TARGET_DIR=target-codex ./target-codex/debug/witchy doctor --web projects/docs --format json > projects/glamour/acceptance/doctor-local-2026-08-10.json` → all checks passed.
+- `./target/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-10.json` → all checks passed (portable/degraded mode, `deployed-headers` route-wise skip behavior).
+- `./target/debug/witchy doctor --web projects/docs --format json > projects/glamour/acceptance/doctor-local-2026-08-10.json` → all checks passed.
 - `node scripts/audit-browser-runnable.mjs` + acceptance artifact + doctor artifacts remain as local proof basis in
   `tests/browser/test-results/acceptance.json`,
   `projects/glamour/acceptance/doctor-gh-pages-2026-08-10.json`, and
