@@ -1963,6 +1963,22 @@ The stricter relying-party entrypoint for short-lived identity tokens. RFC 7519 
 
 `clock_skew` applies only to a future `iat`. Expiry and nbf remain strict, so this API never extends the token's signed validity interval.
 
+#### `fn sign_eddsa(claims: Json, key: Secret) -> String`
+
+Mint a compact EdDSA (Ed25519) JWT. The JOSE header is `{"alg":"EdDSA","typ": "JWT"}`; the signing input is `base64url(header) + "." + base64url(claims JSON)`; that ASCII is signed with the Ed25519 `Secret` (`crypto.sign`, hex output), and the hex signature is base64url-encoded as the third segment. The caller sets the registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/…) in `claims`.
+
+#### `fn verify_eddsa(token: String, ed25519_pubkey_hex: String, audience: String, now: Int) -> Result(Json, JwtError)`
+
+Verify an EdDSA (Ed25519) compact JWT against an Ed25519 public key (hex), checking the signature, `exp > now` (unix seconds), and `aud == audience`. The JOSE header's `alg` MUST be exactly `EdDSA`: an attacker-chosen `alg` is refused here rather than trusted (algorithm confusion; BUG-250, RFC 8725 §3.1).
+
+#### `fn verify_oidc_eddsa(token: String, ed25519_pubkey_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError)`
+
+The EdDSA analogue of `verify_oidc`: verify the Ed25519 signature AND that the token was minted by the expected `issuer` for the expected `audience`, valid now (`exp`/`nbf`/`azp`). Returns the identity claims for the caller to authorize.
+
+#### `fn verify_oidc_fresh_eddsa(token: String, ed25519_pubkey_hex: String, issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError)`
+
+The EdDSA analogue of `verify_oidc_fresh`: the stricter entrypoint for short-lived internally-minted identity tokens. `iat` is required, `exp - iat` may not exceed `max_lifetime`, and the issuer clock may lead by at most `clock_skew` seconds. Signature, issuer, audience, expiry, nbf, and azp checks are those of `verify_oidc_eddsa`.
+
 #### `fn header(token: String) -> Result(Json, JwtError)`
 
 The decoded JOSE header of a compact JWT (its first segment), or an error - so a verifier can read `alg`/`kid` to select the JWKS key before checking the signature.

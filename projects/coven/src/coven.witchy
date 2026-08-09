@@ -251,17 +251,22 @@ fn parse_issuers(net: Net, args: List(String)) -> List(Issuer):
 // registry with fewer — or zero — trusted issuers (which would quietly make it anonymous).
 fn parse_issuer_arg(net: Net, a: String) -> Issuer:
     if !a.contains("="):
-        fail("coven: malformed trusted-issuer argument `${a}` (expected `issuer=pubkeyhex`, `issuer=jwks:<json>`, or `<issuer-url>=oidc`)")
+        fail("coven: malformed trusted-issuer argument `${a}` (expected `issuer=pubkeyhex`, `issuer=jwks:<json>`, `issuer=ed25519:<hex>`, or `<issuer-url>=oidc`)")
     let (id, value) = a.split_once("=")
     if value.starts_with("jwks:"):
         let (_tag, jwks_json) = value.split_once(":")
         match json.decode(jwks_json):
-            Ok(jwks) -> Issuer(id, "", Some(jwks))
+            Ok(jwks) -> Issuer(id, "", Some(jwks), None)
             Err(e) -> bad_issuer("coven: malformed JWKS for issuer `${id}`: ${json.decode_error_message(e)}")
+    else if value.starts_with("ed25519:"):
+        // An INTERNAL EdDSA issuer (coven-web): the value is the issuer's Ed25519
+        // public key (hex). Tokens it signs are verified with EdDSA only.
+        let (_tag, hex) = value.split_once(":")
+        Issuer(id, "", None, Some(hex))
     else if value == "oidc":
         resolve_oidc_issuer(net, id)
     else:
-        Issuer(id, value, None)
+        Issuer(id, value, None, None)
 
 // `<issuer-url>=oidc` — live JWKS discovery: fetch the issuer's OIDC discovery
 // document, then its `jwks_uri` (required by coven_trust to be https and
@@ -283,7 +288,7 @@ fn oidc_issuer(net: Net, issuer: String) -> Result(Issuer, String):
     let jwks_uri = coven_trust.jwks_uri_of(issuer, discovery).map_err(discovery_message)?
     let jwks_body = fetched(fetch, jwks_uri, "JWKS")?
     let jwks = coven_trust.installed_jwks(jwks_body).map_err(discovery_message)?
-    Ok(Issuer(issuer, "", Some(jwks)))
+    Ok(Issuer(issuer, "", Some(jwks), None))
 
 fn discovery_message(e: coven_trust.DiscoveryError) -> String:
     coven_trust.discovery_error_message(e)
@@ -304,7 +309,7 @@ fn fetched(fetch: Fetch, request_url: String, what: String) -> Result(String, St
 // type the caller needs where `fail` sits in an expression position.
 fn bad_issuer(msg: String) -> Issuer:
     fail(msg)
-    Issuer("", "", None)
+    Issuer("", "", None, None)
 
 impl Coven:
     fn route_rootpub(self) -> fn(Request) -> Response:

@@ -768,3 +768,78 @@ fn r(x: Result(String, encoding.EncodingError)) -> String:
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
+
+    /// (RFC-0119) EdDSA identity tokens round-trip THROUGH witchy: a host-granted
+    /// Ed25519 `Secret` MINTS a compact JWT with `jwt.sign_eddsa`, and
+    /// `jwt.verify_oidc_fresh_eddsa` against the key's public half (`crypto.public_key`)
+    /// accepts it and returns the claims — while a wrong audience, an expired token, a
+    /// wrong issuer, and a tampered signing input each fail with the matching typed
+    /// error. This is the in-browser human-2FA issuer coven-web uses: it verifies a
+    /// passkey server-side, then mints this token for a TRUSTED registry to verify
+    /// (witchy has native Ed25519 signing but no RSA signing). The mint AND every
+    /// verify must be byte-identical on the interpreter (oracle) and the compiled WASM
+    /// backend — the same parity discipline as `crypto.sign`.
+    #[test]
+    fn jwt_eddsa_mint_and_verify_roundtrip_backends_agree() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = r#"import jwt
+import crypto
+from json import Json
+
+fn claims(iss: String, aud: String, sub: String, iat: Int, exp: Int) -> Json:
+    JsonObject([("iss", JsonString(iss)), ("aud", JsonString(aud)), ("sub", JsonString(sub)), ("amr", JsonArray([JsonString("webauthn")])), ("iat", JsonInt(iat)), ("exp", JsonInt(exp))])
+
+fn check(label: String, r: Result(Json, jwt.JwtError), console: Console):
+    match r:
+        Ok(c) -> console.print(label + ":" + json.get_string(c, "sub").unwrap_or("?"))
+        Err(e) -> console.print(label + ":" + jwt.jwt_error_message(e))
+
+fn main(console: Console, signer: Secret):
+    let pk = crypto.public_key(signer)
+    let iss = "https://coven-web.example"
+    let now = 1000
+    let tok = jwt.sign_eddsa(claims(iss, "coven-registry", "alice", now, now + 120), signer)
+    check("valid", jwt.verify_oidc_fresh_eddsa(tok, pk, iss, "coven-registry", now, 600, 60), console)
+    check("wrongaud", jwt.verify_oidc_fresh_eddsa(tok, pk, iss, "other", now, 600, 60), console)
+    check("expired", jwt.verify_oidc_fresh_eddsa(tok, pk, iss, "coven-registry", now + 200, 600, 60), console)
+    check("wrongiss", jwt.verify_oidc_fresh_eddsa(tok, pk, "https://evil", "coven-registry", now, 600, 60), console)
+    let parts = tok.split(".")
+    let tampered = parts[0] + "." + parts[1] + "A." + parts[2]
+    check("tampered", jwt.verify_eddsa(tampered, pk, "coven-registry", now), console)
+"#;
+        let expected = vec![
+            "valid:alice".to_string(),
+            "wrongaud:JWT audience mismatch (wrong relying party / replay)".to_string(),
+            "expired:JWT has expired".to_string(),
+            "wrongiss:JWT issuer mismatch (untrusted identity provider)".to_string(),
+            "tampered:JWT signature is invalid (untrusted or forged)".to_string(),
+        ];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let seed = [7u8; 32];
+        // Interpreter (oracle): mint with the granted Ed25519 Secret, then verify.
+        let interp = interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), Some(seed))
+            .expect("interp");
+        assert_eq!(interp, expected, "interp: EdDSA mint->verify round-trip");
+        // Compiled WASM: same seed granted, so sign/public_key/verify are deterministic
+        // and must produce byte-identical output.
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("EdDSA sign/verify lowers to the WIR binary path");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    signing_key: Some(seed),
+                    secrets: vec![crate::runtime::SecretGrant::new("signing", seed.to_vec())],
+                    ..Default::default()
+                },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn with signing key");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), interp, "EdDSA mint+verify must be byte-identical on both backends");
+    }

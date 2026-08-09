@@ -148,7 +148,7 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     app = app.post("/api/webauthn/challenge", h_wa_challenge(assets, rand))
     app = app.post("/api/webauthn/login", h_wa_login(assets, key, clock, origin, rp_id))
     app = app.post("/api/coven/promote-2fa", h_wa_promote(assets, net, key, clock, upstream, origin, rp_id))
-    app = app.post("/api/coven/yank-2fa", h_wa_yank(assets, net, upstream, origin, rp_id))
+    app = app.post("/api/coven/yank-2fa", h_wa_yank(assets, net, key, clock, upstream, origin, rp_id))
     // "Log in with GitHub" (OAuth2 Authorization Code) — registered only when a client
     // id is configured. `/login` redirects to GitHub with a signed anti-CSRF state;
     // `/callback` verifies the state, trades the code for a token, reads the user, and
@@ -320,13 +320,24 @@ fn challenge_request(req: Request) -> Json:
         Ok(d) -> d
         Err(_e) -> JsonObject([])
 
+// Mint the short-lived EdDSA identity token a trusted upstream coven verifies for a
+// 2FA promote/yank. The passkey has ALREADY been verified server-side at the call site,
+// so this attests `amr:["webauthn"]` for the signed-in `subject`, issued by this origin
+// (the issuer coven trusts as `origin=ed25519:<pubkey>`) for the `coven-registry`
+// audience, valid 120 seconds. `jti` names the exact operation for audit / single use.
+// Signed with coven-web's Ed25519 `--signing-key` (witchy has no RSA signing).
+fn mint_2fa_token(key: Secret, clock: Clock, origin: String, subject: String, op: String, name: String, version: String) -> String:
+    let iat = clock.now() / 1000
+    let claims = JsonObject([("iss", JsonString(origin)), ("aud", JsonString("coven-registry")), ("sub", JsonString(subject)), ("amr", JsonArray([JsonString("webauthn")])), ("iat", JsonInt(iat)), ("exp", JsonInt(iat + 120)), ("jti", JsonString("${subject}|${op}|${name}@${version}|${iat}"))])
+    jwt.sign_eddsa(claims, key)
+
 fn h_wa_promote(store: Dir, net: Net, key: Secret, clock: Clock, upstream: String, origin: String, rp_id: String) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
             Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
-            Ok(doc) -> wa_do_promote(store, net, upstream, origin, rp_id, doc, session_subject(key, clock, req))
+            Ok(doc) -> wa_do_promote(store, net, key, clock, upstream, origin, rp_id, doc, session_subject(key, clock, req))
 
-fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json, promoter: String) -> Response:
+fn wa_do_promote(store: Dir, net: Net, key: Secret, clock: Clock, upstream: String, origin: String, rp_id: String, doc: Json, promoter: String) -> Response:
     let name = string_field_or_empty(doc, "name")
     let version = string_field_or_empty(doc, "version")
     if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
@@ -355,7 +366,12 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
                 Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: ${webauthn.assertion_error_message(reason)}"))])))
                 Ok(_) ->
                     store.write("_wa_challenge.json", "{}")
-                    let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(promoter))]))
+                    // The passkey is verified server-side HERE, so mint a short-lived EdDSA
+                    // identity token attesting `amr:["webauthn"]` for the signed-in promoter.
+                    // A trusted upstream coven verifies it (issuer `origin`); an anonymous
+                    // coven ignores it and trusts `promoted_by`, so both paths still work.
+                    let tok = mint_2fa_token(key, clock, origin, promoter, "promote", name, version)
+                    let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(promoter)), ("id_token", JsonString(tok))]))
                     let (host, port) = split_host_port(upstream)
                     match upstream_try_post(net, host, port, "/coven/promote", body):
                         Ok(resp) -> server.json(http.status(resp), http.body(resp))
@@ -366,13 +382,13 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
 // promote — it requires a fresh, single-use WebAuthn assertion verified server-side,
 // NOT merely a session. Mirrors h_wa_promote exactly (same credential + challenge +
 // single-use semantics), then forwards `{name, version}` to coven's yank.
-fn h_wa_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: String) -> fn(Request) -> Response:
+fn h_wa_yank(store: Dir, net: Net, key: Secret, clock: Clock, upstream: String, origin: String, rp_id: String) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
             Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
-            Ok(doc) -> wa_do_yank(store, net, upstream, origin, rp_id, doc)
+            Ok(doc) -> wa_do_yank(store, net, key, clock, upstream, origin, rp_id, doc, session_subject(key, clock, req))
 
-fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json) -> Response:
+fn wa_do_yank(store: Dir, net: Net, key: Secret, clock: Clock, upstream: String, origin: String, rp_id: String, doc: Json, yanker: String) -> Response:
     let name = string_field_or_empty(doc, "name")
     let version = string_field_or_empty(doc, "version")
     if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
@@ -392,7 +408,11 @@ fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: Str
                 Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: ${webauthn.assertion_error_message(reason)}"))])))
                 Ok(_) ->
                     store.write("_wa_challenge.json", "{}")
-                    let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version))]))
+                    // As with promote: the verified passkey lets us mint a short-lived EdDSA
+                    // identity token attesting `amr:["webauthn"]` for the signed-in yanker,
+                    // which a trusted upstream coven verifies (an anonymous one ignores it).
+                    let tok = mint_2fa_token(key, clock, origin, yanker, "yank", name, version)
+                    let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("id_token", JsonString(tok))]))
                     let (host, port) = split_host_port(upstream)
                     match upstream_try_post(net, host, port, "/coven/yank", body):
                         Ok(resp) -> server.json(http.status(resp), http.body(resp))

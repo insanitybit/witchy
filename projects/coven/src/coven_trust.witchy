@@ -14,13 +14,18 @@ import url
 from json import Json
 
 // A trusted issuer: a provider id (the token's `iss`) plus the key(s) that sign its
-// tokens. Either a single pinned RSA key (`pubkey`, DER PKCS#1 hex) for a static issuer,
-// or a `jwks` document from which the signing key is selected by the token's `kid` — the
-// rotating form a real OIDC provider (e.g. GitHub Actions) publishes.
+// tokens. One of: a single pinned RSA key (`pubkey`, DER PKCS#1 hex) for a static issuer;
+// a `jwks` document from which the signing key is selected by the token's `kid` — the
+// rotating form a real OIDC provider (e.g. GitHub Actions) publishes; or an Ed25519 public
+// key (`ed25519`, hex) for an INTERNAL EdDSA issuer such as coven-web, which mints a
+// short-lived identity token after verifying a passkey server-side (witchy has native
+// Ed25519 signing but no RSA signing). Dispatch is by the CONFIGURED key type, never the
+// token's `alg` header: an Ed25519 issuer accepts ONLY EdDSA, an RSA/jwks issuer ONLY RS256.
 type Issuer:
     id: String
     pubkey: String
     jwks: Option(Json)
+    ed25519: Option(String)
 
 // The namespace (first path segment) of a rune name.
 pub fn namespace_of(name: String) -> String:
@@ -125,12 +130,17 @@ pub fn verify_token(issuers: List(Issuer), token: String, now: Int) -> Result(Js
     match find_issuer(issuers, iss):
         None -> Err(TokenUntrustedIssuer(iss))
         Some(entry) ->
-            let pubkey = signing_key(entry, token)?
             // BUG-068: trusted-publishing identity tokens are intentionally short-lived.
             // The local IdP defaults to five minutes; permit up to ten minutes plus
             // 60 seconds of issuer clock lead while rejecting absent `iat` or a longer
             // signed lifetime.
-            jwt.verify_oidc_fresh(token, pubkey, iss, "coven-registry", now, 600, 60).map_err(fn(e: jwt.JwtError): TokenOidc(jwt.jwt_error_message(e)))
+            match entry.ed25519:
+                // An Ed25519 issuer accepts ONLY EdDSA tokens (dispatch by configured
+                // key type, never the wire `alg` header).
+                Some(hex) -> jwt.verify_oidc_fresh_eddsa(token, hex, iss, "coven-registry", now, 600, 60).map_err(fn(e: jwt.JwtError): TokenOidc(jwt.jwt_error_message(e)))
+                None ->
+                    let pubkey = signing_key(entry, token)?
+                    jwt.verify_oidc_fresh(token, pubkey, iss, "coven-registry", now, 600, 60).map_err(fn(e: jwt.JwtError): TokenOidc(jwt.jwt_error_message(e)))
 
 // Matchable trusted-publishing identity-token failures. These sit above
 // `jwt.JwtError`: the registry also owns issuer trust and JWKS key-selection

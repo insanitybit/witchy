@@ -138,13 +138,25 @@ fn test_verify_token_errors_are_typed():
                 coven_trust.TokenUntrustedIssuer(iss) -> testing.assert_eq(iss, "rogue")
                 _ -> testing.assert(false, "untrusted issuer should be TokenUntrustedIssuer")
 
-    let jwks_issuer = coven_trust.Issuer("gha", "", Some(JsonObject([])))
+    let jwks_issuer = coven_trust.Issuer("gha", "", Some(JsonObject([])), None)
     match coven_trust.verify_token([jwks_issuer], unsigned_token("gha"), 0):
         Ok(_claims) -> testing.assert(false, "JWKS issuer without kid must fail")
         Err(e) ->
             match e:
                 coven_trust.TokenMissingKid(id) -> testing.assert_eq(id, "gha")
                 _ -> testing.assert(false, "missing kid should be TokenMissingKid")
+
+    // RFC-0119: an Ed25519 issuer accepts ONLY EdDSA tokens. Dispatch is by the
+    // configured key type, so an RS256-headed token (algorithm confusion) is
+    // rejected on the EdDSA path (UnsupportedAlg -> TokenOidc), never verified with
+    // the RSA path.
+    let ed_issuer = coven_trust.Issuer("gha", "", None, Some("aa"))
+    match coven_trust.verify_token([ed_issuer], unsigned_token("gha"), 0):
+        Ok(_claims) -> testing.assert(false, "an Ed25519 issuer must reject an RS256-headed token")
+        Err(e) ->
+            match e:
+                coven_trust.TokenOidc(_reason) -> testing.assert(true, "RS256 header rejected on the EdDSA path")
+                _ -> testing.assert(false, "an EdDSA-pinned rejection should be TokenOidc")
 
 // BUG-219: trusted promotion proof comes only from claims in the verified identity
 // token. A client-provided request marker must never substitute for an IdP `amr`.

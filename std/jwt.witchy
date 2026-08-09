@@ -12,6 +12,7 @@ import string
 import list
 import crypto
 import encoding
+import bytes
 import option
 import math
 import show
@@ -230,6 +231,91 @@ pub fn verify_oidc_fresh(token: String, rsa_pubkey_der_hex: String, issuer: Stri
         Err(FreshnessPolicyInvalid)
     else:
         let claims = verify_oidc(token, rsa_pubkey_der_hex, issuer, audience, now)?
+        check_freshness(claims, now, max_lifetime, clock_skew)?
+        Ok(claims)
+
+// --- EdDSA (Ed25519): the INTERNAL issuer algorithm --------------------------
+// witchy has native Ed25519 signing (`crypto.sign`) but no RSA signing, so a
+// service that must MINT identity tokens in-process (coven-web, after it verifies
+// a passkey server-side) signs them with EdDSA. A trusted registry configured
+// with that issuer's Ed25519 public key verifies them with the functions below.
+// External GitHub/Google issuers stay RS256/JWKS. Algorithm confusion is defended
+// exactly as on the RS256 path (BUG-250, RFC 8725 §3.1): each entrypoint PINS its
+// `alg` and dispatch is by the CONFIGURED key type, never the wire `alg` header -
+// an EdDSA issuer accepts ONLY `EdDSA`, an RS256 issuer ONLY `RS256`.
+
+// Mint a compact EdDSA (Ed25519) JWT. The JOSE header is `{"alg":"EdDSA","typ":
+// "JWT"}`; the signing input is `base64url(header) + "." + base64url(claims JSON)`;
+// that ASCII is signed with the Ed25519 `Secret` (`crypto.sign`, hex output), and
+// the hex signature is base64url-encoded as the third segment. The caller sets the
+// registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/…) in `claims`.
+pub fn sign_eddsa(claims: Json, key: Secret) -> String:
+    let header_b64 = base64url_of_text("{\"alg\":\"EdDSA\",\"typ\":\"JWT\"}")
+    let payload_b64 = base64url_of_text(claims.encode())
+    let signing_input = header_b64 + "." + payload_b64
+    // `crypto.sign` returns a hex signature; the wire form is base64url of the raw
+    // signature bytes. The hex round-trips cleanly, so a decode error is impossible
+    // here and falls back to "" (which verification rejects as a bad signature).
+    let sig_b64 = encoding.hex_to_base64url(crypto.sign(key, signing_input)) ?? ""
+    signing_input + "." + sig_b64
+
+// base64url (no padding, the JWT wire form) of a text string's UTF-8 bytes.
+fn base64url_of_text(text: String) -> String:
+    encoding.base64url_encode_bytes(bytes.from_string(text))
+
+// Verify an EdDSA (Ed25519) compact JWT against an Ed25519 public key (hex),
+// checking the signature, `exp > now` (unix seconds), and `aud == audience`.
+// The JOSE header's `alg` MUST be exactly `EdDSA`: an attacker-chosen `alg` is
+// refused here rather than trusted (algorithm confusion; BUG-250, RFC 8725 §3.1).
+pub fn verify_eddsa(token: String, ed25519_pubkey_hex: String, audience: String, now: Int) -> Result(Json, JwtError):
+    let parts = token.split(".")
+    if list.length(parts) != 3:
+        Err(MalformedCompact)
+    else:
+        let alg = header_alg(list.at(parts, 0))?
+        if alg != "EdDSA":
+            Err(UnsupportedAlg(alg))
+        else:
+            let signed = list.at(parts, 0) + "." + list.at(parts, 1)
+            // Decode the base64url signature segment to the hex `ed25519_verify` wants;
+            // a malformed segment is a distinct, reachable error, not garbage bytes.
+            let sig_hex = encoding.base64url_to_hex(list.at(parts, 2)).map_err(fn(e: encoding.EncodingError): SignatureSegmentBase64(encoding.encoding_error_message(e)))?
+            match crypto.ed25519_verify(ed25519_pubkey_hex, signed, sig_hex):
+                Err(e) -> Err(SignatureInputMalformed(crypto.verify_error_message(e)))
+                Ok(false) -> Err(SignatureInvalid)
+                Ok(true) -> check_claims(list.at(parts, 1), audience, now)
+
+// The EdDSA analogue of `verify_oidc`: verify the Ed25519 signature AND that the
+// token was minted by the expected `issuer` for the expected `audience`, valid now
+// (`exp`/`nbf`/`azp`). Returns the identity claims for the caller to authorize.
+pub fn verify_oidc_eddsa(token: String, ed25519_pubkey_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError):
+    match verify_eddsa(token, ed25519_pubkey_hex, audience, now):
+        Err(e) -> Err(e)
+        Ok(claims) ->
+            let iss = require_string_claim(claims, "iss")?
+            if iss != issuer:
+                Err(IssuerMismatch)
+            else:
+                let early = not_yet_valid(claims, now)?
+                if early:
+                    Err(NotYetValid)
+                else:
+                    let azp = azp_ok(claims, audience)?
+                    if !azp:
+                        Err(AuthorizedPartyMismatch)
+                    else:
+                        Ok(claims)
+
+// The EdDSA analogue of `verify_oidc_fresh`: the stricter entrypoint for
+// short-lived internally-minted identity tokens. `iat` is required, `exp - iat`
+// may not exceed `max_lifetime`, and the issuer clock may lead by at most
+// `clock_skew` seconds. Signature, issuer, audience, expiry, nbf, and azp checks
+// are those of `verify_oidc_eddsa`.
+pub fn verify_oidc_fresh_eddsa(token: String, ed25519_pubkey_hex: String, issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError):
+    if now < 0 || max_lifetime < 0 || clock_skew < 0:
+        Err(FreshnessPolicyInvalid)
+    else:
+        let claims = verify_oidc_eddsa(token, ed25519_pubkey_hex, issuer, audience, now)?
         check_freshness(claims, now, max_lifetime, clock_skew)?
         Ok(claims)
 
