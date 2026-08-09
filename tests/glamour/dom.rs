@@ -1110,6 +1110,20 @@ fn glamour_coven_web_app_full_shell_works() {
     run_node_driver("web/witchy-runtime/glamour-coven-web-app.test.mjs", "GLAMOUR-COVEN-WEB-APP OK", "glamour Coven web app");
 }
 
+/// BUG-608 guard: the PRODUCTION host shell (`projects/coven-web/web/src/main.ts`) must keep
+/// declaring the `[user_caps]` grant the compiled `coven_web_app` rune needs at boot. The
+/// full-shell test above mounts with its OWN opts, so main.ts drifting off
+/// `instantiateOpts: { userCaps: [["coven-web"]] }` (which blanked every from-source deploy)
+/// stayed invisible. The committed driver
+/// (`web/witchy-runtime/coven-web-shell-grant.test.mjs`) closes that: it proves the grant is
+/// load-bearing (a mount WITHOUT it trips the boot trap), extracts the grant main.ts
+/// actually passes to `mount`, and boots the rune under exactly that grant — so removing or
+/// weakening the production line turns this red.
+#[test]
+fn coven_web_production_shell_declares_the_user_caps_grant() {
+    run_node_driver("web/witchy-runtime/coven-web-shell-grant.test.mjs", "COVEN-WEB-SHELL-GRANT OK", "coven-web shell grant guard");
+}
+
 /// Regression: the `String -> String` WASM export ABI must not leak. The bump allocator
 /// (`__galloc`) never frees, so a long-lived run loop (glamour MVU: one call per event) would
 /// otherwise accumulate one call's allocations forever and eventually exhaust WASM memory —

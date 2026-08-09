@@ -340,6 +340,9 @@ fn host_net_accept(
         let (stream, _peer) = listener
             .accept()
             .map_err(|e| Error::msg(format!("accept failed: {e}")))?;
+        // (Availability) Bound how long a stalled peer can pin this worker in its request
+        // read — set BEFORE the TLS handshake so a slow-loris there is bounded too.
+        crate::net::prepare_accepted_socket(&stream);
         let stream: Box<dyn Stream> = match &tls {
             None => Box::new(stream),
             Some(config) => match crate::net::accept_tls(config.clone(), stream) {
@@ -424,10 +427,13 @@ fn host_net_recv_all_len(
         let mut sock = lock_socket(&socket)?;
         // (SEC-035) Cap the read so a peer streaming without EOF can't OOM the host. Read one
         // byte past the cap to detect overflow, then fail closed.
-        sock.by_ref()
-            .take(crate::net::MAX_RECV_BYTES + 1)
-            .read_to_end(&mut buf)
-            .map_err(|e| Error::msg(format!("recv failed: {e}")))?;
+        match sock.by_ref().take(crate::net::MAX_RECV_BYTES + 1).read_to_end(&mut buf) {
+            Ok(_) => {}
+            // A stalled server read (timeout) ends the stream cleanly: keep the bytes read
+            // so far rather than erroring out the worker.
+            Err(e) if crate::net::is_read_timeout(&e) => {}
+            Err(e) => return Err(Error::msg(format!("recv failed: {e}"))),
+        }
     }
     if buf.len() as u64 > crate::net::MAX_RECV_BYTES {
         bail!("recv_all exceeded the {}-byte cap", crate::net::MAX_RECV_BYTES);
@@ -461,6 +467,9 @@ fn host_net_recv_bytes_len(
             match sock.read(&mut chunk[..to_read]) {
                 Ok(0) => break,
                 Ok(k) => buf.extend_from_slice(&chunk[..k]),
+                // A stalled server read (timeout) ends the body early, like a peer that
+                // closed mid-stream — return what arrived rather than crashing the worker.
+                Err(e) if crate::net::is_read_timeout(&e) => break,
                 Err(e) => bail!("recv failed: {e}"),
             }
         }

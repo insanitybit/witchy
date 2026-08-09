@@ -3229,10 +3229,20 @@ impl Interpreter {
                     // host — one byte past the cap detects overflow; same as the compiled side.
                     use std::io::Read;
                     let mut buf = Vec::new();
-                    sock.by_ref()
+                    match sock
+                        .by_ref()
                         .take(witchy_runtime::net::MAX_RECV_BYTES + 1)
                         .read_to_end(&mut buf)
-                        .map_err(|e| RuntimeError { message: format!("recv failed: {e}") })?;
+                    {
+                        Ok(_) => {}
+                        // A stalled server read (timeout) ends the stream cleanly: keep the
+                        // bytes so far rather than erroring out the worker. Matches the
+                        // compiled backend (`host_net_recv_all_len`).
+                        Err(e) if witchy_runtime::net::is_read_timeout(&e) => {}
+                        Err(e) => {
+                            return Err(RuntimeError { message: format!("recv failed: {e}") });
+                        }
+                    }
                     if buf.len() as u64 > witchy_runtime::net::MAX_RECV_BYTES {
                         return Err(RuntimeError {
                             message: format!(
@@ -3267,6 +3277,10 @@ impl Interpreter {
                         match sock.read(&mut chunk[..to_read]) {
                             Ok(0) => break,
                             Ok(k) => buf.extend_from_slice(&chunk[..k]),
+                            // A stalled server read (timeout) ends the body early, like a
+                            // peer that closed mid-stream — return what arrived rather than
+                            // crashing the worker. Matches `host_net_recv_bytes_len`.
+                            Err(e) if witchy_runtime::net::is_read_timeout(&e) => break,
                             Err(e) => return err(format!("recv failed: {e}")),
                         }
                     }
@@ -3329,6 +3343,10 @@ impl Interpreter {
                         .ok_or_else(|| RuntimeError { message: "invalid listener".into() })?;
                     match listener.accept() {
                         Ok((stream, _peer)) => {
+                            // (Availability) Bound a stalled peer's hold on this worker's
+                            // request read — set before any TLS handshake so a slow-loris
+                            // there is bounded too. Mirrors the compiled accept loop.
+                            witchy_runtime::net::prepare_accepted_socket(&stream);
                             let stream: Box<dyn Stream> = match tls {
                                 None => Box::new(stream),
                                 Some(config) => {

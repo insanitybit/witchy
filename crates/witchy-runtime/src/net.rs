@@ -349,6 +349,56 @@ mod tests {
         }
         assert_eq!(TEST_TLS_ROOTS.lock().unwrap().len(), before);
     }
+
+    #[test]
+    fn read_timeout_is_classified_as_eof_signal() {
+        use std::io::{Error, ErrorKind};
+        assert!(is_read_timeout(&Error::from(ErrorKind::WouldBlock)));
+        assert!(is_read_timeout(&Error::from(ErrorKind::TimedOut)));
+        // Real read errors must still propagate, not be swallowed as EOF.
+        assert!(!is_read_timeout(&Error::from(ErrorKind::ConnectionReset)));
+        assert!(!is_read_timeout(&Error::from(ErrorKind::UnexpectedEof)));
+    }
+
+    #[test]
+    fn server_read_timeout_default_override_and_disable() {
+        let d = |secs| Some(std::time::Duration::from_secs(secs));
+        // Unset (or absent) -> the conservative default.
+        assert_eq!(server_read_timeout_from(None), d(DEFAULT_SERVER_READ_TIMEOUT_SECS));
+        // An explicit value overrides.
+        assert_eq!(server_read_timeout_from(Some("5")), d(5));
+        assert_eq!(server_read_timeout_from(Some("  90 ")), d(90));
+        // Zero disables the timeout (restores unbounded blocking).
+        assert_eq!(server_read_timeout_from(Some("0")), None);
+        // Garbage falls back to the default rather than silently disabling the guard.
+        assert_eq!(server_read_timeout_from(Some("not-a-number")), d(DEFAULT_SERVER_READ_TIMEOUT_SECS));
+    }
+
+    // Slow-loris mitigation, end to end: a peer connects and sends nothing. With a read
+    // timeout on the accepted socket, `read_line_capped` must return promptly with the
+    // (empty) bytes-so-far as EOF — never hang, never error — so the worker is freed.
+    #[test]
+    fn accepted_socket_stall_reads_as_eof_within_the_timeout() {
+        use std::io::BufReader;
+        use std::time::{Duration, Instant};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Client connects but never sends a byte, holding the connection open.
+        let _client = TcpStream::connect(addr).unwrap();
+        let (server, _peer) = listener.accept().unwrap();
+        // Same call the accept loops make, but with a short timeout for the test.
+        server.set_read_timeout(Some(Duration::from_millis(150))).unwrap();
+        let mut reader = BufReader::new(server);
+        let start = Instant::now();
+        let line = read_line_capped(&mut reader).expect("a stalled read is EOF, not an error");
+        assert!(line.is_empty(), "no bytes were sent, so the line is empty");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the read returned near the timeout, not after blocking indefinitely"
+        );
+        // The still-connected client keeps `_client` alive until here.
+        drop(_client);
+    }
 }
 
 /// (SEC-035) A capability-secure server must not let a peer OOM the host by streaming
@@ -359,16 +409,78 @@ mod tests {
 /// apply the SAME cap — keeping recv behavior in parity.
 pub const MAX_RECV_BYTES: u64 = 64 << 20;
 
+/// (Availability / edge-hardening) A slow or stalled client must not pin a server worker
+/// forever. The deployed coven registry is a single small VM, so one wedged worker is a
+/// real availability loss — the classic slow-loris: open a connection and send a partial
+/// request (or nothing) and never finish, holding the worker in its request read. Every
+/// ACCEPTED server connection gets this read timeout via [`prepare_accepted_socket`]; a
+/// request read that stalls this long is treated as a clean end-of-stream (the recv
+/// helpers below map a read timeout to EOF), so `read_request` sees a truncated request,
+/// returns its 400/close, and the worker is freed — never crashing the accept loop, and
+/// identically on both backends (this ONE module is what both call).
+///
+/// 30s is far longer than any healthy client needs to send a request over a slow link, yet
+/// short enough that a stalled peer can't hold a worker for minutes. Override with the
+/// `WITCHY_SERVER_READ_TIMEOUT_SECS` env var (an integer number of seconds; `0` disables
+/// the timeout, restoring the historical unbounded blocking).
+pub const DEFAULT_SERVER_READ_TIMEOUT_SECS: u64 = 30;
+
+/// The configured server read timeout (see [`DEFAULT_SERVER_READ_TIMEOUT_SECS`]). `None`
+/// when disabled via `WITCHY_SERVER_READ_TIMEOUT_SECS=0` (or an unparseable value falls
+/// back to the default).
+pub fn server_read_timeout() -> Option<std::time::Duration> {
+    server_read_timeout_from(std::env::var("WITCHY_SERVER_READ_TIMEOUT_SECS").ok().as_deref())
+}
+
+/// Pure core of [`server_read_timeout`], factored out so the parse/default/disable policy
+/// is unit-tested without mutating the process environment.
+fn server_read_timeout_from(raw: Option<&str>) -> Option<std::time::Duration> {
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SERVER_READ_TIMEOUT_SECS);
+    (secs > 0).then(|| std::time::Duration::from_secs(secs))
+}
+
+/// Apply the server read timeout (if enabled) to a freshly ACCEPTED connection, BEFORE it
+/// is wrapped (plain or TLS) — so a stall during the TLS handshake is bounded too. This is
+/// the ONLY place a socket read timeout is set on a server socket; client (`net.connect`)
+/// sockets set none, which keeps the timeout-as-EOF mapping in the recv helpers scoped to
+/// the server path. Best-effort: a platform that rejects the option leaves the socket
+/// blocking rather than failing the accept.
+pub fn prepare_accepted_socket(stream: &TcpStream) {
+    if let Some(timeout) = server_read_timeout() {
+        let _ = stream.set_read_timeout(Some(timeout));
+    }
+}
+
+/// True when an io error is a read timeout firing (`SO_RCVTIMEO`): `WouldBlock` on Unix,
+/// `TimedOut` on Windows. The recv helpers treat this as a clean EOF. Only server-accepted
+/// sockets carry a read timeout (see [`prepare_accepted_socket`]), so on any other socket
+/// — client dials, which never set one — this is never reached, keeping the EOF mapping
+/// scoped to the server path.
+pub fn is_read_timeout(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+}
+
 /// Read one line (through `\n`) from a buffered reader, but never buffer more than
 /// [`MAX_RECV_BYTES`] — so a peer that never sends a newline can't grow the buffer
 /// without bound. Returns the bytes read (including any trailing `\n`); errors if the cap
-/// is reached with no newline (a hostile or malformed stream).
+/// is reached with no newline (a hostile or malformed stream). A server read timeout
+/// firing mid-read ([`is_read_timeout`]) ends the line as EOF — a stalled peer yields the
+/// bytes so far, never an error.
 pub fn read_line_capped<R: std::io::BufRead>(r: &mut R) -> std::io::Result<Vec<u8>> {
     use std::io::{Error, ErrorKind};
     let mut buf = Vec::new();
     loop {
         let room = MAX_RECV_BYTES as usize - buf.len();
-        let chunk = r.fill_buf()?;
+        let chunk = match r.fill_buf() {
+            Ok(chunk) => chunk,
+            // A stalled server connection (read timeout) reads as a clean end-of-stream:
+            // return the bytes gathered so far so the request parser sees a truncated
+            // request and drops the connection, rather than erroring out the worker.
+            Err(e) if is_read_timeout(&e) => break,
+            Err(e) => return Err(e),
+        };
         if chunk.is_empty() {
             break; // EOF before a newline
         }
