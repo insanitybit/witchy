@@ -3,7 +3,7 @@ rfc: 0107
 title: "Glamour 1.0: capability-safe, compiler-directed web applications"
 status: accepted
 created: 2026-07-29
-updated: 2026-08-11
+updated: 2026-08-09
 superseded-by:
 tracking: "Design accepted. RFC-0107 implementation is locally complete with all RFC-0107-owned acceptance rows `PROVEN`; public closure remains externally owned. As of the latest local revalidation pass, `tests/browser/test-results/acceptance.json` expected 9 / unexpected 0 / skipped 0 across Chromium/Firefox/WebKit; `node scripts/audit-browser-runnable.mjs` reports 148/148; `node scripts/validate_book_examples.mjs` reports 165 runnable / 56 non-runnable blocks and 0 divergence; `./scripts/test-for-paths.sh rfcs/0107... projects/glamour/RFC-0107-ACCEPTANCE.md --run` is currently 96/96 passing; and local `witchy doctor --web` plus `witchy doctor --web --deployment <url>` checks pass. Remaining externally-owned evidence is public CI/header/hosting evidence, the approved WebAuthn relying-party exchange payload alignment, and cold-mobile matrix work."
 predecessors:
