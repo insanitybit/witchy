@@ -272,6 +272,176 @@ pub(crate) fn witchy_pm_add_resolves_transitive_dependencies() {
     );
 }
 
+/// SEC-048: `pm update` must re-gate the WHOLE re-resolved dependency closure for
+/// capability widening — not just the single updated rune. A registry record's
+/// footprint is single-rune, so a new version whose OWN footprint is unchanged can
+/// still pull in a NEW transitive dependency that demands fresh authority; the
+/// per-record gate never sees it. This test pins a clean closure, proves a
+/// non-widening update succeeds, then publishes a new `app` whose own footprint is
+/// still empty but which now depends on a transitive `evil` rune demanding `Net`.
+/// `update` must BLOCK (exit 2) without `--allow-cap`, leaving `witchy.lock`
+/// byte-for-byte untouched, and only proceed once `--allow-cap Net` consents to the
+/// whole updated tree.
+pub(crate) fn witchy_pm_update_regates_transitive_widening() {
+    let (mut server, addr, store) = start_basic_coven("witchy-update-widen-store");
+
+    let publish = |name: &str, stem: &str, version: &str, manifest: &str, module: &str| {
+        let source = format!(
+            "{{\"files\":[[\"witchy.toml\",{}],[\"src/{stem}.witchy\",{}]]}}",
+            json_str(manifest),
+            json_str(module)
+        );
+        let body = format!(
+            "{{\"manifest_toml\":{},\"source\":{source},\"uploaded_by\":\"ci\"}}",
+            json_str(manifest)
+        );
+        assert_eq!(http_post(&addr, "/coven/publish", &body).0, 200, "publish {name}@{version}");
+        let promote = format!(
+            "{{\"name\":\"{}\",\"version\":\"{version}\",\"second_factor\":\"webauthn\",\"promoted_by\":\"human\"}}",
+            name.replace('/', "~")
+        );
+        assert_eq!(http_post(&addr, "/coven/promote", &promote).0, 200, "promote {name}@{version}");
+    };
+
+    // t0: a pure `util@1.0.0` and an `app@1.0.0` that depends on it. Both empty.
+    publish(
+        "acme/util",
+        "util",
+        "1.0.0",
+        "[rune]\nname = \"acme/util\"\nversion = \"1.0.0\"\n",
+        "fn id(s: String) -> String:\n    s\n",
+    );
+    publish(
+        "acme/app",
+        "app",
+        "1.0.0",
+        "[rune]\nname = \"acme/app\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/util\" = { version = \"^1.0.0\" }\n",
+        "fn run() -> String:\n    \"app\"\n",
+    );
+
+    // Add `app` — vendors app@1.0.0 + util@1.0.0, both with an empty footprint, and
+    // writes the accepted baseline into witchy.lock.
+    let dest = unique("witchy-update-widen-dest");
+    let add = Command::new(BIN)
+        .args(["pm", "--net", &addr, "add", "acme/app", "*", &addr, "vendor"])
+        .env("WITCHY_COOLDOWN_SECS", "0")
+        .current_dir(&dest)
+        .output()
+        .expect("run pm add");
+    let add_out = String::from_utf8_lossy(&add.stdout).to_string();
+    assert!(
+        add_out.contains("added acme/app@1.0.0") && add_out.contains("added acme/util@1.0.0"),
+        "add must vendor app and its transitive util: {add_out:?} / {:?}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    // A registry-driven `pm update` (registry from COVEN_URL, which also auto-grants
+    // Net to the registry host — no explicit `--net` positional to confuse
+    // `update`'s arg parsing).
+    let update = |allow_net: bool| {
+        let mut args = vec!["pm", "update"];
+        if allow_net {
+            args.push("--allow-cap");
+            args.push("Net");
+        }
+        Command::new(BIN)
+            .args(&args)
+            .env("COVEN_URL", &addr)
+            .env("WITCHY_COOLDOWN_SECS", "0")
+            .current_dir(&dest)
+            .output()
+            .expect("run pm update")
+    };
+
+    // POSITIVE: a clean transitive bump. `util@1.1.0` is still empty, so `update`
+    // moves it and repins the lock with no consent needed.
+    publish(
+        "acme/util",
+        "util",
+        "1.1.0",
+        "[rune]\nname = \"acme/util\"\nversion = \"1.1.0\"\n",
+        "fn id(s: String) -> String:\n    s\n\nfn tag() -> String:\n    \"v11\"\n",
+    );
+    let clean = update(false);
+    let clean_out = String::from_utf8_lossy(&clean.stdout).to_string();
+    assert!(
+        clean.status.success(),
+        "a non-widening update must succeed: {clean_out:?} / {:?}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    assert!(
+        clean_out.contains("updated acme/util 1.0.0 -> 1.1.0"),
+        "the clean update must move util to 1.1.0: {clean_out:?}"
+    );
+
+    // WIDENING: `app@1.1.0`'s OWN footprint is still empty, but it now depends on a
+    // NEW transitive `evil` rune that demands Net. The single-rune record gate on
+    // app@1.1.0 sees nothing new; only re-gating the whole closure catches Net.
+    publish(
+        "acme/evil",
+        "evil",
+        "1.0.0",
+        "[rune]\nname = \"acme/evil\"\nversion = \"1.0.0\"\n\n[capabilities]\nruntime = [\"Net\"]\n",
+        "pub fn fetch(net: Net) -> Int:\n    0\n",
+    );
+    publish(
+        "acme/app",
+        "app",
+        "1.1.0",
+        "[rune]\nname = \"acme/app\"\nversion = \"1.1.0\"\n\n[dependencies]\n\"acme/util\" = { version = \"^1.0.0\" }\n\"acme/evil\" = { version = \"^1.0.0\" }\n",
+        "fn run() -> String:\n    \"app\"\n",
+    );
+
+    let lock_before = std::fs::read_to_string(dest.join("witchy.lock")).unwrap_or_default();
+    // BLOCK: no consent — updating to app@1.1.0 widens the closure with Net.
+    let blocked = update(false);
+    let blocked_out = String::from_utf8_lossy(&blocked.stdout).to_string();
+    let lock_after = std::fs::read_to_string(dest.join("witchy.lock")).unwrap_or_default();
+
+    // CONSENT: `--allow-cap Net` folds Net into the baseline; the update proceeds and
+    // repins the lock to include the widened closure.
+    let consented = update(true);
+    let consented_out = String::from_utf8_lossy(&consented.stdout).to_string();
+    let lock_consent = std::fs::read_to_string(dest.join("witchy.lock")).unwrap_or_default();
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&dest);
+
+    assert_eq!(
+        blocked.status.code(),
+        Some(2),
+        "a transitive-widening update must BLOCK (exit 2): {blocked_out:?} / {:?}",
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+    assert!(
+        blocked_out.contains("widen") && blocked_out.contains("Net"),
+        "the block must name the widened capability: {blocked_out:?}"
+    );
+    // The lock-untouched invariant (BUG-371/569): a blocked update rewrites neither
+    // the pins nor the closure. The baseline it diffs against must be preserved.
+    assert!(
+        !lock_before.is_empty() && lock_after == lock_before,
+        "a blocked update must leave witchy.lock byte-for-byte untouched:\n\
+         before: {lock_before:?}\nafter:  {lock_after:?}"
+    );
+    assert!(
+        !lock_before.contains("acme/evil"),
+        "the blocked closure (with evil/Net) must never reach the lock: {lock_before:?}"
+    );
+    // With Net consented, the same update proceeds and pins the widened closure.
+    assert!(
+        consented.status.success(),
+        "--allow-cap Net must let the update proceed: {consented_out:?} / {:?}",
+        String::from_utf8_lossy(&consented.stderr)
+    );
+    assert!(
+        lock_consent.contains("acme/evil"),
+        "after consent the lock must pin the widened closure (evil): {lock_consent:?}"
+    );
+}
+
 pub(crate) fn witchy_pm_check_accepts_net_axis_omission() {
     let work = unique("witchy-pm-rights-net");
     std::fs::create_dir_all(work.join("src")).unwrap();

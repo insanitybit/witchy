@@ -589,6 +589,17 @@ fn witchy_pm_add_resolves_transitive_dependencies() {
     package_manager::witchy_pm_add_resolves_transitive_dependencies();
 }
 
+/// SEC-048: `pm update` re-resolves and re-fetches versions; a new version can pull
+/// a NEW transitive dependency that widens the project's capability footprint past
+/// the gate. A registry record's footprint is single-rune, so the per-record gate
+/// alone misses it. `update` must re-gate the WHOLE re-resolved closure — blocking a
+/// transitive widening (exit 2) without `--allow-cap` and leaving `witchy.lock`
+/// untouched, exactly as `add` does — and proceed once the widening is consented.
+#[test]
+fn witchy_pm_update_regates_transitive_widening() {
+    package_manager::witchy_pm_update_regates_transitive_widening();
+}
+
 /// BUG-381: `std/rights` must interpret Net's verb and transport axes the same
 /// way the compiler renders footprints. A manifest that declares all Connect
 /// transports (`Net[Connect]`) covers source whose concrete footprint is the TCP

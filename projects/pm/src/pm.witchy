@@ -2299,19 +2299,57 @@ fn update_vendored(console: Console, net: Net, root: Dir, origin: String, only: 
         console.print("BLOCK: an update failed to resolve, fetch, or verify — leaving witchy.lock and the pinned registry key untouched")
         1
     else:
-        match lock_trust_pins(net, root, origin):
-            Err(e) ->
-                console.print("BLOCK: cannot pin registry metadata — ${tuf_error_message(e)}")
-                2
-            Ok(pins) ->
-                match vendor_lock(root, pins):
+        // SEC-048: before repinning, re-gate the FULL re-resolved closure now on
+        // disk against the project's previously accepted baseline (its declared caps
+        // ∪ the lock's recorded footprints, still the OLD lock at this point) ∪ the
+        // caps consented to with `--allow-cap`. `update` re-resolves the WHOLE closure,
+        // so a moved rune — or a NEW transitive dependency a moved rune pulled in —
+        // can widen authority even when every single-rune record gate passed (a
+        // record's footprint is single-rune). Any widening not consented BLOCKS,
+        // leaving `witchy.lock` and the pinned registry key untouched. Gating here (at
+        // the commit point, not per-rune) also closes the re-run hole: a prior blocked
+        // update leaves the tree mutated, and a later no-op `update` must not silently
+        // repin that widened tree.
+        match update_closure_gate(console, root, allowed):
+            Some(code) -> code
+            None ->
+                match lock_trust_pins(net, root, origin):
                     Err(e) ->
-                        console.print("BLOCK: cannot regenerate witchy.lock — ${vendored_record_error_message(e)}")
+                        console.print("BLOCK: cannot pin registry metadata — ${tuf_error_message(e)}")
                         2
-                    Ok(lock) ->
-                        root.write("witchy.lock", lock)
-                        console.print("updated ${changed} dependencies -> witchy.lock")
-                        0
+                    Ok(pins) ->
+                        match vendor_lock(root, pins):
+                            Err(e) ->
+                                console.print("BLOCK: cannot regenerate witchy.lock — ${vendored_record_error_message(e)}")
+                                2
+                            Ok(lock) ->
+                                root.write("witchy.lock", lock)
+                                console.print("updated ${changed} dependencies -> witchy.lock")
+                                0
+
+// SEC-048: the widening gate `update` applies to the whole re-resolved vendored
+// closure before repinning the lock. `Some(code)` BLOCKS the update (leaving the lock
+// + pinned key untouched); `None` is a clean closure that may proceed to repin. The
+// baseline is the project's previously accepted authority (declared caps ∪ the OLD
+// lock's recorded footprints) ∪ the caps consented to with `--allow-cap` — the same
+// baseline `add` diffs a new dependency against.
+fn update_closure_gate(console: Console, root: Dir, allowed: List(String)) -> Option(Int):
+    match project_baseline(root):
+        Err(e) ->
+            console.print("BLOCK: cannot read witchy.lock to re-gate the updated dependency closure — ${lock_integrity_error_message(e)}")
+            Some(2)
+        Ok(recorded) ->
+            match closure_widening(root, union_all(recorded, allowed)):
+                Err(e) ->
+                    console.print("BLOCK: an updated dependency has no trustworthy capability footprint: ${footprint_error_message(e)}")
+                    Some(2)
+                Ok(widened) ->
+                    if list.length(widened) > 0:
+                        console.print("BLOCK: this update would widen your project's capability footprint through its dependency closure: ${list.join(widened, ", ")}")
+                        console.print("  re-run with --allow-cap ${list.join(widened, " --allow-cap ")} to consent to the whole updated dependency tree")
+                        Some(2)
+                    else:
+                        None
 
 // Re-fetch one vendored rune if the registry has a newer eligible version than the
 // one currently vendored. Returns (changed, blocked, failed): `changed` is 1 if it
@@ -2602,12 +2640,11 @@ fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, nam
             // transitive dep can carry a capability the direct rune's footprint
             // never showed. Blocked here, the files stay vendored but unpinned;
             // re-running with `--allow-cap` consents and completes the add.
-            match vendored_closure_footprint(root):
+            match closure_widening(root, baseline):
                 Err(e) ->
                     console.print("BLOCKED: a dependency of `${name}` has no trustworthy capability footprint: ${footprint_error_message(e)}")
                     2
-                Ok(closure) ->
-                    let closure_widened = rights.uncovered(baseline, closure)
+                Ok(closure_widened) ->
                     if list.length(closure_widened) > 0:
                         console.print("BLOCKED: a dependency of `${name}` would widen your project's capability footprint: ${list.join(closure_widened, ", ")}")
                         console.print("  re-run with --allow-cap ${list.join(closure_widened, " --allow-cap ")} to consent to the whole dependency tree")
@@ -3808,6 +3845,16 @@ fn vendored_closure_footprint(root: Dir) -> Result(List(String), FootprintError)
                 for cap in caps:
                     out = add_unique(out, cap)
     Ok(out)
+
+// SEC-006/SEC-048: the capabilities the FULL vendored closure now on disk demands
+// beyond `baseline` — the transitive re-gate BOTH `add` and `update` apply after a
+// fetch mutates `vendor/`. A signed registry record's footprint is single-rune, so
+// the per-record gate alone never sees a NEW transitive dependency's authority;
+// walking the whole vendored tree does. An empty result means the closure is clean;
+// `Err` on an un-footprintable dep so the caller blocks rather than trusting a
+// silent empty closure.
+fn closure_widening(root: Dir, baseline: List(String)) -> Result(List(String), FootprintError):
+    Ok(rights.uncovered(baseline, vendored_closure_footprint(root)?))
 
 fn first_witchy(let files: List(String)) -> Option(String):
     var found = None
