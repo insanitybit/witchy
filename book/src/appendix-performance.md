@@ -252,3 +252,18 @@ Last-use checking is precise within a straight-line block. An enclosing live
 view is conservatively treated as live throughout a nested branch or loop body,
 so materialize before branch-local mutation when the branches can't be proven
 disjoint.
+
+### Borrowed nominal shells
+
+A lifetime-parameterized nominal can hold a view together with owned cursor
+state. The compiled backend retains the owner root, not the view address, and
+releases it at the shell's checked last use. Updating an owned scalar field
+keeps the same root; replacing a declared borrowed field retires the old root
+after the write-back reads it and then retains the replacement root.
+
+`List(B('a))` is supported for a direct borrowed nominal `B`: list literals,
+`list.at`, and `for` traversal preserve hidden owner companions without copying
+the viewed payload. A dynamic `list.at` deliberately retains every possible
+element owner, which is conservative and correct. Mutating such a list or
+passing it through a relation-erasing boundary remains unavailable until the
+compiler has per-element overwrite/drop descriptors.

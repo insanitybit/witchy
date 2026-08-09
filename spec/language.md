@@ -938,11 +938,22 @@ text.
 Borrowed nominal values may be constructed, copied, projected, and returned
 when their declared lifetime relations preserve the checked owner roots. A
 mutable borrowed record shell may update an owned scalar field; the write-back
-keeps the shell's hidden owner-root companions unchanged for the shell's whole
-lifetime. Replacing a borrowed field remains a check-time error until old/new
-loan sequencing can update that root set, and replacing an owned aggregate
-field is outside the current scalar-mutation slice. Calls or storage that erase
-the declared lifetime relation remain rejected.
+keeps the shell's hidden owner-root companions unchanged for a scalar update.
+Replacing a declared borrowed field is also permitted when the replacement
+preserves its declared lifetime relation: lowering closes the retired root set
+after reading the shell and opens the replacement set after the write-back.
+Replacing an owned aggregate field is outside the current scalar-mutation
+slice. Calls or storage that erase the declared lifetime relation remain
+rejected.
+
+A `List(B('a))`, where `B` is a direct lifetime-parameterized nominal, may be
+constructed, read with `list.at`, and traversed with `for`. The compiler keeps
+hidden owner-root companions for the list and transfers the selected companions
+to a value read from `list.at`; a dynamic index conservatively retains every
+possible element root. A loop binder is a read-only borrowed shell and keeps
+the list companions live for the iterator expression. List mutation, nesting,
+`Dict`, and lifetime-erasing boundaries remain rejected until their element
+overwrite/drop representations are specified.
 
 Binding a returned view loans the corresponding owner until the view's final
 use. During that interval the owner may be read, but it may not be moved,
