@@ -223,6 +223,15 @@ implemented as `witchy doctor --web --deployment <url>`.
 
 **Conclusion.** RFC-0107 has **no in-sandbox code work left** — it can move to
 `implemented` only when externally owned evidence is approved and recorded.
+As of 2026-08-09 local closeout evidence run on this checkout:
+
+- `node scripts/audit-browser-runnable.mjs` → 148/148 complete examples, ALL PASS.
+- `node scripts/validate_book_examples.mjs` → 165 runnable blocks in manifest lockstep, 56 non-runnable.
+- `CARGO_TARGET_DIR=target-codex ./target-codex/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-09.json` → all checks passed (portable/degraded mode, `deployed-headers` route-wise skip behavior).
+- `node scripts/audit-browser-runnable.mjs` + acceptance artifact + doctor artifact remain as local proof basis in
+  `tests/browser/test-results/acceptance.json` and
+  `projects/glamour/acceptance/doctor-gh-pages-2026-08-09.json`.
+
 Current in-repo browser contract checks are green: `node scripts/audit-browser-runnable.mjs`
 reports 148/148 complete examples passing and `node scripts/validate_book_examples.mjs`
 reports 165 runnable blocks in lockstep with the manifest.
