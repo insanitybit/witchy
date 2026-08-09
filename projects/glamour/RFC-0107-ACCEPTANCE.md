@@ -200,7 +200,7 @@ for RFC-0107 itself. Phase 6/7 no longer map to local implementation gaps.
 Phase-closure does not change RFC-0107's public `implemented` status; that
 status still requires the externally-owned evidence rows to be recorded.
 
-## Remaining-work triage (2026-08-09)
+## Remaining-work triage (2026-08-10)
 
 Every open row above was classified as either **in-sandbox** (code/tests that
 can still be written and proven on a developer machine) or **external** (needs
@@ -237,7 +237,7 @@ requirements:
 
 This is a local completion boundary; public `implemented` status depends on those
 externally owned gates.
-As of 2026-08-09 local closeout evidence run on this checkout:
+As of 2026-08-10 local closeout evidence run on this checkout:
 
 - `node scripts/audit-browser-runnable.mjs` → 148/148 complete examples, ALL PASS.
 - `node scripts/validate_book_examples.mjs` → 165 runnable blocks in manifest lockstep, 56 non-runnable.
