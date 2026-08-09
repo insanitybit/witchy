@@ -103,6 +103,24 @@ test-group = 'gate-cold-heavy'
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 80
 
+# Same shape as `commands::web::tests` above: each compiles/renders a full
+# glamour program through the multi-core Wasm compiler. Already run in
+# gate-cold-heavy via binary_id(witchy::glamour)/binary_id(witchy::bin/witchy),
+# but without a widened timeout, so they were exposed to the default 135s
+# slow-kill. Measured standalone: the `witchy::glamour dom::*` tests run
+# 47-95s baseline; `example_tests::glamour::
+# glamour_media_policy_css_and_loader_share_one_query_corpus` TIMED OUT at
+# 135s twice in a row under concurrent-gate load (2026-08-09) despite no
+# code-path relation to the change being gated -- pure contention, same
+# failure shape as the census/docs-bundle/web::tests entries above. Same
+# remedy: widen the period so one uninterrupted run clears the real runtime
+# with headroom.
+[[profile.default.overrides]]
+filter = 'test(/^dom::(glamour_island_completion_frames_agree_on_both_backends|glamour_island_host_work_frames_agree_on_both_backends|glamour_structural_patch_frames_agree_on_both_backends|glamour_version_and_trust_views_render_security_fields)$|^html_nul::html_rejects_static_nul_without_affecting_real_holes_or_strings$|^example_tests::glamour::glamour_media_policy_css_and_loader_share_one_query_corpus$/)'
+test-group = 'gate-cold-heavy'
+slow-timeout = { period = "240s", terminate-after = 2 }
+priority = 80
+
 # `cli_subcommands::{web_commands_route_natively_and_complete_clean_clone_flow,
 # static_web_flow_needs_no_client_scaffold_or_browser_runtime}` each spawn the
 # real `witchy` binary through a full `new`/`test --web`/`build --web`/`doctor`
