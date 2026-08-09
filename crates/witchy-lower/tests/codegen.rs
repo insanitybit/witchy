@@ -4125,4 +4125,30 @@ fn main(console: Console):
             assert!(body.contains("call $rc_drop"), "release in {function}: {body}");
         }
     }
+
+    #[test]
+    fn borrowed_shell_root_is_released_on_try_early_return() {
+        let source = "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 7)\n\n\
+             fn fail() -> Result(Int, String):\n    Err(\"stop\")\n\n\
+             fn finish(input: let('a) String) -> Result(Int, String):\n    var cursor = make(input)\n    let value = fail()?\n    Ok(cursor.offset + value)\n\n\
+             fn main() -> Int:\n    match finish(\"root\"):\n        Ok(value) -> value\n        Err(_) -> 0\n";
+        assert_eq!(run_int(source), 0);
+
+        let module = parse_module(source).expect("parse aggregate try lifecycle fixture");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("aggregate try lifecycle lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $finish").expect("finish function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let finish = &tail[..end];
+        assert!(finish.contains("__loan_root_cursor__input"), "checked root local: {finish}");
+        assert_eq!(finish.match_indices("call $rc_dup").count(), 1, "one root opened: {finish}");
+        assert!(
+            finish.match_indices("call $rc_drop").count() >= 2,
+            "both `?` failure and success paths release the root: {finish}"
+        );
+    }
 }
