@@ -4,7 +4,7 @@ title: "Borrowed aggregate types and projection-aware loans"
 status: accepted
 created: 2026-08-01
 updated: 2026-08-09
-tracking: "Design accepted; no open questions (non-goals fixed: no mutable/shared refs, no pointer identity, no loan across await/yield initially). Adds lifetime parameters to nominal type declarations; shared read-only borrows only. Criteria 1-5 PROVEN (lifetime-parameterized nominal parse/kind-check, fixed borrowed record/tuple construct-copy-project-return, projection-aware loan facts, loan fact model, function-value lifetime relations); criteria 6 and 7 PARTIAL, and 8,9,10,11 MISSING. Row 6 now supports checked mutable shells updating owned scalar fields while transporting the existing hidden root set; borrowed-field replacement and old/new root sequencing remain. Remaining before implemented: field-replacement loan sequencing (row 6), aggregate retain/drop balance matrix incl. early-return/?/branch/loop/UAF (row 8), List(B('a)) lifecycle (row 9), a runnable zero-copy parser + borrowed iterator with zero-materialization counters (row 10), and the complete shipped-contract spec/book/reflection docs (row 11). Per rfcs/0110-0112-acceptance-ledger.md."
+tracking: "Design accepted; no open questions (non-goals fixed: no mutable/shared refs, no pointer identity, no loan across await/yield initially). Adds lifetime parameters to nominal type declarations; shared read-only borrows only. Criteria 1-5 PROVEN; criteria 6 and 7 PARTIAL; and 8,9,10,11 MISSING. Row 6 now transports exact before/after root sets through scalar updates and declared borrowed-field replacement, including the required retire-then-open ordering. Row 8 has explicit-return, branch, loop, and ? cleanup coverage, but lacks the checked-heap/UAF balance matrix. Remaining before implemented: owned-companion materialization (row 7), aggregate checked-heap/UAF evidence (row 8), descriptor-backed List(B('a)) lifecycle (row 9), a runnable zero-copy parser + borrowed iterator with zero-materialization counters (row 10), and the complete shipped-contract spec/book/reflection docs (row 11). Rust-class performance remains a measured target: the point-based fact interface is stable, while the solver and lowering must continue to be replaced or specialized where corpus evidence warrants it. Per rfcs/0110-0112-acceptance-ledger.md."
 predecessors:
   - "[0024](0024-unified-facts-lattice.md) (shared facts and confinement lattice)"
   - "[0083](0083-opt-mode-lifetimes.md) (`let('a)` inputs, `View(T, 'a)` results, and owner loans)"
@@ -299,7 +299,7 @@ owner roots. The layout descriptor distinguishes:
 
 Compiled lowering retains each distinct linear-memory owner root exactly once per
 live aggregate owner relation and releases it after the checked last use on
-fallthrough, explicit return, and `?` propagation. Typed GC roots remain typed
+fallthrough, explicit return, branch/loop exits, and `?` propagation. Typed GC roots remain typed
 references rather than integer slots. Host-backed roots require a separate
 lease-bearing capability API and do not become valid merely by using `'a`.
 
@@ -435,9 +435,9 @@ and container element overwrite once container support lands.
 11. `spec/language.md`, `spec/performance.md`, reflection, docs generation, and
     the book state the same lifetime/escape rules.
 
-The RFC remains `proposed` until all eleven criteria are proven in a checked
-acceptance ledger. Fixed-shell support without borrowed-container completion is
-an implementation phase, not completion.
+The RFC is `accepted`; it becomes `implemented` only when all eleven criteria
+are proven in a checked acceptance ledger. Fixed-shell support without
+borrowed-container completion is an implementation phase, not completion.
 
 ## Staging and dependency graph
 
