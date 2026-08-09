@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -23,7 +24,7 @@ web command usage:
   witchy new --web <directory>
   witchy test --web [directory]
   witchy build --web [--out <directory>] [directory]
-  witchy doctor --web [--format human|json] [directory]
+  witchy doctor --web [--format human|json] [--deployment <url>] [directory]
   witchy dev [--host 127.0.0.1] [--port 3000] [directory]";
 
 const REQUIRED_EXPORTS: &[&str] = &[
@@ -707,6 +708,7 @@ fn test_command(args: &[String]) -> Result<String, WebCommandError> {
 fn doctor_command(args: &[String]) -> Result<String, WebCommandError> {
     let mut format = "human";
     let mut root = None;
+    let mut deployment = None;
     let mut rest = args.iter();
     let Some(flag) = rest.next() else {
         return Err(WebCommandError::usage("`witchy doctor --web` requires `--web`"));
@@ -721,8 +723,21 @@ fn doctor_command(args: &[String]) -> Result<String, WebCommandError> {
                     WebCommandError::usage("`--format` requires `human` or `json`")
                 })?;
             }
+            "--deployment" => {
+                let value = rest.next().ok_or_else(|| {
+                    WebCommandError::usage("`--deployment` requires a URL")
+                })?;
+                if deployment.replace(value.to_string()).is_some() {
+                    return Err(WebCommandError::usage("`--deployment` was supplied more than once"));
+                }
+            }
             value if value.starts_with("--format=") => {
                 format = &value["--format=".len()..];
+            }
+            value if value.starts_with("--deployment=") => {
+                if deployment.replace(value["--deployment=".len()..].to_string()).is_some() {
+                    return Err(WebCommandError::usage("`--deployment` was supplied more than once"));
+                }
             }
             value if value.starts_with('-') => {
                 return Err(WebCommandError::usage(format!("unknown doctor option `{value}`")));
@@ -743,10 +758,21 @@ fn doctor_command(args: &[String]) -> Result<String, WebCommandError> {
     let outcome = match load_project(&root) {
         Ok(project) => {
             checks.push(pass("project", format!("resolved `{}`", project.name)));
-            match project.delivery {
-                Delivery::Client => doctor_client_project(project, &mut checks),
-                Delivery::Static => doctor_static_project(project, &mut checks),
+            let mut outcome = match project.delivery {
+                Delivery::Client => doctor_client_project(project.clone(), &mut checks),
+                Delivery::Static => doctor_static_project(project.clone(), &mut checks),
+            };
+            if let Some(deployment) = deployment {
+                if let Err(error) = doctor_deployment_headers(&project, &deployment, &mut checks) {
+                    checks.push(fail(
+                        "deployed-headers",
+                        error,
+                        "build the project, deploy it, and point `--deployment` at a reachable URL",
+                    ));
+                    outcome = Err(());
+                }
             }
+            outcome
         }
         Err(error) => {
             checks.push(fail(
@@ -895,6 +921,148 @@ fn doctor_static_project(
             Err(())
         }
     }
+}
+
+fn doctor_deployment_headers(
+    project: &Project,
+    deployment: &str,
+    checks: &mut Vec<DoctorCheck>,
+) -> Result<(), String> {
+    let manifest_path = project.root.join("dist").join("witchy-web-manifest.json");
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(manifest_path)
+            .map_err(|error| format!("cannot read deployment manifest: {error}"))?,
+    )
+    .map_err(|error| format!("deployment manifest is invalid JSON: {error}"))?;
+    let browser_policies = manifest
+        .get("browserPolicy")
+        .and_then(Value::as_array)
+        .ok_or("deployment manifest has no `browserPolicy` array")?;
+    if browser_policies.is_empty() {
+        checks.push(pass(
+            "deployed-headers",
+            "no routes declare browser policy metadata; nothing to validate",
+        ));
+        return Ok(());
+    }
+
+    let mut failed = Vec::new();
+    for policy in browser_policies {
+        let route = policy.get("route").and_then(Value::as_str).ok_or_else(|| {
+            "a browser-policy record is missing `route`".to_string()
+        })?;
+        let deployment_url = deployment_route_url(deployment, route);
+        let (status, headers) =
+            fetch_deployment_headers(&deployment_url).map_err(|error| error)?;
+        if !(200..=399).contains(&status) {
+            failed.push(format!("{} -> HTTP {}", route, status));
+            continue;
+        }
+        let csp = policy.get("contentSecurityPolicy").and_then(Value::as_str).unwrap_or("");
+        let permissions = policy.get("permissionsPolicy").and_then(Value::as_str).unwrap_or("");
+        let enforcement_required = policy
+            .get("enforcement")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == "required")
+            || policy.get("enforcement").and_then(Value::as_bool) == Some(true);
+        if enforcement_required {
+            if !policy_value_match(&headers, "content-security-policy", csp) {
+                failed.push(format!(
+                    "{route}: missing required Content-Security-Policy header `{csp}`"
+                ));
+            }
+            if !policy_value_match(&headers, "permissions-policy", permissions) {
+                failed.push(format!(
+                    "{route}: missing required Permissions-Policy header `{permissions}`"
+                ));
+            }
+        } else if csp.is_empty() && permissions.is_empty() {
+            checks.push(pass(
+                "deployed-headers",
+                format!("{route} is marked portable; skipping strict deployed-header enforcement"),
+            ));
+        } else if csp.is_empty() && !permissions.is_empty() {
+            if !policy_value_match(&headers, "permissions-policy", permissions) {
+                failed.push(format!(
+                    "{route}: missing portable Permissions-Policy header `{permissions}`"
+                ));
+            }
+        } else if !csp.is_empty() && !policy_value_match(&headers, "content-security-policy", csp) {
+            failed.push(format!(
+                "{route}: missing portable Content-Security-Policy header `{csp}`"
+            ));
+        }
+    }
+    if failed.is_empty() {
+        checks.push(pass(
+            "deployed-headers",
+            "deployed host exposes declared route browser policy",
+        ));
+        Ok(())
+    } else {
+        Err(failed.join("; "))
+    }
+}
+
+fn deployment_route_url(base: &str, route: &str) -> String {
+    let trimmed_base = base.trim_end_matches('/');
+    if route == "/" || route.is_empty() {
+        trimmed_base.to_string()
+    } else {
+        format!("{trimmed_base}/{}", route.trim_start_matches('/'))
+    }
+}
+
+fn policy_value_match(headers: &BTreeMap<String, String>, key: &str, expected: &str) -> bool {
+    headers
+        .get(&key.to_ascii_lowercase())
+        .is_some_and(|value| value.contains(expected))
+}
+
+fn fetch_deployment_headers(url: &str) -> Result<(u16, BTreeMap<String, String>), String> {
+    let response = Command::new("curl")
+        .args(["--head", "--silent", "--show-error", "--location", "--max-time", "10", url])
+        .output()
+        .map_err(|error| format!("curl invocation failed: {error}"))?;
+    if !response.status.success() {
+        return Err(format!(
+            "curl failed for {url}: {}",
+            String::from_utf8_lossy(&response.stderr).trim()
+        ));
+    }
+    let output = String::from_utf8_lossy(&response.stdout);
+    if output.trim().is_empty() {
+        return Err(format!(
+            "curl returned no headers for {url}: {}",
+            String::from_utf8_lossy(&response.stderr).trim()
+        ));
+    }
+    let normalized = output.replace('\r', "");
+    let block = normalized
+        .split("\n\n")
+        .filter(|value| !value.trim().is_empty())
+        .last()
+        .ok_or_else(|| format!("cannot parse curl headers for {url}"))?;
+    let mut lines = block.lines();
+    let status_line = lines.next().unwrap_or("");
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| format!("cannot parse response status from `{status_line}`"))?;
+    let mut headers = BTreeMap::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+    if headers.is_empty() {
+        return Err(format!("no response headers parsed from {url}"));
+    }
+    Ok((status, headers))
 }
 
 fn render_doctor(format: &str, checks: &[DoctorCheck]) -> Result<String, String> {

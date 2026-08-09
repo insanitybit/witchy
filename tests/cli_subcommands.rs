@@ -190,6 +190,32 @@ fn web_commands_route_natively_and_complete_clean_clone_flow() {
     assert_eq!(report["schema"], "witchy.web.doctor.v1");
     assert_eq!(report["ok"], true);
 
+    let missing_deployment = run(&["doctor", "--web", "--deployment"]);
+    assert_eq!(
+        missing_deployment.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&missing_deployment.stderr)
+    );
+    assert!(String::from_utf8_lossy(&missing_deployment.stderr).contains("`--deployment` requires a URL"));
+
+    let duplicate_deployment = run(&[
+        "doctor",
+        "--web",
+        "--deployment",
+        "https://example.com",
+        "--deployment",
+        "https://example.org",
+        project_text,
+    ]);
+    assert_eq!(
+        duplicate_deployment.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&duplicate_deployment.stderr)
+    );
+    assert!(String::from_utf8_lossy(&duplicate_deployment.stderr).contains("`--deployment` was supplied more than once"));
+
     let misplaced = run(&["new", project_text, "--web"]);
     assert_eq!(misplaced.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&misplaced.stderr).contains("requires exactly one destination"));

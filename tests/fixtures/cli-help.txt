@@ -12,7 +12,7 @@ USAGE:
     witchy test --web [directory]                 validate a Glamour project and optimized browser artifact
     witchy build --web [--out <directory>] [directory]
                                                   create deterministic production web artifacts
-    witchy doctor --web [--format human|json] [directory]
+    witchy doctor --web [--format human|json] [--deployment <url>] [directory]
                                                   audit web project, target, ABI, and reproducibility
     witchy dev [--host 127.0.0.1] [--port 3000] [directory]
                                                   run the integrated Glamour development loop
