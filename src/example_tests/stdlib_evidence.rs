@@ -132,6 +132,26 @@ fn crypto_ed25519_verify_checks_signatures() {
     assert_eq!(link_run(&prog(&pk, msg, "00")), vec!["err"], "malformed sig must be an error");
 }
 
+/// `crypto.sha256_bytes` (RFC-0095) hashes RAW bytes — the digest a binary
+/// artifact is verified against. It agrees with `crypto.sha256` on the same bytes
+/// (a UTF-8 string), matches the SHA-256 KAT for "abc", and agrees on both backends.
+#[test]
+fn crypto_sha256_bytes_hashes_raw_bytes() {
+    let prog =
+"import crypto
+import bytes
+fn main(console: Console):
+    console.print(crypto.sha256_bytes(bytes.from_string(\"abc\")))
+    console.print(crypto.sha256(\"abc\"))
+";
+    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    assert_eq!(
+        link_run(prog),
+        vec![abc.to_string(), abc.to_string()],
+        "sha256_bytes of a string's bytes must equal sha256 of that string (SHA-256 KAT for `abc`)"
+    );
+}
+
 /// `crypto.ecdsa_p256_verify` (WebAuthn "ES256") verifies a real P-256/SHA-256
 /// signature, rejects a tampered message, and reports malformed signatures.
 /// KAT: SEC1-uncompressed pubkey + ASN.1-DER sig (generated with the `cryptography` lib).

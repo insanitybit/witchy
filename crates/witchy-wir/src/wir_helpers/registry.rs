@@ -768,6 +768,17 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        // RFC-0095: SHA-256 over raw Bytes. A Bytes pointer has the same
+        // `[len][payload]` layout as a Str, so the string hash helper works
+        // unchanged — only the host reads the input as bytes and the guest wraps
+        // the input pointer as Bytes rather than Str.
+        "crypto_sha256_bytes" => Some(WirHelperSpec {
+            func: crypto_hash_helper("crypto_sha256_bytes", "crypto.sha256_bytes", 64, &["in"]),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["crypto.sha256_bytes"],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "crypto_sha512" => Some(WirHelperSpec {
             func: crypto_hash_helper("crypto_sha512", "crypto.sha512", 128, &["in"]),
             helper_deps: &["rc_alloc"],

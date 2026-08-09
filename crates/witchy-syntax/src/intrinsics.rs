@@ -102,6 +102,7 @@ pub enum IntrinsicId {
     EncodingBase64UrlDecodeBytesRaw,
     EncodingBase64UrlToHexLossy,
     CryptoSha256,
+    CryptoSha256Bytes,
     CryptoRuneHash,
     CryptoEd25519VerifyStatus,
     CryptoSign,
@@ -554,6 +555,7 @@ pub const ENCODING_BASE64URL_DECODE_BYTES_RAW: &str = "encoding.base64url_decode
 pub const ENCODING_BASE64URL_TO_HEX_LOSSY: &str = "encoding.base64url_to_hex_lossy";
 
 pub const CRYPTO_SHA256: &str = "crypto.sha256";
+pub const CRYPTO_SHA256_BYTES: &str = "crypto.sha256_bytes";
 pub const CRYPTO_RUNE_HASH: &str = "crypto.rune_hash";
 pub const CRYPTO_ED25519_VERIFY_STATUS: &str = "crypto.__ed25519_verify_status";
 pub const CRYPTO_SIGN: &str = "crypto.sign";
@@ -2040,6 +2042,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::CryptoSha256Bytes,
+        name: CRYPTO_SHA256_BYTES,
+        arity: 1,
+        signature: IntrinsicSignature::BytesToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_sha256_bytes"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_SHA256_BYTES,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::CryptoRuneHash,
         name: CRYPTO_RUNE_HASH,
         arity: 2,
@@ -2837,6 +2854,7 @@ pub const ENCODING_OPERATIONS: &[&str] = &[
 
 pub const CRYPTO_OPERATIONS: &[&str] = &[
     CRYPTO_SHA256,
+    CRYPTO_SHA256_BYTES,
     CRYPTO_RUNE_HASH,
     CRYPTO_ED25519_VERIFY_STATUS,
     CRYPTO_SIGN,
@@ -3041,6 +3059,7 @@ pub fn is_crypto_operation(name: &str) -> bool {
         matches!(
             spec.id,
             IntrinsicId::CryptoSha256
+                | IntrinsicId::CryptoSha256Bytes
                 | IntrinsicId::CryptoRuneHash
                 | IntrinsicId::CryptoEd25519VerifyStatus
                 | IntrinsicId::CryptoSign
@@ -3425,6 +3444,7 @@ mod tests {
             ENCODING_BASE64URL_DECODE_BYTES_RAW,
             ENCODING_BASE64URL_TO_HEX_LOSSY,
             CRYPTO_SHA256,
+            CRYPTO_SHA256_BYTES,
             CRYPTO_RUNE_HASH,
             CRYPTO_ED25519_VERIFY_STATUS,
             CRYPTO_SIGN,

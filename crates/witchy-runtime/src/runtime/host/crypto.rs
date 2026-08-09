@@ -24,6 +24,7 @@ pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> 
         host_ed25519_verify_status,
     )?;
     linker.func_wrap("witchy", intrinsics::CRYPTO_SHA256, host_sha256)?;
+    linker.func_wrap("witchy", intrinsics::CRYPTO_SHA256_BYTES, host_sha256_bytes)?;
     linker.func_wrap(
         "witchy",
         intrinsics::CRYPTO_ECDSA_P256_VERIFY_STATUS,
@@ -109,6 +110,26 @@ fn host_sha256(mut caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Re
     }
     mem.write(&mut caller, out_ptr as usize, hex.as_bytes())
         .map_err(|e| Error::msg(format!("writing sha256 result into guest memory: {e}")))
+}
+
+/// (RFC-0095) Read a raw `Bytes` header from guest memory, compute its SHA-256 via
+/// the shared native registry, and write the 64 hex bytes into `out_ptr`. Mirrors
+/// `host_sha256` but reads the input as bytes (not a UTF-8 string).
+fn host_sha256_bytes(mut caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let input = read_wbytes(mem.data(&caller), in_ptr)?;
+    let f = crate::native::lookup(intrinsics::CRYPTO_SHA256_BYTES).ok_or_else(|| {
+        Error::msg(format!("{} is not registered", intrinsics::CRYPTO_SHA256_BYTES))
+    })?;
+    let hex = match f(&[Value::Bytes(input)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("crypto.sha256_bytes did not return a String")),
+    };
+    if hex.len() != 64 {
+        return Err(Error::msg("crypto.sha256_bytes hex digest is not 64 bytes"));
+    }
+    mem.write(&mut caller, out_ptr as usize, hex.as_bytes())
+        .map_err(|e| Error::msg(format!("writing sha256_bytes result into guest memory: {e}")))
 }
 
 /// Shared bridge for private three-string crypto verifier status intrinsics:

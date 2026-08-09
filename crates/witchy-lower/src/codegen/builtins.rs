@@ -254,6 +254,7 @@ impl Codegen<'_> {
         const DIRECT_HELPER_CALLS: &[(&str, usize)] = &[
             (intrinsics::CRYPTO_ED25519_VERIFY_STATUS, 3),
             (intrinsics::CRYPTO_SHA256, 1),
+            (intrinsics::CRYPTO_SHA256_BYTES, 1),
             (intrinsics::CRYPTO_SIGN, 2),
             (intrinsics::CRYPTO_PUBLIC_KEY, 1),
             (intrinsics::CRYPTO_REVEAL, 1),

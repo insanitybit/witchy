@@ -77,6 +77,7 @@ const HELPER_NAMES: &[&str] = &[
     "substr",
     "ascii_case",
     "crypto_sha256",
+    "crypto_sha256_bytes",
     "crypto_rune_hash",
     "field_str_get",
     "field_intlist_get",
@@ -216,6 +217,7 @@ pub struct Prelude {
 const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (param i32 i32)))
   (import "witchy" "console_read_len" (func $console_read_len_host (result i32)))
   (import "witchy" "crypto.sha256" (func $crypto_sha256_host (param i32 i32)))
+  (import "witchy" "crypto.sha256_bytes" (func $crypto_sha256_bytes_host (param i32 i32)))
   (import "witchy" "crypto.rune_hash" (func $crypto_rune_hash_host (param i32 i32 i32)))
   (import "witchy" "compiler_footprint_len" (func $compiler_footprint_len_host (param i32) (result i32)))
   (import "witchy" "compiler_diff_len" (func $compiler_diff_len_host (param i32 i32) (result i32)))
@@ -318,7 +320,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 101;
+pub const IMPORT_COUNT: usize = 102;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v9 (RFC-0106): adds the browser-omitted `crypto.__shake128`/`__shake256` XOFs.
@@ -450,6 +452,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
     let class = match name {
         "print"
         | "crypto.sha256"
+        | "crypto.sha256_bytes"
         | "crypto.rune_hash"
         | "float_to_str"
         | "encoding"
@@ -605,6 +608,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         name,
         "print"
             | "crypto.sha256"
+            | "crypto.sha256_bytes"
             | "crypto.rune_hash"
             | "user_cap_field_len"
             | "field_str_len"

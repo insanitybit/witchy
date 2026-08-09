@@ -47,6 +47,13 @@ impl From(VerifyError) for String:
 pub fn sha256(data: String) -> String:
     data
 
+// SHA-256 of RAW bytes, as 64 lowercase hex characters. Unlike `sha256` (which
+// hashes a string's UTF-8), this hashes the exact `Bytes` — the digest a binary
+// artifact (e.g. a trusted-exe) is verified against (RFC-0095). Native intrinsic;
+// this body is a placeholder the runtime never executes.
+pub fn sha256_bytes(data: Bytes) -> String:
+    ""
+
 // The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass
 // parallel lists - one entry per file (`witchy.toml` plus each `src/**/*.witchy`):
 // `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and

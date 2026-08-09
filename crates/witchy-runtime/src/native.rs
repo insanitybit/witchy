@@ -57,6 +57,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
     }
     match qualified {
         intrinsics::CRYPTO_SHA256 => Some(crypto::sha256),
+        intrinsics::CRYPTO_SHA256_BYTES => Some(crypto::sha256_bytes),
         intrinsics::CRYPTO_RUNE_HASH => Some(crypto::rune_hash),
         intrinsics::CRYPTO_ED25519_VERIFY_STATUS => Some(crypto::ed25519_verify_status),
         intrinsics::CRYPTO_SIGN => Some(crypto::sign),
@@ -125,6 +126,15 @@ mod crypto {
             return Err(type_error("crypto.sha256 expects a String"));
         };
         Ok(Value::Str(hex(&sha256_digest(s.as_bytes()))))
+    }
+
+    /// SHA-256 of RAW bytes, as 64 lowercase hex characters (RFC-0095 — the digest
+    /// a binary artifact is verified against; `sha256` hashes a string's UTF-8).
+    pub fn sha256_bytes(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Bytes(b)] = args else {
+            return Err(type_error("crypto.sha256_bytes expects Bytes"));
+        };
+        Ok(Value::Str(hex(&sha256_digest(b))))
     }
 
     /// The canonical content hash of a rune's source tree — the package manager's
