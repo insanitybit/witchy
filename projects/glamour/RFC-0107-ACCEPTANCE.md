@@ -223,6 +223,9 @@ implemented as `witchy doctor --web --deployment <url>`.
 
 **Conclusion.** RFC-0107 has **no in-sandbox code work left** — it can move to
 `implemented` only when externally owned evidence is approved and recorded.
+Current in-repo browser contract checks are green: `node scripts/audit-browser-runnable.mjs`
+reports 148/148 complete examples passing and `node scripts/validate_book_examples.mjs`
+reports 165 runnable blocks in lockstep with the manifest.
 RFC-0108 is similarly externally gated by release-channel evidence. RFC-0109
 still has one implementable deep slice (per-module checked-IR/codegen reuse
 for the incremental compiler), which remains out of RFC-0107 scope.
