@@ -31,12 +31,348 @@
       "status": "pass"
     },
     {
-      "detail": "/: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/appendix-ecosystem: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/appendix-operators: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/appendix-performance: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/appendix-recipes: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/appendix-stdlib: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/backends: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/capabilities: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/capabilities-authority: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/capabilities-narrowing: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/capabilities-optional: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/capabilities-sandbox: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-bytes: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-collections: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-config: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-crypto: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-errors: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-files: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-functional: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-iterators: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-json: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-numbers: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-text: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/cookbook-time: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/for-var: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/frontend: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/functional-in-place: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/getting-started: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/getting-started-hello: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/getting-started-installation: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/getting-started-toolbox: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/idioms: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/introduction: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/mutating-methods: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/packages: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/packages-build: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/packages-cli: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/project: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/running: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/shipping: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/structural-records: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/testing: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/title: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'none'; style-src 'self'; style-src-attr 'none'; connect-src 'none'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-async: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-comptime: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-data: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-errors: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-functions: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-generics: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-iterators: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-modules: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-reflection: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-values: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`; /p/tour-vm: missing portable Content-Security-Policy header `default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self'; frame-src 'none'; worker-src 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'`",
+      "detail": "/ is marked portable/degraded; skipping strict deployed-header enforcement",
       "id": "deployed-headers",
-      "remediation": "build the project, deploy it, and point `--deployment` at a reachable URL",
-      "status": "fail"
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/appendix-ecosystem is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/appendix-operators is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/appendix-performance is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/appendix-recipes is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/appendix-stdlib is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/backends is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/capabilities is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/capabilities-authority is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/capabilities-narrowing is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/capabilities-optional is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/capabilities-sandbox is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-bytes is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-collections is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-config is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-crypto is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-errors is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-files is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-functional is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-iterators is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-json is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-numbers is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-text is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-time is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/for-var is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/frontend is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/functional-in-place is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/getting-started is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/getting-started-hello is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/getting-started-installation is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/getting-started-toolbox is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/idioms is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/introduction is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/mutating-methods is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/packages is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/packages-build is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/packages-cli is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/project is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/running is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/shipping is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/structural-records is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/testing is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/title is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-async is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-comptime is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-data is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-errors is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-functions is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-generics is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-iterators is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-modules is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-reflection is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-values is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-vm is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "deployed host exposes declared route browser policy",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
     }
   ],
-  "ok": false,
+  "ok": true,
   "schema": "witchy.web.doctor.v1"
 }

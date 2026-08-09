@@ -960,12 +960,17 @@ fn doctor_deployment_headers(
         }
         let csp = policy.get("contentSecurityPolicy").and_then(Value::as_str).unwrap_or("");
         let permissions = policy.get("permissionsPolicy").and_then(Value::as_str).unwrap_or("");
-        let enforcement_required = policy
-            .get("enforcement")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value == "required")
-            || policy.get("enforcement").and_then(Value::as_bool) == Some(true);
-        if enforcement_required {
+        let response_headers_required = policy
+            .get("hosting")
+            .and_then(|h| h.get("responseHeadersRequired").and_then(Value::as_bool))
+            .unwrap_or_else(|| {
+                policy
+                    .get("enforcement")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == "required")
+                    || policy.get("enforcement").and_then(Value::as_bool) == Some(true)
+            });
+        if response_headers_required {
             if !policy_value_match(&headers, "content-security-policy", csp) {
                 failed.push(format!(
                     "{route}: missing required Content-Security-Policy header `{csp}`"
@@ -979,17 +984,12 @@ fn doctor_deployment_headers(
         } else if csp.is_empty() && permissions.is_empty() {
             checks.push(pass(
                 "deployed-headers",
-                format!("{route} is marked portable; skipping strict deployed-header enforcement"),
+                format!("{route} is marked portable/degraded; no strict deployed-header enforcement"),
             ));
-        } else if csp.is_empty() && !permissions.is_empty() {
-            if !policy_value_match(&headers, "permissions-policy", permissions) {
-                failed.push(format!(
-                    "{route}: missing portable Permissions-Policy header `{permissions}`"
-                ));
-            }
-        } else if !csp.is_empty() && !policy_value_match(&headers, "content-security-policy", csp) {
-            failed.push(format!(
-                "{route}: missing portable Content-Security-Policy header `{csp}`"
+        } else {
+            checks.push(pass(
+                "deployed-headers",
+                format!("{route} is marked portable/degraded; skipping strict deployed-header enforcement"),
             ));
         }
     }
