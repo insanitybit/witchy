@@ -4396,6 +4396,10 @@ Just the keys of `[section]` (unquoted), in file order.
 
 Read `key` from an inline table value like `{ path = "../money", version = "1" }`. Returns the unquoted value, or None if the key is absent.
 
+#### `fn dep_requirement(raw: String) -> Option(String)`
+
+The version requirement a `[dependencies]` value declares, in EITHER TOML form: a bare string (`"acme/x" = "^1.0"`), whose value IS the requirement, or an inline table (`{ version = "^1.0" }`), whose `version` key holds it. `None` for a path-only inline table (no `version` key) or an empty value. Dep walks that read a version requirement (transitive resolution, `outdated`, `update`) must use this so a bare-string dep is not silently skipped.
+
 #### `fn inline_get_array(inline: String, key: String) -> List(String)`
 
 Read a string-array field from an inline table. This is the array counterpart to `inline_get`, used by nested policy values such as `{ programs = ["git"], child-paths = ["~/.gitconfig"] }`.

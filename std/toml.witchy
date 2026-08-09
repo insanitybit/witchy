@@ -417,6 +417,23 @@ pub fn inline_get(inline: String, key: String) -> Option(String):
                 found = Some(unquote(v))
     found
 
+// The version requirement a `[dependencies]` value declares, in EITHER TOML form:
+// a bare string (`"acme/x" = "^1.0"`), whose value IS the requirement, or an
+// inline table (`{ version = "^1.0" }`), whose `version` key holds it. `None` for
+// a path-only inline table (no `version` key) or an empty value. Dep walks that
+// read a version requirement (transitive resolution, `outdated`, `update`) must
+// use this so a bare-string dep is not silently skipped.
+pub fn dep_requirement(raw: String) -> Option(String):
+    let v = raw.trim()
+    if v.starts_with("{"):
+        inline_get(v, "version")
+    else:
+        let s = unquote(v)
+        if s.is_empty():
+            None
+        else:
+            Some(s)
+
 // Read a string-array field from an inline table. This is the array counterpart
 // to `inline_get`, used by nested policy values such as
 // `{ programs = ["git"], child-paths = ["~/.gitconfig"] }`.
