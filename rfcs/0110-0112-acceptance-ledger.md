@@ -92,7 +92,7 @@ them instead of creating parallel AST-shape or operation-name catalogs.
 | 8 | **PARTIAL** | Compiled-Wasm fixtures prove root balance for explicit return, branch return, loop exit, and `?` early return. The checked-heap poison/no-reuse/UAF balance matrix remains absent. |
 | 9 | **PARTIAL** | Direct `List(B('a))` literals publish indexed owner-root contributions; list copies preserve their companions; `list.at` transfers the selected roots (or conservatively all roots for a dynamic index); and `for` binders keep the list companions live. Type and compiled-Wasm fixtures prove construction, copy, read, and traversal. List overwrite, drop, nested containers, and relation-erasing boundary coverage remain absent. |
 | 10 | **MISSING** | No runnable zero-copy parser and borrowed iterator exercise both backends with zero-materialization counters. |
-| 11 | **MISSING** | The language/performance specs, reflection, generated docs, and book do not state a shipped borrowed-aggregate contract. |
+| 11 | **PARTIAL** | The language spec and book state the fixed-shell and direct-list contract; structured TypeInfo reflection preserves source-ordered lifetime parameters and meta.TBorrowed fields. Generated user docs plus the runnable parser/iterator and zero-materialization counters remain absent. |
 
 ## Required closeout evidence
 
