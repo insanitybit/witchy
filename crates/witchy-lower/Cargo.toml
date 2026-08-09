@@ -26,3 +26,6 @@ wasmparser = "0.251"
 
 [dev-dependencies]
 wasmtime = "45.0.0"
+# Integration tests (tests/) compile the lib WITHOUT cfg(test); enable the
+# raw-module test surface for them via a self-dependency.
+witchy-lower = { path = ".", features = ["raw-module-test-api"] }
