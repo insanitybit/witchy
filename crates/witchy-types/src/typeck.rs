@@ -3189,6 +3189,11 @@ struct Checker {
     /// record update. A standalone update expression remains an untracked copy
     /// and is rejected.
     borrowed_shell_update_target: Option<String>,
+    /// Mutable locals whose initializer created a checked borrowed shell. This
+    /// is deliberately separate from type identity: a borrowed shell received
+    /// as an ordinary parameter has no compiler-owned root companions at this
+    /// boundary, so it must retain the RFC-0112 stage-1 runtime guard.
+    borrowed_shell_bindings: Vec<HashSet<String>>,
     /// Sealed record capabilities (`capability X:` with named fields). Their
     /// fields are opaque: `.field` access is rejected so the only way to reach a
     /// carried capability is `match`, which the linker confines to the home
@@ -4233,14 +4238,38 @@ impl Checker {
         }
     }
 
+    fn borrowed_shell_binding_source(value: &Expr) -> bool {
+        matches!(value, Expr::Ctor { .. } | Expr::Call { .. })
+    }
+
+    fn is_borrowed_shell_binding(&self, name: &str) -> bool {
+        self.borrowed_shell_bindings
+            .iter()
+            .rev()
+            .any(|bindings| bindings.contains(name))
+    }
+
+    fn authorize_borrowed_shell_binding(&mut self, name: String) {
+        self.borrowed_shell_bindings
+            .last_mut()
+            .expect("borrowed shell bindings track type scopes")
+            .insert(name);
+    }
+
+    fn is_authorized_borrowed_shell_value(&self, value: &Expr, ty: &Ty) -> bool {
+        self.is_direct_borrowed_nominal(ty)
+            && matches!(value, Expr::Var(name) if self.is_borrowed_shell_binding(name))
+    }
+
     fn is_borrowed_shell_self_update(&self, name: &str, existing: &Ty, value: &Expr) -> bool {
         self.is_direct_borrowed_nominal(existing)
+            && self.is_borrowed_shell_binding(name)
             && matches!(value, Expr::RecordUpdate { base, .. }
                 if matches!(base.as_ref(), Expr::Var(base) if base == name))
     }
 
     fn is_authorized_borrowed_shell_update(&self, base: &Expr, ty: &Ty) -> bool {
-        self.is_direct_borrowed_nominal(ty)
+        self.is_authorized_borrowed_shell_value(base, ty)
             && self.borrowed_shell_update_target.as_ref().is_some_and(|target| {
                 matches!(base, Expr::Var(base) if base == target)
             })
@@ -4406,9 +4435,11 @@ impl Checker {
     // --- scope helpers ---
     fn push(&mut self) {
         self.scopes.push(HashMap::new());
+        self.borrowed_shell_bindings.push(HashSet::new());
     }
     fn pop(&mut self) {
         self.scopes.pop();
+        self.borrowed_shell_bindings.pop();
     }
     /// The (name, type) bindings introduced in the innermost scope frame — used to
     /// compare what each or-pattern alternative binds (RFC-0052 binding-consistency).
@@ -5506,13 +5537,19 @@ impl Checker {
                     } else {
                         self.infer(value)?
                     };
-                    if !(*mutable && self.is_direct_borrowed_nominal(&vt)) {
+                    let borrowed_shell_binding = *mutable
+                        && self.is_direct_borrowed_nominal(&vt)
+                        && Self::borrowed_shell_binding_source(value);
+                    if !borrowed_shell_binding {
                         self.reject_borrowed_nominal_runtime_ty(
                             &vt,
                             &format!("binding/copy into `{name}`"),
                         )?;
                     }
                     self.define(name.clone(), vt, *mutable);
+                    if borrowed_shell_binding {
+                        self.authorize_borrowed_shell_binding(name.clone());
+                    }
                     ty = Ty::Unit;
                 }
                 Stmt::Assign { name, value } => {
@@ -5535,7 +5572,7 @@ impl Checker {
                         }
                     }
                     let saved_shell_target = self.borrowed_shell_update_target.take();
-                    if self.is_direct_borrowed_nominal(&existing) {
+                    if self.is_borrowed_shell_binding(name) {
                         self.borrowed_shell_update_target = Some(name.clone());
                     }
                     let inferred = self.infer_expected(value, &existing);
@@ -7083,7 +7120,7 @@ impl Checker {
             }
             Expr::Field { base, field } => {
                 let bt = self.infer(base)?;
-                if !self.is_direct_borrowed_nominal(&bt) {
+                if !self.is_authorized_borrowed_shell_value(base, &bt) {
                     self.reject_borrowed_nominal_runtime_ty(
                         &bt,
                         &format!("field projection `.{field}`"),
@@ -8382,6 +8419,7 @@ impl Checker {
         }
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
+        self.borrowed_shell_bindings = vec![HashSet::new()];
         self.consumed.clear();
         self.current_ret = Some(ret.clone());
         self.current_isolated_callback = isolated_vm_callback_contract(
@@ -9187,6 +9225,7 @@ fn run_check_selected(
             })
             .collect(),
         borrowed_shell_update_target: None,
+        borrowed_shell_bindings: vec![HashSet::new()],
         sealed_types: HashSet::new(),
         construction_sealed_types: HashSet::new(),
         transparent_externref_brands: HashMap::new(),
