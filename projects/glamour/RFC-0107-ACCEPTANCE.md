@@ -206,8 +206,9 @@ Every open row above was classified as either **in-sandbox** (code/tests that
 can still be written and proven on a developer machine) or **external** (needs
 evidence that cannot be produced in a local sandbox: an approved public GitHub
 CI push, a real GitHub Pages / second-host deployment with Core Web Vitals, a
-controlled release-host or cold-mobile reference measurement, a deployed-header
-doctor run, or the approved WebAuthn relying-party exchange).
+controlled release-host or cold-mobile reference measurement, or the approved
+WebAuthn relying-party exchange). A deployed-header proof is now locally
+implemented as `witchy doctor --web --deployment <url>`.
 
 | Open row | Owning RFC | Bucket | Note |
 | --- | --- | --- | --- |
@@ -216,7 +217,7 @@ doctor run, or the approved WebAuthn relying-party exchange).
 | Static-host and production-vitals evidence | 0107 | external | Needs a GitHub Pages + second-host deployment and controlled Core Web Vitals. |
 | Release-channel browser matrix | 0108 | external | Needs release-CI Chromium/Firefox/WebKit runs. |
 | Controlled release-host timing report | 0108 | external | Needs pinned macOS-arm64 + Linux-x86-64 release-host records. |
-| Build-authenticated mount grants and browser policy | 0109 | external | Every locally executable path is covered; only a deployed-header doctor run + the approved WebAuthn exchange remain. |
+| Build-authenticated mount grants and browser policy | 0109 | external | `witchy doctor --web --deployment <url>` validates deployed-host browser-policy headers locally; only the approved WebAuthn exchange remains for completion. |
 | Cold-mobile and book migration evidence | 0109 | external | Local migration complete; only cold-mobile measurement against the approved reference deployment remains. |
 | **Incremental compiler** | 0109 | **in-sandbox (deep)** | The dev watcher's fingerprinting / affected-module / parsed-module cache is done. Remaining: **per-module checked-IR + codegen reuse** (`src/commands/web/dev.rs`, `crates/witchy-types/src/pipeline.rs`, `crates/witchy-lower/src/codegen/*`) so a Witchy source edit no longer relinks + regenerates the whole loaded unit, plus a local incremental-timing threshold test (model on `web/witchy-runtime/glamour-phase3-performance.mjs`). This is a multi-session codegen track, not a bounded slice. |
 
