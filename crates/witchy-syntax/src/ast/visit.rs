@@ -29,7 +29,11 @@ pub fn visit_module_exprs<E>(
                 }
             }
             Item::Const { value, .. } => visit_expr(value, visitor)?,
-            Item::Type(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
+            // Comptime blocks contain ordinary expressions and MUST be visited:
+            // the existential pre-pass relied on this (its pre-merge copy did;
+            // the glamour copy skipped them — union semantics here).
+            Item::Comptime(block) => visit_block(block, visitor)?,
+            Item::Type(_) | Item::TypeAlias { .. } => {}
         }
     }
     Ok(())

@@ -234,7 +234,33 @@ impl Codegen<'_> {
         };
         // A void effect that yields Nil: `{inner} ... i32.const 0`.
         let nil0 = |inner: W| W::Seq(vec![N::Do(inner), N::Push(W::ConstI32(0))]);
+        // Builtins whose lowering is EXACTLY "call the sole cataloged WIR helper
+        // with the source arguments in order" — one data-driven arm instead of a
+        // copy-pasted arm apiece. (For Secret-taking ops — sign/public_key/reveal —
+        // the Secret bytes stay host-side; the guest passes only the opaque
+        // externref, which IS the lowered argument.) An op needing any conversion,
+        // nil-wrapping, or extract handling does NOT belong here: give it a real arm.
+        const DIRECT_HELPER_CALLS: &[(&str, usize)] = &[
+            (intrinsics::CRYPTO_ED25519_VERIFY_STATUS, 3),
+            (intrinsics::CRYPTO_SHA256, 1),
+            (intrinsics::CRYPTO_SIGN, 2),
+            (intrinsics::CRYPTO_PUBLIC_KEY, 1),
+            (intrinsics::CRYPTO_REVEAL, 1),
+            (intrinsics::CRYPTO_RUNE_HASH, 2),
+            (intrinsics::CRYPTO_ECDSA_P256_VERIFY_STATUS, 3),
+            (intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS, 3),
+            (intrinsics::CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS, 3),
+            (intrinsics::CRYPTO_SHA512, 1),
+            (intrinsics::CRYPTO_SHA3_256, 1),
+            (intrinsics::CRYPTO_HMAC_SHA256, 2),
+            (intrinsics::COMPILER_DOC, 2),
+            (intrinsics::COMPILER_DOC_RESULT_JSON, 2),
+        ];
         Some(match (name, args.len()) {
+            (name, arity) if DIRECT_HELPER_CALLS.contains(&(name, arity)) => {
+                let arg_refs: Vec<&Expr> = args.iter().collect();
+                call(intrinsic_helper(name), self.lower_args(&arg_refs)?)
+            }
             (name, 1) if intrinsics::is_list_pop_extract(name) =>
             {
                 if self
@@ -296,52 +322,6 @@ impl Codegen<'_> {
                     Kind::I64,
                 )
             }
-            (intrinsics::CRYPTO_ED25519_VERIFY_STATUS, 3) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1], &args[2]])?)
-            }
-            (intrinsics::CRYPTO_SHA256, 1) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
-            }
-            (intrinsics::CRYPTO_SIGN, 2) => {
-                // The Secret bytes stay host-side; the guest passes an opaque
-                // externref and the message.
-                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
-            }
-            (intrinsics::CRYPTO_PUBLIC_KEY, 1) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
-            }
-            (intrinsics::CRYPTO_REVEAL, 1) => {
-                // The Secret bytes stay host-side until this explicit reveal path;
-                // the guest passes only the opaque externref.
-                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
-            }
-            (intrinsics::CRYPTO_RUNE_HASH, 2) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
-            }
-            (intrinsics::CRYPTO_ECDSA_P256_VERIFY_STATUS, 3) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1], &args[2]])?)
-            }
-            (intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS, 3) => {
-                call(
-                    intrinsic_helper(name),
-                    self.lower_args(&[&args[0], &args[1], &args[2]])?,
-                )
-            }
-            (intrinsics::CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS, 3) => {
-                call(
-                    intrinsic_helper(name),
-                    self.lower_args(&[&args[0], &args[1], &args[2]])?,
-                )
-            }
-            (intrinsics::CRYPTO_SHA512, 1) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
-            }
-            (intrinsics::CRYPTO_SHA3_256, 1) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
-            }
-            (intrinsics::CRYPTO_HMAC_SHA256, 2) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
-            }
             // (RFC-0106) SHAKE XOFs: (Bytes, Int) -> Bytes via the variable-length
             // raw-output helper. The std wrapper pre-validated the length.
             (intrinsics::CRYPTO_SHAKE128 | intrinsics::CRYPTO_SHAKE256, 2) => {
@@ -389,12 +369,6 @@ impl Codegen<'_> {
             }
             (intrinsics::COMPILER_DIFF, 2) => {
                 self.uses_compiler_diff = true;
-                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
-            }
-            (intrinsics::COMPILER_DOC, 2) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
-            }
-            (intrinsics::COMPILER_DOC_RESULT_JSON, 2) => {
                 call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
             (intrinsics::REGEX_MATCH_SPANS, 2) => {
