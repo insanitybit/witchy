@@ -240,7 +240,7 @@ externally owned gates.
 As of the latest local closeout evidence run on this checkout:
 
 - `node scripts/audit-browser-runnable.mjs` → 148/148 complete examples, ALL PASS.
-- `node scripts/validate_book_examples.mjs` → 165 runnable blocks in manifest lockstep, 58 non-runnable.
+- `node scripts/validate_book_examples.mjs` → 165 runnable blocks in manifest lockstep, 59 non-runnable.
 - `./target/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-09.json` → all checks passed (portable/degraded mode, `deployed-headers` route-wise skip behavior).
 - `./target/debug/witchy doctor --web projects/docs --format json > projects/glamour/acceptance/doctor-local-2026-08-09.json` → all checks passed.
 - `node scripts/audit-browser-runnable.mjs` + acceptance artifact + doctor artifacts remain as local proof basis in
