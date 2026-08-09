@@ -6,7 +6,7 @@
 // the rune never sees a credential and the app stays XSS/CSRF-proof by construction. The
 // rune renders via glamour-dom.mjs (createElement/textContent only — no HTML-string sink).
 import { mount } from "glamour-dom";
-import { authHeader, setToken, isSignedIn } from "./session";
+import { authHeader, setToken, isSignedIn, setIdentity, sessionIdentity } from "./session";
 import { login as passkeyLogin, register as passkeyRegister, promote2fa, yank2fa } from "./webauthn";
 
 // The compiled glamour app, base64. build.sh replaces this placeholder with the bytes of
@@ -43,6 +43,10 @@ function adoptLoginFragment(): string {
   const who = params.get("login") ?? "";
   if (token) {
     setToken(token);
+    // Persist the social-login handle so a later reload — after this one-shot fragment is
+    // scrubbed — still labels the session with the real identity instead of decaying to the
+    // generic passkey placeholder.
+    if (who) setIdentity(who);
     history.replaceState({}, "", location.pathname);
     return who;
   }
@@ -61,16 +65,31 @@ function loginProviders(): string[] {
   return content.split(/\s+/).filter((p) => p === "github" || p === "google");
 }
 
+// Turn a promote/yank rejection into an honest, actionable status line. A *trusted* registry
+// (the hosted default) requires a short-lived identity token carrying a human second factor to
+// release or yank — a browser passkey assertion is not that token, so coven refuses. Rather than
+// echo the raw server string, say plainly that this action isn't a browser operation on a trusted
+// registry and where it does belong (a CI job's OIDC identity). Non-trust refusals pass through.
+function refusalNotice(op: "promote" | "yank", error: string | undefined, status: number): string {
+  if (error && /short-lived identity token/i.test(error)) {
+    return `${op} needs a short-lived identity token — this registry uses trusted publishing, so ${op} runs from CI (\`witchy pm ${op}\`), not the browser.`;
+  }
+  return "refused: " + (error ?? status);
+}
+
 async function boot(): Promise<void> {
   const root = document.getElementById("app");
   if (!root) throw new Error("coven-web: missing #app element");
 
   const who = adoptLoginFragment();
-  // Label the session HONESTLY (UI-03). A social-login callback carries a real identity in the
-  // fragment's `login` (`who`); a passkey sign-in mints only an anonymous bearer, so we must NOT
-  // claim a named "maintainer" role the user was never granted — that would mislead. Fall back to
-  // a plain "signed in (passkey)" when the only thing we know is that a bearer is present.
-  const session = who || (isSignedIn() ? "signed in (passkey)" : "");
+  // Label the session HONESTLY (UI-03), and identify it correctly ACROSS RELOADS. The rune
+  // renders this as "signed in as ${session}", so the string is a bare identity — never one
+  // that already contains "signed in" (that produced the doubled "signed in as signed in
+  // (passkey)"). Precedence: the fresh social-login handle from this callback, else the
+  // identity persisted from an earlier sign-in (a GitHub handle survives the reload now), else
+  // the honest "passkey" placeholder when all we know is that an anonymous bearer is present.
+  // We never claim a named "maintainer" role the user was not granted.
+  const session = who || sessionIdentity() || (isSignedIn() ? "passkey" : "");
 
   await mount(wasmBytes(), root, {
     initialModel: { route: location.pathname, session, data: "", notice: "", providers: loginProviders() },
@@ -93,9 +112,11 @@ async function boot(): Promise<void> {
       passkeyLogin: async () => {
         const tok = await passkeyLogin(location.hostname);
         setToken(tok);
-        // The bearer is anonymous — report the honest passkey label, not a "maintainer" role
-        // the user does not hold (UI-03). The rune renders this string as the session identity.
-        return "signed in (passkey)";
+        // The bearer is anonymous — report the honest bare "passkey" identity (the rune renders
+        // it as "signed in as passkey"), not a "maintainer" role the user does not hold (UI-03).
+        // Persist it so a reload keeps the same honest label.
+        setIdentity("passkey");
+        return "passkey";
       },
       passkeyRegister: async () => {
         // UI-04: the ceremony can stall or be refused. webauthn.register now enforces a hard
@@ -115,7 +136,7 @@ async function boot(): Promise<void> {
         const r = await promote2fa(location.hostname, name, version);
         if (r.ok) return "released ✓";
         const d = (await r.json().catch(() => ({}))) as { error?: string };
-        return "refused: " + (d.error ?? r.status);
+        return refusalNotice("promote", d.error, r.status);
       },
       yank: async (route: string) => {
         const [name, version] = nameVer(route);
@@ -125,7 +146,7 @@ async function boot(): Promise<void> {
         const r = await yank2fa(location.hostname, name, version);
         if (r.ok) return "yanked ✓";
         const d = (await r.json().catch(() => ({}))) as { error?: string };
-        return "refused: " + (d.error ?? r.status);
+        return refusalNotice("yank", d.error, r.status);
       },
     },
   });
