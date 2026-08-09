@@ -2882,6 +2882,10 @@ function browserHandlers(artifact) {{
     return policy;
   }};
   const storage = createStorageEffectHandler({{ artifact }});
+  const hostPorts = (() => {{
+    const host = globalThis.__witchyHostPorts;
+    return host && typeof host === "object" && !Array.isArray(host) ? host : {{}};
+  }})();
   const worker = createWorkerEffectHandler({{
     artifact,
     shellUrl: new URL("./{worker_shell}", import.meta.url).href,
@@ -2927,7 +2931,15 @@ function browserHandlers(artifact) {{
             (adapter === "credential.get-exchange.v1" || adapter === "credential.create-exchange.v1") &&
             utf8.encode(typedRequest).byteLength <= policy.maxRequestBytes;
           if (!admitted) return Promise.reject(new Error("host port exceeds its build-authenticated policy"));
-          return Promise.reject(new Error("credential exchange requires an approved host-custody implementation"));
+          const hostPort = hostPorts?.[`${{adapter}}:${{endpoint}}`] || hostPorts?.[adapter] || hostPorts?.[endpoint];
+          if (typeof hostPort !== "function") {{
+            return Promise.reject(new Error("credential exchange requires an approved host-custody implementation"));
+          }}
+          return Promise.resolve(hostPort(typedRequest)).then((raw) => {{
+            if (typeof raw !== "string") return Promise.reject(new Error("credential exchange result must be a string"));
+            if (utf8.encode(raw).byteLength > policy.maxResultBytes) return Promise.reject(new Error("credential exchange result exceeds its build-authenticated policy"));
+            return raw;
+          }}).catch((error) => Promise.reject(error));
         }}
         const fields = requestFields(request, 2);
         const name = semantic === "secret" ? fields[1] : fields[0];

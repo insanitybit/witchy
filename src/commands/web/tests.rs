@@ -5650,6 +5650,7 @@ pub fn web() -> Site:
             .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "mjs"))
             .map(|entry| std::fs::read_to_string(entry.path()).expect("host-port runtime module"))
             .collect::<Vec<_>>();
+        assert!(scripts.iter().any(|source| source.contains("globalThis.__witchyHostPorts")));
         assert!(scripts.iter().any(|source| source.contains(
             "credential exchange requires an approved host-custody implementation",
         )));
