@@ -228,9 +228,11 @@ As of 2026-08-09 local closeout evidence run on this checkout:
 - `node scripts/audit-browser-runnable.mjs` → 148/148 complete examples, ALL PASS.
 - `node scripts/validate_book_examples.mjs` → 165 runnable blocks in manifest lockstep, 56 non-runnable.
 - `CARGO_TARGET_DIR=target-codex ./target-codex/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-09.json` → all checks passed (portable/degraded mode, `deployed-headers` route-wise skip behavior).
-- `node scripts/audit-browser-runnable.mjs` + acceptance artifact + doctor artifact remain as local proof basis in
-  `tests/browser/test-results/acceptance.json` and
-  `projects/glamour/acceptance/doctor-gh-pages-2026-08-09.json`.
+- `CARGO_TARGET_DIR=target-codex ./target-codex/debug/witchy doctor --web projects/docs --format json > projects/glamour/acceptance/doctor-local-2026-08-09.json` → all checks passed.
+- `node scripts/audit-browser-runnable.mjs` + acceptance artifact + doctor artifacts remain as local proof basis in
+  `tests/browser/test-results/acceptance.json`,
+  `projects/glamour/acceptance/doctor-gh-pages-2026-08-09.json`, and
+  `projects/glamour/acceptance/doctor-local-2026-08-09.json`.
 
 Current in-repo browser contract checks are green: `node scripts/audit-browser-runnable.mjs`
 reports 148/148 complete examples passing and `node scripts/validate_book_examples.mjs`
