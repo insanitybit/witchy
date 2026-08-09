@@ -5647,9 +5647,12 @@ impl Checker {
                     } else {
                         self.infer(value)?
                     };
-                    let borrowed_shell_binding = (self.is_direct_borrowed_nominal(&vt)
-                        || self.is_direct_borrowed_nominal_list(&vt))
+                    let borrowed_shell_binding = self.is_direct_borrowed_nominal(&vt)
                         && Self::borrowed_shell_binding_source(value);
+                    let borrowed_list_binding = self.is_direct_borrowed_nominal_list(&vt)
+                        && (matches!(value, Expr::List(_))
+                            || matches!(value, Expr::Var(source) if self.is_borrowed_shell_binding(source)));
+                    let borrowed_shell_binding = borrowed_shell_binding || borrowed_list_binding;
                     if !borrowed_shell_binding {
                         self.reject_borrowed_nominal_runtime_ty(
                             &vt,
