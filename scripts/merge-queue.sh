@@ -829,7 +829,7 @@ group_is_busy() { # group_is_busy <pgid>
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
 gate_attempt=0
-run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infra-only] [cargo-target] [census-proof-sha]
+run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infra-only] [cargo-target] [census-proof-sha] [skip-glamour]
     local log="$1"
     local progress_file="${log}.progress"
     local fuzz_mode="${2:-full}"
@@ -838,6 +838,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local queue_infra_only="${5:-0}"
     local cargo_target_dir="${6:-target}"
     local census_proof_sha="${7:-}"
+    local skip_glamour="${8:-0}"
     local selected_gate_cmd="$gate_cmd"
     if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
         selected_gate_cmd="./scripts/check.sh --queue-infra"
@@ -861,7 +862,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_SKIP_GLAMOUR=$skip_glamour" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -1789,6 +1790,24 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         gate_scope="docs"
     fi
 
+    # Glamour-skip from the same diff (see check.sh's WITCHY_GATE_SKIP_GLAMOUR).
+    # glamour's own tests (`witchy::glamour`, `commands::web::tests`) compile a
+    # full glamour program per test through the multi-core Wasm compiler — real
+    # cost that only earns its keep when a change could affect glamour's
+    # behavior. Skip them only when the batch touches NEITHER the shared
+    # parity surface (same set as fuzz_mode above: a compiler/stdlib/build
+    # change can break glamour without touching a glamour-named path) NOR
+    # anything glamour owns directly (its JS runtime, self-hosted app, or the
+    # book it renders through `glamour_docs_bundle_renders_the_real_book`).
+    # coven's own tests already live entirely in the `e2e` binary, which the
+    # default gate excludes regardless — no separate classification needed.
+    # Fail SAFE: errored/empty diff -> run them (0).
+    local skip_glamour=0
+    if [ -n "$changed" ] \
+        && ! echo "$changed" | grep -cE '^(crates/|std/|src/|examples/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain|web/|projects/glamour|projects/coven-web|book/|dist/)' >/dev/null; then
+        skip_glamour=1
+    fi
+
     # Queue fixtures manipulate process groups, detached daemons, file locks,
     # and nested Git repositories. Run that binary in check.sh's isolated,
     # serial shard only when this batch can change the queue substrate. The
@@ -1891,10 +1910,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 2
     fi
 
-    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only); log: $log"
+    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; skip-glamour=$skip_glamour); log: $log"
     local gate_started; gate_started="$(date +%s)"
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
-        "$cargo_target_dir" "$census_proof_sha"
+        "$cargo_target_dir" "$census_proof_sha" "$skip_glamour"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 

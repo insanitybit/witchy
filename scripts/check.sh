@@ -179,6 +179,26 @@ case "$gate_scope" in
 esac
 if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 
+# Glamour-skip (WITCHY_GATE_SKIP_GLAMOUR, default 0) — set by the merge-queue
+# coordinator from the batch diff (see merge-queue.sh). glamour's own tests
+# (`witchy::glamour`, `commands::web::tests`) compile a full glamour program
+# per test and drive the multi-core Wasm compiler — real cost that only earns
+# its keep when a change could affect glamour's behavior. coven's own tests
+# already live entirely in the `e2e` binary, which the default (non-`--full`)
+# gate excludes below regardless of this flag. Fail SAFE: unset means 0 (run
+# them), matching a standalone run. `--fast`/`--full` are human/agent-invoked
+# runs whose whole point is to execute their section (same reasoning as
+# gate_scope above), so force 0 for both regardless of the coordinator's
+# classification.
+gate_skip_glamour="${WITCHY_GATE_SKIP_GLAMOUR:-0}"
+case "$gate_skip_glamour" in
+    0 | 1) ;;
+    *) echo "check.sh: WITCHY_GATE_SKIP_GLAMOUR must be 0 or 1" >&2; exit 2 ;;
+esac
+if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_skip_glamour=0; fi
+glamour_excl=""
+[ "$gate_skip_glamour" -eq 1 ] && glamour_excl="not binary(glamour) and not test(/^commands::web::tests::/)"
+
 # Queue fixtures spawn detached coordinators, process groups, lock holders, and
 # nested throwaway Git repositories. Running them beside 2,000 product tests
 # makes their bounded readiness assertions measure machine contention instead
@@ -222,6 +242,9 @@ if cargo nextest --version >/dev/null 2>&1; then
     [ "$full" -eq 0 ] && excl="$excl and not binary(e2e)"
     if [ -n "$fuzz_excl" ]; then
         excl="${excl:+$excl and }$fuzz_excl"
+    fi
+    if [ -n "$glamour_excl" ]; then
+        excl="${excl:+$excl and }$glamour_excl"
     fi
     if [ -n "$gate_test_jobs" ] && [ -n "$excl" ]; then
         test_cmd=(cargo nextest run -j "$gate_test_jobs" --workspace -E "$excl")
