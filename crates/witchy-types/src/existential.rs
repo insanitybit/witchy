@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use witchy_syntax::ast::visit::visit_module_exprs;
 use witchy_syntax::ast::{Block, Expr, Item, Module, Stmt, Type};
 use witchy_syntax::{format, intrinsics};
 
@@ -251,7 +252,7 @@ fn collect_requests(
 ) -> Result<CollectedRequests, String> {
     let mut requests = Vec::new();
     let mut upcasts = Vec::new();
-    visit_module_exprs(module, &mut |expr| {
+    visit_module_exprs::<String>(module, &mut |expr| {
         if let Some(request) = pack_request(table, expr)? {
             requests.push(request);
         }
@@ -509,167 +510,6 @@ fn rewrite_expr(
     Ok(())
 }
 
-fn visit_module_exprs(
-    module: &Module,
-    visitor: &mut impl FnMut(&Expr) -> Result<(), String>,
-) -> Result<(), String> {
-    for item in &module.items {
-        match item {
-            Item::Function(function) => visit_block(&function.body, visitor)?,
-            Item::Trait(definition) => {
-                for method in &definition.methods {
-                    if let Some(default) = &method.default {
-                        visit_block(default, visitor)?;
-                    }
-                }
-            }
-            Item::Impl(definition) => {
-                for method in &definition.methods {
-                    visit_block(&method.body, visitor)?;
-                }
-            }
-            Item::Const { value, .. } => visit_expr(value, visitor)?,
-            Item::Comptime(block) => visit_block(block, visitor)?,
-            Item::Type(_) | Item::TypeAlias { .. } => {}
-        }
-    }
-    Ok(())
-}
-
-fn visit_block(
-    block: &Block,
-    visitor: &mut impl FnMut(&Expr) -> Result<(), String>,
-) -> Result<(), String> {
-    for statement in &block.stmts {
-        match statement {
-            Stmt::Let { value, .. }
-            | Stmt::Assign { value, .. }
-            | Stmt::LetPattern { value, .. }
-            | Stmt::Yield(value)
-            | Stmt::Expr(value)
-            | Stmt::Return(Some(value)) => visit_expr(value, visitor)?,
-            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
-        }
-    }
-    Ok(())
-}
-
-fn visit_expr(
-    expr: &Expr,
-    visitor: &mut impl FnMut(&Expr) -> Result<(), String>,
-) -> Result<(), String> {
-    visitor(expr)?;
-    match expr {
-        Expr::List(items)
-        | Expr::Tuple(items)
-        | Expr::Ctor { args: items, .. }
-        | Expr::AnonCtor { args: items, .. } => {
-            for item in items {
-                visit_expr(item, visitor)?;
-            }
-        }
-        Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {
-            if let Expr::MethodCall { receiver, .. } = expr {
-                visit_expr(receiver, visitor)?;
-            }
-            for argument in args {
-                visit_expr(argument, visitor)?;
-            }
-        }
-        Expr::ExistentialCall { receiver, args, .. } => {
-            visit_expr(receiver, visitor)?;
-            for argument in args {
-                visit_expr(argument, visitor)?;
-            }
-        }
-        Expr::LabeledCall { args, .. } => {
-            for (_, argument) in args {
-                visit_expr(argument, visitor)?;
-            }
-        }
-        Expr::LabeledMethodCall { receiver, args, .. } => {
-            visit_expr(receiver, visitor)?;
-            for (_, argument) in args {
-                visit_expr(argument, visitor)?;
-            }
-        }
-        Expr::Apply { func, args } => {
-            visit_expr(func, visitor)?;
-            for argument in args {
-                visit_expr(argument, visitor)?;
-            }
-        }
-        Expr::Unary { expr, .. }
-        | Expr::Try(expr)
-        | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. }
-        | Expr::ExistentialUpcast { expr, .. }
-        | Expr::Field { base: expr, .. } => visit_expr(expr, visitor)?,
-        Expr::Lambda { body, .. } | Expr::Block(body) => visit_block(body, visitor)?,
-        Expr::RecordUpdate { base, fields, .. } => {
-            visit_expr(base, visitor)?;
-            for (_, value) in fields {
-                visit_expr(value, visitor)?;
-            }
-        }
-        Expr::Record { fields, spread, .. } => {
-            for (_, value) in fields {
-                visit_expr(value, visitor)?;
-            }
-            if let Some(spread) = spread {
-                visit_expr(spread, visitor)?;
-            }
-        }
-        Expr::Binary { lhs, rhs, .. } => {
-            visit_expr(lhs, visitor)?;
-            visit_expr(rhs, visitor)?;
-        }
-        Expr::If { cond, then_block, else_block } => {
-            visit_expr(cond, visitor)?;
-            visit_block(then_block, visitor)?;
-            if let Some(else_block) = else_block {
-                visit_block(else_block, visitor)?;
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            visit_expr(scrutinee, visitor)?;
-            for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    visit_expr(guard, visitor)?;
-                }
-                visit_expr(&arm.body, visitor)?;
-            }
-        }
-        Expr::While { cond, body } => {
-            visit_expr(cond, visitor)?;
-            visit_block(body, visitor)?;
-        }
-        Expr::For { iter, body, .. } => {
-            visit_expr(iter, visitor)?;
-            visit_block(body, visitor)?;
-        }
-        Expr::Range { lo, hi, .. } => {
-            visit_expr(lo, visitor)?;
-            visit_expr(hi, visitor)?;
-        }
-        Expr::Index { base, index } => {
-            visit_expr(base, visitor)?;
-            visit_expr(index, visitor)?;
-        }
-        Expr::WhileLet { scrutinee, body, .. } => {
-            visit_expr(scrutinee, visitor)?;
-            visit_block(body, visitor)?;
-        }
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Duration(_)
-        | Expr::Str(_)
-        | Expr::Bool(_)
-        | Expr::Var(_)
-        | Expr::TaggedLit { .. } => {}
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
@@ -890,7 +730,7 @@ fn erase_update(value: Label, base: Envelope) -> Envelope:
             "all construction sites share one concrete witness"
         );
         let mut packs = 0;
-        visit_module_exprs(prepared.module(), &mut |expr| {
+        visit_module_exprs::<String>(prepared.module(), &mut |expr| {
             if matches!(
                 expr,
                 Expr::ExistentialPack {
@@ -972,7 +812,7 @@ fn choose(flag: Bool, label: Label, badge: Badge) -> dyn Render:
 
         assert_eq!(prepared.witnesses().witnesses.len(), 2);
         let mut witness_ids = Vec::new();
-        visit_module_exprs(prepared.module(), &mut |expr| {
+        visit_module_exprs::<String>(prepared.module(), &mut |expr| {
             if let Expr::ExistentialPack { witness, .. } = expr {
                 witness_ids.push(*witness);
             }
@@ -1025,7 +865,7 @@ fn pair(label: Label, badge: Badge) -> (dyn Render, dyn Render):
 
         assert_eq!(prepared.witnesses().witnesses.len(), 2);
         let mut packs = 0;
-        visit_module_exprs(prepared.module(), &mut |expr| {
+        visit_module_exprs::<String>(prepared.module(), &mut |expr| {
             if matches!(expr, Expr::ExistentialPack { .. }) {
                 packs += 1;
             }

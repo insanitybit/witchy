@@ -1253,3 +1253,96 @@ fn glamour_highlighter_footprint_is_empty() {
         );
     }
 }
+
+/// Every committed `web/witchy-runtime/*.test.mjs` driver must be WIRED to a
+/// Rust test — a suite that exists but is referenced by nothing never runs,
+/// and dark tests read as coverage that isn't there (the 2026-08-07 published-
+/// book CSP regression shipped green exactly this way; five suites, including
+/// the 719-line islands suite, were dark). This meta-test makes darkness loud:
+/// committing a new driver without a `run_node_driver` (or equivalent) wiring
+/// fails HERE with the missing filename.
+#[test]
+fn every_node_test_driver_is_wired_to_a_rust_test() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let this_file = std::fs::read_to_string(manifest.join("tests/glamour/dom.rs"))
+        .expect("read tests/glamour/dom.rs");
+    let mut wired_elsewhere = String::new();
+    // Drivers may legitimately be wired from other harness files.
+    for extra in [
+        "tests/browser/runtime.rs",
+        "tests/browser/shim.rs",
+        "tests/browser/encoding.rs",
+        "tests/misc/wasm_abi_catalog.rs",
+        "tests/test_for_paths.rs",
+        "src/example_tests/glamour.rs",
+        "scripts/check.sh",
+    ] {
+        if let Ok(text) = std::fs::read_to_string(manifest.join(extra)) {
+            wired_elsewhere.push_str(&text);
+        }
+    }
+    let mut dark = Vec::new();
+    for entry in std::fs::read_dir(manifest.join("web/witchy-runtime")).expect("list drivers") {
+        let name = entry.expect("driver entry").file_name();
+        let name = name.to_string_lossy().into_owned();
+        if !name.ends_with(".test.mjs") {
+            continue;
+        }
+        if !this_file.contains(&name) && !wired_elsewhere.contains(&name) {
+            dark.push(name);
+        }
+    }
+    assert!(
+        dark.is_empty(),
+        "committed Node test drivers not wired to any Rust test (add a run_node_driver \
+         test or delete the driver): {dark:?}"
+    );
+}
+
+/// Compiler-lowered islands: publication, activation, and resume — the suite
+/// that was dark when the published-book CSP regression shipped (see
+/// `every_node_test_driver_is_wired_to_a_rust_test`).
+#[test]
+fn glamour_islands_publication_and_resume_work() {
+    run_node_driver("web/witchy-runtime/glamour-islands.test.mjs", "GLAMOUR-ISLANDS OK", "glamour islands");
+}
+
+/// Resume differential: server-rendered island state must equal a fresh mount.
+#[test]
+fn glamour_resume_matches_fresh_mount_differentially() {
+    run_node_driver(
+        "web/witchy-runtime/glamour-resume-differential.test.mjs",
+        "GLAMOUR-RESUME-DIFFERENTIAL OK",
+        "glamour resume differential",
+    );
+}
+
+/// Session/local storage host effects stay at the host boundary.
+#[test]
+fn glamour_storage_host_effects_work() {
+    run_node_driver("web/witchy-runtime/glamour-storage.test.mjs", "GLAMOUR-STORAGE OK", "glamour storage");
+}
+
+/// The frame host protocol (init/grant/event handshake) for document frames.
+#[test]
+fn glamour_frame_host_protocol_works() {
+    run_node_driver("web/witchy-runtime/glamour-frame.test.mjs", "glamour frame host tests passed", "glamour frame host");
+}
+
+/// Worker host effects: spawn/message/terminate at the host boundary.
+#[test]
+fn glamour_worker_host_effects_work() {
+    run_node_driver("web/witchy-runtime/glamour-worker.test.mjs", "glamour worker host: ok", "glamour worker host");
+}
+
+/// Published runnable-cell adoption: identity retention, edited-source
+/// execution, idempotence. (Sixth dark driver found by the wiring meta-test —
+/// it covers the exact adopt path the 2026-08-07 highlight fix changed.)
+#[test]
+fn witchy_runnable_adoption_retains_identity() {
+    run_node_driver(
+        "web/witchy-runtime/witchy-runnable-adoption.test.mjs",
+        "WITCHY-RUNNABLE-ADOPTION OK",
+        "runnable cell adoption",
+    );
+}

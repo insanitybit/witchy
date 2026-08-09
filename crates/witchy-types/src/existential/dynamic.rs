@@ -303,7 +303,7 @@ pub(super) fn collect_dynamic_types(
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
 ) -> Result<Vec<Type>, String> {
     let mut requested = Vec::new();
-    visit_module_exprs(module, &mut |expr| {
+    visit_module_exprs::<String>(module, &mut |expr| {
         if let Some(ty) =
             dynamic_identity_request(module, table, expr, runtime_catalog.is_some())?
         {

@@ -1192,9 +1192,11 @@ fn clos_type_name(signature: &ClosureSignature) -> String {
     format!("clos_t_{params}_r_{results}")
 }
 
-/// Collect the distinct closure signatures referenced by indirect calls for the
-/// type declarations the WAT printer emits. Mirrors the binary encoder.
-fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSignature>) {
+/// Collect the distinct closure signatures referenced by indirect calls, for
+/// the type declarations both emitters synthesize: the WAT printer's type
+/// section and the binary encoder's (one walker, two callers — they must
+/// never diverge).
+pub(crate) fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSignature>) {
     fn push(out: &mut Vec<ClosureSignature>, signature: &ClosureSignature) {
         if !out.contains(signature) {
             out.push(signature.clone());

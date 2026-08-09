@@ -4,6 +4,8 @@
 //! constructors/variants (`Click`, `Closed`); lowercase identifiers are
 //! variables and functions (`greet`, `count`).
 
+pub mod visit;
+
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashSet, HashSetExt as _};
 
