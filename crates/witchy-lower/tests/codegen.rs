@@ -4099,4 +4099,30 @@ fn main(console: Console):
             "the old root closes before the replacement root opens: {replace}"
         );
     }
+
+    #[test]
+    fn borrowed_shell_roots_balance_on_explicit_and_branch_returns() {
+        let source = "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 7)\n\n\
+             fn early(input: let('a) String) -> Int:\n    var cursor = make(input)\n    return cursor.offset\n\n\
+             fn branch(input: let('a) String, take: Bool) -> Int:\n    var cursor = make(input)\n    if take:\n        return cursor.offset\n    cursor.offset\n\n\
+             fn looped(input: let('a) String) -> Int:\n    var cursor = make(input)\n    var i = 0\n    while (i < 3):\n        i = i + 1\n    cursor.offset + i\n\n\
+             fn main() -> Int:\n    let input = \"root\"\n    early(input) + branch(input, true) + branch(input, false) + looped(input)\n";
+        assert_eq!(run_int(source), 31);
+
+        let module = parse_module(source).expect("parse aggregate root lifecycle fixture");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("aggregate root lifecycle lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        for function in ["early", "branch", "looped"] {
+            let start = wat.find(&format!("(func ${function}")).expect("lifecycle function");
+            let tail = &wat[start..];
+            let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+            let body = &tail[..end];
+            assert!(body.contains("__loan_root_cursor__input"), "root local in {function}: {body}");
+            assert!(body.contains("call $rc_dup"), "retain in {function}: {body}");
+            assert!(body.contains("call $rc_drop"), "release in {function}: {body}");
+        }
+    }
 }
