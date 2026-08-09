@@ -136,6 +136,16 @@ impl Codegen<'_> {
                 Kind::ExternRef
             }
             Expr::Call { name, .. } => match cap_ops::surface_name(name) {
+                // (BUG-609) A BINDING IN SCOPE SHADOWS AN INTRINSIC. A closure-typed
+                // parameter or local named after a bare intrinsic (`read`, `now`, …)
+                // must be typed from its own function type, not from the intrinsic
+                // catalog — otherwise the call pushes the intrinsic's result kind and
+                // the module fails wasm validation ("expected externref, found i32").
+                // This arm has to precede every `intrinsics::lookup` arm below, since
+                // name resolution and the interpreter already prefer the local.
+                other if self.local_fn_ret_kind.contains_key(other) => {
+                    self.local_fn_ret_kind[other]
+                }
                 name if intrinsics::lookup(name)
                     .is_some_and(|spec| spec.signature.returns_float()) => Kind::F64,
                 name if intrinsics::lookup(name)
@@ -367,6 +377,18 @@ impl Codegen<'_> {
                 ValType::Str
             }
             Expr::Call { name, .. } => match cap_ops::surface_name(name) {
+                // (BUG-609) A binding in scope shadows an intrinsic — see the
+                // matching arm in `kind_of`. A closure-typed local/parameter named
+                // `read`/`now`/… is typed from its own declared function type, so
+                // this arm must precede every `intrinsics::lookup` arm below.
+                other if self.local_fn_ret_kind.contains_key(other) => self
+                    .local_types
+                    .get(other)
+                    .and_then(|t| match t.unqualified() {
+                        Type::Fn(_, ret, _) => Some(ty_to_valtype(ret)),
+                        _ => None,
+                    })
+                    .unwrap_or(ValType::Other),
                 name if intrinsics::lookup(name)
                     .is_some_and(|spec| spec.signature.returns_string()) => ValType::Str,
                 name if intrinsics::lookup(name)

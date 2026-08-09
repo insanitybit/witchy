@@ -191,3 +191,29 @@ fn main(console: Console):
         assert_eq!(interp(src), run_on_wasm(src), "loop-captured closures diverged");
         assert_eq!(run_on_wasm(src), vec!["10", "11", "12"]);
     }
+
+    /// BUG-609: A BINDING IN SCOPE SHADOWS AN INTRINSIC. A closure-typed parameter
+    /// named after a bare intrinsic must be typed from its own function type, not
+    /// from the intrinsic catalog. `read` (`fn(String) -> String`) previously lowered
+    /// to the `file_read` WIR helper and failed wasm validation ("expected externref,
+    /// found i32"); `now` (`fn() -> Int`) mis-widened to i64. No capability is
+    /// involved — the defect was purely name-keyed. Both names are pinned because
+    /// they exercise the two distinct kind mismatches.
+    #[test]
+    fn closure_param_shadowing_an_intrinsic_agrees() {
+        let read_shadow = "fn use_it(console: Console, read: fn(String) -> String):\n    console.print(read(\"x\"))\n\nfn main(console: Console):\n    use_it(console, fn(s: String) -> String: s + \"!\")\n";
+        let expected = ["x!"];
+        assert_eq!(link_run(read_shadow), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", read_shadow)], "main"), expected, "wasm");
+
+        let now_shadow = "fn use_it(console: Console, now: fn() -> Int):\n    console.print(\"${now()}\")\n\nfn main(console: Console):\n    use_it(console, fn() -> Int: 42)\n";
+        let expected = ["42"];
+        assert_eq!(link_run(now_shadow), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", now_shadow)], "main"), expected, "wasm");
+
+        // A shadowing LOCAL (not just a parameter) resolves the same way.
+        let local_shadow = "fn main(console: Console):\n    let read = fn(s: String) -> String: s + \"?\"\n    console.print(read(\"y\"))\n";
+        let expected = ["y?"];
+        assert_eq!(link_run(local_shadow), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", local_shadow)], "main"), expected, "wasm");
+    }

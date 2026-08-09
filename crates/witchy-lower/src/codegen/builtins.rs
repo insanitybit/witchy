@@ -211,6 +211,17 @@ impl Codegen<'_> {
         use witchy_syntax::ast::is_render_intrinsic;
         use witchy_syntax::intrinsics;
         let name = witchy_syntax::cap_ops::surface_name(name);
+        // (BUG-609) A BINDING IN SCOPE SHADOWS AN INTRINSIC. A closure-typed local or
+        // parameter named after a bare intrinsic (`read`, `now`, `sign`, …) is a call
+        // THROUGH THAT VALUE, not the intrinsic — name resolution and the interpreter
+        // already agree on that. Declining here (before canonicalization and the
+        // arity table) sends it down the ordinary indirect-call path; without this,
+        // `read(x)` lowered to the `file_read` helper and the module failed wasm
+        // validation ("expected externref, found i32"). One guard covers every
+        // intrinsic rather than a per-name exclusion.
+        if self.local_fn_ret_kind.contains_key(name) {
+            return None;
+        }
         let name = intrinsics::canonical_operation_name(name);
         if let Some((callback_index, diagnostic)) =
             witchy_types::typeck::isolated_vm_callback_contract(name, args.len())
