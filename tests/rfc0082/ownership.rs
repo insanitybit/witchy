@@ -3,9 +3,7 @@
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter};
 
-#[path = "support/authenticated.rs"]
-mod authenticated;
-use authenticated::checked_result;
+use super::authenticated::checked_result;
 
 fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
     checked_result(source).expect("authenticated checked link")

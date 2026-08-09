@@ -103,24 +103,46 @@ test-group = 'gate-cold-heavy'
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 80
 
-# Long-running regression guards: the at-scale perf programs and the
-# type-resolved repository census can exceed the default 135s slow-kill under
-# a busy gate (the census was the sole timeout after 2,284 tests passed on
-# 2026-07-18). Serialize them in their own group, start them early, and retain
-# a bounded hard cap; assertions are unchanged. The census alone runs ~123s
-# standalone, so a 120s period tripped the slow-kill under concurrent load even
-# with three periods of grace (2026-08-04: two docs-only batches went red on
-# this single test). Widen the period to 240s so one uninterrupted run clears
-# the real runtime with headroom, keeping a bounded 480s (2 × 240s) hard cap.
+# `cli_subcommands::{web_commands_route_natively_and_complete_clean_clone_flow,
+# static_web_flow_needs_no_client_scaffold_or_browser_runtime}` each spawn the
+# real `witchy` binary through a full `new`/`test --web`/`build --web`/`doctor`
+# flow — same shape as `commands::web::tests` above (a full glamour program
+# compiled through the multi-core Wasm compiler, just out-of-process). Measured
+# ~53s standalone but TIMED OUT at the default 135s slow-kill in a full-suite
+# run (2026-08-09) purely from concurrent CPU contention — passes every time in
+# isolation. Same remedy: bound to the width-4 cold-heavy group and widen the
+# timeout so one uninterrupted run clears the real cost with headroom.
 [[profile.default.overrides]]
-filter = 'test(/list_reverse_flatten_flat_map_are_linear_at_scale|inplace_set_at_is_fast_and_alias_safe|inplace_update_at_is_fast_and_alias_safe|repository_census_matches_the_checked_in_type_resolved_snapshot/)'
+filter = 'binary_id(witchy::cli_subcommands) & test(/web_commands_route_natively_and_complete_clean_clone_flow|static_web_flow_needs_no_client_scaffold_or_browser_runtime/)'
+test-group = 'gate-cold-heavy'
+slow-timeout = { period = "240s", terminate-after = 2 }
+priority = 80
+
+# Long-running regression guards: the at-scale perf programs can exceed the
+# default 135s slow-kill under a busy gate. Serialize them in their own group,
+# start them early, and retain a bounded hard cap; assertions are unchanged.
+[[profile.default.overrides]]
+filter = 'test(/list_reverse_flatten_flat_map_are_linear_at_scale|inplace_set_at_is_fast_and_alias_safe|inplace_update_at_is_fast_and_alias_safe/)'
 test-group = 'perf-serial'
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
-# GitHub-hosted runners are several times slower than the dev machines: the
-# census hit the 480s hard cap there while 2,731 other tests passed (public CI,
-# 2026-08-07). Widen only the ci profile so the local gate keeps its bound.
+# The type-resolved repository census (the sole timeout after 2,284 tests
+# passed on 2026-07-18, then again after 2026-08-04 and 2026-08-09). It runs
+# ~113-123s standalone — always well inside a 240s period — but hit the full
+# 480s (2 × 240s) hard cap THREE separate times under concurrent-gate load,
+# confirming this is contention-starvation, not a regression (isolated runs
+# stay green every time). Local dev-machine contention has now caught up to
+# the GitHub-runner slowdown that already forced CI to 600s (2026-08-07);
+# apply the same widened period locally instead of just in CI.
+[[profile.default.overrides]]
+filter = 'test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)'
+test-group = 'perf-serial'
+slow-timeout = { period = "600s", terminate-after = 2 }
+priority = 90
+
+# GitHub-hosted runners are several times slower still; keep the CI profile
+# at parity with the (now equally widened) local default above.
 [[profile.ci.overrides]]
 filter = 'test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)'
 test-group = 'perf-serial'

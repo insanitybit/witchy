@@ -125,8 +125,54 @@
     /// result as a Rust reference range, on BOTH backends (so they also agree
     /// with each other) — across sign, inclusive/exclusive, empty, and `continue`.
     mod range_for_properties {
-        use super::{interp, run_on_wasm};
+        use super::interp;
         use proptest::prelude::*;
+        use std::cell::RefCell;
+
+        // `run_on_wasm` builds a fresh `Runtime` (a real Wasmtime `Engine::new()` —
+        // Cranelift ISA setup, not free) per call. Each proptest case here calls it
+        // once, and `with_cases(96)` means 96 fresh engines per test function —
+        // enough to blow past the nextest per-test timeout. The generated programs
+        // differ every case (so the *module* still compiles fresh each time, as it
+        // must), but proptest runs cases sequentially on one thread, so the `Engine`
+        // itself can be built once per thread and reused across all of a test
+        // function's cases.
+        thread_local! {
+            static RUNTIME: RefCell<crate::runtime::Runtime> =
+                RefCell::new(crate::runtime::Runtime::new().expect("runtime"));
+        }
+
+        fn run_on_wasm_cached(src: &str) -> Vec<String> {
+            use crate::runtime::Capabilities;
+            let linked = super::resolve_std_src(src);
+            super::typeck::check(&linked).expect("typecheck");
+            let bytes = super::codegen::compile_module_binary(&linked)
+                .expect_lowered("the binary path lowers this program");
+            RUNTIME.with(|rt| {
+                let mut rt = rt.borrow_mut();
+                let mut actor = rt
+                    .spawn(
+                        &bytes,
+                        Capabilities {
+                            print: true,
+                            print_int: true,
+                            clock: true,
+                            env: true,
+                            dir_root: Some(std::path::PathBuf::from(".")),
+                            dir_read: true,
+                            dir_write: true,
+                            net_allow: Some(Vec::new()),
+                            net_connect: true,
+                            net_listen: true,
+                            ..Default::default()
+                        },
+                        4,
+                    )
+                    .expect("spawn");
+                actor.run().expect("run");
+                actor.output()
+            })
+        }
 
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(96))]
@@ -141,7 +187,7 @@
                 let reference: i64 = if inclusive { (lo..=hi).sum() } else { (lo..hi).sum() };
                 let want = vec![reference.to_string()];
                 prop_assert_eq!(interp(&src), want.clone());
-                prop_assert_eq!(run_on_wasm(&src), want);
+                prop_assert_eq!(run_on_wasm_cached(&src), want);
             }
 
             #[test]
@@ -153,7 +199,7 @@
                 let reference: i64 = (lo..hi).filter(|x| x % 2 == 0).sum();
                 let want = vec![reference.to_string()];
                 prop_assert_eq!(interp(&src), want.clone());
-                prop_assert_eq!(run_on_wasm(&src), want);
+                prop_assert_eq!(run_on_wasm_cached(&src), want);
             }
         }
     }
