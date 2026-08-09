@@ -5,7 +5,11 @@ status: accepted
 created: 2026-07-29
 updated: 2026-08-09
 superseded-by:
+<<<<<<< HEAD
 tracking: "Design accepted. No open RFC-0107-owned questions remain for local implementation: RFC-0107 is fully implemented in code and tests, with only externally-owned evidence remaining (public CI/header/hosting evidence, WebAuthn relying-party exchange, and cold-mobile matrix work). `witchy doctor --web --deployment <url>` can now validate deployed-browser-policy headers in addition to local checks. Remaining non-local work can still include RFC-0109 implementation slices, including a deeper incremental compiler pass if/when started."
+=======
+tracking: "Design accepted. No open RFC-0107-owned questions remain for local implementation: RFC-0107 is fully implemented in code and tests, with only externally-owned evidence remaining (public CI/header/hosting evidence, WebAuthn relying-party exchange, and cold-mobile matrix work). Remaining non-local work can still include RFC-0109 implementation slices, including a deeper incremental compiler pass if/when started."
+>>>>>>> 0c19efaf (docs(rfc0107): refresh closeout status and external blockers)
 predecessors:
   - "[0006](0006-compile-time-tagged-literals.md) (typed and hygienic `html` literals)"
   - "[0008](0008-frontend-framework-rune.md) (capability-pure model/update/view architecture)"
