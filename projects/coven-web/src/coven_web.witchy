@@ -140,7 +140,7 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     // WebAuthn: register a credential, fetch a single-use challenge, sign IN (an
     // assertion the server verifies, minting a session token), and the second-factor
     // promote + yank that verify the assertion server-side before forwarding.
-    app = app.post("/api/webauthn/register", h_wa_register(assets))
+    app = app.post("/api/webauthn/register", h_wa_register(assets, origin, rp_id))
     // BUG-372: minting a challenge WRITES `_wa_challenge.json` (server state), so it must be a
     // POST — a GET is CSRF-exempt (`is_state_changing` only flags unsafe methods), which would
     // let a cross-site page silently rotate the outstanding challenge. As a POST it sits behind
@@ -277,25 +277,62 @@ fn decode_state_or_empty(s: String) -> Json:
         Ok(doc) -> doc
         Err(_e) -> JsonObject([])
 
-fn h_wa_register(store: Dir) -> fn(Request) -> Response:
+fn h_wa_register(store: Dir, origin: String, rp_id: String) -> fn(Request) -> Response:
     fn(req: Request):
-        // SEC-001: registration is UNAUTHENTICATED, so it may only BOOTSTRAP the first
-        // passkey — never overwrite an existing one. Otherwise an anonymous attacker could
-        // replace the maintainer's credential and then sign in as them. Rotating a passkey
-        // requires removing `_wa_cred.json` out-of-band (operator action).
+        // SEC-001 + RFC-0099: registration BOOTSTRAPS the first passkey only (never
+        // overwrite an existing one — an anonymous attacker must not replace the
+        // maintainer's credential; rotation removes `_wa_cred.json` out-of-band, an
+        // operator action). RFC-0099: the credential is no longer client-asserted —
+        // it is PROVEN by a server-challenged `create` ceremony we re-verify here
+        // (`webauthn.verify_registration`), and its initial signature counter is
+        // recorded so a later cloned authenticator is caught by the monotonic check.
         if store.exists("_wa_cred.json"):
             server.json(403, "{\"error\":\"a passkey is already registered; rotation requires removing the credential out-of-band\"}")
         else:
             match server.json_body(req):
                 Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
-                Ok(doc) ->
-                    let cred = string_field_or_empty(doc, "credentialId")
-                    let pk = string_field_or_empty(doc, "publicKey")
-                    if cred == "" || pk == "":
-                        server.bad_request("{\"error\":\"missing credentialId or publicKey\"}")
-                    else:
-                        store.write("_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(cred)), ("publicKey", JsonString(pk))])))
-                        server.json(200, "{\"ok\":true}")
+                Ok(doc) -> wa_do_register(store, origin, rp_id, doc)
+
+fn wa_do_register(store: Dir, origin: String, rp_id: String, doc: Json) -> Response:
+    if !store.exists("_wa_challenge.json"):
+        server.json(403, "{\"error\":\"no outstanding registration challenge\"}")
+    else:
+        let ch = decode_state_or_empty(store.read("_wa_challenge.json"))
+        let ch_b64 = string_field_or_empty(ch, "b64")
+        // The create ceremony is only valid against a challenge minted for `register`
+        // (single-use, enforced by content: a consumed challenge is cleared to `{}`).
+        if ch_b64 == "" || string_field_or_empty(ch, "op") != "register":
+            server.json(403, "{\"error\":\"no outstanding registration challenge\"}")
+        else:
+            match webauthn.verify_registration(string_field_or_empty(doc, "clientData"), string_field_or_empty(doc, "attestationObject"), ch_b64, origin, rp_id, true):
+                Err(e) -> server.json(400, json.encode(JsonObject([("error", JsonString("registration failed: ${webauthn.registration_error_message(e)}"))])))
+                Ok(cred) ->
+                    store.write("_wa_challenge.json", "{}")
+                    store.write("_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(cred.credential_id_hex)), ("publicKey", JsonString(cred.public_key_hex)), ("signCount", JsonInt(cred.sign_count))])))
+                    server.json(200, "{\"ok\":true}")
+
+fn int_field_or_zero(doc: Json, key: String) -> Int:
+    match json.get_int(doc, key):
+        Some(n) -> n
+        None -> 0
+
+// RFC-0099: enforce a MONOTONIC WebAuthn signature counter to detect a cloned
+// authenticator. After a valid assertion, compare the counter it reported against
+// the stored one; refuse a regression, and persist the higher value atomically. A
+// reported `0` means the authenticator implements no counter and is never a
+// regression. `_wa_cred.json` already exists at every call site (the handlers check).
+fn counter_check(store: Dir, auth_data_hex: String) -> Result(Nil, String):
+    match webauthn.assertion_sign_count(auth_data_hex):
+        Err(e) -> Err(webauthn.assertion_error_message(e))
+        Ok(reported) ->
+            let cred = decode_state_or_empty(store.read("_wa_cred.json"))
+            let stored = int_field_or_zero(cred, "signCount")
+            if reported != 0 && reported <= stored:
+                Err("signature counter regression (cloned authenticator?): reported ${reported} <= stored ${stored}")
+            else:
+                if reported > stored:
+                    store.replace("_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(string_field_or_empty(cred, "credentialId"))), ("publicKey", JsonString(string_field_or_empty(cred, "publicKey"))), ("signCount", JsonInt(reported))])))
+                Ok(Nil)
 
 fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
     fn(req: Request):
@@ -364,18 +401,24 @@ fn wa_do_promote(store: Dir, net: Net, key: Secret, clock: Clock, upstream: Stri
         else:
             match webauthn.verify_assertion(pk, string_field_or_empty(doc, "authData"), string_field_or_empty(doc, "clientData"), string_field_or_empty(doc, "signature"), ch_b64, origin, rp_id, true):
                 Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: ${webauthn.assertion_error_message(reason)}"))])))
-                Ok(_) ->
-                    store.write("_wa_challenge.json", "{}")
-                    // The passkey is verified server-side HERE, so mint a short-lived EdDSA
-                    // identity token attesting `amr:["webauthn"]` for the signed-in promoter.
-                    // A trusted upstream coven verifies it (issuer `origin`); an anonymous
-                    // coven ignores it and trusts `promoted_by`, so both paths still work.
-                    let tok = mint_2fa_token(key, clock, origin, promoter, "promote", name, version)
-                    let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(promoter)), ("id_token", JsonString(tok))]))
-                    let (host, port) = split_host_port(upstream)
-                    match upstream_try_post(net, host, port, "/coven/promote", body):
-                        Ok(resp) -> server.json(http.status(resp), http.body(resp))
-                        Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+                Ok(_) -> promote_after_assertion(store, net, key, clock, upstream, origin, name, version, promoter, string_field_or_empty(doc, "authData"))
+
+fn promote_after_assertion(store: Dir, net: Net, key: Secret, clock: Clock, upstream: String, origin: String, name: String, version: String, promoter: String, auth_data_hex: String) -> Response:
+    // RFC-0099: enforce the monotonic signature counter before releasing state.
+    match counter_check(store, auth_data_hex):
+        Err(m) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: ${m}"))])))
+        Ok(_) ->
+            store.write("_wa_challenge.json", "{}")
+            // The passkey is verified server-side HERE, so mint a short-lived EdDSA
+            // identity token attesting `amr:["webauthn"]` for the signed-in promoter.
+            // A trusted upstream coven verifies it (issuer `origin`); an anonymous
+            // coven ignores it and trusts `promoted_by`, so both paths still work.
+            let tok = mint_2fa_token(key, clock, origin, promoter, "promote", name, version)
+            let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(promoter)), ("id_token", JsonString(tok))]))
+            let (host, port) = split_host_port(upstream)
+            match upstream_try_post(net, host, port, "/coven/promote", body):
+                Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
 
 // ---- WebAuthn 2FA for yank --------------------------------------------------
 // Yank is a destructive state change (exclude a version from resolutions), so — like
@@ -406,17 +449,23 @@ fn wa_do_yank(store: Dir, net: Net, key: Secret, clock: Clock, upstream: String,
         else:
             match webauthn.verify_assertion(pk, string_field_or_empty(doc, "authData"), string_field_or_empty(doc, "clientData"), string_field_or_empty(doc, "signature"), ch_b64, origin, rp_id, true):
                 Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: ${webauthn.assertion_error_message(reason)}"))])))
-                Ok(_) ->
-                    store.write("_wa_challenge.json", "{}")
-                    // As with promote: the verified passkey lets us mint a short-lived EdDSA
-                    // identity token attesting `amr:["webauthn"]` for the signed-in yanker,
-                    // which a trusted upstream coven verifies (an anonymous one ignores it).
-                    let tok = mint_2fa_token(key, clock, origin, yanker, "yank", name, version)
-                    let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("id_token", JsonString(tok))]))
-                    let (host, port) = split_host_port(upstream)
-                    match upstream_try_post(net, host, port, "/coven/yank", body):
-                        Ok(resp) -> server.json(http.status(resp), http.body(resp))
-                        Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+                Ok(_) -> yank_after_assertion(store, net, key, clock, upstream, origin, name, version, yanker, string_field_or_empty(doc, "authData"))
+
+fn yank_after_assertion(store: Dir, net: Net, key: Secret, clock: Clock, upstream: String, origin: String, name: String, version: String, yanker: String, auth_data_hex: String) -> Response:
+    // RFC-0099: enforce the monotonic signature counter before the destructive yank.
+    match counter_check(store, auth_data_hex):
+        Err(m) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: ${m}"))])))
+        Ok(_) ->
+            store.write("_wa_challenge.json", "{}")
+            // As with promote: the verified passkey lets us mint a short-lived EdDSA
+            // identity token attesting `amr:["webauthn"]` for the signed-in yanker,
+            // which a trusted upstream coven verifies (an anonymous one ignores it).
+            let tok = mint_2fa_token(key, clock, origin, yanker, "yank", name, version)
+            let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("id_token", JsonString(tok))]))
+            let (host, port) = split_host_port(upstream)
+            match upstream_try_post(net, host, port, "/coven/yank", body):
+                Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
 
 // ---- Session (passkey / social sign-in) -------------------------------------
 // A signed-in maintainer holds a short-lived BEARER token, minted only after a
@@ -508,9 +557,13 @@ fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: Str
             match webauthn.verify_assertion(pk, string_field_or_empty(doc, "authData"), string_field_or_empty(doc, "clientData"), string_field_or_empty(doc, "signature"), ch_b64, origin, rp_id, true):
                 Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: ${webauthn.assertion_error_message(reason)}"))])))
                 Ok(_) ->
-                    store.write("_wa_challenge.json", "{}")
-                    let (tok, exp) = issue_session(key, clock, "passkey")
-                    server.json(200, json.encode(JsonObject([("token", JsonString(tok)), ("expires", JsonString("${exp}"))])))
+                    // RFC-0099: enforce the monotonic signature counter before minting a session.
+                    match counter_check(store, string_field_or_empty(doc, "authData")):
+                        Err(m) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: ${m}"))])))
+                        Ok(_) ->
+                            store.write("_wa_challenge.json", "{}")
+                            let (tok, exp) = issue_session(key, clock, "passkey")
+                            server.json(200, json.encode(JsonObject([("token", JsonString(tok)), ("expires", JsonString("${exp}"))])))
 
 // ---- "Log in with GitHub" (OAuth2) ------------------------------------------
 // `/login` redirects to GitHub with a signed, expiring anti-CSRF `state`; `/callback`

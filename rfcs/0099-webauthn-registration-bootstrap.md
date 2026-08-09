@@ -96,17 +96,28 @@ the rest of the RFC builds on):
 - Differential test `webauthn_verify_registration_parses_the_create_ceremony`
   (both backends agree on a valid ceremony and on rejection of a wrong challenge).
 
-**Remaining integration (not yet landed):**
+**coven-web integration LANDED** (`projects/coven-web`):
 
-- coven-web wiring: mint a single-use **create** challenge (op `register`), rewrite
-  `h_wa_register` to verify via `verify_registration` and persist
-  `{credentialId, publicKey, signCount}`, and update the browser `webauthn.ts` to
-  run `navigator.credentials.create` and POST `{clientData, attestationObject}`.
-- Signature-counter enforcement in the three assert handlers (promote/yank/login):
-  after a valid assertion, compare `assertion_sign_count` against the stored count,
-  reject a regression, persist the higher value.
-- Explicit operator-authorized bootstrap/recovery (beyond the current SEC-001
-  first-credential-only bootstrap), which the RFC couples to a stable purchased
-  domain (see Non-goals / the RFC-0117 domain prerequisite) and MED-3
-  (first-promoter hijack) in RFC-0117 Lane C.
-- Browser + malformed-CBOR/COSE/origin/RP/counter fixtures.
+- `h_wa_register` no longer trusts a client-asserted key — it verifies a
+  server-challenged **create** ceremony (challenge minted with op `register`) via
+  `webauthn.verify_registration` and persists `{credentialId, publicKey, signCount}`.
+  The browser `webauthn.ts` now sends `{clientData, attestationObject}` from
+  `navigator.credentials.create` instead of a `getPublicKey()` SEC1 point.
+- **Signature-counter enforcement** in all three assert handlers (promote/yank/
+  login): after a valid assertion, `counter_check` compares `assertion_sign_count`
+  against the stored counter, refuses a regression (cloned-authenticator signal),
+  and persists the higher value with the atomic `Dir.replace` (RFC-0118). A reported
+  `0` (authenticator implements no counter) is never a regression. `coven_web.witchy`
+  typechecks with all of this.
+
+**Remaining (residual, infra/harness-gated):**
+
+- Explicit operator-authorized bootstrap/recovery *beyond* the current SEC-001
+  first-credential-only bootstrap (no overwrite; rotation is an out-of-band operator
+  delete of `_wa_cred.json`). A stronger operator-token bootstrap couples to the
+  stable purchased domain the RFC's Non-goals require and to MED-3 (first-promoter
+  hijack) in RFC-0117 Lane C.
+- A register-ceremony **e2e** and browser + malformed-CBOR/COSE/origin/RP/counter
+  fixtures — the coven-web WebAuthn path has no automated CI coverage today (the
+  known RFC-0117 Lane B.4 gap); the security core is covered by the
+  `verify_registration` differential test.

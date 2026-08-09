@@ -38,13 +38,6 @@ function b64url(buf: ArrayBuffer): string {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-// SPKI DER (from getPublicKey()) → SEC1 uncompressed point hex (the last 65 bytes
-// for P-256: 0x04 ‖ x ‖ y). This is exactly what std/webauthn expects as the pubkey.
-function spkiToSec1Hex(spki: ArrayBuffer): string {
-  const b = new Uint8Array(spki);
-  return hex(b.slice(b.length - 65).buffer);
-}
-
 // Mint a fresh single-use challenge for a specific operation. It is a POST (state-changing:
 // it writes the server's outstanding challenge, so it must sit behind the Sec-Fetch CSRF
 // layer, never GET). The {op, name, version} body BINDS the challenge — and thus the assertion
@@ -87,8 +80,11 @@ export async function register(rpId: string): Promise<void> {
     "passkey registration",
   )) as PublicKeyCredential;
   const resp = cred.response as AuthenticatorAttestationResponse;
-  const spki = resp.getPublicKey();
-  if (!spki) throw new Error("authenticator returned no public key");
+  // RFC-0099: send the RAW attestation, not a client-asserted key. The server
+  // re-verifies the create ceremony (clientDataJSON type/challenge/origin, then the
+  // attestationObject's authenticatorData rpIdHash + flags) and extracts the attested
+  // COSE ES256 key ITSELF (std/webauthn.verify_registration) — the browser no longer
+  // gets to choose the public key that will later authorize releases.
   // BUG-018: check r.ok. Registration can be REFUSED server-side (e.g. a passkey is already
   // registered → 403). Ignoring the response let a rejected register silently look like success;
   // the caller would then flip the UI to a "registered" state that the server never granted.
@@ -96,7 +92,10 @@ export async function register(rpId: string): Promise<void> {
     method: "POST",
     credentials: "omit",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ credentialId: b64url(cred.rawId), publicKey: spkiToSec1Hex(spki) }),
+    body: JSON.stringify({
+      clientData: new TextDecoder().decode(resp.clientDataJSON),
+      attestationObject: hex(resp.attestationObject),
+    }),
   });
   if (!r.ok) {
     const d = (await r.json().catch(() => ({}))) as { error?: string };
