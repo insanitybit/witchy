@@ -410,10 +410,18 @@ impl Coven:
             None -> "uploader=" + uploaded_by + "|hash=" + hash
 
         require(coven_validate.single_line(uploaded_by) && coven_validate.single_line(provenance), 400, "record fields must not contain newlines")?
+        // SEC-049/RFC-0118: claim the coordinate atomically BEFORE writing any source.
+        // Two concurrent first-publishes of the same name@version both pass do_publish's
+        // fast `!record_exists` pre-check; this exclusive create is the authoritative
+        // single-writer gate — exactly one wins, so their source trees can never
+        // interleave (which would leave `content_hash(files) != rec.hash` and brick the
+        // version). The loser gets the same 409 the immutability pre-check produces.
+        require(coven_store.claim_record(self.store, name, version), 409, "${name}@${version} already published — versions are immutable, bump the version")?
         // BUG-423: store the source only after EVERY validation has passed, so a rejected
         // publish never leaves poisoned source bytes on disk for this version.
         coven_store.store_source(self.store, name, version, files)
         let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0)
+        // Finalize the claimed placeholder with the real signed record (atomic replace).
         coven_store.write_record(self.store, name, version, rec)
         self.rebuild_metadata()
         Ok(server.json(200, rec))
@@ -504,9 +512,13 @@ impl Coven:
         let jti = coven_trust.claim(claims, "jti")
         require(!jti.is_empty(), 403, "identity token has no `jti` claim — a single-use token id is required (replay defense)")?
         let marker = "_policy/_jti/${crypto.sha256(jti)}"
-        require(!self.store.exists(marker), 403, "identity token already used — single-use replay refused")?
         fs.ensure_dir(self.store, "_policy/_jti")
-        self.store.write(marker, "1")
+        // SEC-049/RFC-0118: the atomic exclusive create IS the replay defense. Two
+        // concurrent consumes of one token (two workers, no shared memory) both run
+        // this create_new; the store guarantees exactly one winner (`true`) and one
+        // loser (`false`), so the token is spent exactly once. The old
+        // `exists`-then-`write` was a TOCTOU race that could double-spend the jti.
+        require(self.store.create_new(marker, "1"), 403, "identity token already used — single-use replay refused")?
         Ok(jti)
 
     fn authorize_publish(self, name: String, claims: Json) -> Result(String, CovenError):
@@ -518,15 +530,23 @@ impl Coven:
             require(!repo.is_empty() && !wf.is_empty(), 403, "cannot bind `${ns}`: the identity token carries no repository/workflow_ref claims (trusted publishing requires a CI identity)")?
             require(!repo.contains("/") || ns == coven_trust.namespace_of(repo), 403, "namespace `${ns}` does not match the token's repository org `${coven_trust.namespace_of(repo)}`")?
             fs.ensure_dir(self.store, "_policy/${ns}")
-            self.store.write(pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(repo)), ("workflow_ref", JsonString(wf))])))
-            Ok(coven_json.str(claims, "sub"))
+            // SEC-049/RFC-0118: bind the namespace first-writer-wins. If a concurrent
+            // first-publish already bound it (the atomic create loses), fall through to
+            // ENFORCING the committed policy rather than clobbering it (last-writer-wins).
+            if self.store.create_new(pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(repo)), ("workflow_ref", JsonString(wf))]))):
+                Ok(coven_json.str(claims, "sub"))
+            else:
+                self.enforce_bound_publisher(pubfile, claims, ns)
         else:
-            // BUG-379: a publisher.json that does not DECODE is corruption/tampering — a
-            // distinct hard error (500), not the 403 "incomplete trust policy" that a
-            // decoded-but-empty policy yields. Both fail closed; they are not the same fault.
-            match json.decode(self.store.read(pubfile)):
-                Err(e) -> Err(CovenError(500, "corrupt trust policy for namespace `${ns}` (${json.decode_error_message(e)}); it must be repaired or rebound out of band"))
-                Ok(policy) -> enforce_publish_policy(policy, claims, ns)
+            self.enforce_bound_publisher(pubfile, claims, ns)
+
+    fn enforce_bound_publisher(self, pubfile: String, claims: Json, ns: String) -> Result(String, CovenError):
+        // BUG-379: a publisher.json that does not DECODE is corruption/tampering — a
+        // distinct hard error (500), not the 403 "incomplete trust policy" that a
+        // decoded-but-empty policy yields. Both fail closed; they are not the same fault.
+        match json.decode(self.store.read(pubfile)):
+            Err(e) -> Err(CovenError(500, "corrupt trust policy for namespace `${ns}` (${json.decode_error_message(e)}); it must be repaired or rebound out of band"))
+            Ok(policy) -> enforce_publish_policy(policy, claims, ns)
 
     fn authorized_promoter(self, req: PromoteRequest, now: Int) -> Result((String, Option(Json), String), CovenError):
         if self.issuers.length() == 0:
@@ -562,7 +582,9 @@ impl Coven:
         if !self.store.exists(mfile):
             let id = "${coven_json.str(claims, "iss")}|${coven_json.str(claims, "sub")}"
             fs.ensure_dir(self.store, "_policy/${ns}")
-            self.store.write(mfile, json.encode(JsonArray([JsonString(id)])))
+            // RFC-0118: first-writer-wins bind; a lost race means a concurrent promote
+            // already bound the maintainer set — benign, so the result is ignored.
+            let _bound = self.store.create_new(mfile, json.encode(JsonArray([JsonString(id)])))
 
     fn authorized_yanker(self, name: String, id_token: Option(String), now: Int) -> Result(String, CovenError):
         if self.issuers.length() == 0:

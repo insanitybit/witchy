@@ -259,6 +259,63 @@ impl ConfinedDir {
             err("host filesystem capabilities are unavailable on this target")
         }
     }
+
+    /// Atomically create `rel` with `contents` if and only if it does not already
+    /// exist (a single `O_CREAT|O_EXCL` open). Returns `Ok(true)` when this call
+    /// created the file and `Ok(false)` when it was already present — the
+    /// race-loser signal. Two concurrent `create_new`s of the same path see
+    /// exactly one `true` and one `false`, so a marker written this way is
+    /// single-owner (RFC-0118). The parent directory must already exist.
+    pub fn create_new(&self, rel: &str, contents: &[u8]) -> Result<bool, ConfineError> {
+        let file = self.file(rel, false)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            file.create_new_all(contents)
+                .map_err(|error| inaccessible(&file.display, error))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = contents;
+            err("host filesystem capabilities are unavailable on this target")
+        }
+    }
+
+    /// Atomically replace `rel`'s contents with `contents` (creating it if
+    /// absent), by writing a unique temp sibling and renaming it over `rel`. A
+    /// concurrent reader observes either the whole old file or the whole new
+    /// file, never a torn or absent intermediate (RFC-0118).
+    pub fn replace(&self, rel: &str, contents: &[u8]) -> Result<(), ConfineError> {
+        let file = self.file(rel, false)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            file.replace_all(contents)
+                .map_err(|error| inaccessible(&file.display, error))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = contents;
+            err("host filesystem capabilities are unavailable on this target")
+        }
+    }
+
+    /// Atomically move `from` to `to` within this authority, replacing `to` if it
+    /// exists (POSIX `renameat` replace semantics). Both paths stay confined to
+    /// the Dir subtree; cross-authority rename is not offered (RFC-0118).
+    pub fn rename(&self, from: &str, to: &str) -> Result<(), ConfineError> {
+        let src = self.file(from, false)?;
+        let dst = self.file(to, false)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            src.parent
+                .inner
+                .rename(&src.name, &dst.parent.inner, &dst.name)
+                .map_err(|error| inaccessible(&dst.display, error))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            err("host filesystem capabilities are unavailable on this target")
+        }
+    }
 }
 
 /// A fixed file name paired with its already-open, confined parent directory.
@@ -423,6 +480,62 @@ impl ConfinedFile {
         }
     }
 
+    /// Atomically create this file with `contents` iff absent (`O_CREAT|O_EXCL`,
+    /// symlinks never followed). `Ok(true)` = created here; `Ok(false)` = it was
+    /// already present. Backs `ConfinedDir::create_new` (RFC-0118).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn create_new_all(&self, contents: &[u8]) -> std::io::Result<bool> {
+        use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+        use std::io::Write;
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create_new(true).follow(FollowSymlinks::No);
+        match self.parent.inner.open_with(&self.name, &options) {
+            Ok(mut file) => {
+                file.write_all(contents)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Atomically replace this file's contents by writing a unique temp sibling
+    /// and renaming it over the name — the reader never sees a torn write. Backs
+    /// `ConfinedDir::replace` (RFC-0118).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn replace_all(&self, contents: &[u8]) -> std::io::Result<()> {
+        use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+        use std::io::Write;
+        let temp = self.temp_sibling();
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create_new(true).follow(FollowSymlinks::No);
+        {
+            let mut file = self.parent.inner.open_with(&temp, &options)?;
+            file.write_all(contents)?;
+        }
+        // Rename the finished temp over the target: a concurrent reader of `name`
+        // observes all-old or all-new, never the half-written temp.
+        match self.parent.inner.rename(&temp, &self.parent.inner, &self.name) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = self.parent.inner.remove_file(&temp);
+                Err(error)
+            }
+        }
+    }
+
+    /// A collision-free temp name beside this file: distinct per process (pid)
+    /// and per call within a process (an atomic counter), so concurrent workers —
+    /// separate processes, distinct pids — never share a temp path.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn temp_sibling(&self) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = self.name.file_name().and_then(|s| s.to_str()).unwrap_or("tmp");
+        PathBuf::from(format!(".{base}.tmp.{}.{n}", std::process::id()))
+    }
+
     /// Execute this already-confined file without reopening its original ambient
     /// pathname. Linux passes the open executable as fd 3 so scripts keep working
     /// after the kernel starts their shebang interpreter.
@@ -569,6 +682,29 @@ mod tests {
         root.make_dir("fresh/nested").unwrap();
         root.make_dir("fresh/nested").unwrap();
         assert!(root.open_dir("fresh/nested").is_ok());
+    }
+
+    #[test]
+    fn atomic_create_new_replace_and_rename() {
+        let scratch = Scratch::new();
+        let root = ConfinedDir::open_ambient(&scratch.0).unwrap();
+        // create_new: first wins (true), second loses (false), contents untouched.
+        assert!(root.create_new("marker", b"one").unwrap());
+        assert!(!root.create_new("marker", b"two").unwrap());
+        assert_eq!(std::fs::read_to_string(scratch.join("marker")).unwrap(), "one");
+        // replace: whole-file swap, creating if absent then overwriting.
+        root.replace("doc", b"first").unwrap();
+        assert_eq!(std::fs::read_to_string(scratch.join("doc")).unwrap(), "first");
+        root.replace("doc", b"second").unwrap();
+        assert_eq!(std::fs::read_to_string(scratch.join("doc")).unwrap(), "second");
+        // rename: moves and replaces the destination.
+        root.rename("doc", "marker").unwrap();
+        assert_eq!(std::fs::read_to_string(scratch.join("marker")).unwrap(), "second");
+        assert!(!root.exists("doc").unwrap());
+        // the atomic ops stay confined.
+        assert!(root.create_new("../escape", b"x").is_err());
+        assert!(root.replace("../escape", b"x").is_err());
+        assert!(root.rename("marker", "../escape").is_err());
     }
 
     #[test]

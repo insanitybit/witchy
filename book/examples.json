@@ -1397,6 +1397,19 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/cookbook-files.md",
+    "footprint": [
+      "Console[Read,Write]",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 4,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,

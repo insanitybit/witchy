@@ -388,6 +388,128 @@ impl FixtureSession {
         self.open_from_dir(handle, relative, true, source)
     }
 
+    /// RFC-0118 atomic exclusive-create. Returns `true` when this call created
+    /// the file and `false` when it was already present (the race-loser signal);
+    /// the fixture host runs single-threaded, so "check-then-insert" is one
+    /// indivisible step, matching the native `O_CREAT|O_EXCL` observable result.
+    pub fn dir_create_new(
+        &mut self,
+        handle: &FixtureHandle,
+        relative: &str,
+        bytes: &[u8],
+        source: Option<SourceLocation>,
+    ) -> FilesystemProviderResult<bool> {
+        let (base, rights, policy) = self.checked_dir(handle)?;
+        require_right(&rights, "Write", "Dir")?;
+        self.guard_policy(&policy, relative, false)?;
+        let path = join_path(&base, relative)?;
+        require_parent_directory(&self.filesystem.nodes, &path)?;
+        if matches!(self.filesystem.nodes.get(&path), Some(Node::Directory)) {
+            return Err(fs_failure(
+                FixtureErrorCode::InvalidData,
+                format!("`{relative}` is a directory"),
+            ));
+        }
+        if matches!(self.filesystem.nodes.get(&path), Some(Node::File(_))) {
+            return Ok(false);
+        }
+        let mut call = fs_call("dir_create_new", Some(relative), &rights, source);
+        call.arguments
+            .insert("bytes".into(), FixtureValue::Bytes(encode_hex(bytes)));
+        outcome_unit(
+            self.dispatch_filesystem(
+                call,
+                FixtureOutcome::Return { value: FixtureValue::Null },
+            ),
+            "dir_create_new",
+        )?;
+        self.filesystem.nodes.insert(path, Node::File(bytes.to_vec()));
+        Ok(true)
+    }
+
+    /// RFC-0118 atomic whole-file replace (creating if absent). A map insert is
+    /// never torn, matching native's temp+rename observable result.
+    pub fn dir_replace(
+        &mut self,
+        handle: &FixtureHandle,
+        relative: &str,
+        bytes: &[u8],
+        source: Option<SourceLocation>,
+    ) -> FilesystemProviderResult<()> {
+        let (base, rights, policy) = self.checked_dir(handle)?;
+        require_right(&rights, "Write", "Dir")?;
+        self.guard_policy(&policy, relative, false)?;
+        let path = join_path(&base, relative)?;
+        require_parent_directory(&self.filesystem.nodes, &path)?;
+        if matches!(self.filesystem.nodes.get(&path), Some(Node::Directory)) {
+            return Err(fs_failure(
+                FixtureErrorCode::InvalidData,
+                format!("`{relative}` is a directory"),
+            ));
+        }
+        let mut call = fs_call("dir_replace", Some(relative), &rights, source);
+        call.arguments
+            .insert("bytes".into(), FixtureValue::Bytes(encode_hex(bytes)));
+        outcome_unit(
+            self.dispatch_filesystem(
+                call,
+                FixtureOutcome::Return { value: FixtureValue::Null },
+            ),
+            "dir_replace",
+        )?;
+        self.filesystem.nodes.insert(path, Node::File(bytes.to_vec()));
+        Ok(())
+    }
+
+    /// RFC-0118 atomic rename/replace within the Dir authority.
+    pub fn dir_rename(
+        &mut self,
+        handle: &FixtureHandle,
+        from: &str,
+        to: &str,
+        source: Option<SourceLocation>,
+    ) -> FilesystemProviderResult<()> {
+        let (base, rights, policy) = self.checked_dir(handle)?;
+        require_right(&rights, "Write", "Dir")?;
+        self.guard_policy(&policy, from, false)?;
+        self.guard_policy(&policy, to, false)?;
+        let from_path = join_path(&base, from)?;
+        let to_path = join_path(&base, to)?;
+        require_parent_directory(&self.filesystem.nodes, &to_path)?;
+        let moved = match self.filesystem.nodes.get(&from_path) {
+            Some(Node::File(existing)) => Node::File(existing.clone()),
+            Some(Node::Directory) => {
+                return Err(fs_failure(
+                    FixtureErrorCode::InvalidData,
+                    format!("`{from}` is a directory"),
+                ));
+            }
+            None => {
+                return Err(fs_failure(
+                    FixtureErrorCode::NotFound,
+                    format!("`{from}` was not found"),
+                ));
+            }
+        };
+        if matches!(self.filesystem.nodes.get(&to_path), Some(Node::Directory)) {
+            return Err(fs_failure(
+                FixtureErrorCode::InvalidData,
+                format!("`{to}` is a directory"),
+            ));
+        }
+        let call = fs_call("dir_rename", Some(from), &rights, source);
+        outcome_unit(
+            self.dispatch_filesystem(
+                call,
+                FixtureOutcome::Return { value: FixtureValue::Null },
+            ),
+            "dir_rename",
+        )?;
+        self.filesystem.nodes.remove(&from_path);
+        self.filesystem.nodes.insert(to_path, moved);
+        Ok(())
+    }
+
     pub fn file_read(
         &mut self,
         handle: &FixtureHandle,

@@ -1,7 +1,7 @@
 ---
 rfc: 0118
 title: "Atomic Dir intrinsics: closing the SEC-049 coven store concurrency races"
-status: proposed
+status: implemented
 created: 2026-08-08
 tracking: "Spawned by RFC-0117 Lane C item 3 (the atomic-Dir-intrinsics RFC it promised to scope, not hand-wave). Grounded in scratch/audit-2026-08-08-registry/{trust-pipeline.md,SYNTHESIS.md}. Design-only; no implementation in this RFC."
 ---
@@ -497,3 +497,52 @@ project's standard parity discipline:
     appending dated change-notes below.
   - The current behavior lives in spec/ and the code — NOT here.
 -->
+
+## Change notes
+
+### 2026-08-09 — implemented (scoped to the lock-free primitives)
+
+Shipped the three **lock-free** primitives that close the SEC-049 **HIGH** races,
+implemented identically on both backends and proven at parity:
+
+- `dir.create_new(path, data) -> Bool` — atomic `O_CREAT|O_EXCL`; `true` = this
+  call created it, `false` = it already existed (the race-loser signal).
+- `dir.replace(path, data) -> Nil` — atomic whole-file replace (temp sibling +
+  `renameat`).
+- `dir.rename(from, to) -> Nil` — atomic `renameat` replace within the Dir.
+
+**Deviations from the design above, and why:**
+
+- **Return shape is `Bool`/`Nil`, not a typed `DirError`.** The load-bearing
+  signal is `AlreadyExists`, delivered as `create_new`'s `false` (coven branches on
+  it exactly as the design's `Err(AlreadyExists)` → 403/409). witchy's entire
+  existing `Dir` surface already *traps* on a genuine IO/denied fault (coven's
+  `store.write` was unchecked), so trapping there is zero regression — and it avoids
+  a whole new error-ABI across both backends for the merely-exceptional IO case. A
+  typed `DirError` can layer on later without changing these callsites.
+- **`try_lock`/`DirLock` deferred.** As this RFC states, both HIGH races close
+  without a lock; `try_lock` is the multi-step-critical-section generalization and
+  depends on RFC-0114 must-consume obligations. Deferred to a follow-up rather than
+  block the security fix on the obligation machinery.
+
+**Where it landed.** The atomic FS semantics live once, in the shared
+`crates/witchy-runtime/src/confine.rs` (`ConfinedDir::{create_new,replace,rename}`),
+which *both* backends already use (the interpreter's `DirValue::Fs` IS a
+`ConfinedDir`), so the two backends cannot diverge on the filesystem effect. Wiring:
+cap-op table (`cap_ops.rs`), typeck (`capability_calls.rs`), interpreter dispatch
+(`builtins.rs`), the WIR prelude/classifiers/helper-registry, codegen lowering, the
+native host (`host/filesystem.rs`), and the fixture host for both the interpreter
+(`witchy-testkit`) and compiled-fixture (`host/fixture.rs`) paths. Differential
+coverage is a `book/src/cookbook-files.md` runnable example + `test_*` (both
+backends, fixture host) and a `confine.rs` unit test (native FS).
+
+**coven migration (SEC-049).** `consume_jti` now uses `create_new` (HIGH-1: the
+jti double-spend is closed — exactly one winner). Publish claims the version
+coordinate with `coven_store.claim_record` (`create_new` an empty placeholder)
+before writing source and finalizes with an atomic `write_record` replace (HIGH-2:
+concurrent same-version publishes can no longer interleave source and brick the
+content hash); `all_target_digests` skips a mid-publish placeholder. `coven_meta`
+role writes use `replace` (BUG-554 torn writes). The publisher/maintainer TOFU
+binds use `create_new` first-writer-wins (MED-4). The genuine multi-worker
+concurrency e2e (the design's "tests that FAIL today, PASS after") remains a
+follow-up — the differential oracle is single-VM.

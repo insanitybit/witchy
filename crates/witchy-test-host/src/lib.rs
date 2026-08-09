@@ -98,6 +98,9 @@ pub enum HostRequest {
     DirMakeDir { dir: HostHandle, path: String },
     DirOpen { dir: HostHandle, path: String },
     DirCreate { dir: HostHandle, path: String },
+    DirCreateNew { dir: HostHandle, path: String, bytes: Vec<u8> },
+    DirReplace { dir: HostHandle, path: String, bytes: Vec<u8> },
+    DirRename { dir: HostHandle, from: String, to: String },
     FileRead { file: HostHandle },
     FileWrite { file: HostHandle, bytes: Vec<u8> },
     FetchOnly { fetch: HostHandle, origins: Vec<String> },
@@ -467,6 +470,24 @@ impl FixtureHost {
                 let handle = self.session.dir_create(&dir, &path, source)?;
                 self.store(FixtureFamily::Filesystem, handle)
                     .map(HostResponse::Handle)
+            }
+            HostRequest::DirCreateNew { dir, path, bytes } => {
+                let dir = self.fs_handle(dir, "dir_create_new", source.clone())?;
+                self.session
+                    .dir_create_new(&dir, &path, &bytes, source)
+                    .map(HostResponse::Bool)
+            }
+            HostRequest::DirReplace { dir, path, bytes } => {
+                let dir = self.fs_handle(dir, "dir_replace", source.clone())?;
+                self.session
+                    .dir_replace(&dir, &path, &bytes, source)
+                    .map(|()| HostResponse::Unit)
+            }
+            HostRequest::DirRename { dir, from, to } => {
+                let dir = self.fs_handle(dir, "dir_rename", source.clone())?;
+                self.session
+                    .dir_rename(&dir, &from, &to, source)
+                    .map(|()| HostResponse::Unit)
             }
             HostRequest::FileRead { file } => {
                 let file = self.fs_handle(file, "file_read", source.clone())?;

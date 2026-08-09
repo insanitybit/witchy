@@ -974,6 +974,24 @@ impl Codegen<'_> {
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("dir_make_dir", a) } else { nil0(host("dir_make_dir_host", a)) }
             }
+            // RFC-0118 atomic primitives. `create_new` yields Bool (i32, like
+            // `exists`): 1 = created here, 0 = already existed. `replace`/`rename`
+            // are void effects yielding Nil.
+            ("create_new", 3) => {
+                self.used_dir_ops.insert("create_new");
+                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
+                if self.collect_wir { call("dir_create_new", a) } else { host("dir_create_new_host", a) }
+            }
+            ("replace", 3) => {
+                self.used_dir_ops.insert("replace");
+                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
+                if self.collect_wir { call("dir_replace", a) } else { nil0(host("dir_replace_host", a)) }
+            }
+            ("rename", 3) => {
+                self.used_dir_ops.insert("rename");
+                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
+                if self.collect_wir { call("dir_rename", a) } else { nil0(host("dir_rename_host", a)) }
+            }
             ("write_out", 3) => {
                 self.used_build_ops.insert("write_out");
                 // BuildOut is checked at source level and granted by import

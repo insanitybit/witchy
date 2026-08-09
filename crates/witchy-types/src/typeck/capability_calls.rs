@@ -252,6 +252,25 @@ impl Checker {
                 }
                 Ty::Unit
             }
+            // RFC-0118 atomic primitives — all `Write`. `create_new` reports whether
+            // this call won the exclusive create (`true`) or the path already existed
+            // (`false`); `replace`/`rename` are atomic whole-file swaps returning Nil.
+            "create_new" => {
+                if !rights.write {
+                    return terr(format!(
+                        "`create_new` needs `Write` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Bool
+            }
+            "replace" | "rename" => {
+                if !rights.write {
+                    return terr(format!(
+                        "`{name}` needs `Write` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Unit
+            }
             // RFC-0012 navigation: a `Dir` opens a confined `File` (the leaf). The
             // name states the conferred right: `read_file` needs `Read` and yields
             // `File[Read]`; `write_file` needs `Write` and yields `File[Write]`.

@@ -2405,6 +2405,123 @@ impl Interpreter {
                 }
                 _ => err("append expects a Dir, a relative path, and contents"),
             },
+            // RFC-0118: atomically create `path` with `contents` iff it does not
+            // already exist (one `O_CREAT|O_EXCL` step). Returns `true` when this
+            // call created the file, `false` when it was already present — the
+            // race-loser signal two concurrent creators can rely on.
+            "create_new" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [
+                    Value::Dir(DirValue::Fixture(handle), _),
+                    Value::Str(rel),
+                    Value::Str(contents),
+                ] => {
+                    match self.invoke_fixture(HostRequest::DirCreateNew {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                        bytes: contents.as_bytes().to_vec(),
+                    })? {
+                        HostResponse::Bool(created) => Ok(Some(Value::Bool(created))),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
+                [Value::Dir(base, pol), Value::Str(rel), Value::Str(contents)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
+                    match base {
+                        DirValue::Fs(base) => match base.create_new(rel, contents.as_bytes()) {
+                            Ok(created) => Ok(Some(Value::Bool(created))),
+                            Err(e) => err(format!("create_new failed for `{rel}`: {}", e.0)),
+                        },
+                        #[cfg(feature = "test-fixtures")]
+                        DirValue::Fixture(_) => err(
+                            "internal error: fixture Dir bypassed fixture dispatch",
+                        ),
+                    }
+                }
+                _ => err("create_new expects a Dir, a relative path, and contents"),
+            },
+            // RFC-0118: atomically replace `path`'s contents (creating it if absent)
+            // via a temp sibling + rename, so a concurrent reader never observes a
+            // torn write.
+            "replace" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [
+                    Value::Dir(DirValue::Fixture(handle), _),
+                    Value::Str(rel),
+                    Value::Str(contents),
+                ] => {
+                    match self.invoke_fixture(HostRequest::DirReplace {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                        bytes: contents.as_bytes().to_vec(),
+                    })? {
+                        HostResponse::Unit => Ok(Some(Value::Unit)),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
+                [Value::Dir(base, pol), Value::Str(rel), Value::Str(contents)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
+                    match base {
+                        DirValue::Fs(base) => match base.replace(rel, contents.as_bytes()) {
+                            Ok(()) => Ok(Some(Value::Unit)),
+                            Err(e) => err(format!("replace failed for `{rel}`: {}", e.0)),
+                        },
+                        #[cfg(feature = "test-fixtures")]
+                        DirValue::Fixture(_) => err(
+                            "internal error: fixture Dir bypassed fixture dispatch",
+                        ),
+                    }
+                }
+                _ => err("replace expects a Dir, a relative path, and contents"),
+            },
+            // RFC-0118: atomically move `from` to `to` within the Dir authority,
+            // replacing `to` if present (POSIX renameat replace). Both stay confined.
+            "rename" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [
+                    Value::Dir(DirValue::Fixture(handle), _),
+                    Value::Str(from),
+                    Value::Str(to),
+                ] => {
+                    match self.invoke_fixture(HostRequest::DirRename {
+                        dir: *handle,
+                        from: from.as_str().to_owned(),
+                        to: to.as_str().to_owned(),
+                    })? {
+                        HostResponse::Unit => Ok(Some(Value::Unit)),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
+                [Value::Dir(base, pol), Value::Str(from), Value::Str(to)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, from, false) {
+                        return err(format!("`{from}` is not permitted by this Dir capability's entry policy"));
+                    }
+                    if !witchy_caps::capabilities::dir_admits(pol, to, false) {
+                        return err(format!("`{to}` is not permitted by this Dir capability's entry policy"));
+                    }
+                    match base {
+                        DirValue::Fs(base) => match base.rename(from, to) {
+                            Ok(()) => Ok(Some(Value::Unit)),
+                            Err(e) => err(format!("rename failed (`{from}` -> `{to}`): {}", e.0)),
+                        },
+                        #[cfg(feature = "test-fixtures")]
+                        DirValue::Fixture(_) => err(
+                            "internal error: fixture Dir bypassed fixture dispatch",
+                        ),
+                    }
+                }
+                _ => err("rename expects a Dir and two relative paths"),
+            },
             // Whether a file exists within the Dir capability's subtree — total
             // (never errors), so a path outside the subtree, or a missing file,
             // simply reads as `false`. Lets `read` callers avoid a crash.

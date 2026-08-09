@@ -15,10 +15,12 @@ pub fn rebuild(store: Dir, key: Secret, created: Int):
     let targets = json.object_sorted(coven_store.all_target_digests(store))
     let snapshot = JsonObject([("version", JsonInt(version)), ("created", JsonInt(created)), ("targets", targets)])
     let snap_canonical = json.encode(snapshot)
-    store.write("snapshot.json", json.encode(JsonObject([("signed", snapshot), ("sig", JsonString(crypto.sign(key, snap_canonical)))])))
+    // SEC-049/RFC-0118 (BUG-554): replace atomically so a concurrent reader — or a
+    // mid-write crash — never observes a torn `snapshot.json`/`timestamp.json` role.
+    store.replace("snapshot.json", json.encode(JsonObject([("signed", snapshot), ("sig", JsonString(crypto.sign(key, snap_canonical)))])))
     let timestamp = JsonObject([("snapshot_version", JsonInt(version)), ("snapshot_hash", JsonString("sha256:${crypto.sha256(snap_canonical)}")), ("expires", JsonInt(created + 86400))])
     let ts_canonical = json.encode(timestamp)
-    store.write("timestamp.json", json.encode(JsonObject([("signed", timestamp), ("sig", JsonString(crypto.sign(key, ts_canonical)))])))
+    store.replace("timestamp.json", json.encode(JsonObject([("signed", timestamp), ("sig", JsonString(crypto.sign(key, ts_canonical)))])))
 
 // The current snapshot version (0 before the first build), read from snapshot.json. If
 // snapshot.json EXISTS but cannot be parsed to a `signed.version` integer, that is

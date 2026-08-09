@@ -274,6 +274,9 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_make_dir" (func $dir_make_dir_host (param externref i32)))
   (import "witchy" "dir_open" (func $dir_open_host (param externref i32) (result externref)))
   (import "witchy" "dir_create" (func $dir_create_host (param externref i32) (result externref)))
+  (import "witchy" "dir_create_new" (func $dir_create_new_host (param externref i32 i32) (result i32)))
+  (import "witchy" "dir_replace" (func $dir_replace_host (param externref i32 i32)))
+  (import "witchy" "dir_rename" (func $dir_rename_host (param externref i32 i32)))
   (import "witchy" "mint_file" (func $mint_file_host (param i32) (result externref)))
   (import "witchy" "file_read_len" (func $file_read_len_host (param externref) (result i32)))
   (import "witchy" "file_write" (func $file_write_host (param externref i32)))
@@ -315,7 +318,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 98;
+pub const IMPORT_COUNT: usize = 101;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v9 (RFC-0106): adds the browser-omitted `crypto.__shake128`/`__shake256` XOFs.
@@ -494,6 +497,9 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_write"
         | "dir_append"
         | "dir_make_dir"
+        | "dir_create_new"
+        | "dir_replace"
+        | "dir_rename"
         | "mint_dir"
         | "dir_open"
         | "dir_create"
@@ -561,7 +567,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_exists"
         | "dir_is_dir"
         | "dir_open" => AUTH_DIR_READ,
-        "dir_write" | "dir_append" | "dir_make_dir" | "dir_create" => AUTH_DIR_WRITE,
+        "dir_write" | "dir_append" | "dir_make_dir" | "dir_create" | "dir_create_new"
+        | "dir_replace" | "dir_rename" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
         "file_read_len" | "file_write" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,

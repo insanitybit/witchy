@@ -31,6 +31,9 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
     linker.func_wrap("witchy", "dir_append", host_dir_append)?;
     linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
     linker.func_wrap("witchy", "dir_create", host_dir_create)?;
+    linker.func_wrap("witchy", "dir_create_new", host_dir_create_new)?;
+    linker.func_wrap("witchy", "dir_replace", host_dir_replace)?;
+    linker.func_wrap("witchy", "dir_rename", host_dir_rename)?;
     Ok(())
 }
 
@@ -520,5 +523,76 @@ fn host_dir_make_dir(
                 e.0
             )))
         }
+    }
+}
+
+/// `dir_create_new(h, rel, contents) -> i32` (RFC-0118): atomically create the
+/// confined file if and only if it does not already exist (`O_CREAT|O_EXCL`).
+/// Returns 1 when this call created it, 0 when it was already present (the
+/// race-loser signal); traps on escape or a real IO fault.
+fn host_dir_create_new(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+    contents_ptr: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let rel = read_wstr(data, rel_ptr)?;
+    let contents = read_wstr(data, contents_ptr)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    let created = match &dir.backing {
+        DirBacking::Fs(base) => base.create_new(&rel, contents.as_bytes()).map_err(|e| {
+            Error::msg(format!("create_new failed for `{rel}`: {}", e.0))
+        })?,
+    };
+    Ok(created as i32)
+}
+
+/// `dir_replace(h, rel, contents)` (RFC-0118): atomically replace a confined
+/// file's contents (creating it if absent) via a temp sibling + rename, so a
+/// concurrent reader never observes a torn write. Traps on escape or IO fault.
+fn host_dir_replace(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+    contents_ptr: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let rel = read_wstr(data, rel_ptr)?;
+    let contents = read_wstr(data, contents_ptr)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    match &dir.backing {
+        DirBacking::Fs(base) => base.replace(&rel, contents.as_bytes()).map_err(|e| {
+            Error::msg(format!("replace failed for `{rel}`: {}", e.0))
+        }),
+    }
+}
+
+/// `dir_rename(h, from, to)` (RFC-0118): atomically move `from` to `to` within
+/// the Dir authority, replacing `to` if present. Both paths stay confined.
+fn host_dir_rename(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    from_ptr: i32,
+    to_ptr: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let from = read_wstr(data, from_ptr)?;
+    let to = read_wstr(data, to_ptr)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &from, false)?;
+    dir_guard(&dir, &to, false)?;
+    match &dir.backing {
+        DirBacking::Fs(base) => base.rename(&from, &to).map_err(|e| {
+            Error::msg(format!("rename failed (`{from}` -> `{to}`): {}", e.0))
+        }),
     }
 }

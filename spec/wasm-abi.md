@@ -227,6 +227,9 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_make_dir` | `(externref, i32)` | capability authority | Dir.Write | omitted |
 | `dir_open` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_create` | `(externref, i32) -> externref` | capability authority | Dir.Write | omitted |
+| `dir_create_new` | `(externref, i32, i32) -> i32` | capability authority | Dir.Write | omitted |
+| `dir_replace` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_rename` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
 | `mint_file` | `(i32) -> externref` | capability authority | File.grant | omitted |
 | `file_read_len` | `(externref) -> i32` | capability authority | File.authority | omitted |
 | `file_write` | `(externref, i32)` | capability authority | File.authority | omitted |

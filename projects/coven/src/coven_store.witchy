@@ -26,9 +26,21 @@ pub fn read_record(store: Dir, name: String, version: String) -> Option(String):
     else:
         None
 
-// Write (or overwrite) a version's record JSON.
+// Atomically claim a version coordinate before writing its source (SEC-049/
+// RFC-0118). Exclusive-creates `coven.json` as an empty placeholder: exactly one
+// concurrent first-publish wins (`true`); the loser (`false`) gets the same 409 as
+// a sequential re-publish. The winner then writes source and finalizes the record
+// with `write_record` (an atomic replace). A placeholder is unparseable, so a
+// concurrent reader or snapshot treats a mid-publish coordinate as absent, never
+// torn — and a crashed publish self-heals (the empty record re-publishes).
+pub fn claim_record(store: Dir, name: String, version: String) -> Bool:
+    fs.ensure_dir(store, "${name}/${version}")
+    store.create_new(meta_path(name, version), "")
+
+// Atomically write (or replace) a version's record JSON — a concurrent reader sees
+// the whole old record or the whole new one, never a torn write (RFC-0118).
 pub fn write_record(store: Dir, name: String, version: String, record: String):
-    store.write(meta_path(name, version), record)
+    store.replace(meta_path(name, version), record)
 
 // A version's record decoded to a typed `Record`, or None if absent or corrupt.
 pub fn read_record_typed(store: Dir, name: String, version: String) -> Option(Record):
@@ -101,8 +113,12 @@ pub fn all_target_digests(store: Dir) -> List((String, Json)):
     for name in all_names(store):
         for v in versions_of(store, name):
             if let Some(text) = read_record(store, name, v):
-                keys.push("${name}@${v}")
-                payloads.push(coven_record.record_signing_payload(text))
+                // RFC-0118: skip a mid-publish placeholder (empty/unparseable
+                // `coven.json`) — the coordinate is claimed but not yet finalized,
+                // so it is not a target until its record lands whole.
+                if coven_record.parse(text).is_ok():
+                    keys.push("${name}@${v}")
+                    payloads.push(coven_record.record_signing_payload(text))
     let digests = vm.par_map(payloads, hash_payload)
     list.zip_with(keys, digests, fn(key: String, digest: String): (key, JsonString(digest)))
 

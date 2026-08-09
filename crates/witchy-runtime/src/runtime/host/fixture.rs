@@ -58,6 +58,9 @@ pub(in crate::runtime) fn link_granted_filesystem(
     linker.func_wrap("witchy", "dir_append", host_dir_append)?;
     linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
     linker.func_wrap("witchy", "dir_create", host_dir_create)?;
+    linker.func_wrap("witchy", "dir_create_new", host_dir_create_new)?;
+    linker.func_wrap("witchy", "dir_replace", host_dir_replace)?;
+    linker.func_wrap("witchy", "dir_rename", host_dir_rename)?;
     linker.func_wrap("witchy", "file_read_len", host_file_read_len)?;
     linker.func_wrap("witchy", "file_write", host_file_write)?;
     Ok(())
@@ -492,6 +495,67 @@ fn host_dir_make_dir(
         HostResponse::Unit => Ok(()),
         response => Err(Error::msg(format!(
             "fixture Dir.make_dir returned unexpected response {response:?}"
+        ))),
+    }
+}
+
+/// RFC-0118 `dir_create_new(d, path, contents) -> i32`: atomic exclusive create.
+/// Returns 1 when this call created the file, 0 when it already existed.
+fn host_dir_create_new(
+    mut caller: Caller<'_, VmState>,
+    dir: Option<Rooted<ExternRef>>,
+    path_pointer: i32,
+    contents_pointer: i32,
+) -> Result<i32> {
+    let dir = fixture_handle(&caller, dir, "Dir")?;
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    let path = read_wstr(data, path_pointer)?;
+    let bytes = read_wstr(data, contents_pointer)?.into_bytes();
+    match invoke(&mut caller, HostRequest::DirCreateNew { dir, path, bytes })? {
+        HostResponse::Bool(created) => Ok(created as i32),
+        response => Err(Error::msg(format!(
+            "fixture Dir.create_new returned unexpected response {response:?}"
+        ))),
+    }
+}
+
+/// RFC-0118 `dir_replace(d, path, contents)`: atomic whole-file replace.
+fn host_dir_replace(
+    mut caller: Caller<'_, VmState>,
+    dir: Option<Rooted<ExternRef>>,
+    path_pointer: i32,
+    contents_pointer: i32,
+) -> Result<()> {
+    let dir = fixture_handle(&caller, dir, "Dir")?;
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    let path = read_wstr(data, path_pointer)?;
+    let bytes = read_wstr(data, contents_pointer)?.into_bytes();
+    match invoke(&mut caller, HostRequest::DirReplace { dir, path, bytes })? {
+        HostResponse::Unit => Ok(()),
+        response => Err(Error::msg(format!(
+            "fixture Dir.replace returned unexpected response {response:?}"
+        ))),
+    }
+}
+
+/// RFC-0118 `dir_rename(d, from, to)`: atomic rename/replace within the Dir.
+fn host_dir_rename(
+    mut caller: Caller<'_, VmState>,
+    dir: Option<Rooted<ExternRef>>,
+    from_pointer: i32,
+    to_pointer: i32,
+) -> Result<()> {
+    let dir = fixture_handle(&caller, dir, "Dir")?;
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    let from = read_wstr(data, from_pointer)?;
+    let to = read_wstr(data, to_pointer)?;
+    match invoke(&mut caller, HostRequest::DirRename { dir, from, to })? {
+        HostResponse::Unit => Ok(()),
+        response => Err(Error::msg(format!(
+            "fixture Dir.rename returned unexpected response {response:?}"
         ))),
     }
 }

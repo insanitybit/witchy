@@ -557,6 +557,29 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        // RFC-0118 atomic primitives. `dir_create_new` returns Bool (1 = created,
+        // 0 = already existed); `dir_replace`/`dir_rename` are void effects.
+        "dir_create_new" => Some(WirHelperSpec {
+            func: host_call_helper_typed("dir_create_new", "dir_create_new", &[WirTy::Extern, WirTy::Str, WirTy::Str], WirTy::Bool),
+            helper_deps: &[],
+            import_deps: &["dir_create_new"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dir_replace" => Some(WirHelperSpec {
+            func: host_void_helper_typed("dir_replace", "dir_replace", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
+            helper_deps: &[],
+            import_deps: &["dir_replace"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dir_rename" => Some(WirHelperSpec {
+            func: host_void_helper_typed("dir_rename", "dir_rename", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
+            helper_deps: &[],
+            import_deps: &["dir_rename"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "net_connect" => Some(WirHelperSpec {
             func: host_call_helper_typed(
                 "net_connect",
