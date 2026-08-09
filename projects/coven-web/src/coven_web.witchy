@@ -101,15 +101,12 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     app = app.get("/api/coven/rootpub", h_proxy(net, upstream, "/coven/rootpub"))
     app = app.get("/api/coven/snapshot", h_proxy(net, upstream, "/coven/snapshot"))
     app = app.get("/api/coven/timestamp", h_proxy(net, upstream, "/coven/timestamp"))
-    // `/coven/*` READ passthrough — the exact same reverse proxy under the bare
-    // registry paths, so a `witchy pm` client pointed at THIS public origin
-    // (`COVEN_URL=https://<host>`) resolves and downloads without knowing it is
-    // talking to the web frontend. One explicit GET route per allowlisted read
-    // endpoint (the route table IS the SSRF allowlist), mirroring the coven
-    // registry's own route table exactly. The state-changing writes
-    // (`/coven/publish|promote|yank`) are deliberately NOT mirrored here — the web
-    // origin exposes no plain write route; its only write surface is the
-    // WebAuthn-2FA `/api/coven/*-2fa` handlers above.
+    // `/coven/*` machine-API passthrough — the exact same reverse proxy under the
+    // bare registry paths, so a `witchy pm` client (or CI) pointed at THIS public
+    // origin (`COVEN_URL=https://<host>`) resolves, downloads, AND publishes without
+    // knowing it is talking to the web frontend. One explicit route per allowlisted
+    // endpoint (the route table IS the SSRF allowlist), mirroring the coven registry's
+    // own route table exactly.
     app = app.get("/coven/index", h_proxy(net, upstream, "/coven/index"))
     app = app.get("/coven/catalog", h_proxy(net, upstream, "/coven/catalog"))
     app = app.get("/coven/versions", h_proxy(net, upstream, "/coven/versions"))
@@ -120,7 +117,20 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     app = app.get("/coven/rootpub", h_proxy(net, upstream, "/coven/rootpub"))
     app = app.get("/coven/snapshot", h_proxy(net, upstream, "/coven/snapshot"))
     app = app.get("/coven/timestamp", h_proxy(net, upstream, "/coven/timestamp"))
-    // Write endpoints (the only state-changing surface): the two-phase promote and
+    // `/coven/*` WRITE passthrough — the machine-API state changes (`publish`, and the
+    // CLI/CI forms of `promote`/`yank`). Each forwards the JSON request body VERBATIM to
+    // the same loopback upstream and returns coven-serve's own status + body unchanged, so
+    // `pm` parses the real registry error/success. These are authed IN-BAND: coven-serve
+    // verifies a short-lived OIDC identity token carried in the body/headers — NOT an
+    // ambient cookie/session — so they carry no CSRF risk and a non-browser client (which
+    // sends no Sec-Fetch-* headers) must reach them. They are therefore exempted from the
+    // browser Sec-Fetch CSRF layer by their `/coven/` prefix (see `sec_fetch_csrf`); the
+    // browser-facing writes (`/api/coven/*-2fa`, `/api/webauthn/*`, `/auth/*`) keep it.
+    app = app.post("/coven/publish", h_write_proxy(net, upstream, "/coven/publish"))
+    app = app.post("/coven/promote", h_write_proxy(net, upstream, "/coven/promote"))
+    app = app.post("/coven/yank", h_write_proxy(net, upstream, "/coven/yank"))
+    // Browser-facing write endpoints (the cookie/session-adjacent state-changing surface,
+    // distinct from the OIDC-authed `/coven/*` machine API above): the two-phase promote and
     // yank. There is NO plain, session-only write route — a bearer session (mintable
     // by any social login) is not sufficient authority to change registry state, and
     // an anonymous upstream coven trusts a client-chosen promoter/yanker verbatim. So
@@ -215,6 +225,26 @@ fn h_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
                     let path = if qs == "": base else: "${base}?${qs}"
                     let (host, port) = split_host_port(upstream)
                     match upstream_try_get(net, host, port, path):
+                        Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                        Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+
+// The WRITE counterpart of h_proxy for the `/coven/*` machine API: forward the request
+// body VERBATIM to the loopback upstream via POST, returning coven-serve's own status +
+// body unchanged so `pm` parses the real registry error/success. It mirrors h_proxy's
+// host/port split and the SEC-021 no-control-char discipline for any forwarded query, so
+// a CR/LF in query data can never smuggle a second request line upstream. The body is not
+// inspected here — authorization is coven-serve's job (it verifies an in-band OIDC token).
+fn h_write_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        match req:
+            Request(_m, _p, _pa, q, _h, _b) ->
+                if query_has_control(q):
+                    server.bad_request("{\"error\":\"invalid query\"}")
+                else:
+                    let qs = encode_query(q)
+                    let path = if qs == "": base else: "${base}?${qs}"
+                    let (host, port) = split_host_port(upstream)
+                    match upstream_try_post(net, host, port, path, server.request_body(req)):
                         Ok(resp) -> server.json(http.status(resp), http.body(resp))
                         Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
 
@@ -705,10 +735,21 @@ fn spa_fallback(assets: Dir, providers: String) -> fn(fn(Request) -> Response) -
 // refuse both cross-site AND absent (SEC-020): a missing header means a non-browser
 // client, which must opt in with an explicit `Sec-Fetch-Site: same-origin`. Safe methods
 // (GET/HEAD) pass through untouched.
+//
+// EXEMPTION — the `/coven/*` machine API: these endpoints are authed IN-BAND by
+// short-lived OIDC identity tokens that coven-serve verifies (not by ambient
+// cookies/session), so they carry no CSRF risk — CSRF only exists where the browser
+// attaches ambient credentials, which these never use. Their legitimate clients (the `pm`
+// CLI, CI trusted publishing) are non-browser and send no Sec-Fetch-* headers, so the
+// Sec-Fetch layer — designed for cookie-authed BROWSER writes — must not gate them. The
+// exemption is scoped to the `/coven/` prefix ONLY; the browser write surface
+// (`/api/coven/*-2fa`, `/api/webauthn/*`, `/auth/*`, the UI) keeps full CSRF protection.
 fn sec_fetch_csrf() -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
     fn(inner: fn(Request) -> Response):
         fn(req: Request):
-            if is_state_changing(server.method(req)):
+            if server.path(req).starts_with("/coven/"):
+                inner(req)
+            else if is_state_changing(server.method(req)):
                 match server.request_header(req, "sec-fetch-site"):
                     Some(site) -> if site == "same-origin": inner(req) else: server.forbidden("cross-site request refused")
                     None -> server.forbidden("missing sec-fetch-site on a state-changing request")

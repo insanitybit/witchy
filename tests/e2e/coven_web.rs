@@ -136,6 +136,113 @@ fn coven_web_proxy_reencodes_decoded_query_values() {
     );
 }
 
+/// The `/coven/*` WRITE passthrough: a non-browser client (CLI / CI trusted publishing)
+/// POSTing to `/coven/publish` through coven-web must REACH the loopback coven-serve — the
+/// machine API is authed in-band by an OIDC token coven-serve verifies, so the Sec-Fetch
+/// CSRF layer (built for cookie-authed browser writes) must NOT gate it. Proves two things
+/// at once: (1) the publish body is forwarded verbatim and coven-serve's own status+body
+/// come back (NOT coven-web's 403), and (2) a browser write route (`/api/webauthn/register`)
+/// WITHOUT a `Sec-Fetch-Site` header is STILL refused with 403 — the exemption is scoped to
+/// `/coven/*` only. Against the GET-only code this test fails: the publish POST is rejected
+/// by the CSRF layer with 403 before ever reaching the upstream.
+#[test]
+fn coven_web_publish_passthrough_reaches_upstream_and_keeps_browser_csrf() {
+    use std::io::{Read, Write};
+
+    // Mock coven-serve: read one full POST (headers + Content-Length body), report what it
+    // saw, and reply with coven-serve's own distinctive 200 body.
+    let upstream_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap().to_string();
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+    let upstream = std::thread::spawn(move || {
+        let (mut stream, _) = upstream_listener.accept().unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(8))).unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while stream.read_exact(&mut byte).is_ok() {
+            head.push(byte[0]);
+            if head.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head_str = String::from_utf8_lossy(&head).to_string();
+        let request_line = head_str.lines().next().unwrap_or("").to_string();
+        let content_length = head_str
+            .lines()
+            .find_map(|l| l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case("content-length")).map(|(_, v)| v.trim().parse::<usize>().unwrap_or(0)))
+            .unwrap_or(0);
+        let mut body = vec![0u8; content_length];
+        stream.read_exact(&mut body).unwrap();
+        seen_tx.send((request_line, String::from_utf8_lossy(&body).to_string())).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 24\r\nConnection: close\r\n\r\n{\"published\":\"acme@1.0\"}")
+            .unwrap();
+    });
+
+    let seed_root = unique("cw-publish-seed");
+    let seed = seed_root.join("root.seed");
+    std::fs::write(&seed, "0000000000000000000000000000000000000000000000000000000000000001").unwrap();
+    let web_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let web_addr = format!("127.0.0.1:{web_port}");
+    let assets = unique("cw-publish-assets");
+    let cw_src = format!("{}/projects/coven-web/src/coven_web.witchy", env!("CARGO_MANIFEST_DIR"));
+    let mut child = Command::new(BIN)
+        .args([
+            "--net",
+            &web_addr,
+            "--net",
+            &upstream_addr,
+            "--signing-key",
+            seed.to_str().unwrap(),
+            &cw_src,
+            &web_addr,
+            &upstream_addr,
+            &format!("http://{web_addr}"),
+            "localhost",
+        ])
+        .current_dir(&assets)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn coven-web");
+
+    let mut up = false;
+    for _ in 0..SERVER_START_ATTEMPTS {
+        if std::net::TcpStream::connect(&web_addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
+    }
+    assert!(up, "coven-web never started on {web_addr}");
+
+    // A CLI/CI publish: POST /coven/publish with NO Sec-Fetch-Site header (a non-browser
+    // client). It must be forwarded to coven-serve, not refused by the CSRF layer.
+    let publish_body = "{\"name\":\"acme\",\"version\":\"1.0\",\"token\":\"oidc-jwt\"}";
+    let (status, body) = http_post(&web_addr, "/coven/publish", publish_body);
+    let (upstream_line, upstream_body) = seen_rx.recv_timeout(std::time::Duration::from_secs(8)).unwrap();
+
+    // A browser write route WITHOUT a Sec-Fetch-Site header must STILL be refused (403) —
+    // the exemption is scoped to `/coven/*`, never the `/api/*` browser surface.
+    let (wa_status, wa_body) = http_post(&web_addr, "/api/webauthn/register", "{\"credentialId\":\"x\",\"publicKey\":\"y\"}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream.join().unwrap();
+    let _ = std::fs::remove_dir_all(&seed_root);
+    let _ = std::fs::remove_dir_all(&assets);
+
+    // The publish reached coven-serve verbatim and its own status + body came back.
+    assert_eq!(upstream_line, "POST /coven/publish HTTP/1.1", "publish must reach coven-serve at the bare registry path");
+    assert_eq!(upstream_body, publish_body, "the publish body must be forwarded verbatim");
+    assert_eq!(status, 201, "coven-web must return coven-serve's own status, not a 403; got body: {body}");
+    assert_eq!(body, "{\"published\":\"acme@1.0\"}", "coven-web must return coven-serve's own body verbatim");
+
+    // The browser route stayed CSRF-protected: a POST with no Sec-Fetch-Site is refused.
+    assert_eq!(wa_status, 403, "a browser write without Sec-Fetch-Site must still be refused: {wa_body}");
+    assert!(wa_body.contains("sec-fetch-site"), "the refusal must be the Sec-Fetch CSRF layer's: {wa_body}");
+}
+
 /// "Log in with GitHub" end to end through the REAL coven-web server: a mock GitHub (a
 /// local rustls server) returns a token then a user; coven-web's OAuth `/callback`
 /// verifies the signed state, exchanges the code, reads the user, and mints a bearer
