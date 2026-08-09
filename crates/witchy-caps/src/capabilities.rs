@@ -267,6 +267,15 @@ pub fn dir_admits(policy: &str, name: &str, is_dir: bool) -> bool {
 /// the SAME text and cannot drift on this refusal.
 pub use witchy_cap_model::USE_ONLY_SECRET_REVEAL_ERROR;
 
+/// (RFC-0060/BUG-610) How a secret's reveal policy is spelled on a REVIEWABLE
+/// surface — the grant-approval prompt and the grant cross-check. Enforcement of
+/// the bit was already correct; what was missing was showing it where a human or
+/// CI decides, so a revealable and a use-only secret no longer render identically.
+/// Defined once so the prompt and the gate cannot drift on the wording.
+pub fn secret_reveal_suffix(use_only: bool) -> &'static str {
+    if use_only { " (use-only)" } else { " (revealable)" }
+}
+
 /// Whether `secret`'s bytes are the host's signing key (the `--signing-key` seed).
 /// A `Secret` equal to the signing key — the bare `Secret` capability, or
 /// `SecretStore.require("signing")` — is SIGN-ONLY (`crypto.sign`/`public_key`) and

@@ -335,3 +335,19 @@ fn run_forwards_net_grant_to_the_sandboxed_app() {
         stderr(&denied),
     );
 }
+
+/// BUG-148/RFC-0060: `serve_tls_n` serves HTTPS with a **use-only** key (consumed by
+/// opaque reference) while `crypto.reveal` on that same secret still errors. This is
+/// the end-to-end coverage RFC-0060's TLS claim was missing.
+#[test]
+fn serve_tls_accepts_a_use_only_key() {
+    sandbox::serve_tls_accepts_a_use_only_key();
+}
+
+/// BUG-118: the two signing-key launch forms are NOT equivalent — `--signing-key` is
+/// sign-only, `--secret-file signing=` is an ordinary revealable named secret. Pins
+/// both so the distinction cannot silently collapse.
+#[test]
+fn signing_key_is_not_secret_file_signing_sugar() {
+    sandbox::signing_key_is_not_secret_file_signing_sugar();
+}

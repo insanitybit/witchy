@@ -345,7 +345,11 @@ pub(crate) fn run_file_grants(
         }
     }
     for (name, s) in &doc.secrets {
-        eprintln!("  secret {name}: {}", s.from);
+        // (RFC-0060/BUG-610) The reveal policy is part of what is being approved:
+        // a revealable secret can be read into guest memory, a use-only one can
+        // only be consumed by handle. Printing both rows identically hid the
+        // strongest per-secret guarantee at the one point a human decides.
+        eprintln!("  secret {name}: {}{}", s.from, capabilities::secret_reveal_suffix(s.use_only));
     }
     if !accept_grants && std::io::stdin().is_terminal() {
         use std::io::Write;

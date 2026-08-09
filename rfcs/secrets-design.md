@@ -102,11 +102,19 @@ method (the receiver type `Secret` resolves to the `crypto` module):
 ```
 --secret <name>=<value>        # inline (e.g. an API token, a password)
 --secret-file <name>=<path>    # the secret's bytes from a file
---signing-key <path>           # sugar for --secret-file signing=<path> (the `signing` slot, handle 0)
+--signing-key <path>           # the `signing` slot (handle 0) as a SIGN-ONLY key
 ```
 A `Secret` `main` parameter (always handle 0) and `SecretStore.get("signing")` therefore
 agree. A program whose `main` binds `Secret`/`SecretStore` requires at least one granted
 secret, else it is refused before running.
+
+> **Correction (BUG-118).** An earlier revision of this section described
+> `--signing-key <path>` as "sugar for `--secret-file signing=<path>`". As
+> implemented the two differ, and the difference is security-relevant:
+> `--signing-key` grants a sign-only key that `crypto.reveal` refuses, while
+> `--secret-file signing=<path>` grants an ordinary **revealable** named secret.
+> Only `--signing-key` satisfies a bare `Secret` parameter. See
+> `std/secretstore.witchy` for the normative wording.
 
 **coven** (`projects/coven`) dogfoods this: `main(console, net, root, secrets:
 SecretStore, clock, args)` does `secrets.require("signing")` and signs records with that

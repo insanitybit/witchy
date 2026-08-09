@@ -540,3 +540,195 @@ pub(crate) fn grant_document_exec_is_name_scoped_monotone_and_typed() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// BUG-148/RFC-0060: the POSITIVE half of the TLS-by-opaque-reference claim, which
+/// had no coverage anywhere — only a footprint assertion. `server.serve_tls_n`
+/// really does serve HTTPS with a **use-only** `Secret`: the key is consumed by
+/// opaque reference, its bytes never enter guest memory, and `crypto.reveal` on
+/// that same secret still errors. Both halves are asserted here so a regression
+/// that made the key revealable (or broke serving) fails this test.
+pub(crate) fn serve_tls_accepts_a_use_only_key() {
+    use std::io::{Read, Write};
+
+    let dir = unique("serve-tls-use-only");
+    // A self-signed loopback cert, the pattern the coven IdP mock uses.
+    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+    std::fs::write(&key_path, ck.key_pair.serialize_pem()).unwrap();
+
+    // Bind :0 to claim a free port, then release it for the witchy server.
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let addr = format!("127.0.0.1:{port}");
+
+    let prog = dir.join("tls.witchy");
+    std::fs::write(
+        &prog,
+        "import secretstore\nimport server\n\n\
+         fn main(console: Console, net: Net[Listen, Tcp], root: Dir[Read], secrets: SecretStore, args: List(String)):\n\
+         \x20   let cert = root.read(\"cert.pem\")\n\
+         \x20   let key = secretstore.require(secrets, \"tlskey\")\n\
+         \x20   console.print(\"serving\")\n\
+         \x20   server.serve_tls_n(net, args.at(0), cert, key, server.router(), 1)\n",
+    )
+    .unwrap();
+
+    let child = Command::new(BIN)
+        .args([
+            "sandbox",
+            "--net",
+            &addr,
+            "--dir",
+            dir.to_str().unwrap(),
+            "--secret-file",
+            &format!("tlskey={},use-only", key_path.to_str().unwrap()),
+            prog.to_str().unwrap(),
+            &addr,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tls server");
+
+    // Wait for the listener to come up (the server prints before serving).
+    let mut connected = None;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Ok(tcp) = std::net::TcpStream::connect(&addr) {
+            connected = Some(tcp);
+            break;
+        }
+    }
+    let tcp = connected.expect("witchy serve_tls_n never accepted a connection");
+
+    // A real TLS client: the handshake proves the host used the key material.
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ck.cert.der().clone()).unwrap();
+    let config = rustls::ClientConfig::builder_with_provider(
+        rustls::crypto::aws_lc_rs::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name).unwrap();
+    let mut tls = rustls::StreamOwned::new(conn, tcp);
+    tls.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("TLS write (handshake) failed — the use-only key was not usable");
+    let mut response = Vec::new();
+    let _ = tls.read_to_end(&mut response);
+    let response = String::from_utf8_lossy(&response);
+    assert!(
+        response.starts_with("HTTP/1.1"),
+        "expected an HTTPS response over the use-only key, got: {response}"
+    );
+
+    let out = child.wait_with_output().expect("server exit");
+    let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(combined.contains("serving"), "server never started: {combined}");
+
+    // The SAME use-only secret must remain unrevealable — serving by handle does
+    // not make its bytes readable.
+    let reveal = dir.join("reveal.witchy");
+    std::fs::write(
+        &reveal,
+        "import secretstore\nimport crypto\n\nfn main(console: Console, secrets: SecretStore):\n    console.print(crypto.reveal(secretstore.require(secrets, \"tlskey\")))\n",
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .args([
+            "sandbox",
+            "--secret-file",
+            &format!("tlskey={},use-only", key_path.to_str().unwrap()),
+            reveal.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "revealing a use-only TLS key must abort");
+    let combined = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        combined.contains("use-only") || combined.contains("cannot be revealed"),
+        "expected a use-only refusal: {combined}"
+    );
+    assert!(
+        !combined.contains("PRIVATE KEY"),
+        "the TLS key material must never reach output: {combined}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BUG-118: `--signing-key <path>` is NOT sugar for `--secret-file signing=<path>`,
+/// and the difference is security-relevant. Both yield the same public key, but only
+/// `--signing-key` makes the key sign-only — the `--secret-file` form grants an
+/// ordinary REVEALABLE named secret, so following the (long-stale) "sugar" advice
+/// would leave a root signing seed exfiltratable. This pins both launch forms so a
+/// refactor cannot silently collapse them.
+pub(crate) fn signing_key_is_not_secret_file_signing_sugar() {
+    let dir = unique("signing-not-sugar");
+    let seedfile = dir.join("seed.hex");
+    let seed = "41".repeat(32);
+    std::fs::write(&seedfile, &seed).unwrap();
+    let seedpath = seedfile.to_str().unwrap().to_string();
+
+    // Separate programs: an abort discards buffered output, so `public_key` and
+    // `reveal` are probed independently rather than in one run.
+    let pubprog = dir.join("pub.witchy");
+    std::fs::write(
+        &pubprog,
+        "import secretstore\nimport crypto\n\nfn main(console: Console, secrets: SecretStore):\n    console.print(crypto.public_key(secretstore.require(secrets, \"signing\")))\n",
+    )
+    .unwrap();
+    let revealprog = dir.join("reveal.witchy");
+    std::fs::write(
+        &revealprog,
+        "import secretstore\nimport crypto\n\nfn main(console: Console, secrets: SecretStore):\n    console.print(crypto.reveal(secretstore.require(secrets, \"signing\")))\n",
+    )
+    .unwrap();
+    let pp = pubprog.to_str().unwrap();
+    let rp = revealprog.to_str().unwrap();
+    let named = format!("signing={seedpath}");
+
+    // `public_key` works under BOTH forms, and derives the SAME key.
+    let pub_protected = Command::new(BIN).args(["sandbox", "--signing-key", &seedpath, pp]).output().unwrap();
+    assert!(pub_protected.status.success(), "public_key under --signing-key: {}{}", stdout(&pub_protected), stderr(&pub_protected));
+    let pub_named = Command::new(BIN).args(["sandbox", "--secret-file", &named, pp]).output().unwrap();
+    assert!(pub_named.status.success(), "public_key under --secret-file: {}{}", stdout(&pub_named), stderr(&pub_named));
+    assert_eq!(
+        stdout(&pub_protected).trim(),
+        stdout(&pub_named).trim(),
+        "the two launch forms must derive the same public key"
+    );
+
+    // `reveal` DIFFERS: refused for --signing-key, permitted for the named secret.
+    // That difference IS the bug's subject — the forms are not interchangeable.
+    let rv_protected = Command::new(BIN).args(["sandbox", "--signing-key", &seedpath, rp]).output().unwrap();
+    assert!(!rv_protected.status.success(), "revealing a --signing-key secret must abort");
+    let combined = format!("{}{}", stdout(&rv_protected), stderr(&rv_protected));
+    assert!(combined.contains("not revealable"), "expected the sign-only refusal: {combined}");
+    assert!(!combined.contains(&seed), "the seed must never be revealed: {combined}");
+
+    let rv_named = Command::new(BIN).args(["sandbox", "--secret-file", &named, rp]).output().unwrap();
+    assert!(rv_named.status.success(), "a named `signing` value-secret is revealable: {}{}", stdout(&rv_named), stderr(&rv_named));
+    assert!(stdout(&rv_named).contains(&seed), "the named secret reveals: {}", stdout(&rv_named));
+
+    // A bare `Secret` parameter is satisfied ONLY by `--signing-key` (BUG-116).
+    let bare = dir.join("bare.witchy");
+    std::fs::write(
+        &bare,
+        "import crypto\n\nfn main(console: Console, key: Secret):\n    console.print(crypto.public_key(key))\n",
+    )
+    .unwrap();
+    let b = bare.to_str().unwrap();
+    let via_named = Command::new(BIN).args(["sandbox", "--secret-file", &named, b]).output().unwrap();
+    assert!(!via_named.status.success(), "a named secret must not satisfy a bare `Secret`");
+    let via_signing = Command::new(BIN).args(["sandbox", "--signing-key", &seedpath, b]).output().unwrap();
+    assert!(via_signing.status.success(), "--signing-key must satisfy a bare `Secret`: {}{}", stdout(&via_signing), stderr(&via_signing));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

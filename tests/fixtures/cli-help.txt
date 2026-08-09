@@ -30,6 +30,8 @@ USAGE:
                                                   build a trusted self-contained native application
     witchy build-step <file.witchy> [--out <dir>] [--read <dir>]...
                                                   run a build-time entrypoint with declared grants
+    witchy grants-diff <old.grants.toml> <new.grants.toml>
+                                                  fail if a secret's reveal policy loosened
     witchy grants-check <prog.witchy> <grants.toml>
                                                   verify a program's footprint fits declared grants
     witchy fmt [--check] [--cap-methods] <file.witchy>

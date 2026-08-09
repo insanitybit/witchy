@@ -113,6 +113,15 @@ at implementation with the flag's current grammar).
   the Mozilla root set plus explicitly configured `WITCHY_TLS_EXTRA_ROOTS`.
 - A use-only test: `crypto.reveal` on a use-only secret errors identically on
   both backends.
+- The **positive** half of the by-opaque-reference claim must be exercised, not
+  just the refusal: a use-only secret really does serve TLS.
+  `tests/e2e/sandbox_grants.rs::serve_tls_accepts_a_use_only_key` completes a real
+  TLS 1.3 handshake against `server.serve_tls_n` granted
+  `--secret-file 'tlskey=key.pem,use-only'`, then asserts `crypto.reveal` on that
+  same secret still errors and no key material reaches output (closes BUG-148).
+- The use-only bit must be **visible where it is approved**, not merely enforced:
+  the grant prompt and `grants-check` mark each secret `(revealable)`/`(use-only)`,
+  and `witchy grants-diff` exits 2 when a document loosens one (closes BUG-610).
 
 ## Out of scope
 

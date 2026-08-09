@@ -368,6 +368,20 @@ block on a widening until you approve. Build steps themselves run under confined
 safe-by-default grants - try one with
 `witchy build-step <file> [--out <dir>] [--read <dir>] [--env K]... [--exec tool]...`.
 
+**Secrets carry a per-secret axis the cap-set cannot express.** `SecretStore` is one
+capability, but each granted secret is independently *revealable* or *use-only*, and
+two documents granting the same store are indistinguishable on the footprint axis.
+So the reveal policy is reviewable in its own right: the grant-approval prompt and
+`grants-check` mark every secret `(revealable)` or `(use-only)`, and
+
+```sh
+witchy grants-diff old.grants.toml new.grants.toml   # exit 2 if a reveal policy loosened
+```
+
+exits 2 when a newer document drops `use-only = true` from a secret or introduces a
+new revealable one - both of which hand the program authority to read secret bytes
+it previously could only use by handle.
+
 ## Enforcement: the sandbox
 
 Static checking keeps *your* code honest. To run code you don't trust, compile

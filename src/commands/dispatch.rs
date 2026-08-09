@@ -10,6 +10,7 @@ use crate::{
     ast, bundled_module, commands, enforce_performance_modes, execute_file_exit,
     format, idp, link_file_checked, load_signing_seed, lsp, opt, parser, pipeline,
     project_entry_file, report_capabilities, report_capability_diff, report_grant_check,
+    report_grant_diff,
     run_benchmarks, runtime, trusted_exe, RUN_MEMORY_PAGES,
 };
 use witchy_syntax::linker;
@@ -228,6 +229,23 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         };
         match report_grant_check(&prog, &grants) {
             Ok(under_grant) => std::process::exit(if under_grant { 2 } else { 0 }),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    // `witchy grants-diff <old.grants.toml> <new.grants.toml>` (RFC-0060/BUG-610)
+    // is the secrets analog of `caps-diff`: it exits 2 when the newer document
+    // loosens a secret's reveal policy. The cap-set axis cannot see this, since
+    // both documents grant the same `SecretStore`.
+    if std::env::args().nth(1).as_deref() == Some("grants-diff") {
+        let (Some(old), Some(new)) = (std::env::args().nth(2), std::env::args().nth(3)) else {
+            eprintln!("usage: witchy grants-diff <old.grants.toml> <new.grants.toml>");
+            std::process::exit(1);
+        };
+        match report_grant_diff(&old, &new) {
+            Ok(widened) => std::process::exit(if widened { 2 } else { 0 }),
             Err(e) => {
                 eprintln!("{e}");
                 std::process::exit(1);

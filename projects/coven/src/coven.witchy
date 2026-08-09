@@ -49,9 +49,13 @@ import compiler
 // clock, and the trusted issuers. Bundling these lets the handlers read as
 // `self.store` / `self.key` methods rather than threading four parameters.
 
-// The host grants a `SecretStore`; the root signing key is its `signing` secret
-// (`--signing-key <seed>` is sugar for `--secret-file signing=<path>`). Required —
-// `require` fails loudly if it was not granted rather than handing back an Option.
+// The host grants a `SecretStore`; the root signing key is its `signing` secret.
+// Grant it with `--signing-key <seed>`, which is NOT the same as
+// `--secret-file signing=<path>`: only `--signing-key` makes the key sign-only, so
+// `crypto.reveal` refuses it. The `--secret-file` form grants an ordinary
+// revealable named secret, and the registry's root seed would be exfiltratable.
+// Required — `require` fails loudly if it was not granted rather than handing back
+// an Option.
 
 // Trailing `issuer=pubkeyhex` args are trusted issuers (a JWKS stand-in). With
 // at least one, publish/promote require a short-lived identity token (trusted
