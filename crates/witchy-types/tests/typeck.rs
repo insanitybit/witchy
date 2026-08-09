@@ -3348,6 +3348,11 @@ fn main():
         .expect("a mutable borrowed shell may update its owned scalar field");
 
         check_str(
+            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\nfn read(input: let('a) String) -> Int:\n    let cursor = make(input)\n    cursor.offset\n",
+        )
+        .expect("an immutable borrowed shell may use its checked projections");
+
+        check_str(
             "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\nfn replace(left: let('a) String, right: let('a) String) -> Int:\n    var cursor = make(left)\n    cursor.view = right\n    cursor.offset\n",
         )
         .expect("a declared borrowed field may replace its root with a related owner");

@@ -5537,8 +5537,7 @@ impl Checker {
                     } else {
                         self.infer(value)?
                     };
-                    let borrowed_shell_binding = *mutable
-                        && self.is_direct_borrowed_nominal(&vt)
+                    let borrowed_shell_binding = self.is_direct_borrowed_nominal(&vt)
                         && Self::borrowed_shell_binding_source(value);
                     if !borrowed_shell_binding {
                         self.reject_borrowed_nominal_runtime_ty(
