@@ -237,7 +237,7 @@ requirements:
 
 This is a local completion boundary; public `implemented` status depends on those
 externally owned gates.
-As of 2026-08-11 local closeout evidence run on this checkout:
+As of the latest local closeout evidence run on this checkout:
 
 - `node scripts/audit-browser-runnable.mjs` → 148/148 complete examples, ALL PASS.
 - `node scripts/validate_book_examples.mjs` → 165 runnable blocks in manifest lockstep, 56 non-runnable.
