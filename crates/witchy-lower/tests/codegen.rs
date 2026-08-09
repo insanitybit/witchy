@@ -4151,4 +4151,29 @@ fn main(console: Console):
             "both `?` failure and success paths release the root: {finish}"
         );
     }
+
+    #[test]
+    fn borrowed_nominal_list_at_transfers_the_checked_owner_root() {
+        let source = "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String, offset: Int) -> Cursor('a):\n    Cursor(input, offset)\n\n\
+             fn first(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input, 7)]\n    let cursor = list.at(cursors, 0)\n    cursor.offset\n\n\
+             fn main() -> Int:\n    first(\"root\")\n";
+        assert_eq!(run_int(source), 7);
+
+        let module = parse_module(source).expect("parse borrowed nominal list fixture");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("borrowed nominal list read lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $first").expect("first function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let first = &tail[..end];
+        assert!(first.contains("__loan_root_cursors__input"), "list root local: {first}");
+        assert!(first.contains("__loan_root_cursor__input"), "extracted root local: {first}");
+        // The list element itself is copied out of its slot once; the other
+        // two operations retain the list and extracted-shell root companions.
+        assert_eq!(first.match_indices("call $rc_dup").count(), 3, "element copy plus one retain per live shell: {first}");
+        assert_eq!(first.match_indices("call $rc_drop").count(), 2, "one root release per live shell: {first}");
+    }
 }
