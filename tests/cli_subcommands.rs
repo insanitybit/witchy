@@ -5,6 +5,12 @@
 //! dir), so they can run in parallel. Bug numbers reference `bugs/`.
 
 use std::process::Command;
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream, Shutdown};
+use std::sync::mpsc::{self, TryRecvError};
+use std::thread;
+use std::time::Duration;
 
 use wasm_encoder::{
     CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
@@ -26,6 +32,98 @@ fn write(dir: &std::path::Path, name: &str, body: &str) -> String {
     let p = dir.join(name);
     std::fs::write(&p, body).unwrap();
     p.to_str().unwrap().to_string()
+}
+
+struct HeaderProbeServer {
+    port: u16,
+    stop: mpsc::Sender<()>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for HeaderProbeServer {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn spawn_header_probe_server(routes: Vec<(&str, Vec<(&str, &str)>)>) -> HeaderProbeServer {
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let map: HashMap<String, Vec<(String, String)>> = routes
+        .into_iter()
+        .map(|(route, headers)| {
+            (
+                route.to_string(),
+                headers
+                    .into_iter()
+                    .map(|(name, value)| (name.to_string(), value.to_string()))
+                    .collect(),
+            )
+        })
+        .collect();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let thread = thread::spawn(move || {
+        loop {
+            match stop_rx.try_recv() {
+                Ok(()) => break,
+                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => {}
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    handle_header_probe_connection(&mut stream, &map);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    HeaderProbeServer { port, stop: stop_tx, thread: Some(thread) }
+}
+
+fn handle_header_probe_connection(
+    stream: &mut TcpStream,
+    routes: &HashMap<String, Vec<(String, String)>>,
+) {
+    let mut request = [0u8; 1024];
+    let n = stream.read(&mut request).unwrap_or(0);
+    let request = String::from_utf8_lossy(&request[..n]);
+    let route = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/")
+        .to_string();
+    let (status, headers) = routes.get(&route).map_or_else(
+        || (404u16, vec![("Content-Type".to_string(), "text/plain".to_string())]),
+        |custom| {
+            (
+                200,
+                custom
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
+            )
+        },
+    );
+    let mut response = format!(
+        "HTTP/1.1 {} {}\r\n",
+        status,
+        if status == 200 { "OK" } else { "Not Found" }
+    );
+    for (name, value) in headers {
+        response.push_str(&format!("{name}: {value}\r\n"));
+    }
+    response.push_str("Connection: close\r\nContent-Length: 0\r\n\r\n");
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+    let _ = stream.shutdown(Shutdown::Both);
 }
 
 /// A legacy/external wasm module with no `witchy.launch` metadata. `call_args`
@@ -303,6 +401,120 @@ pub fn web() -> Site:
         .unwrap()
         .iter()
         .any(|check| check["id"] == "runtime" && check["status"] == "pass"));
+}
+
+#[test]
+fn web_doctor_deployment_headers_check_declared_route_policy() {
+    let project = workdir("web-deployed-header-probe");
+    std::fs::create_dir(project.join("src")).unwrap();
+    write(
+        &project,
+        "witchy.toml",
+        "[rune]\nname = \"deployed-header\"\nversion = \"0.1.0\"\n\n\
+         [capabilities]\nruntime = []\n\n\
+         [dependencies]\n\n\
+         [web]\ndelivery = \"static\"\nentry = \"src/site.witchy\"\n",
+    );
+    write(
+        &project,
+        "src/site.witchy",
+        r#"from glamour import Site
+
+type Message:
+    Unused
+
+fn page(text: String) -> glamour.Ui(Message):
+    glamour.ui(glamour.element("main", [], [glamour.text(text)]))
+
+pub fn web() -> Site:
+    glamour.site([
+        glamour.static_page("/", page("Home")),
+    ])
+"#,
+    );
+    let project_text = project.to_str().unwrap();
+
+    let built = run(&["build", "--web", project_text]);
+    assert!(
+        built.status.success(),
+        "build should succeed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let manifest_path = project.join("dist/witchy-web-manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["browserPolicy"] = serde_json::json!([
+        {
+            "route": "/",
+            "enforcement": "required",
+            "contentSecurityPolicy": "default-src 'self'",
+            "permissionsPolicy": "camera=()",
+        }
+    ]);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    {
+        let server = spawn_header_probe_server(vec![(
+            "/",
+            vec![("Content-Security-Policy", "default-src 'self'"), ("Permissions-Policy", "camera=()")],
+        )]);
+        let good_deployment = format!("http://127.0.0.1:{}", server.port);
+        let doctor = run(&[
+            "doctor",
+            "--web",
+            "--format",
+            "json",
+            "--deployment",
+            &good_deployment,
+            project_text,
+        ]);
+        assert_eq!(
+            doctor.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&doctor.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+        let deployed = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["id"] == "deployed-headers")
+            .unwrap();
+        assert_eq!(deployed["status"], "pass");
+    }
+
+    {
+        let server = spawn_header_probe_server(vec![("/", vec![("Permissions-Policy", "camera=()")])]);
+        let bad_deployment = format!("http://127.0.0.1:{}", server.port);
+        let bad_doctor = run(&[
+            "doctor",
+            "--web",
+            "--format",
+            "human",
+            "--deployment",
+            &bad_deployment,
+            project_text,
+        ]);
+        assert_eq!(
+            bad_doctor.status.code(),
+            Some(1),
+            "missing CSP should fail: {}",
+            String::from_utf8_lossy(&bad_doctor.stderr)
+        );
+        let output = format!(
+            "{}{}",
+            String::from_utf8_lossy(&bad_doctor.stdout),
+            String::from_utf8_lossy(&bad_doctor.stderr),
+        );
+        assert!(output.contains("deployed-headers"));
+        assert!(output.contains("missing required Content-Security-Policy"));
+    }
 }
 
 #[test]
