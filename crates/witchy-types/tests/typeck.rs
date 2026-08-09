@@ -3366,6 +3366,11 @@ fn main():
         .expect("a borrowed nominal list retains its checked element owner roots");
 
         check_str(
+            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 7)\n\nfn sum(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input)]\n    var total = 0\n    for cursor in cursors:\n        total = total + cursor.offset\n    total\n",
+        )
+        .expect("a borrowed nominal list loop binder may read checked shell projections");
+
+        check_str(
             "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\nfn replace(left: let('a) String, right: let('a) String) -> Int:\n    var cursor = make(left)\n    cursor.view = right\n    cursor.offset\n",
         )
         .expect("a declared borrowed field may replace its root with a related owner");

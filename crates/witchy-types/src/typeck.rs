@@ -7505,7 +7505,15 @@ impl Checker {
                     message: format!("`for` expects a List to iterate: {}", e.message),
                 })?;
                 self.push();
+                let borrowed_element = self.is_direct_borrowed_nominal(&elem);
                 self.define(var.clone(), elem, false);
+                // A borrowed-list loop binder is a read-only borrowed shell.
+                // Its owner roots remain live through the enclosing iterator
+                // expression; authorizing the binder admits only checked field
+                // projections, never list mutation or an owning escape.
+                if borrowed_element {
+                    self.authorize_borrowed_shell_binding(var.clone());
+                }
                 self.infer_block(body)?;
                 self.pop();
                 Ok(Ty::Unit)
