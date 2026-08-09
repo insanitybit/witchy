@@ -70,6 +70,12 @@ fn stage_crates_follow_the_declared_dependency_dag() {
             .expect("package dependencies")
             .iter()
             .filter(|dependency| !dependency["path"].is_null())
+            // The stage DAG constrains the LIBRARY build graph. Dev-dependencies
+            // never enter it (they exist only for the crate's own test targets;
+            // Cargo forbids dev-dep cycles from affecting downstream builds), so
+            // a self dev-dependency used to enable a test-only feature for
+            // tests/ integration targets is not a stage edge.
+            .filter(|dependency| dependency["kind"].is_null())
             .filter_map(|dependency| dependency["name"].as_str())
             .filter(|dependency| dependency.starts_with("witchy-"))
             .map(str::to_owned)
