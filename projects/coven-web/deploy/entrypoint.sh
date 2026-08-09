@@ -1,96 +1,147 @@
 #!/bin/sh
 # Entrypoint for the PUBLIC coven origin (see ./Dockerfile and ./fly.toml).
 #
-# It runs TWO processes and supervises them:
+# It runs TWO supervised processes:
 #   1. `witchy coven-serve`  — the registry, bound to LOOPBACK 127.0.0.1:8787.
 #   2. `witchy sandbox coven_web.witchy` — the glamour web UI + same-origin
-#      reverse proxy, bound to 0.0.0.0:8080 (the only public listener), pointing
-#      its upstream at the loopback registry.
-# If EITHER process exits, the entrypoint tears down the other and exits nonzero
-# so Fly restarts the whole machine — the origin never half-serves.
+#      reverse proxy, bound to 0.0.0.0:8080 (the only public listener).
+# If EITHER exits, the entrypoint tears the other down and exits nonzero so Fly
+# restarts the whole machine — the origin never half-serves.
 #
-# The container starts as root ONLY for three chores that need it — materialize
-# the signing seed onto tmpfs, chown the Fly volume (mounted root-owned), and set
-# always-overcommit — then execs BOTH servers as the unprivileged `coven` user
-# via setpriv (util-linux, present in debian-slim). The long-running servers are
-# never root; only this tiny supervisor shell is.
+# The container starts as root ONLY for its chores — materialize seed files onto
+# tmpfs, chown the Fly volume, refresh the served asset bundle, set always-
+# overcommit — then execs BOTH servers as the unprivileged `coven` user via
+# setpriv. The long-running servers are never root.
 set -eu
 
-# Loopback registry + public web listener. WebAuthn ties the RP id/origin to the
-# public host, so both come from the Fly app's public hostname.
 COVEN_LOOPBACK="127.0.0.1:8787"
 WEB_ADDR="0.0.0.0:8080"
-WEB_URL="https://witchy.fly.dev"
-RP_ID="witchy.fly.dev"
 ROOT="${COVEN_ROOT:-/data}"
 DIST="/app/dist"
 APP="/app/coven_web.witchy"
 
+# The public origin browsers reach — coven-web verifies every WebAuthn assertion
+# against it AND mints its human-2FA identity tokens with `iss` = this origin
+# (RFC-0119), so it must be EXACTLY the address-bar URL. The Fly app name is
+# authoritative; override with COVEN_WEB_ORIGIN (a custom domain).
+if [ -n "${COVEN_WEB_ORIGIN:-}" ]; then
+    ORIGIN="$COVEN_WEB_ORIGIN"
+elif [ -n "${FLY_APP_NAME:-}" ]; then
+    ORIGIN="https://${FLY_APP_NAME}.fly.dev"
+else
+    ORIGIN="http://localhost:8080"
+fi
+if [ -n "${COVEN_WEB_RP_ID:-}" ]; then
+    RP_ID="$COVEN_WEB_RP_ID"
+else
+    RP_ID="${ORIGIN#*://}"; RP_ID="${RP_ID%%/*}"; RP_ID="${RP_ID%%:*}"
+fi
+
 if [ -z "${COVEN_SIGNING_SEED:-}" ]; then
-    echo "entrypoint: COVEN_SIGNING_SEED is not set." >&2
-    echo "  Set it as a Fly secret: fly secrets set COVEN_SIGNING_SEED=\$(openssl rand -hex 32)" >&2
+    echo "entrypoint: COVEN_SIGNING_SEED is not set (fly secrets set COVEN_SIGNING_SEED=\$(openssl rand -hex 32))." >&2
     exit 1
 fi
-# witchy validates the format too (64 hex chars = a 32-byte seed), but failing
-# here gives a clearer message than a post-boot crash loop.
 if [ "${#COVEN_SIGNING_SEED}" -ne 64 ]; then
-    echo "entrypoint: COVEN_SIGNING_SEED must be exactly 64 hex characters (openssl rand -hex 32), got ${#COVEN_SIGNING_SEED}" >&2
+    echo "entrypoint: COVEN_SIGNING_SEED must be exactly 64 hex characters, got ${#COVEN_SIGNING_SEED}" >&2
     exit 1
 fi
 
-# Seed file on tmpfs, readable only by the runtime user. Both processes read it:
-# coven-serve as the registry root key, coven-web as its `signing` secret (session
-# + OAuth-state MAC). `--signing-key <file>` is how both receive it.
 SEED_DIR=/dev/shm
 [ -d "$SEED_DIR" ] && [ -w "$SEED_DIR" ] || SEED_DIR=/tmp
-SEED_FILE="$SEED_DIR/coven-signing.seed"
 umask 077
+
+# coven-serve's registry root key.
+SEED_FILE="$SEED_DIR/coven-signing.seed"
 printf '%s\n' "$COVEN_SIGNING_SEED" > "$SEED_FILE"
 unset COVEN_SIGNING_SEED
-chown coven:coven "$SEED_FILE"
-chmod 0400 "$SEED_FILE"
+chown coven:coven "$SEED_FILE"; chmod 0400 "$SEED_FILE"
 
-# The registry store. A Fly volume mounted at /data arrives owned by root; hand
-# it to the runtime user so the registry's Dir capability can write it.
-mkdir -p "$ROOT"
-chown coven:coven "$ROOT"
+# coven-web's signing key — a DISTINCT trust domain from the registry root key.
+# It backs browser sessions + OAuth state AND is the Ed25519 issuer key coven-web
+# signs its `amr=webauthn` identity tokens with (RFC-0119). It MUST be stable and
+# its public key registered in coven's trust (COVEN_TRUST_ISSUERS as
+# `<origin>=ed25519:<pubkey-hex>`), or in-browser promote/yank cannot verify.
+# A missing seed falls back to an ephemeral per-boot key (sessions reset each
+# restart, and — without a matching trust entry — 2FA promote/yank will not work).
+WEB_SEED_FILE="$SEED_DIR/coven-web-signing.seed"
+if [ -n "${COVEN_WEB_SIGNING_SEED:-}" ]; then
+    if [ "${#COVEN_WEB_SIGNING_SEED}" -ne 64 ]; then
+        echo "entrypoint: COVEN_WEB_SIGNING_SEED must be exactly 64 hex characters, got ${#COVEN_WEB_SIGNING_SEED}" >&2
+        exit 1
+    fi
+    printf '%s\n' "$COVEN_WEB_SIGNING_SEED" > "$WEB_SEED_FILE"
+    unset COVEN_WEB_SIGNING_SEED
+else
+    od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$WEB_SEED_FILE"
+fi
+chown coven:coven "$WEB_SEED_FILE"; chmod 0400 "$WEB_SEED_FILE"
 
-# The interpreter/compile path reserves a 4 GiB virtual (lazily committed) stack
-# for its deep-recursion thread. On a small VM the default overcommit heuristic
-# refuses that mapping and the process crash-loops with `pthread_create ...
-# Resource temporarily unavailable` before binding. Always-overcommit makes the
-# (never-committed) reservation admissible. Needs root — done before setpriv.
+# "Log in with GitHub" (RFC-0010). The client ID is public (a coven-web arg); the
+# client secret is coven-web's `github_client_secret` SecretStore entry, from the
+# COVEN_GH_CLIENT_SECRET Fly secret via a tmpfs file. Enabled only when BOTH are
+# present; otherwise coven-web runs passkey-only.
+GH_GRANTS=""
+GH_APP_ARGS=""
+if [ -n "${COVEN_GH_CLIENT_ID:-}" ] && [ -n "${COVEN_GH_CLIENT_SECRET:-}" ]; then
+    GH_SECRET_FILE="$SEED_DIR/coven-web-gh-secret"
+    printf '%s' "$COVEN_GH_CLIENT_SECRET" > "$GH_SECRET_FILE"
+    unset COVEN_GH_CLIENT_SECRET
+    chown coven:coven "$GH_SECRET_FILE"; chmod 0400 "$GH_SECRET_FILE"
+    GH_GRANTS="--net github.com:443 --net api.github.com:443 --secret-file github_client_secret=$GH_SECRET_FILE"
+    GH_APP_ARGS="$COVEN_GH_CLIENT_ID"
+    echo "entrypoint: GitHub login enabled (client id ${COVEN_GH_CLIENT_ID})"
+fi
+
+# The registry store (Fly volume, arrives root-owned → hand to the runtime user).
+mkdir -p "$ROOT"; chown coven:coven "$ROOT"
+
+# The web UI's served Dir lives ON the volume so its small server-side state
+# (registered passkey `_wa_cred.json`, challenge/nonce markers) survives restarts
+# and deploys; the static assets are refreshed from the image each boot. The `_web`
+# name is deliberate: coven's store scan skips top-level `_`-prefixed entries, so
+# the web dir shares coven's root without appearing in the registry index.
+WEB_DIR="$ROOT/_web"
+mkdir -p "$WEB_DIR"
+cp -R "$DIST"/. "$WEB_DIR"/
+chown -R coven:coven "$WEB_DIR"
+
+# The deep-recursion thread reserves a 4 GiB (lazily committed) stack; a small VM's
+# default overcommit heuristic refuses it and the process crash-loops before binding.
 echo 1 > /proc/sys/vm/overcommit_memory || true
 
-# setpriv preserves the environment; point HOME at the runtime user's home so
-# witchy's embedded-wasm cache (~/.cache/witchy) is writable (best-effort — a
-# miss only costs a recompile at boot).
 HOME=/home/coven
 export HOME
 
 # ---- 1. coven-serve (registry) on loopback ----------------------------------
-# Trust specs are optional: COVEN_TRUST_ISSUERS holds whitespace-separated
-# `--trust-issuer` values, each `<issuer>=<pubkey-hex>` (or `<issuer>=jwks:<json>`).
-# Without them the registry runs ANONYMOUS — never do that on a public URL.
+# COVEN_TRUST_ISSUERS: whitespace/newline-separated static `--trust-issuer` specs,
+# each `<issuer>=<pubkey-hex>`, `<issuer>=jwks:<json>`, or `<issuer>=ed25519:<hex>`
+# (RFC-0119 — the coven-web human-2FA issuer). COVEN_OIDC_ISSUERS: space-separated
+# https issuer URLs discovered live at startup (`--trust-issuer-oidc`, e.g. GitHub
+# Actions). Without any trust the registry is ANONYMOUS — never on a public URL.
 set -- witchy coven-serve --addr "$COVEN_LOOPBACK" --root "$ROOT" --signing-key "$SEED_FILE"
 for spec in ${COVEN_TRUST_ISSUERS:-}; do
     [ -n "$spec" ] && set -- "$@" --trust-issuer "$spec"
+done
+for iss in ${COVEN_OIDC_ISSUERS:-}; do
+    [ -n "$iss" ] && set -- "$@" --trust-issuer-oidc "$iss"
 done
 setpriv --reuid coven --regid coven --init-groups "$@" &
 COVEN_PID=$!
 
 # ---- 2. coven-web (public UI + same-origin proxy) ---------------------------
-# `--dir` grants the served asset bundle; the two `--net` grants are the public
-# listener and the loopback upstream. The positional args are
-# <listen-addr> <upstream-addr> <public-origin> <webauthn-rp-id>.
+# Grants: the served web Dir, the public listener, the loopback upstream, GitHub
+# OAuth (when enabled), and its Ed25519 signing key. Positional args:
+# <listen> <upstream> <origin> <rp-id> [<gh-client-id>].
+# shellcheck disable=SC2086 # GH_GRANTS / GH_APP_ARGS are intentionally word-split.
 setpriv --reuid coven --regid coven --init-groups \
-    witchy sandbox --dir "$DIST" --net "$WEB_ADDR" --net "$COVEN_LOOPBACK" --signing-key "$SEED_FILE" \
-    "$APP" "$WEB_ADDR" "$COVEN_LOOPBACK" "$WEB_URL" "$RP_ID" &
+    witchy sandbox --dir "$WEB_DIR" --net "$WEB_ADDR" --net "$COVEN_LOOPBACK" \
+    $GH_GRANTS --signing-key "$WEB_SEED_FILE" \
+    "$APP" "$WEB_ADDR" "$COVEN_LOOPBACK" "$ORIGIN" "$RP_ID" $GH_APP_ARGS &
 WEB_PID=$!
 
+echo "entrypoint: coven pid $COVEN_PID on $COVEN_LOOPBACK (root $ROOT); coven-web pid $WEB_PID on $WEB_ADDR (origin $ORIGIN, rp id $RP_ID)"
+
 # ---- supervise: if EITHER exits, tear the other down and exit nonzero --------
-# POSIX sh has no `wait -n`; poll both PIDs. The `kill -0` results are consumed by
-# the while condition, so `set -e` does not fire on a live-process check.
 while kill -0 "$COVEN_PID" 2>/dev/null && kill -0 "$WEB_PID" 2>/dev/null; do
     sleep 2
 done
