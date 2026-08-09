@@ -88,6 +88,9 @@ const FIXTURE_AUTHORITY_IMPORTS = new Set([
   "dir_append",
   "dir_make_dir",
   "dir_create",
+  "dir_create_new",
+  "dir_replace",
+  "dir_rename",
   "file_read_len",
   "file_write",
   "mint_fetch",
@@ -97,7 +100,6 @@ const FIXTURE_AUTHORITY_IMPORTS = new Set([
   "crypto_reveal_len",
   "crypto.sign",
   "crypto.public_key",
-  "mint_secret",
   "mint_exec",
   "exec_only",
   "exec_run",
@@ -416,6 +418,28 @@ function installFixtureImports(real, bridge, io) {
         ),
         "File",
       );
+    real.dir_create_new = (dir, pathPtr, contentsPtr) =>
+      Number(response(
+        "dir_create_new",
+        {
+          dir: rawHandle(dir, "Dir"),
+          path: io.readWstrText(pathPtr),
+          bytes: [...io.readWstr(contentsPtr)],
+        },
+        "bool",
+      ));
+    real.dir_replace = (dir, pathPtr, contentsPtr) =>
+      unit("dir_replace", {
+        dir: rawHandle(dir, "Dir"),
+        path: io.readWstrText(pathPtr),
+        bytes: [...io.readWstr(contentsPtr)],
+      });
+    real.dir_rename = (dir, fromPtr, toPtr) =>
+      unit("dir_rename", {
+        dir: rawHandle(dir, "Dir"),
+        from: io.readWstrText(fromPtr),
+        to: io.readWstrText(toPtr),
+      });
     real.file_read_len = (file) =>
       stageBytes(
         response("file_read", { file: rawHandle(file, "File") }, "bytes"),

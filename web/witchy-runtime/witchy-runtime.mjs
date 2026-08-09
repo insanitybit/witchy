@@ -498,6 +498,9 @@ export const WITCHY_DIR_IMPORTS = Object.freeze([
   "dir_write",
   "dir_append",
   "dir_make_dir",
+  "dir_create_new",
+  "dir_replace",
+  "dir_rename",
   // … plus the File handles `dir_open`/`dir_create` mint (a Dir-derived File,
   // NOT the top-level `mint_file` grant, which stays denied).
   "file_read_len",
@@ -728,6 +731,49 @@ function memAppend(fs, path, bytes) {
     fs.files.set(path, merged);
   }
   fs.recordAncestors(path);
+}
+
+function memCreateNew(fs, path, bytes) {
+  if (path === "") throw new Error("create_new failed: path names the Dir root, not a file");
+  memRequireParent(fs, path);
+  if (fs.dirs.has(path)) {
+    throw new Error(`create_new failed for \`${path}\`: existing path is a directory`);
+  }
+  if (fs.files.has(path)) return 0;
+  fs.files.set(path, bytes);
+  fs.recordAncestors(path);
+  return 1;
+}
+
+function memReplace(fs, path, bytes) {
+  if (path === "") throw new Error("replace failed: path names the Dir root, not a file");
+  memRequireParent(fs, path);
+  if (fs.dirs.has(path)) {
+    throw new Error(`replace failed for \`${path}\`: existing path is a directory`);
+  }
+  fs.files.set(path, bytes);
+  fs.recordAncestors(path);
+}
+
+function memRename(fs, from, to) {
+  if (from === "") throw new Error("rename failed: source path is the Dir root");
+  if (to === "") throw new Error("rename failed: destination path is the Dir root");
+  memRequireParent(fs, from);
+  memRequireParent(fs, to);
+  if (!fs.files.has(from)) {
+    throw new Error(`rename failed: \`${from}\` does not exist`);
+  }
+  if (fs.dirs.has(from)) {
+    throw new Error(`rename failed: \`${from}\` is a directory`);
+  }
+  if (fs.dirs.has(to)) {
+    throw new Error(`rename failed: \`${to}\` is a directory`);
+  }
+  const value = fs.files.get(from);
+  fs.files.delete(from);
+  fs.files.set(to, value);
+  fs.recordAncestors(from);
+  fs.recordAncestors(to);
 }
 
 // `make_dir` is recursive (native FS uses `create_dir_all`): create every level.
@@ -1053,8 +1099,7 @@ function decodeBase64Url(value) {
 // opaque externrefs; only this closure can unwrap them. Reveal enforces the
 // per-entry use-only bit. Ed25519 signing/public-key derivation runs in the
 // platform WebCrypto provider through JSPI, so key bytes never enter guest
-// memory. This family deliberately excludes `mint_secret`: a bare root Secret
-// remains denied even when a SecretStore is granted.
+// memory. A bare root Secret is intentionally not provided by this policy.
 export function makeSecretStoreImports(
   secretSpec,
   { readWstr, readWstrText, writeAt, stagePending },
@@ -1500,6 +1545,26 @@ function makeDirImports(grants, { readWstr, readWstrText, stagePending, stageLis
       requireWrite(dir);
       dirGuard(dir, name, true);
       memMakeDir(dir.fs, mockJoin(dir.root, name));
+    },
+    dir_create_new(dir, relPtr, contentsPtr) {
+      const rel = readWstrText(relPtr);
+      requireWrite(dir);
+      dirGuard(dir, rel, false);
+      return memCreateNew(dir.fs, mockJoin(dir.root, rel), readWstr(contentsPtr));
+    },
+    dir_replace(dir, relPtr, contentsPtr) {
+      const rel = readWstrText(relPtr);
+      requireWrite(dir);
+      dirGuard(dir, rel, false);
+      memReplace(dir.fs, mockJoin(dir.root, rel), readWstr(contentsPtr));
+    },
+    dir_rename(dir, fromPtr, toPtr) {
+      const from = readWstrText(fromPtr);
+      const to = readWstrText(toPtr);
+      requireWrite(dir);
+      dirGuard(dir, from, false);
+      dirGuard(dir, to, false);
+      memRename(dir.fs, mockJoin(dir.root, from), mockJoin(dir.root, to));
     },
     // File handles minted by dir_open/dir_create.
     file_read_len(file) {
