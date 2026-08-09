@@ -57,3 +57,9 @@ mod typed_errors;
 mod vm_worker_isolation;
 #[path = "misc/wasm_abi_catalog.rs"]
 mod wasm_abi_catalog;
+#[path = "misc/rfc0102_console.rs"]
+mod rfc0102_console;
+#[path = "misc/rfc0103_build_step_confinement.rs"]
+mod rfc0103_build_step_confinement;
+#[path = "misc/rfc0103_csp.rs"]
+mod rfc0103_csp;

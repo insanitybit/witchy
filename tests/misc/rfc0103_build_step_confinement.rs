@@ -2,9 +2,7 @@ use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
-#[path = "support/temp_dir.rs"]
-mod temp_dir;
-use temp_dir::TempDir;
+use super::temp_dir::TempDir;
 
 #[test]
 fn production_build_step_runs_in_a_confined_child() {
