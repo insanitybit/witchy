@@ -1039,6 +1039,41 @@
     }
 
     #[test]
+    fn scalar_shell_mutation_transports_the_checked_root_set() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\n\
+             fn main() -> Int:\n    let input = \"root\"\n    var cursor = make(input)\n    cursor.offset = cursor.offset + 1\n    cursor.offset\n",
+        )
+        .expect("parse scalar shell mutation fixture");
+        let typed = crate::typeck::annotate_checked(module)
+            .expect("type-check scalar shell mutation fixture");
+        let loan_facts = crate::loans::facts_with_types(typed.module(), typed.table())
+            .expect("publish scalar shell mutation facts");
+        let main = typed
+            .module()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main");
+        let mutation = loan_facts
+            .shell_mutation_after(&main.body.stmts[2])
+            .expect("the record update is authenticated as a shell mutation");
+        assert_eq!(mutation.shell, "cursor");
+        assert_eq!(mutation.fields, ["offset"]);
+        assert_eq!(mutation.roots.len(), 1);
+        assert_eq!(mutation.roots[0].owner_root().local, "input");
+        assert_eq!(
+            mutation.roots[0].borrower_projection,
+            LoanProjection { steps: vec![LoanProjectionStep::Field("view".into())] },
+        );
+    }
+
+    #[test]
     fn copied_borrowed_shell_keeps_the_original_live_for_owner_conflicts() {
         let module = witchy_syntax::parser::parse_module(
             "mode opt\n\n\

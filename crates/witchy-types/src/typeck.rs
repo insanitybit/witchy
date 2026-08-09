@@ -1326,25 +1326,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     }
                     Ok(())
                 }
-                Expr::Ctor { name, args } => {
-                    if let Some(definition) = type_defs.values().find(|definition| {
-                        definition
-                            .params
-                            .iter()
-                            .any(|parameter| ast::is_lifetime_param(parameter))
-                            && definition
-                                .variants
-                                .iter()
-                                .any(|variant| variant.name == *name)
-                    }) {
-                        return terr(format!(
-                            "in `{}`: construction of borrowed nominal type `{}` is not available \
-                             in RFC-0112 stage 1; this stage preserves syntax, kinds, and reflection \
-                             only. Wait for projection-aware loans and runtime owner-root lowering",
-                            ctx.rsplit('.').next().unwrap_or(ctx),
-                            definition.name.rsplit('.').next().unwrap_or(&definition.name)
-                        ));
-                    }
+                Expr::Ctor { args, .. } => {
                     for arg in args {
                         validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
                     }
@@ -3199,6 +3181,14 @@ struct Checker {
     /// checked, but values may not yet be projected, destructured, updated, or
     /// transported through executable calls until owner-root lowering lands.
     borrowed_nominal_types: HashSet<String>,
+    /// Fields whose declared type contributes a borrowed relation to a lifetime
+    /// nominal. The AST declaration is authoritative here because `Ty` erases a
+    /// `View` qualifier after checking.
+    borrowed_nominal_relation_fields: HashMap<String, HashSet<String>>,
+    /// The assignment target currently authorized to infer a borrowed-shell
+    /// record update. A standalone update expression remains an untracked copy
+    /// and is rejected.
+    borrowed_shell_update_target: Option<String>,
     /// Sealed record capabilities (`capability X:` with named fields). Their
     /// fields are opaque: `.field` access is rejected so the only way to reach a
     /// carried capability is `match`, which the linker confines to the home
@@ -4228,6 +4218,32 @@ impl Checker {
             | Ty::BuildExec
             | Ty::Var(_) => None,
         }
+    }
+
+    fn is_direct_borrowed_nominal(&self, ty: &Ty) -> bool {
+        match self.resolve(ty) {
+            Ty::Named(name, arguments) => {
+                self.borrowed_nominal_types.contains(&name)
+                    || arguments.iter().any(|argument| {
+                        matches!(self.resolve(argument), Ty::Named(lifetime, args)
+                            if args.is_empty() && lifetime.starts_with('\''))
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn is_borrowed_shell_self_update(&self, name: &str, existing: &Ty, value: &Expr) -> bool {
+        self.is_direct_borrowed_nominal(existing)
+            && matches!(value, Expr::RecordUpdate { base, .. }
+                if matches!(base.as_ref(), Expr::Var(base) if base == name))
+    }
+
+    fn is_authorized_borrowed_shell_update(&self, base: &Expr, ty: &Ty) -> bool {
+        self.is_direct_borrowed_nominal(ty)
+            && self.borrowed_shell_update_target.as_ref().is_some_and(|target| {
+                matches!(base, Expr::Var(base) if base == target)
+            })
     }
 
     /// RFC-0112 stage 1 freezes the type-level contract before any value-level
@@ -5490,10 +5506,12 @@ impl Checker {
                     } else {
                         self.infer(value)?
                     };
-                    self.reject_borrowed_nominal_runtime_ty(
-                        &vt,
-                        &format!("binding/copy into `{name}`"),
-                    )?;
+                    if !(*mutable && self.is_direct_borrowed_nominal(&vt)) {
+                        self.reject_borrowed_nominal_runtime_ty(
+                            &vt,
+                            &format!("binding/copy into `{name}`"),
+                        )?;
+                    }
                     self.define(name.clone(), vt, *mutable);
                     ty = Ty::Unit;
                 }
@@ -5516,11 +5534,19 @@ impl Checker {
                             ));
                         }
                     }
-                    let vt = self.infer_expected(value, &existing)?;
-                    self.reject_borrowed_nominal_runtime_ty(
-                        &vt,
-                        &format!("assignment/copy into `{name}`"),
-                    )?;
+                    let saved_shell_target = self.borrowed_shell_update_target.take();
+                    if self.is_direct_borrowed_nominal(&existing) {
+                        self.borrowed_shell_update_target = Some(name.clone());
+                    }
+                    let inferred = self.infer_expected(value, &existing);
+                    self.borrowed_shell_update_target = saved_shell_target;
+                    let vt = inferred?;
+                    if !self.is_borrowed_shell_self_update(name, &existing, value) {
+                        self.reject_borrowed_nominal_runtime_ty(
+                            &vt,
+                            &format!("assignment/copy into `{name}`"),
+                        )?;
+                    }
                     if !self.existential_coercion(&existing, &vt)?
                         && !self.record_width_conformance(&existing, &vt)?
                     {
@@ -5673,7 +5699,17 @@ impl Checker {
             Expr::Ctor { name, args } => {
                 if name != "Nil" && let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
                     let typarams = self.ctor_typarams.get(name).cloned().unwrap_or_default();
-                    let (fields, result) = self.instantiate(&fields, &result, &typarams);
+                    let (fields, mut result) = self.instantiate(&fields, &result, &typarams);
+                    if self.is_direct_borrowed_nominal(expected)
+                        && matches!((self.resolve(expected), self.resolve(&result)),
+                            (Ty::Named(expected_name, _), Ty::Named(result_name, _))
+                                if expected_name == result_name)
+                    {
+                        // Lifetime arguments are relations, not runtime constructor
+                        // operands. The annotated result supplies them while the
+                        // constructor continues to check the ordinary field values.
+                        result = expected.clone();
+                    }
                     self.coerce_arg(expected, &result).map_err(|e| TypeError {
                         message: format!("in constructor `{name}`: {}", e.message),
                     })?;
@@ -6180,10 +6216,12 @@ impl Checker {
         self.reject_externref_cap_aggregate_ty(&ret, &format!("call to `{call_name}`"))?;
         self.reject_structural_authority_ty(&ret, &format!("call to `{call_name}`"))?;
         self.reject_runtime_compiler_syntax_ty(&ret, &format!("call to `{call_name}`"))?;
-        self.reject_borrowed_nominal_runtime_ty(
-            &ret,
-            &format!("call to `{display}` result"),
-        )?;
+        if !self.is_direct_borrowed_nominal(&ret) {
+            self.reject_borrowed_nominal_runtime_ty(
+                &ret,
+                &format!("call to `{display}` result"),
+            )?;
+        }
         Ok(ret)
     }
 
@@ -6950,10 +6988,12 @@ impl Checker {
                 if let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
                     let typarams = self.ctor_typarams.get(name).cloned().unwrap_or_default();
                     let (fields, result) = self.instantiate(&fields, &result, &typarams);
-                    self.reject_borrowed_nominal_runtime_ty(
-                        &result,
-                        &format!("constructor `{name}`"),
-                    )?;
+                    if !self.is_direct_borrowed_nominal(&result) {
+                        self.reject_borrowed_nominal_runtime_ty(
+                            &result,
+                            &format!("constructor `{name}`"),
+                        )?;
+                    }
                     if fields.len() != args.len() {
                         return terr(format!(
                             "constructor `{name}` takes {} field(s) but got {}",
@@ -7043,10 +7083,12 @@ impl Checker {
             }
             Expr::Field { base, field } => {
                 let bt = self.infer(base)?;
-                self.reject_borrowed_nominal_runtime_ty(
-                    &bt,
-                    &format!("field projection `.{field}`"),
-                )?;
+                if !self.is_direct_borrowed_nominal(&bt) {
+                    self.reject_borrowed_nominal_runtime_ty(
+                        &bt,
+                        &format!("field projection `.{field}`"),
+                    )?;
+                }
                 let resolved = self.resolve(&bt);
                 // `pair.0` — a tuple element, by position.
                 if let Ok(i) = field.parse::<usize>() {
@@ -7100,7 +7142,10 @@ impl Checker {
             }
             Expr::RecordUpdate { name, base, fields } => {
                 let bt = self.infer(base)?;
-                self.reject_borrowed_nominal_runtime_ty(&bt, "record spread/update")?;
+                let borrowed_shell = self.is_authorized_borrowed_shell_update(base, &bt);
+                if !borrowed_shell {
+                    self.reject_borrowed_nominal_runtime_ty(&bt, "record spread/update")?;
+                }
                 let resolved = self.resolve(&bt);
                 let (base_tyname, base_args) = match &resolved {
                     Ty::Named(n, a) => (n.clone(), a.clone()),
@@ -7142,6 +7187,25 @@ impl Checker {
                         return terr(format!("record `{tyname}` has no field `{fname}`"));
                     };
                     let expected = self.subst_vars(fty, &map);
+                    if borrowed_shell {
+                        if self
+                            .borrowed_nominal_relation_fields
+                            .get(&tyname)
+                            .is_some_and(|borrowed| borrowed.contains(fname))
+                        {
+                            return terr(format!(
+                                "`update` of borrowed field `{fname}` on `{tyname}` requires \
+                                 checked old/new loan sequencing; update an owned scalar field \
+                                 instead"
+                            ));
+                        }
+                        if !is_scalar_ty(&self.resolve(&expected)) {
+                            return terr(format!(
+                                "`update` of field `{fname}` on borrowed shell `{tyname}` is \
+                                 limited to owned scalar fields in this stage"
+                            ));
+                        }
+                    }
                     let vt = self.infer_expected(vexpr, &expected)?;
                     if !self.existential_coercion(&expected, &vt)? {
                         self.unify(&expected, &vt).map_err(|e| TypeError {
@@ -9100,6 +9164,29 @@ fn run_check_selected(
                     .then(|| definition.name.clone())
             })
             .collect(),
+        borrowed_nominal_relation_fields: module
+            .items
+            .iter()
+            .filter_map(|item| {
+                let Item::Type(definition) = item else { return None };
+                if !definition
+                    .params
+                    .iter()
+                    .any(|parameter| ast::is_lifetime_param(parameter))
+                {
+                    return None;
+                }
+                let fields = definition
+                    .variants
+                    .iter()
+                    .flat_map(|variant| variant.field_names.iter().zip(&variant.fields))
+                    .filter(|(_, field)| type_contains_nominal_lifetime_relation(field))
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                Some((definition.name.clone(), fields))
+            })
+            .collect(),
+        borrowed_shell_update_target: None,
         sealed_types: HashSet::new(),
         construction_sealed_types: HashSet::new(),
         transparent_externref_brands: HashMap::new(),

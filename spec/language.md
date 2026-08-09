@@ -935,10 +935,14 @@ field is represented structurally as `meta.TBorrowed(meta.TNamed("a", []),
 "input")`, so generators can inspect the owner relation without parsing source
 text.
 
-Borrowed nominal types currently provide a declaration, kind, signature, and
-reflection contract only. Constructing, destructuring, projecting, updating,
-or otherwise using a value of one remains a check-time error until the runtime
-owner-root representation is available.
+Borrowed nominal values may be constructed, copied, projected, and returned
+when their declared lifetime relations preserve the checked owner roots. A
+mutable borrowed record shell may update an owned scalar field; the write-back
+keeps the shell's hidden owner-root companions unchanged for the shell's whole
+lifetime. Replacing a borrowed field remains a check-time error until old/new
+loan sequencing can update that root set, and replacing an owned aggregate
+field is outside the current scalar-mutation slice. Calls or storage that erase
+the declared lifetime relation remain rejected.
 
 Binding a returned view loans the corresponding owner until the view's final
 use. During that interval the owner may be read, but it may not be moved,

@@ -50,6 +50,10 @@ struct BorrowSig {
     access: Option<AccessSignature>,
     /// `true` when the return type is a borrowed view.
     returns_view: bool,
+    /// `true` when the result is a nominal value containing authenticated
+    /// lifetime-linked fields. This remains available to the untyped loan pass,
+    /// which validates the compiler-lowered AST after type checking.
+    returns_borrowed_shell: bool,
     /// Parameter indices whose borrow lifetime matches the returned view's
     /// lifetime — the owners a call's result loans. Empty when the return is not
     /// a view (or, after signature validation, never empty when it is).
@@ -194,6 +198,19 @@ pub struct BorrowedValueShape {
     pub roots: Vec<LoanRootCompanion>,
 }
 
+/// A checked in-place update of a borrowed aggregate's logical shell.
+///
+/// Scalar shell updates do not replace any borrowed field, so the hidden root
+/// set is transported unchanged across the statement. Publishing that fact is
+/// still required: lowering must distinguish an authenticated shell update from
+/// an arbitrary mutable binding that happens to contain a view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoanShellMutation {
+    pub shell: String,
+    pub fields: Vec<String>,
+    pub roots: Vec<LoanEvent>,
+}
+
 /// One checked owner loan. Lowering uses these names to invalidate ownership
 /// tokens and retain the owner while the view is live.
 #[derive(Clone, Debug, PartialEq)]
@@ -329,6 +346,7 @@ pub struct LoanFacts {
     opens_after: HashMap<usize, Vec<LoanEvent>>,
     closes_after: HashMap<usize, Vec<LoanEvent>>,
     return_transfers: HashMap<usize, Vec<LoanEvent>>,
+    shell_mutations: HashMap<usize, LoanShellMutation>,
     edges: HashMap<LoanPoint, Vec<LoanEdgeFacts>>,
 }
 
@@ -359,6 +377,10 @@ impl LoanFacts {
 
     pub fn closes_after(&self, stmt: &Stmt) -> &[LoanEvent] {
         self.closes_after.get(&stmt_key(stmt)).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn shell_mutation_after(&self, stmt: &Stmt) -> Option<&LoanShellMutation> {
+        self.shell_mutations.get(&stmt_key(stmt))
     }
 
     pub fn edges_from(&self, stmt: &Stmt) -> &[LoanEdgeFacts] {
@@ -420,7 +442,8 @@ impl LoanFacts {
         let key = stmt_key(stmt);
         (self.active.contains_key(&key)
             || self.opens_after.contains_key(&key)
-            || self.closes_after.contains_key(&key))
+            || self.closes_after.contains_key(&key)
+            || self.shell_mutations.contains_key(&key))
             .then_some(key)
     }
 }
@@ -1193,6 +1216,7 @@ fn validate_signature(
     Ok(BorrowSig {
         access: None,
         returns_view: false,
+        returns_borrowed_shell: false,
         owner_params: Vec::new(),
         relations: Vec::new(),
         conventions: f.params.iter().map(|param| param.convention).collect(),
@@ -1235,6 +1259,10 @@ fn borrow_sig_from_access(
     BorrowSig {
         access: Some(signature.clone()),
         returns_view: !relations.is_empty(),
+        returns_borrowed_shell: matches!(
+            signature.result().ty(),
+            Type::Named(name, _) if catalog.borrowed_record(name)
+        ),
         owner_params,
         relations,
         conventions: signature
@@ -1785,6 +1813,30 @@ impl LoanCtx<'_> {
         self.type_table?.type_of(root).and_then(ty_to_ast)
     }
 
+    fn is_direct_borrowed_shell_value(
+        &self,
+        value: &Expr,
+        callables: &HashMap<String, BorrowSig>,
+    ) -> bool {
+        if let Some(ty) = self
+            .type_table
+            .and_then(|table| table.type_of(value))
+            .and_then(ty_to_ast)
+        {
+            return matches!(ty, Type::Named(name, _) if self.catalog.borrowed_record(&name));
+        }
+        match value {
+            Expr::Ctor { name, .. } => self.catalog.borrowed_constructor(name),
+            Expr::Record { name, .. } => self.catalog.borrowed_record(name),
+            Expr::Call { name, .. } => self
+                .sigs
+                .get(name)
+                .or_else(|| callables.get(name))
+                .is_some_and(|sig| sig.returns_borrowed_shell),
+            _ => false,
+        }
+    }
+
     /// Check a block's linear statement sequence.
     ///
     /// `inherited` loans come from an enclosing block and are treated as live for
@@ -1887,7 +1939,10 @@ impl LoanCtx<'_> {
                 if let Some(source) = self.aggregate_borrow_source(value, &callables, &live) {
                     return Err(self.aggregate_view_storage(&source.origin));
                 }
-                if *mutable && !sources.is_empty() {
+                if *mutable
+                    && !sources.is_empty()
+                    && !self.is_direct_borrowed_shell_value(value, &callables)
+                {
                     return Err(self.mutable_view_storage(name));
                 }
                 for owner in sources {
@@ -1976,6 +2031,23 @@ impl LoanCtx<'_> {
                 self.collect_alias_sources(value, &live, &mut sources);
                 if !sources.is_empty() {
                     return Err(self.mutable_view_storage(name));
+                }
+                if let Expr::RecordUpdate { base, fields, .. } = value
+                    && matches!(base.as_ref(), Expr::Var(base) if base == name)
+                    && live.iter().any(|loan| loan.view == *name)
+                {
+                    let mut roots = Vec::new();
+                    for loan in live.iter().filter(|loan| loan.view == *name) {
+                        push_unique_event(&mut roots, LoanEvent::from(loan.clone()));
+                    }
+                    self.facts.shell_mutations.insert(
+                        stmt_key(stmt),
+                        LoanShellMutation {
+                            shell: name.clone(),
+                            fields: fields.iter().map(|(field, _)| field.clone()).collect(),
+                            roots,
+                        },
+                    );
                 }
                 self.reject_callable_erasure(
                     name,
@@ -3020,9 +3092,22 @@ fn stmt_lets_view_escape(
     view: &str,
     catalog: &BorrowRelationCatalog,
 ) -> bool {
+    // Field assignment is represented as assignment of a RecordUpdate back to
+    // the same local. The type checker has already authenticated which fields
+    // may change; at the loan layer this shape transports the shell's existing
+    // roots instead of storing the shell elsewhere.
+    let self_shell_update = matches!(
+        stmt,
+        Stmt::Assign {
+            name,
+            value: Expr::RecordUpdate { base, .. },
+        } if name == view && matches!(base.as_ref(), Expr::Var(base) if base == view)
+    );
     match stmt {
         Stmt::Assign { value, .. }
-            if expr_mentions_var(value, view) && !expr_materializes_view(value, view) =>
+            if !self_shell_update
+                && expr_mentions_var(value, view)
+                && !expr_materializes_view(value, view) =>
         {
             return true;
         }
@@ -3069,7 +3154,7 @@ fn stmt_lets_view_escape(
                 }
             }
             Expr::RecordUpdate { base, fields, .. } => {
-                if expr_result_is_var(base, view)
+                if (!self_shell_update && expr_result_is_var(base, view))
                     || fields.iter().any(|(_, value)| expr_result_is_var(value, view))
                 {
                     escapes = true;

@@ -82,6 +82,19 @@ impl<'types> Codegen<'types> {
             let analyzed_stmt = stmt;
             let stmt_start = seq.len();
             self.active_loan_events = self.loan_facts.active_at(analyzed_stmt).to_vec();
+            if let Some(mutation) = self.loan_facts.shell_mutation_after(analyzed_stmt) {
+                // A scalar shell update transports the already-retained owner
+                // roots unchanged. Refuse to lower if the checked fact is not
+                // attached to that exact local or names a root that is not live
+                // at the write-back point.
+                if assignment_name != Some(mutation.shell.as_str())
+                    || mutation.roots.iter().any(|root| {
+                        root.view != mutation.shell || !self.active_loan_events.contains(root)
+                    })
+                {
+                    return None;
+                }
+            }
             if let Some(key) = self.loan_facts.event_key(analyzed_stmt)
                 && let Some((_, seen)) = self.loan_fact_stack.last_mut()
             {

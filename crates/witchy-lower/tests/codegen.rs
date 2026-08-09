@@ -4050,4 +4050,25 @@ fn main(console: Console):
         assert_eq!(on, vec!["510".to_string()], "elided closure computes the right value");
         assert_eq!(on, off, "elided and boxed closures produce identical output (parity)");
     }
+
+    #[test]
+    fn borrowed_shell_scalar_update_keeps_one_root_for_the_whole_mutable_shell() {
+        let source = "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\n\
+             fn main() -> Int:\n    let input = \"root\"\n    var cursor = make(input)\n    cursor.offset = cursor.offset + 1\n    cursor.offset\n";
+        assert_eq!(run_int(source), 1);
+
+        let module = parse_module(source).expect("parse borrowed shell mutation");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("borrowed shell scalar mutation lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $main").expect("main function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let main = &tail[..end];
+        assert!(main.contains("__loan_root_cursor__input"), "checked root local: {main}");
+        assert_eq!(main.match_indices("call $rc_dup").count(), 1, "one root retain: {main}");
+        assert_eq!(main.match_indices("call $rc_drop").count(), 1, "one root release: {main}");
+    }
 }
