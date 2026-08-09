@@ -2229,7 +2229,7 @@ platform enforcement. `[web].hosting = "portable"` is the default and explicitly
 accepts degraded response-header enforcement; `[web].hosting =
 "headers-required"` makes the complete emitted response-header set a deployment
 requirement. The selected profile enters the manifest and build report.
-`witchy doctor --web --url` must reject a `headers-required` deployment whose
+`witchy doctor --web --deployment <url>` must reject a `headers-required` deployment whose
 observed headers do not exactly provide the route policy. For a static host such
 as GitHub Pages, portable publication
 inserts the route's exact meta-compatible CSP into the document head and audits
