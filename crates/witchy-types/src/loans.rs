@@ -3267,7 +3267,7 @@ fn stmt_lets_view_escape(
     match stmt {
         Stmt::Assign { value, .. }
             if !self_shell_update
-                && expr_mentions_var(value, view)
+                && expr_result_is_var(value, view)
                 && !expr_materializes_view(value, view) =>
         {
             return true;
