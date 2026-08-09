@@ -223,6 +223,20 @@ implemented as `witchy doctor --web --deployment <url>`.
 
 **Conclusion.** RFC-0107 has **no in-sandbox code work left** — it can move to
 `implemented` only when externally owned evidence is approved and recorded.
+
+### RFC-0107 local closeout scope (as of this branch)
+
+For RFC-0107-owned acceptance rows, this branch has no missing in-repository proof
+requirements:
+
+- All RFC-0107 table rows are `PROVEN`.
+- Remaining RFC-0107 items in the open-row table are marked `external` only for
+  hosted/public execution evidence (public CI, deployment header policy posture on
+  an approved deployment host, release-host browser matrix, cold-mobile, and
+  WebAuthn relying-party payload exchange alignment).
+
+This is a local completion boundary; public `implemented` status depends on those
+externally owned gates.
 As of 2026-08-09 local closeout evidence run on this checkout:
 
 - `node scripts/audit-browser-runnable.mjs` → 148/148 complete examples, ALL PASS.
