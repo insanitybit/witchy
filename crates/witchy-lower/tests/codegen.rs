@@ -4176,4 +4176,26 @@ fn main(console: Console):
         assert_eq!(first.match_indices("call $rc_dup").count(), 3, "element copy plus one retain per live shell: {first}");
         assert_eq!(first.match_indices("call $rc_drop").count(), 2, "one root release per live shell: {first}");
     }
+
+    #[test]
+    fn borrowed_nominal_list_loop_binder_keeps_the_list_root_live() {
+        let source = "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String, offset: Int) -> Cursor('a):\n    Cursor(input, offset)\n\n\
+             fn sum(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input, 7), make(input, 9)]\n    var total = 0\n    for cursor in cursors:\n        total = total + cursor.offset\n    total\n\n\
+             fn main() -> Int:\n    sum(\"root\")\n";
+        assert_eq!(run_int(source), 16);
+
+        let module = parse_module(source).expect("parse borrowed nominal list loop fixture");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("borrowed nominal list loop lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $sum").expect("sum function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let sum = &tail[..end];
+        assert!(sum.contains("__loan_root_cursors__input"), "list companion root: {sum}");
+        assert!(sum.contains("call $rc_dup"), "list root retain: {sum}");
+        assert!(sum.contains("call $rc_drop"), "list root release: {sum}");
+    }
 }
