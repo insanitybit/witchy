@@ -15,7 +15,7 @@ type Option:
 // every other helper is methods-only (RFC-0099). ---
 
 // Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes
-// `Err(err)` — the inverse of `result.ok`.
+// `Err(err)` - the inverse of `result.ok`.
 pub fn ok_or(o: Option(a), err: e) -> Result(a, e):
     match o:
         Some(v) -> Ok(v)
@@ -61,7 +61,7 @@ impl Option(a):
             Some(v) -> Some(f(v))
             None -> None
 
-    // Apply `f` to the Some value, or return `default` for None — `map` then
+    // Apply `f` to the Some value, or return `default` for None - `map` then
     // `unwrap_or` in one step.
     pub fn map_or(self, default: b, f: fn(a) -> b) -> b:
         match self:
@@ -81,7 +81,7 @@ impl Option(a):
             Some(v) -> if keep(v): Some(v) else: None
             None -> None
 
-    // `other` if this option is Some, otherwise None — the value-forgetting
+    // `other` if this option is Some, otherwise None - the value-forgetting
     // conjunction that keeps the second option only when the first is present.
     // The lazy, value-threading counterpart is `and_then`.
     pub fn and(self, other: Option(b)) -> Option(b):
@@ -112,7 +112,7 @@ impl Option(a):
             None -> f()
 
     // Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes
-    // `Err(err)` — the inverse of `result.ok`.
+    // `Err(err)` - the inverse of `result.ok`.
     pub fn ok_or(self, err: e) -> Result(a, e):
         option.ok_or(self, err)
 

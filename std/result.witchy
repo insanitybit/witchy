@@ -80,7 +80,7 @@ impl Result(a, e):
     pub fn map_err(self, f: fn(e) -> g) -> Result(a, g):
         result.map_err(self, f)
 
-    // Apply `f` to the Ok value, or return `default` for an Err — `map_ok` then
+    // Apply `f` to the Ok value, or return `default` for an Err - `map_ok` then
     // `unwrap_or` in one step.
     pub fn map_or(self, default: b, f: fn(a) -> b) -> b:
         match self:
@@ -101,13 +101,13 @@ impl Result(a, e):
             Err(_) -> alt
 
     // The result if it is Ok, otherwise the result produced by applying `f` to
-    // the error — a lazy, error-aware recovery step.
+    // the error - a lazy, error-aware recovery step.
     pub fn or_else(self, f: fn(e) -> Result(a, e)) -> Result(a, e):
         match self:
             Ok(v) -> Ok(v)
             Err(x) -> f(x)
 
-    // The Ok value as `Some`, or `None` for an Err — discards the error, turning
+    // The Ok value as `Some`, or `None` for an Err - discards the error, turning
     // a Result into an Option.
     pub fn ok(self) -> Option(a):
         match self:
@@ -165,7 +165,7 @@ fn combine(acc: Result(List(a), e), x: Result(a, e)) -> Result(List(a), e):
                     Ok(out)
                 Err(e) -> Err(e)
 
-// Split a list of Results into the Ok values and the Err values, each in order —
+// Split a list of Results into the Ok values and the Err values, each in order -
 // for batch work that reports every failure, not just the first.
 pub fn partition(xs: List(Result(a, e))) -> (List(a), List(e)):
     var acc = ([], [])

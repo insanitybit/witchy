@@ -329,7 +329,7 @@ pub const PRELUDE_MODULES: &[&str] =
 /// Bundled playground/package modules. These are compiler-shipped for
 /// filesystem-free docs and playgrounds, but retain a package owner distinct
 /// from the standard library.
-pub const PLAYGROUND_MODULES: &[&str] = &["glamour", "markdown"];
+pub const PLAYGROUND_MODULES: &[&str] = &["glamour", "markdown", "highlight"];
 
 /// The bundled std modules that export a `pub fn` of the given name — used to
 /// suggest a missing `import` when a call names an unimported stdlib function.
@@ -535,6 +535,7 @@ pub fn bundled_source(name: &str) -> Option<&'static str> {
     std_source(name).or(match name {
         "glamour" => Some(include_str!("../../../projects/glamour/src/glamour.witchy")),
         "markdown" => Some(include_str!("../../../projects/glamour/src/markdown.witchy")),
+        "highlight" => Some(include_str!("../../../projects/glamour/src/highlight.witchy")),
         _ => None,
     })
 }

@@ -1,0 +1,357 @@
+// highlight — a shared, capability-PURE syntax highlighter for witchy + TOML
+// source, built on glamour (RFC-0008). It takes source TEXT and produces a
+// glamour `VNode` tree: the source is split into classed `<span>` runs by token
+// kind. Two languages share ONE token model and ONE renderer, so a single CSS
+// set (`.kw`, `.str`, `.comment`, `.num`, `.section`, `.key`, `.punct`, …) styles
+// both. The `highlighter` example rune and the `coven_web_app` source view both
+// import this module rather than duplicating a tokenizer.
+//
+// SECURITY: every token's text flows through glamour's `text(...)` node, never an
+// HTML-string sink, so source containing `<script>` renders as the inert
+// characters `&lt;script&gt;` and never a real script node. Highlighting untrusted
+// package source INLINE in the trusted shell is therefore exactly as XSS-safe as
+// the old plain-text `text(...)` render (RFC-0015 §0: foreign *code* gets a
+// compartment; untrusted *data* renders inline, safe by construction).
+//
+// The functions are GENERIC over the caller's `msg` type (the render emits no `on`
+// bindings, so `msg` is a free variable) — the same shape as `markdown.to_vnode`.
+// `string`/`list` are prelude, so this module's runtime footprint stays empty.
+
+from glamour import VNode
+
+// A token is a (class, text) pair; an empty class means plain (unclassed) text.
+type Token:
+    Tok(String, String)
+
+// ---------------------------------------------------------------------------
+// Public entry points.
+// ---------------------------------------------------------------------------
+
+// Dispatch by file extension: `.witchy` -> witchy highlighting, `.toml` -> TOML
+// highlighting, anything else -> a single plain `text(...)` node (safe fallback).
+// Returns the CHILDREN of a `<code>` element, so the caller keeps its own `<pre>`.
+pub fn code_spans(path: String, src: String) -> List(VNode(msg)):
+    if path.ends_with(".witchy"):
+        witchy_spans(src)
+    else if path.ends_with(".toml"):
+        toml_spans(src)
+    else:
+        [glamour.text(src)]
+
+// Highlight witchy source into a flat list of classed `<span>`/plain-text nodes.
+pub fn witchy_spans(src: String) -> List(VNode(msg)):
+    render_tokens(tokenize_witchy(src))
+
+// Highlight TOML source into a flat list of classed `<span>`/plain-text nodes.
+pub fn toml_spans(src: String) -> List(VNode(msg)):
+    render_tokens(tokenize_toml(src))
+
+// The conventional `<pre><code>…</code></pre>` block wrapping witchy spans, used by
+// the standalone `highlighter` rune (coven-web builds its own `pre.src` instead).
+pub fn witchy_pre(src: String) -> VNode(msg):
+    glamour.element("pre", [], [glamour.element("code", [], witchy_spans(src))])
+
+// ---------------------------------------------------------------------------
+// Rendering: tokens -> VNode spans. A classed token becomes `<span class="kind">
+// text</span>`; a plain token becomes a bare `text(...)` node. Either way the
+// token's text is a `text(...)` node, so it can NEVER form markup.
+// ---------------------------------------------------------------------------
+fn render_tokens(toks: List(Token)) -> List(VNode(msg)):
+    var spans: List(VNode(msg)) = []
+    for t in toks:
+        spans.push(render_token(t))
+    spans
+
+fn render_token(t: Token) -> VNode(msg):
+    match t:
+        Tok(kind, text) ->
+            if kind.is_empty():
+                glamour.text(text)
+            else:
+                glamour.element("span", [glamour.prop("class", kind)], [glamour.text(text)])
+
+// ---------------------------------------------------------------------------
+// The witchy tokenizer — a pragmatic scanner (NOT a full lexer). It peels off one
+// classed run at a time:
+//   * `com` — a `//` line comment, to end of line;
+//   * `str` — a `"…"` string literal (with `\"` escapes), quotes included;
+//   * `num` — a run of digits (a number literal);
+//   * `kw`  — an identifier that is a reserved keyword;
+//   * `cap` — an identifier that names a host capability;
+//   *  ""   — anything else (identifiers, whitespace, punctuation) as plain text.
+// ---------------------------------------------------------------------------
+fn tokenize_witchy(src: String) -> List(Token):
+    let cs = src.chars()
+    let n = cs.length()
+    var toks: List(Token) = []
+    var i = 0
+    while i < n:
+        let c = cs.at(i)
+        if is_slash_slash(cs, i, n):
+            let (text, j) = read_to_eol(cs, i, n)
+            toks.push(Tok("com", text))
+            i = j
+        else if c == "\"":
+            let (text, j) = read_string(cs, i, n)
+            toks.push(Tok("str", text))
+            i = j
+        else if is_digit(c):
+            let (text, j) = read_number(cs, i, n)
+            toks.push(Tok("num", text))
+            i = j
+        else if is_ident_start(c):
+            let (word, j) = read_ident(cs, i, n)
+            let kind = if is_keyword(word): "kw" else: if is_capability(word): "cap" else: ""
+            toks.push(Tok(kind, word))
+            i = j
+        else:
+            let (text, j) = read_plain(cs, i, n)
+            toks.push(Tok("", text))
+            i = j
+    toks
+
+// A pragmatic, representative slice of witchy's keywords — enough for a reader to
+// see the shape in a color; plain identifiers fall through to "".
+fn is_keyword(word: String) -> Bool:
+    keywords().contains(word)
+
+fn keywords() -> List(String):
+    ["fn", "let", "var", "own", "if", "else", "match", "type", "import", "pub", "for", "while", "return", "in", "where", "derive", "and", "or", "not", "true", "false", "async", "await", "spawn", "comptime", "gen", "yield", "as", "capability", "from", "test", "pass"]
+
+// witchy's host capabilities — the unforgeable authority a rune may hold. Their
+// own `cap` class lands a reader's eye on exactly the authority-bearing tokens.
+fn is_capability(word: String) -> Bool:
+    capabilities().contains(word)
+
+fn capabilities() -> List(String):
+    ["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "Net", "Exec"]
+
+// `//` at position `i`?
+fn is_slash_slash(cs: List(String), i: Int, n: Int) -> Bool:
+    cs.at(i) == "/" && i + 1 < n && cs.at(i + 1) == "/"
+
+// Read a `"…"` string literal including both quotes; `\"` stays inside.
+fn read_string(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start + 1
+    var out = "\""
+    var done = false
+    while i < n && !done:
+        let c = cs.at(i)
+        if c == "\\" && i + 1 < n:
+            out = out + c + cs.at(i + 1)
+            i = i + 2
+        else:
+            out = out + c
+            i = i + 1
+            if c == "\"":
+                done = true
+    (out, i)
+
+// Read a run of decimal digits (and `_` separators / a single `.`), a number.
+fn read_number(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    while i < n && is_number_char(cs.at(i)):
+        out = out + cs.at(i)
+        i = i + 1
+    (out, i)
+
+// Read an identifier (letter/`_` start, then letters/digits/`_`).
+fn read_ident(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    while i < n && is_ident_cont(cs.at(i)):
+        out = out + cs.at(i)
+        i = i + 1
+    (out, i)
+
+// Read a plain run up to the next char that could start a classed witchy token.
+fn read_plain(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    var done = false
+    while i < n && !done:
+        let c = cs.at(i)
+        if c == "\"" || is_digit(c) || is_ident_start(c) || is_slash_slash(cs, i, n):
+            done = true
+        else:
+            out = out + c
+            i = i + 1
+    (out, i)
+
+// ---------------------------------------------------------------------------
+// The TOML tokenizer. TOML is line-oriented, so the scanner tracks two bits of
+// per-line state: `bol` (only whitespace seen since the last newline) and
+// `seen_eq` (we are past the `=`, i.e. in value position). Token classes:
+//   * `comment` — a `#` line comment, to end of line;
+//   * `section` — a `[table]` / `[[array.of.tables]]` header at line start;
+//   * `key`     — a bare key before the `=`;
+//   * `str`     — a `"…"` (with escapes) or `'…'` (literal) string, quotes included;
+//   * `num`     — a numeric / date-time run;
+//   * `bool`    — `true` / `false`;
+//   * `punct`   — `=` `[` `]` `{` `}` `,` `.`;
+//   *  ""       — whitespace / newlines / anything else, as plain text.
+// ---------------------------------------------------------------------------
+fn tokenize_toml(src: String) -> List(Token):
+    let cs = src.chars()
+    let n = cs.length()
+    var toks: List(Token) = []
+    var i = 0
+    var bol = true
+    var seen_eq = false
+    while i < n:
+        let c = cs.at(i)
+        if c == "\n":
+            toks.push(Tok("", c))
+            i = i + 1
+            bol = true
+            seen_eq = false
+        else if c == " " || c == "\t":
+            let (text, j) = read_ws(cs, i, n)
+            toks.push(Tok("", text))
+            i = j
+        else if c == "#":
+            let (text, j) = read_to_eol(cs, i, n)
+            toks.push(Tok("comment", text))
+            i = j
+        else if c == "\"" || c == "'":
+            let (text, j) = read_toml_string(cs, i, n, c)
+            toks.push(Tok("str", text))
+            i = j
+            bol = false
+        else if bol && c == "[":
+            let (text, j) = read_section(cs, i, n)
+            toks.push(Tok("section", text))
+            i = j
+            bol = false
+        else if c == "=":
+            toks.push(Tok("punct", c))
+            i = i + 1
+            seen_eq = true
+            bol = false
+        else if is_toml_punct(c):
+            toks.push(Tok("punct", c))
+            i = i + 1
+            bol = false
+        else if is_digit(c) || is_signed_number(cs, i, n, seen_eq):
+            let (text, j) = read_toml_number(cs, i, n)
+            toks.push(Tok("num", text))
+            i = j
+            bol = false
+        else if is_ident_start(c):
+            let (word, j) = read_ident(cs, i, n)
+            let kind = if word == "true" || word == "false": "bool" else: if !seen_eq: "key" else: ""
+            toks.push(Tok(kind, word))
+            i = j
+            bol = false
+        else:
+            toks.push(Tok("", c))
+            i = i + 1
+            bol = false
+    toks
+
+fn is_toml_punct(c: String) -> Bool:
+    c == "[" || c == "]" || c == "{" || c == "}" || c == "," || c == "."
+
+// A leading `+`/`-` immediately followed by a digit, in value position, begins a
+// signed number.
+fn is_signed_number(cs: List(String), i: Int, n: Int, seen_eq: Bool) -> Bool:
+    seen_eq && (cs.at(i) == "-" || cs.at(i) == "+") && i + 1 < n && is_digit(cs.at(i + 1))
+
+// Read a `[table]` / `[[array]]` header: from `[` until brackets balance back to
+// depth 0 (never crossing a newline).
+fn read_section(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    var depth = 0
+    var done = false
+    while i < n && !done:
+        let c = cs.at(i)
+        if c == "\n":
+            done = true
+        else:
+            out = out + c
+            i = i + 1
+            if c == "[":
+                depth = depth + 1
+            else if c == "]":
+                depth = depth - 1
+                if depth == 0:
+                    done = true
+    (out, i)
+
+// Read a TOML string: basic `"…"` honors `\` escapes, literal `'…'` does not.
+// A single-line string ends at its closing quote or the end of the line.
+fn read_toml_string(cs: List(String), start: Int, n: Int, quote: String) -> (String, Int):
+    let escapes = quote == "\""
+    var i = start + 1
+    var out = quote
+    var done = false
+    while i < n && !done:
+        let c = cs.at(i)
+        if c == "\n":
+            done = true
+        else if escapes && c == "\\" && i + 1 < n:
+            out = out + c + cs.at(i + 1)
+            i = i + 2
+        else:
+            out = out + c
+            i = i + 1
+            if c == quote:
+                done = true
+    (out, i)
+
+// Read a numeric or date-time run (digits, separators, hex/exp letters, `:` `-`
+// `+` `.` for dates/times). Cosmetic: over-inclusion only tints, never breaks.
+fn read_toml_number(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    if i < n && (cs.at(i) == "-" || cs.at(i) == "+"):
+        out = out + cs.at(i)
+        i = i + 1
+    while i < n && is_toml_number_char(cs.at(i)):
+        out = out + cs.at(i)
+        i = i + 1
+    (out, i)
+
+fn is_toml_number_char(c: String) -> Bool:
+    is_digit(c) || c == "_" || c == "." || c == "-" || c == "+" || c == ":" || c == "e" || c == "E" || c == "x" || c == "o" || c == "b" || c == "T" || c == "Z" || c >= "a" && c <= "f" || c >= "A" && c <= "F"
+
+// Read a run of spaces/tabs (plain).
+fn read_ws(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    while i < n && (cs.at(i) == " " || cs.at(i) == "\t"):
+        out = out + cs.at(i)
+        i = i + 1
+    (out, i)
+
+// ---------------------------------------------------------------------------
+// Shared helpers.
+// ---------------------------------------------------------------------------
+
+// Read to the end of the line (not including the newline).
+fn read_to_eol(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    while i < n && cs.at(i) != "\n":
+        out = out + cs.at(i)
+        i = i + 1
+    (out, i)
+
+// ---- character classes ----
+fn is_digit(c: String) -> Bool:
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+
+fn is_number_char(c: String) -> Bool:
+    is_digit(c) || c == "_" || c == "."
+
+fn is_ident_start(c: String) -> Bool:
+    is_alpha(c) || c == "_"
+
+fn is_ident_cont(c: String) -> Bool:
+    is_alpha(c) || is_digit(c) || c == "_"
+
+fn is_alpha(c: String) -> Bool:
+    let lower = c.to_lower()
+    lower >= "a" && lower <= "z"

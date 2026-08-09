@@ -21,7 +21,8 @@ examples, see the [book tour](../book/src/tour.md).
 
 Start with these six runes. Together they exercise the deliberately supported
 preview path without requiring the package registry, browser applications, or
-experimental language features.
+experimental language features. See [Witchy product status](../PRODUCT-STATUS.md)
+for the promise and trust boundaries behind that label.
 
 | Order | Example | Why it is here |
 |---:|---|---|
@@ -75,8 +76,8 @@ supply its authority.
 
 The remaining examples are useful implementation evidence and demonstrations,
 but the catalog intentionally extends beyond the supported-preview product
-story. An example's presence here does not promote its subsystem; the supported
-surface is what the checked-in tests and examples exercise.
+story. An example's presence here does not promote its subsystem; use the
+maturity labels in [Witchy product status](../PRODUCT-STATUS.md).
 
 ### Core language demonstrations
 

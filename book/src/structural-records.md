@@ -1,8 +1,10 @@
 # Structural Records and Width Conformance
 
-Anonymous records are exact structural types. They are useful when the shape is
-the contract and a nominal constructor would add ceremony without adding an
-invariant.
+A nominal type earns its keep by carrying an invariant. When the shape *is* the
+contract - a pair of counts, a projection you're about to serialize - declaring
+a constructor buys you ceremony and nothing else.
+
+Anonymous records are exact structural types for that case.
 
 ```witchy
 type Value(a) = .{value: a}
@@ -22,7 +24,7 @@ fn main(console: Console):
 .{label: ready, line: 7, value: payload}
 ```
 
-Field order does not affect identity. The type
+Field order doesn't affect identity. The type
 `.{label: String, value: String, line: Int}` above is exactly the same type as
 `Located(String)` after its aliases are resolved.
 
@@ -31,13 +33,13 @@ Field order does not affect identity. The type
 The type spread `.{..Base, extra: Type}` resolves `Base`, copies its fields, and
 then produces one ordinary exact anonymous-record type. Bases may be aliases,
 qualified aliases from another module, or generic aliases after substitution.
-Composition is not a runtime wrapper and does not create a nominal subtype.
+Composition isn't a runtime wrapper and doesn't create a nominal subtype.
 
 - Repeating a field with the identical type collapses to one field.
 - Repeating it with a different type is an error.
 - A cyclic base, unresolved base, nominal record, tuple, union, or non-record
   base is an error.
-- Structural shapes remain capability-safe: a projection cannot hide authority
+- Structural shapes remain capability-safe: a projection can't hide authority
   in a field that the structural-type rules would reject.
 
 Type spread and value spread are separate operations:
@@ -47,13 +49,13 @@ type Detailed = .{..Summary, note: String}  # compose a type
 let renamed = .{label: "new", ..detailed}  # update an exact value
 ```
 
-Value spread preserves the base value's exact shape. It does not add or remove
+Value spread preserves the base value's exact shape. It doesn't add or remove
 fields.
 
 ## Richer values at expected-type sites
 
 When an expression has a richer anonymous-record type and the surrounding
-source explicitly expects a poorer anonymous-record type, Witchy constructs the
+source explicitly expects a poorer anonymous-record type, witchy constructs the
 exact target shape. Every target field must exist at exactly the required type.
 
 ```witchy
@@ -138,14 +140,14 @@ true
 ```
 
 Strings, containers, closures, and other reference-bearing fields retain their
-ordinary typed representation. Projection is a checked construction; it is not
+ordinary typed representation. Projection is a checked construction; it isn't
 a layout cast, a nominal relabel, or a conversion through an untyped slot.
 
 ## Inference stays exact
 
-Width conformance is directed only by an explicit expected type. Witchy does
+Width conformance is directed only by an explicit expected type. witchy does
 not guess a common smaller shape for an unannotated branch, container, function
-value, or generic argument. This keeps inference local and prevents an extra
+value, or generic argument. This keeps inference local and avoids an extra
 field from disappearing merely because another expression lacks it.
 
 The following partial examples are intentionally rejected:
@@ -166,7 +168,7 @@ type User:
 let public: .{id: Int} = User(1)
 ```
 
-Add the intended target where the narrowing is deliberate—for example,
+Add the intended target where the narrowing is deliberate - for example,
 `let rows: List(.{id: Int}) = [...]` or
 `let row: .{id: Int} = if ...`.
 
@@ -208,7 +210,7 @@ own done
 
 Using `moved` afterward is a use-after-move error. A `var Public` parameter is
 different: it may replace its argument with any `Public`, so a `Private` caller
-place could not regain the omitted `secret` during write-back. Witchy therefore
+place could not regain the omitted `secret` during write-back. witchy therefore
 rejects `var Private -> var Public` for direct bindings, fields, indexes, and
 nested places before reserving or mutating the caller place.
 

@@ -163,6 +163,39 @@ fn full_lifecycle_publish_promote_add_use() {
         "the fetched rune source must be vendored",
     );
 
+    // RFC-0117 Lane A: `add` also records the dependency in the manifest's
+    // `[dependencies]` (import alias keyed, a caret requirement of the resolved
+    // version — the manifest holds the requirement, the lock pins the exact
+    // version), in the same inline shape a hand-written registry dep uses — so the
+    // whole-tree authority commands are no longer blind to registry deps.
+    let manifest = std::fs::read_to_string(app.join("witchy.toml")).unwrap();
+    assert!(
+        manifest.contains("\"strkit\" = { version = \"^0.1.0\" }"),
+        "add must record the registry dep in [dependencies]: {manifest}"
+    );
+    // Re-adding must not duplicate or corrupt the entry (idempotency).
+    let out = fe.pm(&app, &["add", "acme/strkit"], None);
+    assert!(out.status.success(), "re-add failed: {}\n{}", stderr(&out), stdout(&out));
+    let manifest = std::fs::read_to_string(app.join("witchy.toml")).unwrap();
+    assert_eq!(
+        manifest.matches("\"strkit\" = { version =").count(),
+        1,
+        "re-add must not duplicate the [dependencies] entry: {manifest}"
+    );
+    // `tree` and `why` now see the registry dep (previously "(no dependencies)").
+    let out = fe.pm(&app, &["tree", "."], None);
+    assert!(
+        stdout(&out).contains("strkit") && !stdout(&out).contains("(no dependencies)"),
+        "tree must show the added registry dep: {}",
+        stdout(&out)
+    );
+    let out = fe.pm(&app, &["why", ".", "strkit"], None);
+    assert!(
+        stdout(&out).contains("strkit — direct dependency"),
+        "why must report the registry dep as direct: {}",
+        stdout(&out)
+    );
+
     let out = fe.pm(&app, &["build", "."], None);
     assert!(out.status.success() && stdout(&out).contains("ok"), "build: {}", stderr(&out));
 

@@ -3,6 +3,22 @@
 // public key comes from getPublicKey() (SPKI DER) → SEC1 uncompressed point — no CBOR.
 import { authHeader } from "./session";
 
+// A client-side deadline over the WebAuthn ceremony. `navigator.credentials.create/get`
+// carry an authenticator `timeout`, but a stalled platform dialog (or an authenticator that
+// never resolves) can leave that promise pending forever, sticking the UI on "registering…".
+// Race the ceremony against a hard wall-clock cap so the caller ALWAYS settles (UI-04).
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(label + " timed out")), ms);
+  });
+  return Promise.race([p, guard]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
+// Hard client-side deadline for a credential ceremony — a hair past the authenticator's own
+// 60s `timeout`, so the native cancel normally fires first and this only catches true stalls.
+const CEREMONY_TIMEOUT_MS = 65000;
+
 function hex(buf: ArrayBuffer): string {
   return Array.from(new Uint8Array(buf))
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -48,18 +64,28 @@ async function challengeBytes(op: string, name = "", version = ""): Promise<Uint
 
 // Register a passkey (P-256/ES256) and bind its public key on the server.
 export async function register(rpId: string): Promise<void> {
-  const cred = (await navigator.credentials.create({
-    publicKey: {
-      challenge: await challengeBytes("register"),
-      rp: { id: rpId, name: "coven" },
-      user: { id: new Uint8Array([1]), name: "maintainer", displayName: "maintainer" },
-      pubKeyCredParams: [{ type: "public-key", alg: -7 }],
-      // A discoverable (resident) passkey, so the assertion can find it without the
-      // server having to hand back an allow-list of credential ids.
-      authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
-      timeout: 60000,
-    },
-  })) as PublicKeyCredential;
+  const cred = (await withTimeout(
+    navigator.credentials.create({
+      publicKey: {
+        challenge: await challengeBytes("register"),
+        rp: { id: rpId, name: "coven" },
+        user: { id: new Uint8Array([1]), name: "maintainer", displayName: "maintainer" },
+        // Offer ES256 first (the P-256 key this shell decodes via spkiToSec1Hex), then RS256 as a
+        // fallback for authenticators that reject an ES256-only list — Chrome warns an ES256-only
+        // offer can fail on incompatible authenticators (UI-05). ES256 stays the preferred choice.
+        pubKeyCredParams: [
+          { type: "public-key", alg: -7 },
+          { type: "public-key", alg: -257 },
+        ],
+        // A discoverable (resident) passkey, so the assertion can find it without the
+        // server having to hand back an allow-list of credential ids.
+        authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
+        timeout: 60000,
+      },
+    }),
+    CEREMONY_TIMEOUT_MS,
+    "passkey registration",
+  )) as PublicKeyCredential;
   const resp = cred.response as AuthenticatorAttestationResponse;
   const spki = resp.getPublicKey();
   if (!spki) throw new Error("authenticator returned no public key");

@@ -1,7 +1,7 @@
 # Compile-Time Code: `comptime`
 
 Sometimes the most honest way to write repetitive code is to *generate* it. A
-top-level `comptime:` block is witchy's tool for that — a block that runs **at
+top-level `comptime:` block is witchy's tool for that - a block that runs **at
 compile time** and emits new source:
 
 ```witchy
@@ -32,12 +32,12 @@ exactly the same rules as handwritten code.
 
 `comptime` keeps the capability model intact through three rules:
 
-- **No capabilities.** A `comptime:` block has no parameter list, so there is
-  nothing to receive a `Console`, `Dir`, or `Net` through — and capabilities
-  cannot be forged. No filesystem, no network, no clock: the block is
+- **No capabilities.** A `comptime:` block has no parameter list, so there's
+  nothing to receive a `Console`, `Dir`, or `Net` through - and capabilities
+  can't be forged. No filesystem, no network, no clock: the block is
   **deterministic by construction**. The same source always generates the
   same code, which is also what makes builds cacheable.
-- **Additive only.** Emitted source is appended. A `comptime` block cannot
+- **Additive only.** Emitted source is appended. A `comptime` block can't
   rewrite or delete existing items, so signatures retain their reviewed
   meaning.
 - **Analyzed after expansion.** `witchy caps`, the type checker, and the
@@ -64,10 +64,10 @@ text.
 For structured generators, prefer `emit_item(meta.ItemSyntax)` to raw `emit`
 lines. The `meta` builders validate syntax categories before the generated item
 is appended. `meta.fresh(hint)` creates a deterministic compiler-owned identifier
-for a generated binding; user source cannot spell its reserved name, so a local
-with the same human-readable hint cannot capture it.
+for a generated binding; user source can't spell its reserved name, so a local
+with the same human-readable hint can't capture it.
 
-`quote item:` remains compiler-owned syntax from parsing through append; it is
+`quote item:` remains compiler-owned syntax from parsing through append; it's
 not rendered and reparsed. Typed holes replace exact expression, type, or
 pattern nodes in that item AST. `quote expr:`, `quote type:`, `quote pattern:`,
 `quote stmt:`, and `quote block:` likewise retain their parsed nodes. Their
@@ -77,7 +77,7 @@ enclosing syntax.
 The `meta` builders validate category boundaries and preserve compiler-owned
 children where their API is structural. Compatibility builders that accept raw
 source parse only that explicit payload. Use quotation and structural builders
-for new generators; use raw-source constructors only when the syntax is not yet
+for new generators; use raw-source constructors only when the syntax isn't yet
 covered by a structural builder. A typed tagged-literal generator returns
 `meta.ExprSyntax`, and the expansion engine transfers that expression AST
 directly.
@@ -183,7 +183,7 @@ fn main(console: Console):
 42
 ```
 
-Expression templates can contain syntax that is not independently parseable as
+Expression templates can contain syntax that isn't independently parseable as
 a builder payload. The nested quote below preserves the anonymous-record AST
 through both substitutions:
 
@@ -210,7 +210,7 @@ fn main(console: Console):
 
 ## Tagged literals: `comptime` in expression position
 
-A string literal written *immediately after an identifier* — `tag"…"` — is a
+A string literal written *immediately after an identifier* - `tag"…"` - is a
 **tagged literal**. Like `comptime` it runs at compile time, but in *expression*
 position: the lexer splits the literal into its static fragments and its `${…}`
 holes. Tags use the typed signature
@@ -220,7 +220,7 @@ comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
 ```
 
 Tags that generate source-indexed artifacts may accept a third `String`
-parameter. Witchy supplies the invocation as `module:line`; use it for
+parameter. witchy supplies the invocation as `module:line`; use it for
 diagnostics, while deriving stable artifact identity from normalized static
 input:
 
@@ -232,9 +232,9 @@ String-returning tags are rejected. With `parts` = the static fragments and `hol
 **opaque marker** per hole,
 The tag returns the typed expression that replaces the literal. Convert a marker
 to its explicit expression category with `meta.expr_raw`, or compose it through
-a structural quote or builder. The compiler substitutes the real hole expression
-— resolved at the call site — and splices the result before type-checking.
-Reachable tag evaluator items do not invoke tagged literals in their bodies or
+a structural quote or builder. The compiler substitutes the real hole expression -
+resolved at the call site - and splices the result before type-checking.
+Reachable tag evaluator items don't invoke tagged literals in their bodies or
 initializers; to compose tags, return nested tagged-literal syntax. Dynamic source is parsed with
 the tag definition's direct imports, while hole expressions use the invocation
 module's direct imports. Transitive imports never become implicit qualifier
@@ -242,7 +242,7 @@ scope.
 The evaluator retains the selected tag's module-qualified helper closure,
 including constants, constructors, custom traits, implementations, and imported
 comptime helpers. Duplicate tag names from direct imports are an error. Bundled
-standard-library modules are not tag-entry namespaces; tags live in ordinary
+standard-library modules aren't tag-entry namespaces; tags live in ordinary
 imported runes such as `glamour`.
 
 `quote expr:` results, including structurally substituted expression templates,
@@ -250,13 +250,13 @@ stay as compiler-owned AST through this boundary. Direct functions, types,
 constructors, and
 constructor patterns written in compiler-owned typed output resolve where the
 tag is defined, including through that module's imports, while the literal's
-holes keep their invocation-site context. This name resolution does not bypass
+holes keep their invocation-site context. This name resolution doesn't bypass
 sealed-type construction rules. Use
 `meta.call_site("name")` when generated code deliberately needs an invocation
 scope identity. Pass it to `meta.expr_name`, `meta.type_named`, or
 `meta.pattern_ctor` to choose an expression, type, or constructor-pattern
 reference. These references remain compiler-owned nodes through structural
-quotation; they are not encoded as generated source. Imported tags remain
+quotation; they aren't encoded as generated source. Imported tags remain
 available during expansion and are removed before runtime type checking. If a
 direct tag expansion fails, its diagnostic names the literal's invocation line
 and the tag function's defining module and line, so an imported generator does
@@ -309,12 +309,12 @@ Holes are typed by position (the substituted expression is type-checked normally
 so a type error points back *into the literal* at that `${…}`, and a marker may be
 placed zero, once, or many times. This preserves structural safety: the
 `glamour` rune's `html` tag turns a `${userInput}` in text position into a
-`text(…)` **node**, never markup — so interpolated input is **XSS-immune**, not
+`text(…)` **node**, never markup - so interpolated input is **XSS-immune**, not
 escaped-after-the-fact.
 
 ## When to reach for it
 
-Use `comptime` for families of declarations that follow a pattern — lookup
+Use `comptime` for families of declarations that follow a pattern - lookup
 tables, wrapper functions, enumerated constants. Reach for a **tagged literal**
 when you want a compile-time mini-language in expression position (typed
 templates, safe HTML/SQL). For generating code from *files* (a schema, a protocol

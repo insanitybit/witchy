@@ -1,11 +1,16 @@
 # The Manifest, the Lockfile, and the CLI
 
-This chapter covers the package manager's manifest, lockfile, and command-line
-surface. Command and file formats match the current tool.
+The one thing you won't find in a witchy manifest is a list of the capabilities
+a rune needs. A declared permission is a claim, and a claim can be wrong, stale,
+or a lie; witchy computes the footprint from the source every time instead.
+
+What the manifest does hold is everything else - dependencies, versions, build
+steps. This chapter is its reference, along with the lockfile and the
+command-line surface. Command and file formats match the current tool.
 
 ## The manifest: `witchy.toml`
 
-`witchy new my-app` scaffolds a rune — a directory with a manifest and a `src/`
+`witchy new my-app` scaffolds a rune - a directory with a manifest and a `src/`
 tree:
 
 ```toml
@@ -23,16 +28,16 @@ exec = ["protoc"]                    # build-time grants
 
 Three sections matter:
 
-- **`[rune]`** — identity. Registry runes are namespaced (`acme/logger`); local
+- **`[rune]`** - identity. Registry runes are namespaced (`acme/logger`); local
   ones needn't be.
-- **`[dependencies]`** — version requirements against the registry, or `path`
+- **`[dependencies]`** - version requirements against the registry, or `path`
   dependencies for work inside one repository (the multi-rune projects under
   [`examples/projects/`](https://github.com/insanitybit/witchy/tree/master/examples/projects)
   are all wired this way).
-- **`[build.grants."<name>"]`** — the *build-time authority* you, the consumer,
+- **`[build.grants."<name>"]`** - the *build-time authority* you, the consumer,
   explicitly hand to one specific dependency's build step: `read`/`exec`/`net`/
   `env` allow-lists. **Default deny applies to execution itself**: a dependency
-  that ships a build step at all is refused until this section exists (an empty
+  that ships a build step at all is rejected until this section exists (an empty
   section accepts execution with only the confined `BuildOut` sandbox), and
   absent kinds are denied.
 
@@ -61,26 +66,47 @@ provenance = "path:./../genlib"
 
 The lockfile records both capability axes for each rune:
 
-- **`hash`** — the content hash of the rune's source. A path dependency that
+- **`hash`** - the content hash of the rune's source. A path dependency that
   changes on disk no longer matches and the build stops with "run `witchy
   update`"; a registry rune is verified against this hash on every fetch.
-- **`runtime_footprint` / `build_footprint`** — the rune's authority on each
+- **`runtime_footprint` / `build_footprint`** - the rune's authority on each
   axis, **recomputed from its source** at lock time (never read from metadata).
   This is the baseline the widening gate compares against: these footprints are
-  what you have *accepted*.
-- **`determinism`** — the build-reproducibility tier: `guaranteed` for a rune
+  what you've *accepted*.
+- **`determinism`** - the build-reproducibility tier: `guaranteed` for a rune
   whose build (if any) is pure, `pinned-only` once it uses `BuildExec`/`BuildNet`
   (those outputs get content-hashed so rebuilds still pin).
-- **`provenance`** — where it came from (a path, or the registry record chain).
+- **`provenance`** - where it came from (a path, or the registry record chain).
 
 Commit the lockfile. Same lock ⇒ same bytes, same authority, offline.
+
+## Pointing the client at a registry: `COVEN_URL`
+
+The registry commands (`add`, `update`, `outdated`, `list`, `publish`, …) talk to
+a Coven registry. Which one is set by the `COVEN_URL` environment variable; with
+none set the client dials the local default `127.0.0.1:8787`, which is why an
+undocumented setup silently fails against a dead loopback port. The hosted
+registry lives at `https://witchy.fly.dev`:
+
+```sh
+export COVEN_URL=https://witchy.fly.dev
+witchy add insanitybit/hello --allow-fresh
+```
+
+The scheme is preserved (`https://…` stays TLS; a bare `host:port` means plain
+http for loopback), and the bootstrap auto-grants `Net` to the `COVEN_URL`
+origin, so no explicit `--net` is needed. A one-off registry can also be passed
+as the positional `[host:port]` shown in the `add` row below. `--allow-fresh` is
+the expected first step on a fresh registry: it accepts a release still inside
+its 72-hour staging cooldown (see the [packages chapter](packages.md)); a
+release past its cooldown needs no flag.
 
 ## The everyday commands
 
 | Command | What it does |
 |---|---|
-| `witchy new <name>` / `init [name]` | scaffold a rune — `new` makes a subdirectory, `init` writes into the current one (namespaced names like `acme/lib` work) |
-| `witchy add <pkg>[@<version>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]` | resolve + add a **registry** dependency — **gated** on widening (either axis), and a release younger than the staging cooldown (72h; `WITCHY_COOLDOWN_SECS`) is refused unless `--allow-fresh`. A local **path** dependency is added by hand in `witchy.toml`; `add --path` is not wired up |
+| `witchy new <name>` / `init [name]` | scaffold a rune - `new` makes a subdirectory, `init` writes into the current one (namespaced names like `acme/lib` work) |
+| `witchy add <pkg>[@<version>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]` | resolve + add a **registry** dependency - **gated** on widening (either axis), and a release younger than the staging cooldown (72h; `WITCHY_COOLDOWN_SECS`) is denied unless `--allow-fresh`. A local **path** dependency is added by hand in `witchy.toml`; `add --path` isn't wired up |
 | `witchy build [<file\|dir>]` | resolve, verify hashes, link, type-check; writes/uses the lock (defaults to the current project) |
 | `witchy --release build --target trusted-exe [--out <path>]` | emit one host-native trusted application containing the runtime and compiled WASM (default `target/release/<rune-name>`) |
 | `witchy run [<file\|dir>] [args…]` | `build`, then run the app rune |
@@ -94,21 +120,21 @@ Commit the lockfile. Same lock ⇒ same bytes, same authority, offline.
 | `witchy verify [<dir>] --online` | run the same offline checks, then re-fetch TUF metadata to check freshness and rollback |
 | `witchy vendor <dir>` | materialize the resolved tree into the project for offline builds |
 | `witchy publish` / `promote` / `yank` / `list` | registry operations (staged → 2FA-promoted releases) |
-| `witchy coven-serve` | run a registry yourself (it's a witchy program — `projects/coven`) |
+| `witchy coven-serve` | run a registry yourself (it's a witchy program - `projects/coven`) |
 
 `build`, `run`, `update`, and `verify` act on the current project. The
-inspection commands take the project's directory — or, for `audit`, a source
-file — as a positional argument: pass `.` to inspect the current project, or a
+inspection commands take the project's directory - or, for `audit`, a source
+file - as a positional argument: pass `.` to inspect the current project, or a
 relative path to inspect one elsewhere (`witchy tree path/to/app`,
 `witchy why path/to/app genlib`).
 
 `trusted-exe` is an installation artifact, not an untrusted sandbox. Running it
-trusts the application, its embedded Witchy runtime, and its distributor. The
+trusts the application, its embedded witchy runtime, and its distributor. The
 application author must bind each resource parameter of `main` in
 `[targets.trusted-exe]`; a directory binding selects exactly one launch-time
-root such as cwd or `/`, and Witchy operations still accept only paths relative
+root such as cwd or `/`, and witchy operations still accept only paths relative
 to that root. Use portable `.wasm` with consumer-supplied grants when the person
-running the code does not want to trust the application beyond a sandbox.
+running the code doesn't want to trust the application beyond a sandbox.
 
 ```toml
 [targets.trusted-exe.dirs]
@@ -133,7 +159,7 @@ token = { from = "env:APP_TOKEN", use-only = true }
 ```
 
 The target defaults to best-effort native outer confinement. A deployment that
-must refuse unsupported or partial enforcement records the stricter choice in
+must fail on unsupported or partial enforcement records the stricter choice in
 the authenticated binding plan:
 
 ```toml
@@ -157,8 +183,8 @@ straight from its code and prints what it demands:
 src/app.witchy demands: Console
 ```
 
-The footprint is derived from the source, never read from the manifest, so it is
-the authority the file actually reaches for — not what it claims. Across a whole
+The footprint is derived from the source, never read from the manifest, so it's
+the authority the file actually reaches for - not what it claims. Across a whole
 tree, each rune's runtime and build footprints are pinned per rune in
 `witchy.lock` (the `runtime_footprint` / `build_footprint` fields above), and
 `witchy why-cap <dir> <Cap>` names which dependency introduces a given

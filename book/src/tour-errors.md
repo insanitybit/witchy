@@ -1,7 +1,13 @@
 # Errors as Values
 
-witchy has no `null` and no exceptions. Two standard enums cover absence and
-failure, and a single operator makes them ergonomic.
+An exception lets a function fail without saying so in its signature, which is
+the same complaint this book makes about ambient authority: you can't see it
+from the outside, so you audit the body, and then everything the body calls.
+`null` is worse. It makes *every* type quietly mean "or nothing at all".
+
+witchy has neither. Two standard enums cover absence and failure, and a single
+operator keeps them from being tedious - because errors-as-values is only
+bearable if the plumbing is short.
 
 ## `Option`: maybe a value
 
@@ -71,15 +77,15 @@ fn main(console: Console):
 0
 ```
 
-`??` works on `Result` too — `parse(s) ?? 0` yields the `Ok` value or the
+`??` works on `Result` too - `parse(s) ?? 0` yields the `Ok` value or the
 fallback, discarding the error (when the error matters, use `?`, `e? "msg"`, or
-`match`). There is no truthiness in witchy: an empty string or list is data, not
-falsehood — to default one, test it honestly
+`match`). There's no truthiness in witchy: an empty string or list is data, not
+falsehood - to default one, test it honestly
 (`if name.is_empty(): "anon" else: name`).
 
 ## `Result`: a value or an error
 
-`Result(a, e)` is `Ok(a)` or `Err(e)`. Use it when failure carries information —
+`Result(a, e)` is `Ok(a)` or `Err(e)`. Use it when failure carries information -
 *why* it failed:
 
 ```witchy
@@ -106,8 +112,8 @@ error: division by zero
 
 ## The `?` operator
 
-Chaining fallible operations by hand — matching each result, propagating each
-error — is tedious. The `?` operator does it: on `Ok`/`Some` it unwraps the
+Chaining fallible operations by hand - matching each result, propagating each
+error - is tedious. The `?` operator does it: on `Ok`/`Some` it unwraps the
 value and keeps going; on `Err`/`None` it returns that from the enclosing
 function immediately.
 
@@ -142,12 +148,12 @@ error: division by zero
 
 The happy path reads top-to-bottom like ordinary code, and every `?` is a
 visible place where an error can leave the function. There's no hidden control
-flow — no exception that unwinds through frames you can't see.
+flow - no exception that unwinds through frames you can't see.
 
 ## Local error unions
 
 For small, local error sets, you can use an anonymous union directly in
-`Result`. The union is still closed and matchable, but you do not have to name a
+`Result`. The union is still closed and matchable, but you don't have to name a
 new enum while the plumbing is local. A smaller error set widens into a larger
 one through `?`, so helpers can compose without wrapper code:
 
@@ -196,11 +202,11 @@ carries context or match and rewrap.
 
 ## When you *want* to crash
 
-Sometimes a condition is a genuine bug, not an expected failure — and you want
+Sometimes a condition is a genuine bug, not an expected failure - and you want
 to stop, loudly. `fail(message)` aborts with your message. So do the operations
 that can't sensibly continue: indexing out of bounds, dividing by zero, parsing
-nonsense as a number. These are **loud on every backend** — a runtime error in
-the interpreter, a trap in the compiled VM — never a quietly wrong result. This
+nonsense as a number. These are **loud on every backend** - a runtime error in
+the interpreter, a trap in the compiled VM - never a quietly wrong result. This
 is the same parity discipline at work: failure is part of a program's observable
 behavior, and witchy keeps it identical across backends.
 
@@ -220,14 +226,14 @@ fn main(console: Console):
 9
 ```
 
-`fail` is a builtin — it needs no capability, because aborting isn't reaching
+`fail` is a builtin - it needs no capability, because aborting isn't reaching
 out to the world. It's the primitive the test framework's assertions are built
 on, too (we'll meet `witchy test` later).
 
 ## Constructors that validate return `Result`
 
 A function that *checks* its input before building a value hands back a
-`Result`, not the bare value — so a bad input is a value you handle, not a
+`Result`, not the bare value - so a bad input is a value you handle, not a
 crash. Several standard constructors work exactly this way, and `?` threads
 them cleanly:
 
@@ -253,8 +259,8 @@ fn main(console: Console):
 ```
 
 `time.civil(...)`, `time.parse_iso8601(...)`, `semver.parse(...)`, and
-`url.parse(...)` all follow this shape: they verify the input — a real calendar
-date, a well-formed version or URL — and report a bad one as `Err` instead of
+`url.parse(...)` all follow this shape: they verify the input - a real calendar
+date, a well-formed version or URL - and report a bad one as `Err` instead of
 guessing. Some library APIs return matchable error enums and rely on `?` plus
 `From` to convert them at an application boundary like `Result(_, String)`.
 So you can't accidentally use an unvalidated `DateTime`; the type makes you

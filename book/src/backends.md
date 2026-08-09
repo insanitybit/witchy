@@ -1,11 +1,17 @@
 # Execution Backends: One Meaning
 
-witchy has one production run path and one independent semantic oracle. Their
-agreement explains several of the language's design constraints.
+Shipping two implementations of one language is normally a bad idea. You pay
+for every feature twice, and the second one is always slightly wrong in a way
+nobody notices until it matters.
+
+witchy does it anyway. There's one production run path and one independent
+semantic oracle, and every compiled run can be checked against the oracle. That
+choice is expensive, and it's why several of the language's design constraints
+look the way they do - this chapter is the argument for paying it.
 
 | Backend | How | Role |
 |---|---|---|
-| **Compiled WebAssembly** | lowered to a structured IR, encoded to a wasm binary, run on wasmtime | the run path: every program runs here — confinement *and* speed, and the browser playground |
+| **Compiled WebAssembly** | lowered to a structured IR, encoded to a wasm binary, run on wasmtime | the run path: every program runs here - confinement *and* speed, and the browser playground |
 | **Interpreter** | tree-walking, in Rust | the *reference* semantics: the independent oracle every compiled run is checked against |
 
 ```sh
@@ -28,25 +34,25 @@ implementation to the parity obligation, so the project maintains these two.
 The two backends implement *one* language under a single rule:
 
 > Every supported program has identical results and failures on both backends.
-> A construct that cannot meet that contract is rejected loudly.
+> A construct that can't meet that contract is rejected loudly.
 
 The interpreter defines the result; the compiled tier must match it. Hundreds of
 differential tests run the same source through both implementations. Property
 tests generate additional programs, and CI runs the maintained examples through
 `witchy parity`. The CLI exposes that same check so a user can inspect the
-invariant on a particular program. Ordinary `run` does not secretly execute the
+invariant on a particular program. Ordinary `run` doesn't secretly execute the
 interpreter first; the test and parity harnesses are what keep the production
 compiler honest.
 
 Parity includes edge and failure cases:
 
 - `Int` arithmetic **wraps** on overflow everywhere (that's why it wraps rather
-  than being undefined — a portable choice both backends can honor).
+  than being undefined - a portable choice both backends can honor).
 - Float formatting is the shortest round-trip on every backend; `NaN` and
   infinities behave identically; ordering a `NaN` errors on both.
 - Structural equality is deep and identical for every comparable type.
 - Out-of-bounds indexing, divide-by-zero, parse overflow, and `fail` abort on
-  *every* backend — a trap in the VM, a runtime error in the interpreter, never
+  *every* backend - a trap in the VM, a runtime error in the interpreter, never
   a silently different result.
 
 Owned existential values (`dyn Trait`) are part of that parity contract. A
@@ -79,7 +85,7 @@ fn main(console: Console):
         console.print(value.render())
 ```
 
-Receiver conventions do not change at the dynamic boundary. In particular,
+Receiver conventions don't change at the dynamic boundary. In particular,
 `var self` writes the hidden value back only after the call returns normally:
 
 ```witchy
@@ -103,15 +109,15 @@ fn main(console: Console):
 
 Migration is explicit. Replace a generic `x: impl Render` with `x: dyn Render`
 only when callers need runtime heterogeneity, and add a directed annotation (or
-`as dyn Render`) at construction. A concrete `var` caller place cannot be
+`as dyn Render`) at construction. A concrete `var` caller place can't be
 silently erased because dynamic write-back may select another concrete witness;
 bind `var value: dyn Render` first. Move any capability stored inside the
 concrete payload into an explicit trait-method parameter. `dyn PartialEq` and
 implicit downcasts are intentionally unavailable; declare a domain-specific
 comparison/key method, or use a closed enum when concrete recovery is required.
 
-When a backend genuinely can't express something the same way — historically,
-say, comparing certain generic types — witchy makes it a **loud compile-time
+When a backend genuinely can't express something the same way - historically,
+say, comparing certain generic types - witchy makes it a **loud compile-time
 error** rather than letting the two backends diverge. The rule is zero silent
 divergence.
 
@@ -123,11 +129,11 @@ authority the host hands over. Differential coverage checks that the run path
 implements the independent reference semantics, while the sandbox constrains
 which host services that compiled module can reach.
 
-There is no silently divergent portable subset. The concurrency model
+There's no silently divergent portable subset. The concurrency model
 (`async`/`await`, spawning, and channels) runs on a deterministic cooperative
 executor written in witchy. Native services such as networking and cryptography
-are host imports with shared semantics; a browser that does not supply such an
-import cannot run that operation. When a representation or host cannot support a
+are host imports with shared semantics; a browser that doesn't supply such an
+import can't run that operation. When a representation or host can't support a
 construct faithfully, compilation or instantiation fails instead of selecting a
 different meaning.
 
@@ -171,10 +177,10 @@ user-declared [`region:` blocks](appendix-performance.md) whose value escapes
 by copy-out. Hot paths
 avoid allocating at all: an ownership analysis proves where accumulation
 (`xs.push(e)`, `s = s + p`, `d.insert(k, v)`,
-`x = f(move x)`) can mutate in place — aliases cost one copy where they
-happen, never the whole loop — and dicts carry a hidden hash index. The result
+`x = f(move x)`) can mutate in place - aliases cost one copy where they
+happen, never the whole loop - and dicts carry a hidden hash index. The result
 runs at native-class throughput: a string builder stays linear instead of
-O(n²), and list/dict/compute loops carry no per-iteration allocation overhead —
+O(n²), and list/dict/compute loops carry no per-iteration allocation overhead -
 all inside the sandbox ([`bench/BASELINE.md`](https://github.com/insanitybit/witchy/blob/master/bench/BASELINE.md)
 has the numbers). The repository's
 `spec/architecture.md` has the full

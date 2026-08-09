@@ -1,9 +1,12 @@
 # Project: A Confined Log Scanner
 
-This chapter builds `scan`, a confined command-line tool that searches a log file
-for lines containing a query, with optional case-insensitivity. It exercises a
-pure core, a capability shell, and the sandbox. The organizing rule is: *push
-the effects to the edges, keep the middle pure.*
+*Push the effects to the edges, keep the middle pure.* That's the organizing
+rule of this chapter, and it's worth stating first, because it's what makes the
+last step - running the whole thing in a sandbox - almost boring.
+
+We'll build `scan`, a confined command-line tool that searches a log file for
+lines containing a query, with optional case-insensitivity. It exercises a pure
+core, a capability shell, and the sandbox.
 
 ## Start pure
 
@@ -42,7 +45,7 @@ ci:     INFO started
 ci:     info retry
 ```
 
-This is the heart of the program, and it's *provably effect-free* — look at the
+This is the heart of the program, and it's *provably effect-free* - look at the
 signatures. We could write a dozen `test_*` functions for it and
 never need a capability. That's the goal: the logic that's worth testing
 carefully is the logic that touches nothing.
@@ -100,7 +103,7 @@ main   Console, Dir[Read], Env
 total  Console, Dir[Read], Env
 ```
 
-`Dir[Read]`, not `Dir` — the analyzer sees that we only ever call `read`, never
+`Dir[Read]`, not `Dir` - the analyzer sees that we only ever call `read`, never
 `write`. If we later added a `write` call, this output would change, and a
 `caps-diff` in CI would flag the new authority.
 
@@ -124,7 +127,7 @@ it.
 
 We split the program into a pure core and a capability shell, audited its exact
 authority from the source, and ran it in a VM that can do precisely that and
-nothing more. That shape — pure middle, thin authorized edge, enforced boundary
-— is how witchy programs are meant to be built. The bigger the program, the more
+nothing more. That shape - pure middle, thin authorized edge, enforced boundary -
+is how witchy programs are meant to be built. The bigger the program, the more
 it pays off: the surface that can affect the world stays small and legible, and
 everything else is provably inert.

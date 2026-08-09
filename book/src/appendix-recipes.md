@@ -19,16 +19,16 @@ fn main(console: Console, root: Dir[Read]):
 ```
 
 Where does `root` point? A plain `witchy program.witchy` run roots every `Dir`
-it grants at the **current working directory** — so relative paths resolve
+it grants at the **current working directory** - so relative paths resolve
 against where you launched the program, not where the source file lives. To run
 it confined to a specific subtree instead, use `witchy sandbox --dir <root>
 program.witchy`; the sandbox prints exactly what it granted. Either way the
-program only ever sees paths *under* that root — `root.subtree("sub")` narrows
+program only ever sees paths *under* that root - `root.subtree("sub")` narrows
 further to a child folder.
 
 ## Read just one file
 
-When a program needs *one* file, ask for a `File[Read]` instead of a whole `Dir` —
+When a program needs *one* file, ask for a `File[Read]` instead of a whole `Dir` -
 the least authority that does the job. A `Dir` navigates down to a single file with
 `read_file`, and a `File` op takes no path (it *is* the file):
 
@@ -73,7 +73,7 @@ fn main(console: Console, root: Dir[Read]):
 ## Read an environment variable
 
 `Env` is the capability to read the process environment. `get_env` returns an
-`Option(String)` — `None` when the variable is unset — so you handle the missing
+`Option(String)` - `None` when the variable is unset - so you handle the missing
 case explicitly.
 
 ```witchy
@@ -123,9 +123,9 @@ with `net.fetch(origin)`, while browser programs receive `Fetch` directly.
 
 ## Fetch an untrusted URL without DNS rebinding
 
-When a URL comes from outside, do not turn its authority into a new grant.
+When a URL comes from outside, don't turn its authority into a new grant.
 Narrow an existing `Fetch` root to the parsed origin instead. Narrowing rejects
-an origin the host did not grant, so user input cannot expand authority. The
+an origin the host didn't grant, so user input can't expand authority. The
 native provider resolves once and dials only the admitted result; a Fetch
 derived from confined `Net` also retains that network policy as a permanent
 floor.
@@ -148,20 +148,20 @@ own origin and CORS boundary.
 ## Sign with a secret without ever seeing its bytes
 
 A `SecretStore` is a capability that holds named secrets whose bytes stay
-host-side — the guest asks the host to *use* a secret, never to hand it over.
+host-side - the guest asks the host to *use* a secret, never to hand it over.
 The host grants secrets with `--signing-key <path>` (the protected `signing`
 key, usable only for signing) and `--secret name=value` / `--secret-file
-name=path` (ordinary named secrets; append `,use-only` to forbid reading them
+name=path` (ordinary named secrets; append `,use-only` to deny reading them
 back). Ask for a `SecretStore` in `main`, then:
 
 - `secrets.require("name")` returns the `Secret` directly, failing loudly if it
-  was not granted — use it when absence is a configuration error.
-- `secrets.get("name")` returns `Option(Secret)` — `None` when it was not
-  granted — for secrets that are genuinely optional.
+  wasn't granted - use it when absence is a configuration error.
+- `secrets.get("name")` returns `Option(Secret)` - `None` when it wasn't
+  granted - for secrets that are genuinely optional.
 
 A `Secret` is opaque: you pass it to an operation that consumes it. `crypto.sign`
 signs a message with an Ed25519 signing key; `crypto.reveal` returns a value
-secret's bytes — but it *errors* on the `signing` key and on any `use-only`
+secret's bytes - but it *errors* on the `signing` key and on any `use-only`
 secret, so a signing key can sign and nothing else.
 
 ```witchy
@@ -185,8 +185,8 @@ fn main(console: Console, secrets: SecretStore):
 
 Run it with `witchy run sign.witchy --signing-key key.seed --secret
 api-token=sk-live-abc`. Because the secret bytes live in the host, a program that
-loses the `SecretStore` capability (or was never granted it) cannot sign or
-reveal at all — the authority to use a secret is itself a value you can withhold
+loses the `SecretStore` capability (or was never granted it) can't sign or
+reveal at all - the authority to use a secret is itself a value you can withhold
 or [narrow](capabilities-narrowing.md).
 
 In the browser, the page supplies the named-secret map explicitly. This book's
@@ -197,9 +197,9 @@ the same signing and reveal policy as the native host.
 ## Render HTML with Glamour
 
 [Glamour](https://github.com/insanitybit/witchy) is witchy's frontend framework
-(this very book is a Glamour app). A view is built as **data** — a tree of `VNode`s,
-never a string — and rendered to HTML. Because `text` is escaped by construction,
-there is no HTML-injection sink: a `<script>` in your data renders as inert text, not
+(this very book is a Glamour app). A view is built as **data** - a tree of `VNode`s,
+never a string - and rendered to HTML. Because `text` is escaped by construction,
+there's no HTML-injection sink: a `<script>` in your data renders as inert text, not
 markup. This example needs only `Console` and runs in the page:
 
 ```witchy
@@ -212,26 +212,26 @@ fn main(console: Console):
 ```
 
 Beyond rendering, a full Glamour app adds an MVU loop (`view`/`update`/`step_with`) and
-effects-as-data (`Cmd`s the host performs), with UI authority — fetch, routing, timers —
+effects-as-data (`Cmd`s the host performs), with UI authority - fetch, routing, timers -
 carried as capabilities (`UiFetch`, `UiRoute`, …) narrowed from a single app-root
 `UiRoot`, exactly like every other capability in witchy.
 
 The live example below is a Glamour counter (`view`/`update`, clickable buttons)
 compiled to WebAssembly and mounted by the runtime that renders this book. Its
 network authority (`UiFetch`) is **denied**, so it can compute and render but can't phone
-home — the capability model, running in the page:
+home - the capability model, running in the page:
 
 ```glamour-app
 counter
 ```
 
-For everything else — string manipulation, lists, dicts, sorting, JSON, time —
+For everything else - string manipulation, lists, dicts, sorting, JSON, time -
 see the [standard library reference](appendix-stdlib.md) and the `examples/`
 directory in the repository, which carries a runnable program for nearly every
 feature in this book.
 
 When you're ready to build something larger, `examples/projects/` has complete
-multi-rune applications — a todo app, a ledger, a sales report, a dashboard, and
-more — each a small project with its own `witchy.toml`, a library rune and an app
+multi-rune applications - a todo app, a ledger, a sales report, a dashboard, and
+more - each a small project with its own `witchy.toml`, a library rune and an app
 rune wired together by a path dependency. They can be copied as starting points
 for larger applications.

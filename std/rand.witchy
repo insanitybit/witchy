@@ -1,6 +1,6 @@
 // The witchy randomness library. Every draw comes from the `Rand` capability's
-// source: the OS CSPRNG host-side (`getrandom` on the compiled backend), or — when
-// `WITCHY_RAND_SEED` is set — a shared deterministic sequence both backends agree on,
+// source: the OS CSPRNG host-side (`getrandom` on the compiled backend), or - when
+// `WITCHY_RAND_SEED` is set - a shared deterministic sequence both backends agree on,
 // so randomness-using programs stay parity-stable and reproducible for tests.
 
 import string
@@ -25,12 +25,12 @@ pub fn below(rand: Rand, n: Int) -> Int:
 pub fn bool(rand: Rand) -> Bool:
     rand.rand_u64() & 1 == 1
 
-// `nbytes` random bytes rendered as lowercase hex (2 chars per byte) — the form a
+// `nbytes` random bytes rendered as lowercase hex (2 chars per byte) - the form a
 // WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit
 // words and truncates to the requested length.
 pub fn hex(rand: Rand, nbytes: Int) -> String:
     // `nbytes * 2` (the character count) would overflow past `Int.MAX` and wrap
-    // negative, silently yielding an EMPTY string — a catastrophic result for a
+    // negative, silently yielding an EMPTY string - a catastrophic result for a
     // token/nonce. Refuse loudly instead (RFC-0044 rule 3).
     if nbytes > 4611686018427387903:
         fail("rand.hex: nbytes `${nbytes}` too large")

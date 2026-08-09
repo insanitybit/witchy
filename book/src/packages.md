@@ -26,16 +26,59 @@ pub fn shout(s: String) -> String:
 
 It has no capability parameters, so consumers can verify that the rune is pure.
 
+## Consume your first package
+
+Runes are shared through a **registry**. There's a hosted one at
+`https://witchy.fly.dev`; the client reads its address from the `COVEN_URL`
+environment variable, and with none set it dials the local default
+`127.0.0.1:8787` - so a brand-new user has to point it at the hosted registry
+before anything resolves:
+
+```sh
+export COVEN_URL=https://witchy.fly.dev
+witchy new demo-app && cd demo-app
+witchy add insanitybit/hello --allow-fresh   # --allow-fresh accepts a release still inside its staging cooldown
+```
+
+Why `--allow-fresh`? Every promoted release sits out a **staging cooldown**
+(72 hours by default) before `add` will resolve it - a window in which a
+compromised release can be spotted before anyone installs it. On a young
+registry every release is still inside that window, so the very first `add`
+needs `--allow-fresh` to opt in explicitly. A release older than the cooldown
+resolves with no flag at all; `--allow-fresh` is only the honest first step on a
+fresh registry, not a permanent part of the workflow.
+
+Now import the rune and use it:
+
+```
+// src/demo-app.witchy
+import hello
+
+fn main(console: Console):
+    console.print(hello.greeting())   // whatever the rune exports; `witchy doc` lists it
+```
+
+```sh
+witchy run .
+witchy tree .    # the dependency, plus the capability footprint it pulls in
+```
+
+`witchy tree` prints the resolved dependency tree with each rune's recomputed
+capability footprint alongside it, so before you trust `hello` you can see
+exactly what authority it - and its transitive dependencies - reach for. The
+rest of this chapter is about that footprint: how it's computed, and how adding
+or upgrading a dependency gates on it.
+
 ## The footprint is recomputed, never trusted
 
 The manifest can *declare* a capability footprint, but the registry and the
 client don't believe it. When you publish, and again when anyone resolves a
-dependency, the footprint is **recomputed from the source** — the same analysis
+dependency, the footprint is **recomputed from the source** - the same analysis
 as `witchy caps`. Declared metadata that disagrees with the code is ignored in
 favor of the code.
 
 In other ecosystems, "this package only needs network access" may be a README
-claim. witchy derives the footprint from source each time, preventing declared
+claim. witchy derives the footprint from source each time, so a declared
 metadata from drifting away from the code.
 
 ## Adding a dependency gates on widening
@@ -45,7 +88,7 @@ witchy add acme/shout
 ```
 
 `add` fetches the rune, verifies its signature, and checks its footprint against
-what you've approved. If a rune — or anything in its transitive tree — demands
+what you've approved. If a rune - or anything in its transitive tree - demands
 authority you haven't accepted, the command **blocks** and tells you what new
 power appeared:
 
@@ -67,45 +110,45 @@ blocked: acme/logger 1.0.0 -> 1.1.0 widens the footprint
 run `witchy update --allow-cap Net` to accept, or pin the old version
 ```
 
-A dependency cannot silently start touching the network between versions. The
-gate forces the new authority to be seen and accepted — a code-review signal
+A dependency can't silently start touching the network between versions. The
+gate forces the new authority to be seen and accepted - a code-review signal
 that's verb-precise (`Net[Listen]` is different from `Net[Connect]`) and
 impossible to miss. `witchy tree` shows the whole dependency tree's authority at
-any time — each rune's recorded footprint alongside it — and `witchy why-cap
+any time - each rune's recorded footprint alongside it - and `witchy why-cap
 <dir> <Cap>` traces which dependency pulls a given capability in.
 
 ## Trusted publishing, two-phase release
 
-Publishing uses short-lived **identity tokens** — the same OIDC shape CI systems
-like GitHub Actions provide
-— so a publish is bound to a specific repository and workflow. The first publish
-to a namespace binds it; a token from any other repository is refused, which
+Publishing uses short-lived **identity tokens** - the same OIDC shape CI systems
+like GitHub Actions provide -
+so a publish is bound to a specific repository and workflow. The first publish
+to a namespace binds it; a token from any other repository is denied, which
 shuts down namespace hijacking.
 
-Release is two-phase. A publish lands **staged** — visible but not resolvable.
+Release is two-phase. A publish lands **staged** - visible but not resolvable.
 A separate **promote**, by a different identity and with a second factor, makes
 it a real release. On a trusted registry, Coven accepts that proof only from the
 verified identity token's issuer-signed `amr` claim (`mfa` or `webauthn`) and
-consumes the token's `jti`; a request-body marker cannot release anything.
+consumes the token's `jti`; a request-body marker can't release anything.
 Coven Web instead verifies a fresh passkey assertion at the web edge and may
-forward to an internal anonymous-mode Coven that is never exposed directly.
+forward to an internal anonymous-mode Coven that's never exposed directly.
 Separation of duties is enforced: the promoter can't be the uploader. And even
 once released, a version sits out a **staging cooldown**
-(72 hours by default) before `add`/`update` will resolve it — time for a
-compromised release to be noticed before anyone consumes it — unless you accept
+(72 hours by default) before `add`/`update` will resolve it - time for a
+compromised release to be noticed before anyone consumes it - unless you accept
 it explicitly with `--allow-fresh`. The release timestamp is part of the signed
 record, so the window can't be erased by tampering. Registry metadata is signed (TUF-style) to resist rollback and
 tampering, and lockfiles pin content hashes, the registry's key, and the full
 provenance chain, all re-checkable offline with `witchy verify`. Add `--online`
 when you also want to re-fetch TUF metadata and check freshness or rollback.
 
-**Resolving and installing a rune never executes its code**: it is
-read and type-checked, nothing more. There is no `postinstall`, no `build.rs`
+**Resolving and installing a rune never executes its code**: it's
+read and type-checked, nothing more. There's no `postinstall`, no `build.rs`
 running with your ambient authority.
 
 ## Build steps are capabilities too
 
-Some runes legitimately need to run code at *build* time — generating witchy
+Some runes legitimately need to run code at *build* time - generating witchy
 source from a schema, say. That is the one place code executes outside your
 type-checked call graph, which makes it exactly where supply-chain attacks live
 in other ecosystems. witchy models it with the same machinery as runtime: a rune
@@ -120,7 +163,7 @@ flow with real tool output.
 The repository includes a scripted tour that starts a
 registry, publishes through trusted publishing, promotes with a second factor,
 consumes the rune from a separate project, and demonstrates the widening gate
-refusing an over-reaching upgrade:
+rejecting an over-reaching upgrade:
 
 ```sh
 ./scripts/local-registry-demo.sh
@@ -130,5 +173,5 @@ The repository's [`spec/local-registry.md`](https://github.com/insanitybit/witch
 walks through it step by step, and [`rfcs/package-manager.md`](https://github.com/insanitybit/witchy/blob/master/rfcs/package-manager.md)
 is the full design and threat model. The package manager and the registry are
 themselves written in witchy ([`projects/pm`](https://github.com/insanitybit/witchy/tree/master/projects/pm)
-and [`projects/coven`](https://github.com/insanitybit/witchy/tree/master/projects/coven)) —
+and [`projects/coven`](https://github.com/insanitybit/witchy/tree/master/projects/coven)) -
 the language eats its own dog food, sandboxable footprint and all.

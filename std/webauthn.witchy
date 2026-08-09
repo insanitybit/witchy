@@ -1,9 +1,9 @@
-// webauthn — server-side verification of a WebAuthn *assertion* (the credential
+// webauthn - server-side verification of a WebAuthn *assertion* (the credential
 // "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.
 //
 // The browser hands every BINARY value to the server HEX-ENCODED (it holds them as
 // ArrayBuffers, so this is free). The server then INDEPENDENTLY re-derives and
-// checks everything that matters — it trusts none of the client's interpretation:
+// checks everything that matters - it trusts none of the client's interpretation:
 //   * clientDataJSON.type == "webauthn.get"
 //   * clientDataJSON.challenge == the exact challenge the server issued (anti-replay)
 //   * clientDataJSON.origin == the expected origin (anti-phishing)
@@ -70,7 +70,7 @@ fn json_str(doc: Json, key: String) -> String:
 // Verify an assertion. All `*_hex` arguments are hex-encoded bytes;
 // `client_data_json` is the exact clientDataJSON text the browser signed over (it
 // must be re-hashed verbatim, never re-serialized). `require_uv` demands user
-// verification — pass `true` for a genuine second-factor gate. Returns `Ok(true)`
+// verification - pass `true` for a genuine second-factor gate. Returns `Ok(true)`
 // when every check passes, or a typed `Err`.
 pub fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError):
     match json.decode(client_data_json):

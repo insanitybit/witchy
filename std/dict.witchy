@@ -1,10 +1,10 @@
-// dict — the associative map.
+// dict - the associative map.
 //
 // The core operations are native primitives (intercepted by both backends;
 // the bodies are self-recursive placeholders giving the type checker their
 // signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.at`,
 // `dict.update`, `dict.contains_key`, `dict.remove`, `dict.keys`, `dict.values`,
-// `dict.pairs`, `dict.length`. The rest is the compositional layer — a lookup returning
+// `dict.pairs`, `dict.length`. The rest is the compositional layer - a lookup returning
 // `Option`, constructors from pairs, and the map/filter/merge transforms.
 
 // --- native primitives ---
@@ -156,7 +156,7 @@ impl Dict(k, v) where k: Eq:
     pub fn get_or(self, key: k, default: v) -> v:
         dict.get_or(self, key, default)
 
-    // The value for `key`, inserting `default` first when the key is absent —
+    // The value for `key`, inserting `default` first when the key is absent -
     // the key is present afterward either way. Returns the existing value on a
     // hit and `default` on a miss.
     pub fn get_or_insert(var self: unique Dict(k, v), key: k, default: v) -> v:

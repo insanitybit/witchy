@@ -1,4 +1,4 @@
-// Compile-time type introspection — the `typeInfo` half of witchy's comptime
+// Compile-time type introspection - the `typeInfo` half of witchy's comptime
 // reflection (Zig's `@typeInfo`). A `comptime:` block can read the structure of
 // every type in its module as ordinary data and generate code from it (e.g. a
 // `to_json` specialized to a record's fields), with zero runtime cost. The
@@ -648,11 +648,11 @@ type TypeInfo:
 
 // --- built-in derive generators ----------------------------------------------
 // Built-in `derive(X)` desugars to a comptime call `meta.derive_<x>(typeInfo)`
-// that returns an `ItemSyntax`. These ARE witchy — the per-trait code generation that used to be
+// that returns an `ItemSyntax`. These ARE witchy - the per-trait code generation that used to be
 // hardcoded in the Rust compiler now lives here as ordinary, readable functions over
 // `TypeInfo`, and anyone can write their own `derive_foo` the same way.
 
-// The impl target with its type parameters — `Box(a)` for a generic type, `Point`
+// The impl target with its type parameters - `Box(a)` for a generic type, `Point`
 // otherwise. Also the type of a same-typed `other` parameter.
 fn target_with_params(t: TypeInfo) -> String:
     if list.is_empty(t.params):
@@ -661,7 +661,7 @@ fn target_with_params(t: TypeInfo) -> String:
         t.name + "(" + list.join(t.params, ", ") + ")"
 
 // A ` where a: Trait, b: Trait` clause binding each type parameter to `trait_name`,
-// or "" for a non-generic type — so a generic type's derived impl discharges its
+// or "" for a non-generic type - so a generic type's derived impl discharges its
 // parameters' bounds and monomorphizes per argument.
 fn where_each(params: List(String), trait_name: String) -> String:
     if list.is_empty(params):
@@ -817,7 +817,7 @@ fn variant_eq_arm(v: VariantInfo) -> String:
     "            " + selfpat + " -> match other:\n                " + otherpat + " -> " + rhs + "\n                _ -> false"
 
 // The `reflect`-call for a field/payload of declared type `ty` applied to the
-// expression text `value` — single-line, dispatched by structured type shape.
+// expression text `value` - single-line, dispatched by structured type shape.
 fn reflect_call(ty: TypeExpr, value: String) -> String:
     match ty:
         TNamed(name, _args) ->
@@ -941,7 +941,7 @@ fn json_decode_value(ty: TypeExpr, value: String) -> String:
         // An `Option` value already in hand: JSON `null` decodes to `None`,
         // anything else applies the element decoder and wraps `Some`. Reuses
         // `json.optional` (which maps `Some(JsonNull) -> None`) so it composes
-        // at any depth — inside a `List`, another `Option`, or a record field.
+        // at any depth - inside a `List`, another `Option`, or a record field.
         TNamed(name, args) ->
             if name == "Int":
                 "json.int_of(" + value + ")"
@@ -994,7 +994,7 @@ fn derive_deserialize_source(t: TypeInfo) -> String:
     // The generated body makes module-qualified calls (json.*, list.map, result.all);
     // emitted source is parsed on its own, so it must carry those imports for the
     // parser to qualify them (comptime merges them into the module). A generic type's
-    // impl carries its parameters and a `: Deserialize` bound per parameter — the same
-    // `target_with_params`/`where_each` convention every other standard derive uses —
+    // impl carries its parameters and a `: Deserialize` bound per parameter - the same
+    // `target_with_params`/`where_each` convention every other standard derive uses -
     // so `Box(a)` reconstructs coherently (each `a` field decodes via `a`'s bound).
     "import json\nimport list\nimport result\n\nimpl Deserialize for " + target_with_params(t) + where_each(t.params, "Deserialize") + ":\n" + from_json

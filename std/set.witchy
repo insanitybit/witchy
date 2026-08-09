@@ -1,4 +1,4 @@
-// Set(a) — an unordered collection of distinct values. Members are compared by
+// Set(a) - an unordered collection of distinct values. Members are compared by
 // value equality (a `where a: Eq` bound on every operation that compares), so
 // sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with
 // `set.new()` / `set.from_list(xs)`, test membership with `s.contains(x)`, and
@@ -44,7 +44,7 @@ pub fn from_list(xs: List(a)) -> Set(a) where a: Eq:
 pub fn to_list(s: Set(a)) -> List(a):
     s.items
 
-// Whether every member of `s` is also in `t` — the private core behind both the
+// Whether every member of `s` is also in `t` - the private core behind both the
 // `is_subset` method and set equality above (the pre-mono pass cannot resolve a
 // method call inside the generic `PartialEq` impl, so this stays a free
 // function with a non-colliding name).
@@ -148,7 +148,7 @@ impl Set(a) where a: Eq:
     pub fn is_subset(self, other: Set(a)) -> Bool:
         subset_of(self, other)
 
-    // Whether this set contains every member of `other` — the reverse of
+    // Whether this set contains every member of `other` - the reverse of
     // `is_subset`.
     pub fn is_superset(self, other: Set(a)) -> Bool:
         subset_of(other, self)

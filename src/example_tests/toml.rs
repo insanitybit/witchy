@@ -270,3 +270,27 @@ fn opt(o: Option(String)) -> String:
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(wasm_run(src), expected, "wasm");
     }
+
+    /// (CJ-06) `toml.dep_requirement` reads a `[dependencies]` version requirement
+    /// in EITHER form — a bare string (`"acme/x" = "^1.0"`), whose value IS the
+    /// requirement, or an inline table (`{ version = "^2.0" }`) — and returns
+    /// `None` for a path-only dep. This is what stops a bare-string dep from being
+    /// silently skipped by transitive resolution / `outdated`. Both backends.
+    #[test]
+    fn toml_dep_requirement_reads_bare_string_and_inline_table() {
+        let src = r#"import toml
+
+fn main(console: Console):
+    let m = "[dependencies]\n\"acme/x\" = \"^1.0\"\n\"acme/y\" = { version = \"^2.0\" }\n\"acme/z\" = { path = \"../z\" }\n"
+    for name, inline in toml.table(m, "dependencies"):
+        console.print(name + "=" + opt(toml.dep_requirement(inline)))
+
+fn opt(o: Option(String)) -> String:
+    match o:
+        Some(s) -> s
+        None -> "(none)"
+"#;
+        let expected = ["acme/x=^1.0", "acme/y=^2.0", "acme/z=(none)"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }

@@ -39,23 +39,23 @@ dependency.
 **You can audit by reading signatures.** `witchy caps program.witchy` walks the
 program and reports its complete capability footprint, computed from the source,
 broken down per right (`Dir[Read]` vs `Dir[Write]`, `Net[Connect]` vs
-`Net[Listen]`). It is never self-asserted metadata that could drift or lie.
+`Net[Listen]`). It's never self-asserted metadata that could drift or lie.
 
 **You can gate on growth.** `witchy caps-diff old new` fails when authority
-widened. Put it in CI and a dependency cannot quietly start listening on a
+widened. Put it in CI and a dependency can't quietly start listening on a
 socket between versions. The package manager applies the same gate to the runes
 (packages) you depend on.
 
 **You can enforce at runtime.** `witchy sandbox program.witchy` compiles to
 WebAssembly and runs it in a VM that has been handed *exactly* the host
-functions its footprint calls for — and nothing else physically exists for it
+functions its footprint calls for - and nothing else physically exists for it
 to call.
 
 ## A taste of the language
 
 The rest of the language supports ordinary application code. This small
 in-process server is an `async` task that owns a channel,
-folds the messages it receives into running state, and answers a request — the
+folds the messages it receives into running state, and answers a request - the
 request/reply shape you'd normally reach for a socket, here in pure, deterministic
 witchy that needs nothing but `Console`.
 
@@ -104,12 +104,12 @@ async fn main(console: Console):
 A lot is on display in those few lines: `async`/`await` and first-class channels
 (`Sender`/`Receiver`), one message `type` matched exhaustively, a list
 comprehension to feed it, and an **anonymous record** (`.{count, total}`) turned
-straight into JSON by reflection — with no response type to declare. Tasks share
+straight into JSON by reflection - with no response type to declare. Tasks share
 no memory and the scheduler is deterministic, so this prints the same thing on the
 interpreter and the compiled-to-WebAssembly backend, every run.
 
 Laziness is just as light. A `gen fn` writes a sequence as an ordinary loop and
-`yield`s each value, producing an `Iter` that computes only what is demanded — so
+`yield`s each value, producing an `Iter` that computes only what is demanded - so
 an infinite generator is fine when something bounds it:
 
 ```witchy

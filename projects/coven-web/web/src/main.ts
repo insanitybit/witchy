@@ -54,11 +54,21 @@ async function boot(): Promise<void> {
   if (!root) throw new Error("coven-web: missing #app element");
 
   const who = adoptLoginFragment();
-  const session = who || (isSignedIn() ? "maintainer" : "");
+  // Label the session HONESTLY (UI-03). A social-login callback carries a real identity in the
+  // fragment's `login` (`who`); a passkey sign-in mints only an anonymous bearer, so we must NOT
+  // claim a named "maintainer" role the user was never granted — that would mislead. Fall back to
+  // a plain "signed in (passkey)" when the only thing we know is that a bearer is present.
+  const session = who || (isSignedIn() ? "signed in (passkey)" : "");
 
   await mount(wasmBytes(), root, {
     initialModel: { route: location.pathname, session, data: "", notice: "" },
     routeTag: "Route",
+    // (RFC-0040/0107) `export_step` takes a `UiRoot`; stage its user-capability grant at
+    // instantiation. Without this the compiled rune's `build_user_cap_field` traps at boot
+    // (`user_cap_field_len — no [user_caps] grant`) and the app mounts blank. The
+    // glamour-coven-web-app.test.mjs reference has always mounted with this grant; the
+    // production host shell had drifted from it (BUG-608).
+    instantiateOpts: { userCaps: [["coven-web"]] },
     // The shell owns the network: fetch same-origin, NEVER with ambient cookies (so a
     // cross-site request carries no credential — CSRF has nothing to ride), and attach the
     // bearer session ITSELF via authHeaders so the rune never holds the token.
@@ -71,11 +81,20 @@ async function boot(): Promise<void> {
       passkeyLogin: async () => {
         const tok = await passkeyLogin(location.hostname);
         setToken(tok);
-        return "maintainer";
+        // The bearer is anonymous — report the honest passkey label, not a "maintainer" role
+        // the user does not hold (UI-03). The rune renders this string as the session identity.
+        return "signed in (passkey)";
       },
       passkeyRegister: async () => {
-        await passkeyRegister(location.hostname);
-        return "passkey registered — now sign in";
+        // UI-04: the ceremony can stall or be refused. webauthn.register now enforces a hard
+        // client-side timeout; catch any failure here and return a short human notice (mirroring
+        // the promote/yank "refused: …" shape) so the rune's status never sticks on "registering…".
+        try {
+          await passkeyRegister(location.hostname);
+          return "passkey registered — now sign in";
+        } catch (e) {
+          return "register failed: " + (e instanceof Error ? e.message : String(e));
+        }
       },
       promote: async (route: string) => {
         const [name, version] = nameVer(route);

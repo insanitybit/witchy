@@ -261,6 +261,35 @@ export WITCHY_LIST_PROGRESS_FILE="$(mktemp "${TMPDIR:-/tmp}/witchy-list-progress
 # already processes all path args, names each unformatted file on stderr, and
 # exits 1 iff any fails — so the per-file loop only paid ~200 extra process
 # spawns (1.5s vs 0.13s over the 205 files) for identical diagnostics.
+# House prose style bans the em dash in documentation prose (spaced hyphen
+# instead). Fenced code blocks and inline code spans are exempt: an em dash
+# there is example content or program output, not prose. spec/stdlib.md is
+# generated from std/*.witchy doc comments, so it is checked at the source.
+prose_em_dash_check() {
+    python3 - <<'PY'
+import glob, re, sys
+targets = ["README.md", "SECURITY.md", "CONTRIBUTING.md", "KNOWN-ISSUES.md"]
+targets += sorted(glob.glob("book/src/*.md"))
+targets += [f for f in sorted(glob.glob("spec/*.md")) if f != "spec/stdlib.md"]
+targets += sorted(glob.glob("std/*.witchy"))
+bad = 0
+for path in targets:
+    text = open(path, encoding="utf-8").read()
+    if path.endswith(".witchy"):
+        segments = [l for l in text.split("\n") if l.lstrip().startswith("//")]
+    else:
+        # even-indexed splits are prose; odd are fenced blocks / inline code
+        segments = re.split(r"(```.*?```|`[^`\n]*`)", text, flags=re.S)[::2]
+    for seg in segments:
+        for _ in re.finditer("—", seg):
+            bad += 1
+            print(f"{path}: em dash in prose (use a spaced hyphen ' - ')",
+                  file=sys.stderr)
+            break
+sys.exit(1 if bad else 0)
+PY
+}
+
 witchy_fmt_check() {
     local files=()
     local f
@@ -681,6 +710,9 @@ if [ "$fast" -eq 1 ]; then
         run "build (binary)"           cargo build -p witchy
         run "witchy fmt (changed .witchy files)" witchy_fmt_check
     fi
+    if git diff --name-only HEAD 2>/dev/null | grep -qE '\.(md|witchy)$'; then
+        run "prose style (no em dashes)" prose_em_dash_check
+    fi
     run_watched "tests (workspace, minus e2e)" "${test_cmd[@]}"
     collect_bg "clippy (bug lints)" "$clippy_pid" "$clippy_log" "$clippy_started"
     clippy_pid=""
@@ -724,6 +756,7 @@ wasm_pid=$!
 
 run_watched "tests (workspace)"        "${test_cmd[@]}"
 run "witchy fmt (std+examples)" witchy_fmt_check
+run "prose style (no em dashes)"  prose_em_dash_check
 
 collect_bg "compile check (cargo check)" "$check_pid" "$check_log" "$check_started"
 check_pid=""

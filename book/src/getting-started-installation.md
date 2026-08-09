@@ -3,7 +3,7 @@
 ## The zero-install option: the playground
 
 The witchy compiler runs in WebAssembly, so the playground needs no server-side
-compiler. If the repository ships a built playground, open `web/index.html`
+compiler and nothing you type leaves your machine. If the repository ships a built playground, open `web/index.html`
 (served over HTTP); otherwise build it once:
 
 ```sh
@@ -51,13 +51,13 @@ tar -xzf "$artifact" -C witchy-release
 ```
 
 The checksum proves that the archive matches the manifest attached to that
-release. Because the manifest is not independently signed, it detects download
-corruption or mismatched assets but does not provide a separate trust root from
+release. Because the manifest isn't independently signed, it detects download
+corruption or mismatched assets but doesn't provide a separate trust root from
 GitHub.
 
 ## Building from source
 
-To use witchy as a real tool — the sandbox, the package manager — build the
+To use witchy as a real tool - the sandbox, the package manager - build the
 binary. This requires a Rust toolchain (`rustup` recommended):
 
 ```sh

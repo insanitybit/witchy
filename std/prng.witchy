@@ -1,7 +1,7 @@
 // A small deterministic PRNG: the Park-Miller "minimal
 // standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits
 // in i64 (no overflow), so it is content-correct on both backends. State is
-// threaded explicitly — the same seed always replays the same sequence, which is
+// threaded explicitly - the same seed always replays the same sequence, which is
 // what you want for tests, sampling, and games. NOT for cryptography. Pure and
 // capability-free.
 
@@ -15,7 +15,7 @@ fn modulus() -> Int:
 
 // Map any Int into the valid seed/state range [1, modulus). 0 is forbidden (the
 // LCG is stuck at 0) and a negative would replay an out-of-range sequence, so
-// both are folded in — this is the PRNG contract every state must satisfy.
+// both are folded in - this is the PRNG contract every state must satisfy.
 fn normalize(s: Int) -> Int:
     let m = modulus()
     var v = s % m
@@ -34,7 +34,7 @@ pub fn seed(s: Int) -> Rng:
 // which cannot call each other's `var self` forms through the pre-mono pass)
 // all thread the Rng through here. ---
 
-// Advance the generator and return the raw draw — the core behind `next`.
+// Advance the generator and return the raw draw - the core behind `next`.
 fn advance(var r: Rng) -> Int:
     match r:
         Rng(state) ->
@@ -42,7 +42,7 @@ fn advance(var r: Rng) -> Int:
             r = Rng(n)
             n
 
-// Validate `bound` and reduce a draw into [0, bound) — the core behind
+// Validate `bound` and reduce a draw into [0, bound) - the core behind
 // `next_below` and `choice`.
 fn draw_below(var r: Rng, bound: Int) -> Int:
     if bound <= 0:
@@ -53,7 +53,7 @@ fn draw_below(var r: Rng, bound: Int) -> Int:
 
 // A pseudo-randomly chosen element of `xs` (`None` if empty).
 // The index comes from `next_below`, whose `% len` reducer carries a negligible
-// modulo bias for ordinary list lengths — plenty for tests, sampling, and games,
+// modulo bias for ordinary list lengths - plenty for tests, sampling, and games,
 // but not a strict uniform distribution (see `next_below`). Module-level with
 // the list FIRST for historical callers: the method form is `r.choice(xs)`, and
 // deleting this function would flip the qualified call's argument order to the
@@ -80,7 +80,7 @@ impl Rng:
     // loudly naming the bad argument rather than dividing by zero. It must also
     // be below the generator range `2^31-1` (`next`'s cardinality): the reducer
     // is `n % bound`, so a `bound` at or above that range cannot produce every
-    // value in `[0, bound)` and would silently under-cover it — that impossible
+    // value in `[0, bound)` and would silently under-cover it - that impossible
     // case fails loudly too. For a `bound` well below the range the modulo bias
     // is negligible; for a strictly uniform bounded draw, use the `Rand`
     // capability's byte-oriented helpers.
@@ -91,7 +91,7 @@ impl Rng:
     pub fn next_bool(var self) -> Bool:
         advance(self) % 2 == 0
 
-    // A pseudo-randomly chosen element of `xs` (`None` if empty) — see the
+    // A pseudo-randomly chosen element of `xs` (`None` if empty) - see the
     // module-level `choice`.
     pub fn choice(var self, xs: List(a)) -> Option(a):
         choice(xs, self)

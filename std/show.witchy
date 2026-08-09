@@ -1,10 +1,10 @@
 // The witchy standard `Show` trait: render a value as a `String`. Built-in impls
-// cover the scalars — `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which
-// shows in its human form, `1m30s`, not raw milliseconds) — and the built-in
+// cover the scalars - `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which
+// shows in its human form, `1m30s`, not raw milliseconds) - and the built-in
 // comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or
 // tuple through arity 8 whose elements are themselves `Show` renders structurally
 // through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so
-// `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work — and a custom
+// `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work - and a custom
 // element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own
 // types to give them a custom readable form. `Show` is preluded: interpolation
 // (`"${x}"`) always honors a relevant impl, while values without one keep the
@@ -43,7 +43,7 @@ impl Show for Float:
         "${self}"
 
 // A Duration SHOWS in its human form ("1m30s"), unlike the structural
-// `to_string`, which renders the underlying milliseconds — exactly the kind
+// `to_string`, which renders the underlying milliseconds - exactly the kind
 // of custom rendering `Show` exists for.
 impl Show for Duration:
     fn show(self) -> String:
@@ -65,7 +65,7 @@ fn show_one(x: a) -> String where a: Show:
 // Render each element of a list through its `Show` impl. Every container impl
 // below funnels its elements through this ONE single-bound helper: the loop
 // runs over a parameter (whose concrete type each specialization knows), so the
-// `show(x)` dispatch resolves — including when the element is itself a
+// `show(x)` dispatch resolves - including when the element is itself a
 // container rendered by another blanket impl.
 fn show_each(xs: List(a)) -> List(String) where a: Show:
     var parts = []
@@ -73,7 +73,7 @@ fn show_each(xs: List(a)) -> List(String) where a: Show:
         list.push(parts, show(x))
     parts
 
-// A list renders as `[a, b, c]`, each element through its own `Show` — the same
+// A list renders as `[a, b, c]`, each element through its own `Show` - the same
 // structural form `"${xs}"` produces, but honoring a custom element `Show`.
 impl Show for List(a) where a: Show:
     fn show(self) -> String:
@@ -153,7 +153,7 @@ impl Show for (a, b, c, d, e, f, g, h) where a: Show, b: Show, c: Show, d: Show,
         let (x0, x1, x2, x3, x4, x5, x6, x7) = self
         "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ", " + show_one(x4) + ", " + show_one(x5) + ", " + show_one(x6) + ", " + show_one(x7) + ")"
 
-// Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`,
+// Render one `Show` value to a `String` - `render(point)`, `render(90000ms)`,
 // `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string
 // interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type
 // has a relevant `Show` impl, so interpolation and `show.say` agree. A type without
@@ -161,7 +161,7 @@ impl Show for (a, b, c, d, e, f, g, h) where a: Show, b: Show, c: Show, d: Show,
 pub fn render(x: impl Show) -> String:
     show(x)
 
-// Print any `Show` value without converting it by hand — `show.say(console, 42)`,
+// Print any `Show` value without converting it by hand - `show.say(console, 42)`,
 // `show.say(console, point)`, `show.say(console, [1, 2, 3])`. This is the explicit
 // Show-accepting print helper; interpolation remains the normal inline rendering form.
 // (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)

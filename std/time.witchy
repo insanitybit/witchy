@@ -1,4 +1,4 @@
-// time — civil (UTC) date/time from a unix timestamp.
+// time - civil (UTC) date/time from a unix timestamp.
 //
 // `std/duration` models *spans*; this module models *points* on the calendar.
 // Given seconds since the unix epoch (1970-01-01T00:00:00Z), it computes the
@@ -78,14 +78,14 @@ pub fn second(d: DateTime) -> Int:
 
 // --- construction ------------------------------------------------------------
 
-// The civil UTC date/time at `ms` MILLISECONDS since the unix epoch — what
+// The civil UTC date/time at `ms` MILLISECONDS since the unix epoch - what
 // `clock.now()` returns, so `time.from_millis(clock.now())` is the idiom for
 // "the current date/time".
 pub fn from_millis(ms: Int) -> DateTime:
     from_unix(floor_div(ms, 1000))
 
 // The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic
-// unix timestamp). `clock.now()` returns milliseconds — use `from_millis`
+// unix timestamp). `clock.now()` returns milliseconds - use `from_millis`
 // for it, or this becomes the year 58000. The formatted/parsing contract is a
 // fixed four-digit CE year, so timestamps outside 0001..9999 are out of domain.
 pub fn from_unix(secs: Int) -> DateTime:
@@ -100,7 +100,7 @@ pub fn from_unix(secs: Int) -> DateTime:
 pub fn to_unix(d: DateTime) -> Int:
     days_from_civil(year(d), month(d), day(d)) * 86400 + hour(d) * 3600 + minute(d) * 60 + second(d)
 
-// A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)`
+// A DateTime from civil UTC components, validated - `civil(2026, 2, 30, ...)`
 // is an Err, not a rollover. The typed error lets libraries classify malformed
 // components without parsing display text.
 pub fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, TimeError):
@@ -193,7 +193,7 @@ fn parse_date_part(t: String) -> Result((Int, Int, Int), TimeError):
     let da = int_at(t, 8, 10)?
     Ok((y, mo, da))
 
-// The digits at `s[from..to]`, as an Int — Err on anything non-numeric.
+// The digits at `s[from..to]`, as an Int - Err on anything non-numeric.
 fn int_at(s: String, from: Int, to: Int) -> Result(Int, TimeError):
     let piece = s.substring(from, to)
     if piece == "" || !ascii.all_digits(piece):
@@ -294,7 +294,7 @@ fn days_from_civil(y: Int, mo: Int, da: Int) -> Int:
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
     era * 146097 + doe - 719468
 
-// Floor division (rounds toward negative infinity) — so a pre-1970 timestamp
+// Floor division (rounds toward negative infinity) - so a pre-1970 timestamp
 // lands on the right day. Witchy's `/` truncates toward zero.
 fn floor_div(a: Int, b: Int) -> Int:
     let q = a / b

@@ -1,10 +1,10 @@
-// The witchy web framework — a slice of axum/tower over the `Net` capability,
+// The witchy web framework - a slice of axum/tower over the `Net` capability,
 // built on the shared `Request`/`Response` types in `http`.
 //
 // A handler is a pure `fn(Request) -> Response`: it has NO capability
 // parameters, so it is *structurally* unable to touch the network, filesystem,
 // or console. To give a handler authority (a logger, a store, an outbound
-// client), capture it in the closure — capture IS dependency injection. `serve`
+// client), capture it in the closure - capture IS dependency injection. `serve`
 // holds the `Net` to listen and never hands it to a handler, so even a mounted
 // third-party handler can only compute over the request; it cannot phone home.
 //
@@ -59,7 +59,7 @@ pub fn method(req: Request) -> String:
 pub fn path(req: Request) -> String:
     percent_decode(normalize_path(raw_path_of(req)), false)
 
-// The raw (still percent-encoded) request path — used by the router so that
+// The raw (still percent-encoded) request path - used by the router so that
 // segment boundaries are taken from literal `/` only.
 fn raw_path_of(req: Request) -> String:
     match req:
@@ -99,7 +99,7 @@ pub fn request_body(req: Request) -> String:
     match req:
         Request(_m, _p, _pa, _q, _h, b) -> b
 
-// Decode the request body as JSON — the role of axum's `Json` extractor. Returns
+// Decode the request body as JSON - the role of axum's `Json` extractor. Returns
 // a typed Err (rather than panicking) on malformed input, so handlers stay total
 // without collapsing trust-boundary failures to display text.
 pub fn json_body(req: Request) -> Result(Json, json.DecodeError):
@@ -112,7 +112,7 @@ pub fn json_body_string(req: Request) -> Result(Json, String):
         Err(e) -> Err(json.decode_error_message(e))
 
 // Parse an `application/x-www-form-urlencoded` body (`a=1&b=2`) into key/value
-// pairs — for HTML form POSTs.
+// pairs - for HTML form POSTs.
 pub fn form_body(req: Request) -> List((String, String)):
     parse_query(request_body(req))
 
@@ -142,7 +142,7 @@ pub fn html(code: Int, b: String) -> Response:
 pub fn json(code: Int, b: String) -> Response:
     Response(code, [("content-type", "application/json")], b)
 
-// A JSON response from a `Json` value — encodes it for you.
+// A JSON response from a `Json` value - encodes it for you.
 pub fn json_value(code: Int, j: Json) -> Response:
     json(code, json.encode(j))
 
@@ -189,10 +189,10 @@ pub fn method_not_allowed() -> Response:
 pub fn redirect(location: String) -> Response:
     Response(303, [("location", location)], "")
 
-// Return `resp` with an extra header — for handlers and middleware that decorate
+// Return `resp` with an extra header - for handlers and middleware that decorate
 // a response (e.g. add a `set-cookie` or a tracing header). The stored name is
 // lowercased: `Response` documents its header list as lowercase so
-// `http.header(resp, name)` can look up case-insensitively — headers are
+// `http.header(resp, name)` can look up case-insensitively - headers are
 // case-insensitive on the wire, and rendering emits the lowercase form.
 pub fn with_header(resp: Response, name: String, value: String) -> Response:
     match resp:
@@ -282,7 +282,7 @@ fn dispatch(routes: List(Route)) -> fn(Request) -> Response:
 
 fn dispatch_one(routes: List(Route), req: Request) -> Response:
     match try_routes(routes, req):
-        // The path may exist under a different method — that's a 405, not a
+        // The path may exist under a different method - that's a 405, not a
         // 404 (so clients can tell "wrong verb" from "no such resource").
         Some(resp) -> resp
         None ->
@@ -329,7 +329,7 @@ fn match_path(pattern: String, p: String) -> Option(List((String, String))):
     match_segs(split_path(pattern), split_path(normalize_path(p)), [])
 
 fn split_path(p: String) -> List(String):
-    // (BUG-375) Split on literal `/` FIRST, then percent-decode each segment — so a
+    // (BUG-375) Split on literal `/` FIRST, then percent-decode each segment - so a
     // captured `:param` / `*rest` reaches the handler decoded (`a%20b` -> `a b`),
     // while a `%2F` inside a segment decodes to a literal `/` that stays WITHIN that
     // one segment rather than forging a new routing boundary. (`+` is left literal:
@@ -464,7 +464,7 @@ fn request_parse_error_response(e: RequestParseError) -> Response:
 fn framed_length(headers: List((String, String))) -> Result(Int, RequestParseError):
     // Content-Length and Transfer-Encoding are attacker-controlled framing. Two
     // Content-Length headers with DIFFERENT values (or one header carrying a
-    // differing comma list) is a request-smuggling ambiguity — reject it (400)
+    // differing comma list) is a request-smuggling ambiguity - reject it (400)
     // rather than pick first-wins. Any Transfer-Encoding is rejected for now:
     // pretending it has no body would desynchronize the handler from the wire, and
     // mixed Transfer-Encoding/Content-Length is explicitly ambiguous.
@@ -515,8 +515,8 @@ fn parse_query(q: String) -> List((String, String)):
                     list.push(out, (percent_decode(pair, true), ""))
         out
 
-// Percent-decode `s` (RFC 3986): each `%XX` becomes the byte it names, and — when
-// `plus_space` — a `+` becomes a space (the form/query convention; false for paths).
+// Percent-decode `s` (RFC 3986): each `%XX` becomes the byte it names, and - when
+// `plus_space` - a `+` becomes a space (the form/query convention; false for paths).
 // Consecutive `%XX` bytes are accumulated and decoded together so a multi-byte UTF-8
 // escape (`%E2%82%AC` -> `€`) round-trips. Total: a stray `%` (not followed by two
 // hex digits) is passed through literally rather than trapping.
@@ -644,7 +644,7 @@ fn after(s: String, sep: String) -> String:
 // ---- Rendering + the serve loop ----
 
 // Dispatch `req` through `app` (all routes and middleware layers) and return the
-// Response — the whole request pipeline WITHOUT a socket. The axum "oneshot" analog:
+// Response - the whole request pipeline WITHOUT a socket. The axum "oneshot" analog:
 // handlers and routers become unit-testable with a `Request` literal, and it is the
 // in-process way to call one app from another. `serve*` is this plus the accept loop.
 pub fn handle(app: Router, req: Request) -> Response:
@@ -657,7 +657,7 @@ pub fn render(resp: Response) -> String:
     render_for(resp, "")
 
 // `render`, honoring the request method: a HEAD response carries the same
-// status/headers — including the Content-Length the body WOULD have — but the
+// status/headers - including the Content-Length the body WOULD have - but the
 // body bytes themselves are never sent (RFC 9110 §9.3.2). This is enforced at
 // the rendering boundary so a `.head(...)` handler may simply return the GET
 // response and the framework suppresses the body.
@@ -669,7 +669,7 @@ pub fn render_for(resp: Response, method: String) -> String:
         // (SEC-043) A handler-set header name/value (e.g. a `location` from
         // `redirect`, a `set-cookie`) may carry attacker-derived data; a
         // `\r`/`\n` here would inject a header or split the response. Validate
-        // before concatenating — trap loudly rather than emit a split response.
+        // before concatenating - trap loudly rather than emit a split response.
 
         // (BUG-358) The framing headers are OWNED below (Content-Length +
         // Connection). Drop any handler-supplied Content-Length /
@@ -745,7 +745,7 @@ fn handle_one(server: Listener, handler: fn(Request) -> Response):
 
 // Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to
 // listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each
-// re-running this program and accepting from the SAME bound listener — the kernel
+// re-running this program and accepting from the SAME bound listener - the kernel
 // load-balances connections across them, so the server scales across cores with no
 // extra effort from you. Handlers are pure `fn(Request) -> Response` whose state lives
 // in their captured capabilities (e.g. a store `Dir` = the filesystem), so the workers
@@ -758,7 +758,7 @@ pub fn serve(net: Net[Listen, Tcp], addr: String, app: Router):
     while running:
         handle_one(server, handler)
 
-// Serve `app` on `addr` forever on a SINGLE core (one accept loop, no worker pool) —
+// Serve `app` on `addr` forever on a SINGLE core (one accept loop, no worker pool) -
 // for servers with per-process in-memory state, or when one core is plenty.
 pub fn serve_one(net: Net[Listen, Tcp], addr: String, app: Router):
     let server = net.listen(addr)
@@ -767,7 +767,7 @@ pub fn serve_one(net: Net[Listen, Tcp], addr: String, app: Router):
     while running:
         handle_one(server, handler)
 
-// Serve exactly `n` requests then return — for tests and one-shot servers.
+// Serve exactly `n` requests then return - for tests and one-shot servers.
 pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
     let server = net.listen(addr)
     let handler = handler_of(app)
@@ -776,8 +776,8 @@ pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
         handle_one(server, handler)
         i = i + 1
 
-// Serve `app` over HTTPS on `addr` forever, using ALL cores — `serve` with TLS
-// terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text —
+// Serve `app` over HTTPS on `addr` forever, using ALL cores - `serve` with TLS
+// terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text -
 // inline, or read via an ordinary `Dir` grant); `key` is the private key as a
 // `Secret` (`secretstore.require(store, "tls-key")`), consumed by opaque host
 // reference: the key bytes never enter this program's memory, so even a bug in a
@@ -786,7 +786,7 @@ pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
 // A malformed or mismatched cert/key fails
 // LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad
 // ClientHello) drops that connection and the server keeps serving. Handlers,
-// `Router`, and `Request`/`Response` are unchanged — TLS is transparent above the
+// `Router`, and `Request`/`Response` are unchanged - TLS is transparent above the
 // accepted connection.
 pub fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router):
     let server = net.listen_tls(addr, cert_pem, key)
@@ -796,7 +796,7 @@ pub fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Sec
     while running:
         handle_one(server, handler)
 
-// Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twin
+// Serve exactly `n` HTTPS requests then return - `serve_tls`'s one-shot/test twin
 // (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
 pub fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router, n: Int):
     let server = net.listen_tls(addr, cert_pem, key)

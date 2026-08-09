@@ -599,6 +599,7 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
         [
             "tests (workspace)",
             "witchy fmt (std+examples)",
+            "prose style (no em dashes)",
             "compile check (cargo check)",
             "clippy (bug lints)",
             "wasm playground build",

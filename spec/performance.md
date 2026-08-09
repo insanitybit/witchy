@@ -1,0 +1,389 @@
+# Making the WASM tier the only compiled tier - and fast
+
+**Goal:** retire the native (Rust) backend by making compiled-to-WASM witchy
+run at native-class speed on the workloads witchy is for - bounded by the
+intrinsic cost of the work, not by interpretation or GC overhead.
+**Sandboxing stays non-negotiable:** every optimization below preserves the
+capability model; nothing reaches around the VM boundary.
+
+## Where that target is reachable (and where it isn't)
+
+Wasmtime runs Cranelift-compiled machine code, not an interpreter. Our own
+measurements (2026-06-11): a 4M-op arithmetic loop runs in ~16 ms wall
+including JIT - the same class as the LLVM-compiled native binary. The gaps
+aren't "WASM is slow"; they are specific and addressable:
+
+| Workload | Today | Reachable at native-class speed? |
+|---|---|---|
+| Compute-bound loops | already native-class | **Yes** - Cranelift + a Binaryen post-pass closes most of the LLVM gap; SIMD where it applies |
+| Startup / cold runs | validated optimized-WASM + Cranelift caches exist | **Yes** - warm runs skip Binaryen and native recompilation while still validating cached wasm through Wasmtime's safe API |
+| Allocation-heavy (lists, strings) | **Phase 1 complete** - capacity-growth + ownership-driven in-place mutation (was: OOM trap, copy-per-push O(n²)) | **Yes, done** - GC-free throughput; the 300k-push bench runs in constant memory (see Phase 1 below) |
+| Long-running request loops | arena grows until the cap | **Yes** - arena reset points reclaim in bulk with no pauses |
+| Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** - reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), implemented) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there's no pointer-cycle tail to concede. See [RFC-0029](../rfcs/0029-performance-tier-contract.md) |
+
+The honest summary: witchy should not add a *tracing GC*. Its
+value semantics + ownership conventions + region-scoped arenas, with reference
+counting as the reclamation floor ([RFC-0016](../rfcs/0016-reference-counted-memory.md)),
+are an *Erlang-shaped* memory story that delivers GC-free throughput while
+also serving the long-lived, evicting state - caches, indexes, servers holding
+state - that general-purpose runtimes take for
+granted. Two properties make this work without a collector: value semantics
+admits no reference cycles, so RC is complete with no tracer; and graphs are
+expressed with index-arena handles rather than shared pointers, so even cyclic
+*structure* is just integers reclaimed with its arena. The two-tier contract
+over this model is [RFC-0029](../rfcs/0029-performance-tier-contract.md).
+
+## "You're I/O-bound" is false - assume CPU/allocation-bound until measured
+
+A persistent piece of folklore says server and async programs are I/O-bound, so
+runtime CPU and allocation cost are noise. Treat that claim as **false by
+default.** Programs - including the networked, concurrent, `async` ones witchy
+is built for - are routinely bound by CPU, by allocation, by memory bandwidth,
+or by the runtime's own per-event overhead. Optimizing those costs isn't
+premature; it's the main event.
+
+The folklore conflates two different things: async *hides* per-operation I/O
+latency by overlapping it - that's the entire point of async - but hiding
+latency doesn't make the work free. What binds **throughput** is the CPU spent
+per event: parsing, framing, (de)serialization, TLS, compression, buffer
+copies, allocation, and the scheduler's own poll/waker/state-machine
+transitions. All of that scales with event count and none of it's hidden by
+concurrency. A proxy, broker, cache, or database moving millions of small
+operations per second does async I/O and is flatly CPU- and
+memory-bandwidth-bound. Modern I/O (NVMe, io_uring, intra-datacenter RTTs in
+tens of microseconds) makes per-operation compute a large fraction of total
+time, not a rounding error.
+
+There is a **selection effect** that makes this decisive for us: a path is worth
+optimizing only when its throughput matters, and throughput-limited work is
+CPU/allocation/copy-bound by construction - the latency has already been
+concurrency-hidden, leaving per-event compute as the binding constraint. The
+latency-bound programs where the folklore holds (a script making a few remote
+calls) are exactly the ones no one optimizes. So conditioning on "this is worth
+optimizing" selects *for* the CPU/allocation-bound case.
+
+witchy sharpens this further: its concurrency scheduler is in-language (the pure
+deterministic executor of [RFC-0032](../rfcs/0032-multi-core-execution.md)),
+so poll/wakeup/state-machine overhead is visible witchy code on the hot path,
+not cost buried inside a native runtime. Per-event runtime cost is *more*
+exposed here, not less. This is why the memory model above and the
+ownership-driven allocation work below are load-bearing for exactly the
+server/streaming workloads (`std/server`, `witchy serve`, the coven registry)
+that the folklore would wrongly wave off.
+
+The rule this implies: **never assume where the time goes - measure** (see
+Phase 0). Profile the actual workload; the answer is far more often "CPU and
+allocation" than "waiting on I/O."
+
+## Ownership-aware update and extraction
+
+`List.pop`, `Dict.insert`, and `Dict.remove` return an ordinary `Option` while
+also writing their final container back through `var`. Their compiled lowering
+threads a hidden ownership/capacity token through the same convention-bearing
+call ABI:
+
+- a proven-unique `List.pop` moves the final leaf out and decrements the length
+  without copying the list spine;
+- `Dict.insert` and `Dict.remove` perform one semantic key search and reuse that
+  result for the ordinary return and structural repair;
+- unique dictionary replacement preserves the hash index, while insertion
+  grows capacity geometrically and reindexes only as structural maintenance;
+- a shared or unknown root takes a copy-on-write path, retaining the returned
+  and copied heap leaves needed to keep every alias valid;
+- empty pop and missing removal allocate, copy, retain, and drop nothing.
+
+These are ownership-dependent guarantees, not unconditional source-level
+complexities. Their public `var` receivers are typed `unique`: `mode opt`
+rejects a missing proof and reports the statement that aliased, moved, or loaned
+the owner. Normal mode remains value-correct through operation-level
+copy-on-write when storage is shared. Fresh storage, a typed call returning a
+`unique` collection, and `var` parameters typed `unique` / `local unique`
+satisfy the contract; an active [RFC-0083](../rfcs/0083-opt-mode-lifetimes.md) loan
+never does. A typed `unique` result carries its capacity token as part of the
+compiled result envelope. Fresh list/dict tails and typed `unique` calls
+establish that token; control-flow results spell an explicit `return` on each
+reachable branch. Direct calls, typed function values, typed lambdas, and
+existential witness adapters transport the same ordinary result, `var`
+write-back, and ownership state. The verifier consumes the same
+statement-identity capacity-token kills and loan facts as compiled lowering,
+after typed method resolution, so method/module spelling and discarded/used
+results are one contract.
+
+`WITCHY_OPT=-inplace` selects the copy-correct differential oracle. `witchy
+stats` exposes `extract_searches`,
+`extract_key_comparisons`, `extract_copied_bytes`, `extract_retains`, and
+`extract_drops` so the no-copy and single-search claims are deterministic test
+facts rather than timing inferences. `indirect_ownership_calls` counts the
+state-bearing calls that actually retain typed table dispatch. `reowns` counts
+operation-level copy-on-write entries; it isn't a count of repairs at source
+call boundaries.
+
+When a `var`-unique call writes its result back into whole caller locals (no
+field or index projection), the result is committed directly into storage rather
+than staged through a scratch local - the callee already produced the exact
+owner the local must hold, so the extra move is redundant. `direct_storage_var_accesses`
+counts these direct commits; it's exact and lever-invariant (the write-back is
+observationally identical to the staged form on every non-trapping path, and the
+single commit still runs after the multi-result call returns, so a trapped VM
+commits nothing - the same all-or-nothing write-back). When the same envelope
+folds into a proper tail loop the write-back becomes loop-argument forwarding and
+no direct commit occurs, so the count is zero there.
+
+## Functional-in-place state kernels
+
+[RFC-0089](../rfcs/0089-functional-in-place.md) strengthens the ownership and proper-tail-call machinery for a narrow
+class of `mode opt` state machines. A directly self-recursive function with one
+`own unique T` parameter and the same `unique T` result may update fields of that
+owner, do scalar computation, and tail-call itself while remaining functional at
+the call boundary. `T` has scalar stored fields and auxiliary parameters are
+scalar. Base cases explicitly return the owner and the recursive edge is the
+function's final expression.
+
+The hidden ownership token is forwarded with the result and the full envelope
+lowers to a loop. Recursive depth therefore adds no heap or control-stack work.
+`witchy stats` exposes `rc_alloc_calls`, `bump_alloc_calls`, `rc_reuse_calls`,
+`rc_free_calls`, and `region_rewind_calls`; comparing shallow and deep runs is
+the deterministic resource oracle. Fixed setup outside the kernel may allocate,
+so the contract requires equal counts as depth changes, not zero counts for the
+whole program. The interpreter remains the value oracle only.
+
+The initial checked class rejects construction, non-final recursion, replacement
+returns, calls to helpers, effects, suspension, indexed input, and region/loop
+machinery. These restrictions keep the theorem inspectable in generated WIR;
+normal mode remains copy-correct for programs outside the class.
+
+## Phase 0 - Measure first
+
+A `bench/` suite of paired programs (witchy / Go / C#) run via `hyperfine`,
+tracked in CI as numbers, not vibes:
+
+- compute (numeric loops, branchy code)
+- list/dict building and traversal (the workload that traps today)
+- string building/scanning
+- channel ping-pong and fan-out throughput
+- HTTP server requests/second (`std/server` vs `net/http` vs ASP.NET minimal)
+- cold-start latency (`witchy sandbox` cached vs `go run`/compiled binary vs `dotnet run`)
+
+`bench/run.sh` runs the paired programs via `hyperfine` and diffs against the
+recorded [benchmark baseline](../bench/BASELINE.md), so regressions fail loudly.
+
+## Phase 1 - Memory model (the current blocker)
+
+1. **Growable lists**: representation becomes `[len][cap][slots…]`, doubling
+   on overflow. `push` copies the spine only when `cap` is hit.
+   Touches every consumer of the `[len][slots]` layout (at/iterate/equality/
+   to_string/message marshaling) - mechanical but wide.
+2. **Ownership-driven in-place mutation** - the critical companion. Capacity
+   alone cannot fix repeated `xs.push(x)` under value semantics (the update must
+   preserve a fresh value if anyone else observes the old `xs`). But the conventions
+   system already proves uniqueness: when the write-back target is an unaliased
+   `var` (the same analysis the native
+   backend uses to elide clones), `push` mutates in place. This is the classic
+   linear-update optimization, and it's what turns push from O(n) to
+   amortized O(1). Same treatment for `insert` on dicts and string-builder
+   accumulation (`s = s <> piece`).
+3. **Dict growth**: verify the 16-byte-entry table doubles rather than
+   rebuilding per insert; apply the same in-place rule.
+4. **Arena reset points**: generalize the per-loop-iteration watermark reset
+   to other escape-free boundaries - first target: `std/server`'s per-request
+   loop. A reset is sound exactly when no value allocated inside the scope
+   escapes it; the capability/escape analysis used for `let`-borrows already
+   answers this for function boundaries.
+5. ~~Checked arithmetic~~ - already resolved the other way: Int overflow
+   WRAPS (two's complement) as defined language behavior on both backends
+   (`integer_overflow_wraps_like_the_wasm_backend`). No divergence remains,
+   and wrapping keeps arithmetic at one instruction.
+
+Exit criterion: the 300k-push benchmark runs in the same order of magnitude
+as native Rust, and `std/server` compiled serves indefinitely under load.
+
+**Status 2026-06-11 - PHASE 1 COMPLETE:** items 1–2 landed as one change
+(shadow-capacity locals: in-place push + string append, no representation
+change); item 3 landed twice (in-place insert, then the hidden-word hash
+index: 50k inserts 1.63 s → 10 ms); item 4 landed (loop watermark resets - a
+200k-iteration/6 GB-churn soak runs in constant memory); item 5 was already
+resolved (overflow wraps by definition on both backends). The 300k-push
+bench went from an OOM trap to constant-memory, native-class throughput.
+
+**Superseded (2026-06-11, later):** item 2's eligibility scan was replaced
+wholesale by the **uniqueness pass** ([ownership-analysis.md](../rfcs/ownership-analysis.md)):
+share-event/dirty-site analysis with function summaries, so aliases cost one
+re-own instead of disqualifying, read-only calls don't break accumulation,
+`d.update(…)` upserts and `x = f(move x)` own-ABI pipelines run in place,
+and the remaining copy-path cliffs are flagged by `witchy check`/the LSP.
+
+**Measured baseline ([bench/BASELINE.md](../bench/BASELINE.md)):** the benchmark suite tracks witchy
+against native reference implementations as data - currently strings run
+4–5.7× the reference throughput; lists, dicts, compute, and cold start are at
+parity. Those reference legs (Go, and C# when a dotnet toolchain is present)
+are prior-art data points in the harness, not a target framing.
+
+## Phase 2 - Codegen quality
+
+1. **Binaryen post-pass** - shipped default-on (`WITCHY_OPT=wasm-opt`,
+   shell-out during cold compilation, cached with the artifact, and a graceful
+   no-op without the binary) and then MEASURED:
+   at 64M ops the optimized module is no faster (Cranelift Speed already
+   emits ~0.6 ns/op for our loop shapes) and the ~50 ms invocation cost
+   dominates every benchmark. Verdict: keep the hook for future
+   inline-heavy code, but it's NOT a current lever - which also validates
+   deferring the wasmer-LLVM engine.
+2. **Direct calls over `call_indirect`** - SHIPPED when a closure target is
+   statically known (`WITCHY_OPT=direct-call`).
+2b. **Non-escaping closure environments** - SHIPPED (RFC-0062). A closure
+   bound once and used only as a direct callee has its captures threaded into a
+   lifted function, so no environment is allocated. The default-deny escape
+   analysis keeps every uncertain or escaping closure boxed. The pass is
+   default-on (`WITCHY_OPT=closure-elide`); `-closure-elide` retains the boxed
+   reference path for differential testing.
+3. **Flatten non-escaping tuples/records into locals** - SHIPPED as escape-driven
+   SROA (RFC-0027): a frame-confined record/tuple (used only via field/index
+   access, per the `escape` analysis) is scalar-replaced - each field lives in an
+   i64-slot local instead of a heap object, for read-only AND field-mutated
+   (`p.x = v`) aggregates. Gated by `WITCHY_OPT=sroa`; a 300-iteration confined
+   record drops from 6017 to 17 heap bytes. The general optimization knob is the
+   single `WITCHY_OPT` lever (RFC-0030), with the differential de-opt sweep and
+   `witchy stats` counters as the soundness/effect gates.
+3c. **Confined in-place reuse** - SHIPPED (RFC-0016, first reclamation rung). A
+   `var` reassigned to a fixed-shape aggregate - a list literal (any length), or a
+   record constructor reassigned only to the same constructor - and never used as a
+   whole value (the `escape` oracle proves its buffer unaliased) reuses its buffer
+   instead of allocating fresh: a record overwrites its field slots; a list
+   overwrites the buffer when the new length fits its capacity, else reallocates
+   (the buffer ratchets to the max length). So a build-and-drop loop stays O(1) heap
+   instead of leaking O(n) (the arena/watermark cannot reclaim a value that escaped
+   the loop body and only later died). A self-referential reassignment bails to
+   allocation.
+   This is the arena/in-place machinery as an RC-elision rung (no refcount word).
+   `WITCHY_OPT=rc-elide` (default-on); proven by a bounded-heap `witchy stats`
+   counter (O(1) vs O(n)) and the de-opt sweep.
+3d. **RC-floor free-at-overwrite** - SHIPPED (RFC-0016, the reclamation floor the
+   reuse rung could not reach). A confined, never-aliased `let`/`var` heap local -
+   the `escape` oracle's summary-aware `confined_reassigned_vars`: every whole-use is
+   a non-leaking call argument (decided by `Summaries::arg_leaks`, so it generalizes
+   to user functions) or an element read - that's overwritten by a freshly-allocated
+   buffer threading the old one through (`x = f(x, …)`) frees the old buffer into a
+   size-classed free-list that the next allocation reuses. This bounds the
+   cache-EVICTION case the reuse rung leaks (insert then remove distinct dict keys:
+   every `dict.remove` churns a fresh buffer whose dead, uniquely-owned predecessor
+   neither the watermark - the dict escapes the iteration - nor the reuse rung -
+   reassignment to a builtin result, not a same-shape literal - reclaims). All
+   allocations carry a negative-offset `[size]` header (at `ptr-4`; the returned
+   object pointer is unchanged, so readers are untouched), so `$rc_free` needs only
+   the pointer; `$rc_alloc` scans the free-list, then bumps. ONE mechanism, general
+   over operations (no per-method code) and over USER types (every record/tuple/ADT
+   funnels through the single `$mkN` allocator, already routed through `$rc_alloc`).
+   Opt-in `WITCHY_OPT=rc-floor` (the floor adds a per-object header + free-list
+   traffic the default doesn't pay); proven by the `cache_eviction_bounded_by_rc_floor`
+   stats test (off → leaks O(n); on → bounded) plus the `__rc_reused_bytes` counter
+   (off 0; on → scales with iterations) and the de-opt sweep. Reclamation currently
+   covers the dict allocators and the generic `$mkN` (records/tuples/ADTs); routing
+   the list/string primitive allocators through `$rc_alloc` (so their results are
+   freeable too) is the remaining bounded extension.
+3b. **Canonical packed layouts across direct boundaries** - SHIPPED foundation
+   (RFC-0027 + RFC-0111). The `unbox` lever gives each closed declared-`packed`
+   record, packed-containing tuple, `List(Packed)`, and fixed-layout packed sum a
+   canonical versioned `LayoutId`. The descriptor fixes natural scalar widths,
+   padding, offsets, list stride/header state, and sum tag/payload bands. A packed
+   list is one `[length][capacity][inline elements...]` buffer rather than a pointer
+   array plus boxed records. Descriptor-owned allocation is measured by
+   `packed_alloc_calls` and `packed_alloc_bytes`.
+
+   Local construction, field/index access, list traversal and supported mutation,
+   and fixed-sum matching use that layout. Direct named functions and linked user
+   modules pass packed records, lists, packed-containing tuples, and sums without
+   boxing or reshaping. Closed direct generic calls additionally specialize by
+   logical type identity, RFC-0110 access envelope, exact parameter/result layout
+   IDs, and optimization schema. Their packed construction, indexed traversal,
+   mutation, direct/recursive helper calls, and return retain the selected
+   physical instance; open generic or unsupported crossings don't guess a
+   layout.
+
+   Unsupported boundaries fail closed. Function values, lambda/closure captures,
+   trait/existential calls, `region:` copy-out, workers/channels, rendering, and
+   custom `PartialEq`, and non-sum specialized equality reject when they would
+   need a packed ABI. Derived/default structural `==`/`!=` on a fixed-layout
+   packed sum is descriptor-driven: tag width, variant child layouts, and physical
+   payload offsets all come from the canonical descriptor.
+   Host ABI version
+   8 authenticates descriptor metadata, but every production import currently has
+   an empty accepted-layout set; therefore structured packed host crossings reject.
+   No capability/reference field can enter packed linear-memory storage. Disabling
+   `unbox` selects the boxed differential oracle and isn't evidence that a packed
+   physical path fired.
+
+   **Destination passing.** A private direct producer with a fixed descriptor and
+   constructor-complete result paths can receive a hidden destination. The shipped
+   record case requires an exact `unique` packed result and compatible dead caller
+   storage; fixed packed sums may use a proven nonescaping immediate-consumer
+   scratch. Public entry points, incompatible ownership/capacity envelopes, nested
+   allocating payloads, escaping old values, and layout mismatches allocate instead.
+   `destination_candidates_forwarded` counts actual forwarded calls; exact packed
+   allocation counts/bytes distinguish reuse from fallback.
+
+   **Header selection.** `rc-elide` may select `RcHeader::Elided` only for a
+   nonempty immutable local packed list whose exact type is absent from every
+   signature, whole-value boundary call/return, alias, mutation, nested scope,
+   dynamic wrapper, and loan in the whole module. Every other packed list keeps
+   `RcHeader::Required`.
+   Differential tests compare the header-free and RC-backed values and bytes;
+   generated modules expose `__witchy_rc_headers_emitted` and
+   `__witchy_rc_headers_elided` for exact firing evidence.
+3a. **Zero-copy confined slice views** - SHIPPED (RFC-0028, feature 3). A
+   `let w = list.slice(src, lo, hi)` the same `escape` analysis proves confined
+   (read only via `list.at`/`list.length`, with `src` never reassigned/mutated nor
+   aliased whole) elides the slice COPY: `w` becomes a borrow that reads through
+   `src` at an offset (the `$list_at_view`/`$list_len_view` helpers recompute the
+   clamped window and trap on the view bound, so reads match the interpreter
+   reading the copy). Invisible - no `View` type or new surface, just a faster
+   `list.slice`. Gated `WITCHY_OPT=views`; proven by a `witchy stats` heap-drop
+   counter and the differential de-opt sweep.
+4. **SIMD** (`relaxed-simd` in wasmtime config) for the obvious stdlib loops
+   (string compare/search, list scans) - after Phase 0 shows where it pays.
+
+## Phase 3 - Engine configuration (cheap, do early)
+
+All wasmtime-45 features we already ship but don't fully use:
+
+1. `Config::cranelift_opt_level(OptLevel::Speed)` for non-preempt engines.
+2. **Safe two-level cache**: content-bound optimized wasm keyed by program
+   hash, loaded only through `Module::new`, plus Wasmtime's validated Cranelift
+   compilation cache. No application-owned native artifact deserialization.
+3. **Pooling instance allocator** - deferred until profiling shows spawn
+   pressure (the measure-first rule; on-demand allocation hasn't appeared in
+   any profile yet).
+
+## Phase 4 - Researched options, deliberately deferred
+
+- **wasm-gc proposal** (wasmtime ships a DRC collector): would give real
+  reclamation for long-lived heaps by lowering lists/strings/records to GC
+  structs/arrays. Deferred: it rewrites the value representation AND every
+  host function that reads guest memory (capabilities included), and gives up
+  the arena's bulk-free advantage on the workloads we win. Revisit only if a
+  flagship use case needs long-lived mutable graphs.
+- **Wasmer's LLVM backend** as an optional "release engine": true LLVM
+  codegen over the same module. Deferred until Phase 2 numbers exist -
+  Binaryen likely closes most of the gap without linking LLVM or maintaining
+  a second runtime integration.
+- **wizer** (pre-initialized snapshots): deferred; the start-function plus
+  validated optimized-WASM/Cranelift caches cover the measured startup need.
+
+## Crates
+
+| Crate | Use | Phase |
+|---|---|---|
+| `wasm-opt` (Binaryen bindings) | post-pass optimizer over emitted modules | 2 |
+| `wasmtime` 45 (already in) | opt-level, safe compilation cache, pooling allocator, relaxed-SIMD | 3 |
+| `hyperfine` (dev-dependency / CI tool) | benchmark harness vs Go/C# | 0 |
+| `wasmer` + `wasmer-compiler-llvm` | optional LLVM engine - only if Binaryen numbers disappoint | 4 |
+
+## Native backend retirement - DONE (2026-06-11, e302f70)
+
+The exit criteria held (Phase 1 complete; the WASM tier at or beyond the
+native tier across the suite), so the native backend was removed:
+`src/rustgen.rs` deleted, the `witchy native`/`emit-rust` CLI arms dropped,
+and the `let`-borrow no-escape contract moved from rustc's borrow checker
+into typeck (`borrow_escape_check`) so the documented language rule survives
+the backend. The ownership-conventions appendix is rewritten around what the
+conventions buy the one compiled tier (provable non-aliasing for in-place
+mutation).

@@ -270,12 +270,12 @@ pub fn find_header(hdrs: List((String, String)), name: String) -> Option(String)
 // value/path/host must never carry a control byte; a header name must be a
 // non-empty RFC 7230 token.
 
-// Whether `s` contains a CR or LF — the response/request-splitting bytes.
+// Whether `s` contains a CR or LF - the response/request-splitting bytes.
 pub fn has_crlf(s: String) -> Bool:
     s.contains("\r") || s.contains("\n")
 
 // A valid HTTP header-name char (RFC 7230 tchar): alphanumeric or one of a small
-// punctuation set. Notably EXCLUDES `:`, space, CR, LF — so a header name can
+// punctuation set. Notably EXCLUDES `:`, space, CR, LF - so a header name can
 // never carry the `:`/CRLF that would break out of the name field.
 fn is_tchar(c: String) -> Bool:
     ascii.is_alnum(c) || "!#\$%&'*+-.^_`|~".contains(c)
@@ -314,7 +314,7 @@ pub fn check_header_name(name: String):
     if !is_header_name(name):
         fail("invalid HTTP header name (must be a non-empty RFC 7230 token): " + name)
 
-// Validate one `(name, value)` header pair — the name is a token, the value has
+// Validate one `(name, value)` header pair - the name is a token, the value has
 // no forbidden controls. Shared by the client request builder and server renderer.
 pub fn check_header(name: String, value: String):
     check_header_name(name)
@@ -329,7 +329,7 @@ pub fn check_request_field(what: String, value: String):
     if has_forbidden_control(value, false) || value.contains(" "):
         fail("HTTP " + what + " contains a whitespace/control character that would break the request line: " + value)
 
-// (BUG-358 / BUG-393) Whether `name` is a message-FRAMING header — Content-Length,
+// (BUG-358 / BUG-393) Whether `name` is a message-FRAMING header - Content-Length,
 // Transfer-Encoding, or Connection. The renderer owns framing (it appends its own
 // Content-Length / Connection), so a caller/handler-supplied framing header must be
 // dropped rather than emitted alongside ours: two conflicting framing headers are a
@@ -410,13 +410,13 @@ fn status_code(line: String) -> Int:
         let sp2 = rest.index_of(" ") ?? -1
         let code: String = if sp2 < 0: rest else: rest.substring(0, sp2)
         // (BUG-203) A malformed/non-HTTP response can carry a non-numeric OR an
-        // overflowing code. `string.to_int` TRAPS on i64 overflow — an
-        // attacker-controlled response could crash the client — so parse totally
+        // overflowing code. `string.to_int` TRAPS on i64 overflow - an
+        // attacker-controlled response could crash the client - so parse totally
         // with `string.parse_int` (None on non-digit, empty, or overflow) → 0.
         code.parse_int() ?? 0
 
 // Decode a `chunked` transfer-coding body: a sequence of
-// `<hex-size>[;ext]CRLF <size bytes> CRLF`, ending at a `0`-sized chunk. Total —
+// `<hex-size>[;ext]CRLF <size bytes> CRLF`, ending at a `0`-sized chunk. Total -
 // a malformed/truncated stream stops decoding and returns what was recovered
 // rather than trapping. Chunk sizes are byte counts, so framing is decoded on
 // `Bytes`; only the recovered payload is converted back to text.
@@ -496,7 +496,7 @@ fn chunk_size_hex(line: String) -> String:
     raw.trim()
 
 // Parse a hex string to an Int, totally: `None` on empty, a non-hex digit, or a
-// size wide enough to risk i64 overflow (>15 hex digits) — so a hostile chunk
+// size wide enough to risk i64 overflow (>15 hex digits) - so a hostile chunk
 // header can't trap the arithmetic.
 fn parse_hex_size(hex: String) -> Option(Int):
     if hex == "" || hex.char_count() > 15:

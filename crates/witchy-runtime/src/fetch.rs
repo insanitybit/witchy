@@ -261,11 +261,19 @@ pub fn send(policy: &FetchPolicy, request: &FetchRequest) -> Result<FetchRespons
         parsed.origin.port
     );
     let targets = if let Some(net_allow) = &policy.network_floor {
-        witchy_caps::capabilities::resolve_admitted(net_allow, &host_port).map_err(|_| {
-            FetchError::Denied {
-                origin: parsed.origin.as_str(),
-            }
-        })?
+        // A capability denial says "not granted"; a name-resolution failure of an
+        // *admitted* origin is a truthful network error, not a capability lie
+        // (RFC-0117 Lane A). `resolve_admitted_typed` keeps the two distinct.
+        witchy_caps::capabilities::resolve_admitted_typed(net_allow, &host_port).map_err(
+            |failure| match failure {
+                witchy_caps::capabilities::AdmitFailure::Denied(_) => FetchError::Denied {
+                    origin: parsed.origin.as_str(),
+                },
+                witchy_caps::capabilities::AdmitFailure::Unresolved(message) => {
+                    FetchError::Network { message }
+                }
+            },
+        )?
     } else {
         resolve(&parsed.origin.host, parsed.origin.port)?
     };
@@ -574,6 +582,22 @@ mod tests {
         assert!(matches!(
             send(&narrowed, &get("http://127.0.0.1:9/never-dial".to_string())),
             Err(FetchError::Denied { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_failure_of_an_admitted_origin_is_network_not_denial() {
+        // The origin IS granted by the Net floor, but its name cannot resolve
+        // (`.invalid` is reserved to never resolve, RFC 2606). This must surface as
+        // a truthful network error, never a capability "not granted" lie
+        // (RFC-0117 Lane A).
+        let allow = vec!["nonexistent.invalid:80".to_string()];
+        let policy =
+            FetchPolicy::from_net(&allow, ["http://nonexistent.invalid:80".to_string()])
+                .expect("admitted origin derives a Fetch policy");
+        assert!(matches!(
+            send(&policy, &get("http://nonexistent.invalid:80/x".to_string())),
+            Err(FetchError::Network { .. })
         ));
     }
 

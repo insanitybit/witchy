@@ -98,9 +98,9 @@ the authority for the serialized full workspace, e2e, parity, and browser gate.
 scratch, then asserts one program produces identical output on all three
 backends, exercises the formatter, the in-language test framework, capability
 auditing (`caps`/`caps-diff`), sandbox enforcement (confinement + allowlist
-refusals), a complete registry lifecycle (trusted publish → staged → 2FA
+denials), a complete registry lifecycle (trusted publish → staged → 2FA
 promote → verified add → the capability-widening gate → namespace binding), a
-multi-rune example project, and doc extraction — ~30 asserted checks.
+multi-rune example project, and doc extraction - ~30 asserted checks.
 `--quick` skips its test stage, which is redundant once `check.sh` has run the
 suite.
 
@@ -124,32 +124,32 @@ If you add observable behavior (a builtin, an operator, a stdlib function),
 implement it on the interpreter AND the WASM backend in the same change, with
 a differential test (`assert_eq!(interp(src), ...); assert_eq!(run_on_wasm(src), ...)`
 in `src/example_tests.rs`). If a backend genuinely can't support it
-yet, make it a **loud error** there — never a silently different answer.
+yet, make it a **loud error** there - never a silently different answer.
 Behavior that errors should error on *both* backends (the parity tool checks
-error paths too) — and with the **same complete diagnostic** ([RFC-0045](rfcs/0045-compiled-trap-diagnostics.md)): a
+error paths too) - and with the **same complete diagnostic** ([RFC-0045](rfcs/0045-compiled-trap-diagnostics.md)): a
 runtime abort (out-of-bounds index, integer division/modulo failure,
 `string.to_int` junk, `NaN` ordering, `fail(msg)`) carries the interpreter's
 exact text on the compiled backend via the always-linked, authority-free
 `__witchy_abort` import. The harness compares that diagnostic byte-for-byte,
 including lexical function and source line. Improving an abort's wording is
 therefore a shared-template change in
-`crates/witchy-syntax/src/diag.rs` (`DiagTemplate`) plus the pinned browser mirror
-— never edit one backend's formatter alone. When debugging a compiled trap, set
+`crates/witchy-syntax/src/diag.rs` (`DiagTemplate`) plus the pinned browser mirror -
+never edit one backend's formatter alone. When debugging a compiled trap, set
 `WITCHY_WASM_BACKTRACE=1` to dump the full named-frame wasm backtrace beneath the
 message (the message itself always prints).
 
 ## Formatting
 
-Rust code is **hand-formatted** — do NOT run `cargo fmt` (it reformats ~71
+Rust code is **hand-formatted** - do NOT run `cargo fmt` (it reformats ~71
 files and fights the intended style; the gate deliberately excludes rustfmt).
-witchy code (std/, examples/, projects/): `witchy fmt <file>` — CI runs
+witchy code (std/, examples/, projects/): `witchy fmt <file>` - CI runs
 `witchy fmt --check` over the tree, the only formatting gate. If you edit `std/`, regenerate
 the API reference: `witchy doc std/*.witchy > spec/stdlib.md` (a test asserts it
 is current).
 
-## Witchy house style
+## witchy house style
 
-Witchy source in this repository follows the executable
+witchy source in this repository follows the executable
 [Idiomatic witchy](book/src/idioms.md) chapter. In particular:
 
 - use interpolation for presentation strings, not concatenation;
@@ -176,14 +176,14 @@ enforce these semantic idioms.
 Runnable ` ```witchy ` examples in the markdown docs (`README.md`, `spec/*.md`,
 `book/src/*.md`) are exercised by the runnable-book gate,
 `scripts/validate_book_examples.mjs` (run in CI). It loads the compiled
-playground engine (`web/witchy.wasm` + `web/witchy-host.js` — the same engine a
+playground engine (`web/witchy.wasm` + `web/witchy-host.js` - the same engine a
 reader's Run button uses), and for each entry in the `book/examples.json`
 manifest it locates the referenced ` ```witchy ` block, runs the ones marked
 `runnable`, and asserts the block's output equals the interpreter output the
-manifest recorded — so an in-book run can never diverge from the toolchain that
+manifest recorded - so an in-book run can never diverge from the toolchain that
 produced the manifest. A divergence, or a manifest block that no longer exists,
 fails the gate. So a runnable example in the docs must be a **complete, correct
-program** — when you change the language, the examples that demonstrate it fail
+program** - when you change the language, the examples that demonstrate it fail
 the build until updated. Genuinely partial snippets (signatures with `...`, shell
 commands, sample output) use a different fence (untagged, or ` ```sh `); blocks
 the manifest marks non-runnable are recorded but not executed.
@@ -197,7 +197,7 @@ workspace layout (the compiler is split into stage-aligned crates under
 (`crates/witchy-lower/src/codegen/`) must match it; typeck
 (`crates/witchy-types/src/typeck.rs`) rejects what can't be made to agree; the
 wasmtime sandbox (`crates/witchy-runtime/src/runtime.rs`) is the security
-boundary (capability-gated host imports — anything you add there is part of the
+boundary (capability-gated host imports - anything you add there is part of the
 TCB, so keep host functions small, total, and confined).
 
 ## Capability changes
@@ -205,11 +205,11 @@ TCB, so keep host functions small, total, and confined).
 If a change adds or widens what any capability can do, update the footprint
 analyzer (`crates/witchy-caps/src/capabilities.rs`), the runtime gating
 (`crates/witchy-runtime/src/runtime.rs`), and
-[spec/capabilities.md](spec/capabilities.md) together — and add an
+[spec/capabilities.md](spec/capabilities.md) together - and add an
 *enforcement* test (an ungranted module must fail to instantiate).
 
 Terminology in docs and diagnostics: a **capability** is the unforgeable
-value (`Console`, `Dir`); a **right** is a permission within one
+value (`Console`, `Dir`); a **right** is one axis of authority within one
 (`Dir[Read]`); a **verb** is an operation checked against rights (`read`,
 `connect`). Don't use the three interchangeably.
 
@@ -245,8 +245,8 @@ truth elsewhere:
   hand-edit it; update the source comments or generator and regenerate it.
 - `wiki/` is derived, disposable synthesis over code, `spec/`, `rfcs/`, and
   `external-refs/`. Regenerate it instead of hand-maintaining pages.
-- `external-refs/` is curated research input, not the current Witchy spec. Keep
-  notes attributed and use RFCs/spec docs for Witchy decisions.
+- `external-refs/` is curated research input, not the current witchy spec. Keep
+  notes attributed and use RFCs/spec docs for witchy decisions.
 
 If a public-facing docs change updates commands, examples, or generated output,
 run the command or generator named by the doc and include that command in the PR.

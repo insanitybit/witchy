@@ -1,6 +1,6 @@
-// fs — small directory helpers over the `Dir` capability. Each function's
+// fs - small directory helpers over the `Dir` capability. Each function's
 // authority is exactly the `Dir` the caller passes: `collect_files`/`parent_dir`
-// need only read, `ensure_dir` needs write. Nothing here widens a capability —
+// need only read, `ensure_dir` needs write. Nothing here widens a capability -
 // the confinement of the `Dir` you hand in is preserved.
 
 import string

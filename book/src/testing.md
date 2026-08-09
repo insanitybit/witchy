@@ -1,12 +1,19 @@
 # Testing
 
-witchy has a built-in test runner. A test is a function named `test_*`; it
-passes by returning and fails by aborting. A plain test runs with zero real
-authority. It may be pure, use ordinary collaborators, or receive deterministic
-fixture-backed capabilities from an external plan. An integration test may
-instead receive real `Dir` or `Net` grants, but only through the explicit
-integration tier. The `testing` module provides assertions and small ordinary
-collaborators; it does not mint capabilities.
+A test suite is the least audited code you run, and in most languages it runs
+with your full ambient authority. A stray unit test can delete a directory or
+call a live API, and from the outside it looks exactly like one that can't.
+
+In witchy a plain test runs with **zero** real authority. The point isn't that
+tests *shouldn't* touch the filesystem by convention - it's that nothing hands
+them a `Dir`, so they structurally can't.
+
+The runner is built in. A test is a function named `test_*`; it passes by
+returning and fails by aborting. It may be pure, use ordinary collaborators, or
+receive deterministic fixture-backed capabilities from an external plan. An
+integration test may instead receive real `Dir` or `Net` grants, but only
+through the explicit integration tier. The `testing` module provides assertions
+and small ordinary collaborators; it doesn't mint capabilities.
 
 ```witchy
 import testing
@@ -66,26 +73,26 @@ into CI.
 
 Look at those test functions: none take a capability. That's not a restriction
 the runner imposes arbitrarily: plain `witchy test` instantiates the compiled
-test artifact with zero real host grants. A test therefore cannot accidentally
+test artifact with zero real host grants. A test therefore can't accidentally
 hit the network, write a file, inspect the environment, or depend on the real
 clock. Effectful production functions may live beside the tests, but the runner
-does not grant them authority merely because they were linked into a test.
+doesn't grant them authority merely because they were linked into a test.
 
 Keeping effects at the edges leaves the program's core pure, so plain tests need
-no host setup and cannot accidentally exercise real authority. Unused effectful
+no host setup and can't accidentally exercise real authority. Unused effectful
 production functions are pruned from each synthesized test artifact; merely
-linking a function that mentions `Dir`, `Fetch`, or `Exec` does not grant it.
+linking a function that mentions `Dir`, `Fetch`, or `Exec` doesn't grant it.
 
 ## Stubs, fakes, strict mocks, and fixtures
 
-Witchy uses these terms deliberately:
+witchy uses these terms deliberately:
 
 | Term | Meaning |
 |---|---|
 | Collaborator | Ordinary data, function, or trait value passed to domain code |
 | Stub | A collaborator or fixture configured to return canned values |
 | Fake | A deterministic implementation with useful behavior, such as an in-memory filesystem |
-| Strict mock | An ordered fixture script that fails on an unexpected, missing, or differently attenuated call |
+| Strict mock | An ordered fixture script that fails on an unexpected, missing, or differently narrowed call |
 | Fixture capability | A sealed capability backed only by validated inert plan data |
 | Integration grant | Real host authority explicitly supplied to an owned integration test |
 | Browser provider | An explicitly enabled browser host provider, either real or fixture-backed |
@@ -93,10 +100,10 @@ Witchy uses these terms deliberately:
 Prefer an ordinary collaborator for a unit-sized seam. `FakeGateway` above is
 cheap, typed, and follows exactly the same dispatch rules as production code.
 Use a fixture capability when the provider contract itself matters: rights,
-attenuation, call order, failure injection, filesystem state, origin checks, or
+narrowing, call order, failure injection, filesystem state, origin checks, or
 the proof that no undeclared operation occurred.
 
-Witchy does not monkeypatch statically bound functions. There is no global mock
+witchy doesn't monkeypatch statically bound functions. There's no global mock
 registry and no source-level interception syntax.
 
 ## Deterministic capability fixtures
@@ -154,14 +161,14 @@ stack; use `Fetch`, an ordinary collaborator, or an explicit integration test.
 rather than minted as roots. VM is a zero-authority facility, not a fixture
 family; its sequential reference behavior remains independently parity-tested.
 
-Fixture capability records are assembled only for the selected package's test
+Fixture capability records are assembled only for the selected rune's test
 module. The compiler flattens a concrete named-field capability record into its
 declared fixture roots, constructs the sealed record at the authenticated test
-boundary, and passes it to the test. Dependency tests cannot inherit that
-construction privilege. Generic or recursive fixture aggregate records are
+boundary, and passes it to the test. Dependency tests can't inherit that
+ability to construct fixture records. Generic or recursive fixture aggregate records are
 rejected before execution.
 
-Plans are inert data. They cannot name a host path, ambient environment source,
+Plans are inert data. They can't name a host path, ambient environment source,
 socket, executable path, callback, descriptor, or native object. Unknown
 versions and fields, duplicate JSON keys, malformed UTF-8, invalid paths,
 oversized values, forged handles, and inconsistent scripts fail closed before
@@ -209,7 +216,7 @@ they have an explicit CLI grant surface.
 
 Authority follows the test entrypoint, not everything linked beside it. A
 nullary test remains zero-grant even during an integration run, and an imported
-library function cannot widen the synthesized test `main`. When a directory
+library function can't widen the synthesized test `main`. When a directory
 run encounters tests from a manifest/lock-resolved dependency, those tests
 always receive zero real grants even if the caller supplied `--dir` or `--net`
 for the root package.
@@ -224,7 +231,7 @@ trait-bounded value, while the test chooses the concrete fake and its canned
 result.
 
 Function parameters work the same way when a one-method trait would add no
-clarity. The important part is the explicit injection seam: Witchy does not
+clarity. The important part is the explicit injection seam: witchy doesn't
 monkeypatch or intercept a statically bound top-level function for tests. The
 test and production program exercise the same dispatch rules.
 
@@ -232,11 +239,11 @@ test and production program exercise the same dispatch rules.
 
 The entry module run by `witchy test` may directly construct a foreign sealed
 *data* type. This lets a test create malformed or boundary-case values that the
-type's production constructors intentionally prevent. Production commands
-remain strict, and imported dependency modules do not inherit this privilege.
+type's production constructors intentionally reject. Production commands
+remain strict, and imported dependency modules don't inherit this ability.
 
-This relaxation does not manufacture authority. Sealed host capabilities such
-as `Dir`, `Net`, and `Clock` still cannot be constructed from Witchy source, and
+This relaxation doesn't manufacture authority. Sealed host capabilities such
+as `Dir`, `Net`, and `Clock` still can't be constructed from witchy source, and
 plain tests still receive zero real host grants. Fixture handles are minted only
 by the runner from a validated plan. The old `testing.mock_dir` constructor and
 its separate native/interpreter filesystem backends were deleted; the shared
@@ -254,7 +261,7 @@ The `testing` module gives you:
 | `assert_int_eq(got, want)` | the two `Int`s are equal |
 | `assert_value_eq(got, want)` | the two values are equal (`where a: PartialEq, a: Show`) |
 | `assert_value_ne(got, other)` | the two values differ (`where a: PartialEq, a: Show`) |
-| `fail_with(msg)` | (always — an unconditional failure) |
+| `fail_with(msg)` | (always - an unconditional failure) |
 
 `assert_value_eq` / `assert_value_ne` are the idiomatic choice for records,
 enums, and other typed values: they compare with `==` and render the mismatch
@@ -269,14 +276,14 @@ the same whichever backend runs it.
 Three project-level checks run alongside your tests:
 
 - **`witchy parity`** (from the last chapter) is differential testing for the
-  *language itself* — it catches either backend disagreeing with the other.
+  *language itself* - it catches either backend disagreeing with the other.
 - **The independent conformance corpus** pins exact language results,
   rejections, and capability footprints without deriving its expectations from
   either backend. This matters because two implementations can agree on the
   same wrong answer. Its positive-control mutation deliberately preserves
   interpreter/Wasm agreement while changing a result, then proves the
   independently stated expectation still fails.
-- The documentation you're reading is tested. Every Witchy block is extracted
+- The documentation you're reading is tested. Every witchy block is extracted
   and checked. Complete examples execute through compiled Wasm in fresh opaque
   browser frames with explicit providers and derived CSP; runnable examples are
   also checked against committed output and backend parity.

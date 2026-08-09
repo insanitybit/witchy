@@ -1,7 +1,7 @@
 # Shipping and Deployment
 
-Witchy separates a program from the authority used to run it. That makes the
-first distribution decision straightforward:
+witchy separates a program from the authority used to run it, which makes the
+first distribution decision unusually easy:
 
 - Ship **portable WebAssembly** when the recipient should choose every grant.
 - Ship a **trusted executable** when running the installed application is
@@ -9,7 +9,7 @@ first distribution decision straightforward:
 - Ship a **static browser bundle** when the browser is the host and its
   capability menu is sufficient.
 
-These forms share compiled Witchy semantics, but their host and trust boundaries
+These forms share compiled witchy semantics, but their host and trust boundaries
 are intentionally different.
 
 ## Portable WebAssembly
@@ -92,9 +92,9 @@ checked binding plan into one native file:
 witchy --release build --target trusted-exe
 ```
 
-The default output is `target/release/<rune-name>`. The destination does not
-need a Witchy toolchain or separate `.wasm`, but running the file trusts the
-application, its embedded runtime, and its distributor. It is an installation
+The default output is `target/release/<rune-name>`. The destination doesn't
+need a witchy toolchain or separate `.wasm`, but running the file trusts the
+application, its embedded runtime, and its distributor. It's an installation
 artifact, not a way to make an untrusted author safe.
 
 ### Bind `main` in the manifest
@@ -126,10 +126,10 @@ token = { from = "env:APP_TOKEN", use-only = true }
 ```
 
 Directory and file bindings retain their opened authority from admission
-through runtime construction; replacing a parent name after admission cannot
+through runtime construction; replacing a parent name after admission can't
 redirect them. Declared type rights still apply, so a `Dir[Read]` binding does
 not gain write access. `Env` names are explicit, `Fetch` origins and `Exec`
-programs are allowlisted, and a dependency cannot widen the application's
+programs are allowlisted, and a dependency can't widen the application's
 authenticated root binding plan.
 
 `Console`, `Clock`, `Rand`, argv, and an empty `SecretStore` use conventional
@@ -182,19 +182,21 @@ frames. Their derived CSP uses `connect-src` for exactly the granted `Fetch`
 origins, providing a browser analogue to native outer confinement. Unsupported
 native capabilities remain visibly non-runnable.
 
-The browser host is not interchangeable with the native host: it has no raw
+The browser host isn't interchangeable with the native host: it has no raw
 `Net`, `Exec`, or host filesystem root. Write shared code against portable
 roots such as `Fetch`, use optional capabilities when graceful degradation is
 part of the API, or expose host-specific entrypoints with distinct footprints.
 
-## What is not a shipping promise
+## What isn't a shipping promise
 
 The package manager, Coven registry, trusted publishing, and hosted browser
-deployment are substantial dogfood, but they are not a supported public
-distribution service. Witchy 0.1.0 is still a private release candidate until
+deployment are substantial dogfood, but they aren't a supported public
+distribution service. witchy 0.1.0 is still a private release candidate until
 the exact queue-settled commit passes the release workflow and native platform
 matrix and receives explicit publication approval.
 
-The supported-preview surface is the behavior exercised by the checked-in tests
-and examples; everything else is experimental. RFC status alone is not release
-evidence.
+Use the repository's
+[product-status ledger](https://github.com/insanitybit/witchy/blob/master/PRODUCT-STATUS.md)
+for supported-preview versus experimental surfaces, and
+[release-readiness ledger](https://github.com/insanitybit/witchy/blob/master/RELEASE-READINESS.md)
+for candidate evidence. RFC status alone isn't release evidence.

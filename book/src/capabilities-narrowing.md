@@ -1,11 +1,16 @@
-# Narrowing and Attenuation
+# Narrowing
 
-A capability can be attenuated before it is passed on: remove rights, or restrict
-the part of the world it can reach. This is **attenuation**.
+Handing a helper everything you hold is the easy thing to do, and it's how
+authority spreads. The function that needed to read one file ends up with your
+whole filesystem, because that's what was in your hand when you called it.
+
+So a capability can be narrowed before it's passed on: drop rights, or shrink
+the part of the world it can reach. The object-capability literature calls this
+*attenuation*; this book says **narrowing**.
 
 ## Rights: fewer verbs
 
-`Dir` and `Net` are parameterized by *rights* — the operations they permit. A
+`Dir` and `Net` are parameterized by *rights* - the operations they permit. A
 bare `Dir` allows everything; `Dir[Read]` allows only reading; `Dir[Write]` only
 writing. The right is part of the type, so it's checked:
 
@@ -19,9 +24,9 @@ fn main(console: Console, dir: Dir):
 ```
 
 `load` takes `Dir[Read]`, but `main` holds a full `Dir`. Passing the full `Dir`
-where `Dir[Read]` is expected is allowed — **more authority stands in for less**,
+where `Dir[Read]` is expected is allowed - **more authority stands in for less**,
 narrowing automatically at the call boundary. The reverse never type-checks: you
-cannot pass a `Dir[Read]` where a `Dir[Write]` is wanted, because that would be
+can't pass a `Dir[Read]` where a `Dir[Write]` is wanted, because that would be
 *widening*, and authority only ever shrinks.
 
 The full `Dir` verb set, and the right each one demands:
@@ -29,18 +34,18 @@ The full `Dir` verb set, and the right each one demands:
 | Verb | Needs | Semantics |
 |---|---|---|
 | `d.read(path)` | `Read` | file contents; error if missing or outside the subtree |
-| `d.exists(path)` / `d.is_dir(path)` | `Read` | total — a path outside the subtree just reads as `false` |
+| `d.exists(path)` / `d.is_dir(path)` | `Read` | total - a path outside the subtree just reads as `false` |
 | `d.list()` | `Read` | entry names in the directory |
 | `d.subtree(name)` | `Read` | mint a capability confined to a child, keeping the rights (see below) |
 | `d.write(path, contents)` | `Write` | **replace** the whole file, creating it if absent |
 | `d.append(path, contents)` | `Write` | add to the end, creating the file if absent |
 | `d.make_dir(name)` | `Write` | create a subdirectory (idempotent) |
 
-Note `write` *overwrites* — for a log you keep adding to, use `append`.
+Note `write` *overwrites* - for a log you keep adding to, use `append`.
 
 `Net` works the same way along two axes: a verb (`Connect` to dial out vs
 `Listen` to accept connections) and a transport (`Tcp`/`Udp`/`Uds`). A
-`Net[Connect, Tcp]` is a TCP client that structurally cannot listen:
+`Net[Connect, Tcp]` is a TCP client that structurally can't listen:
 
 ```witchy
 // A fetcher that can dial out over TCP but cannot open a listening socket.
@@ -49,14 +54,14 @@ fn fetch(net: Net[Connect, Tcp], addr: String) -> String:
     sock.recv_all()
 ```
 
-If `fetch` tried to call `net.listen(...)`, it wouldn't compile — `Net[Connect]`
+If `fetch` tried to call `net.listen(...)`, it wouldn't compile - `Net[Connect]`
 has no `listen`. This is deliberately a library fragment rather than an
 executable browser example: raw sockets have no honest browser provider.
 
 ## Naming a narrowed handle: `as`
 
-Implicit narrowing happens at calls. When you want to *name* a weaker handle —
-to keep using it locally, or to make the attenuation obvious — ascribe it with
+Implicit narrowing happens at calls. When you want to *name* a weaker handle -
+to keep using it locally, or to make the narrowing obvious - ascribe it with
 `as`:
 
 ```witchy
@@ -74,8 +79,8 @@ laundered back up.
 ## Subtrees: a smaller world
 
 Rights restrict the *verbs*; `dir.subtree(...)` restricts the *scope*. A `Dir` is
-not "the filesystem" — it is one directory subtree, and `dir.subtree("uploads")`
-mints a new capability confined to that child. It is the host-primitive method
+not "the filesystem" - it's one directory subtree, and `dir.subtree("uploads")`
+mints a new capability confined to that child. It's the host-primitive method
 form, the filesystem counterpart of `net.only(...)`:
 
 ```witchy
@@ -90,15 +95,15 @@ fn main(console: Console, dir: Dir):
     console.print("stored")
 ```
 
-Combine the two — `dir.subtree("uploads") as Dir[Write]` — to give a function
+Combine the two - `dir.subtree("uploads") as Dir[Write]` - to give a function
 write access to one folder. Narrowing chains and stays confined:
-`dir.subtree("a").subtree("b")` reaches `a/b`, and `..` cannot escape.
+`dir.subtree("a").subtree("b")` reaches `a/b`, and `..` can't escape.
 
 A `Dir` also carries an **entry policy** that narrows *which entries* it may
 touch, the third axis alongside rights (verbs) and subtree (scope).
 `dir.only(Dir.ext(".log"))` confines a `Dir` so `read`/`write`/`open` only
-admit matching files — a non-matching name is refused at the access check, and a
-subtree inherits the policy. It is the `Dir` analog of `net.only` below:
+admit matching files - a non-matching name is denied at the access check, and a
+subtree inherits the policy. It's the `Dir` analog of `net.only` below:
 
 ```witchy
 // `read_logs` is handed a Dir that can only touch `.log` files — even though its
@@ -114,7 +119,7 @@ fn main(console: Console, dir: Dir):
 
 ## Files: the leaf
 
-A `Dir` is authority over a *subtree*; a **`File`** is the leaf — authority over
+A `Dir` is authority over a *subtree*; a **`File`** is the leaf - authority over
 exactly *one* file. A function that only needs to read one config file shouldn't be
 handed a whole directory, so a `Dir` navigates down to a single file:
 
@@ -138,24 +143,24 @@ fn main(console: Console, dir: Dir):
 The **name states the conferred right**, and it's all checked statically:
 `dir.read_file` needs `Dir[Read]` and yields `File[Read]`; `dir.write_file` needs
 `Dir[Write]` and yields `File[Write]`. So a `Dir[Read]` can only ever produce a
-`File[Read]` (calling `write_file` on it is a compile error), and `write` on a
-`File[Read]` is a compile error too — the read-only chain is provable end to end.
+`File[Read]` (calling `write_file` on it's a compile error), and `write` on a
+`File[Read]` is a compile error too - the read-only chain is provable end to end.
 Navigation keeps the same `..`/absolute/symlink confinement as `read`, and a
 `File` can also be handed straight to `main` (`main(config: File[Read])`, granted
-with `--file`) — the least authority for a single-file program, with no `Dir` at
-all. A `File` is read/write only; there is no exec-on-a-`File` (spawning a process
+with `--file`) - the least authority for a single-file program, with no `Dir` at
+all. A `File` is read/write only; there's no exec-on-a-`File` (spawning a process
 is the separate `Exec` capability, below).
 
 Native directory and file capabilities are open handles, not checked path
 strings. A `File` retains its already-open parent plus one fixed leaf; a subtree
 retains the opened child directory. Renaming or replacing any original path
-component therefore cannot redirect a later operation, and write/append refuse
+component therefore can't redirect a later operation, and write/append deny
 a symlink leaf. Build input/output roots use the same implementation.
 
 ## Net: a smaller slice of the network
 
 Rights narrow the *verbs* a `Net` permits (`Connect` vs `Listen`); to narrow its
-*reach* — which hosts it may dial — confine its **address-set**. This is the
+*reach* - which hosts it may dial - confine its **address-set**. This is the
 network counterpart of `dir.subtree`, and it uses typed policy values built on
 the capability itself (`Net.tcp(…)`) rather than ad-hoc strings:
 
@@ -169,20 +174,20 @@ fn talk_to_db(db: Net[Connect, Tcp]):
 
 `net.only(policy)` *intersects* the carried address-set with `policy`; an endpoint
 survives only if it was already admitted, so refinement can only ever shrink the
-set. `net.deny(policy)` does the opposite — subtracts a slice — and the two chain:
+set. `net.deny(policy)` does the opposite - subtracts a slice - and the two chain:
 `net.deny(Net.cidr_any("10.0.0.0/8")).only(Net.tcp("192.168.1.1", 80))`
 removes a private block, then keeps a single host. The policy constructors are
 `Net.tcp(host, port)`, `Net.any_port(host)`, `Net.cidr(block, port)`,
 `Net.cidr_any(block)`, and `Net.union(a, b)` for a multi-endpoint set. The host enforces the set **at the
-syscall** on both backends, so a narrowed `Net` structurally cannot reach
+syscall** on both backends, so a narrowed `Net` structurally can't reach
 elsewhere. (HTTPS isn't a separate right: ask for TLS at connect time with a
-`tls:` prefix on the address you dial — `net.connect("tls:example.com:443")`.)
+`tls:` prefix on the address you dial - `net.connect("tls:example.com:443")`.)
 
 For the common SSRF / DNS-rebinding guard, `net.deny(Net.private())` excludes
-the internal ranges in one line — loopback, RFC-1918, link-local (including the
-`169.254.169.254` cloud-metadata address), CGNAT, and "this host". It is matched
+the internal ranges in one line - loopback, RFC-1918, link-local (including the
+`169.254.169.254` cloud-metadata address), CGNAT, and "this host". It's matched
 against the **resolved** IP, so a hostname that rebinds to an internal address is
-refused at connect time, not just at a check beforehand.
+denied at connect time, not just at a check beforehand.
 
 For portable HTTP clients, narrow the host-granted `Fetch` root to one origin.
 Unlike the raw-socket fragments above, this complete program runs unchanged in
@@ -201,15 +206,15 @@ fn main(console: Console, fetch: Fetch):
 
 ## Spawning processes: the `Exec` capability
 
-`Exec` is authority to run a *native subprocess* — and it is the single most
+`Exec` is authority to run a *native subprocess* - and it's the single most
 dangerous capability, because a spawned process runs with full OS authority
-**outside** witchy's sandbox. witchy cannot confine what it spawns, so `Exec` is
+**outside** witchy's sandbox. witchy can't confine what it spawns, so `Exec` is
 kept conspicuous and granted on its own line, never folded into `File`. Two things
 keep it honest: the binary is **named through a `Dir[Read]`** (you can only execute
 a file you can *read*, opened through the same handle-anchored confinement as
 `read`), and the call takes an argv list, never a shell string. The host executes
 the already-open file (or a private immutable snapshot on platforms without
-descriptor execution), so a concurrent path swap cannot change which program
+descriptor execution), so a concurrent path swap can't change which program
 starts:
 
 ```witchy
@@ -235,7 +240,7 @@ never regain an executable excluded by its source.
 
 A library can define its own capability by refining one of the host's, with
 `capability X from U`. The new type `X` wraps the underlying capability `U`, and
-it is sealed: only the module that declares `X` may construct or destructure it.
+it's sealed: only the module that declares `X` may construct or destructure it.
 No other module can forge an `X` or pull the `U` back out.
 
 ```witchy
@@ -273,9 +278,9 @@ and [`examples/redis_capability`](https://github.com/insanitybit/witchy/tree/mas
 
 ## Capabilities that carry policy
 
-A `capability` can carry **state beside** the authority it wraps — a sealed
+A `capability` can carry **state beside** the authority it wraps - a sealed
 *record* mixing a host capability with ordinary policy data. A database handle, say,
-is a `Net` confined to one server *plus* the table it is scoped to:
+is a `Net` confined to one server *plus* the table it's scoped to:
 
 ```witchy
 // A confined `Net` (the hard, audited authority) + a `table` it is scoped to (a
@@ -310,7 +315,7 @@ fn main(console: Console, fetch: Fetch):
 
 `witchy caps` sees straight through the record: `Table` audits as exactly `Fetch`,
 because the footprint sums its capability-typed fields and the `String` carries no
-authority. So you get carried policy with **nothing hidden** — the hard tier (the
+authority. So you get carried policy with **nothing hidden** - the hard tier (the
 `Fetch` is host-confined to one origin) plus a soft, library-enforced tier (the
 `table` filter), in one unforgeable value. See
 [`examples/carried_state`](https://github.com/insanitybit/witchy/tree/master/examples/carried_state).
@@ -318,8 +323,8 @@ authority. So you get carried policy with **nothing hidden** — the hard tier (
 ## Grantable capabilities: a library's own root authority
 
 The capabilities above all *wrap* a host capability. Sometimes a library wants a
-capability that is its own kind of authority — a UI framework's "permission to
-request a fetch", say — that `main` receives at the root without it being a
+capability that's its own kind of authority - a UI framework's "permission to
+request a fetch", say - that `main` receives at the root without it being a
 built-in like `Net` or `Dir`. Mark a sealed capability `grantable`:
 
 ```witchy
@@ -332,7 +337,7 @@ fn policy_of(u: UiRoot) -> String:
 ```
 
 Now `main` can take a `UiRoot`, and the host mints it from a `[user_caps]` block of
-a grant document — the same reviewed launch as `[dirs]`/`[files]`:
+a grant document - the same reviewed launch as `[dirs]`/`[files]`:
 
 ```
 fn main(console: Console, ui: UiRoot):
@@ -345,30 +350,30 @@ fn main(console: Console, ui: UiRoot):
 ui = { type = "UiRoot", policy = "coven-web" }
 ```
 
-The rule that keeps this safe: a grantable capability must be **bare** — it may
+The rule that keeps this safe: a grantable capability must be **bare** - it may
 carry policy data, but *zero* host authority, directly or through any field. A
 `grantable` cap that reaches a `Net`/`Dir`/`Secret` is a compile error. So granting
 `UiRoot` can never be a disguised `Net` grant, and a version bump that slips a
-host-cap field into it cannot widen your root authority behind an unchanged `main`
+host-cap field into it can't widen your root authority behind an unchanged `main`
 signature. (A capability that legitimately wraps host authority, like `Table`
 above, stays non-grantable: you build it *inside* the program from an explicit
 `Net`, where the `Net` shows in the signature.)
 
 Bare grantable caps carry no host authority, so they get their own footprint axis:
 `witchy caps` prints a `user caps` line, and requiring a new one counts as a
-**widening** — new library-defined authority, and a new package in your trust base,
+**widening** - new library-defined authority, and a new rune in your trust base,
 both of which review (and the coven gate) will flag.
 
 ## Withholding authority by structure
 
-Everything above attenuates along *calls* — you weaken a handle as you pass it
+Everything above narrows along *calls* - you weaken a handle as you pass it
 on. The same mechanism gives you the strongest possible way to *deny* authority
 to a stretch of code: don't pass it. A function or closure that never receives a
-capability cannot use it — there is no name to reach, no value to alias, nothing
+capability can't use it - there's no name to reach, no value to alias, nothing
 to forge.
 
 When a region of work must not touch the network (or the clock, or the disk),
-lift it into a function that is not given that capability:
+lift it into a function that isn't given that capability:
 
 ```witchy
 fn audit_log(console: Console, body: String):
@@ -381,12 +386,12 @@ fn main(console: Console, clock: Clock):
     console.print("logged at ${clock.now()}")
 ```
 
-`audit_log` cannot read the clock in *any* execution, under *any* later refactor:
-the authority was never handed to it. This is **capture-as-dependency-injection**
-— authority comes from *holding* a capability, so the un-bypassable way to deny
-it is to not pass the reference. The boundary is sealed against the future, too:
+`audit_log` can't read the clock in *any* execution, under *any* later refactor:
+the authority was never handed to it. This is **capture-as-dependency-injection** -
+authority comes from *holding* a capability, so the un-bypassable way to deny
+it's to not pass the reference. The boundary is sealed against the future, too:
 if someone later adds a `Net` parameter to `main`, the code inside `audit_log`
-still cannot dial, because its authority is fixed by its own signature, not by
+still can't dial, because its authority is fixed by its own signature, not by
 whatever its callers accumulate over time.
 
 ## The supply-chain payoff
@@ -401,13 +406,13 @@ Because rights are part of the footprint, `witchy caps` reports them precisely:
   total  Console, Dir, Net
 ```
 
-(Private helpers appear too — the rows are *every* function whose signature
+(Private helpers appear too - the rows are *every* function whose signature
 carries a capability; `total` is the union over the entry points.)
 
 And `witchy caps-diff old.witchy new.witchy` understands them. A change from
-`Net[Connect]` to `Net[Connect, Listen]` is a *widening* — "this code now
-*listens*" — and fails the gate, even though both are "uses the network." The
+`Net[Connect]` to `Net[Connect, Listen]` is a *widening* - "this code now
+*listens*" - and fails the gate, even though both are "uses the network." The
 supply-chain signal is verb-precise, not just kind-precise.
 
-Capabilities can also be *conditional* — held only sometimes, or in one of
+Capabilities can also be *conditional* - held only sometimes, or in one of
 several shapes.

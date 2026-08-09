@@ -8,19 +8,19 @@ has the precise semantics; this is the cheat sheet.
 | Operator | Meaning |
 |---|---|
 | `+ - * / %` | arithmetic; `+` on two Strings concatenates; `Int` wraps on overflow; `/0` and `%0` are runtime errors |
-| `== !=` | equality — structural for built-ins, else the type's `PartialEq` impl (`eq`/`ne`) |
+| `== !=` | equality - structural for built-ins, else the type's `PartialEq` impl (`eq`/`ne`) |
 | `< <= > >=` | ordering via the type's `PartialOrd` impl (built in for `Int`/`Float`/`String`/`Duration`; derive or implement it for your own) |
 | `&&` | short-circuit boolean and |
 | `\|\|` | short-circuit boolean or (Bool operands only) |
-| `??` | fallback: `Option(T) ?? T` / `Result(T, e) ?? T` **unwraps** (`Some(x)`/`Ok(x)` is `x`, else the right side, evaluated lazily) — right-associative, so `d.get(k1) ?? d.get(k2) ?? 0` chains |
+| `??` | fallback: `Option(T) ?? T` / `Result(T, e) ?? T` **unwraps** (`Some(x)`/`Ok(x)` is `x`, else the right side, evaluated lazily) - right-associative, so `d.get(k1) ?? d.get(k2) ?? 0` chains |
 | `!` | boolean not |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shift counts masked to 6 bits) |
 | `xs[i]`, `d[k]` | strict indexing (sugar for `xs.at(i)` / `d.at(k)`); out of bounds or missing-key reads error |
-| `xs[i] = v`, `d[k] = v`, `x.f = v` | assign to a place — sugar for a value update (`set_at` / record spread); the binding must be `var`. Compound `+=` etc. work |
+| `xs[i] = v`, `d[k] = v`, `x.f = v` | assign to a place - sugar for a value update (`set_at` / record spread); the binding must be `var`. Compound `+=` etc. work |
 | `lo..hi` | half-open range, for iteration only |
 | `lo..=hi` | inclusive integer range in a pattern |
-| `x.f(a)` | a method call: an `impl`/trait method — the primary form for the standard data types; every public method also has an equivalent module-qualified alias (`list.map(xs, f)` is `xs.map(f)`) |
-| `${expr}` | string interpolation — renders *any* value into the string |
+| `x.f(a)` | a method call: an `impl`/trait method - the primary form for the standard data types; every public method also has an equivalent module-qualified alias (`list.map(xs, f)` is `xs.map(f)`) |
+| `${expr}` | string interpolation - renders *any* value into the string |
 | `e?` | unwrap `Ok`/`Some`, or early-return the `Err`/`None` |
 | `e? "context"` | propagate with context: prefix a String `Err`, or turn `None` into `Err("context")` |
 | `cap as T` | capability narrowing (drop rights; never widen) |
@@ -28,7 +28,7 @@ has the precise semantics; this is the cheat sheet.
 
 ## Precedence
 
-Tightest to loosest — an operator higher in the table binds before one below it,
+Tightest to loosest - an operator higher in the table binds before one below it,
 so `1 + 2 * 3` is `1 + (2 * 3)` and `a & b == c` is `(a & b) == c`. Postfix
 operators bind tighter than everything: `f(x)?` is `(f(x))?` and `p.x + 1` is
 `(p.x) + 1`. When in doubt, parenthesize.
@@ -36,7 +36,7 @@ operators bind tighter than everything: `f(x)?` is `(f(x))?` and `p.x + 1` is
 | Level | Operators | Associativity |
 |---|---|---|
 | tightest | `x.f` `x.f(a)` `xs[i]` `e?` (call / index / field / propagate) | left |
-| | `- x` `! x` `~ x` (prefix negate / not / bitwise-not) | — |
+| | `- x` `! x` `~ x` (prefix negate / not / bitwise-not) | - |
 | | `* / %` | left |
 | | `+ -` | left |
 | | `<< >>` (bit shift) | left |
@@ -46,10 +46,10 @@ operators bind tighter than everything: `f(x)?` is `(f(x))?` and `p.x + 1` is
 | | `== != < <= > >=` (comparison) | left |
 | | `&&` | left |
 | | `\|\|` | left |
-| | `??` (unwrap-or) | **right** — `a ?? b ?? c` is `a ?? (b ?? c)` |
-| loosest | `lo..hi` `lo..=hi` (range) | — |
+| | `??` (unwrap-or) | **right** - `a ?? b ?? c` is `a ?? (b ?? c)` |
+| loosest | `lo..hi` `lo..=hi` (range) | - |
 
-Comparison does not chain: write `0 <= x && x < n`, not `0 <= x < n`.
+Comparison doesn't chain: write `0 <= x && x < n`, not `0 <= x < n`.
 
 ## Keywords
 

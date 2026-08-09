@@ -1,16 +1,20 @@
 # Working with JSON
 
-JSON is the format most programs exchange with the outside world, so witchy
-makes both directions first-class. Encoding is *reflective*: any type that
+JSON goes out easily and comes in dangerously. Encoding is mechanical: you have
+a value, you write it down. Decoding is where programs get hurt, because the
+bytes came from somebody else and your type is claiming to know their shape.
+
+witchy splits the two deliberately. Encoding is *reflective*: any type that
 derives `Reflect` serializes with no per-type code. Decoding is *typed*: you
 parse a string into a `Json` value and either navigate it by hand or let a
-derived `Deserialize` pull it into your own record.
+derived `Deserialize` pull it into your own record, failing if it doesn't
+fit.
 
 ## Encoding: `json.stringify`
 
 Give a type `derive(Reflect)` (which needs `import reflect`) and
-`json.stringify` turns any value of it — and any list, option, or nesting of
-them — into a JSON string. There is no `derive(Json)`; serialization rides on
+`json.stringify` turns any value of it - and any list, option, or nesting of
+them - into a JSON string. There's no `derive(Json)`; serialization rides on
 reflection.
 
 ```witchy
@@ -38,7 +42,7 @@ string, when you want to embed it in a larger structure before encoding.
 
 ## Decoding: parse then navigate
 
-`json.decode` returns `Result(Json, DecodeError)` — a parse can fail, so you
+`json.decode` returns `Result(Json, DecodeError)` - a parse can fail, so you
 handle that up front. The resulting `Json` is a sum type you inspect with `get`
 (object field), `index` (array element), and the `as_*` accessors, each
 returning an `Option` because the value might not be the shape you asked for.
@@ -73,7 +77,7 @@ scores: 3
 For a few fields this hand-navigation is fine. When you want the whole document
 validated into a typed record, though, the `require` / `int_of` / `string_of`
 family returns a `Result` with a structured `DeserializeError` you can thread
-with `?` — no cascade of `Option` matches.
+with `?` - no cascade of `Option` matches.
 
 ## Decoding into your own type: `derive(Deserialize)`
 
@@ -103,7 +107,7 @@ fn main(console: Console):
 api on port 8080
 ```
 
-Note the two-step shape — `json.decode` (is it valid JSON?) then `from_json` (is
+Note the two-step shape - `json.decode` (is it valid JSON?) then `from_json` (is
 it the *right* JSON?). Each stage has its own error type, so a malformed payload
 and a well-formed-but-wrong payload are distinguishable. Derive `Reflect` too if
 you also want to serialize the type back out; the two derives are independent and

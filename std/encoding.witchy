@@ -1,14 +1,14 @@
-// encoding — hex and base64 for text conveniences and raw Bytes payloads.
+// encoding - hex and base64 for text conveniences and raw Bytes payloads.
 //
 // The byte-level codecs need access witchy source cannot express directly, so the
 // raw transforms are native intrinsics (like `crypto`): the private helpers below
-// are placeholders the runtime never executes — each is intercepted by its
+// are placeholders the runtime never executes - each is intercepted by its
 // qualified name and run in Rust on both backends.
 //
 // Encoding is total, so the encoders return a plain `String`. Decoding can fail, so
 // the public `*decode` functions guard the raw codec with a pure-witchy alphabet
 // check and return `Result` (RFC-0044): valid input decodes to `Ok`, and any
-// non-alphabet character or a truncated final group is a reachable `Err` — never a
+// non-alphabet character or a truncated final group is a reachable `Err` - never a
 // silent truncation (the JWT/WebAuthn segment-decoding hazard BUG-006 named).
 
 import bytes
@@ -112,7 +112,7 @@ pub fn base64_decode_bytes_string(data: String) -> Result(Bytes, String):
 
 // base64url (no padding; `-`/`_`) of the bytes given as a HEX string, or an `Err`
 // naming the input when it is not valid hex. The hex indirection lets binary
-// round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge`
+// round-trip through UTF-8 strings - e.g. a WebAuthn `clientDataJSON.challenge`
 // is base64url of the raw challenge bytes. Fallible like `hex_decode` (RFC-0044):
 // malformed hex is a reachable `Err`, never the silent drop the raw codec would do.
 pub fn hex_to_base64url(hex: String) -> Result(String, EncodingError):
@@ -124,8 +124,8 @@ pub fn hex_to_base64url_string(hex: String) -> Result(String, String):
         Ok(text) -> Ok(text)
         Err(e) -> Err(encoding_error_message(e))
 
-// Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) — the
-// JSON header/payload segments of a JWT/OIDC identity token — or an `Err` naming the
+// Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) - the
+// JSON header/payload segments of a JWT/OIDC identity token - or an `Err` naming the
 // input when it is not valid base64url.
 pub fn base64url_decode(data: String) -> Result(String, EncodingError):
     result.map_ok(base64url_decode_bytes(data), fn(b: Bytes): bytes.to_string_lossy(b))
@@ -150,8 +150,8 @@ pub fn base64url_decode_bytes_string(data: String) -> Result(Bytes, String):
         Ok(b) -> Ok(b)
         Err(e) -> Err(encoding_error_message(e))
 
-// Decode base64url to a HEX string — for binary that must round-trip through a witchy
-// String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify` — or an
+// Decode base64url to a HEX string - for binary that must round-trip through a witchy
+// String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify` - or an
 // `Err` naming the input when it is not valid base64url.
 pub fn base64url_to_hex(data: String) -> Result(String, EncodingError):
     result.map_ok(base64url_decode_bytes(data), fn(b: Bytes): hex_encode_bytes(b))
@@ -164,7 +164,7 @@ pub fn base64url_to_hex_string(data: String) -> Result(String, String):
 
 // --- alphabet validators (pure witchy) --------------------------------------
 // Character-level, so they agree with the native byte-level codecs: a string these
-// accept is entirely ASCII-alphabet, which the codec then consumes in full — so a
+// accept is entirely ASCII-alphabet, which the codec then consumes in full - so a
 // valid decode is never a truncated one. A rejected string never reaches the codec.
 
 // Every character a hex digit, with an even count (each byte is two digits).
@@ -184,17 +184,17 @@ fn base64_valid(data: String) -> Bool:
     valid_symbols(data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
 
 // Every character in the URL-safe base64 alphabet, with a decodable bit-length.
-// base64url is the NO-PADDING form (the JWT/WebAuthn wire format), so any `=` —
-// even a well-formed trailing run — is invalid here, not just misplaced padding.
+// base64url is the NO-PADDING form (the JWT/WebAuthn wire format), so any `=` -
+// even a well-formed trailing run - is invalid here, not just misplaced padding.
 fn base64url_valid(data: String) -> Bool:
     !data.contains("=") && valid_symbols(data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 
 // Shared base64/base64url check. Every data symbol must be in `alphabet`, and any
-// `=` padding must be a contiguous run of 1 or 2 at the very END — never in the
+// `=` padding must be a contiguous run of 1 or 2 at the very END - never in the
 // middle (`S=Gk`) and never three or more (`ab===`). The final group must be
 // complete: 1 pad after 3 data symbols, 2 pads after 2. An unpadded string is
 // accepted when its symbol count is not `≡ 1 (mod 4)` (a lone trailing symbol
-// carries only 6 bits — a truncated final group that would decode to nothing).
+// carries only 6 bits - a truncated final group that would decode to nothing).
 fn valid_symbols(data: String, alphabet: String) -> Bool:
     let cs = data.chars()
     let n = list.length(cs)

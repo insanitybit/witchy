@@ -22,7 +22,7 @@ The numeric value of a single decimal digit as `Some`, or `None` when `c` is not
 
 #### `fn all_digits(s: String) -> Bool`
 
-True when `s` is non-empty and every character is an ASCII digit — a safe guard before `string_to_int`, which traps on non-numeric input.
+True when `s` is non-empty and every character is an ASCII digit - a safe guard before `string_to_int`, which traps on non-numeric input.
 
 ## `borrow`
 
@@ -42,9 +42,9 @@ A view has no value representation of its own, so `owned` is the logical identit
 
 ## `bytes`
 
-std/bytes — immutable byte buffers.
+std/bytes - immutable byte buffers.
 
-A `Bytes` is a flat, UTF-8-free sequence of bytes — the type for binary data (file contents, network frames, hashes, serialized payloads) that `String` (which is always valid UTF-8) cannot faithfully hold. It shares `String`'s in-memory layout (`[length][bytes…]`), so the bridge operations (`from_string`/`to_string`) are free, and a `Bytes` is FLAT: it byte-copies directly across a worker VM boundary (RFC-0032), making it the canonical cross-VM and serialization payload.
+A `Bytes` is a flat, UTF-8-free sequence of bytes - the type for binary data (file contents, network frames, hashes, serialized payloads) that `String` (which is always valid UTF-8) cannot faithfully hold. It shares `String`'s in-memory layout (`[length][bytes…]`), so the bridge operations (`from_string`/`to_string`) are free, and a `Bytes` is FLAT: it byte-copies directly across a worker VM boundary (RFC-0032), making it the canonical cross-VM and serialization payload.
 
 #### `type BytesError`
 
@@ -157,9 +157,9 @@ Whether the buffer ends with `suffix`.
 
 ## `chan`
 
-std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent — you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a pure-witchy cooperative executor with a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
+std/chan - decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent - you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a pure-witchy cooperative executor with a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly - no scheduler state in the runtime, no `Pin`.
 
-Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` pair carries values of ITS OWN type `m`, and independent channels in one program may carry different types — a library may pipeline work through a private channel without forcing its message type on the whole program. Under the hood the executor is ERASED: its effects and buffers carry the opaque `__Msg`; the typed endpoints erase a message on `send` and recover it on `recv`. The erasure is representationally the identity on both backends (a message already rides the universal slot), so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full while the executor is making progress (backpressure), an unbounded one never does. If every live task parks with no progress, the executor runs its quiescence close pass: parked receivers/selects resume with `None`, parked senders are released, and parked joins resume. This replaces sender refcounting and destructors; it is deterministic on both backends, but "closed" means quiescent, not "no `Sender` value can ever be used again".
+Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` pair carries values of ITS OWN type `m`, and independent channels in one program may carry different types - a library may pipeline work through a private channel without forcing its message type on the whole program. Under the hood the executor is ERASED: its effects and buffers carry the opaque `__Msg`; the typed endpoints erase a message on `send` and recover it on `recv`. The erasure is representationally the identity on both backends (a message already rides the universal slot), so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full while the executor is making progress (backpressure), an unbounded one never does. If every live task parks with no progress, the executor runs its quiescence close pass: parked receivers/selects resume with `None`, parked senders are released, and parked joins resume. This replaces sender refcounting and destructors; it is deterministic on both backends, but "closed" means quiescent, not "no `Sender` value can ever be used again".
 
 The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` / `await chan.send(tx, x)`) run on the same protocol.
 
@@ -189,7 +189,7 @@ A finished task.
 
 #### `fn ready_unit() -> Task(Nil)`
 
-An already-complete `Task(Nil)` — the async/await lowering target for a body that falls off its end.
+An already-complete `Task(Nil)` - the async/await lowering target for a body that falls off its end.
 
 #### `fn yield_now() -> Task(Nil)`
 
@@ -197,7 +197,7 @@ Hand control back to the executor once, then continue.
 
 #### `fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b)`
 
-Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to — the continuation `k` is the rest of the body.
+Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to - the continuation `k` is the rest of the body.
 
 #### `fn map(t: Task(a), f: fn(a) -> b) -> Task(b)`
 
@@ -209,15 +209,15 @@ Build the task `thunk()` lazily: nothing runs until this task is polled. A `Task
 
 #### `fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil)`
 
-Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an `await` inside a `for x in xs:` loop.
+Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an `await` inside a `for x in xs:` loop.
 
 #### `fn channel(capacity: Int) -> Task((Sender(m), Receiver(m)))`
 
-A channel of logical `capacity`: a positive capacity is bounded (the sender blocks when the buffer is full), while 0 — or any non-positive value — is unbounded and never blocks the sender, matching the convention that a non-positive bound means "no bound".
+A channel of logical `capacity`: a positive capacity is bounded (the sender blocks when the buffer is full), while 0 - or any non-positive value - is unbounded and never blocks the sender, matching the convention that a non-positive bound means "no bound".
 
 #### `fn unbounded() -> Task((Sender(m), Receiver(m)))`
 
-An unbounded channel — `send` never blocks (the buffer grows without limit).
+An unbounded channel - `send` never blocks (the buffer grows without limit).
 
 #### `fn send(tx: Sender(m), msg: m) -> Task(Nil)`
 
@@ -237,7 +237,7 @@ Wait for the spawned task behind `h` while the executor can make progress. If th
 
 #### `fn cancel(h: Handle) -> Task(Nil)`
 
-Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow — it stops this one task, not any tasks it itself spawned — and idempotent (already finished or already cancelled is a no-op). Deterministic on the cooperative schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
+Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow - it stops this one task, not any tasks it itself spawned - and idempotent (already finished or already cancelled is a no-op). Deterministic on the cooperative schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
 
 #### `fn spawn_all(children: List(Task(Nil))) -> Task(List(Handle))`
 
@@ -249,7 +249,7 @@ Join every handle in `hs` while the executor can make progress. Like `join`, qui
 
 #### `fn cancel_all(hs: List(Handle)) -> Task(Nil)`
 
-Cancel every handle in `hs` — the companion to `spawn_all`/`join_all`. Each is stopped and treated as finished; idempotent, so cancelling an already-finished handle is a no-op. Used by `race_n` to drop the losers.
+Cancel every handle in `hs` - the companion to `spawn_all`/`join_all`. Each is stopped and treated as finished; idempotent, so cancelling an already-finished handle is a no-op. Used by `race_n` to drop the losers.
 
 #### `fn scope(children: List(Task(Nil))) -> Task(Nil)`
 
@@ -257,11 +257,11 @@ STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently 
 
 #### `fn gather(jobs: List(Task(m))) -> Task(List(m))`
 
-STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return the results that arrive before the collecting channel quiesces. In the normal case every job completes and sends exactly one result. Each job produces a value of the message type `m` (results ride the same channels), so `gather` is the typed companion to `scope` — the same no-escaping-handle shape, with the results handed back. Results are in COMPLETION order (deterministic on the cooperative executor, hence byte-identical on both backends), not input order.
+STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return the results that arrive before the collecting channel quiesces. In the normal case every job completes and sends exactly one result. Each job produces a value of the message type `m` (results ride the same channels), so `gather` is the typed companion to `scope` - the same no-escaping-handle shape, with the results handed back. Results are in COMPLETION order (deterministic on the cooperative executor, hence byte-identical on both backends), not input order.
 
 #### `fn par_map(items: List(a), f: fn(a) -> Task(m)) -> Task(List(m))`
 
-STRUCTURED parallel map (the level-1 combinator): run `f` over every item of `items` concurrently and return the results in INPUT order. The tasks are never visible — spawn and join happen inside — so this cannot leak a handle, cannot deadlock on a forgotten join, and is the ergonomic default for data parallelism. Each item's result rides its own channel, so the returned order is the input order regardless of completion order: the result is a pure function of `items` and `f`, hence DETERMINISTIC by construction and byte-identical on both backends. That determinism is exactly what lets a future parallel backend run the items on separate cores without changing the observable result (see RFC-0032). Results are of the message type `m` (they ride channels), as with `gather`.
+STRUCTURED parallel map (the level-1 combinator): run `f` over every item of `items` concurrently and return the results in INPUT order. The tasks are never visible - spawn and join happen inside - so this cannot leak a handle, cannot deadlock on a forgotten join, and is the ergonomic default for data parallelism. Each item's result rides its own channel, so the returned order is the input order regardless of completion order: the result is a pure function of `items` and `f`, hence DETERMINISTIC by construction and byte-identical on both backends. That determinism is exactly what lets a future parallel backend run the items on separate cores without changing the observable result (see RFC-0032). Results are of the message type `m` (they ride channels), as with `gather`.
 
 #### `fn par_reduce(items: List(a), f: fn(a) -> Task(m), init: m, combine: fn(m, m) -> m) -> Task(m)`
 
@@ -269,7 +269,7 @@ STRUCTURED parallel reduce: `par_map` the items, then fold the results with `com
 
 #### `fn race(a: Task(m), b: Task(m)) -> Task(Option(m))`
 
-Run `a` and `b` concurrently and return the FIRST result, cancelling the loser. `None` only if neither ever produces a value. The winner is decided by the deterministic round-robin schedule (a tie favours `a`), so the outcome is byte-identical on both backends — and under a future parallel backend the cancel genuinely stops the loser's remaining work. This is the cancellation-enabled combinator of RFC-0032's ladder; build `timeout` by racing a task against one that yields a sentinel.
+Run `a` and `b` concurrently and return the FIRST result, cancelling the loser. `None` only if neither ever produces a value. The winner is decided by the deterministic round-robin schedule (a tie favours `a`), so the outcome is byte-identical on both backends - and under a future parallel backend the cancel genuinely stops the loser's remaining work. This is the cancellation-enabled combinator of RFC-0032's ladder; build `timeout` by racing a task against one that yields a sentinel.
 
 #### `fn race_n(tasks: List(Task(m))) -> Task(Option(m))`
 
@@ -293,7 +293,7 @@ Drive `root` through the canonical `std/task` executor. `chan` keeps this facade
 
 ## `cmp`
 
-The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`: `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar through these traits, so `a == b` and `x < y` work on your own types once you implement (or derive) them — there is no separate `compare`/`greater` to call by name. Built-in impls cover the primitives; `Self` in a method signature stands for the implementing type. Pure and capability-free.
+The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`: `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar through these traits, so `a == b` and `x < y` work on your own types once you implement (or derive) them - there is no separate `compare`/`greater` to call by name. Built-in impls cover the primitives; `Self` in a method signature stands for the implementing type. Pure and capability-free.
 
 #### `type Ordering`
 
@@ -305,7 +305,7 @@ The result of a comparison: `a` is `Less` than, `Equal` to, or `Greater` than `b
 
 #### `trait PartialEq`
 
-`==` and `!=`. The minimal equality trait: implement `eq` and `ne` comes free. `Float` is `PartialEq` but NOT `Eq` — `NaN != NaN`, so equality is not reflexive.
+`==` and `!=`. The minimal equality trait: implement `eq` and `ne` comes free. `Float` is `PartialEq` but NOT `Eq` - `NaN != NaN`, so equality is not reflexive.
 
 - `fn eq(self, other: Self) -> Bool`
 - `fn ne(self, other: Self) -> Bool` _(default)_
@@ -333,7 +333,7 @@ A total order: `compare` never reports "incomparable". Sorting and the `min`/ `m
 
 #### `fn reverse(o: Ordering) -> Ordering`
 
-Flip an ordering — `Less` <-> `Greater`, `Equal` unchanged — for reverse sorts.
+Flip an ordering - `Less` <-> `Greater`, `Equal` unchanged - for reverse sorts.
 
 #### `fn max_of(x: a, y: a) -> a where a: Ord`
 
@@ -345,7 +345,7 @@ Flip an ordering — `Less` <-> `Greater`, `Equal` unchanged — for reverse sor
 
 #### `fn maximum(xs: List(a), default: a) -> a where a: Ord`
 
-The largest element of `xs`, or `default` when `xs` is empty. `default` is only the empty fallback — it never participates in the comparison, so it is returned unchanged only for an empty list (a small `default` no longer wins over the elements, nor a large one lose to them).
+The largest element of `xs`, or `default` when `xs` is empty. `default` is only the empty fallback - it never participates in the comparison, so it is returned unchanged only for an empty list (a small `default` no longer wins over the elements, nor a large one lose to them).
 
 #### `fn minimum(xs: List(a), default: a) -> a where a: Ord`
 
@@ -382,7 +382,7 @@ The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`
 
 #### `impl PartialEq for String`
 
-Lexicographic ordering by code point — the same order `<` gives on strings, and content-correct in compiled code (both backends compare bytes, not pointers).
+Lexicographic ordering by code point - the same order `<` gives on strings, and content-correct in compiled code (both backends compare bytes, not pointers).
 
 - `fn eq(self, other: Self) -> Bool`
 
@@ -508,9 +508,9 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 ## `compiler`
 
-compiler — witchy's own toolchain, exposed to witchy programs.
+compiler - witchy's own toolchain, exposed to witchy programs.
 
-A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy — on either backend. The body below is a placeholder the runtime never executes (the call is intercepted by its qualified name).
+A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy - on either backend. The body below is a placeholder the runtime never executes (the call is intercepted by its qualified name).
 
 #### `type CompilerError`
 
@@ -524,7 +524,7 @@ Matchable compiler-service failures. `SourceRejected` is the ordinary parse, typ
 
 #### `fn footprint(source: String) -> String`
 
-The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[..],"user_caps":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse or contains `comptime:` blocks. Use the source-file CLI path for expanded comptime introspection. `build` is the build-time footprint — the build capabilities the rune's `build` entrypoint demands (gated separately from the runtime `total`). `user_caps` lists grantable user-capability names the source requires. Parse it with `import json`.
+The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[..],"user_caps":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse or contains `comptime:` blocks. Use the source-file CLI path for expanded comptime introspection. `build` is the build-time footprint - the build capabilities the rune's `build` entrypoint demands (gated separately from the runtime `total`). `user_caps` lists grantable user-capability names the source requires. Parse it with `import json`.
 
 #### `fn diff(old: String, new: String) -> String`
 
@@ -540,7 +540,7 @@ Render docs with String errors for application-style boundaries.
 
 #### `fn doc(name: String, source: String) -> String`
 
-Render `source` to Markdown API documentation (the same output as `witchy doc` for source-only modules): the module's public types, traits, trait implementations, and functions with their signatures and doc-comments, under a heading titled `name`. This only PARSES the source — it never runs it — so a registry can safely generate browsable docs from a rune's stored source on either backend. Display callers get parse/comptime-boundary errors as an HTML comment; tooling should prefer `try_doc`.
+Render `source` to Markdown API documentation (the same output as `witchy doc` for source-only modules): the module's public types, traits, trait implementations, and functions with their signatures and doc-comments, under a heading titled `name`. This only PARSES the source - it never runs it - so a registry can safely generate browsable docs from a rune's stored source on either backend. Display callers get parse/comptime-boundary errors as an HTML comment; tooling should prefer `try_doc`.
 
 ### Trait implementations
 
@@ -578,9 +578,9 @@ Conversion traits, following Rust's `std::convert`. `From(a)` builds the impleme
 
 ## `crypto`
 
-crypto — cryptographic hashing and signatures.
+crypto - cryptographic hashing and signatures.
 
-Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve field arithmetic), so they are implemented in Rust. They are reachable only through this module — there is no global builtin. The function bodies below are placeholders the runtime never executes for native-backed functions: the interpreter intercepts their qualified names (`crypto.sha256`, `crypto.__ed25519_verify_status`, ...), and the WASM backend bridges them to the same implementation as host imports. Fallible public verify functions are ordinary Witchy wrappers around private native status intrinsics.
+Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve field arithmetic), so they are implemented in Rust. They are reachable only through this module - there is no global builtin. The function bodies below are placeholders the runtime never executes for native-backed functions: the interpreter intercepts their qualified names (`crypto.sha256`, `crypto.__ed25519_verify_status`, ...), and the WASM backend bridges them to the same implementation as host imports. Fallible public verify functions are ordinary Witchy wrappers around private native status intrinsics.
 
 #### `type VerifyError`
 
@@ -607,7 +607,7 @@ SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
 
 #### `fn rune_hash(paths: List(String), contents: List(String)) -> String`
 
-The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass parallel lists — one entry per file (`witchy.toml` plus each `src/**/*.witchy`): `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and length-prefixed before hashing, so the result is the rune's stable content address — the package manager's tamper-evident identity.
+The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass parallel lists - one entry per file (`witchy.toml` plus each `src/**/*.witchy`): `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and length-prefixed before hashing, so the result is the rune's stable content address - the package manager's tamper-evident identity.
 
 #### `fn ed25519_verify(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError)`
 
@@ -619,23 +619,23 @@ Sign `message` with a `Secret` capability (the host grants it; it cannot be forg
 
 #### `fn public_key(key: Secret) -> String`
 
-The hex Ed25519 public key for a `Secret` — what verifiers check against.
+The hex Ed25519 public key for a `Secret` - what verifiers check against.
 
 #### `fn reveal(key: Secret) -> String`
 
-Reveal a `Secret`'s raw bytes as a string — for revealable value secrets (tokens, passwords) that must be handed to an external sink. Errors on secrets that are not revealable: signing keys (granted with `--signing-key`, used via `sign`/`public_key`) and any secret granted use-only (`--secret-file name=path,use-only`, e.g. a TLS private key).
+Reveal a `Secret`'s raw bytes as a string - for revealable value secrets (tokens, passwords) that must be handed to an external sink. Errors on secrets that are not revealable: signing keys (granted with `--signing-key`, used via `sign`/`public_key`) and any secret granted use-only (`--secret-file name=path,use-only`, e.g. a TLS private key).
 
 #### `fn ecdsa_p256_verify(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError)`
 
-Verify an ECDSA P-256 / SHA-256 signature — WebAuthn "ES256" (COSE alg -7). `public_key` is the hex SEC1 uncompressed point (`04 || x || y`); `signature` is the hex ASN.1-DER signature; `message` is the raw bytes it covers. Malformed inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`. (Native/interpreter-only.)
+Verify an ECDSA P-256 / SHA-256 signature - WebAuthn "ES256" (COSE alg -7). `public_key` is the hex SEC1 uncompressed point (`04 || x || y`); `signature` is the hex ASN.1-DER signature; `message` is the raw bytes it covers. Malformed inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`. (Native/interpreter-only.)
 
 #### `fn ecdsa_p256_verify_hex(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError)`
 
-Like `ecdsa_p256_verify` but the message is also hex — for binary messages such as WebAuthn's `authenticatorData || SHA256(clientDataJSON)`. Malformed message hex is `Err`, not a false signature. (Native-only.)
+Like `ecdsa_p256_verify` but the message is also hex - for binary messages such as WebAuthn's `authenticatorData || SHA256(clientDataJSON)`. Malformed message hex is `Err`, not a false signature. (Native-only.)
 
 #### `fn rsa_pkcs1_sha256_verify(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError)`
 
-Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature — JWT/OIDC "RS256" (the algorithm GitHub Actions and Google sign their identity tokens with). `public_key` is the hex of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`); `signature` is hex; `message` is the raw signed bytes (`header.payload` for a JWT). Malformed inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`. (Native-only.)
+Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature - JWT/OIDC "RS256" (the algorithm GitHub Actions and Google sign their identity tokens with). `public_key` is the hex of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`); `signature` is hex; `message` is the raw signed bytes (`header.payload` for a JWT). Malformed inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`. (Native-only.)
 
 #### `fn sha512(data: String) -> String`
 
@@ -651,7 +651,7 @@ HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `mess
 
 #### `fn shake128(input: Bytes, output_len: Int) -> Result(Bytes, ShakeError)`
 
-SHAKE128 (FIPS 202) extendable-output function. Absorbs raw `input` bytes and squeezes exactly `output_len` bytes. `output_len` must be `0..=1048576` (a megabyte ceiling, far past any key/nonce/commitment use — a stream needs repeated domain-separated calls), else `Err(InvalidOutputLength)`. Native-only: the browser target omits this and a module that reaches it cannot instantiate in the browser host (RFC-0106/0007).
+SHAKE128 (FIPS 202) extendable-output function. Absorbs raw `input` bytes and squeezes exactly `output_len` bytes. `output_len` must be `0..=1048576` (a megabyte ceiling, far past any key/nonce/commitment use - a stream needs repeated domain-separated calls), else `Err(InvalidOutputLength)`. Native-only: the browser target omits this and a module that reaches it cannot instantiate in the browser host (RFC-0106/0007).
 
 #### `fn shake256(input: Bytes, output_len: Int) -> Result(Bytes, ShakeError)`
 
@@ -677,9 +677,9 @@ SHAKE256 (FIPS 202) extendable-output function. See `shake128`; SHAKE256 has the
 
 ## `dict`
 
-dict — the associative map.
+dict - the associative map.
 
-The core operations are native primitives (intercepted by both backends; the bodies are self-recursive placeholders giving the type checker their signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.at`, `dict.update`, `dict.contains_key`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`, `dict.length`. The rest is the compositional layer — a lookup returning `Option`, constructors from pairs, and the map/filter/merge transforms.
+The core operations are native primitives (intercepted by both backends; the bodies are self-recursive placeholders giving the type checker their signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.at`, `dict.update`, `dict.contains_key`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`, `dict.length`. The rest is the compositional layer - a lookup returning `Option`, constructors from pairs, and the map/filter/merge transforms.
 
 #### `fn new() -> Dict(k, v)`
 
@@ -775,7 +775,7 @@ The value for `key`, or `default` when absent.
 
 #### `Dict.get_or_insert(key: k, default: v) -> v`
 
-The value for `key`, inserting `default` first when the key is absent — the key is present afterward either way. Returns the existing value on a hit and `default` on a miss.
+The value for `key`, inserting `default` first when the key is absent - the key is present afterward either way. Returns the existing value on a hit and `default` on a miss.
 
 #### `Dict.at(key: k) -> v`
 
@@ -803,7 +803,7 @@ Swap keys and values. With duplicate values, a later entry wins.
 
 ## `duration`
 
-Pure helpers for the built-in `Duration` type — a length of time, written as a literal like `30s`, `2hr`, or `500ms`. Durations are combined and compared with the language operators (`a + b`, `d * 3`, `a < b`); this module adds construction from plain numbers, component access, and human formatting. Capability-free, so it compiles to WASM. A Duration is carried as whole milliseconds (`int_to_duration`/`duration_to_int` are the Int<->Duration bridge).
+Pure helpers for the built-in `Duration` type - a length of time, written as a literal like `30s`, `2hr`, or `500ms`. Durations are combined and compared with the language operators (`a + b`, `d * 3`, `a < b`); this module adds construction from plain numbers, component access, and human formatting. Capability-free, so it compiles to WASM. A Duration is carried as whole milliseconds (`int_to_duration`/`duration_to_int` are the Int<->Duration bridge).
 
 #### `type DurationParseError`
 
@@ -885,11 +885,11 @@ A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a l
 
 #### `fn human(d: Duration) -> String`
 
-A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and `500ms` for a pure sub-second span. A negative span (e.g. from subtraction) keeps its sign as a single leading "-" over the absolute magnitude: `-1s`, `-1m30s` — not the truncated-division fields of the raw negative count.
+A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and `500ms` for a pure sub-second span. A negative span (e.g. from subtraction) keeps its sign as a single leading "-" over the absolute magnitude: `-1s`, `-1m30s` - not the truncated-division fields of the raw negative count.
 
 #### `fn parse(s: String) -> Result(Duration, DurationParseError)`
 
-Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. `Err` on a stray character, a unit with no preceding count ("ms", "1hms"), a dangling unit-less number after units were given ("1h30"), or a value that overflows a 64-bit millisecond count. The typed error lets libraries classify malformed input without parsing display text.
+Parse a duration string to a `Duration` - the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. `Err` on a stray character, a unit with no preceding count ("ms", "1hms"), a dangling unit-less number after units were given ("1h30"), or a value that overflows a 64-bit millisecond count. The typed error lets libraries classify malformed input without parsing display text.
 
 #### `fn parse_string(s: String) -> Result(Duration, String)`
 
@@ -1096,11 +1096,11 @@ Decode to the result type inferred from the surrounding static context. A mismat
 
 ## `encoding`
 
-encoding — hex and base64 for text conveniences and raw Bytes payloads.
+encoding - hex and base64 for text conveniences and raw Bytes payloads.
 
-The byte-level codecs need access witchy source cannot express directly, so the raw transforms are native intrinsics (like `crypto`): the private helpers below are placeholders the runtime never executes — each is intercepted by its qualified name and run in Rust on both backends.
+The byte-level codecs need access witchy source cannot express directly, so the raw transforms are native intrinsics (like `crypto`): the private helpers below are placeholders the runtime never executes - each is intercepted by its qualified name and run in Rust on both backends.
 
-Encoding is total, so the encoders return a plain `String`. Decoding can fail, so the public `*decode` functions guard the raw codec with a pure-witchy alphabet check and return `Result` (RFC-0044): valid input decodes to `Ok`, and any non-alphabet character or a truncated final group is a reachable `Err` — never a silent truncation (the JWT/WebAuthn segment-decoding hazard BUG-006 named).
+Encoding is total, so the encoders return a plain `String`. Decoding can fail, so the public `*decode` functions guard the raw codec with a pure-witchy alphabet check and return `Result` (RFC-0044): valid input decodes to `Ok`, and any non-alphabet character or a truncated final group is a reachable `Err` - never a silent truncation (the JWT/WebAuthn segment-decoding hazard BUG-006 named).
 
 #### `type EncodingError`
 
@@ -1166,7 +1166,7 @@ Decode base64 bytes with String errors for application-style boundaries.
 
 #### `fn hex_to_base64url(hex: String) -> Result(String, EncodingError)`
 
-base64url (no padding; `-`/`_`) of the bytes given as a HEX string, or an `Err` naming the input when it is not valid hex. The hex indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes. Fallible like `hex_decode` (RFC-0044): malformed hex is a reachable `Err`, never the silent drop the raw codec would do.
+base64url (no padding; `-`/`_`) of the bytes given as a HEX string, or an `Err` naming the input when it is not valid hex. The hex indirection lets binary round-trip through UTF-8 strings - e.g. a WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes. Fallible like `hex_decode` (RFC-0044): malformed hex is a reachable `Err`, never the silent drop the raw codec would do.
 
 #### `fn hex_to_base64url_string(hex: String) -> Result(String, String)`
 
@@ -1174,7 +1174,7 @@ Convert hex to base64url with String errors for application-style boundaries.
 
 #### `fn base64url_decode(data: String) -> Result(String, EncodingError)`
 
-Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) — the JSON header/payload segments of a JWT/OIDC identity token — or an `Err` naming the input when it is not valid base64url.
+Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) - the JSON header/payload segments of a JWT/OIDC identity token - or an `Err` naming the input when it is not valid base64url.
 
 #### `fn base64url_decode_bytes(data: String) -> Result(Bytes, EncodingError)`
 
@@ -1190,7 +1190,7 @@ Decode base64url bytes with String errors for application-style boundaries.
 
 #### `fn base64url_to_hex(data: String) -> Result(String, EncodingError)`
 
-Decode base64url to a HEX string — for binary that must round-trip through a witchy String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify` — or an `Err` naming the input when it is not valid base64url.
+Decode base64url to a HEX string - for binary that must round-trip through a witchy String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify` - or an `Err` naming the input when it is not valid base64url.
 
 #### `fn base64url_to_hex_string(data: String) -> Result(String, String)`
 
@@ -1223,7 +1223,7 @@ Errors are ordinary values carried in `Result(_, e)`. Library-specific error enu
 
 ## `exec`
 
-The `Exec` capability: spawn a confined native subprocess. The executable is named through a `Dir[Read]` — you can only run a file you can read — so `run` takes both the `Exec` right and the `Dir` the binary lives under. Pure data otherwise; the only authority is the `Exec`/`Dir` it is handed.
+The `Exec` capability: spawn a confined native subprocess. The executable is named through a `Dir[Read]` - you can only run a file you can read - so `run` takes both the `Exec` right and the `Dir` the binary lives under. Pure data otherwise; the only authority is the `Exec`/`Dir` it is handed.
 
 This wraps the low-level `exec` primitive (which takes a single `\0`-joined argv string and returns a `"<exit_code>\n<output>"` payload) with a `List(String)` argv and a parsed `(Int, String)` result, where `output` is the child's stdout followed by its stderr. See rfcs/0004-self-hosted-cli.md.
 
@@ -1233,11 +1233,11 @@ Run `path` (resolved within `dir`) with `args` and `stdin`, returning `(exit_cod
 
 #### `fn run_args(e: Exec, dir: Dir[Read], path: String, args: List(String)) -> (Int, String)`
 
-Run `path` with `args` and no stdin — the common case.
+Run `path` with `args` and no stdin - the common case.
 
 ## `fs`
 
-fs — small directory helpers over the `Dir` capability. Each function's authority is exactly the `Dir` the caller passes: `collect_files`/`parent_dir` need only read, `ensure_dir` needs write. Nothing here widens a capability — the confinement of the `Dir` you hand in is preserved.
+fs - small directory helpers over the `Dir` capability. Each function's authority is exactly the `Dir` the caller passes: `collect_files`/`parent_dir` need only read, `ensure_dir` needs write. Nothing here widens a capability - the confinement of the `Dir` you hand in is preserved.
 
 #### `fn ensure_dir(root: Dir, path: String)`
 
@@ -1261,7 +1261,7 @@ Return the argument unchanged.
 
 #### `fn compose(f: fn(b) -> c, g: fn(a) -> b) -> fn(a) -> c`
 
-`compose(f, g)` is the function `x -> f(g(x))` — apply `g`, then `f`.
+`compose(f, g)` is the function `x -> f(g(x))` - apply `g`, then `f`.
 
 #### `fn flip(f: fn(a, b) -> c) -> fn(b, a) -> c`
 
@@ -1269,7 +1269,7 @@ Return the argument unchanged.
 
 #### `fn on_key(op: fn(b, b) -> c, key: fn(a) -> b) -> fn(a, a) -> c`
 
-`on_key(op, key)` is the function `(x, y) -> op(key(x), key(y))` — run a two-argument `op` on the projections of two values. Pairs with the comparator-taking list functions: `list.sort_by(people, func.on_key(fn(a, b): a < b, person_age))` sorts by age. (Named `on_key` because bare `on` is a keyword.)
+`on_key(op, key)` is the function `(x, y) -> op(key(x), key(y))` - run a two-argument `op` on the projections of two values. Pairs with the comparator-taking list functions: `list.sort_by(people, func.on_key(fn(a, b): a < b, person_age))` sorts by age. (Named `on_key` because bare `on` is a keyword.)
 
 #### `fn constant(x: a) -> fn(b) -> a`
 
@@ -1277,15 +1277,15 @@ A function that ignores its argument and always returns `x`.
 
 #### `fn first(p: (a, b)) -> a`
 
-The first / second component of a pair — handy for the tuples `iter.zip` and `iter.enumerate` produce, without writing a `match` each time.
+The first / second component of a pair - handy for the tuples `iter.zip` and `iter.enumerate` produce, without writing a `match` each time.
 
 #### `fn second(p: (a, b)) -> b`
 
 ## `future`
 
-std/future — cooperative single-threaded futures via CPS over closures.
+std/future - cooperative single-threaded futures via CPS over closures.
 
-A `Future(a)` is a thunk that, when polled, either completes (`Done`) or hands back the rest of the work (`More`). It is a standalone building block for racing and joining independent computations (`select`, `join_all`) — NOT what the `async`/`await` surface lowers onto (that targets `std/task`, which points here for `select`). A future's live state is the captured values of its continuation closure — owned values, never internal references, so unlike Rust there is nothing self-referential and no `Pin`. Pure structure (closures + sum types), so it runs byte-identically on both backends.
+A `Future(a)` is a thunk that, when polled, either completes (`Done`) or hands back the rest of the work (`More`). It is a standalone building block for racing and joining independent computations (`select`, `join_all`) - NOT what the `async`/`await` surface lowers onto (that targets `std/task`, which points here for `select`). A future's live state is the captured values of its continuation closure - owned values, never internal references, so unlike Rust there is nothing self-referential and no `Pin`. Pure structure (closures + sum types), so it runs byte-identically on both backends.
 
 `More` is the cooperative yield point: an executor drives a future by polling it one step at a time, so several futures can interleave at their `pending` points.
 
@@ -1317,11 +1317,11 @@ An already-complete future.
 
 #### `fn pending(x: a) -> Future(a)`
 
-Completes with `x`, but yields control once first — a cooperative scheduling point an executor can interleave other tasks across.
+Completes with `x`, but yields control once first - a cooperative scheduling point an executor can interleave other tasks across.
 
 #### `fn and_then(f: Future(a), k: fn(a) -> Future(b)) -> Future(b)`
 
-Sequence: run `f` to completion, then continue with `k` applied to its result. The CPS analogue of `let y = await f; k(y)` — continuation-passing over futures.
+Sequence: run `f` to completion, then continue with `k` applied to its result. The CPS analogue of `let y = await f; k(y)` - continuation-passing over futures.
 
 #### `fn map(f: Future(a), g: fn(a) -> b) -> Future(b)`
 
@@ -1337,7 +1337,7 @@ Build the future `thunk()` lazily: nothing runs until this future is polled. The
 
 #### `fn ready_unit() -> Future(Nil)`
 
-An already-complete `Future(Nil)` — the lowering target for an async body that falls off its end.
+An already-complete `Future(Nil)` - the lowering target for an async body that falls off its end.
 
 #### `fn yield_now() -> Future(Nil)`
 
@@ -1349,11 +1349,11 @@ Drive a single future to completion and return its value. Recursive on `More` so
 
 #### `fn join_all(tasks: List(Future(a))) -> List(a)`
 
-Drive every task in `tasks` concurrently to completion, returning their results in the original order. The schedule is a deterministic round-robin — one poll step per task per round — so it is single-threaded and fixed-order, and both backends produce byte-identical output. Tasks interleave at their `pending`/ `await` points. This is the structured-concurrency primitive (`scope`/`join`): hand it the task list and it fans them out, joining all before it returns.
+Drive every task in `tasks` concurrently to completion, returning their results in the original order. The schedule is a deterministic round-robin - one poll step per task per round - so it is single-threaded and fixed-order, and both backends produce byte-identical output. Tasks interleave at their `pending`/ `await` points. This is the structured-concurrency primitive (`scope`/`join`): hand it the task list and it fans them out, joining all before it returns.
 
 #### `fn select(tasks: List(Future(a))) -> (Int, a)`
 
-Race `tasks`: drive them concurrently until the FIRST one finishes, and return its index and value; the losers are simply dropped (no further polling — and because futures are pure and lazy, dropping is cancellation, no cleanup hook needed). On a tie within a round the lowest index wins, so the result is deterministic and both backends agree. This is the `select` of structured concurrency (e.g. race a task against `sleep` for a timeout).
+Race `tasks`: drive them concurrently until the FIRST one finishes, and return its index and value; the losers are simply dropped (no further polling - and because futures are pure and lazy, dropping is cancellation, no cleanup hook needed). On a tie within a round the lowest index wins, so the result is deterministic and both backends agree. This is the `select` of structured concurrency (e.g. race a task against `sleep` for a timeout).
 
 ## `http`
 
@@ -1467,7 +1467,7 @@ Look up a header by its (already-lowercased) name. Shared with `server`.
 
 #### `fn has_crlf(s: String) -> Bool`
 
-Whether `s` contains a CR or LF — the response/request-splitting bytes.
+Whether `s` contains a CR or LF - the response/request-splitting bytes.
 
 #### `fn check_field(what: String, value: String)`
 
@@ -1479,7 +1479,7 @@ Trap unless `name` is a valid header-name token (rejects `:`, space, and CR/LF).
 
 #### `fn check_header(name: String, value: String)`
 
-Validate one `(name, value)` header pair — the name is a token, the value has no forbidden controls. Shared by the client request builder and server renderer.
+Validate one `(name, value)` header pair - the name is a token, the value has no forbidden controls. Shared by the client request builder and server renderer.
 
 #### `fn check_request_field(what: String, value: String)`
 
@@ -1487,7 +1487,7 @@ Validate one `(name, value)` header pair — the name is a token, the value has 
 
 #### `fn is_framing_header(name: String) -> Bool`
 
-(BUG-358 / BUG-393) Whether `name` is a message-FRAMING header — Content-Length, Transfer-Encoding, or Connection. The renderer owns framing (it appends its own Content-Length / Connection), so a caller/handler-supplied framing header must be dropped rather than emitted alongside ours: two conflicting framing headers are a request/response-smuggling primitive.
+(BUG-358 / BUG-393) Whether `name` is a message-FRAMING header - Content-Length, Transfer-Encoding, or Connection. The renderer owns framing (it appends its own Content-Length / Connection), so a caller/handler-supplied framing header must be dropped rather than emitted alongside ours: two conflicting framing headers are a request/response-smuggling primitive.
 
 #### `fn parse_response(raw: String) -> Response`
 
@@ -1531,9 +1531,9 @@ Strict response parsing for public client paths. In particular, malformed `Trans
 
 ## `iter`
 
-std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. `gen fn`/`yield` lower to this representation; `from_gen` is the low-level desugaring target for compiler-generated iterators.
+std/iter - lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. `gen fn`/`yield` lower to this representation; `from_gen` is the low-level desugaring target for compiler-generated iterators.
 
-Adapters and consumers are METHODS on `Iter` (`it.map(f).take(3)`), so pipelines read left-to-right. The module level keeps only what has no receiver — the constructors (`iter.range`, `iter.from_list`, ...) — plus `iter.collect` (whose polymorphic return type dispatches on the EXPECTED type; keeping it a free function also avoids a measured mono-pass blowup) and the pull primitive `iter.next` (also a method; the free form drives the module's own generic internals).
+Adapters and consumers are METHODS on `Iter` (`it.map(f).take(3)`), so pipelines read left-to-right. The module level keeps only what has no receiver - the constructors (`iter.range`, `iter.from_list`, ...) - plus `iter.collect` (whose polymorphic return type dispatches on the EXPECTED type; keeping it a free function also avoids a measured mono-pass blowup) and the pull primitive `iter.next` (also a method; the free form drives the module's own generic internals).
 
 #### `type Step`
 
@@ -1550,7 +1550,7 @@ An iterator is a thunk producing its next Step. Pull it with `next`.
 
 #### `trait FromIterator(e)`
 
-A type an iterator can be collected INTO. `from_iter` mentions the implementing type only in its result, so a call dispatches on the EXPECTED type — an ascribed binding, a typed parameter, a for-loop — not on any argument.
+A type an iterator can be collected INTO. `from_iter` mentions the implementing type only in its result, so a call dispatches on the EXPECTED type - an ascribed binding, a typed parameter, a for-loop - not on any argument.
 
 - `fn from_iter(it: Iter(e)) -> Self`
 
@@ -1568,7 +1568,7 @@ One element, then done.
 
 #### `fn unfold(seed: s, f: fn(s) -> Option((a, s))) -> Iter(a)`
 
-Build an iterator from a `seed` by repeatedly applying `f`, which returns `Some((value, next_seed))` to yield a value or `None` to stop. The general generator primitive — count/fibonacci/range are all unfolds.
+Build an iterator from a `seed` by repeatedly applying `f`, which returns `Some((value, next_seed))` to yield a value or `None` to stop. The general generator primitive - count/fibonacci/range are all unfolds.
 
 #### `fn count_from(n: Int) -> Iter(Int)`
 
@@ -1592,7 +1592,7 @@ Build an iterator from an index function: `f(0)`, `f(1)`, ... each `Some(x)` is 
 
 #### `fn collect(it: Iter(a)) -> c where c: FromIterator(a)`
 
-Collect into any FromIterator type, chosen by the call site's expected type (drives the iterator to exhaustion — don't call on an unbounded one):     let xs: List(Int) = iter.collect(it)     let joined: String = iter.collect(pieces)     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Eq` Free-function-only ON PURPOSE: the polymorphic return type in an impl block causes a measured mono-pass performance explosion.
+Collect into any FromIterator type, chosen by the call site's expected type (drives the iterator to exhaustion - don't call on an unbounded one):     let xs: List(Int) = iter.collect(it)     let joined: String = iter.collect(pieces)     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Eq` Free-function-only ON PURPOSE: the polymorphic return type in an impl block causes a measured mono-pass performance explosion.
 
 #### `Iter.next() -> Step(a)`
 
@@ -1608,7 +1608,7 @@ Keep only the elements for which `keep` holds.
 
 #### `Iter.filter_map(f: fn(a) -> Option(b)) -> Iter(b)`
 
-Apply `f` to each element, keeping every `Some(y)` and dropping every `None` — a `map` and `filter` fused into one pass (Rust's `Iterator::filter_map`).
+Apply `f` to each element, keeping every `Some(y)` and dropping every `None` - a `map` and `filter` fused into one pass (Rust's `Iterator::filter_map`).
 
 #### `Iter.take(k: Int) -> Iter(a)`
 
@@ -1620,7 +1620,7 @@ Elements up to (not including) the first one failing `pred`.
 
 #### `Iter.drop(k: Int) -> Iter(a)`
 
-Skip the first `k` elements. Lazy like every adapter: nothing is pulled from the source at construction — the skip runs inside the returned iterator's thunk on first pull, and iteratively, so a large `k` cannot exhaust the stack.
+Skip the first `k` elements. Lazy like every adapter: nothing is pulled from the source at construction - the skip runs inside the returned iterator's thunk on first pull, and iteratively, so a large `k` cannot exhaust the stack.
 
 #### `Iter.drop_while(pred: fn(a) -> Bool) -> Iter(a)`
 
@@ -1644,7 +1644,7 @@ Map each element to an iterator and concatenate the results.
 
 #### `Iter.flatten() -> Iter(b)`
 
-Concatenate an iterator OF iterators into one flat iterator, lazily and in order — `flatten` is `flat_map` with the identity function.
+Concatenate an iterator OF iterators into one flat iterator, lazily and in order - `flatten` is `flat_map` with the identity function.
 
 #### `Iter.scan(state: s, f: fn(s, a) -> (s, b)) -> Iter(b)`
 
@@ -1652,7 +1652,7 @@ A lazy STATEFUL map: thread `state` through `f`, which returns the new state and
 
 #### `Iter.for_each(f: fn(a) -> Nil)`
 
-Call `f` on every element for its effect (drives to exhaustion). The right consumer for a generator when you don't need to early-exit — no list is built.
+Call `f` on every element for its effect (drives to exhaustion). The right consumer for a generator when you don't need to early-exit - no list is built.
 
 #### `Iter.fold(init: b, f: fn(b, a) -> b) -> b`
 
@@ -1676,15 +1676,15 @@ The first element satisfying `pred`, or None (stops at the first match, so it is
 
 #### `Iter.any(pred: fn(a) -> Bool) -> Bool`
 
-Whether at least one element satisfies `pred` — stops (short-circuits) at the first match, so it terminates on an unbounded iterator once one is found. `false` for the empty iterator.
+Whether at least one element satisfies `pred` - stops (short-circuits) at the first match, so it terminates on an unbounded iterator once one is found. `false` for the empty iterator.
 
 #### `Iter.all(pred: fn(a) -> Bool) -> Bool`
 
-Whether every element satisfies `pred` — stops at the first failure. `true` for the empty iterator (vacuously). Don't call on an unbounded iterator whose elements all satisfy `pred`: it never stops.
+Whether every element satisfies `pred` - stops at the first failure. `true` for the empty iterator (vacuously). Don't call on an unbounded iterator whose elements all satisfy `pred`: it never stops.
 
 #### `Iter.last() -> Option(a)`
 
-The last element (drives the iterator to exhaustion), or None if it is empty. Don't call on an unbounded iterator — it never stops.
+The last element (drives the iterator to exhaustion), or None if it is empty. Don't call on an unbounded iterator - it never stops.
 
 #### `Iter.position(pred: fn(a) -> Bool) -> Option(Int)`
 
@@ -1720,7 +1720,7 @@ A conditional impl: collecting into a `Set` needs `Eq` to deduplicate, so the `w
 
 ## `json`
 
-A JSON library — the witchy take on Go's encoding/json. This slice is the value type and the encoder (serialization); the decoder (parsing) follows. Pure and capability-free, so — unlike networking — it compiles to WASM like the rest of the data std.
+A JSON library - the witchy take on Go's encoding/json. This slice is the value type and the encoder (serialization); the decoder (parsing) follows. Pure and capability-free, so - unlike networking - it compiles to WASM like the rest of the data std.
 
 #### `type Json`
 
@@ -1765,7 +1765,7 @@ Build a JSON object whose keys are sorted (matching a serialized BTreeMap), e.g.
 
 #### `fn from_option(o: Option(a), each: fn(a) -> Json) -> Json`
 
-Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as `JsonNull`. Keeps a derived `to_json`'s Option field a single-line call. (The param is `each`, not `encode`, so it doesn't shadow `json.encode`.)
+Encode an `Option` as payload-or-`null` - `Some(x)` through `each`, `None` as `JsonNull`. Keeps a derived `to_json`'s Option field a single-line call. (The param is `each`, not `encode`, so it doesn't shadow `json.encode`.)
 
 #### `fn from_value(x: a) -> Json where a: Reflect`
 
@@ -1791,7 +1791,7 @@ Whether a JSON object has `key` (false for non-objects).
 
 #### `Json.merge(other: Json) -> Json`
 
-A shallow merge of two JSON objects: every key of `other` overrides the same key in `self`, and `self`'s other keys are kept. If either value is not an object, `other` wins (so it works as "patch `self` with `other`"). Override is top-level only — nested objects are replaced, not deep-merged.
+A shallow merge of two JSON objects: every key of `other` overrides the same key in `self`, and `self`'s other keys are kept. If either value is not an object, `other` wins (so it works as "patch `self` with `other`"). Override is top-level only - nested objects are replaced, not deep-merged.
 
 #### `Json.index(i: Int) -> Option(Json)`
 
@@ -1815,7 +1815,7 @@ The element at index `i` of a JSON array.
 
 #### `Json.as_object() -> Option(List((String, Json)))`
 
-`self` as its key/value pairs, when it is an object — for iterating an object whose keys aren't known ahead of time.
+`self` as its key/value pairs, when it is an object - for iterating an object whose keys aren't known ahead of time.
 
 #### `Json.require(key: String) -> Result(Json, DeserializeError)`
 
@@ -1837,7 +1837,7 @@ A JSON number with no fraction/exponent decodes to `JsonInt`, but it is still a 
 
 #### `Json.get_string(key: String) -> Option(String)`
 
-`get` composed with each `as_*` — the common case of reading a typed field out of an object without spelling the two steps every time.
+`get` composed with each `as_*` - the common case of reading a typed field out of an object without spelling the two steps every time.
 
 #### `Json.get_int(key: String) -> Option(Int)`
 
@@ -1847,7 +1847,7 @@ A JSON number with no fraction/exponent decodes to `JsonInt`, but it is still a 
 
 The string array at `key` as a `List(String)`, dropping any non-string element; `[]` when the key is absent or not an array. Collapses the very common "decode an object's array-of-strings field" pattern into one call.
 
-LENIENT BY DESIGN (RFC-0044): a missing key, a non-array value, and a non-string element all collapse to the same empty/filtered result — ergonomic for display, but it cannot tell "absent" from "malformed". At a trust boundary (package, registry, or security code) where a wrong shape must be an ERROR, use the strict path instead: `get` then `array_of` (`Result`), coercing each element with `as_string`.
+LENIENT BY DESIGN (RFC-0044): a missing key, a non-array value, and a non-string element all collapse to the same empty/filtered result - ergonomic for display, but it cannot tell "absent" from "malformed". At a trust boundary (package, registry, or security code) where a wrong shape must be an ERROR, use the strict path instead: `get` then `array_of` (`Result`), coercing each element with `as_string`.
 
 #### `Json.strings() -> List(String)`
 
@@ -1901,7 +1901,7 @@ Convert any reflectable value to `Json`, which also gives `Json.from(x)` and `x.
 
 ## `jwt`
 
-jwt — verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy over `crypto` (RS256), `encoding` (base64url), and `json`. Verification is computation, so this module has no host capability of its own — fetching the signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
+jwt - verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy over `crypto` (RS256), `encoding` (base64url), and `json`. Verification is computation, so this module has no host capability of its own - fetching the signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
 
 A compact JWT is `header.payload.signature`, each base64url. The signature covers the ASCII bytes of `header.payload`; for RS256 it is verified against the issuer's RSA public key (DER PKCS#1, hex). On success the decoded payload `claims` are returned for the caller to inspect (`sub`, `iss`, provider-specific owner fields).
 
@@ -1955,7 +1955,7 @@ Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 R
 
 #### `fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError)`
 
-The generic OIDC relying-party check: verify the RS256 signature AND that the token was minted by the expected `issuer` for the expected `audience`, and is valid now (`exp`/`nbf`). Returns the identity claims — `sub` plus provider-specific fields like GitHub's `repository` or Google's `email` — for the caller to authorize. This is the base check once it holds the issuer's JWKS key (`rsa_key_from_jwk`). Login and trusted-publishing flows should use `verify_oidc_fresh`, which adds their explicit `iat` and maximum-lifetime policy. The issuer check is what binds a token to a TRUSTED provider: without it, anyone who can mint a JWT for the right audience would be admitted.
+The generic OIDC relying-party check: verify the RS256 signature AND that the token was minted by the expected `issuer` for the expected `audience`, and is valid now (`exp`/`nbf`). Returns the identity claims - `sub` plus provider-specific fields like GitHub's `repository` or Google's `email` - for the caller to authorize. This is the base check once it holds the issuer's JWKS key (`rsa_key_from_jwk`). Login and trusted-publishing flows should use `verify_oidc_fresh`, which adds their explicit `iat` and maximum-lifetime policy. The issuer check is what binds a token to a TRUSTED provider: without it, anyone who can mint a JWT for the right audience would be admitted.
 
 #### `fn verify_oidc_fresh(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError)`
 
@@ -1965,15 +1965,15 @@ The stricter relying-party entrypoint for short-lived identity tokens. RFC 7519 
 
 #### `fn header(token: String) -> Result(Json, JwtError)`
 
-The decoded JOSE header of a compact JWT (its first segment), or an error — so a verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
+The decoded JOSE header of a compact JWT (its first segment), or an error - so a verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
 
 #### `fn claims_unverified(token: String) -> Result(Json, JwtError)`
 
-The payload claims of a compact JWT WITHOUT verifying its signature — for reading the routing fields (`iss`, and `kid` via `header`) needed to SELECT the verification key before `verify_oidc`. DANGER: never authorize on these claims; verify the signature first and read the claims `verify_oidc` returns.
+The payload claims of a compact JWT WITHOUT verifying its signature - for reading the routing fields (`iss`, and `kid` via `header`) needed to SELECT the verification key before `verify_oidc`. DANGER: never authorize on these claims; verify the signature first and read the claims `verify_oidc` returns.
 
 #### `fn rsa_key_from_jwk(n: String, e: String) -> Result(String, JwtError)`
 
-Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) from a JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit is set (DER integers are signed two's-complement, RSA values are unsigned magnitudes).
+Build the DER PKCS#1 `RSAPublicKey` (as hex - the shape `verify_rs256` wants) from a JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit is set (DER integers are signed two's-complement, RSA values are unsigned magnitudes).
 
 #### `fn require_kid(token: String) -> Result(String, JwtError)`
 
@@ -2001,7 +2001,7 @@ Select the RSA public key for `kid` from a JWKS document (`{"keys":[{"kty":"RSA"
 
 ## `list`
 
-The witchy standard list library. Every function here is pure: the module declares no capability parameters, so importing it grants no authority — it can only transform data. This is the capability model in miniature: a library you didn't hand a Console/Dir/Net to literally cannot reach them.
+The witchy standard list library. Every function here is pure: the module declares no capability parameters, so importing it grants no authority - it can only transform data. This is the capability model in miniature: a library you didn't hand a Console/Dir/Net to literally cannot reach them.
 
 #### `fn length(xs: List(a)) -> Int`
 
@@ -2025,7 +2025,7 @@ Store `value` at `index`. An out-of-range (or negative) index is a runtime error
 
 #### `fn update_at(var xs: List(a), index: Int, f: fn(a) -> a)`
 
-A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
+A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` - a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
 #### `fn pop(var xs: unique List(a)) -> Option(a)`
 
@@ -2073,7 +2073,7 @@ Reverse in place.
 
 #### `List.sort_by(less: fn(a, a) -> Bool)`
 
-Sort using a caller-supplied "is-less-than" comparator — a stable merge sort (O(n log n)), so equal elements keep their original order. Generic over the element type.
+Sort using a caller-supplied "is-less-than" comparator - a stable merge sort (O(n log n)), so equal elements keep their original order. Generic over the element type.
 
 #### `List.set_at(index: Int, value: a)`
 
@@ -2081,7 +2081,7 @@ Store `value` at `index`. An out-of-range (or negative) index is a runtime error
 
 #### `List.update_at(index: Int, f: fn(a) -> a)`
 
-A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
+A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` - a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
 #### `List.pop() -> Option(a)`
 
@@ -2113,7 +2113,7 @@ The elements in the half-open index range [start, end), clamped to bounds. `slic
 
 #### `List.get(index: Int) -> Option(a)`
 
-The element at `index` as `Some`, or `None` when `index` is out of range — a total, bounds-checked alternative to the `at` builtin.
+The element at `index` as `Some`, or `None` when `index` is out of range - a total, bounds-checked alternative to the `at` builtin.
 
 #### `List.head() -> Option(a)`
 
@@ -2153,7 +2153,7 @@ Whether every element satisfies `pred` (true for the empty list).
 
 #### `List.position(pred: fn(a) -> Bool) -> Option(Int)`
 
-The index of the first element satisfying `pred` as `Some`, or `None` if none do — the by-predicate search (`index_of` is the by-value search). One name per axis, both `Option`, no sentinel (RFC-0044/0049).
+The index of the first element satisfying `pred` as `Some`, or `None` if none do - the by-predicate search (`index_of` is the by-value search). One name per axis, both `Option`, no sentinel (RFC-0044/0049).
 
 #### `List.count_where(pred: fn(a) -> Bool) -> Int`
 
@@ -2165,7 +2165,7 @@ Reduce the list to a single value, left to right.
 
 #### `List.reduce(f: fn(a, a) -> a) -> Option(a)`
 
-Combine the elements left to right using the first as the seed, as `Some`; `None` for the empty list. (A `fold` that needs no initial value — handy for max/min/sum over a non-empty list with a plain binary op.)
+Combine the elements left to right using the first as the seed, as `Some`; `None` for the empty list. (A `fold` that needs no initial value - handy for max/min/sum over a non-empty list with a plain binary op.)
 
 #### `List.scan(init: b, f: fn(b, a) -> b) -> List(b)`
 
@@ -2177,7 +2177,7 @@ The sum of a list of integers (0 for the empty list).
 
 #### `List.sum_by(f: fn(a) -> Int) -> Int`
 
-The sum of `f` applied to each element (0 for the empty list) — e.g. a total over a record field: `cart.sum_by(fn(it): it.price * it.qty)`.
+The sum of `f` applied to each element (0 for the empty list) - e.g. a total over a record field: `cart.sum_by(fn(it): it.price * it.qty)`.
 
 #### `List.product() -> Int`
 
@@ -2241,7 +2241,7 @@ Combine two lists element-wise with `f`, stopping at the shorter one.
 
 #### `List.unzip() -> (List(x), List(y))`
 
-Split a list of pairs into a pair of lists — the inverse of `zip`.
+Split a list of pairs into a pair of lists - the inverse of `zip`.
 
 #### `List.enumerate() -> List((Int, a))`
 
@@ -2253,11 +2253,11 @@ Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
 
 #### `List.partition(pred: fn(a) -> Bool) -> (List(a), List(a))`
 
-Split the list into (matching, non-matching) by `pred`, each preserving the original order. A single pass — the dual of running `filter` twice.
+Split the list into (matching, non-matching) by `pred`, each preserving the original order. A single pass - the dual of running `filter` twice.
 
 #### `List.max_by(less: fn(a, a) -> Bool) -> Option(a)`
 
-The maximum element under a caller-supplied "is-less-than" comparator, as `Some` (the first of equal maxima), or `None` for the empty list. Generic, so it works for any type — e.g. max by a record field.
+The maximum element under a caller-supplied "is-less-than" comparator, as `Some` (the first of equal maxima), or `None` for the empty list. Generic, so it works for any type - e.g. max by a record field.
 
 #### `List.min_by(less: fn(a, a) -> Bool) -> Option(a)`
 
@@ -2265,7 +2265,7 @@ The minimum element under `less`, as `Some`; `None` for the empty list.
 
 #### `List.contains(target: a) -> Bool`
 
-Whether `target` appears in the list, by the element type's `Eq` impl. The `where a: Eq` bound monomorphizes the equality per element type, so the comparison is content-correct on both backends — including user record element types, which the compiled backend cannot compare through an unbounded generic `==` (RFC-0046).
+Whether `target` appears in the list, by the element type's `Eq` impl. The `where a: Eq` bound monomorphizes the equality per element type, so the comparison is content-correct on both backends - including user record element types, which the compiled backend cannot compare through an unbounded generic `==` (RFC-0046).
 
 #### `List.index_of(target: a) -> Option(Int)`
 
@@ -2285,15 +2285,15 @@ The list with duplicates removed, keeping the first occurrence of each element (
 
 #### `List.sort()`
 
-Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
+Sort any list whose elements are `Ord` ascending - a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
 
 #### `List.min() -> Option(a)`
 
-The smallest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type (like `sort`), dispatching through the total order — so `xs.min()` works for `Int`, `String`, `Duration`, or a derived-`Ord` record. For a merely-partial type or a custom criterion, use `min_by`.
+The smallest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type (like `sort`), dispatching through the total order - so `xs.min()` works for `Int`, `String`, `Duration`, or a derived-`Ord` record. For a merely-partial type or a custom criterion, use `min_by`.
 
 #### `List.max() -> Option(a)`
 
-The largest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type — see `min`.
+The largest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type - see `min`.
 
 #### `List.join(sep: String) -> String`
 
@@ -2361,7 +2361,7 @@ Whether `n` is odd.
 
 #### `fn factorial(n: Int) -> Int`
 
-`n!` — the product 1*2*...*n (1 for n in {0, 1}). Watch the 64-bit range: factorial is exact through 20!; 21! overflows and wraps. `n < 0` has no factorial, so it is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 1.
+`n!` - the product 1*2*...*n (1 for n in {0, 1}). Watch the 64-bit range: factorial is exact through 20!; 21! overflows and wraps. `n < 0` has no factorial, so it is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 1.
 
 #### `fn is_prime(n: Int) -> Bool`
 
@@ -2397,11 +2397,11 @@ Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a leadin
 
 #### `fn format_float(x: Float, decimals: Int) -> String`
 
-Format `x` with `decimals` digits after the decimal point, rounded half-up: format_float(3.14159, 2) = "3.14", format_float(-0.5, 1) = "-0.5", format_float(2.0, 0) = "2". Built from float arithmetic, so unlike the `to_string` builtin it works on the compiled WASM backend too (which has no float formatting). Best for a fixed number of places; very large magnitudes lose precision to the Float itself. `decimals` is capped at 18 — the most places the `Int` scale `pow(10, decimals)` can hold without overflowing.
+Format `x` with `decimals` digits after the decimal point, rounded half-up: format_float(3.14159, 2) = "3.14", format_float(-0.5, 1) = "-0.5", format_float(2.0, 0) = "2". Built from float arithmetic, so unlike the `to_string` builtin it works on the compiled WASM backend too (which has no float formatting). Best for a fixed number of places; very large magnitudes lose precision to the Float itself. `decimals` is capped at 18 - the most places the `Int` scale `pow(10, decimals)` can hold without overflowing.
 
 ## `meta`
 
-Compile-time type introspection — the `typeInfo` half of witchy's comptime reflection (Zig's `@typeInfo`). A `comptime:` block can read the structure of every type in its module as ordinary data and generate code from it (e.g. a `to_json` specialized to a record's fields), with zero runtime cost. The compiler injects the type list as the `module_types` value; these are the shapes it hands you.
+Compile-time type introspection - the `typeInfo` half of witchy's comptime reflection (Zig's `@typeInfo`). A `comptime:` block can read the structure of every type in its module as ordinary data and generate code from it (e.g. a `to_json` specialized to a record's fields), with zero runtime cost. The compiler injects the type list as the `module_types` value; these are the shapes it hands you.
 
 This is COMPILE-TIME structure (field names + declared type expressions), distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
 
@@ -2735,7 +2735,7 @@ Render a structured type back to source text only when generated source needs to
 
 ## `oauth`
 
-oauth — the OAuth 2.0 Authorization Code flow (RFC 6749 §4.1), the basis of "Log in with GitHub / Google". Pure witchy over `std/http` (HTTPS) + `url`. A relying party:   1. redirects the user to `authorize_url(...)`;   2. receives a `code` (and the `state` it sent) at its registered callback;   3. exchanges the code for an access token with `exchange_code(...)`. Identity is then read from a provider endpoint (GitHub `/user`) or, for OIDC, the `id_token` (verify with `std/jwt`). `state` is an opaque anti-CSRF token the caller signs before the redirect and re-checks on the callback — bind it to the session.
+oauth - the OAuth 2.0 Authorization Code flow (RFC 6749 §4.1), the basis of "Log in with GitHub / Google". Pure witchy over `std/http` (HTTPS) + `url`. A relying party:   1. redirects the user to `authorize_url(...)`;   2. receives a `code` (and the `state` it sent) at its registered callback;   3. exchanges the code for an access token with `exchange_code(...)`. Identity is then read from a provider endpoint (GitHub `/user`) or, for OIDC, the `id_token` (verify with `std/jwt`). `state` is an opaque anti-CSRF token the caller signs before the redirect and re-checks on the callback - bind it to the session.
 
 #### `type OAuthError`
 
@@ -2760,25 +2760,25 @@ The provider authorization-endpoint URL to redirect the user to. After the user 
 
 #### `fn exchange_code(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError)`
 
-Exchange an authorization `code` for an access token at the provider's token endpoint — an HTTPS POST with a form-encoded body and `Accept: application/json`. Returns the `access_token`, or a reason. Needs a `Net` that reaches the token host over TLS; the `client_secret` should come from a `Secret`, never a literal.
+Exchange an authorization `code` for an access token at the provider's token endpoint - an HTTPS POST with a form-encoded body and `Accept: application/json`. Returns the `access_token`, or a reason. Needs a `Net` that reaches the token host over TLS; the `client_secret` should come from a `Secret`, never a literal.
 
 #### `fn exchange_code_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
 
 #### `fn exchange_code_id_token(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError)`
 
-Like `exchange_code`, but returns the OIDC `id_token` (a JWT carrying the user's identity) instead of the access token — for "Log in with Google" and other OIDC providers. Verify the returned token with `std/jwt` (`kid` → `rsa_key_for_kid` over the provider's JWKS → `verify_oidc_fresh` with that provider's lifetime policy).
+Like `exchange_code`, but returns the OIDC `id_token` (a JWT carrying the user's identity) instead of the access token - for "Log in with Google" and other OIDC providers. Verify the returned token with `std/jwt` (`kid` → `rsa_key_for_kid` over the provider's JWKS → `verify_oidc_fresh` with that provider's lifetime policy).
 
 #### `fn exchange_code_id_token_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
 
 #### `fn token_response(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, OAuthError)`
 
-The raw token-endpoint response as JSON (the HTTPS POST exchanging the code) — the level beneath `exchange_code`; read `access_token` / `id_token` / `refresh_token` from it.
+The raw token-endpoint response as JSON (the HTTPS POST exchanging the code) - the level beneath `exchange_code`; read `access_token` / `id_token` / `refresh_token` from it.
 
 #### `fn token_response_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, String)`
 
 #### `fn bearer_get_json(fetch: Fetch, url: String, token: String) -> Result(Json, OAuthError)`
 
-GET `url` with a `Bearer` access token and parse the JSON body — the "read the signed-in user" step after `exchange_code` (GitHub `/user`, an OIDC userinfo endpoint). Sends a `User-Agent` (GitHub rejects requests without one). Returns the parsed JSON, or a reason. The caller reads identity fields it trusts (`login`, `id`, `email`).
+GET `url` with a `Bearer` access token and parse the JSON body - the "read the signed-in user" step after `exchange_code` (GitHub `/user`, an OIDC userinfo endpoint). Sends a `User-Agent` (GitHub rejects requests without one). Returns the parsed JSON, or a reason. The caller reads identity fields it trusts (`login`, `id`, `email`).
 
 #### `fn bearer_get_json_string(fetch: Fetch, url: String, token: String) -> Result(Json, String)`
 
@@ -2805,7 +2805,7 @@ The witchy standard `Option` type and helpers. `Option`, `Some`, and `None` are 
 
 #### `fn ok_or(o: Option(a), err: e) -> Result(a, e)`
 
-Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes `Err(err)` — the inverse of `result.ok`.
+Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes `Err(err)` - the inverse of `result.ok`.
 
 #### `fn all(xs: List(Option(a))) -> Option(List(a))`
 
@@ -2837,7 +2837,7 @@ Transform the Some value, leaving None untouched.
 
 #### `Option.map_or(default: b, f: fn(a) -> b) -> b`
 
-Apply `f` to the Some value, or return `default` for None — `map` then `unwrap_or` in one step.
+Apply `f` to the Some value, or return `default` for None - `map` then `unwrap_or` in one step.
 
 #### `Option.and_then(f: fn(a) -> Option(b)) -> Option(b)`
 
@@ -2849,7 +2849,7 @@ Keep the Some value only if it satisfies `keep`; otherwise None.
 
 #### `Option.and(other: Option(b)) -> Option(b)`
 
-`other` if this option is Some, otherwise None — the value-forgetting conjunction that keeps the second option only when the first is present. The lazy, value-threading counterpart is `and_then`.
+`other` if this option is Some, otherwise None - the value-forgetting conjunction that keeps the second option only when the first is present. The lazy, value-threading counterpart is `and_then`.
 
 #### `Option.or(alt: Option(a)) -> Option(a)`
 
@@ -2865,7 +2865,7 @@ The option if it is Some, otherwise the option produced by `f` (lazy).
 
 #### `Option.ok_or(err: e) -> Result(a, e)`
 
-Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes `Err(err)` — the inverse of `result.ok`.
+Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes `Err(err)` - the inverse of `result.ok`.
 
 #### `Option.ok_or_else(f: fn() -> e) -> Result(a, e)`
 
@@ -2885,9 +2885,9 @@ Collapse one layer of nesting: `Some(Some(v))` becomes `Some(v)`, and both `Some
 
 ## `path`
 
-path — pure manipulation of '/'-separated path strings.
+path - pure manipulation of '/'-separated path strings.
 
-This is string surgery only — it never touches the filesystem (that is the `Dir` capability, wrapped by `std/fs`). Splitting, joining, the base/dir/ext components, and a `normalize` that collapses `.` and `..`.
+This is string surgery only - it never touches the filesystem (that is the `Dir` capability, wrapped by `std/fs`). Splitting, joining, the base/dir/ext components, and a `normalize` that collapses `.` and `..`.
 
 #### `fn is_abs(p: String) -> Bool`
 
@@ -2907,7 +2907,7 @@ The parent before the final component as `Some`: "a/b/c" -> Some("a/b"), "/x" ->
 
 #### `fn ext(p: String) -> Option(String)`
 
-The extension after the final `.` in the base name, WITHOUT the leading dot, as `Some` ("a/b.tar.gz" -> Some("gz")) — matching Rust's `Path::extension` both in dropping the dot AND in the `Option` shape (RFC-0044 rule 1). A base with no extension, a dotfile base (".bashrc"), or the parent marker ("..") is `None`. A trailing dot on an ordinary filename is an empty extension.
+The extension after the final `.` in the base name, WITHOUT the leading dot, as `Some` ("a/b.tar.gz" -> Some("gz")) - matching Rust's `Path::extension` both in dropping the dot AND in the `Option` shape (RFC-0044 rule 1). A base with no extension, a dotfile base (".bashrc"), or the parent marker ("..") is `None`. A trailing dot on an ordinary filename is an empty extension.
 
 #### `fn stem(p: String) -> String`
 
@@ -2919,7 +2919,7 @@ Collapse `.` and `..` segments and redundant slashes. A relative path that backs
 
 ## `policy`
 
-policy — typed capability refinement policies (RFC-0011, RFC-0057). A policy is a pure value built by a type-associated constructor on the capability it belongs to, then handed to that capability's refinement verb: `net.only(policy)` narrows a `Net`, `net.deny(policy)` subtracts it, `dir.only(policy)` confines a `Dir`. The constructors live under the capability's OWN type — `Net.tcp(…)`, `Dir.ext(…)` — so a reader finds a capability's whole refinement vocabulary (verbs and policy values) in one place, with no shared grab-bag reaching across capabilities:
+policy - typed capability refinement policies (RFC-0011, RFC-0057). A policy is a pure value built by a type-associated constructor on the capability it belongs to, then handed to that capability's refinement verb: `net.only(policy)` narrows a `Net`, `net.deny(policy)` subtracts it, `dir.only(policy)` confines a `Dir`. The constructors live under the capability's OWN type - `Net.tcp(…)`, `Dir.ext(…)` - so a reader finds a capability's whole refinement vocabulary (verbs and policy values) in one place, with no shared grab-bag reaching across capabilities:
 
     let db  = net.only(Net.tcp("10.0.0.5", 6379))     // one plaintext host     let lan = net.deny(Net.cidr_any("10.0.0.0/8"))    // hold everything EXCEPT this block     let log = dir.only(Dir.ext(".log"))               // only `.log` files
 
@@ -2957,7 +2957,7 @@ A sealed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/ope
 
 ## `prng`
 
-A small deterministic PRNG: the Park-Miller "minimal standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits in i64 (no overflow), so it is content-correct on both backends. State is threaded explicitly — the same seed always replays the same sequence, which is what you want for tests, sampling, and games. NOT for cryptography. Pure and capability-free.
+A small deterministic PRNG: the Park-Miller "minimal standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits in i64 (no overflow), so it is content-correct on both backends. State is threaded explicitly - the same seed always replays the same sequence, which is what you want for tests, sampling, and games. NOT for cryptography. Pure and capability-free.
 
 #### `sealed type Rng`
 
@@ -2969,7 +2969,7 @@ A generator from seed `s` (any Int is mapped into the valid range 1..modulus).
 
 #### `fn choice(xs: List(a), var r: Rng) -> Option(a)`
 
-A pseudo-randomly chosen element of `xs` (`None` if empty). The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths — plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`). Module-level with the list FIRST for historical callers: the method form is `r.choice(xs)`, and deleting this function would flip the qualified call's argument order to the alias's `prng.choice(r, xs)`, silently breaking existing `prng.choice(xs, r)` call sites.
+A pseudo-randomly chosen element of `xs` (`None` if empty). The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths - plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`). Module-level with the list FIRST for historical callers: the method form is `r.choice(xs)`, and deleting this function would flip the qualified call's argument order to the alias's `prng.choice(r, xs)`, silently breaking existing `prng.choice(xs, r)` call sites.
 
 #### `Rng.next() -> Int`
 
@@ -2977,7 +2977,7 @@ Advance the generator and return a pseudo-random Int in [1, 2^31-1). The incomin
 
 #### `Rng.next_below(bound: Int) -> Int`
 
-A pseudo-random Int in [0, bound). `bound` must be positive (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly naming the bad argument rather than dividing by zero. It must also be below the generator range `2^31-1` (`next`'s cardinality): the reducer is `n % bound`, so a `bound` at or above that range cannot produce every value in `[0, bound)` and would silently under-cover it — that impossible case fails loudly too. For a `bound` well below the range the modulo bias is negligible; for a strictly uniform bounded draw, use the `Rand` capability's byte-oriented helpers.
+A pseudo-random Int in [0, bound). `bound` must be positive (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly naming the bad argument rather than dividing by zero. It must also be below the generator range `2^31-1` (`next`'s cardinality): the reducer is `n % bound`, so a `bound` at or above that range cannot produce every value in `[0, bound)` and would silently under-cover it - that impossible case fails loudly too. For a `bound` well below the range the modulo bias is negligible; for a strictly uniform bounded draw, use the `Rand` capability's byte-oriented helpers.
 
 #### `Rng.next_bool() -> Bool`
 
@@ -2985,7 +2985,7 @@ A pseudo-random Bool (true ~half the time).
 
 #### `Rng.choice(xs: List(a)) -> Option(a)`
 
-A pseudo-randomly chosen element of `xs` (`None` if empty) — see the module-level `choice`.
+A pseudo-randomly chosen element of `xs` (`None` if empty) - see the module-level `choice`.
 
 ## `public_state`
 
@@ -3039,7 +3039,7 @@ PublicState is a checked boundary proof for data that may cross into static HTML
 
 ## `rand`
 
-The witchy randomness library. Every draw comes from the `Rand` capability's source: the OS CSPRNG host-side (`getrandom` on the compiled backend), or — when `WITCHY_RAND_SEED` is set — a shared deterministic sequence both backends agree on, so randomness-using programs stay parity-stable and reproducible for tests.
+The witchy randomness library. Every draw comes from the `Rand` capability's source: the OS CSPRNG host-side (`getrandom` on the compiled backend), or - when `WITCHY_RAND_SEED` is set - a shared deterministic sequence both backends agree on, so randomness-using programs stay parity-stable and reproducible for tests.
 
 #### `fn u64(rand: Rand) -> Int`
 
@@ -3055,11 +3055,11 @@ A fair coin.
 
 #### `fn hex(rand: Rand, nbytes: Int) -> String`
 
-`nbytes` random bytes rendered as lowercase hex (2 chars per byte) — the form a WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit words and truncates to the requested length.
+`nbytes` random bytes rendered as lowercase hex (2 chars per byte) - the form a WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit words and truncates to the requested length.
 
 ## `reflect`
 
-Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. `MNil` is the unit value and maps to JSON null. Scalars, `Bytes`, `Ordering`, and the built-in containers (`List`, `Option`, `Result`, `Set`, tuples through arity 8, `Dict`) are reflectable out of the box. Container reflection is an encoding/debug protocol, not a promise that `derive(Deserialize)` can rebuild every container shape: `Dict` reflects as a string-keyed object. A user `type` becomes reflectable when you add `derive(Reflect)` to it (which needs `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type derives it.
+Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. `MNil` is the unit value and maps to JSON null. Scalars, `Bytes`, `Ordering`, and the built-in containers (`List`, `Option`, `Result`, `Set`, tuples through arity 8, `Dict`) are reflectable out of the box. Container reflection is an encoding/debug protocol, not a promise that `derive(Deserialize)` can rebuild every container shape: `Dict` reflects as a string-keyed object. A user `type` becomes reflectable when you add `derive(Reflect)` to it (which needs `import reflect`), much like Zig's `@typeInfo` but opt-in per type - so `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type derives it.
 
 `reflect` is a trait method; `derive(Reflect)` generates `impl Reflect for T`, building the `Mirror` from the declared fields and variants. The scalar impls below are the leaves.
 
@@ -3116,7 +3116,7 @@ A `Set` reflects to the same `MList` shape as its insertion-order `to_list` view
 
 #### `fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect`
 
-A `Dict` reflects to an `MRecord` — the same string-keyed shape a record uses, so `json` encodes it as an object and `debug` renders it record-style. Each key is rendered to a string (an object/record key is always a string), each value reflects through the `v: Reflect` bound. This is intentionally one-way for encoding/debug: reflection does not preserve enough key structure for a general `Dict(k, v)` deserialize round trip. A free function for the same reason `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict` module, so the generated `reflect` for a `Dict` field routes here.
+A `Dict` reflects to an `MRecord` - the same string-keyed shape a record uses, so `json` encodes it as an object and `debug` renders it record-style. Each key is rendered to a string (an object/record key is always a string), each value reflects through the `v: Reflect` bound. This is intentionally one-way for encoding/debug: reflection does not preserve enough key structure for a general `Dict(k, v)` deserialize round trip. A free function for the same reason `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict` module, so the generated `reflect` for a `Dict` field routes here.
 
 #### `fn debug(x: a) -> String where a: Reflect`
 
@@ -3210,7 +3210,7 @@ Tuples reflect to `MTuple` (a JSON array, or a parenthesized debug). Each suppor
 
 ## `regex`
 
-Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear time, with full alternation `a|b` and grouping `(...)` — and a loud error, not a silent non-match, on an invalid pattern. The engine itself is the native `match_spans`, which returns the character spans of every match; the whole public API here is built on those spans in plain witchy, so it runs the same on the interpreter and the compiled backend. Positions are character indices.
+Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear time, with full alternation `a|b` and grouping `(...)` - and a loud error, not a silent non-match, on an invalid pattern. The engine itself is the native `match_spans`, which returns the character spans of every match; the whole public API here is built on those spans in plain witchy, so it runs the same on the interpreter and the compiled backend. Positions are character indices.
 
 #### `fn matches(pattern: String, text: String) -> Bool`
 
@@ -3218,7 +3218,7 @@ True if `pattern` matches anywhere in `text`.
 
 #### `fn find(pattern: String, text: String) -> Option((Int, Int))`
 
-The leftmost match as a (start, end) character span — end exclusive — or None.
+The leftmost match as a (start, end) character span - end exclusive - or None.
 
 #### `fn find_all(pattern: String, text: String) -> List((Int, Int))`
 
@@ -3230,7 +3230,7 @@ The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 
 #### `fn replace_all(pattern: String, text: String, replacement: String) -> String`
 
-`text` with every match replaced (the replacement is literal — no `$1` group expansion): replace_all("\\s+", "a  b", "-") is "a-b".
+`text` with every match replaced (the replacement is literal - no `$1` group expansion): replace_all("\\s+", "a  b", "-") is "a-b".
 
 #### `fn split(pattern: String, text: String) -> List(String)`
 
@@ -3255,7 +3255,7 @@ Collect a list of Results into a Result of the list: `Ok` of every value in orde
 
 #### `fn partition(xs: List(Result(a, e))) -> (List(a), List(e))`
 
-Split a list of Results into the Ok values and the Err values, each in order — for batch work that reports every failure, not just the first.
+Split a list of Results into the Ok values and the Err values, each in order - for batch work that reports every failure, not just the first.
 
 #### `Result.is_ok() -> Bool`
 
@@ -3295,7 +3295,7 @@ Transform the Err value, leaving an Ok untouched.
 
 #### `Result.map_or(default: b, f: fn(a) -> b) -> b`
 
-Apply `f` to the Ok value, or return `default` for an Err — `map_ok` then `unwrap_or` in one step.
+Apply `f` to the Ok value, or return `default` for an Err - `map_ok` then `unwrap_or` in one step.
 
 #### `Result.and_then(f: fn(a) -> Result(b, e)) -> Result(b, e)`
 
@@ -3307,11 +3307,11 @@ The result if it is Ok, otherwise the `alt` result.
 
 #### `Result.or_else(f: fn(e) -> Result(a, e)) -> Result(a, e)`
 
-The result if it is Ok, otherwise the result produced by applying `f` to the error — a lazy, error-aware recovery step.
+The result if it is Ok, otherwise the result produced by applying `f` to the error - a lazy, error-aware recovery step.
 
 #### `Result.ok() -> Option(a)`
 
-The Ok value as `Some`, or `None` for an Err — discards the error, turning a Result into an Option.
+The Ok value as `Some`, or `None` for an Err - discards the error, turning a Result into an Option.
 
 #### `Result.err() -> Option(e)`
 
@@ -3331,9 +3331,9 @@ Collapse one layer of nesting: `Ok(Ok(v))` becomes `Ok(v)`; `Ok(Err(e))` and `Er
 
 ## `rights`
 
-rights — rights-precise reasoning over capability footprints.
+rights - rights-precise reasoning over capability footprints.
 
-A capability is rendered the way the compiler's footprint prints it: "Console", "Dir[Read]", "Net[Connect, Tcp]". A *declared* capability covers a *demanded* one when they share a base kind AND the declared authority is at least as broad: a bare "Net" admits any rights of that kind, while "Net[Connect]" admits only a subset — so Net[Connect] does NOT cover full Net. This rights-precision is what the package manager's declared-vs-actual check and the block-on-widening gate both rely on, so it lives in one tested place.
+A capability is rendered the way the compiler's footprint prints it: "Console", "Dir[Read]", "Net[Connect, Tcp]". A *declared* capability covers a *demanded* one when they share a base kind AND the declared authority is at least as broad: a bare "Net" admits any rights of that kind, while "Net[Connect]" admits only a subset - so Net[Connect] does NOT cover full Net. This rights-precision is what the package manager's declared-vs-actual check and the block-on-widening gate both rely on, so it lives in one tested place.
 
 #### `fn covers(declared: String, demanded: String) -> Bool`
 
@@ -3345,7 +3345,7 @@ Whether any capability in `declared` covers `demanded`.
 
 #### `fn uncovered(declared: List(String), demanded: List(String)) -> List(String)`
 
-The demanded capabilities no declared capability covers — the gap a gate blocks on (an under-declaration, or a widening of authority). Empty means admitted.
+The demanded capabilities no declared capability covers - the gap a gate blocks on (an under-declaration, or a widening of authority). Empty means admitted.
 
 #### `fn is_full(cap: String) -> Bool`
 
@@ -3361,7 +3361,7 @@ The rights inside "Kind[A, B]" as ["A", "B"] (trimmed, blanks dropped).
 
 ## `secretstore`
 
-secretstore — read named secrets from the host-granted `SecretStore`. The secrets come from `--secret name=value` / `--secret-file name=path` (append `,use-only` to forbid `crypto.reveal`). `--signing-key <path>` grants the `signing` secret as a protected, non-revealable signing key — it is NOT the same as `--secret-file signing=<path>`, which grants an ordinary revealable named secret. Their bytes stay host-side. `get` is intercepted by the runtime, since a `SecretStore` is a capability, not plain data. A `Secret` is opaque host-held material consumed by specific operations: `crypto.sign` / `crypto.public_key` (Ed25519 signing keys), `server.serve_tls` / `serve_tls_n` (a TLS private key, by opaque reference), and `crypto.reveal` — which succeeds only for revealable value secrets, and errors on signing keys and use-only secrets.
+secretstore - read named secrets from the host-granted `SecretStore`. The secrets come from `--secret name=value` / `--secret-file name=path` (append `,use-only` to forbid `crypto.reveal`). `--signing-key <path>` grants the `signing` secret as a protected, non-revealable signing key - it is NOT the same as `--secret-file signing=<path>`, which grants an ordinary revealable named secret. Their bytes stay host-side. `get` is intercepted by the runtime, since a `SecretStore` is a capability, not plain data. A `Secret` is opaque host-held material consumed by specific operations: `crypto.sign` / `crypto.public_key` (Ed25519 signing keys), `server.serve_tls` / `serve_tls_n` (a TLS private key, by opaque reference), and `crypto.reveal` - which succeeds only for revealable value secrets, and errors on signing keys and use-only secrets.
 
 #### `fn get(store: SecretStore, name: String) -> Option(Secret)`
 
@@ -3369,17 +3369,17 @@ Fetch the secret named `name`, or `None` if it was not granted.
 
 #### `fn require(store: SecretStore, name: String) -> Secret`
 
-Fetch a *required* secret named `name`, returning the `Secret` directly. Use this when absence is a configuration error (e.g. a server's root signing key): it fails loudly rather than handing back an `Option` to unwrap. The body is a placeholder — the runtime intercepts the call (interpreter) / lowers it to a host Secret lookup (WASM); it is never executed.
+Fetch a *required* secret named `name`, returning the `Secret` directly. Use this when absence is a configuration error (e.g. a server's root signing key): it fails loudly rather than handing back an `Option` to unwrap. The body is a placeholder - the runtime intercepts the call (interpreter) / lowers it to a host Secret lookup (WASM); it is never executed.
 
 ## `semver`
 
-semver — semantic versions and constraints, for dependency resolution.
+semver - semantic versions and constraints, for dependency resolution.
 
-Intentionally minimal (matching the package manager's needs): `major.minor.patch` versions and the `^`, `~`, exact, `>=`, and `*` constraints — enough for deterministic resolution without a full SemVer grammar. A missing component parses as 0 (`1.2` is `1.2.0`); a non-numeric component is an error.
+Intentionally minimal (matching the package manager's needs): `major.minor.patch` versions and the `^`, `~`, exact, `>=`, and `*` constraints - enough for deterministic resolution without a full SemVer grammar. A missing component parses as 0 (`1.2` is `1.2.0`); a non-numeric component is an error.
 
 #### `sealed type Version derive(PartialEq, Eq, PartialOrd, Ord)`
 
-A version orders by major, then minor, then patch — exactly the lexicographic order `derive(Ord)` gives the fields in declaration order, so `<`, `>`, and `==` compare versions directly. `Version` is sealed (RFC-0065): external code cannot forge one with the raw data constructor, so a `Version` can only be built through this module — `parse`, which rejects negative components, or `version`. This closes the arbitrary-raw-construction vector of BUG-191 (`semver.Version(-1, 2, 3)` from another module is now a compile error).
+A version orders by major, then minor, then patch - exactly the lexicographic order `derive(Ord)` gives the fields in declaration order, so `<`, `>`, and `==` compare versions directly. `Version` is sealed (RFC-0065): external code cannot forge one with the raw data constructor, so a `Version` can only be built through this module - `parse`, which rejects negative components, or `version`. This closes the arbitrary-raw-construction vector of BUG-191 (`semver.Version(-1, 2, 3)` from another module is now a compile error).
 
 - `Version { major: Int, minor: Int, patch: Int }`
 
@@ -3434,7 +3434,7 @@ Whether `v` satisfies the constraint `req`.
 
 #### `fn best(versions: List(Version), req: Req) -> Option(Version)`
 
-The highest version in `versions` that satisfies `req`, or None if none do. Keep the matching versions and fold to the highest — dogfoods std/iter.
+The highest version in `versions` that satisfies `req`, or None if none do. Keep the matching versions and fold to the highest - dogfoods std/iter.
 
 ### Trait implementations
 
@@ -3454,9 +3454,9 @@ The highest version in `versions` that satisfies `req`, or None if none do. Keep
 
 ## `server`
 
-The witchy web framework — a slice of axum/tower over the `Net` capability, built on the shared `Request`/`Response` types in `http`.
+The witchy web framework - a slice of axum/tower over the `Net` capability, built on the shared `Request`/`Response` types in `http`.
 
-A handler is a pure `fn(Request) -> Response`: it has NO capability parameters, so it is *structurally* unable to touch the network, filesystem, or console. To give a handler authority (a logger, a store, an outbound client), capture it in the closure — capture IS dependency injection. `serve` holds the `Net` to listen and never hands it to a handler, so even a mounted third-party handler can only compute over the request; it cannot phone home.
+A handler is a pure `fn(Request) -> Response`: it has NO capability parameters, so it is *structurally* unable to touch the network, filesystem, or console. To give a handler authority (a logger, a store, an outbound client), capture it in the closure - capture IS dependency injection. `serve` holds the `Net` to listen and never hands it to a handler, so even a mounted third-party handler can only compute over the request; it cannot phone home.
 
   let app = server.router()       .get("/", home)       .get("/users/:id", show)       .layer(logging(console))   server.serve(net, "127.0.0.1:8080", app)
 
@@ -3516,7 +3516,7 @@ A request header, looked up case-insensitively, or None.
 
 #### `fn json_body(req: Request) -> Result(Json, json.DecodeError)`
 
-Decode the request body as JSON — the role of axum's `Json` extractor. Returns a typed Err (rather than panicking) on malformed input, so handlers stay total without collapsing trust-boundary failures to display text.
+Decode the request body as JSON - the role of axum's `Json` extractor. Returns a typed Err (rather than panicking) on malformed input, so handlers stay total without collapsing trust-boundary failures to display text.
 
 #### `fn json_body_string(req: Request) -> Result(Json, String)`
 
@@ -3524,7 +3524,7 @@ Compatibility bridge for applications that intentionally want rendered errors.
 
 #### `fn form_body(req: Request) -> List((String, String))`
 
-Parse an `application/x-www-form-urlencoded` body (`a=1&b=2`) into key/value pairs — for HTML form POSTs.
+Parse an `application/x-www-form-urlencoded` body (`a=1&b=2`) into key/value pairs - for HTML form POSTs.
 
 #### `fn form_field(req: Request, name: String) -> Option(String)`
 
@@ -3544,7 +3544,7 @@ A single form field, or `default` if absent.
 
 #### `fn json_value(code: Int, j: Json) -> Response`
 
-A JSON response from a `Json` value — encodes it for you.
+A JSON response from a `Json` value - encodes it for you.
 
 #### `fn send(code: Int, value: a) -> Response where a: Reflect`
 
@@ -3576,7 +3576,7 @@ A JSON response from any reflectable value. Reflection serializes it, so a handl
 
 #### `fn with_header(resp: Response, name: String, value: String) -> Response`
 
-Return `resp` with an extra header — for handlers and middleware that decorate a response (e.g. add a `set-cookie` or a tracing header). The stored name is lowercased: `Response` documents its header list as lowercase so `http.header(resp, name)` can look up case-insensitively — headers are case-insensitive on the wire, and rendering emits the lowercase form.
+Return `resp` with an extra header - for handlers and middleware that decorate a response (e.g. add a `set-cookie` or a tracing header). The stored name is lowercased: `Response` documents its header list as lowercase so `http.header(resp, name)` can look up case-insensitively - headers are case-insensitive on the wire, and rendering emits the lowercase form.
 
 #### `fn with_status(resp: Response, code: Int) -> Response`
 
@@ -3596,7 +3596,7 @@ Application/server-boundary bridge for callers that want the old "parse or 400 R
 
 #### `fn handle(app: Router, req: Request) -> Response`
 
-Dispatch `req` through `app` (all routes and middleware layers) and return the Response — the whole request pipeline WITHOUT a socket. The axum "oneshot" analog: handlers and routers become unit-testable with a `Request` literal, and it is the in-process way to call one app from another. `serve*` is this plus the accept loop.
+Dispatch `req` through `app` (all routes and middleware layers) and return the Response - the whole request pipeline WITHOUT a socket. The axum "oneshot" analog: handlers and routers become unit-testable with a `Request` literal, and it is the in-process way to call one app from another. `serve*` is this plus the accept loop.
 
 #### `fn render(resp: Response) -> String`
 
@@ -3604,27 +3604,27 @@ Serialize a `Response` to its HTTP/1.1 wire form (inverse of `http.parse_respons
 
 #### `fn render_for(resp: Response, method: String) -> String`
 
-`render`, honoring the request method: a HEAD response carries the same status/headers — including the Content-Length the body WOULD have — but the body bytes themselves are never sent (RFC 9110 §9.3.2). This is enforced at the rendering boundary so a `.head(...)` handler may simply return the GET response and the framework suppresses the body.
+`render`, honoring the request method: a HEAD response carries the same status/headers - including the Content-Length the body WOULD have - but the body bytes themselves are never sent (RFC 9110 §9.3.2). This is enforced at the rendering boundary so a `.head(...)` handler may simply return the GET response and the framework suppresses the body.
 
 #### `fn serve(net: Net[Listen, Tcp], addr: String, app: Router)`
 
-Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each re-running this program and accepting from the SAME bound listener — the kernel load-balances connections across them, so the server scales across cores with no extra effort from you. Handlers are pure `fn(Request) -> Response` whose state lives in their captured capabilities (e.g. a store `Dir` = the filesystem), so the workers are interchangeable. (For a single-threaded server, use `serve_one`.)
+Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each re-running this program and accepting from the SAME bound listener - the kernel load-balances connections across them, so the server scales across cores with no extra effort from you. Handlers are pure `fn(Request) -> Response` whose state lives in their captured capabilities (e.g. a store `Dir` = the filesystem), so the workers are interchangeable. (For a single-threaded server, use `serve_one`.)
 
 #### `fn serve_one(net: Net[Listen, Tcp], addr: String, app: Router)`
 
-Serve `app` on `addr` forever on a SINGLE core (one accept loop, no worker pool) — for servers with per-process in-memory state, or when one core is plenty.
+Serve `app` on `addr` forever on a SINGLE core (one accept loop, no worker pool) - for servers with per-process in-memory state, or when one core is plenty.
 
 #### `fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int)`
 
-Serve exactly `n` requests then return — for tests and one-shot servers.
+Serve exactly `n` requests then return - for tests and one-shot servers.
 
 #### `fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router)`
 
-Serve `app` over HTTPS on `addr` forever, using ALL cores — `serve` with TLS terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text — inline, or read via an ordinary `Dir` grant); `key` is the private key as a `Secret` (`secretstore.require(store, "tls-key")`), consumed by opaque host reference: the key bytes never enter this program's memory, so even a bug in a handler cannot exfiltrate them. Grant the key use-only (`--secret-file tls-key=key.pem,use-only`) and `crypto.reveal` on it errors too. A malformed or mismatched cert/key fails LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad ClientHello) drops that connection and the server keeps serving. Handlers, `Router`, and `Request`/`Response` are unchanged — TLS is transparent above the accepted connection.
+Serve `app` over HTTPS on `addr` forever, using ALL cores - `serve` with TLS terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text - inline, or read via an ordinary `Dir` grant); `key` is the private key as a `Secret` (`secretstore.require(store, "tls-key")`), consumed by opaque host reference: the key bytes never enter this program's memory, so even a bug in a handler cannot exfiltrate them. Grant the key use-only (`--secret-file tls-key=key.pem,use-only`) and `crypto.reveal` on it errors too. A malformed or mismatched cert/key fails LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad ClientHello) drops that connection and the server keeps serving. Handlers, `Router`, and `Request`/`Response` are unchanged - TLS is transparent above the accepted connection.
 
 #### `fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router, n: Int)`
 
-Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twin (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
+Serve exactly `n` HTTPS requests then return - `serve_tls`'s one-shot/test twin (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
 
 #### `Router.get(p: String, h: fn(Request) -> Response) -> Router`
 
@@ -3658,7 +3658,7 @@ Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twi
 
 ## `set`
 
-Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `s.contains(x)`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through interpolation or `show.say`; `s.to_list()` returns the members in insertion order.
+Set(a) - an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `s.contains(x)`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through interpolation or `show.say`; `s.to_list()` returns the members in insertion order.
 
 #### `sealed type Set(a)`
 
@@ -3722,7 +3722,7 @@ Whether every member of this set is also in `other`.
 
 #### `Set.is_superset(other: Set(a)) -> Bool`
 
-Whether this set contains every member of `other` — the reverse of `is_subset`.
+Whether this set contains every member of `other` - the reverse of `is_subset`.
 
 #### `Set.is_disjoint(other: Set(a)) -> Bool`
 
@@ -3740,7 +3740,7 @@ Two sets are equal when they hold exactly the same members, regardless of insert
 
 ## `show`
 
-The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) — and the built-in comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or tuple through arity 8 whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work — and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom readable form. `Show` is preluded: interpolation (`"${x}"`) always honors a relevant impl, while values without one keep the structural default. Pure except `say`, which takes the `Console` it prints to.
+The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars - `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) - and the built-in comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or tuple through arity 8 whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work - and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom readable form. `Show` is preluded: interpolation (`"${x}"`) always honors a relevant impl, while values without one keep the structural default. Pure except `say`, which takes the `Console` it prints to.
 
 #### `trait Show`
 
@@ -3748,11 +3748,11 @@ The witchy standard `Show` trait: render a value as a `String`. Built-in impls c
 
 #### `fn render(x: impl Show) -> String`
 
-Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`, `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type has a relevant `Show` impl, so interpolation and `show.say` agree. A type without a `Show` path keeps interpolation's byte-identical structural default.
+Render one `Show` value to a `String` - `render(point)`, `render(90000ms)`, `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type has a relevant `Show` impl, so interpolation and `show.say` agree. A type without a `Show` path keeps interpolation's byte-identical structural default.
 
 #### `fn say(console: Console, x: impl Show)`
 
-Print any `Show` value without converting it by hand — `show.say(console, 42)`, `show.say(console, point)`, `show.say(console, [1, 2, 3])`. This is the explicit Show-accepting print helper; interpolation remains the normal inline rendering form. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
+Print any `Show` value without converting it by hand - `show.say(console, 42)`, `show.say(console, point)`, `show.say(console, [1, 2, 3])`. This is the explicit Show-accepting print helper; interpolation remains the normal inline rendering form. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
 
 ### Trait implementations
 
@@ -3778,7 +3778,7 @@ Print any `Show` value without converting it by hand — `show.say(console, 42)`
 
 #### `impl Show for Duration`
 
-A Duration SHOWS in its human form ("1m30s"), unlike the structural `to_string`, which renders the underlying milliseconds — exactly the kind of custom rendering `Show` exists for.
+A Duration SHOWS in its human form ("1m30s"), unlike the structural `to_string`, which renders the underlying milliseconds - exactly the kind of custom rendering `Show` exists for.
 
 - `fn show(self) -> String`
 
@@ -3788,7 +3788,7 @@ A Duration SHOWS in its human form ("1m30s"), unlike the structural `to_string`,
 
 #### `impl Show for List(a) where a: Show`
 
-A list renders as `[a, b, c]`, each element through its own `Show` — the same structural form `"${xs}"` produces, but honoring a custom element `Show`.
+A list renders as `[a, b, c]`, each element through its own `Show` - the same structural form `"${xs}"` produces, but honoring a custom element `Show`.
 
 - `fn show(self) -> String`
 
@@ -3888,7 +3888,7 @@ The number of Unicode scalar values.
 
 #### `String.chars() -> List(String)`
 
-The characters, each as a single-character String — one O(n) pass, so callers can index characters in O(1).
+The characters, each as a single-character String - one O(n) pass, so callers can index characters in O(1).
 
 #### `String.split(sep: String) -> List(String)`
 
@@ -3998,7 +3998,7 @@ Split at the first occurrence of `sep` into `Some((before, after))`, with `sep` 
 
 #### `String.split_once(sep: String) -> (String, String)`
 
-Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. Compatibility wrapper: when `sep` is absent — including the empty separator, which matches nothing (mirroring `rsplit_once`) — returns `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to distinguish absence from a present empty side. Counted by Unicode scalar.
+Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. Compatibility wrapper: when `sep` is absent - including the empty separator, which matches nothing (mirroring `rsplit_once`) - returns `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to distinguish absence from a present empty side. Counted by Unicode scalar.
 
 #### `String.last_index_of(sep: String) -> Option(Int)`
 
@@ -4010,11 +4010,11 @@ Split on the LAST occurrence of `sep` into `Some((before, after))`, with `sep` i
 
 #### `String.rsplit_once(sep: String) -> (String, String)`
 
-Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once` of `"a.b.c"` on `"."` is `("a.b", "c")`. Compatibility wrapper: when `sep` is absent the whole string is the right part: `("", s)` — mirroring `split_once`'s `(s, "")`. Prefer `rsplit_once_opt` when absence matters.
+Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once` of `"a.b.c"` on `"."` is `("a.b", "c")`. Compatibility wrapper: when `sep` is absent the whole string is the right part: `("", s)` - mirroring `split_once`'s `(s, "")`. Prefer `rsplit_once_opt` when absence matters.
 
 #### `String.parse_int() -> Option(Int)`
 
-Safely parse a base-10 integer: an optional leading `-`/`+` then one or more digits. Returns None for empty, sign-only, non-digit, or out-of-range (beyond the i64 range) input — so it never traps the way the raw `string_to_int` builtin can.
+Safely parse a base-10 integer: an optional leading `-`/`+` then one or more digits. Returns None for empty, sign-only, non-digit, or out-of-range (beyond the i64 range) input - so it never traps the way the raw `string_to_int` builtin can.
 
 #### `String.lines() -> List(String)`
 
@@ -4022,19 +4022,19 @@ Split text into its newline-separated lines.
 
 ## `task`
 
-std/task — the cooperative task substrate and its executor.
+std/task - the cooperative task substrate and its executor.
 
-A `Task(a)` is a CPS-over-closures computation that, when stepped, either completes (`Done`) or yields an effect back to the executor: cooperate (`Yield`), `spawn` a child (`Fork`), `join` one (`Wait`), or a channel op (`Open`/`Push`/`Pull`/`PullAny`, produced by `std/chan`). `run` drives a task (and everything it spawns) to completion on a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
+A `Task(a)` is a CPS-over-closures computation that, when stepped, either completes (`Done`) or yields an effect back to the executor: cooperate (`Yield`), `spawn` a child (`Fork`), `join` one (`Wait`), or a channel op (`Open`/`Push`/`Pull`/`PullAny`, produced by `std/chan`). `run` drives a task (and everything it spawns) to completion on a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly - no scheduler state in the runtime, no `Pin`.
 
 This module is the scheduling core: the `Task` monad, `spawn`/`join`/ `yield_now`, and the executor. First-class channels are layered on top in `std/chan`; lightweight value-returning structured concurrency (`join_all`/ `select` over independent futures) lives in `std/future`.
 
-Messages: the executor is ERASED (RFC-0055). Its buffers, `Step`, and `Slot` carry the opaque `__Msg`, so ONE program can run channels of many different message types — a library may use channels privately without forcing its type on the whole program. The typed channel endpoints (`Sender(m)`/`Receiver(m)` in `std/chan`) erase a message on `send` and recover it on `recv`; the erasure is representationally the identity on both backends (a message already rides the universal slot), so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract).
+Messages: the executor is ERASED (RFC-0055). Its buffers, `Step`, and `Slot` carry the opaque `__Msg`, so ONE program can run channels of many different message types - a library may use channels privately without forcing its type on the whole program. The typed channel endpoints (`Sender(m)`/`Receiver(m)` in `std/chan`) erase a message on `send` and recover it on `recv`; the erasure is representationally the identity on both backends (a message already rides the universal slot), so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract).
 
 The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/ `and_then`/`done`/`run`), so `chan.recv(rx).await` / `chan.send(tx, x).await` work in async fns.
 
 #### `sealed type Step(a)`
 
-What a task yields to the executor when stepped. `a` is the task's own result. The channel effects (`Open`/`Push`/`Pull`/`PullAny`) are produced by the private bridge below; the executor interprets every variant. Messages are the erased `__Msg` (RFC-0055) — std/chan's typed endpoints (un)wrap at the boundary.
+What a task yields to the executor when stepped. `a` is the task's own result. The channel effects (`Open`/`Push`/`Pull`/`PullAny`) are produced by the private bridge below; the executor interprets every variant. Messages are the erased `__Msg` (RFC-0055) - std/chan's typed endpoints (un)wrap at the boundary.
 
 - `Done(a)`
 - `Yield(Task(a))`
@@ -4079,7 +4079,7 @@ A finished task.
 
 #### `fn ready_unit() -> Task(Nil)`
 
-An already-complete `Task(Nil)` — the async/await lowering target for a body that falls off its end.
+An already-complete `Task(Nil)` - the async/await lowering target for a body that falls off its end.
 
 #### `fn yield_now() -> Task(Nil)`
 
@@ -4087,7 +4087,7 @@ Hand control back to the executor once, then continue.
 
 #### `fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b)`
 
-Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to — the continuation `k` is the rest of the body.
+Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to - the continuation `k` is the rest of the body.
 
 #### `fn map(t: Task(a), f: fn(a) -> b) -> Task(b)`
 
@@ -4099,7 +4099,7 @@ Build the task `thunk()` lazily: nothing runs until this task is polled. A `Task
 
 #### `fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil)`
 
-Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an `await` inside a `for x in xs:` loop.
+Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an `await` inside a `for x in xs:` loop.
 
 #### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 
@@ -4206,7 +4206,7 @@ Unconditional failure with a message (e.g. an unreachable branch).
 
 ## `time`
 
-time — civil (UTC) date/time from a unix timestamp.
+time - civil (UTC) date/time from a unix timestamp.
 
 `std/duration` models *spans*; this module models *points* on the calendar. Given seconds since the unix epoch (1970-01-01T00:00:00Z), it computes the civil year/month/day/hour/minute/second and formats them. The conversions use the standard days<->civil algorithm (proleptic Gregorian), correct for any CE date and for negative timestamps (before 1970) via floor division.
 
@@ -4246,11 +4246,11 @@ Matchable civil-time construction and ISO 8601 parse failures.
 
 #### `fn from_millis(ms: Int) -> DateTime`
 
-The civil UTC date/time at `ms` MILLISECONDS since the unix epoch — what `clock.now()` returns, so `time.from_millis(clock.now())` is the idiom for "the current date/time".
+The civil UTC date/time at `ms` MILLISECONDS since the unix epoch - what `clock.now()` returns, so `time.from_millis(clock.now())` is the idiom for "the current date/time".
 
 #### `fn from_unix(secs: Int) -> DateTime`
 
-The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic unix timestamp). `clock.now()` returns milliseconds — use `from_millis` for it, or this becomes the year 58000. The formatted/parsing contract is a fixed four-digit CE year, so timestamps outside 0001..9999 are out of domain.
+The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic unix timestamp). `clock.now()` returns milliseconds - use `from_millis` for it, or this becomes the year 58000. The formatted/parsing contract is a fixed four-digit CE year, so timestamps outside 0001..9999 are out of domain.
 
 #### `fn to_unix(d: DateTime) -> Int`
 
@@ -4258,7 +4258,7 @@ The unix timestamp for a DateTime (its inverse).
 
 #### `fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, TimeError)`
 
-A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)` is an Err, not a rollover. The typed error lets libraries classify malformed components without parsing display text.
+A DateTime from civil UTC components, validated - `civil(2026, 2, 30, ...)` is an Err, not a rollover. The typed error lets libraries classify malformed components without parsing display text.
 
 #### `fn civil_string(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, String)`
 
@@ -4320,7 +4320,7 @@ A strftime-style layout: `%Y-%m-%d %H:%M:%S`, `%A %B %d` and friends. Directives
 
 ## `toml`
 
-toml — a TOML reader written in pure witchy (no native code). Two ways in: `toml.decode(text)` parses a whole document into a structured `Toml` tree (the `json.decode` shape); or look individual values up by a `section.key` path with `toml.get`/`get_array`/`table`/... It supports top-level and `[section]` (and dotted `[a.b]`) tables, `key = value` for string/int/bool values, and `["a", "b"]` arrays. Comments (`#`) — whole-line and trailing — and blank lines are ignored. (Floats/dates decode as `TomlString`: witchy has no string->float primitive yet.)
+toml - a TOML reader written in pure witchy (no native code). Two ways in: `toml.decode(text)` parses a whole document into a structured `Toml` tree (the `json.decode` shape); or look individual values up by a `section.key` path with `toml.get`/`get_array`/`table`/... It supports top-level and `[section]` (and dotted `[a.b]`) tables, `key = value` for string/int/bool values, and `["a", "b"]` arrays. Comments (`#`) - whole-line and trailing - and blank lines are ignored. (Floats/dates decode as `TomlString`: witchy has no string->float primitive yet.)
 
 #### `type Toml`
 
@@ -4364,7 +4364,7 @@ The `[[key]]` array-of-tables entries of a document node, in declaration order, 
 
 #### `fn required_string(entry: Toml, field: String, label: String) -> Result(String, TomlDecodeError)`
 
-A required string field of a decoded table `entry`: `Err` when the field is absent, empty, or the wrong TOML kind — the three failure classes kept distinct (BUG-373). `label` names the entry kind for the message (e.g. "a registry [[rune]] entry").
+A required string field of a decoded table `entry`: `Err` when the field is absent, empty, or the wrong TOML kind - the three failure classes kept distinct (BUG-373). `label` names the entry kind for the message (e.g. "a registry [[rune]] entry").
 
 #### `fn optional_string(entry: Toml, field: String) -> Result(Option(String), TomlDecodeError)`
 
@@ -4382,11 +4382,11 @@ The string value of `path` (e.g. "rune.name"), or None if absent. Surrounding do
 
 The string-array value of `path` (e.g. "capabilities.runtime"), or [] if absent. Each element is unquoted.
 
-LENIENT BY DESIGN (RFC-0044): an absent path and a malformed/empty array both return `[]`, so this cannot tell "not declared" from "declared wrong" — convenient for reading config, but wrong for a trust boundary. Where a malformed array must be an ERROR, use the strict path: `decode(text)` (a `Result`) then match the `TomlArray` at the path.
+LENIENT BY DESIGN (RFC-0044): an absent path and a malformed/empty array both return `[]`, so this cannot tell "not declared" from "declared wrong" - convenient for reading config, but wrong for a trust boundary. Where a malformed array must be an ERROR, use the strict path: `decode(text)` (a `Result`) then match the `TomlArray` at the path.
 
 #### `fn table(text: String, section: String) -> List((String, String))`
 
-Every `key = value` pair defined directly under `[section]`, in file order. Keys are unquoted (`"acme/money"` -> `acme/money`); values are raw (trimmed, still quoted/inline) — feed an inline-table value to `inline_get`. Use this to enumerate a table whose keys you don't know ahead of time, like `[dependencies]`.
+Every `key = value` pair defined directly under `[section]`, in file order. Keys are unquoted (`"acme/money"` -> `acme/money`); values are raw (trimmed, still quoted/inline) - feed an inline-table value to `inline_get`. Use this to enumerate a table whose keys you don't know ahead of time, like `[dependencies]`.
 
 #### `fn keys(text: String, section: String) -> List(String)`
 
@@ -4395,6 +4395,10 @@ Just the keys of `[section]` (unquoted), in file order.
 #### `fn inline_get(inline: String, key: String) -> Option(String)`
 
 Read `key` from an inline table value like `{ path = "../money", version = "1" }`. Returns the unquoted value, or None if the key is absent.
+
+#### `fn dep_requirement(raw: String) -> Option(String)`
+
+The version requirement a `[dependencies]` value declares, in EITHER TOML form: a bare string (`"acme/x" = "^1.0"`), whose value IS the requirement, or an inline table (`{ version = "^1.0" }`), whose `version` key holds it. `None` for a path-only inline table (no `version` key) or an empty value. Dep walks that read a version requirement (transitive resolution, `outdated`, `update`) must use this so a bare-string dep is not silently skipped.
 
 #### `fn inline_get_array(inline: String, key: String) -> List(String)`
 
@@ -4414,7 +4418,7 @@ Read a string-array field from an inline table. This is the array counterpart to
 
 ## `url`
 
-Minimal URL parsing — the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path][?query][#fragment]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
+Minimal URL parsing - the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path][?query][#fragment]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
 
 `parse` returns a matchable `UrlError`; `parse_string` is the String-rendering bridge for application-style callers. Simple scalar parses like `string.parse_int` stay `Option`.
 
@@ -4437,7 +4441,7 @@ Matchable URL parse failures. The payload is the original raw URL so callers can
 
 #### `fn parse(s: String) -> Result(Url, UrlError)`
 
-Parse a URL, or a matchable error naming what is malformed. A well-formed URL needs a non-empty scheme and host — an empty either side (`://host`, `https:///path`) is rejected rather than accepted with a blank field. The scheme is case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so `HTTPS://` gets the https default port and formats back canonically.
+Parse a URL, or a matchable error naming what is malformed. A well-formed URL needs a non-empty scheme and host - an empty either side (`://host`, `https:///path`) is rejected rather than accepted with a blank field. The scheme is case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so `HTTPS://` gets the https default port and formats back canonically.
 
 #### `fn parse_string(s: String) -> Result(Url, String)`
 
@@ -4471,19 +4475,19 @@ The HTTP request target: path plus query, deliberately excluding the client-side
 
 #### `fn format(u: Url) -> String`
 
-Render a Url back to its string form — the inverse of `parse`. The port is shown only when it differs from the scheme default, so a parse/format round trip of `https://host/p` stays `https://host/p` rather than gaining `:443`.
+Render a Url back to its string form - the inverse of `parse`. The port is shown only when it differs from the scheme default, so a parse/format round trip of `https://host/p` stays `https://host/p` rather than gaining `:443`.
 
 #### `fn encode(s: String) -> String`
 
-Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build query strings safely — e.g. an OAuth `redirect_uri`, `scope`, or `state`.
+Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build query strings safely - e.g. an OAuth `redirect_uri`, `scope`, or `state`.
 
 #### `fn decode(s: String) -> String`
 
-Percent-decode `s` (RFC 3986 §2.1): each `%XX` becomes the byte it names. Consecutive `%XX` bytes are decoded together so multi-byte UTF-8 escapes (`%E2%82%AC` -> `€`) round-trip. A stray `%` not followed by two hex digits passes through literally (total, lossy). `+` stays literal — for form/query decoding where `+` means space, use `decode_form`.
+Percent-decode `s` (RFC 3986 §2.1): each `%XX` becomes the byte it names. Consecutive `%XX` bytes are decoded together so multi-byte UTF-8 escapes (`%E2%82%AC` -> `€`) round-trip. A stray `%` not followed by two hex digits passes through literally (total, lossy). `+` stays literal - for form/query decoding where `+` means space, use `decode_form`.
 
 #### `fn decode_form(s: String) -> String`
 
-Like `decode`, but also maps `+` to a space — the `application/x-www-form-urlencoded` convention for query strings and form bodies (RFC 1866 §8.2.1).
+Like `decode`, but also maps `+` to a space - the `application/x-www-form-urlencoded` convention for query strings and form bodies (RFC 1866 §8.2.1).
 
 ### Trait implementations
 
@@ -4503,9 +4507,9 @@ Like `decode`, but also maps `+` to a space — the `application/x-www-form-urle
 
 ## `vm`
 
-std/vm — (RFC-0032) parallel execution across cores.
+std/vm - (RFC-0032) parallel execution across cores.
 
-`par_map` maps a function over a list with the elements processed in PARALLEL on the compiled backend: the work is split across OS-thread worker VMs, each its own isolated WebAssembly instance, and the results are gathered back in INPUT order. Because the result is ordered by input index and the mapped function is pure, the parallel result is identical to a sequential map — so the interpreter oracle (and this module's own reference body) computes it sequentially and the two backends agree. Parallelism changes how fast the map runs, not what it returns.
+`par_map` maps a function over a list with the elements processed in PARALLEL on the compiled backend: the work is split across OS-thread worker VMs, each its own isolated WebAssembly instance, and the results are gathered back in INPUT order. Because the result is ordered by input index and the mapped function is pure, the parallel result is identical to a sequential map - so the interpreter oracle (and this module's own reference body) computes it sequentially and the two backends agree. Parallelism changes how fast the map runs, not what it returns.
 
 The compiled backend takes the parallel path only when `f` is a BARE TOP-LEVEL function and the element representation can cross the worker boundary. A local function value, lambda, or pointer-bearing element type instead runs this module's sequential reference body, with identical results. That fallback changes only performance: `par_map` promises an ordered map, not isolation.
 
@@ -4515,17 +4519,17 @@ Map `f` over every element of `xs`, in parallel where the backend supports it, r
 
 #### `fn with_dir(dir: Dir, f: fn(Dir, Bytes) -> Bytes, input: Bytes) -> Bytes`
 
-Run `f` on `input` in an ISOLATED worker VM (on the compiled backend) that is granted EXACTLY the directory capability `dir` — and nothing else. The worker can read/write within `dir` (with `dir`'s own rights) and reach NO other host resource: it is its own WebAssembly instance with its own memory, and every ungranted capability traps. This is the capability-passing sandbox — run untrusted/partially-trusted code with precisely scoped authority. `f` must be named directly as a bare top-level function; closures and local function values are rejected rather than silently running in the parent VM. Because the result is a deterministic function of `dir`'s contents and `input`, the isolation is invisible to the output, so the interpreter (which runs `f` directly) and the compiled backend agree.
+Run `f` on `input` in an ISOLATED worker VM (on the compiled backend) that is granted EXACTLY the directory capability `dir` - and nothing else. The worker can read/write within `dir` (with `dir`'s own rights) and reach NO other host resource: it is its own WebAssembly instance with its own memory, and every ungranted capability traps. This is the capability-passing sandbox - run untrusted/partially-trusted code with precisely scoped authority. `f` must be named directly as a bare top-level function; closures and local function values are rejected rather than silently running in the parent VM. Because the result is a deterministic function of `dir`'s contents and `input`, the isolation is invisible to the output, so the interpreter (which runs `f` directly) and the compiled backend agree.
 
 #### `fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> List(Bytes)`
 
-Run a stateful SERVICE on a single long-lived ISOLATED worker VM. The worker is created once and processes `requests` in order, threading an accumulator `state` through `handler(state, request) -> new_state`, emitting each new state as that request's response. This is witchy's cross-VM channel: a worker that processes a message stream with persistent state. It is deliberately LOCK-STEP (ordered, not racing) — that determinism is what lets the interpreter (a sequential scan) and the compiled backend (a persistent worker VM) agree, which a truly-racing channel could not. `handler` must be named directly as a bare top-level function; closures and local function values are rejected rather than silently replacing isolation with a parent-VM loop.
+Run a stateful SERVICE on a single long-lived ISOLATED worker VM. The worker is created once and processes `requests` in order, threading an accumulator `state` through `handler(state, request) -> new_state`, emitting each new state as that request's response. This is witchy's cross-VM channel: a worker that processes a message stream with persistent state. It is deliberately LOCK-STEP (ordered, not racing) - that determinism is what lets the interpreter (a sequential scan) and the compiled backend (a persistent worker VM) agree, which a truly-racing channel could not. `handler` must be named directly as a bare top-level function; closures and local function values are rejected rather than silently replacing isolation with a parent-VM loop.
 
 ## `webauthn`
 
-webauthn — server-side verification of a WebAuthn *assertion* (the credential "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.
+webauthn - server-side verification of a WebAuthn *assertion* (the credential "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.
 
-The browser hands every BINARY value to the server HEX-ENCODED (it holds them as ArrayBuffers, so this is free). The server then INDEPENDENTLY re-derives and checks everything that matters — it trusts none of the client's interpretation:   * clientDataJSON.type == "webauthn.get"   * clientDataJSON.challenge == the exact challenge the server issued (anti-replay)   * clientDataJSON.origin == the expected origin (anti-phishing)   * authenticatorData.rpIdHash == SHA-256(expected RP id) (wrong relying party)   * the user-presence (and, for 2FA, user-verification) flags are set   * the ECDSA-P256 signature over `authenticatorData || SHA256(clientDataJSON)`     verifies under the public key bound to this credential at registration. A forged or replayed assertion fails one of these and is rejected here.
+The browser hands every BINARY value to the server HEX-ENCODED (it holds them as ArrayBuffers, so this is free). The server then INDEPENDENTLY re-derives and checks everything that matters - it trusts none of the client's interpretation:   * clientDataJSON.type == "webauthn.get"   * clientDataJSON.challenge == the exact challenge the server issued (anti-replay)   * clientDataJSON.origin == the expected origin (anti-phishing)   * authenticatorData.rpIdHash == SHA-256(expected RP id) (wrong relying party)   * the user-presence (and, for 2FA, user-verification) flags are set   * the ECDSA-P256 signature over `authenticatorData || SHA256(clientDataJSON)`     verifies under the public key bound to this credential at registration. A forged or replayed assertion fails one of these and is rejected here.
 
 #### `type AssertionError`
 
@@ -4549,7 +4553,7 @@ Human-readable assertion failure text for logs and HTTP responses.
 
 #### `fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError)`
 
-Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_json` is the exact clientDataJSON text the browser signed over (it must be re-hashed verbatim, never re-serialized). `require_uv` demands user verification — pass `true` for a genuine second-factor gate. Returns `Ok(true)` when every check passes, or a typed `Err`.
+Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_json` is the exact clientDataJSON text the browser signed over (it must be re-hashed verbatim, never re-serialized). `require_uv` demands user verification - pass `true` for a genuine second-factor gate. Returns `Ok(true)` when every check passes, or a typed `Err`.
 
 ### Trait implementations
 

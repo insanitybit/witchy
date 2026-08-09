@@ -1,8 +1,8 @@
 # Hashing and Signatures
 
 The `crypto` module provides the cryptographic primitives a program reaches for:
-hashes, HMACs, and signature verification. Like the other text modules it is
-pure computation — hashing a string needs no capability. Signing, by contrast,
+hashes, HMACs, and signature verification. Like the other text modules it's
+pure computation - hashing a string needs no capability. Signing, by contrast,
 requires a `Secret` (covered with the secret store), because the private key is
 authority you must be granted.
 
@@ -31,8 +31,8 @@ A SHA-256 digest is 32 bytes, which is why decoding its 64-hex-character string
 yields a `Bytes` of length 32. Pair `crypto` with `encoding` whenever you need
 to move a digest between its hex, base64, and raw-byte forms.
 
-`sha512`, `sha3_256`, and `hmac_sha256` work the same way but are native-only —
-a browser-hosted module does not get them. `hmac_sha256` computes a keyed hash;
+`sha512`, `sha3_256`, and `hmac_sha256` work the same way but are native-only -
+a browser-hosted module doesn't get them. `hmac_sha256` computes a keyed hash;
 note its key argument is **hex-encoded**, so encode a raw string key with
 `encoding.hex_encode` first:
 
@@ -44,11 +44,11 @@ let tag = crypto.hmac_sha256(key, "message")
 
 ## Verifying signatures
 
-Signature *verification* takes only public material — a public key, the message,
-and the signature — so it needs no secret and no capability. `ed25519_verify`,
+Signature *verification* takes only public material - a public key, the message,
+and the signature - so it needs no secret and no capability. `ed25519_verify`,
 `ecdsa_p256_verify`, and `rsa_pkcs1_sha256_verify` each return
 `Result(Bool, VerifyError)`: the `Result` distinguishes a *malformed* input
-(bad key encoding — an `Err`) from a well-formed input whose signature simply
+(bad key encoding - an `Err`) from a well-formed input whose signature simply
 doesn't match (`Ok(false)`). That distinction matters: treating a decode error
 as "signature invalid" can mask a bug, so match both.
 
@@ -64,7 +64,7 @@ fn check(console: Console, pubkey: String, msg: String, sig: String):
 
 ## Signing needs a `Secret`
 
-To *produce* a signature you need the private key, which arrives as a `Secret` —
+To *produce* a signature you need the private key, which arrives as a `Secret` -
 never as a plain string in your source. `crypto.sign(key, message)` takes that
 `Secret`; `crypto.public_key(key)` derives the shareable public half. The secret
 store chapter covers how a `Secret` is granted and why it never prints or

@@ -1,0 +1,14 @@
+// insanitybit/greeter — a tiny, zero-authority demo rune published from CI.
+//
+// It exists to prove the trusted-publishing path end to end: a GitHub Actions
+// workflow mints an OIDC identity token for audience `coven-registry` and lets
+// `witchy pm publish` upload this rune to the hosted coven registry. The rune
+// itself needs no runtime capabilities — its whole surface is a pure function,
+// so the server's recomputed footprint is empty (`[capabilities] runtime = []`).
+
+// Greet `name`, or the world when no name is given.
+pub fn greet(name: String) -> String:
+    if name.is_empty():
+        "Hello, world!"
+    else:
+        "Hello, ${name}!"

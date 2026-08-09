@@ -70,7 +70,7 @@ const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if
 
 const work = mkdtempSync(join(tmpdir(), "glamour-cwa-"));
 try {
-  for (const f of ["src/glamour.witchy", "src/markdown.witchy"]) {
+  for (const f of ["src/glamour.witchy", "src/markdown.witchy", "src/highlight.witchy"]) {
     copyFileSync(join(REPO, "projects/glamour", f), join(work, f.replace("src/", "")));
   }
   copyFileSync(join(REPO, "projects/glamour/examples/coven_web_app/src/coven_web_app.witchy"), join(work, "coven_web_app.witchy"));
@@ -86,8 +86,15 @@ try {
     if (url.includes("/catalog")) return json({ runes: [
       { name: "acme/charts", version: "1.0.0", state: "released", uploaded_by: "acme-bot", released_at: 1750000000, runtime_footprint: ["Net[Connect, Tls]", "Js{d3-runes-chart}"] },
       { name: "util/strings", version: "2.1.0", state: "staged", uploaded_by: "u-dev", released_at: 0, runtime_footprint: ["Console"] },
+      // A rune published under the signed-in identity (login port returns "alice"), so the
+      // Profile page has something to list; also carries a provenance `sub` to exercise the
+      // subject-based ownership match.
+      { name: "alice/widget", version: "0.3.0", state: "released", uploaded_by: "alice", released_at: 1750000000, runtime_footprint: ["Console"] },
     ] });
-    if (url.includes("/record")) return json({ state: "released", version: "1.0.0", released_at: 1750000000, determinism: "guaranteed", runtime_footprint: ["Net[Connect, Tls]"], hash: "sha256:abc", uploaded_by: "acme-bot", provenance: "trusted-publisher|issuer=gh" });
+    // Provenance is delivered as a pipe-delimited machine string incl. a raw unix `verified_at`
+    // and an EMPTY `ref=` — the record view must parse it into labeled rows, format the date,
+    // and drop the empty field (UI-02).
+    if (url.includes("/record")) return json({ state: "released", version: "1.0.0", released_at: 1750000000, determinism: "guaranteed", runtime_footprint: ["Net[Connect, Tls]"], hash: "sha256:abc", uploaded_by: "acme-bot", provenance: "trusted-publisher|issuer=admin|sub=colin|repository=acme/charts|ref=|verified_at=1786141989" });
     if (url.includes("/doc")) return json({ markdown: "## acme/charts\n\nA charting library." });
     if (url.includes("/source")) return json({ files: [["witchy.toml", "[rune]\nname = \"acme/charts\""], ["src/charts.witchy", "// a chart rune\nfn draw():\n    pass"]] });
     if (url.includes("/rootpub")) return text("ed25519:3a9fROOTKEY");
@@ -119,6 +126,10 @@ try {
   ok(root.textContent.includes("by acme-bot"), "each row shows the author byline");
   ok(qsa(root, "span").some((s) => (s.getAttribute("class") || "").includes("badge state-released")), "the lifecycle state renders as a badge");
   ok(root.textContent.includes("published") && root.textContent.includes("not yet released"), "a released rune shows its publish date; a staged one says so");
+  ok(!qsa(root, "button").some((b) => b.textContent === "Profile"), "the Profile nav is hidden while signed out");
+  search(root, "zzzznomatch");
+  await settle();
+  ok(root.textContent.includes("no runes match 'zzzznomatch'"), "an empty search result renders a 'no runes match' empty-state (UI-07)");
   search(root, "strings");
   await settle();
   ok(!root.textContent.includes("acme/charts") && root.textContent.includes("util/strings"), "the search box filters by name");
@@ -145,6 +156,17 @@ try {
   await settle();
   ok(calls.some((u) => u.includes("/record?name=acme~charts&version=1.0.0")), "clicking a rune fetches its record");
   ok(root.textContent.includes("trusted-publisher"), "the version view renders the provenance (security audit)");
+  // UI-02: provenance is parsed into labeled sub-rows, not dumped as the raw pipe string.
+  const dt = (label) => qsa(root, "dt").some((d) => d.textContent === label);
+  ok(dt("issuer") && root.textContent.includes("admin"), "provenance issuer renders as its own labeled row");
+  ok(dt("subject") && root.textContent.includes("colin"), "provenance `sub` is relabeled `subject` with its value");
+  ok(dt("repository") && root.textContent.includes("acme/charts"), "provenance repository renders as its own row");
+  ok(dt("verified") && root.textContent.includes("2026"), "provenance `verified_at` renders as a human date, not a raw unix int");
+  ok(!root.textContent.includes("verified_at=1786141989") && !root.textContent.includes("issuer=admin"), "the raw pipe-delimited machine string is NOT shown");
+  ok(!dt("ref") && !root.textContent.includes("ref="), "an empty provenance field (ref=) is hidden");
+  // UI-01: the "how to install" affordance — a copy-paste command + the cooldown note.
+  ok(root.textContent.includes("COVEN_URL=https://witchy.fly.dev witchy add acme/charts"), "the record page shows a copy-paste install command with the hosted registry pinned");
+  ok(root.textContent.includes("--allow-fresh"), "the install block notes that a rune still in its staging cooldown needs --allow-fresh");
   ok(qsa(root, "button").some((b) => b.textContent === "promote"), "promote/yank controls appear once signed in");
 
   // 4. Promote via the host 2FA port — the record re-fetches so state reflects the write.
@@ -160,6 +182,16 @@ try {
   ok(calls.some((u) => u.includes("/source?name=acme~charts")), "the source route fetches the package source");
   ok(root.textContent.includes("src/charts.witchy") && root.textContent.includes("fn draw():"), "every source file renders inline as <pre><code>");
   ok(qsa(root, "pre").length >= 2, "each file gets its own code block");
+  // The source is SYNTAX-HIGHLIGHTED inline (not plain <code> text): the shared `highlight`
+  // module emits classed <span> runs. `.witchy` files get witchy classes (kw/com), `.toml`
+  // files get TOML classes (section/key/comment) — all still glamour.text nodes (XSS-immune).
+  const spanClass = (cls) => qsa(root, "span").filter((s) => (s.getAttribute("class") || "").split(/\s+/).includes(cls));
+  const spanWith = (cls, text) => spanClass(cls).some((s) => s.textContent === text);
+  ok(spanWith("kw", "fn"), "the .witchy source highlights the keyword `fn` as span.kw");
+  ok(spanWith("com", "// a chart rune"), "the .witchy source highlights the line comment as span.com");
+  ok(spanWith("section", "[rune]"), "the witchy.toml source highlights the `[rune]` header as span.section");
+  ok(spanWith("key", "name"), "the witchy.toml source highlights the `name` key as span.key");
+  ok(!qsa(root, "span").some((s) => s.textContent.includes("\n[rune]\n")), "the source is tokenized into spans, not dumped as one plain-text blob");
   clickPrefix(root, "← acme/charts");
   await settle();
 
@@ -168,12 +200,29 @@ try {
   await settle();
   ok(calls.some((u) => u.includes("/doc?name=acme~charts")), "the docs route fetches the docs");
   ok(root.textContent.includes("A charting library") && qsa(root, "h2").length >= 1, "the docs Markdown renders to real elements");
+  // UI-08: the API-docs view carries the same "← <name> @ <ver>" back button as the source view.
+  ok(qsa(root, "button").some((b) => b.textContent.startsWith("← acme/charts")), "the API-docs view has a back button to the record, like the source view");
+  clickPrefix(root, "← acme/charts");
+  await settle();
 
   // 7. Registry trust.
   clickText(root, "Trust");
   await settle();
   ok(calls.some((u) => u.includes("/rootpub")), "the trust route fetches the TUF root key");
   ok(root.textContent.includes("Registry trust") && root.textContent.includes("ROOTKEY"), "the trust view renders the root key");
+  ok(root.textContent.includes("root public key") && root.textContent.includes("trust anchor"), "the trust view explains in plain language what the root key is (UI-09)");
+
+  // 8. Profile page (signed in as "alice"). The nav item appears only when signed in, and the
+  // page lists YOUR runes — filtered out of the already-fetched catalog by identity, no new
+  // endpoint. alice/widget is uploaded_by "alice", so it must appear; the others must not.
+  ok(qsa(root, "button").some((b) => b.textContent === "Profile"), "the Profile nav appears once signed in");
+  clickText(root, "Profile");
+  await settle();
+  ok(root.textContent.includes("signed in as alice"), "the profile page shows who you're signed in as");
+  ok(root.textContent.includes("Your runes"), "the profile page has a 'Your runes' section");
+  ok(root.textContent.includes("alice/widget"), "the profile lists a rune published under the session identity");
+  ok(!root.textContent.includes("util/strings") && !root.textContent.includes("acme/charts"), "the profile lists ONLY the session's own runes, not the whole catalog");
+  ok(!root.textContent.includes("haven't published"), "with matching runes, the empty-state is not shown");
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

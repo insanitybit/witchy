@@ -1,0 +1,93 @@
+name: Publish demo rune (trusted publishing)
+
+# Proves the "outsider can publish via CI" path (RFC-0117 Lane A): a GitHub
+# Actions job mints an OIDC identity token for audience `coven-registry` and
+# uses it as the SOLE authority to publish the `insanitybit/greeter` demo rune
+# to the hosted coven registry. No long-lived secrets — the only inputs are the
+# short-lived OIDC token the Actions runtime issues and network to the registry.
+#
+# Guarded so it cannot fire by accident: manual dispatch only, plus a narrow
+# `demo-publish-v*` tag glob. It never runs on pushes or pull requests, so a
+# fork PR can neither trigger it nor observe its `id-token` authority.
+#
+# WHAT MUST BE TRUE SERVER-SIDE for a dispatch to succeed (this workflow cannot
+# make these true; the registry operator must):
+#   * The live registry (https://witchy.fly.dev) must run `coven-serve` with
+#     `--trust-issuer-oidc https://token.actions.githubusercontent.com`. That
+#     makes coven fetch GitHub's JWKS at startup and accept RS256 tokens from
+#     that issuer, selecting the signing key by the token's `kid` (rotation-safe).
+#   * The rune namespace `insanitybit` must equal this repo's `repository_owner`.
+#     On the FIRST trusted publish coven binds the namespace to the token's
+#     `repository` org (coven.witchy: `ns == namespace_of(repository)`), then
+#     pins issuer + repository + workflow_ref; every later publish must match
+#     that first binding.
+#   * coven verifies the token itself (coven_trust.verify_oidc_fresh): audience
+#     is `coven-registry`, the signature is RS256 against the pinned JWKS key,
+#     and the token is fresh — `iat` present, signed lifetime <= 600s, <=60s of
+#     issuer clock lead, and the `jti` is single-use (replay-rejected).
+#
+# This publishes ONLY (a version lands STAGED). Promotion of a staged version to
+# released requires a human second factor (an MFA/WebAuthn `amr` on the token)
+# by design, and is never performed from CI.
+
+on:
+  workflow_dispatch:
+  push:
+    # Narrow glob: only an explicit maintainer-pushed `demo-publish-vX.Y.Z` tag.
+    tags: ["demo-publish-v[0-9]+.[0-9]+.[0-9]+"]
+
+# Least privilege by default: grant nothing at the top level, opt the one job in.
+permissions: {}
+
+env:
+  # The hosted coven registry. `witchy pm publish` reads COVEN_URL, preserves the
+  # https scheme, and auto-grants Net to exactly this origin (no explicit --net).
+  COVEN_URL: https://witchy.fly.dev
+  # The demo rune to publish (namespaced insanitybit/greeter — see witchy.toml).
+  RUNE_DIR: projects/coven-publish-demo
+
+jobs:
+  publish:
+    name: Publish insanitybit/greeter via OIDC
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout the source
+      id-token: write # mint the GitHub OIDC identity token
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Build the witchy toolchain from source with the repo's pinned toolchain.
+      # There is no published release artifact a third party can download yet
+      # (the release workflow only cuts DRAFT releases), so building the one
+      # `witchy` binary is the cheapest correct way to get a publisher here.
+      - uses: ./.github/actions/install-rust
+      - name: Build the witchy binary
+        run: cargo build --release --bin witchy
+      - name: Mint OIDC token for coven-registry and publish
+        run: |
+          set -euo pipefail
+
+          # ACTIONS_ID_TOKEN_REQUEST_URL / _TOKEN are exported into this step's
+          # process environment by the Actions runtime ONLY because this job has
+          # `id-token: write`. They are read straight from the shell env below —
+          # not via any GitHub Actions expression, so nothing is interpolated
+          # into the command. Request a GitHub OIDC token bound to audience
+          # `coven-registry`; the request URL + bearer are the only authority
+          # used here and both vanish when the job ends. HTTPS + TLS 1.2 enforced.
+          response="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=coven-registry")"
+
+          COVEN_ID_TOKEN="$(printf '%s' "$response" | jq -r '.value')"
+          # Keep the JWT out of any log line.
+          echo "::add-mask::${COVEN_ID_TOKEN}"
+          if [ -z "$COVEN_ID_TOKEN" ] || [ "$COVEN_ID_TOKEN" = "null" ]; then
+            echo "::error::could not mint an OIDC token for audience coven-registry"
+            exit 1
+          fi
+          export COVEN_ID_TOKEN
+
+          # Publish only — NOT promote (promote needs a human second factor).
+          # The rune lands STAGED under insanitybit/greeter@<version>.
+          ./target/release/witchy pm publish "$RUNE_DIR"

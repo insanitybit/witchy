@@ -13,6 +13,9 @@ declare module "glamour-dom" {
     setTimeout?: (fn: () => void, ms: number) => unknown;
     location?: Location;
     history?: History;
+    // (RFC-0040/0107) forwarded to the RFC-0007 host shim; `userCaps` stages the app-root
+    // UiRoot grant the compiled rune's `export_step` requires (e.g. `[["coven-web"]]`).
+    instantiateOpts?: { userCaps?: string[][] };
   }
   export interface Mounted {
     dispatch: (msg: unknown) => void;

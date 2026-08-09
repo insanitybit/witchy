@@ -1,7 +1,7 @@
 # The Sandbox
 
 Static checking keeps *your* code honest: a function without a `Net` can't
-connect, and the compiler proves it. But what about code you didn't write — a
+connect, and the compiler proves it. But what about code you didn't write - a
 plugin, a dependency, something you fetched? You can't audit it by hand, and even
 if you could, the binary you run might not match the source you read.
 
@@ -23,7 +23,7 @@ This:
    functions the footprint calls for.
 
 The enforcement is *structural*, not a permission check. A capability isn't a
-flag the runtime consults — it's the *presence* of a host function. A program
+flag the runtime consults - it's the *presence* of a host function. A program
 that wasn't granted `Clock` has no `now` import linked into its module; if it
 asks for one, instantiation fails before any code runs. No clock import exists
 for the program to call.
@@ -84,14 +84,14 @@ and `[exec]` entries likewise bind same-named policy-carrying parameters. And
 because witchy already *computes* a program's footprint, the grant is
 **cross-checked against it**: a grant
 that asks for authority the code never exercises is a warning (the classic
-over-permission smell), and a grant that withholds authority the code needs is a
-hard error before launch — so "approve this program's permissions" becomes a diff
+over-grant smell), and a grant that withholds authority the code needs is a
+hard error before launch - so "approve this program's permissions" becomes a diff
 against what the code actually does, not blind trust. The same check runs
 standalone: `witchy grants-check program.witchy app.grants.toml`.
 
-At launch the grant is printed as a reviewable diff — each capability and its
-`dir`/`file`/`net`/`fetch`/`env`/`exec`/`secret` binding — and on an
-interactive terminal you are
+At launch the grant is printed as a reviewable diff - each capability and its
+`dir`/`file`/`net`/`fetch`/`env`/`exec`/`secret` binding - and on an
+interactive terminal you're
 prompted to approve it before any authority is handed over. Pass `--accept-grants`
 to skip the prompt for non-interactive launches (CI, installers):
 
@@ -101,12 +101,12 @@ witchy sandbox --grants app.grants.toml --accept-grants program.witchy
 
 ## Host-held references, not guest pointers
 
-When a program holds a `Dir` inside the sandbox, it doesn't hold a path — it
+When a program holds a `Dir` inside the sandbox, it doesn't hold a path - it
 holds an opaque WebAssembly `externref` to an authority object owned by the
 *host*. Paths, address/name/program allowlists, streams, listeners, and secret
 bytes stay
 outside guest linear memory. Corrupting or fabricating an integer in memory
-therefore cannot mint a `Dir`, `Net`, socket, listener, or `Secret`. The host
+therefore can't mint a `Dir`, `Net`, socket, listener, or `Secret`. The host
 creates the root reference from a launch grant; operations such as `subtree`,
 `read_file`, `net.only`, `env.only`, and `exec.only` return narrower host
 objects as new references.
@@ -116,7 +116,7 @@ ambient path once to open each root grant; every `subtree`, `File`, read, write,
 append, existence check, directory check/list, and directory creation after that
 resolves relative to an open directory handle. `..` and absolute paths are
 rejected, escaping symlinks are rejected, and replacing any parent path component
-cannot redirect an operation. Writes also refuse a symlink leaf. The interpreter
+can't redirect an operation. Writes also fail on a symlink leaf. The interpreter
 and compiled host carry the same `ConfinedDir`/`ConfinedFile` objects, so this
 security boundary is shared rather than reimplemented for parity.
 
@@ -125,7 +125,7 @@ same resolved grants immediately before guest execution. Linux hosts apply
 Landlock filesystem and TCP restrictions when the running kernel supports them;
 other hosts report the layer as unavailable and continue in best-effort mode.
 Each strict launch prints the provider and enforcement status on stderr. Ordinary
-development runs and reusable embedded runtimes do not arm irreversible
+development runs and reusable embedded runtimes don't arm irreversible
 process-wide policy, because their process may need to host more than one guest.
 Use `--confine=required` when deployment must fail before `main` unless every
 currently implemented outer layer is fully enforced:
@@ -135,23 +135,23 @@ witchy sandbox --confine=required --dir . main.witchy
 ```
 
 On supported Linux architectures the outer policy also installs a
-thread-synchronized seccomp filter. Witchy maintains promise classes rather
+thread-synchronized seccomp filter. witchy maintains promise classes rather
 than a brittle full syscall allowlist: without filesystem authority the open
 family returns `EPERM`; without network authority socket creation returns
 `EPERM`; without `Net[Listen]`, bind/listen/accept return `EPERM`; and without
 `Exec`, process creation and execution return `EPERM`. High-risk mechanisms
 that could bypass those classes, including `io_uring`, handle-based opens,
 mounts, namespace changes, BPF, and process introspection, remain denied even
-when ordinary grants are present. Filters are restriction-only, apply to every
+when ordinary grants are present. Filters are narrowing-only, apply to every
 existing thread, and are inherited by executable children.
 
 Executable selection uses descriptor execution or an already-open private
-snapshot. On macOS, platform binaries may instead use a path only after Witchy
+snapshot. On macOS, platform binaries may instead use a path only after witchy
 verifies that its opened identity still matches and that every ancestor is
-root-owned and non-writable; mutable grant paths cannot redirect execution.
+root-owned and non-writable; mutable grant paths can't redirect execution.
 
 Third-party build steps use the same outer boundary without irreversibly
-restricting the compiler process. Witchy checks and compiles `build.witchy`
+restricting the compiler process. witchy checks and compiles `build.witchy`
 first, then sends the compiled module and resolved `[build.grants]` to a fresh
 child over a private stdin protocol. That child receives only the granted
 environment values and arms its derived filesystem, network, and process policy
@@ -160,7 +160,7 @@ opened through the same descriptor-confined executable path; build code never
 gets ambient `PATH` lookup or the compiler's full environment.
 
 Native children inherit the outer fence. If an allowed tool needs host files
-that are not Witchy grants, declare them as child-only read authority:
+that aren't witchy grants, declare them as child-only read authority:
 
 ```toml
 [exec]
@@ -174,8 +174,8 @@ The same declaration is authenticated into a trusted executable:
 runner = { from = "allow", programs = ["git"], child-paths = ["~/.gitconfig"] }
 ```
 
-These paths widen only the kernel fence inherited by the child. They do not mint
-an additional `Dir` or `File` for Witchy code, and omitted paths remain denied.
+These paths widen only the kernel fence inherited by the child. They don't mint
+an additional `Dir` or `File` for witchy code, and omitted paths remain denied.
 
 ## The browser's outer fence
 
@@ -195,7 +195,7 @@ or `Rand`; examples requiring those native roots remain read-only.
 
 Bare `Console` carries both rights for compatibility. A logger needs only
 `Console[Write]`; input code asks for `Console[Read]`, so receiving typed input
-does not silently give a library an output channel:
+doesn't silently give a library an output channel:
 
 ```witchy
 fn main(input: Console[Read], output: Console[Write]):
@@ -219,7 +219,7 @@ introduction. The test suite runs every program on both the WebAssembly backend
 and a reference tree-walking interpreter and requires identical output, including
 identical failures. A program that traps on an out-of-bounds index in one traps
 in the other; one that prints `42` in one prints `42` in the other. When the two
-can't agree, that is a compile-time error, never a silent difference.
+can't agree, that's a compile-time error, never a silent difference.
 
 So the confinement you reason about statically is the confinement you get at
 runtime, on a binary you can re-derive from source.
@@ -230,7 +230,7 @@ The boundary has explicit limits:
 
 - **The compiler and the VM are trusted.** A bug in witchy's type checker, code
   generator, or in wasmtime is a bug in the boundary. The boundary is small and
-  testable, which is the point — but it isn't zero.
+  testable, which is the point - but it isn't zero.
 - **Granted authority is granted.** If you `--dir /` a program, it can read `/`.
   Capabilities make authority *minimal and visible*; they don't make a grant you
   chose to give somehow safe.
@@ -241,5 +241,5 @@ The boundary has explicit limits:
   handle-anchored per-operation confinement, report the absent outer layer in
   best-effort mode, and fail before `main` in required mode.
 
-Within these boundaries, a program's blast radius is written in its type and
-enforced by the machine.
+Inside those boundaries you don't have to trust the program. You read its type
+and the VM holds it to that.

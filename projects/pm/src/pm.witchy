@@ -117,7 +117,7 @@ fn dispatch_more(console: Console, root: Dir, args: List(String), cmd: String) -
         cmd_verify_vendor(console, root, arg(args, 1), arg(args, 2))
     else if cmd == "new":
         cmd_new(console, root, arg(args, 1))
-    else if cmd == "" || cmd == "help":
+    else if cmd == "" || cmd == "help" || cmd == "-h" || cmd == "--help":
         usage(console)
         0
     else:
@@ -1325,7 +1325,7 @@ fn cmd_outdated(console: Console, net: Net, root: Dir, args: List(String)) -> In
 
 fn report_dep_version(console: Console, net: Net, origin: String, pair: (String, String)):
     let (name, inline) = pair
-    if let Some(req) = toml.inline_get(inline, "version"):
+    if let Some(req) = toml.dep_requirement(inline):
         let resp = registry_get(net, origin, "/coven/versions?name=${wire(name)}")
         console.print("${name}: req ${req}, ${latest_label(http.body(resp), http.status(resp))}")
 
@@ -1521,7 +1521,7 @@ fn dep_source(let inline: String) -> String:
         None -> version_source(inline)
 
 fn version_source(let inline: String) -> String:
-    match toml.inline_get(inline, "version"):
+    match toml.dep_requirement(inline):
         Some(v) -> "version:${v}"
         None -> "(unspecified)"
 
@@ -2337,7 +2337,7 @@ fn update_one(console: Console, net: Net, root: Dir, origin: String, entry: Stri
             // Cooling and no-match mean there is no eligible update today. Every
             // other resolver error means the registry/manifest could not be
             // trusted, so preserve the lock and report a failed update (BUG-569).
-            Err(VersionCooling(_req)) -> (0, false, false)
+            Err(VersionCooling(_req, _secs)) -> (0, false, false)
             Err(VersionNoMatch(_req)) -> (0, false, false)
             Err(e) ->
                 console.print("BLOCK: cannot resolve an update for ${fullname}: ${version_resolve_error_message(e)}")
@@ -2356,7 +2356,7 @@ fn dep_req(manifest: String, fullname: String, alias: String) -> String:
     var req = "*"
     for name, inline in toml.table(manifest, "dependencies"):
         if name == fullname || basename(name) == alias:
-            if let Some(v) = toml.inline_get(inline, "version"):
+            if let Some(v) = toml.dep_requirement(inline):
                 req = v
     req
 
@@ -2586,9 +2586,9 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name: St
                             console.print("BLOCK: cannot verify the registry record for ${name}@${chosen} — ${record_footprint_error_message(e)}")
                             2
                         Ok(incoming) ->
-                            add_pkg_gate_widen(console, net, root, origin, name, req, cooldown, baseline, rights.uncovered(baseline, incoming))
+                            add_pkg_gate_widen(console, net, root, origin, name, req, chosen, cooldown, baseline, rights.uncovered(baseline, incoming))
 
-fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String)) -> Int:
+fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String)) -> Int:
     if list.length(widened) > 0:
         console.print("BLOCKED: adding `${name}` would widen your project's capability footprint: ${list.join(widened, ", ")}")
         console.print("  re-run with --allow-cap ${list.join(widened, " --allow-cap ")} to consent")
@@ -2613,7 +2613,106 @@ fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, nam
                         console.print("  re-run with --allow-cap ${list.join(closure_widened, " --allow-cap ")} to consent to the whole dependency tree")
                         2
                     else:
-                        pin_lock(console, net, root, origin, name)
+                        // The manifest records the REQUIREMENT (the lock pins the
+                        // exact version). A bare `add` (`req == "*"`) records a caret
+                        // of the resolved version — cargo's `add` behavior: it
+                        // documents the version added while still letting `update`
+                        // move within the compatible range. An explicit `@<req>`
+                        // is recorded verbatim.
+                        let constraint = if req == "*": "^${chosen}" else: req
+                        add_pkg_finalize(console, net, root, origin, name, constraint)
+
+// Complete a gated `add`: pin the registry metadata into `witchy.lock`, and — only
+// once locking succeeds — record the dependency in the project manifest's
+// `[dependencies]` so the manifest-reading commands (`tree`/`why`/`outdated`) see
+// it (RFC-0117 Lane A). Ordering it after the lock means a failed pin never leaves
+// a manifest entry with no matching lock pin.
+fn add_pkg_finalize(console: Console, net: Net, root: Dir, origin: String, name: String, constraint: String) -> Int:
+    let code = pin_lock(console, net, root, origin, name)
+    if code == 0:
+        record_manifest_dep(root, name, constraint)
+    code
+
+// Record a registry dependency in the project manifest's `[dependencies]` table, in
+// the SAME inline shape a hand-written registry dep uses and that
+// `tree`/`why`/`outdated`/`build` already read: `"<alias>" = { version = "<req>" }`,
+// keyed by the import alias (the rune's basename). The value is the version
+// REQUIREMENT (the lock, not the manifest, pins the exact resolved version — the
+// cargo split, and what `pm update`'s `dep_req` re-resolves within). Vendor + lock
+// have already happened; this closes the manifest gap so the "see your tree's
+// authority" story works for registry deps. Idempotent (a re-add replaces the
+// entry, never duplicates). With no project manifest there is nothing to record
+// against, so it is a no-op.
+fn record_manifest_dep(root: Dir, name: String, version: String):
+    if root.exists("witchy.toml"):
+        root.write("witchy.toml", manifest_upsert_dep(root.read("witchy.toml"), basename(name), version))
+
+// Upsert `"<key>" = { version = "<version>" }` into the manifest's `[dependencies]`
+// table. An existing entry for `key` is REPLACED in place (never duplicated); a
+// manifest with no `[dependencies]` section gets one appended. Every other line and
+// section is preserved.
+fn manifest_upsert_dep(manifest: String, key: String, version: String) -> String:
+    let entry = "\"${key}\" = { version = \"${version}\" }"
+    if manifest_has_dependencies(manifest):
+        rewrite_dependencies(manifest, key, entry)
+    else:
+        let base = if manifest.ends_with("\n"): manifest else: "${manifest}\n"
+        "${base}\n[dependencies]\n${entry}\n"
+
+// Whether the manifest already declares a `[dependencies]` section header.
+fn manifest_has_dependencies(manifest: String) -> Bool:
+    var found = false
+    for line in manifest.lines():
+        if line.trim() == "[dependencies]":
+            found = true
+    found
+
+// Rebuild the manifest, replacing the existing `[dependencies]` entry keyed by
+// `key` with `entry`, or — if absent — inserting `entry` right after the
+// `[dependencies]` header. The trailing newline is preserved via `lines()`'s final
+// empty element, and every other line is copied verbatim.
+fn rewrite_dependencies(manifest: String, key: String, entry: String) -> String:
+    let already = dependencies_has_key(manifest, key)
+    var out = []
+    var in_deps = false
+    var did = false
+    for line in manifest.lines():
+        let t = line.trim()
+        if is_section_header(t):
+            in_deps = t == "[dependencies]"
+            out.push(line)
+            if in_deps && !already && !did:
+                out.push(entry)
+                did = true
+        else if in_deps && already && !did && dep_line_is(t, key):
+            out.push(entry)
+            did = true
+        else:
+            out.push(line)
+    list.join(out, "\n")
+
+// Whether the manifest's `[dependencies]` table already declares `key`.
+fn dependencies_has_key(manifest: String, key: String) -> Bool:
+    var found = false
+    for dep, _inline in toml.table(manifest, "dependencies"):
+        if dep == key:
+            found = true
+    found
+
+// Whether a trimmed line is a TOML section header (`[...]`).
+fn is_section_header(t: String) -> Bool:
+    t.starts_with("[") && t.ends_with("]")
+
+// Whether a `key = value` line declares `key`. Splits on the FIRST `=` so an inline
+// table value's inner `=` is never mistaken for the key separator.
+fn dep_line_is(line: String, key: String) -> Bool:
+    if line.contains("="):
+        let (raw, _v) = line.split_once("=")
+        let k = raw.trim()
+        let unquoted = if k.starts_with("\""): k.strip_prefix("\"").strip_suffix("\"") else: k
+        unquoted == key
+    else:
+        false
 
 // The capability authority the project already admits: its own declared runtime
 // caps (from witchy.toml, if any) plus every capability the lockfile already
@@ -2904,6 +3003,13 @@ fn add_rune(console: Console, net: Net, root: Dir, origin: String, name: String,
                 if existing.name != name:
                     console.print("BLOCK: module name collision — `${name}` and `${existing.name}` both vendor to `${vendored}` (same basename `${basename(name)}`)")
                     2
+                else if !version_satisfies(existing.version, req):
+                    // CJ-05: a diamond/version conflict — this dep is already
+                    // vendored at a version that does NOT satisfy the current
+                    // requester's requirement. Fail loud (pm does not unify or
+                    // backtrack) rather than silently keeping the first version.
+                    console.print("BLOCK: version conflict for `${name}` — already vendored at ${existing.version}, but `${req}` is also required and ${existing.version} does not satisfy it; reconcile the conflicting requirements (pm does not auto-unify)")
+                    2
                 else:
                     0
     else:
@@ -2927,10 +3033,9 @@ fn resolve_version(net: Net, origin: String, name: String, req: String, cooldown
         match pick_version_cooled(records, req, cooldown):
             Ok(v) -> Ok(v)
             Err(e) ->
-                if has_cooling_match(records, req, cooldown):
-                    Err(VersionCooling(req))
-                else:
-                    Err(e)
+                match cooling_remaining(records, req, cooldown):
+                    Some(secs) -> Err(VersionCooling(req, secs))
+                    None -> Err(e)
 
 // Matchable failures from the registry version-resolution boundary. This is the
 // first PM decision point after untrusted registry data, semver parsing, and
@@ -2939,7 +3044,7 @@ type VersionResolveError:
     VersionRegistryFetchFailed(Int)
     VersionMalformedResponse(String)
     VersionBadRequirement(String, String)
-    VersionCooling(String)
+    VersionCooling(String, Int)
     VersionNoMatch(String)
 
 fn version_resolve_error_message(e: VersionResolveError) -> String:
@@ -2947,7 +3052,7 @@ fn version_resolve_error_message(e: VersionResolveError) -> String:
         VersionRegistryFetchFailed(_status) -> "registry error fetching versions"
         VersionMalformedResponse(reason) -> "registry returned a malformed versions response: ${reason}"
         VersionBadRequirement(req, cause) -> "bad requirement `${req}`: ${cause}"
-        VersionCooling(req) -> "a release satisfying `${req}` is inside its staging cooldown and not resolvable yet (compromised-release protection) — re-run with --allow-fresh to accept it now"
+        VersionCooling(req, remaining_secs) -> "a release satisfying `${req}` is inside its staging cooldown and not resolvable for another ${humanize_wait(remaining_secs)} (compromised-release protection) — re-run with --allow-fresh to accept it now"
         VersionNoMatch(req) -> "no released version satisfies `${req}`"
 
 impl Show for VersionResolveError:
@@ -2973,7 +3078,7 @@ fn add_deps(console: Console, net: Net, root: Dir, origin: String, name: String,
     let manifest = root.read(join_path(join_path(dest, basename(name)), "witchy.toml"))
     var code = 0
     for depname, inline in toml.table(manifest, "dependencies"):
-        if let Some(depreq) = toml.inline_get(inline, "version"):
+        if let Some(depreq) = toml.dep_requirement(inline):
             let sub = add_rune(console, net, root, origin, depname, depreq, dest, cooldown, allowed)
             if sub != 0:
                 code = sub
@@ -3014,17 +3119,59 @@ fn canonical_version(raw: String) -> Option(Version):
         Ok(v) -> if semver.format(v) == raw: Some(v) else: None
         Err(_e) -> None
 
-// Whether any released version satisfying `req` exists but is still cooling — so
-// the caller can say "blocked by cooldown" instead of "no version".
-fn has_cooling_match(records: List((Version, Int)), req: String, cooldown: (Int, Int, Bool)) -> Bool:
+// The shortest remaining cooldown wait (seconds) among released versions that
+// satisfy `req` but are still cooling — `Some(secs)` when at least one match is
+// cooling (so the caller can say "blocked by cooldown, ~Nh left" instead of "no
+// version"), `None` when nothing satisfying `req` is cooling. The minimum is the
+// soonest a satisfying release becomes resolvable (CJ-01).
+fn cooling_remaining(records: List((Version, Int)), req: String, cooldown: (Int, Int, Bool)) -> Option(Int):
     match semver.parse_req(req):
-        Err(_e) -> false
+        Err(_e) -> None
         Ok(r) ->
-            var found = false
+            let (now_secs, window, _fresh) = cooldown
+            var best = None
             for version, released_at in records:
                 if cooling(released_at, cooldown) && semver.matches(r, version):
-                    found = true
-            found
+                    let remaining = released_at + window - now_secs
+                    let better = match best:
+                        None -> true
+                        Some(cur) -> remaining < cur
+
+                    if better:
+                        best = Some(remaining)
+            best
+
+// Render a wait in seconds as a compact, human-readable duration for the cooldown
+// refusal (CJ-01) — e.g. `71h 59m`, `45m`, `30s`. Never negative.
+fn humanize_wait(secs: Int) -> String:
+    if secs <= 0:
+        "moments"
+    else if secs < 60:
+        "${secs}s"
+    else if secs < 3600:
+        "${secs / 60}m"
+    else:
+        let hours = secs / 3600
+        let mins = secs % 3600 / 60
+        if mins == 0:
+            "${hours}h"
+        else:
+            "${hours}h ${mins}m"
+
+// Whether an already-vendored `version` satisfies a second requester's `req`
+// (CJ-05). A bare/`*`/empty requirement or an unparseable req/version is treated
+// as satisfied here: the version resolver already rejects a malformed requirement,
+// and this guard exists only to catch a genuine already-resolved mismatch.
+fn version_satisfies(version: String, req: String) -> Bool:
+    if req == "*" || req.is_empty():
+        true
+    else:
+        match semver.parse_req(req):
+            Err(_e) -> true
+            Ok(r) ->
+                match semver.parse(version):
+                    Err(_e) -> true
+                    Ok(v) -> semver.matches(r, v)
 
 // Parse the registry response once into the only fields version decisions use.
 // Malformed JSON, response shape, states, coordinates, or release timestamps are

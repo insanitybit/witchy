@@ -318,8 +318,41 @@ pub fn unmintable_main_cap(main_params: &[witchy_syntax::ast::Param], has_signin
 /// an ergonomic, explicitly non-rebinding-proof form; prefer IP/CIDR for untrusted
 /// peers). Used by `connect`/`try_connect` on both backends.
 pub fn resolve_admitted(allow: &[String], addr: &str) -> Result<Vec<std::net::SocketAddr>, String> {
+    resolve_admitted_typed(allow, addr).map_err(|failure| failure.into_message())
+}
+
+/// Why a `resolve_admitted` attempt failed. A `Denied` is a genuine authority
+/// denial (the caller should say "not granted"); an `Unresolved` means the address
+/// *is* admitted by the capability but its name could not be resolved to any
+/// address — a truthful network failure, not a capability lie. Keeping the two
+/// distinct lets Fetch report a DNS/connect failure honestly instead of flattening
+/// it into a misleading "not granted" (RFC-0117 Lane A).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdmitFailure {
+    /// The capability does not admit `addr`.
+    Denied(String),
+    /// `addr` is admitted, but its name could not be resolved.
+    Unresolved(String),
+}
+
+impl AdmitFailure {
+    /// The human-readable message, discarding the denial/resolve distinction.
+    pub fn into_message(self) -> String {
+        match self {
+            Self::Denied(message) | Self::Unresolved(message) => message,
+        }
+    }
+}
+
+/// Like [`resolve_admitted`], but distinguishes a capability denial from a genuine
+/// name-resolution failure (see [`AdmitFailure`]). `resolve_admitted` is the
+/// message-only wrapper over this.
+pub fn resolve_admitted_typed(
+    allow: &[String],
+    addr: &str,
+) -> Result<Vec<std::net::SocketAddr>, AdmitFailure> {
     use std::net::ToSocketAddrs;
-    let denied = || format!("`{addr}` is not permitted by this Net capability");
+    let denied = || AdmitFailure::Denied(format!("`{addr}` is not permitted by this Net capability"));
     // Whether the address STRING itself is allowlisted (an exact `host:port` or a
     // literal-IP pattern). The capability denial takes precedence over any DNS
     // failure, so a disallowed host reports "not permitted", never a resolver leak.
@@ -357,7 +390,9 @@ pub fn resolve_admitted(allow: &[String], addr: &str) -> Result<Vec<std::net::So
         }
         // Could not resolve. A genuine dial failure only if the name was allowed;
         // otherwise it is a capability denial (don't leak the resolver error).
-        Err(e) if name_ok => Err(format!("`{addr}` could not be resolved: {e}")),
+        Err(e) if name_ok => {
+            Err(AdmitFailure::Unresolved(format!("`{addr}` could not be resolved: {e}")))
+        }
         Err(_) => Err(denied()),
     }
 }

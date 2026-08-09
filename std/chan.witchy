@@ -1,13 +1,13 @@
-// std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over
-// first-class `channel`s. Spawning and channels are independent — you can spawn
+// std/chan - decoupled concurrency: `spawn` concurrent tasks, communicate over
+// first-class `channel`s. Spawning and channels are independent - you can spawn
 // without a channel, and a channel is a value you create and pass around, not a
 // task's mailbox. Built on a pure-witchy cooperative executor with a deterministic
 // round-robin schedule, so a concurrent run is byte-identical on the interpreter
-// and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
+// and the compiled WebAssembly - no scheduler state in the runtime, no `Pin`.
 //
 // Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)`
 // pair carries values of ITS OWN type `m`, and independent channels in one program
-// may carry different types — a library may pipeline work through a private channel
+// may carry different types - a library may pipeline work through a private channel
 // without forcing its message type on the whole program. Under the hood the
 // executor is ERASED: its effects and buffers carry the opaque `__Msg`; the
 // typed endpoints erase a message on `send` and recover it on `recv`. The erasure
@@ -56,7 +56,7 @@ fn unerase_option(o: Option(__Msg)) -> Option(m):
 pub fn done(x: a) -> Task(a):
     task.done(x)
 
-// An already-complete `Task(Nil)` — the async/await lowering target for a body
+// An already-complete `Task(Nil)` - the async/await lowering target for a body
 // that falls off its end.
 pub fn ready_unit() -> Task(Nil):
     task.ready_unit()
@@ -66,7 +66,7 @@ pub fn yield_now() -> Task(Nil):
     task.yield_now()
 
 // Sequence: run `t`, then continue with `k` applied to its result. This is what
-// `await` lowers to — the continuation `k` is the rest of the body.
+// `await` lowers to - the continuation `k` is the rest of the body.
 pub fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b):
     task.and_then(t, k)
 
@@ -81,7 +81,7 @@ pub fn map(t: Task(a), f: fn(a) -> b) -> Task(b):
 pub fn lazy(thunk: fn() -> Task(a)) -> Task(a):
     task.lazy(thunk)
 
-// Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an
+// Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an
 // `await` inside a `for x in xs:` loop.
 pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
     task.for_each(xs, f)
@@ -96,17 +96,17 @@ sealed type Sender(m):
 sealed type Receiver(m):
     Receiver(ChannelId)
 
-// `Handle` is task's (from-imported above) — a spawned child's join handle.
+// `Handle` is task's (from-imported above) - a spawned child's join handle.
 
 // A channel of logical `capacity`: a positive capacity is bounded (the sender
-// blocks when the buffer is full), while 0 — or any non-positive value — is
+// blocks when the buffer is full), while 0 - or any non-positive value - is
 // unbounded and never blocks the sender, matching the convention that a
 // non-positive bound means "no bound".
 pub fn channel(capacity: Int) -> Task((Sender(m), Receiver(m))):
     let cap = if capacity < 0: 0 else: capacity
     and_then(task.__channel_open(cap), fn(id): done((Sender(id), Receiver(id))))
 
-// An unbounded channel — `send` never blocks (the buffer grows without limit).
+// An unbounded channel - `send` never blocks (the buffer grows without limit).
 pub fn unbounded() -> Task((Sender(m), Receiver(m))):
     channel(0)
 
@@ -139,8 +139,8 @@ pub fn join(h: Handle) -> Task(Nil):
     task.join(h)
 
 // Cancel the spawned task behind `h`: it is stepped no further and is treated as
-// finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow —
-// it stops this one task, not any tasks it itself spawned — and idempotent (already
+// finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow -
+// it stops this one task, not any tasks it itself spawned - and idempotent (already
 // finished or already cancelled is a no-op). Deterministic on the cooperative
 // schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
 pub fn cancel(h: Handle) -> Task(Nil):
@@ -154,7 +154,7 @@ pub fn spawn_all(children: List(Task(Nil))) -> Task(List(Handle)):
 // Tail-recursive accumulator form (see `recv_n_into`): each spawned handle is
 // appended and the recursion continues in TAIL position, so the executor
 // trampolines it at constant stack depth rather than building the O(n)-deep
-// continuation the post-`concat` form did — the same stack floor that let
+// continuation the post-`concat` form did - the same stack floor that let
 // `par_map`/`gather`/`scope` overflow the compiled backend (BUG-396).
 fn spawn_all_into(children: List(Task(Nil)), i: Int, hs: List(Handle)) -> Task(List(Handle)):
     if i >= list.length(children):
@@ -174,7 +174,7 @@ fn join_all_from(hs: List(Handle), i: Int) -> Task(Nil):
     else:
         and_then(join(list.at(hs, i)), fn(_done): join_all_from(hs, i + 1))
 
-// Cancel every handle in `hs` — the companion to `spawn_all`/`join_all`. Each is
+// Cancel every handle in `hs` - the companion to `spawn_all`/`join_all`. Each is
 // stopped and treated as finished; idempotent, so cancelling an already-finished
 // handle is a no-op. Used by `race_n` to drop the losers.
 pub fn cancel_all(hs: List(Handle)) -> Task(Nil):
@@ -206,7 +206,7 @@ fn recv_n(rx: Receiver(m), n: Int) -> Task(List(m)):
 // the recursion continues in TAIL position, so the executor trampolines it at a
 // constant stack depth. The earlier post-`concat` form wrapped one extra `and_then`
 // around the recursion per received message, building an O(n)-deep continuation
-// that overflowed the compiled backend's stack at a few thousand messages — the
+// that overflowed the compiled backend's stack at a few thousand messages - the
 // OOB trap `gather`/`par_map` hit at N≈2000 (BUG-396).
 fn recv_n_into(rx: Receiver(m), n: Int, acc: List(m)) -> Task(List(m)):
     if n <= 0:
@@ -222,7 +222,7 @@ fn recv_n_into(rx: Receiver(m), n: Int, acc: List(m)) -> Task(List(m)):
 // the results that arrive before the collecting channel quiesces. In the normal
 // case every job completes and sends exactly one result. Each job produces a value
 // of the message type `m` (results ride the same channels), so `gather` is the
-// typed companion to `scope` — the same no-escaping-handle shape, with the results
+// typed companion to `scope` - the same no-escaping-handle shape, with the results
 // handed back. Results are in COMPLETION order (deterministic on the cooperative
 // executor, hence byte-identical on both backends), not input order.
 pub fn gather(jobs: List(Task(m))) -> Task(List(m)):
@@ -234,7 +234,7 @@ pub fn gather(jobs: List(Task(m))) -> Task(List(m)):
 
 // Receive one message from each receiver in `rxs`, in list order. A closed
 // receiver contributes nothing (its slot is skipped). Used by `par_map` to read
-// back results in INPUT order — each task owns its own channel, so the parent
+// back results in INPUT order - each task owns its own channel, so the parent
 // collecting channel-by-channel is independent of which task finished first.
 fn recv_each(rxs: List(Receiver(m))) -> Task(List(m)):
     recv_each_into(rxs, 0, [])
@@ -275,7 +275,7 @@ fn par_build_into(items: List(a), i: Int, f: fn(a) -> Task(m), jobs: List(Task(N
 
 // STRUCTURED parallel map (the level-1 combinator): run `f` over every item of
 // `items` concurrently and return the results in INPUT order. The tasks are never
-// visible — spawn and join happen inside — so this cannot leak a handle, cannot
+// visible - spawn and join happen inside - so this cannot leak a handle, cannot
 // deadlock on a forgotten join, and is the ergonomic default for data parallelism.
 // Each item's result rides its own channel, so the returned order is the input
 // order regardless of completion order: the result is a pure function of `items`
@@ -299,7 +299,7 @@ pub fn par_reduce(items: List(a), f: fn(a) -> Task(m), init: m, combine: fn(m, m
 // Run `a` and `b` concurrently and return the FIRST result, cancelling the loser.
 // `None` only if neither ever produces a value. The winner is decided by the
 // deterministic round-robin schedule (a tie favours `a`), so the outcome is
-// byte-identical on both backends — and under a future parallel backend the cancel
+// byte-identical on both backends - and under a future parallel backend the cancel
 // genuinely stops the loser's remaining work. This is the cancellation-enabled
 // combinator of RFC-0032's ladder; build `timeout` by racing a task against one
 // that yields a sentinel.

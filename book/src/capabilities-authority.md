@@ -2,7 +2,7 @@
 
 ## Capability values
 
-A **capability** is a value whose type grants permission to do something. You've
+A **capability** is a value whose type carries the authority to do something. You've
 already met `Console`, which grants printing. There are a handful of these host
 capabilities:
 
@@ -18,8 +18,8 @@ capabilities:
 | `Rand` | drawing cryptographically-secure randomness |
 | `SecretStore` / `Secret` | named host secrets, and signing with one |
 
-Each is *right-typed* where that matters — `Dir[Read]` vs `Dir[Write]`,
-`Net[Connect, Tcp]` — so the type identifies the resource and the permitted
+Each is *right-typed* where that matters - `Dir[Read]` vs `Dir[Write]`,
+`Net[Connect, Tcp]` - so the type identifies the resource and the permitted
 operations.
 
 The host mints capabilities and hands them to `main`. Capability constructors
@@ -37,14 +37,14 @@ the clock is ticking
 ```
 
 `main`'s parameter list is the program's **root grant**. The host decides what
-to put there; the program cannot ask for more.
+to put there; the program can't ask for more.
 
 ## Authority flows only by argument
 
-A capability is an ordinary value once you have it, and code passes it as an
+A capability is an ordinary value once you've it, and code passes it as an
 argument. There are no globals to stash it in and no ambient registry to fetch
 it from. A function's authority is
-*exactly* its capability-typed parameters — visible, local, complete.
+*exactly* its capability-typed parameters - visible, local, complete.
 
 ```witchy
 // `log` can print, because it was given a Console. `compute` cannot, because it
@@ -64,8 +64,8 @@ fn main(console: Console):
 compute(6): 37
 ```
 
-Read `compute`'s signature: `fn compute(x: Int) -> Int`. No capabilities. It is
-*provably* incapable of any effect — it can only compute. You don't have to read
+Read `compute`'s signature: `fn compute(x: Int) -> Int`. No capabilities. It's
+*provably* incapable of any effect - it can only compute. You don't have to read
 its body, or its callees' bodies, to know that. Contrast a typical language,
 where `compute` could be doing anything, and the only way to find out is to
 audit the entire call graph.
@@ -91,4 +91,5 @@ program. The same applies to environment variables (`Env`) and randomness. A
 function whose result depends on any of these values lists the corresponding
 capability in its signature.
 
-Authority is an unforgeable value that travels through arguments.
+You can't conjure a `Clock` from an integer, and there's no global to reach
+for. If a function has authority, someone handed it over.

@@ -1,6 +1,6 @@
-// path — pure manipulation of '/'-separated path strings.
+// path - pure manipulation of '/'-separated path strings.
 //
-// This is string surgery only — it never touches the filesystem (that is the
+// This is string surgery only - it never touches the filesystem (that is the
 // `Dir` capability, wrapped by `std/fs`). Splitting, joining, the base/dir/ext
 // components, and a `normalize` that collapses `.` and `..`.
 
@@ -55,7 +55,7 @@ pub fn dir(p: String) -> Option(String):
             Some(head)
 
 // The extension after the final `.` in the base name, WITHOUT the leading dot,
-// as `Some` ("a/b.tar.gz" -> Some("gz")) — matching Rust's `Path::extension`
+// as `Some` ("a/b.tar.gz" -> Some("gz")) - matching Rust's `Path::extension`
 // both in dropping the dot AND in the `Option` shape (RFC-0044 rule 1). A base
 // with no extension, a dotfile base (".bashrc"), or the parent marker ("..")
 // is `None`. A trailing dot on an ordinary filename is an empty extension.
@@ -110,6 +110,6 @@ fn last(xs: List(String)) -> String:
         list.at(xs, list.length(xs) - 1)
 
 fn drop_last(xs: List(String)) -> List(String):
-    // Everything but the final element — `take` of one fewer (empty when `xs`
+    // Everything but the final element - `take` of one fewer (empty when `xs`
     // is, since `take` of a non-positive count is empty). Dogfoods std/iter.
     iter.collect(iter.from_list(xs).take(list.length(xs) - 1))

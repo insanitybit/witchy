@@ -255,12 +255,16 @@ fn outdated_reports_newer_versions() {
     let server = RegistryServer::start();
     let fe = FrontEnd::new(&server, "outdated");
     fe.published_lib("acme/lib", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    // CJ-06: a second dep declared in the BARE-STRING form (`"acme/bare" = "^1.0.0"`),
+    // which the dep walk previously skipped silently.
+    fe.published_lib("acme/bare", "1.0.0", "pub fn g(s: String) -> String:\n    s\n");
 
-    // A consumer that declares a registry dependency on acme/lib.
+    // A consumer that declares registry dependencies on acme/lib (inline-table form)
+    // and acme/bare (bare-string form) — `outdated` must report BOTH.
     let app = fe.new_app();
     std::fs::write(
         app.join("witchy.toml"),
-        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"acme/lib\" = { version = \"^1.0.0\" }\n",
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"acme/lib\" = { version = \"^1.0.0\" }\n\"acme/bare\" = \"^1.0.0\"\n",
     )
     .unwrap();
     let hostport = format!("127.0.0.1:{}", server.port);
@@ -269,6 +273,11 @@ fn outdated_reports_newer_versions() {
     let out = fe.pm(&app, &["--net", &hostport, "outdated", ".", &hostport], None);
     assert!(out.status.success(), "outdated failed: {}", stderr(&out));
     assert!(stdout(&out).contains("acme/lib: req ^1.0.0, latest 1.0.0"), "outdated: {}", stdout(&out));
+    assert!(
+        stdout(&out).contains("acme/bare: req ^1.0.0, latest 1.0.0"),
+        "outdated must walk a bare-string dep too (CJ-06): {}",
+        stdout(&out)
+    );
 
     // Publish + promote a newer version.
     let dir = fe.lib("acme/lib", "1.1.0", "pub fn f(s: String) -> String:\n    s\n");
@@ -382,6 +391,14 @@ fn fresh_releases_cool_down_before_resolving() {
         msg.contains("staging cooldown") && msg.contains("--allow-fresh"),
         "the refusal should explain the window and the override: {msg}"
     );
+    // CJ-01: the refusal must be actionable — it states how long remains before
+    // the release becomes resolvable (the 3600s window minus its just-elapsed age,
+    // rendered as a compact duration like `59m`/`1h`). The window is one hour, so
+    // the remaining wait renders in hours or minutes.
+    assert!(
+        msg.contains("for another ") && (msg.contains("m ") || msg.contains("h ")),
+        "the refusal should state the remaining wait time: {msg}"
+    );
     assert!(!app.join("witchy.lock").exists(), "a cooled-out add must write nothing");
 
     // …and `--allow-fresh` is the explicit acceptance.
@@ -412,4 +429,79 @@ fn published_rune_cannot_have_path_dependency() {
     let out = fe.pm(&dir, &["publish", "."], Some(&ci));
     assert!(!out.status.success(), "a published rune with a path dep must be refused");
     assert!(stdout(&out).contains("path"), "stdout {} stderr {}", stdout(&out), stderr(&out));
+}
+
+/// CJ-03: `witchy pm --help` / `-h` / `help` print the usage table and exit 0
+/// with no `unknown command` error line — a help request is not an error.
+#[test]
+fn pm_help_flag_prints_usage_and_exits_zero() {
+    for flag in ["--help", "-h", "help"] {
+        let out = Command::new(BIN).args(["pm", flag]).output().expect("spawn witchy pm");
+        assert!(out.status.success(), "`pm {flag}` should exit 0: {}", stderr(&out));
+        let s = format!("{}{}", stdout(&out), stderr(&out));
+        assert!(s.contains("usage: pm <command>"), "`pm {flag}` should print usage: {s}");
+        assert!(!s.contains("unknown command"), "`pm {flag}` must not print an error: {s}");
+    }
+}
+
+/// CJ-05: a diamond/version conflict is REPORTED, not silently resolved to the
+/// first-vendored version. `acme/foo` depends on `acme/base ^1`, `acme/bar` on
+/// `acme/base ^2` (incompatible). Adding foo vendors base@1.0.0; a later add of
+/// bar needs a base that 1.x does not satisfy, so pm BLOCKS with an actionable
+/// conflict message naming the package, the vendored version, and the unmet
+/// requirement — instead of keeping base@1 (pm does no unification/backtracking).
+#[test]
+fn diamond_version_conflict_is_reported() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "diamond");
+
+    // Two incompatible majors of the shared dep.
+    fe.published_lib("acme/base", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    fe.published_lib("acme/base", "2.0.0", "pub fn f(s: String) -> String:\n    s\n");
+
+    // foo -> base ^1, bar -> base ^2.
+    let publish_dep = |name: &str, base_req: &str| {
+        let stem = name.rsplit('/').next().unwrap();
+        let dir = fe.base.join(stem);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("witchy.toml"),
+            format!(
+                "[rune]\nname = \"{name}\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/base\" = {{ version = \"{base_req}\" }}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src").join(format!("{stem}.witchy")),
+            "pub fn h(s: String) -> String:\n    s\n",
+        )
+        .unwrap();
+        fe.publish_promote(&dir, name, "1.0.0");
+    };
+    publish_dep("acme/foo", "^1.0.0");
+    publish_dep("acme/bar", "^2.0.0");
+
+    let app = fe.new_app();
+
+    // Adding foo vendors base@1.0.0 (foo's ^1 requirement resolves within it).
+    let out = fe.pm(&app, &["add", "acme/foo"], None);
+    assert!(out.status.success(), "add foo failed: {}\n{}", stdout(&out), stderr(&out));
+    assert!(app.join("vendor/base/coven.json").exists(), "foo's add should vendor base");
+
+    // Adding bar needs base ^2, but base is already vendored at 1.0.0 → CONFLICT.
+    let out = fe.pm(&app, &["add", "acme/bar"], None);
+    assert!(
+        !out.status.success(),
+        "a version conflict must fail the add, not silently keep base@1: {}\n{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let msg = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        msg.contains("version conflict")
+            && msg.contains("acme/base")
+            && msg.contains("1.0.0")
+            && msg.contains("^2.0.0"),
+        "the conflict must name the package, vendored version, and unmet requirement (CJ-05): {msg}"
+    );
 }

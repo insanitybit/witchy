@@ -1,8 +1,12 @@
 # Data: Records and Enums
 
-One keyword, `type`, defines all of witchy's user types. It covers three shapes
-that other languages give separate syntax: records (structs), enums, and tagged
-unions (sum types).
+Most statically typed languages give you a `struct`, an `enum`, and some third
+construct for sum types, each with its own syntax and its own rules. That's
+three things to learn for what is underneath one idea: a type is a shape, or a
+choice between shapes.
+
+witchy has one keyword. `type` covers records (structs), enums, and tagged
+unions, and what distinguishes them is what you write inside.
 
 ## Records
 
@@ -28,7 +32,7 @@ ada
 Records are immutable. To "change" a field you make a fresh record; the spread
 form `..base` fills in the fields you don't override. (When the record lives in a
 `var`, the field-assignment shorthand `acct.balance = b` writes that fresh-record
-update for you — sugar for `acct = Account(balance: b, ..acct)`, kept in place by
+update for you - sugar for `acct = Account(balance: b, ..acct)`, kept in place by
 the optimizer.)
 
 ```witchy
@@ -53,7 +57,7 @@ fn main(console: Console):
 
 ## Anonymous records
 
-Sometimes you want a record's *shape* without naming a type for it — usually to
+Sometimes you want a record's *shape* without naming a type for it - usually to
 bundle a few values on the spot. `.{field: expr, ...}` is a record with no declared
 type:
 
@@ -73,11 +77,11 @@ fn main(console: Console):
 ```
 
 Field access (`point.x`) works exactly as on a named record, and because an
-anonymous record is reflectable, `json.stringify` — and the other reflection-based
-encoders (see [Generics](tour-generics.md)) — serialize it with no per-type code.
+anonymous record is reflectable, `json.stringify` - and the other reflection-based
+encoders (see [Generics](tour-generics.md)) - serialize it with no per-type code.
 The same anonymous record can go directly to a JSON response or another
-reflection-based encoder without a one-off `type`. A bare `"${rec}"` structural print works too
-— an anonymous record renders as `.{x: 1, y: hi}`, exactly the way a named one
+reflection-based encoder without a one-off `type`. A bare `"${rec}"` structural print works too -
+an anonymous record renders as `.{x: 1, y: hi}`, exactly the way a named one
 does.
 
 ## Structural aliases and anonymous unions
@@ -114,8 +118,8 @@ missing host
 
 Anonymous-record identity is exact: `.{x: Int, y: Int}` and
 `.{y: Int, x: Int}` are the same type. At a place that explicitly expects a
-smaller anonymous shape, however, Witchy can project a richer record to that
-exact target. Extra fields are really removed; they are not hidden dynamic
+smaller anonymous shape, however, witchy can project a richer record to that
+exact target. Extra fields are really removed; they aren't hidden dynamic
 properties.
 
 Use `.{..Base, field: Type}` to compose a new exact type from an existing
@@ -145,10 +149,10 @@ ready
 
 Projection is directed by an expected type: annotations, assignments, ordinary
 and `let`/`own` arguments, returns, typed aggregate slots, and `as Summary` can
-request it. Inference remains exact—lists and function values do not become
-covariant, and unannotated branch joins do not silently drop fields. A borrowed
+request it. Inference remains exact - lists and function values don't become
+covariant, and unannotated branch joins don't silently drop fields. A borrowed
 call leaves `detailed` unchanged; an `own` call consumes it. `var` arguments
-stay invariant because a callee could replace the smaller record and there is
+stay invariant because a callee could replace the smaller record and there's
 no sound way to write that replacement back while restoring omitted fields.
 
 Type spread and value spread are different operations. `.{..Summary, note:
@@ -233,7 +237,7 @@ true
 
 ## `match` is exhaustive
 
-`match` destructures a value and *must* cover every case — leave one out and the
+`match` destructures a value and *must* cover every case - leave one out and the
 compiler tells you which, by name. This is what makes adding a variant safe:
 every `match` that needs updating becomes a compile error.
 
@@ -295,7 +299,7 @@ positive
 negative
 ```
 
-A guarded arm (`m if m > 0`) doesn't count toward exhaustiveness — the checker
+A guarded arm (`m if m > 0`) doesn't count toward exhaustiveness - the checker
 knows the guard might not hold, so it still expects the cases below it. A
 `match` with an unhandled variant is rejected with the missing cases named.
 
@@ -327,22 +331,22 @@ lots
 
 Or-patterns nest anywhere a pattern is allowed (`Some(1 | 2)`), and every
 alternative must bind the same names with the same types. Range and or-patterns
-are refutable — they can fail to match — so a `match` over them still needs a
+are refutable - they can fail to match - so a `match` over them still needs a
 final `_` (or exhaustive coverage) to compile.
 
 An arm's body is usually an expression, but a single statement works inline
-too — `0 -> return Err("zero")` to bail out of the enclosing function, or
+too - `0 -> return Err("zero")` to bail out of the enclosing function, or
 `Some(v) -> total = total + v` to update a `var`. For more than one statement,
 put the body on its own indented lines after the `->`.
 
 ## Sealed types
 
-By default any code that can see a type can also build one — `Percent(140)` is a
+By default any code that can see a type can also build one - `Percent(140)` is a
 valid expression even if 140 is a nonsense percentage. Prefix the declaration
 with `sealed` and construction becomes the private business of the defining
 module: outside code can no longer call the data constructor, so it must go
 through the module's public functions. Those functions ("smart constructors")
-are then the single place an invariant is established — and, because nothing can
+are then the single place an invariant is established - and, because nothing can
 bypass them, a value of the type is *proof* the invariant holds.
 
 ```witchy
@@ -368,13 +372,13 @@ fn main(console: Console):
 clamped to 100
 ```
 
-Sealing restricts **construction only** — reading fields (`p.value`) and
+Sealing restricts **construction only** - reading fields (`p.value`) and
 `match`ing on the value work exactly as before, from anywhere. Field assignment
 and record spread build a new whole value, so those updates are also confined to
 the declaring module. Inside that module the constructor and updates remain
 available, which is how `percent` builds one. This is the same mechanism that
 makes capabilities unforgeable (only the host mints a `Net`); a `sealed type`
-just opens it to your own types. The standard library uses it widely — `Set`
+just opens it to your own types. The standard library uses it widely - `Set`
 guarantees distinct members, `semver.Version` non-negative components,
-`time.DateTime` a real calendar date — each an invariant its smart constructor
+`time.DateTime` a real calendar date - each an invariant its smart constructor
 enforces and its type then carries.

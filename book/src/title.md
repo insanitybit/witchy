@@ -4,8 +4,8 @@
 auditable, enforceable artifact.*
 
 witchy is a small, statically typed language in which a program's authority is visible
-in its types and enforced at runtime by a sandboxed WebAssembly VM. There is no
-ambient authority: a function without a filesystem capability cannot access the
+in its types and enforced at runtime by a sandboxed WebAssembly VM. There's no
+ambient authority: a function without a filesystem capability can't access the
 filesystem, and the compiler rejects the attempt.
 
 This book teaches witchy from the ground up. For an exhaustive description of

@@ -3,7 +3,7 @@
 `derive(Show)`, `derive(Eq)`, and friends generate a *new function per type* at
 compile time. Reflection is the other half of the same idea: instead of generating
 code for each type, it exposes a value's **structure as data**, so one function can
-walk a value of *any* type. It is how `json.stringify` serializes a record it has
+walk a value of *any* type. It's how `json.stringify` serializes a record it has
 never seen, with no per-type encoder.
 
 ## Making a type reflectable
@@ -32,11 +32,11 @@ fn main(console: Console):
 Point { x: 1, y: 2 }
 ```
 
-Two different consumers — `json.stringify` (from `import json`) and `reflect.debug`
-(a structural string, handy in tests and logs) — both read `Point` with no per-type
+Two different consumers - `json.stringify` (from `import json`) and `reflect.debug`
+(a structural string, handy in tests and logs) - both read `Point` with no per-type
 code. One derivation supports every reflective consumer. Reflection is opt-in per
 type (like Zig's `@typeInfo`, but you choose which types
-participate), so reflection never sees a type that did not ask to be seen.
+participate), so reflection never sees a type that didn't ask to be seen.
 
 Sum types reflect too, carrying their variant:
 
@@ -60,7 +60,7 @@ Square(3, 4)
 
 ## The `Mirror`: inspecting structure yourself
 
-`reflect(x)` returns a `Mirror` — the value's shape as an ordinary sum type you can
+`reflect(x)` returns a `Mirror` - the value's shape as an ordinary sum type you can
 `match` on. That is the whole mechanism `json` and `debug` are built on, and you
 write your own consumer the same way. The variants:
 
@@ -114,7 +114,7 @@ The `Mirror` constructors are module-scoped: after `import reflect` you name the
 qualified (`reflect.MInt`, `reflect.MRecord`, …), or bind the type once with
 `from reflect import Mirror` to write its variants bare (`MInt`, `MRecord`, …).
 `value` is taken as
-`impl Reflect` — sugar for a generic parameter with a `Reflect` bound — because
+`impl Reflect` - sugar for a generic parameter with a `Reflect` bound - because
 `reflect(...)` dispatches on any expression whose type the checker knows (a
 parameter, loop variable, constructor-pattern binding, destructured tuple slot,
 or call result), which is exactly what a trait method needs to resolve (see
@@ -122,27 +122,27 @@ or call result), which is exactly what a trait method needs to resolve (see
 
 A `MRecord` carries its fields *in declared order* and a `MVariant` names both the
 type and the variant, so a single recursive walk over `Mirror` is enough to
-serialize, pretty-print, diff, or hash any reflectable value — which is precisely
+serialize, pretty-print, diff, or hash any reflectable value - which is precisely
 how `std/json` and `reflect.debug` are written.
 
 ## Decoding: the other direction
 
-Reflection covers *encoding* — any reflectable value becomes a `Mirror`, and from
+Reflection covers *encoding* - any reflectable value becomes a `Mirror`, and from
 there JSON, a debug string, or whatever you traverse it into. Going the other way,
 *decoding* a parsed value back into a typed record, is generated per type with
 `derive(Deserialize)` (`Type.from_json(j) -> Result(Type, json.DeserializeError)`);
 see
-[Generics and Traits](tour-generics.md). There is deliberately no `derive(Json)`
-or `to_json` — encoding is reflective and needs nothing generated, while only
+[Generics and Traits](tour-generics.md). There's deliberately no `derive(Json)`
+or `to_json` - encoding is reflective and needs nothing generated, while only
 decoding has to be.
 
-## It is ordinary witchy
+## It's ordinary witchy
 
 `Mirror` is a normal sum type, the `Reflect` impls are normal trait impls, and
-`derive(Reflect)` appends normal source before type-checking — so a reflective
+`derive(Reflect)` appends normal source before type-checking - so a reflective
 consumer you write runs identically on the interpreter and the compiled backend,
 and audits in `witchy caps` like any other code. Reflection adds no runtime magic:
-it is a trait and a data type, nothing more.
+it's a trait and a data type, nothing more.
 
 ## Checked dynamic values
 
@@ -193,7 +193,7 @@ true
 7
 ```
 
-Dynamic values cannot retain borrowed views: materialize a view with `.owned()`
+Dynamic values can't retain borrowed views: materialize a view with `.owned()`
 before packing it. Capability-requiring methods are excluded from plain
 `dynamic.call`; inspect `dynamic.method_caps` and provide an explicit bundle to
 `dynamic.call_with`. Private or sealed fields remain inaccessible, and unknown

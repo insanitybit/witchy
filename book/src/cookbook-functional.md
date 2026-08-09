@@ -1,9 +1,10 @@
 # Functions as Values
 
 Functions in witchy are ordinary values: you can store one in a variable, pass
-it to `list.map`, and return one from another function. The `func` module
-supplies the small set of combinators that show up whenever you work in that
-style — composition, argument shuffling, and tuple projection.
+it to `list.map`, and return one from another function. The `func` module is
+deliberately small. witchy leans on named helpers and explicit closures for most
+work; `func` covers the handful of spots where a point-free adapter genuinely
+reads better - composition, argument shuffling, and tuple projection.
 
 ## Composing and adapting functions
 
@@ -40,7 +41,7 @@ two arguments of a binary function.
 ## Keying comparisons with `on_key`
 
 The most practical combinator is `on_key`. Ordering functions like `list.sort_by`
-want a *less-than predicate* over the elements — but often you want to compare by
+want a *less-than predicate* over the elements - but often you want to compare by
 some field of each element, not the whole thing. `on_key(op, key)` builds
 exactly that: it applies `key` to each side, then compares the results with `op`.
 
@@ -63,9 +64,8 @@ babbage: 49
 
 Here `func.second` is the key (each person's age) and `fn(a, b): a < b` is the
 comparison. `on_key` glues them into the `fn(a, a) -> Bool` predicate `sort_by`
-expects. Pair it with `func.first` to sort by the first field instead — the same
+expects. Pair it with `func.first` to sort by the first field instead - the same
 shape, a different projection.
 
-These combinators are deliberately few. witchy leans on named helper functions
-and explicit closures for most work; `func` is there for the handful of spots
-where a point-free adapter genuinely reads better than a lambda.
+Reach for these when a lambda would just be noise. Anywhere else, write the
+named helper.
