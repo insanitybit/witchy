@@ -17,8 +17,13 @@ import time
 from glamour import Cmd, CredentialPort, HttpResult, NavigationResult, PortResult, Program, Start, Sub, Ui, UiFetch, UiRoot, UiRoute, VNode
 from json import Json
 
+// State is 5 strings + the enabled social-login providers (a list like ["github"], injected
+// by the host from the server's provider config): the route, the signed-in identity, the
+// current view's raw response, a status notice, the search query, and which social-login
+// buttons the signed-out header should offer (a passkey-only instance carries an empty list,
+// so no GitHub/Google button — whose route would 404 — is ever rendered).
 type Model:
-    Model(String, String, String, String, String)
+    Model(String, String, String, String, String, List(String))
 
 type Msg derive(Reflect):
     Route(String)
@@ -65,48 +70,75 @@ fn update(caps: Caps, m: Model, msg: Msg) -> (Model, Cmd(Msg)):
         // the record reflects the new state immediately (a promote flips staged -> released).
         Caps(fetch, router, login, register, promote_cred, yank_cred) ->
             match m:
-                Model(route, sess, data, notice, query) ->
+                Model(route, sess, data, notice, query, providers) ->
                     match msg:
                         Visit(path) -> (m, glamour.navigate("coven-web.navigation", router, path, fn(result: NavigationResult): NavigationDone(result)))
-                        Route(path) -> (Model(path, sess, "", "", ""), fetch_for(fetch, path))
+                        Route(path) -> (Model(path, sess, "", "", "", providers), fetch_for(fetch, path))
                         GotData(result) ->
                             match result:
-                                HttpResponse(_status, body) -> (Model(route, sess, body, notice, query), NoCmd)
-                                HttpFailure(problem) -> (Model(route, sess, data, problem, query), NoCmd)
+                                HttpResponse(_status, body) -> (Model(route, sess, body, notice, query, providers), NoCmd)
+                                HttpFailure(problem) -> (Model(route, sess, data, problem, query, providers), NoCmd)
                                 _ -> (m, NoCmd)
                         NavigationDone(result) ->
                             match result:
-                                Navigated(path) -> (Model(path, sess, "", "", ""), fetch_for(fetch, path))
+                                Navigated(path) -> (Model(path, sess, "", "", "", providers), fetch_for(fetch, path))
                                 _ -> (m, NoCmd)
                         Login -> (m, glamour.port("coven-web.login", login, "", fn(result: PortResult): LoggedIn(result)))
-                        Register -> (Model(route, sess, data, "registering passkey…", query), glamour.port("coven-web.register", register, "", fn(result: PortResult): OpDone(result)))
+                        Register -> (Model(route, sess, data, "registering passkey…", query, providers), glamour.port("coven-web.register", register, "", fn(result: PortResult): OpDone(result)))
                         LoggedIn(result) ->
                             match result:
-                                PortResponse(who) -> (Model(route, who, data, "", query), NoCmd)
-                                PortFailure(problem) -> (Model(route, sess, data, problem, query), NoCmd)
+                                PortResponse(who) -> (Model(route, who, data, "", query, providers), NoCmd)
+                                PortFailure(problem) -> (Model(route, sess, data, problem, query, providers), NoCmd)
                                 _ -> (m, NoCmd)
-                        Promote -> (Model(route, sess, data, "promoting…", query), glamour.port("coven-web.promote", promote_cred, route, fn(result: PortResult): OpDone(result)))
-                        Yank -> (Model(route, sess, data, "yanking…", query), glamour.port("coven-web.yank", yank_cred, route, fn(result: PortResult): OpDone(result)))
+                        Promote -> (Model(route, sess, data, "promoting…", query, providers), glamour.port("coven-web.promote", promote_cred, route, fn(result: PortResult): OpDone(result)))
+                        Yank -> (Model(route, sess, data, "yanking…", query, providers), glamour.port("coven-web.yank", yank_cred, route, fn(result: PortResult): OpDone(result)))
                         OpDone(result) ->
                             match result:
-                                PortResponse(value) -> (Model(route, sess, data, value, query), fetch_for(fetch, route))
-                                PortFailure(problem) -> (Model(route, sess, data, problem, query), NoCmd)
+                                PortResponse(value) -> (Model(route, sess, data, value, query, providers), fetch_for(fetch, route))
+                                PortFailure(problem) -> (Model(route, sess, data, problem, query, providers), NoCmd)
                                 _ -> (m, NoCmd)
-                        Search(q) -> (Model(route, sess, data, notice, q), NoCmd)
+                        Search(q) -> (Model(route, sess, data, notice, q, providers), NoCmd)
 
 // --- views -------------------------------------------------------------------
 fn view(m: Model) -> Ui(Msg):
     match m:
-        Model(route, sess, data, notice, query) ->
-            glamour.ui(glamour.element("div", [glamour.prop("class", "app")], [header(sess, notice), body(route, data, sess, query)]))
+        Model(route, sess, data, notice, query, providers) ->
+            glamour.ui(glamour.element("div", [glamour.prop("class", "app")], [header(sess, notice, providers), body(route, data, sess, query)]))
 
-fn header(sess: String, notice: String) -> VNode(Msg):
-    let auth = if sess.is_empty(): glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Login)], [glamour.text("sign in with passkey")]), glamour.element("button", [glamour.prop("class", "button link ghost"), glamour.on("click", Register)], [glamour.text("register")])]) else: glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("span", [glamour.prop("class", "session-id")], [glamour.text("● signed in as ${sess}")])])
+fn header(sess: String, notice: String, providers: List(String)) -> VNode(Msg):
+    let auth = auth_node(sess, providers)
 
     // "Profile" appears only when signed in (session identity is non-empty).
     let profile_nav = if sess.is_empty(): glamour.text("") else: glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/profile"))], [glamour.text("Profile")])
 
     glamour.element("nav", [glamour.prop("class", "topnav")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("Runes")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/trust"))], [glamour.text("Trust")]), profile_nav, auth, glamour.element("span", [glamour.prop("class", "muted notice")], [glamour.text(notice)])])
+
+// The signed-out auth affordances: the passkey sign-in + register buttons (host credential
+// PORTS, exactly as before) PLUS a plain same-origin link per enabled social-login provider.
+// A social login is NOT a credential port — it is an ordinary full-page navigation to the
+// server's `/auth/<provider>/login`, which mints a session and redirects back to `/#token=…`
+// (main.ts's adoptLoginFragment then labels the header with the real identity). When signed
+// in, only the identity chip shows. `providers` is injected by the host from the server's
+// live config, so a passkey-only instance renders no social button (its route would 404).
+fn auth_node(sess: String, providers: List(String)) -> VNode(Msg):
+    if sess.is_empty():
+        var kids = [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Login)], [glamour.text("sign in with passkey")]), glamour.element("button", [glamour.prop("class", "button link ghost"), glamour.on("click", Register)], [glamour.text("register")])]
+        for node in social_logins(providers):
+            kids.push(node)
+        glamour.element("span", [glamour.prop("class", "nav-auth")], kids)
+    else:
+        glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("span", [glamour.prop("class", "session-id")], [glamour.text("● signed in as ${sess}")])])
+
+// One "sign in with <Provider>" link per enabled provider, as an ordinary same-origin anchor
+// to the server route (glamour scheme-checks href, so this relative path passes untouched).
+fn social_logins(providers: List(String)) -> List(VNode(Msg)):
+    var out = []
+    for p in providers:
+        if p == "github":
+            out.push(glamour.element("a", [glamour.prop("class", "button link"), glamour.prop("href", "/auth/github/login")], [glamour.text("sign in with GitHub")]))
+        else if p == "google":
+            out.push(glamour.element("a", [glamour.prop("class", "button link"), glamour.prop("href", "/auth/google/login")], [glamour.text("sign in with Google")]))
+    out
 
 fn body(route: String, data: String, sess: String, query: String) -> VNode(Msg):
     if route.starts_with("/trust"):
@@ -391,12 +423,15 @@ fn gs(j: Json, k: String) -> String:
     json.get_string(j, k).unwrap_or("")
 
 fn parse_model(j: Json) -> Model:
-    Model(gs(j, "route"), gs(j, "session"), gs(j, "data"), gs(j, "notice"), gs(j, "query"))
+    Model(gs(j, "route"), gs(j, "session"), gs(j, "data"), gs(j, "notice"), gs(j, "query"), json.get_strings(j, "providers"))
 
 fn model_to_json(m: Model) -> Json:
     match m:
-        Model(route, sess, data, notice, query) ->
-            JsonObject([("route", JsonString(route)), ("session", JsonString(sess)), ("data", JsonString(data)), ("notice", JsonString(notice)), ("query", JsonString(query))])
+        Model(route, sess, data, notice, query, providers) ->
+            var pvs = []
+            for p in providers:
+                pvs.push(JsonString(p))
+            JsonObject([("route", JsonString(route)), ("session", JsonString(sess)), ("data", JsonString(data)), ("notice", JsonString(notice)), ("query", JsonString(query)), ("providers", JsonArray(pvs))])
 
 fn aj(j: Json, i: Int) -> Json:
     match json.get(j, "\$values"):
@@ -443,7 +478,7 @@ fn authorize(ui: UiRoot) -> Caps:
 
 fn initial(start: Start) -> Model:
     match start:
-        Start(route, _bootstrap) -> Model(route, "", "", "", "")
+        Start(route, _bootstrap) -> Model(route, "", "", "", "", [])
 
 fn start(_caps: Caps, _model: Model) -> Cmd(Msg):
     NoCmd

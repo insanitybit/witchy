@@ -64,9 +64,15 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     let google_jwks = if list.length(args) > 10: list.at(args, 10) else: "https://www.googleapis.com/oauth2/v3/certs"
     let google_redirect = "${origin}/auth/google/callback"
 
+    // Which social-login providers are configured, as a space-separated list (e.g. "github
+    // google"). Injected into the served shell HTML so the client rune renders a login button
+    // ONLY for an enabled provider — a passkey-only instance offers no GitHub/Google button
+    // whose `/auth/<provider>/login` route would 404.
+    let login_providers = enabled_providers(gh_client_id, google_client_id)
+
     var app = server.router()
-    app = app.get("/", h_index_html(assets))
-    app = app.get("/index.html", h_index_html(assets))
+    app = app.get("/", h_index_html(assets, login_providers))
+    app = app.get("/index.html", h_index_html(assets, login_providers))
     app = app.get("/app.js", h_asset(assets, "app.js", "text/javascript; charset=utf-8"))
     app = app.get("/styles.css", h_asset(assets, "styles.css", "text/css; charset=utf-8"))
     // `source-sandbox.js` is the in-sandbox renderer; the glamour highlighter WASM
@@ -149,7 +155,7 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     // route to the SPA shell (so a deep link / reload of /v/… loads the app, then the glamour
     // rune routes from the URL), sec_fetch_csrf rejects cross-site writes before the handler,
     // and security_headers is outer (so even a 403 carries the full stack).
-    app = app.layer(spa_fallback(assets))
+    app = app.layer(spa_fallback(assets, login_providers))
     app = app.layer(sec_fetch_csrf())
     app = app.layer(security_headers())
 
@@ -157,8 +163,27 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     server.serve(net, listen_addr, app)
 
 // ---- Static assets ----------------------------------------------------------
-fn h_index_html(assets: Dir) -> fn(Request) -> Response:
-    fn(req: Request): if assets.exists("index.html"): server.html(200, assets.read("index.html")) else: server.not_found()
+fn h_index_html(assets: Dir, providers: String) -> fn(Request) -> Response:
+    fn(req: Request): if assets.exists("index.html"): server.html(200, shell_html(assets, providers)) else: server.not_found()
+
+// The served SPA shell, with the enabled social-login providers injected as a
+// `<meta name="coven-login-providers">` the client rune reads to render its login buttons.
+fn shell_html(assets: Dir, providers: String) -> String:
+    let html = assets.read("index.html")
+    let meta = "<meta name=\"coven-login-providers\" content=\"${providers}\">"
+    html.replace("</head>", "${meta}</head>")
+
+// The enabled social-login providers as a space-separated list ("", "github", "google", or
+// "github google"), derived from whether each provider's OAuth client id is configured.
+fn enabled_providers(gh_client_id: String, google_client_id: String) -> String:
+    if gh_client_id != "" && google_client_id != "":
+        "github google"
+    else if gh_client_id != "":
+        "github"
+    else if google_client_id != "":
+        "google"
+    else:
+        ""
 
 fn h_asset(assets: Dir, file: String, ctype: String) -> fn(Request) -> Response:
     fn(req: Request): if assets.exists(file): Response(200, [("content-type", ctype)], assets.read(file)) else: server.not_found()
@@ -664,14 +689,14 @@ fn security_headers() -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
 fn is_client_route(p: String) -> Bool:
     p == "/" || p.starts_with("/v/") || p.starts_with("/d/") || p.starts_with("/s/") || p.starts_with("/trust")
 
-fn spa_fallback(assets: Dir) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
+fn spa_fallback(assets: Dir, providers: String) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
     fn(inner: fn(Request) -> Response):
         fn(req: Request):
             let resp = inner(req)
             match resp:
                 Response(code, _h, _b) ->
                     if code == 404 && server.method(req) == "GET" && is_client_route(server.path(req)) && assets.exists("index.html"):
-                        server.html(200, assets.read("index.html"))
+                        server.html(200, shell_html(assets, providers))
                     else:
                         resp
 

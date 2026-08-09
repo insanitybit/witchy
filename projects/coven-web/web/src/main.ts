@@ -49,6 +49,18 @@ function adoptLoginFragment(): string {
   return "";
 }
 
+// Which social-login providers this instance has configured, read from the server-injected
+// `<meta name="coven-login-providers" content="github google">` (coven_web.witchy builds the
+// content from whether the GitHub/Google client ids are set). The rune renders a "sign in
+// with <provider>" link only for the providers listed here, so a passkey-only deployment
+// never shows a button whose `/auth/<provider>/login` route would 404. Unknown tokens are
+// dropped — the rune only knows github/google.
+function loginProviders(): string[] {
+  const meta = document.querySelector('meta[name="coven-login-providers"]');
+  const content = meta?.getAttribute("content") ?? "";
+  return content.split(/\s+/).filter((p) => p === "github" || p === "google");
+}
+
 async function boot(): Promise<void> {
   const root = document.getElementById("app");
   if (!root) throw new Error("coven-web: missing #app element");
@@ -61,7 +73,7 @@ async function boot(): Promise<void> {
   const session = who || (isSignedIn() ? "signed in (passkey)" : "");
 
   await mount(wasmBytes(), root, {
-    initialModel: { route: location.pathname, session, data: "", notice: "" },
+    initialModel: { route: location.pathname, session, data: "", notice: "", providers: loginProviders() },
     routeTag: "Route",
     // (RFC-0040/0107) `export_step` takes a `UiRoot`; stage its user-capability grant at
     // instantiation. Without this the compiled rune's `build_user_cap_field` traps at boot

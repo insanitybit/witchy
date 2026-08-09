@@ -64,6 +64,13 @@ const search = (root, value) => {
   if (!input) throw new Error("no search input");
   input.dispatchEvent({ type: "input", target: { value } });
 };
+// A social-login affordance is a plain <a href> (a real same-origin navigation, NOT a
+// credential port), so it is found by anchor tag + text, and its href is asserted directly.
+const anchorHref = (root, text) => {
+  const a = qsa(root, "a").find((x) => x.textContent === text);
+  return a ? a.getAttribute("href") : null;
+};
+const hasAnchor = (root, text) => qsa(root, "a").some((x) => x.textContent === text);
 
 let failures = 0;
 const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if (!cond) failures++; };
@@ -111,7 +118,10 @@ try {
   const root = new FakeElement("root");
   await mount(wasm, root, {
     document: fakeDocument,
-    initialModel: { route: "/", session: "", data: "", notice: "", query: "" },
+    // `providers` is the enabled social-login list the host reads from the server-injected
+    // <meta name="coven-login-providers"> and hands the rune. With ["github"] the signed-out
+    // header must offer a "sign in with GitHub" link but NOT a Google one.
+    initialModel: { route: "/", session: "", data: "", notice: "", query: "", providers: ["github"] },
     fetch: fakeFetch, routeTag: "Route", location, history, ports,
     // (RFC-0040) the app's `export_step` takes a `UiRoot`; stage its grant.
     instantiateOpts: { userCaps: [["coven-web"]] },
@@ -127,6 +137,12 @@ try {
   ok(qsa(root, "span").some((s) => (s.getAttribute("class") || "").includes("badge state-released")), "the lifecycle state renders as a badge");
   ok(root.textContent.includes("published") && root.textContent.includes("not yet released"), "a released rune shows its publish date; a staged one says so");
   ok(!qsa(root, "button").some((b) => b.textContent === "Profile"), "the Profile nav is hidden while signed out");
+  // Social login (RFC-0010 UI): with providers ["github"], the signed-out header offers a
+  // "sign in with GitHub" link — a plain anchor to the server's /auth/github/login route
+  // (a real same-origin navigation, not a credential port) — alongside the passkey button.
+  ok(anchorHref(root, "sign in with GitHub") === "/auth/github/login", "an enabled provider renders a 'sign in with GitHub' link to /auth/github/login while signed out");
+  ok(!hasAnchor(root, "sign in with Google"), "a provider that is NOT enabled renders no login link");
+  ok(qsa(root, "button").some((b) => b.textContent === "sign in with passkey"), "the passkey sign-in button remains alongside the social login (additive)");
   search(root, "zzzznomatch");
   await settle();
   ok(root.textContent.includes("no runes match 'zzzznomatch'"), "an empty search result renders a 'no runes match' empty-state (UI-07)");
@@ -150,6 +166,7 @@ try {
   clickText(root, "sign in with passkey");
   await settle();
   ok(root.textContent.includes("signed in as alice"), "the passkey login port signs the user in (identity only — no token in the rune)");
+  ok(!hasAnchor(root, "sign in with GitHub"), "the social-login links disappear once signed in");
 
   // 3. Open the version record (now signed in -> promote/yank visible).
   clickPrefix(root, "acme/charts");
@@ -223,6 +240,19 @@ try {
   ok(root.textContent.includes("alice/widget"), "the profile lists a rune published under the session identity");
   ok(!root.textContent.includes("util/strings") && !root.textContent.includes("acme/charts"), "the profile lists ONLY the session's own runes, not the whole catalog");
   ok(!root.textContent.includes("haven't published"), "with matching runes, the empty-state is not shown");
+
+  // 9. A passkey-only instance (no configured providers) must render NO social-login link —
+  // its /auth/<provider>/login route would 404. Mount a fresh instance with providers: [].
+  const root2 = new FakeElement("root");
+  await mount(wasm, root2, {
+    document: fakeDocument,
+    initialModel: { route: "/", session: "", data: "", notice: "", query: "", providers: [] },
+    fetch: fakeFetch, routeTag: "Route", location: { pathname: "/" }, history: { pushState: () => {} }, ports,
+    instantiateOpts: { userCaps: [["coven-web"]] },
+  });
+  await settle();
+  ok(!hasAnchor(root2, "sign in with GitHub") && !hasAnchor(root2, "sign in with Google"), "with no providers configured, the header renders no social-login link at all");
+  ok(qsa(root2, "button").some((b) => b.textContent === "sign in with passkey"), "the passkey button still renders on a provider-less instance");
 } finally {
   rmSync(work, { recursive: true, force: true });
 }
