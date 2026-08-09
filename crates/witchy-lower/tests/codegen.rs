@@ -4178,6 +4178,30 @@ fn main(console: Console):
     }
 
     #[test]
+    fn borrowed_nominal_list_copy_keeps_an_independent_root_companion() {
+        let source = "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String, offset: Int) -> Cursor('a):\n    Cursor(input, offset)\n\n\
+             fn copy_read(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input, 7)]\n    let copied = cursors\n    let cursor = list.at(copied, 0)\n    cursor.offset\n\n\
+             fn main() -> Int:\n    copy_read(\"root\")\n";
+        assert_eq!(run_int(source), 7);
+
+        let module = parse_module(source).expect("parse borrowed nominal list copy fixture");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("borrowed nominal list copy lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $copy_read").expect("copy_read function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let copy_read = &tail[..end];
+        assert!(copy_read.contains("__loan_root_cursors__input"), "source list root: {copy_read}");
+        assert!(copy_read.contains("__loan_root_copied__input"), "copied list root: {copy_read}");
+        assert!(copy_read.contains("__loan_root_cursor__input"), "extracted shell root: {copy_read}");
+        assert!(copy_read.contains("call $rc_dup"), "retains every live root: {copy_read}");
+        assert!(copy_read.contains("call $rc_drop"), "releases every live root: {copy_read}");
+    }
+
+    #[test]
     fn borrowed_nominal_list_loop_binder_keeps_the_list_root_live() {
         let source = "mode opt\n\n\
              type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
