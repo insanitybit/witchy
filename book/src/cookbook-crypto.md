@@ -79,14 +79,16 @@ Signing and public-key derivation are by-handle operations, so they need only
 
 ```witchy
 import crypto
+import secretstore
 
 // `Secret[Seal]` is a promise the checker enforces: this cannot read the key.
 fn endorse(key: Secret[Seal], release: String) -> String:
     key.sign(release)
 
-fn main(console: Console, key: Secret):
-    // A bare `Secret` has both rights, so it narrows to `Secret[Seal]` here.
+fn main(console: Console, secrets: SecretStore):
+    let key = secrets.require("signing")
     console.print(endorse(key, "v1.0.0"))
+    console.print(crypto.public_key(key))
 ```
 
 Narrowing only ever drops rights, so `endorse` cannot pass its sealed handle

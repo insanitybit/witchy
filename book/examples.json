@@ -1325,13 +1325,13 @@
   },
   {
     "block": 2,
-    "browser_runnable": false,
-    "console_only": false,
+    "browser_runnable": true,
+    "console_only": true,
     "expect_error": false,
     "file": "book/src/cookbook-crypto.md",
     "footprint": [
       "Console[Read,Write]",
-      "Secret[Reveal,Seal]"
+      "SecretStore"
     ],
     "output": [],
     "runnable": false
