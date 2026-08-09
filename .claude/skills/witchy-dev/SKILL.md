@@ -9,6 +9,14 @@ Everything you need for ordinary feature work is on this page. Don't go
 exploring to reconstruct it. Reach for deeper sources only when this page is
 genuinely insufficient — pointers are at the bottom.
 
+**Assume you are one of several agents working this repo right now.** That is
+the normal case, not an edge case. Other agents hold branches, submit to the
+merge queue, and have uncommitted edits in the shared checkout *while you work*.
+So: nothing you observed is guaranteed still true when you act on it, changes
+you didn't make are someone's work-in-progress rather than mess to clean up, and
+master moves under you mid-task. §3 has the mechanics; the rule of thumb is
+**re-check before you act, and never undo what you didn't do.**
+
 ## 0. The one rule: parity
 
 Two backends, **zero silent divergence.** The interpreter
@@ -223,8 +231,8 @@ only the root package activates — a package-scoped check reports green without
 ever parsing those files. Validate runtime work with `cargo check -p witchy` or
 a workspace-wide command.
 
-**This checkout is often shared by several agents at once.** Treat the worktree
-and `target/` as shared state:
+**This checkout is shared by several agents at once — plan for it.** Treat the
+worktree, `target/`, master, and the merge queue as shared state:
 
 - Run `git status --short --branch` before editing and again before claiming the
   repo is clean. If files changed under you, another agent or the user did it —
@@ -237,6 +245,28 @@ and `target/` as shared state:
 - Don't kill Cargo, nextest, dev-server, or browser processes you didn't start.
 - Use a per-agent target dir for long commands:
   `CARGO_TARGET_DIR=target-claude cargo nextest run --workspace`.
+
+**Uncommitted changes you didn't write are the common case, and they are
+someone's in-flight work.** Don't discard them and don't silently fold them into
+your own commit. Read the diff and decide: unrelated to your task → leave it
+alone and say so in your report; a fact you can check (a count, a filename, a
+path) → verify it, and if master has moved since it was written, correct it and
+commit it on its own branch with a message that says what you verified.
+
+**Anything you measured has a shelf life.** Test counts, census numbers,
+artifact filenames, queue contents, and "the queue is empty" all go stale within
+minutes. Re-read state immediately before you act on it, and re-derive a number
+before you write it into a doc rather than copying a number someone else wrote.
+
+**Others' work in the queue is not yours to fix.** A branch that goes RED, a
+duplicate submission, a diverged remote — report it with the log path and leave
+it. The exception is a genuine duplicate of the *identical* SHA, which wastes a
+whole gate cycle: `drop` it with a journaled reason.
+
+**Your own coordinator outlives your task.** If you started
+`merge-queue.sh run`, it keeps gating whatever else is queued after your branch
+lands. That's fine and usually desirable — just say so in your report so the
+next agent knows a coordinator is alive rather than starting a second one.
 
 **All work happens in a worktree on a branch — never edit the main checkout
 directly**, which blocks other agents. Fresh worktrees need a seeded build
