@@ -1065,12 +1065,47 @@
             .expect("the record update is authenticated as a shell mutation");
         assert_eq!(mutation.shell, "cursor");
         assert_eq!(mutation.fields, ["offset"]);
-        assert_eq!(mutation.roots.len(), 1);
-        assert_eq!(mutation.roots[0].owner_root().local, "input");
+        assert_eq!(mutation.roots_before.len(), 1);
+        assert_eq!(mutation.roots_after, mutation.roots_before);
+        assert_eq!(mutation.roots_before[0].owner_root().local, "input");
         assert_eq!(
-            mutation.roots[0].borrower_projection,
+            mutation.roots_before[0].borrower_projection,
             LoanProjection { steps: vec![LoanProjectionStep::Field("view".into())] },
         );
+    }
+
+    #[test]
+    fn borrowed_shell_field_replacement_sequences_distinct_owner_roots() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\n\
+             fn replace(left: let('a) String, right: let('a) String) -> Int:\n    var cursor = make(left)\n    cursor.view = right\n    cursor.offset\n",
+        )
+        .expect("parse borrowed shell root-transition fixture");
+        let typed = crate::typeck::annotate_checked(module)
+            .expect("type-check borrowed shell root-transition fixture");
+        let loan_facts = crate::loans::facts_with_types(typed.module(), typed.table())
+            .expect("publish borrowed shell root-transition facts");
+        let replace = typed
+            .module()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "replace" => Some(function),
+                _ => None,
+            })
+            .expect("replace");
+        let update = &replace.body.stmts[1];
+        let mutation = loan_facts
+            .shell_mutation_after(update)
+            .expect("the borrowed-field update publishes a root transition");
+        assert_eq!(mutation.roots_before.len(), 1);
+        assert_eq!(mutation.roots_before[0].owner_root().local, "left");
+        assert_eq!(mutation.roots_after.len(), 1);
+        assert_eq!(mutation.roots_after[0].owner_root().local, "right");
+        assert!(loan_facts.closes_after(update).contains(&mutation.roots_before[0]));
+        assert!(loan_facts.opens_after(update).contains(&mutation.roots_after[0]));
     }
 
     #[test]

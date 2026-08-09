@@ -3,7 +3,7 @@ rfc: 0112
 title: "Borrowed aggregate types and projection-aware loans"
 status: accepted
 created: 2026-08-01
-updated: 2026-08-08
+updated: 2026-08-09
 tracking: "Design accepted; no open questions (non-goals fixed: no mutable/shared refs, no pointer identity, no loan across await/yield initially). Adds lifetime parameters to nominal type declarations; shared read-only borrows only. Criteria 1-5 PROVEN (lifetime-parameterized nominal parse/kind-check, fixed borrowed record/tuple construct-copy-project-return, projection-aware loan facts, loan fact model, function-value lifetime relations); criteria 6 and 7 PARTIAL, and 8,9,10,11 MISSING. Row 6 now supports checked mutable shells updating owned scalar fields while transporting the existing hidden root set; borrowed-field replacement and old/new root sequencing remain. Remaining before implemented: field-replacement loan sequencing (row 6), aggregate retain/drop balance matrix incl. early-return/?/branch/loop/UAF (row 8), List(B('a)) lifecycle (row 9), a runnable zero-copy parser + borrowed iterator with zero-materialization counters (row 10), and the complete shipped-contract spec/book/reflection docs (row 11). Per rfcs/0110-0112-acceptance-ledger.md."
 predecessors:
   - "[0024](0024-unified-facts-lattice.md) (shared facts and confinement lattice)"
@@ -213,6 +213,23 @@ sets the project thresholds; it must compare equivalent scalar and zero-copy
 workloads, publish percentile results and outliers, and separate analysis cost
 from Wasm code generation. No RFC claim of Rust parity is valid until that
 repeatable baseline exists.
+
+The implementation must preserve a scaling boundary: bodies with no borrowed
+aggregate facts take the existing cheap path, and a body with borrowed facts
+seeds precise propagation only from its candidate invalidations and their
+reachable control-flow component. It must not unconditionally solve every
+loan/constraint pair in a function. The pinned corpus must include a
+large-function stress case and report its fact and constraint cardinalities;
+the current Polonius alpha has shown that a single 5 KLOC function with tens of
+thousands of loans can dominate a checker even after ordinary cases are fast.
+That case is a regression sentinel, not a source-compatible requirement or a
+new user-visible syntax.
+
+The fact interface is deliberately stable while its engine is not: an
+implementation may replace the initial worklist algorithm with a differential
+or Datalog-style solver, provided it preserves the same point-indexed facts and
+diagnostics. This keeps algorithmic improvements available without a language
+redesign or a second, divergent loan model.
 
 Future work may add more precision in this order:
 
@@ -479,6 +496,10 @@ borrowed-container stage.
 - Rust's lifetime-parameterized structs and non-lexical lifetimes demonstrate
   that owner relations can survive nominal aggregation; Witchy keeps `View` and
   value semantics instead of adopting general reference fields.
+- Rust's [2026 Polonius progress update](https://blog.rust-lang.org/2026/05/18/project-goals-2026-04/)
+  motivates the localized propagation and large-function metrics above; it is
+  evidence of a performance risk to measure, not a claim of implementation
+  equivalence.
 
 ## Non-goals
 

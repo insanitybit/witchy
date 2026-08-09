@@ -7225,21 +7225,15 @@ impl Checker {
                     };
                     let expected = self.subst_vars(fty, &map);
                     if borrowed_shell {
-                        if self
+                        let relation_field = self
                             .borrowed_nominal_relation_fields
                             .get(&tyname)
-                            .is_some_and(|borrowed| borrowed.contains(fname))
-                        {
-                            return terr(format!(
-                                "`update` of borrowed field `{fname}` on `{tyname}` requires \
-                                 checked old/new loan sequencing; update an owned scalar field \
-                                 instead"
-                            ));
-                        }
-                        if !is_scalar_ty(&self.resolve(&expected)) {
+                            .is_some_and(|borrowed| borrowed.contains(fname));
+                        if !relation_field && !is_scalar_ty(&self.resolve(&expected)) {
                             return terr(format!(
                                 "`update` of field `{fname}` on borrowed shell `{tyname}` is \
-                                 limited to owned scalar fields in this stage"
+                                 limited to owned scalar fields or declared borrowed-relation \
+                                 fields"
                             ));
                         }
                     }

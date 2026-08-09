@@ -3347,15 +3347,10 @@ fn main():
         )
         .expect("a mutable borrowed shell may update its owned scalar field");
 
-        let borrowed = check_str(
+        check_str(
             "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\nfn replace(left: let('a) String, right: let('a) String) -> Int:\n    var cursor = make(left)\n    cursor.view = right\n    cursor.offset\n",
         )
-        .expect_err("borrowed-field replacement needs old/new root sequencing");
-        assert!(
-            borrowed.contains("`update` of borrowed field `view`")
-                && borrowed.contains("old/new loan sequencing"),
-            "{borrowed}"
-        );
+        .expect("a declared borrowed field may replace its root with a related owner");
 
         let aggregate = check_str(
             "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    values: List(Int)\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, [])\n\nfn replace(input: let('a) String) -> Int:\n    var cursor = make(input)\n    cursor.values = [1]\n    list.length(cursor.values)\n",

@@ -200,15 +200,20 @@ pub struct BorrowedValueShape {
 
 /// A checked in-place update of a borrowed aggregate's logical shell.
 ///
-/// Scalar shell updates do not replace any borrowed field, so the hidden root
-/// set is transported unchanged across the statement. Publishing that fact is
-/// still required: lowering must distinguish an authenticated shell update from
-/// an arbitrary mutable binding that happens to contain a view.
+/// A checked in-place update of a borrowed shell's hidden root set.
+///
+/// `roots_before` are live while the record update reads its base. `roots_after`
+/// are the companions owned by the updated shell. A scalar update transports
+/// the set unchanged; a declared borrowed-field replacement closes precisely
+/// the retired field contributions and opens precisely the replacements after
+/// the write-back. Publishing both sets prevents lowering from inferring roots
+/// from the physical record representation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoanShellMutation {
     pub shell: String,
     pub fields: Vec<String>,
-    pub roots: Vec<LoanEvent>,
+    pub roots_before: Vec<LoanEvent>,
+    pub roots_after: Vec<LoanEvent>,
 }
 
 /// One checked owner loan. Lowering uses these names to invalidate ownership
@@ -2027,27 +2032,26 @@ impl LoanCtx<'_> {
                     }
                 }
             } else if let Stmt::Assign { name, value } = stmt {
-                let mut sources = self.borrow_sources(value, &callables, &live);
-                self.collect_alias_sources(value, &live, &mut sources);
-                if !sources.is_empty() {
-                    return Err(self.mutable_view_storage(name));
-                }
-                if let Expr::RecordUpdate { base, fields, .. } = value
-                    && matches!(base.as_ref(), Expr::Var(base) if base == name)
-                    && live.iter().any(|loan| loan.view == *name)
-                {
-                    let mut roots = Vec::new();
-                    for loan in live.iter().filter(|loan| loan.view == *name) {
-                        push_unique_event(&mut roots, LoanEvent::from(loan.clone()));
-                    }
+                if let Some(mutation) = self.replace_shell_roots(
+                    block,
+                    idx,
+                    stmt,
+                    name,
+                    value,
+                    &live,
+                    &mut local,
+                    &callables,
+                )? {
                     self.facts.shell_mutations.insert(
                         stmt_key(stmt),
-                        LoanShellMutation {
-                            shell: name.clone(),
-                            fields: fields.iter().map(|(field, _)| field.clone()).collect(),
-                            roots,
-                        },
+                        mutation,
                     );
+                } else {
+                    let mut sources = self.borrow_sources(value, &callables, &live);
+                    self.collect_alias_sources(value, &live, &mut sources);
+                    if !sources.is_empty() {
+                        return Err(self.mutable_view_storage(name));
+                    }
                 }
                 self.reject_callable_erasure(
                     name,
@@ -2072,6 +2076,163 @@ impl LoanCtx<'_> {
         }
         self.block_results.insert(block_key(block), result);
         Ok(())
+    }
+
+    /// Turn an authenticated `shell = Shell(field: replacement, ..shell)` into
+    /// a root-set transition. This is deliberately fact-driven: the type
+    /// checker proves that the updated field declares the shell's lifetime
+    /// relation, while this pass proves which owner roots retire and which open.
+    fn replace_shell_roots(
+        &mut self,
+        block: &Block,
+        idx: usize,
+        stmt: &Stmt,
+        name: &str,
+        value: &Expr,
+        live: &[Loan],
+        local: &mut Vec<Loan>,
+        callables: &HashMap<String, BorrowSig>,
+    ) -> Result<Option<LoanShellMutation>, TypeError> {
+        let Expr::RecordUpdate { base, fields, .. } = value else { return Ok(None) };
+        if !matches!(base.as_ref(), Expr::Var(base) if base == name)
+            || !live.iter().any(|loan| loan.view == name)
+        {
+            return Ok(None);
+        }
+
+        let mut roots_before = Vec::new();
+        for loan in live.iter().filter(|loan| loan.view == name) {
+            push_unique_event(&mut roots_before, LoanEvent::from(loan.clone()));
+        }
+
+        for (field, replacement) in fields {
+            let field_projection = LoanProjection {
+                steps: vec![LoanProjectionStep::Field(field.clone())],
+            };
+            let old: Vec<Loan> = local
+                .iter()
+                .filter(|loan| {
+                    loan.view == name
+                        && strip_projection_prefix(&loan.borrower_projection, &field_projection)
+                            .is_some()
+                })
+                .cloned()
+                .collect();
+
+            let mut sources = self.borrow_sources(replacement, callables, live);
+            self.collect_alias_sources(replacement, live, &mut sources);
+            // A direct owner local (rather than a `let('a)` parameter or an
+            // existing view) has no alias source. For a field that already
+            // carries a checked borrowed relation, recover that direct root
+            // from its exact place instead of silently materializing it.
+            if sources.is_empty() && !old.is_empty() {
+                if let Some((root, PlaceProjection::Fixed(projection))) = expr_place(replacement)
+                {
+                    for old_loan in &old {
+                        self.push_source(
+                            BorrowSource {
+                                owner: root.to_string(),
+                                root_type: self.checked_root_type(replacement),
+                                projection: projection.clone(),
+                                borrower_projection: LoanProjection::default(),
+                                origin: old_loan.origin.clone(),
+                                owner_type: old_loan.owner_type.clone(),
+                                temporary: false,
+                            },
+                            &mut sources,
+                        );
+                    }
+                }
+            }
+
+            let mut replacements = Vec::new();
+            for mut source in sources {
+                if source.temporary {
+                    return Err(self.temporary_owner(&source.origin));
+                }
+                source.borrower_projection = source
+                    .borrower_projection
+                    .prefixed(LoanProjectionStep::Field(field.clone()));
+                let loan = Loan {
+                    view: name.to_string(),
+                    owner: source.owner,
+                    root_type: source.root_type,
+                    projection: source.projection,
+                    borrower_projection: source.borrower_projection,
+                    origin: source.origin,
+                    owner_type: source.owner_type,
+                };
+                if !replacements.contains(&loan) {
+                    replacements.push(loan);
+                }
+            }
+
+            for old_loan in &old {
+                let event = LoanEvent::from(old_loan.clone());
+                if replacements.iter().any(|loan| LoanEvent::from(loan.clone()) == event) {
+                    continue;
+                }
+                self.remove_scheduled_close(&event);
+                push_unique_event(
+                    self.facts.closes_after.entry(stmt_key(stmt)).or_default(),
+                    event,
+                );
+                local.retain(|loan| loan != old_loan);
+            }
+            for replacement in replacements {
+                let event = LoanEvent::from(replacement.clone());
+                if old.iter().any(|loan| LoanEvent::from(loan.clone()) == event) {
+                    continue;
+                }
+                push_unique_event(
+                    self.facts.opens_after.entry(stmt_key(stmt)).or_default(),
+                    event.clone(),
+                );
+                self.schedule_close(block, idx, &event);
+                local.push(replacement);
+            }
+        }
+
+        let mut roots_after = Vec::new();
+        for loan in local.iter().filter(|loan| loan.view == name) {
+            push_unique_event(&mut roots_after, LoanEvent::from(loan.clone()));
+        }
+        Ok(Some(LoanShellMutation {
+            shell: name.to_string(),
+            fields: fields.iter().map(|(field, _)| field.clone()).collect(),
+            roots_before,
+            roots_after,
+        }))
+    }
+
+    fn remove_scheduled_close(&mut self, event: &LoanEvent) {
+        let keys: Vec<usize> = self.facts.closes_after.keys().copied().collect();
+        for key in keys {
+            let remove = if let Some(events) = self.facts.closes_after.get_mut(&key) {
+                events.retain(|existing| existing != event);
+                events.is_empty()
+            } else {
+                false
+            };
+            if remove {
+                self.facts.closes_after.remove(&key);
+            }
+        }
+    }
+
+    fn schedule_close(&mut self, block: &Block, idx: usize, event: &LoanEvent) {
+        let close_idx = block.stmts[idx + 1..]
+            .iter()
+            .rposition(|statement| stmt_mentions(statement, &event.view))
+            .map(|offset| idx + 1 + offset)
+            .unwrap_or(idx);
+        push_unique_event(
+            self.facts
+                .closes_after
+                .entry(stmt_key(&block.stmts[close_idx]))
+                .or_default(),
+            event.clone(),
+        );
     }
 
     /// The owners a `let` right-hand side borrows — a RESULT-position analysis: a

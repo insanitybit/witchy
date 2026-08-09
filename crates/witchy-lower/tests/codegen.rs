@@ -4071,4 +4071,32 @@ fn main(console: Console):
         assert_eq!(main.match_indices("call $rc_dup").count(), 1, "one root retain: {main}");
         assert_eq!(main.match_indices("call $rc_drop").count(), 1, "one root release: {main}");
     }
+
+    #[test]
+    fn borrowed_shell_field_replacement_retires_then_retains_the_new_root() {
+        let source = "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\n\
+             fn replace_cursor(left: let('a) String, right: let('a) String) -> Int:\n    var cursor = make(left)\n    cursor.view = right\n    cursor.offset\n\n\
+             fn main() -> Int:\n    let left = \"left\"\n    let right = \"right\"\n    replace_cursor(left, right)\n";
+        assert_eq!(run_int(source), 0);
+
+        let module = parse_module(source).expect("parse borrowed shell root transition");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("borrowed shell root transition lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $replace_cursor").expect("replace function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let replace = &tail[..end];
+        assert!(replace.contains("__loan_root_cursor__left"), "old root local: {replace}");
+        assert!(replace.contains("__loan_root_cursor__right"), "new root local: {replace}");
+        assert_eq!(replace.match_indices("call $rc_dup").count(), 2, "one retain per root: {replace}");
+        assert_eq!(replace.match_indices("call $rc_drop").count(), 2, "one release per root: {replace}");
+        assert!(
+            replace.find("call $rc_drop").expect("retired root drop")
+                < replace.rfind("call $rc_dup").expect("replacement root retain"),
+            "the old root closes before the replacement root opens: {replace}"
+        );
+    }
 }

@@ -83,14 +83,24 @@ impl<'types> Codegen<'types> {
             let stmt_start = seq.len();
             self.active_loan_events = self.loan_facts.active_at(analyzed_stmt).to_vec();
             if let Some(mutation) = self.loan_facts.shell_mutation_after(analyzed_stmt) {
-                // A scalar shell update transports the already-retained owner
-                // roots unchanged. Refuse to lower if the checked fact is not
-                // attached to that exact local or names a root that is not live
-                // at the write-back point.
+                // The update reads `roots_before` from its base then publishes
+                // exactly `roots_after`. Refuse a fact that is not attached to
+                // that local, retires a non-live root, or invents an open/close
+                // outside the statement boundary.
                 if assignment_name != Some(mutation.shell.as_str())
-                    || mutation.roots.iter().any(|root| {
+                    || mutation.roots_before.iter().any(|root| {
                         root.view != mutation.shell || !self.active_loan_events.contains(root)
                     })
+                    || mutation
+                        .roots_before
+                        .iter()
+                        .filter(|root| !mutation.roots_after.contains(root))
+                        .any(|root| !self.loan_facts.closes_after(analyzed_stmt).contains(root))
+                    || mutation
+                        .roots_after
+                        .iter()
+                        .filter(|root| !mutation.roots_before.contains(root))
+                        .any(|root| !self.loan_facts.opens_after(analyzed_stmt).contains(root))
                 {
                     return None;
                 }
@@ -1646,8 +1656,44 @@ impl<'types> Codegen<'types> {
             if !matches!(stmt, Stmt::Return(_)) {
                 let opens = self.loan_facts.opens_after(analyzed_stmt).to_vec();
                 let closes = self.loan_facts.closes_after(analyzed_stmt).to_vec();
-                seq.extend(self.open_loan_nodes(&opens));
-                seq.extend(self.close_loan_nodes(&closes));
+                if let Some(mutation) = self.loan_facts.shell_mutation_after(analyzed_stmt) {
+                    let introduced: Vec<_> = opens
+                        .iter()
+                        .filter(|event| {
+                            mutation.roots_after.contains(event)
+                                && !mutation.roots_before.contains(event)
+                        })
+                        .cloned()
+                        .collect();
+                    let retired: Vec<_> = closes
+                        .iter()
+                        .filter(|event| {
+                            mutation.roots_before.contains(event)
+                                && !mutation.roots_after.contains(event)
+                        })
+                        .cloned()
+                        .collect();
+                    let ordinary_opens: Vec<_> = opens
+                        .iter()
+                        .filter(|event| !introduced.contains(event))
+                        .cloned()
+                        .collect();
+                    let ordinary_closes: Vec<_> = closes
+                        .iter()
+                        .filter(|event| !retired.contains(event))
+                        .cloned()
+                        .collect();
+                    // Keep ordinary aliases retain-before-release. A root
+                    // replacement is different: the write-back no longer
+                    // depends on the old field before the new companion opens.
+                    seq.extend(self.open_loan_nodes(&ordinary_opens));
+                    seq.extend(self.close_loan_nodes(&retired));
+                    seq.extend(self.open_loan_nodes(&introduced));
+                    seq.extend(self.close_loan_nodes(&ordinary_closes));
+                } else {
+                    seq.extend(self.open_loan_nodes(&opens));
+                    seq.extend(self.close_loan_nodes(&closes));
+                }
             }
             // Reset the cap of any inplace_push var killed AFTER this statement
             // (binary path), positioned here in the seq. Read-only — the kills
