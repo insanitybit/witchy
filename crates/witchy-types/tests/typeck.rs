@@ -468,16 +468,11 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_nominal_construction_is_gated_until_owner_root_lowering() {
-        let error = check_str(
+    fn borrowed_nominal_construction_is_checked_with_owner_root_lowering() {
+        check_str(
             "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn hold(let input: let('a) String) -> Holder('a):\n    Holder(input)\n",
         )
-        .expect_err("stage 1 must not expose an ordinary owning constructor");
-        assert!(
-            error.contains("construction of borrowed nominal type `Holder` is not available")
-                && error.contains("projection-aware loans and runtime owner-root lowering"),
-            "{error}"
-        );
+        .expect("a fixed borrowed constructor publishes owner-root loan facts");
     }
 
     #[test]
