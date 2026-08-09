@@ -716,7 +716,21 @@ fn reject_borrowed_nominal_containers(
             // `List(Holder('a))` is a container boundary.
             let is_borrowed_shell = lifetime_nominals.contains(name)
                 || arguments.iter().any(|argument| lifetime_argument_name(argument).is_some());
+            // RFC-0112's first borrowed-container slice admits exactly a list
+            // whose immediate element is a lifetime-parameterized nominal
+            // shell.  Its roots are carried by loan facts and lowered as hidden
+            // companions; nested containers, structural records, dyn, and Dict
+            // remain outside that representation.
+            let is_borrowed_nominal_list = name == "List"
+                && arguments.len() == 1
+                && matches!(
+                    arguments.first(),
+                    Some(ast::Type::Named(element, element_arguments))
+                        if lifetime_nominals.contains(element)
+                            || element_arguments.iter().any(|argument| lifetime_argument_name(argument).is_some())
+                );
             if !is_borrowed_shell
+                && !is_borrowed_nominal_list
                 && arguments
                     .iter()
                     .any(type_contains_nominal_lifetime_relation)
@@ -4243,8 +4257,12 @@ impl Checker {
         }
     }
 
+    fn is_direct_borrowed_nominal_list(&self, ty: &Ty) -> bool {
+        matches!(self.resolve(ty), Ty::List(element) if self.is_direct_borrowed_nominal(&element))
+    }
+
     fn borrowed_shell_binding_source(value: &Expr) -> bool {
-        matches!(value, Expr::Ctor { .. } | Expr::Call { .. })
+        matches!(value, Expr::Ctor { .. } | Expr::Call { .. } | Expr::List(_))
     }
 
     fn is_borrowed_shell_binding(&self, name: &str) -> bool {
@@ -5585,7 +5603,8 @@ impl Checker {
                     } else {
                         self.infer(value)?
                     };
-                    let borrowed_shell_binding = self.is_direct_borrowed_nominal(&vt)
+                    let borrowed_shell_binding = (self.is_direct_borrowed_nominal(&vt)
+                        || self.is_direct_borrowed_nominal_list(&vt))
                         && Self::borrowed_shell_binding_source(value);
                     if !borrowed_shell_binding {
                         self.reject_borrowed_nominal_runtime_ty(
@@ -6162,10 +6181,17 @@ impl Checker {
                 self.infer_expected(arg, param_ty)
             }
             .map_err(|e| in_call_context(&display, e))?;
-            self.reject_borrowed_nominal_runtime_ty(
-                &at,
-                &format!("call to `{display}`"),
-            )?;
+            let borrowed_list_read = self.is_direct_borrowed_nominal_list(&at)
+                && matches!(
+                    witchy_syntax::intrinsics::canonical_operation_name(&call_name),
+                    witchy_syntax::intrinsics::LIST_AT | witchy_syntax::intrinsics::LIST_LENGTH
+                );
+            if !borrowed_list_read {
+                self.reject_borrowed_nominal_runtime_ty(
+                    &at,
+                    &format!("call to `{display}`"),
+                )?;
+            }
             self.reject_var_directed_coercion(
                 &display,
                 index,

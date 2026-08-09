@@ -2316,6 +2316,32 @@ impl LoanCtx<'_> {
                     }
                 }
             }
+            // A list is a dynamic container, but the checked list binding owns
+            // the complete, finite set of companion roots for its borrowed
+            // elements.  A constant index selects its exact contribution;
+            // a dynamic index deliberately transfers every contribution.  That
+            // conservative path keeps an extracted shell alive after the list's
+            // own final use without inventing an interior object root.
+            Expr::Call { name, args }
+                if witchy_syntax::intrinsics::canonical_operation_name(name)
+                    == witchy_syntax::intrinsics::LIST_AT
+                    && args.len() == 2 =>
+            {
+                let mut list_sources = Vec::new();
+                self.collect_alias_sources(&args[0], live, &mut list_sources);
+                let requested = index_projection(&args[1])
+                    .map(|step| LoanProjection { steps: vec![step] });
+                for mut source in list_sources {
+                    if let Some(requested) = &requested {
+                        if let Some(selected) = project_source(source, requested) {
+                            self.push_source(selected, out);
+                        }
+                    } else {
+                        source.borrower_projection = LoanProjection::default();
+                        self.push_source(source, out);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -2415,6 +2441,17 @@ impl LoanCtx<'_> {
                     self.collect_aggregate_slot(
                         item,
                         LoanProjectionStep::Tuple(index),
+                        callables,
+                        live,
+                        out,
+                    );
+                }
+            }
+            Expr::List(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    self.collect_aggregate_slot(
+                        item,
+                        LoanProjectionStep::Index(index as i64),
                         callables,
                         live,
                         out,
@@ -2680,6 +2717,15 @@ impl LoanCtx<'_> {
             sources.into_iter().next()
         };
         match value {
+            // `List(B('a))` is the one owned aggregate that has an explicit
+            // element-root representation. Its element contributions are
+            // published by `collect_view_owners` and travel with the list
+            // binding, so do not treat it as an erased owned aggregate.
+            Expr::List(items)
+                if items.iter().all(|item| self.is_direct_borrowed_shell_value(item, callables)) =>
+            {
+                None
+            }
             Expr::List(items) => items
                 .iter()
                 .find_map(&mut inspect)
