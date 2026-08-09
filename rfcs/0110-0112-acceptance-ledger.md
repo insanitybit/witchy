@@ -108,8 +108,12 @@ marks the RFCs implemented. At minimum, the checked evidence set contains:
 6. the pinned scalar-only Witchy/Rust benchmark report and thresholds;
 7. runnable book examples and current generated manifests/docs;
 8. `./scripts/test-for-paths.sh --run`-selected focused shards on each branch;
-9. a green serialized merge-queue gate for every landed commit; and
-10. a final requirement-by-requirement audit against current `master`.
+9. for each new loan-precision phase, pinned corpus percentile and outlier
+   measurements for compile time, loan count, constraint edges, and generated
+   allocation/retain/drop counters; a conservative prepass alone cannot be
+   accepted as the source of a borrow rejection.
+10. a green serialized merge-queue gate for every landed commit; and
+11. a final requirement-by-requirement audit against current `master`.
 
 Passing a narrower predecessor test, compiling an interface, or landing a
 foundation stage changes a row to **PARTIAL** at most; it is not completion.

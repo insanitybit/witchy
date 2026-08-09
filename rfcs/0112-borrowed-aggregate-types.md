@@ -189,6 +189,41 @@ of its owner root. The first implementation does not use disjoint read ranges to
 permit mutation elsewhere in the same owner; that refinement requires an
 exclusive-borrow RFC and is deliberately absent.
 
+### Analysis phases and performance contract
+
+The checker is specified as a point-based loan analysis. A loan fact names its
+owner root, borrower projection, and the program point where it opens, remains
+live, transfers, or closes; lowering consumes those same facts. This keeps the
+borrow relation independent of an AST spelling or a particular lowering path.
+
+The initial implementation is an **alpha** analysis. A cheap pass collects
+owner-root and projection facts, identifies candidate invalidations, and limits
+the precise reachability calculation to the affected control-flow component. A
+conservative prepass may request that calculation but may not itself reject a
+program. A rejection requires an active loan at the invalidating program point.
+This allows conditional returns, branches, and loops to become more precise
+without weakening the owner-root contract or requiring a whole-program
+re-analysis on every borrow.
+
+The performance objective is Rust-class predictable overhead for zero-copy
+`mode opt` programs, measured rather than assumed. Each precision milestone
+must record compile time, loan count, constraint-edge count, and generated
+allocation/retain/drop counters on a pinned corpus. The first benchmark report
+sets the project thresholds; it must compare equivalent scalar and zero-copy
+workloads, publish percentile results and outliers, and separate analysis cost
+from Wasm code generation. No RFC claim of Rust parity is valid until that
+repeatable baseline exists.
+
+Future work may add more precision in this order:
+
+1. control-flow-sensitive conditional borrows and loop reborrows;
+2. callable access summaries for disjoint field projections; and
+3. richer internal-reference and borrowed-container forms.
+
+Those phases add facts and validation evidence, not new user syntax. They do
+not imply general mutable references, address identity, or loans across
+`await`/`yield`.
+
 ### Aggregate shell mutation
 
 A borrowed aggregate may be held in a mutable binding and update owned scalar
