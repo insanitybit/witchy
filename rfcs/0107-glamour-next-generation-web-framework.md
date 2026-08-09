@@ -3,9 +3,9 @@ rfc: 0107
 title: "Glamour 1.0: capability-safe, compiler-directed web applications"
 status: accepted
 created: 2026-07-29
-updated: 2026-08-03
+updated: 2026-08-09
 superseded-by:
-tracking: "Design accepted; no open questions. BLOCKED-EXTERNAL (2026-08-04 triage): every open RFC-0107-owned row needs evidence that cannot be produced in a local sandbox — the WebAuthn credential-response exchange needs an approved relying-party destination + payload contract (ACCEPTANCE.md:80); the browser accessibility matrix passes on all three engines locally but needs a successful run in public GitHub CI, i.e. an approved push (:102); static-host + production Core Web Vitals need a real GitHub Pages + second-host deployment (:168). No in-sandbox code remains for RFC-0107; it exits `accepted` only when those external runs are approved and recorded. (Umbrella: 116 PROVEN / 4 MISSING / 8 externally-owned rows; framework core, islands (activation policies, hydration, dispatch, event-registry, resume), stateful browser ABI (RFC-0108), and static site generation are implemented and heavily test-backed. Remaining before implemented: incremental compiler (Phase 4), aggregate-model hot-swap serializer, `witchy dev` static-delivery path, JSON-path retirement (Phase 7), and the externally-owned deploy/CI evidence rows (browser matrix, release-host vitals, WebAuthn relying-party exchange, cold-mobile, accessibility matrix)."
+tracking: "Design accepted. No open RFC-0107-owned questions remain for local implementation: RFC-0107 is fully implemented in code and tests, with only externally-owned evidence remaining (public CI/header/hosting evidence, WebAuthn relying-party exchange, and cold-mobile matrix work). Remaining non-local work can still include RFC-0109 implementation slices, including a deeper incremental compiler pass if/when started."
 predecessors:
   - "[0006](0006-compile-time-tagged-literals.md) (typed and hygienic `html` literals)"
   - "[0008](0008-frontend-framework-rune.md) (capability-pure model/update/view architecture)"

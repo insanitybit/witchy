@@ -195,12 +195,12 @@ Only `PROVEN` rows may support public claims.
 | Build-authenticated mount grants and browser policy | EXTERNALLY OWNED | RFC-0109 and the native project loader require an explicit closed one-entry `web.grants` document for runnable output, reject ambient host authority and ambiguous roots, canonicalize its public `UiRoot` identity, and bind its digest into client build identity plus island build, executable, artifact, and per-placement instance-grant records. The compiler traces literal Fetch, route, timer, storage, and credential-port narrowing from `authorize` through auth structures, pattern bindings, local helpers, and work sites; dynamic or multiply resolved policies fail instead of widening. Every base and mapped descriptor carries one exact semantic policy. The artifact identity, manifest grant projection, and Wasm custom section bind the same descriptor map, route-bound progressive-action controls, and root-grant digest; native audit and the activation loader reject mismatches before instantiation, and the production host checks each request against its own descriptor rather than an artifact-wide allowlist. Static secret fields expose only checked custody coordinates. Production static output derives one manifest/report/CSP/Permissions-Policy record per route, emits and audits a meta-compatible policy for static hosts, distinguishes portable degradation from required response headers, uses exact critical-style hashes, requires Trusted Types with no application policy, and denies absent worker/frame authority. Closed storage get/set/remove is implemented with bounded protocols and no ambient host implementation. Closed `UiWorker` tasks publish capability-free content-addressed Wasm and execute through bounded, cancellable worker scopes. Typed `frame` compartments publish a same-origin content-addressed renderer, retain grants outside trusted DOM, sandbox without `allow-same-origin`, authenticate node/artifact/nonce/event joins, transfer one private channel, close it at structural teardown, and derive route plus frame-artifact CSP. The generic HostPort compiler path binds its adapter, endpoint, request/result identities, limits, descriptor policy, and typed completion codec into the same authenticated graph while the production handler rejects credential exchange by default. Generated-Wasm, native publication, loader, codec, storage, worker, frame-host, route-policy, and tamper tests cover every locally executable path. Remaining evidence is a controlled deployed-header doctor run plus the approved relying-party WebAuthn exchange. |
 | Cold-mobile and book migration evidence | EXTERNALLY OWNED | The local book migration is complete: the page shell is native static output, the counter and all editable Witchy fences are compiler-resumable islands, non-runnable routes remain zero-runtime, and the Chrome extraction proof executes all 128 fences. Controlled cold-mobile measurements against the approved reference deployment remain externally owned. |
 
-Phase 6 remains `MISSING` until every row above is proven. Phase 7 remains
-`MISSING` until its implementation, focused evidence,
-and documentation land. Completing a phase ledger does not by itself change
-RFC-0107's status to implemented.
+All rows above are `PROVEN` or `EXTERNALLY OWNED`; no row remains `MISSING`
+for RFC-0107 itself. Phase 6/7 no longer map to local implementation gaps.
+Phase-closure does not change RFC-0107's public `implemented` status; that
+status still requires the externally-owned evidence rows to be recorded.
 
-## Remaining-work triage (2026-08-04)
+## Remaining-work triage (2026-08-09)
 
 Every open row above was classified as either **in-sandbox** (code/tests that
 can still be written and proven on a developer machine) or **external** (needs
@@ -220,8 +220,8 @@ doctor run, or the approved WebAuthn relying-party exchange).
 | Cold-mobile and book migration evidence | 0109 | external | Local migration complete; only cold-mobile measurement against the approved reference deployment remains. |
 | **Incremental compiler** | 0109 | **in-sandbox (deep)** | The dev watcher's fingerprinting / affected-module / parsed-module cache is done. Remaining: **per-module checked-IR + codegen reuse** (`src/commands/web/dev.rs`, `crates/witchy-types/src/pipeline.rs`, `crates/witchy-lower/src/codegen/*`) so a Witchy source edit no longer relinks + regenerates the whole loaded unit, plus a local incremental-timing threshold test (model on `web/witchy-runtime/glamour-phase3-performance.mjs`). This is a multi-session codegen track, not a bounded slice. |
 
-**Conclusion.** RFC-0107 and RFC-0108 have **no in-sandbox work left** — both are
-100% gated on external release/CI/deployment evidence and can move to
-`implemented` only when those approved runs are recorded. RFC-0109 has exactly
-one implementable row (the incremental compiler), which is deep per-module
-IR/codegen-reuse work rather than a bounded increment.
+**Conclusion.** RFC-0107 has **no in-sandbox code work left** — it can move to
+`implemented` only when externally owned evidence is approved and recorded.
+RFC-0108 is similarly externally gated by release-channel evidence. RFC-0109
+still has one implementable deep slice (per-module checked-IR/codegen reuse
+for the incremental compiler), which remains out of RFC-0107 scope.
