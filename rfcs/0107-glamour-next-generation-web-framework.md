@@ -1374,9 +1374,11 @@ credential response in the host, and may post that response only through an
 explicitly authorized, build-bound same-origin exchange endpoint. Witchy
 receives only a closed bounded outcome containing the HTTP status and success
 flag; credential JSON and response bodies never enter `PortResult`, model state,
-snapshots, diagnostics, or resumable state. Until that host-custody exchange is
-implemented and approved, production rejects WebAuthn adapters rather than
-returning credential JSON through the compatibility string port. The adapters
+snapshots, diagnostics, or resumable state. Until the approved relying-party
+payload contract lands, production rejects WebAuthn adapters unless
+`globalThis.__witchyHostPorts` exposes a callback for the adapter and endpoint;
+otherwise it returns a typed failure instead of credential JSON through the
+compatibility string port. The adapters
 derive the matching
 `publickey-credentials-get` or `publickey-credentials-create` Permissions Policy
 for each route. The compatibility request codec is bounded to 60 KiB and its
