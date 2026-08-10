@@ -318,16 +318,16 @@ validate_runnable_book() {
     if node --v8-options 2>/dev/null | grep -q -- '--experimental-wasm-jspi'; then
         node_flags+=(--experimental-wasm-jspi)
     fi
-    if ! node "${node_flags[@]}" -e \
+    if ! node "${node_flags[@]+"${node_flags[@]}"}" -e \
         'process.exit(typeof WebAssembly.Suspending === "function" && typeof WebAssembly.promising === "function" ? 0 : 1)'; then
         echo "Node lacks WebAssembly JSPI — skipping runnable-book validation"
         return 0
     fi
     # Point the validator at the freshly-built wasm via env — do NOT copy over the
     # tracked web/witchy.wasm (a dirtied worktree would break the coordinator's ff-merge).
-    WITCHY_WASM_PATH="$built" node "${node_flags[@]}" scripts/validate_book_examples.mjs
-    WITCHY_WASM_PATH="$built" node "${node_flags[@]}" scripts/audit-browser-runnable.mjs
-    WITCHY_WASM_PATH="$built" node "${node_flags[@]}" web/witchy-runtime/fixture-host.test.mjs
+    WITCHY_WASM_PATH="$built" node "${node_flags[@]+"${node_flags[@]}"}" scripts/validate_book_examples.mjs
+    WITCHY_WASM_PATH="$built" node "${node_flags[@]+"${node_flags[@]}"}" scripts/audit-browser-runnable.mjs
+    WITCHY_WASM_PATH="$built" node "${node_flags[@]+"${node_flags[@]}"}" web/witchy-runtime/fixture-host.test.mjs
 }
 
 # RFC-0111's ordinary gate leg is deliberately untimed: it proves that every
