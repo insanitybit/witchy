@@ -239,8 +239,8 @@ This is a local completion boundary; public `implemented` status depends on thos
 externally owned gates.
 As of the latest local closeout evidence run on this checkout:
 
-- `node scripts/audit-browser-runnable.mjs` → 150/150 complete examples, ALL PASS.
-- `node scripts/validate_book_examples.mjs` → 165 runnable blocks in manifest lockstep, 59 non-runnable.
+- `node scripts/audit-browser-runnable.mjs` → 148/148 complete examples, ALL PASS.
+- `node scripts/validate_book_examples.mjs` → 165 runnable blocks in manifest lockstep, 56 non-runnable.
 - `./target/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-12.json` → all checks passed (portable/degraded mode, `deployed-headers` route-wise skip behavior).
 - `./target/debug/witchy doctor --web projects/docs --format json > projects/glamour/acceptance/doctor-local-2026-08-12.json` → all checks passed.
 - `node scripts/audit-browser-runnable.mjs` + acceptance artifact + doctor artifacts remain as local proof basis in
@@ -249,7 +249,7 @@ As of the latest local closeout evidence run on this checkout:
   `projects/glamour/acceptance/doctor-local-2026-08-12.json`.
 
 Current in-repo browser contract checks are green: `node scripts/audit-browser-runnable.mjs`
-reports 150/150 complete examples passing and `node scripts/validate_book_examples.mjs`
+reports 148/148 complete examples passing and `node scripts/validate_book_examples.mjs`
 reports 165 runnable blocks in lockstep with the manifest.
 RFC-0108 is similarly externally gated by release-channel evidence. RFC-0109
 still has one implementable deep slice (per-module checked-IR/codegen reuse
