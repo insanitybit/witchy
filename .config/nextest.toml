@@ -122,16 +122,23 @@ slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 80
 
 # `cli_subcommands::{web_commands_route_natively_and_complete_clean_clone_flow,
-# static_web_flow_needs_no_client_scaffold_or_browser_runtime}` each spawn the
+# static_web_flow_needs_no_client_scaffold_or_browser_runtime,
+# web_doctor_deployment_headers_check_declared_route_policy}` each spawn the
 # real `witchy` binary through a full `new`/`test --web`/`build --web`/`doctor`
-# flow — same shape as `commands::web::tests` above (a full glamour program
-# compiled through the multi-core Wasm compiler, just out-of-process). Measured
-# ~53s standalone but TIMED OUT at the default 135s slow-kill in a full-suite
-# run (2026-08-09) purely from concurrent CPU contention — passes every time in
-# isolation. Same remedy: bound to the width-4 cold-heavy group and widen the
+# flow (the third also runs a real header-probe server) — same shape as
+# `commands::web::tests` above (a full glamour program compiled through the
+# multi-core Wasm compiler, just out-of-process). Measured ~53s standalone but
+# TIMED OUT at the default 135s slow-kill in a full-suite run (2026-08-09)
+# purely from concurrent CPU contention — passes every time in isolation.
+# `web_doctor_deployment_headers_check_declared_route_policy` was added after
+# being missed by the original two-name list and independently timing out
+# under the same load (2026-08-09): a per-test name allowlist keeps missing
+# siblings that share the underlying cost shape — if a NEW `--web`-flow test
+# is added to this file, add it here too rather than waiting for it to time
+# out first. Same remedy: bound to the width-4 cold-heavy group and widen the
 # timeout so one uninterrupted run clears the real cost with headroom.
 [[profile.default.overrides]]
-filter = 'binary_id(witchy::cli_subcommands) & test(/web_commands_route_natively_and_complete_clean_clone_flow|static_web_flow_needs_no_client_scaffold_or_browser_runtime/)'
+filter = 'binary_id(witchy::cli_subcommands) & test(/web_commands_route_natively_and_complete_clean_clone_flow|static_web_flow_needs_no_client_scaffold_or_browser_runtime|web_doctor_deployment_headers_check_declared_route_policy/)'
 test-group = 'gate-cold-heavy'
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 80
