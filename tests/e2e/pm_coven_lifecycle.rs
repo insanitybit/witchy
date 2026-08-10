@@ -1046,3 +1046,58 @@ fn publish_with_artifact_manifest_produces_coven_v2_and_serves_it() {
         "a source-only record must not commit to an artifact digest: {plain_rec}"
     );
 }
+
+/// RFC-0095: a publisher ships built trusted-exe bytes in `<dir>/artifacts/<target>`.
+/// `pm publish` uploads each after the release; coven re-hashes the decoded bytes
+/// against the SIGNED manifest (crypto.sha256_bytes), so only the attested bytes are
+/// accepted — and `/coven/artifact/bytes` serves them back for the installer. A
+/// direct upload of mismatched bytes is refused by the sha256 gate.
+#[test]
+fn publish_uploads_artifact_bytes_then_serves_them() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "artbytes");
+    let app = fe.lib("acme/wrg", "0.2.0", "pub fn go() -> String:\n    \"hi\"\n");
+    // The manifest commits to sha256("hello"); the uploaded bytes must match it.
+    let sha_hello = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    let manifest = format!(
+        "{{\"version\":1,\"artifacts\":{{\"aarch64-apple-darwin\":{{\"kind\":\"trusted-exe\",\"command\":\"wrg\",\"sha256\":\"{sha_hello}\",\"size\":5,\"binding_plan_sha256\":\"\",\"authority\":[]}}}}}}"
+    );
+    std::fs::write(app.join("artifact.json"), &manifest).unwrap();
+    std::fs::create_dir_all(app.join("artifacts")).unwrap();
+    std::fs::write(app.join("artifacts").join("aarch64-apple-darwin"), b"hello").unwrap();
+
+    let ci = server.ci_token("acme-wrg-repo", "release.yml");
+    let out = fe.pm(&app, &["publish", "."], Some(&ci));
+    assert!(
+        out.status.success() && stdout(&out).contains("publish: 200"),
+        "publish: {}\n{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains("artifact aarch64-apple-darwin: 200"),
+        "pm must upload the built artifact bytes after publish: {}",
+        stdout(&out)
+    );
+
+    let addr = format!("127.0.0.1:{}", server.port);
+    // Fetch the bytes back: base64("hello") == "aGVsbG8=".
+    let (bstatus, bytes_body) = http_get(
+        &addr,
+        "/coven/artifact/bytes?name=acme~wrg&version=0.2.0&target=aarch64-apple-darwin",
+    );
+    assert_eq!(bstatus, 200, "artifact bytes fetch: {bytes_body}");
+    assert!(
+        bytes_body.contains("aGVsbG8="),
+        "served bytes are the base64 of the uploaded blob: {bytes_body}"
+    );
+
+    // A direct upload of MISMATCHED bytes (base64("world")) is refused by the sha256 gate.
+    let bad = r#"{"name":"acme/wrg","version":"0.2.0","target":"aarch64-apple-darwin","bytes":"d29ybGQ="}"#;
+    let (mstatus, mbody) = http_post(&addr, "/coven/artifact/bytes", bad);
+    assert_eq!(mstatus, 400, "mismatched bytes must be refused: {mbody}");
+    assert!(
+        mbody.contains("does not match"),
+        "the rejection explains the sha256 mismatch: {mbody}"
+    );
+}

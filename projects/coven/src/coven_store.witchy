@@ -104,6 +104,30 @@ pub fn read_artifact_manifest(store: Dir, name: String, version: String) -> Opti
     else:
         None
 
+// The raw trusted-exe bytes for one target, keyed by the (validated) target
+// triple. `target` MUST already be checked with coven_artifact.valid_target — it
+// becomes a path component, so an unvalidated one could escape the store subtree.
+fn artifact_bytes_path(name: String, version: String, target: String) -> String:
+    "${name}/${version}/artifacts/${target}"
+
+// Whether this target's artifact bytes have already been uploaded (write-once).
+pub fn artifact_bytes_exists(store: Dir, name: String, version: String, target: String) -> Bool:
+    store.exists(artifact_bytes_path(name, version, target))
+
+// Store one target's decoded trusted-exe bytes. Integrity is anchored elsewhere:
+// the signed record commits to the manifest digest, and the manifest commits to
+// each artifact's sha256, so a swapped byte blob is caught at install time.
+pub fn store_artifact_bytes(store: Dir, name: String, version: String, target: String, data: Bytes):
+    fs.ensure_dir(store, "${name}/${version}/artifacts")
+    store.write_bytes(artifact_bytes_path(name, version, target), data)
+
+// One target's stored artifact bytes, or None if not uploaded.
+pub fn read_artifact_bytes(store: Dir, name: String, version: String, target: String) -> Option(Bytes):
+    if store.exists(artifact_bytes_path(name, version, target)):
+        Some(store.read_bytes(artifact_bytes_path(name, version, target)))
+    else:
+        None
+
 // --- walking -----------------------------------------------------------------
 // Every published version of a rune.
 pub fn versions_of(store: Dir, name: String) -> List(String):

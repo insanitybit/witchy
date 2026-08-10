@@ -17,6 +17,7 @@
 
 import server
 import crypto
+import encoding
 import secretstore
 import fs
 import toml
@@ -241,6 +242,8 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
         .get("/coven/versions", c.route_versions())
         .get("/coven/record", c.route_record())
         .get("/coven/artifact", c.route_artifact())
+        .get("/coven/artifact/bytes", c.route_artifact_bytes())
+        .post("/coven/artifact/bytes", c.route_upload_artifact_bytes())
         .get("/coven/source", c.route_source())
         .get("/coven/doc", c.route_doc())
         .get("/coven/compartments", c.route_compartments())
@@ -375,6 +378,56 @@ impl Coven:
                 Some(m) -> Ok(server.json(200, m))
                 None -> Err(CovenError(404, "${name}@${version} has no artifact manifest (source-only release)"))
         )
+
+    // GET /coven/artifact/bytes?name&version&target — one target's raw trusted-exe
+    // bytes, base64-encoded (JSON transport). The installer decodes and verifies the
+    // sha256 against the signed manifest before trusting them.
+    fn route_artifact_bytes(self) -> fn(Request) -> Response:
+        guard(fn(req: Request) -> Result(Response, CovenError):
+            let name = coven_validate.unwire(server.query_or(req, "name", ""))
+            let version = server.query_or(req, "version", "")
+            let target = server.query_or(req, "target", "")
+            self.validate_ref(name, version)?
+            require(coven_artifact.valid_target(target), 400, "invalid target `${target}`")?
+            match coven_store.read_artifact_bytes(self.store, name, version, target):
+                Some(data) -> Ok(server.send(200, .{bytes: encoding.base64_encode_bytes(data)}))
+                None -> Err(CovenError(404, "no artifact for ${name}@${version} target `${target}`"))
+        )
+
+    // POST /coven/artifact/bytes {name, version, target, bytes} — upload one target's
+    // trusted-exe. No publisher auth is needed: the decoded bytes must hash to the
+    // sha256 the SIGNED manifest already committed to, so an uploader can only ever
+    // place the exact bytes the publisher attested — never substitute a payload.
+    fn route_upload_artifact_bytes(self) -> fn(Request) -> Response:
+        guard(fn(req: Request) -> Result(Response, CovenError): self.do_upload_artifact_bytes(body(req)?))
+
+    fn do_upload_artifact_bytes(self, doc: Json) -> Result(Response, CovenError):
+        let name = coven_validate.unwire(coven_json.str(doc, "name"))
+        let version = coven_json.str(doc, "version")
+        let target = coven_json.str(doc, "target")
+        self.validate_ref(name, version)?
+        require(coven_artifact.valid_target(target), 400, "invalid target `${target}`")?
+        require(coven_store.record_exists(self.store, name, version), 404, "${name}@${version} not found")?
+        let want = self.expected_artifact_sha256(name, version, target)?
+        let data = encoding.base64_decode_bytes_string(coven_json.str(doc, "bytes")).map_err(fn(e: String): CovenError(400, "artifact bytes are not valid base64: ${e}"))?
+        let digest = crypto.sha256_bytes(data)
+        require(digest == want, 400, "uploaded bytes sha256 `${digest}` does not match the manifest's `${want}` for target `${target}`")?
+        coven_store.store_artifact_bytes(self.store, name, version, target, data)
+        Ok(server.send(200, .{stored: true, target: target, sha256: digest}))
+
+    // The sha256 the manifest binds for `target`, or a typed HTTP error: 404 when the
+    // version is source-only or the manifest omits the target; 500 when coven's own
+    // stored manifest no longer parses (corruption, not a client fault).
+    fn expected_artifact_sha256(self, name: String, version: String, target: String) -> Result(String, CovenError):
+        match coven_store.read_artifact_manifest(self.store, name, version):
+            None -> Err(CovenError(404, "${name}@${version} is a source-only release (no artifact manifest)"))
+            Some(text) ->
+                match coven_artifact.parse(text):
+                    Err(e) -> Err(CovenError(500, "stored artifact manifest is corrupt: ${coven_artifact.artifact_error_message(e)}"))
+                    Ok(mani) ->
+                        match coven_artifact.select(mani, target):
+                            None -> Err(CovenError(404, "the manifest for ${name}@${version} has no target `${target}`"))
+                            Some(entry) -> Ok(entry.sha256)
 
     fn route_source(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):

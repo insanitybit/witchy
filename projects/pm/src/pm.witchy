@@ -1258,9 +1258,37 @@ fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manifest:
     let detail = if error.is_empty(): "" else: " error=${error}"
     console.print("publish: ${status} state=${resp_field(response_body, "state")}${detail}")
     if status >= 200 && status < 300:
-        0
+        upload_artifacts(console, net, root, dir, manifest, origin, artifact)
     else:
         1
+
+// (RFC-0095) After an application release publishes, upload each built trusted-exe
+// in `<dir>/artifacts/` (one file per target, filename = target triple). The server
+// re-hashes each against the signed manifest, so a wrong/corrupt file is refused.
+// Source-only runes (no artifact manifest) have nothing to upload.
+fn upload_artifacts(console: Console, net: Net, root: Dir, dir: String, manifest: String, origin: String, artifact: Option(String)) -> Int:
+    match artifact:
+        None -> 0
+        Some(_m) -> upload_artifact_dir(console, net, root, dir, manifest, origin)
+
+fn upload_artifact_dir(console: Console, net: Net, root: Dir, dir: String, manifest: String, origin: String) -> Int:
+    let art_dir = join_path(dir, "artifacts")
+    if !root.exists(art_dir):
+        0
+    else:
+        let name = field(manifest, "rune.name")
+        let version = field(manifest, "rune.version")
+        var failed = 0
+        for target in root.subtree(art_dir).list():
+            let data = root.read_bytes(join_path(art_dir, target))
+            let resp = registry_post(net, origin, "/coven/artifact/bytes", coven_proto.artifact_upload_body(name, version, target, encoding.base64_encode_bytes(data)))
+            let st = http.status(resp)
+            if st >= 200 && st < 300:
+                console.print("  artifact ${target}: ${st}")
+            else:
+                console.print("  artifact ${target}: ${st} error=${resp_field(http.body(resp), "error")}")
+                failed = 1
+        failed
 
 // Whether the manifest declares any path dependency (`{ path = ... }`). A published
 // rune must be self-contained / registry-only, so publish refuses these.
