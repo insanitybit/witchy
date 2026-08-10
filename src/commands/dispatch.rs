@@ -339,7 +339,9 @@ pub(crate) fn run() -> wasmtime::Result<()> {
     // `Net`, and its argv.
     // This is the additive bootstrap of rfcs/0004-self-hosted-cli.md §5 — `src/pm`
     // is NOT yet removed; this proves the front-end runs as the embedded CLI.
-    if std::env::args().nth(1).as_deref() == Some("pm") {
+    // `witchy pm <verb>` and its RFC-0095 Cut 5 branding alias `witchy grimoire <verb>`
+    // both route to the same embedded front-end.
+    if matches!(std::env::args().nth(1).as_deref(), Some("pm") | Some("grimoire")) {
         commands::embedded_pm::run_embedded_pm(std::env::args().skip(2).collect());
     }
     // `witchy coven-serve [--addr H:P] [--root DIR] [--trust-issuer iss=pubhex]...
@@ -829,8 +831,8 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         }
         let a1 = frontend_args.first().cloned().unwrap_or_default();
         const FRONTEND_VERBS: &[&str] = &[
-            "new", "init", "add", "build", "run", "update", "list", "audit", "tree", "outdated",
-            "why", "why-cap", "publish", "promote", "yank", "verify", "vendor",
+            "new", "init", "add", "install", "build", "run", "update", "list", "audit", "tree",
+            "outdated", "why", "why-cap", "publish", "promote", "yank", "verify", "vendor",
         ];
         if FRONTEND_VERBS.contains(&a1.as_str()) {
             commands::embedded_pm::run_embedded_pm(frontend_args);
