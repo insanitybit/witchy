@@ -147,6 +147,7 @@ fn main(console: Console):
             ("coven_proto", "projects/coven/src/coven_proto.witchy"),
             ("coven_json", "projects/coven/src/coven_json.witchy"),
             ("coven_validate", "projects/coven/src/coven_validate.witchy"),
+            ("coven_artifact", "projects/coven/src/coven_artifact.witchy"),
         ];
         let modules = sources
             .iter()
@@ -338,6 +339,7 @@ fn main(console: Console):
             ("coven_proto", "projects/coven/src/coven_proto.witchy"),
             ("coven_json", "projects/coven/src/coven_json.witchy"),
             ("coven_validate", "projects/coven/src/coven_validate.witchy"),
+            ("coven_artifact", "projects/coven/src/coven_artifact.witchy"),
         ] {
             let src = std::fs::read_to_string(path).expect("read pm module");
             modules.push((name.to_string(), parser::parse_module(&src).expect("parse pm module")));

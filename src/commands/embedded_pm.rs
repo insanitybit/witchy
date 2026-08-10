@@ -171,6 +171,8 @@ fn embedded_pm_module(name: &str) -> Option<&'static str> {
         "coven_proto" => Some(include_str!("../../projects/coven/src/coven_proto.witchy")),
         "coven_json" => Some(include_str!("../../projects/coven/src/coven_json.witchy")),
         "coven_validate" => Some(include_str!("../../projects/coven/src/coven_validate.witchy")),
+        // (RFC-0095) `pm install` parses/verifies the artifact manifest.
+        "coven_artifact" => Some(include_str!("../../projects/coven/src/coven_artifact.witchy")),
         _ => None,
     }
 }

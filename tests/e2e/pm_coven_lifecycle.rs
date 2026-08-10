@@ -1101,3 +1101,52 @@ fn publish_uploads_artifact_bytes_then_serves_them() {
         "the rejection explains the sha256 mismatch: {mbody}"
     );
 }
+
+/// RFC-0095 Cut 3: `pm install` runs the full trust chain end to end — resolve the
+/// released version, verify the signed record against the registry root key, read
+/// the coven-v2 artifact_digest, digest-verify the manifest, select the target,
+/// fetch the bytes and check their sha256 — then writes the trusted-exe into the
+/// project's `.witchy/bin/`. A source-only package is refused.
+#[test]
+fn install_fetches_verifies_and_writes_a_trusted_exe() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "install");
+    let appsrc = fe.lib("acme/wrg", "0.3.0", "pub fn go() -> String:\n    \"hi\"\n");
+    let sha_hello = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    let manifest = format!(
+        "{{\"version\":1,\"artifacts\":{{\"aarch64-apple-darwin\":{{\"kind\":\"trusted-exe\",\"command\":\"wrg\",\"sha256\":\"{sha_hello}\",\"size\":5,\"binding_plan_sha256\":\"\",\"authority\":[]}}}}}}"
+    );
+    std::fs::write(appsrc.join("artifact.json"), &manifest).unwrap();
+    std::fs::create_dir_all(appsrc.join("artifacts")).unwrap();
+    std::fs::write(appsrc.join("artifacts").join("aarch64-apple-darwin"), b"hello").unwrap();
+
+    let ci = server.ci_token("acme-wrg-repo", "release.yml");
+    let out = fe.pm(&appsrc, &["publish", "."], Some(&ci));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "publish: {}\n{}", stdout(&out), stderr(&out));
+    // Install requires a RELEASED version — promote with a distinct human identity.
+    let alice = server.human_token("alice");
+    let out = fe.pm(&appsrc, &["promote", "acme/wrg", "0.3.0"], Some(&alice));
+    assert!(out.status.success() && stdout(&out).contains("promote: 200"), "promote: {}", stdout(&out));
+
+    // Install into a fresh consumer project.
+    let consumer = fe.new_app();
+    let out = fe.pm(&consumer, &["install", "acme/wrg", "--target", "aarch64-apple-darwin"], None);
+    assert!(out.status.success(), "install failed: {}\n{}", stdout(&out), stderr(&out));
+    assert!(stdout(&out).contains("installed wrg"), "install receipt: {}", stdout(&out));
+    let installed = consumer.join(".witchy/bin/wrg");
+    assert!(installed.exists(), "the trusted-exe must be installed into .witchy/bin");
+    assert_eq!(std::fs::read(&installed).unwrap(), b"hello", "installed bytes match the published, signed artifact");
+
+    // A source-only package has nothing to install → refused.
+    let libsrc = fe.lib("acme/plain", "0.1.0", "pub fn go() -> String:\n    \"hi\"\n");
+    let ci2 = server.ci_token("acme-wrg-repo", "release.yml");
+    let out2 = fe.pm(&libsrc, &["publish", "."], Some(&ci2));
+    assert!(out2.status.success(), "publish plain: {}", stdout(&out2));
+    // alice is now the bound maintainer of namespace `acme`, so she promotes here too.
+    let alice2 = server.human_token("alice");
+    let out3 = fe.pm(&libsrc, &["promote", "acme/plain", "0.1.0"], Some(&alice2));
+    assert!(out3.status.success(), "promote plain: {}", stdout(&out3));
+    let out4 = fe.pm(&consumer, &["install", "acme/plain", "--target", "aarch64-apple-darwin"], None);
+    assert!(!out4.status.success(), "installing a source-only package must fail");
+    assert!(stdout(&out4).contains("source-only"), "explains source-only: {}", stdout(&out4));
+}

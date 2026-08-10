@@ -34,7 +34,7 @@ markdown-blocks	224
 checked	515
 rejected	0
 var-declarations	40
-resolved-var-calls	729
+resolved-var-calls	730
 mechanical-self-reassignment	0
 expression-position-mutator	11
 immutable-var-argument	0

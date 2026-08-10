@@ -19,6 +19,7 @@
 import bytes
 import compiler
 import coven_proto
+import coven_artifact
 import crypto
 import encoding
 import exec
@@ -64,6 +65,8 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec,
         cmd_drive(console, runner, bin, "doc", ["doc", arg(args, 1)])
     else if cmd == "add":
         cmd_add(console, net, root, env, clock, args)
+    else if cmd == "install":
+        cmd_install(console, net, root, env, clock, args)
     else if cmd == "publish":
         cmd_publish(console, net, root, env, args)
     else if cmd == "promote":
@@ -2622,6 +2625,156 @@ fn has_path_flag(args: List(String)) -> Bool:
         if a == "--path" || a.starts_with("--path="):
             found = true
     found
+
+// (RFC-0095) `pm install <pkg>[@ver] [host] --target <triple>` — install a released
+// application's trusted-exe. The FULL trust chain, reusing the same verified pieces
+// `add` uses: resolve the released version, verify the signed record against the
+// (pinned) registry root key, read the coven-v2 artifact_digest, fetch + digest-verify
+// the manifest, select the host target, fetch the bytes and check their sha256, then
+// write the executable into the project's `.witchy/bin/`. Every step fails closed.
+// (Host-target auto-detection and installing into $WITCHY_HOME are Cut 4 — this slice
+// takes an explicit --target and installs project-relative, inside the confined Dir.)
+fn cmd_install(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
+    // `--target <triple>` takes a value, so drop the pair before reading positionals
+    // (else the triple would be misread as the host:port positional).
+    let pos = positionals(drop_flag_value(args, "--target"))
+    let spec = arg(pos, 1)
+    if spec.is_empty():
+        console.print("usage: pm install <pkg>[@<ver>] [host:port] --target <triple>")
+        1
+    else:
+        let (name, req) = split_spec(spec)
+        let target = flag_value(args, "--target")
+        if target.is_empty():
+            console.print("install: --target <triple> is required (host-target auto-detection is not yet available)")
+            1
+        else:
+            match parse_origin(coven_addr(env, arg(pos, 2))):
+                Err(m) ->
+                    console.print("invalid registry address: ${m}")
+                    1
+                Ok(shp) ->
+                    let (scheme, host, port) = shp
+                    install_resolve(console, net, root, env, clock, registry_origin(scheme, host, port), name, req, target, args)
+
+fn install_resolve(console: Console, net: Net, root: Dir, env: Env, clock: Clock, origin: String, name: String, req: String, target: String, args: List(String)) -> Int:
+    match resolve_version(net, origin, name, req, cooldown_now(env, clock, args)):
+        Err(e) ->
+            console.print("${name}: ${version_resolve_error_message(e)}")
+            1
+        Ok(chosen) ->
+            match install_verified_record(net, root, origin, name, chosen):
+                Err(m) ->
+                    console.print("BLOCK: ${m}")
+                    1
+                Ok(doc) -> install_artifact(console, net, root, origin, name, chosen, target, doc)
+
+// Fetch + verify the signed record against the (pinned) root key and bind its
+// coordinate — the same trust `verified_incoming_footprint` enforces for `add`.
+fn install_verified_record(net: Net, root: Dir, origin: String, name: String, version: String) -> Result(Json, String):
+    let rootpub = fetch_registry_rootpub(net, origin).map_err(fn(e: RegistryRootKeyError): "${e}")?
+    let pinned = pinned_registry_rootpub(root).map_err(fn(e: LockPinError): "${e}")?
+    if pinned != "" && pinned != rootpub:
+        Err("registry root key does not match the key pinned in witchy.lock — refusing to install")
+    else:
+        let resp = registry_get(net, origin, "/coven/record?name=${wire(name)}&version=${version}")
+        if http.status(resp) != 200:
+            Err("registry has no record for ${name}@${version}")
+        else:
+            match verify_record_signature(rootpub, http.body(resp)):
+                Err(e) -> Err(record_verify_error_message(e))
+                Ok(doc) ->
+                    if jget(doc, "name") != name || jget(doc, "version") != version:
+                        Err("record coordinate mismatch — the registry served the wrong record")
+                    else if jget(doc, "state") != "released":
+                        Err("${name}@${version} is `${jget(doc, "state")}`, not released — refusing to install an unreleased version")
+                    else:
+                        Ok(doc)
+
+fn install_artifact(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, target: String, doc: Json) -> Int:
+    let digest = jget(doc, "artifact_digest")
+    if digest.is_empty():
+        console.print("BLOCK: ${name}@${version} is a source-only release — it ships no installable artifact")
+        1
+    else:
+        match install_selected_entry(net, origin, name, version, digest, target):
+            Err(m) ->
+                console.print("BLOCK: ${m}")
+                1
+            Ok(entry) ->
+                let (command, sha) = entry
+                install_fetch_and_write(console, net, root, origin, name, version, target, command, sha)
+
+// Fetch the artifact manifest, verify its digest matches the SIGNED record, and
+// select the host target's (command, sha256). A tampered manifest fails the digest.
+fn install_selected_entry(net: Net, origin: String, name: String, version: String, digest: String, target: String) -> Result((String, String), String):
+    let resp = registry_get(net, origin, "/coven/artifact?name=${wire(name)}&version=${version}")
+    if http.status(resp) != 200:
+        Err("registry has no artifact manifest for ${name}@${version}")
+    else:
+        match coven_artifact.parse(http.body(resp)):
+            Err(e) -> Err("artifact manifest is malformed: ${coven_artifact.artifact_error_message(e)}")
+            Ok(mani) ->
+                if coven_artifact.manifest_digest(mani) != digest:
+                    Err("artifact manifest digest does not match the signed record (tampered mirror?)")
+                else:
+                    match coven_artifact.select(mani, target):
+                        None -> Err("no artifact for target `${target}` (available: ${list.join(coven_artifact.targets(mani), ", ")})")
+                        Some(entry) -> Ok((entry.command, entry.sha256))
+
+fn install_fetch_and_write(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, target: String, command: String, sha: String) -> Int:
+    let resp = registry_get(net, origin, "/coven/artifact/bytes?name=${wire(name)}&version=${version}&target=${target}")
+    if http.status(resp) != 200:
+        console.print("BLOCK: registry has no artifact bytes for ${name}@${version} target `${target}`")
+        1
+    else:
+        match json.decode(http.body(resp)):
+            Err(e) ->
+                console.print("BLOCK: malformed artifact-bytes response: ${json.decode_error_message(e)}")
+                1
+            Ok(bdoc) -> install_verify_bytes(console, root, command, sha, jget(bdoc, "bytes"))
+
+fn install_verify_bytes(console: Console, root: Dir, command: String, sha: String, b64: String) -> Int:
+    match encoding.base64_decode_bytes_string(b64):
+        Err(e) ->
+            console.print("BLOCK: artifact bytes are not valid base64: ${e}")
+            1
+        Ok(data) ->
+            if crypto.sha256_bytes(data) != sha:
+                console.print("BLOCK: fetched artifact bytes do not match the signed sha256 (tampered mirror?)")
+                1
+            else:
+                let path = join_path(".witchy/bin", command)
+                fs.ensure_dir(root, ".witchy/bin")
+                root.write_bytes(path, data)
+                console.print("installed ${command} -> ${path}")
+                0
+
+// The value following a `--flag` in args, or "" if the flag is absent or last.
+fn flag_value(args: List(String), flag: String) -> String:
+    var found = ""
+    var take = false
+    for a in args:
+        if take:
+            found = a
+            take = false
+        else if a == flag:
+            take = true
+    found
+
+// args with a `--flag <value>` pair removed, so a value-taking flag never leaks
+// into positional parsing.
+fn drop_flag_value(args: List(String), flag: String) -> List(String):
+    var out = []
+    var skip = false
+    for a in args:
+        if skip:
+            skip = false
+        else if a == flag:
+            skip = true
+        else:
+            out.push(a)
+    out
 
 fn cmd_add(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     if has_path_flag(args):
