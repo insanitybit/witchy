@@ -93,6 +93,7 @@ const HELPER_NAMES: &[&str] = &[
     "dir_read",
     "dir_read_bytes",
     "dir_write_bytes",
+    "dir_append_bytes",
     "file_read",
     "build_read",
     "build_out_write",
@@ -277,6 +278,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_write" (func $dir_write_host (param externref i32 i32)))
   (import "witchy" "dir_write_bytes" (func $dir_write_bytes_host (param externref i32 i32)))
   (import "witchy" "dir_append" (func $dir_append_host (param externref i32 i32)))
+  (import "witchy" "dir_append_bytes" (func $dir_append_bytes_host (param externref i32 i32)))
   (import "witchy" "dir_make_dir" (func $dir_make_dir_host (param externref i32)))
   (import "witchy" "dir_open" (func $dir_open_host (param externref i32) (result externref)))
   (import "witchy" "dir_create" (func $dir_create_host (param externref i32) (result externref)))
@@ -324,7 +326,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 104;
+pub const IMPORT_COUNT: usize = 105;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v9 (RFC-0106): adds the browser-omitted `crypto.__shake128`/`__shake256` XOFs.
@@ -505,6 +507,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_is_dir"
         | "dir_write"
         | "dir_append"
+        | "dir_append_bytes"
         | "dir_make_dir"
         | "dir_create_new"
         | "dir_replace"
@@ -577,8 +580,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_exists"
         | "dir_is_dir"
         | "dir_open" => AUTH_DIR_READ,
-        "dir_write" | "dir_write_bytes" | "dir_append" | "dir_make_dir" | "dir_create"
-        | "dir_create_new" | "dir_replace" | "dir_rename" => AUTH_DIR_WRITE,
+        "dir_write" | "dir_write_bytes" | "dir_append" | "dir_append_bytes" | "dir_make_dir"
+        | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
         "file_read_len" | "file_write" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,

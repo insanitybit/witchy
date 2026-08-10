@@ -146,6 +146,18 @@ fn test_binary_round_trip(dir: Dir):
     let back = dir.read_bytes("blob.bin")
     testing.assert_int_eq(bytes.length(back), 5)
     testing.assert_eq(crypto.sha256_bytes(back), crypto.sha256_bytes(raw))
+
+fn test_streamed_binary(dir: Dir):
+    // append_bytes streams a large file chunk by chunk, so nothing ever holds the
+    // whole blob in memory. write_bytes with empty bytes truncates first, then each
+    // append_bytes extends the file.
+    let head = bytes.from_list([1, 2, 3]) ?? bytes.from_string("")
+    let tail = bytes.from_list([4, 5]) ?? bytes.from_string("")
+    dir.write_bytes("stream.bin", bytes.from_string(""))
+    dir.append_bytes("stream.bin", head)
+    dir.append_bytes("stream.bin", tail)
+    let whole = bytes.from_list([1, 2, 3, 4, 5]) ?? bytes.from_string("")
+    testing.assert_eq(crypto.sha256_bytes(dir.read_bytes("stream.bin")), crypto.sha256_bytes(whole))
 ```
 
 You supply the starting contents in a small JSON fixture plan and run it with

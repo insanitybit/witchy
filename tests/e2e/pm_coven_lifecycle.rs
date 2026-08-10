@@ -1184,3 +1184,137 @@ fn publish_rejects_a_typosquat_of_an_existing_name() {
     let out3 = fe.pm(&ok, &["publish", "."], Some(&ci3));
     assert!(out3.status.success() && stdout(&out3).contains("publish: 200"), "distinct name must publish: {}\n{}", stdout(&out3), stderr(&out3));
 }
+
+/// RFC-0095 Cut 6 (run-acceptance): the whole product slice end to end. Build a
+/// REAL trusted-exe of the committed minigrep application, publish it to coven (its
+/// bytes uploaded in base64 CHUNKS, since a real host launcher far exceeds the net
+/// recv cap in a single body), promote it, then `pm install` it into a hermetic
+/// `$WITCHY_HOME` (fetched back in chunks and sha256-verified against the signed
+/// manifest) — and finally RUN the installed binary with an empty PATH from a fresh
+/// cwd, no grant flags. This is the acceptance the RFC's "build → publish → install
+/// → run" narrative names: a published witchy application actually runs after being
+/// installed by name.
+#[test]
+#[cfg(unix)]
+fn install_and_run_a_trusted_application_end_to_end() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "cut6");
+    let repo = env!("CARGO_MANIFEST_DIR");
+
+    // 1. Assemble a publishable, NAMESPACED minigrep rune from the committed example,
+    //    keeping its `[targets.trusted-exe]` binding (cwd Dir[Read] + IGNORE_CASE env).
+    let app = fe.base.join("minigrep");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    let toml = std::fs::read_to_string(Path::new(repo).join("examples/minigrep/witchy.toml"))
+        .unwrap()
+        .replace(
+            "name = \"minigrep\"\nversion = \"0.1.0\"",
+            "name = \"acme/minigrep\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\", \"Dir\", \"Env\"]",
+        );
+    std::fs::write(app.join("witchy.toml"), toml).unwrap();
+    for f in ["src/minigrep.witchy", "src/minigrep_test.witchy"] {
+        std::fs::copy(Path::new(repo).join("examples/minigrep").join(f), app.join(f)).unwrap();
+    }
+
+    // 2. Build the real trusted-exe: one self-contained host launcher bundling the
+    //    compiled WASM and its digest-checked launch contract (RFC-0092).
+    let built = Command::new(BIN)
+        .current_dir(&app)
+        .args(["--release", "build", "--target", "trusted-exe", "."])
+        .output()
+        .expect("spawn trusted-exe build");
+    assert!(
+        built.status.success(),
+        "trusted-exe build failed:\nstdout: {}\nstderr: {}",
+        stdout(&built),
+        stderr(&built)
+    );
+    let exe = app.join("target/release/minigrep");
+    assert!(exe.is_file(), "missing built trusted-exe at {}", exe.display());
+    let bytes = std::fs::read(&exe).unwrap();
+
+    // 3. Author the artifact manifest the publish commits to: it binds the exe's
+    //    sha256, which coven re-verifies against the decoded upload before storing.
+    let sha: String = {
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    };
+    let target = "host-native";
+    let manifest = format!(
+        "{{\"version\":1,\"artifacts\":{{\"{target}\":{{\"kind\":\"trusted-exe\",\"command\":\"minigrep\",\"sha256\":\"{sha}\",\"size\":{},\"binding_plan_sha256\":\"\",\"authority\":[]}}}}}}",
+        bytes.len()
+    );
+    std::fs::write(app.join("artifact.json"), &manifest).unwrap();
+    std::fs::create_dir_all(app.join("artifacts")).unwrap();
+    std::fs::copy(&exe, app.join("artifacts").join(target)).unwrap();
+
+    // 4. Publish (CI identity) — pm uploads the artifact bytes in chunks after the record.
+    let ci = server.ci_token("acme-repo", "release.yml");
+    let out = fe.pm(&app, &["publish", "."], Some(&ci));
+    if !(out.status.success() && stdout(&out).contains("publish: 200")) {
+        // The registry runs out of process; surface its stderr so a chunk-transport
+        // regression (e.g. a worker trap) is diagnosable from the test failure alone.
+        let log = std::fs::read_to_string(server.regroot.join("coven-serve.stderr")).unwrap_or_default();
+        panic!("publish: {}\n{}\n--- coven stderr ---\n{}", stdout(&out), stderr(&out), log);
+    }
+    assert!(
+        stdout(&out).contains(&format!("artifact {target}: 200")),
+        "pm must upload the built artifact bytes after publish: {}",
+        stdout(&out)
+    );
+
+    // 5. Promote to released with a distinct human identity (separation of duties).
+    let alice = server.human_token("alice");
+    let out = fe.pm(&app, &["promote", "acme/minigrep", "0.1.0"], Some(&alice));
+    assert!(out.status.success() && stdout(&out).contains("promote: 200"), "promote: {}", stdout(&out));
+
+    // 6. Install into a hermetic consumer home: chunked fetch → sha256 verify → write.
+    let consumer = fe.new_app();
+    let out = fe.pm(&consumer, &["install", "acme/minigrep", "--target", target], None);
+    assert!(
+        out.status.success() && stdout(&out).contains("installed minigrep"),
+        "install: {}\n{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let installed = fe.home().join("bin").join("minigrep");
+    assert!(installed.is_file(), "installed trusted-exe missing at {}", installed.display());
+    assert_eq!(
+        std::fs::read(&installed).unwrap(),
+        bytes,
+        "installed bytes are byte-identical to the published, signed artifact"
+    );
+
+    // install writes the verified bytes; make it executable to launch (the +x
+    // Dir cap-op is deferred follow-up work — recorded in the RFC's roadmap).
+    let mut perms = std::fs::metadata(&installed).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&installed, perms).unwrap();
+
+    // 7. RUN the installed trusted-exe: empty PATH, a fresh cwd, no grant flags — it
+    //    is self-contained and its Dir[Read] follows launch cwd (RFC-0092).
+    let search = fe.base.join("search");
+    std::fs::create_dir_all(&search).unwrap();
+    std::fs::write(
+        search.join("poem.txt"),
+        "Nobody trusts a wrapper.\nTrust the installed artifact.\nnobody needs grant flags.\n",
+    )
+    .unwrap();
+    let ran = Command::new(&installed)
+        .current_dir(&search)
+        .env("PATH", "")
+        .env_remove("IGNORE_CASE")
+        .args(["nobody", "poem.txt"])
+        .output()
+        .expect("run the installed trusted-exe");
+    assert_eq!(ran.status.code(), Some(0), "installed app run failed: {}", stderr(&ran));
+    assert_eq!(
+        stdout(&ran),
+        "nobody needs grant flags.\n",
+        "the installed application produced minigrep's real, case-sensitive output"
+    );
+}

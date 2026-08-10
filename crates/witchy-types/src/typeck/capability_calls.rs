@@ -287,10 +287,10 @@ impl Checker {
                 }
                 Ty::Bytes
             }
-            "write_bytes" => {
+            "write_bytes" | "append_bytes" => {
                 if !rights.write {
                     return terr(format!(
-                        "`write_bytes` needs `Write` but the capability is `{rights}`"
+                        "`{name}` needs `Write` but the capability is `{rights}`"
                     ));
                 }
                 Ty::Unit

@@ -36,6 +36,7 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
     linker.func_wrap("witchy", "dir_replace", host_dir_replace)?;
     linker.func_wrap("witchy", "dir_rename", host_dir_rename)?;
     linker.func_wrap("witchy", "dir_write_bytes", host_dir_write_bytes)?;
+    linker.func_wrap("witchy", "dir_append_bytes", host_dir_append_bytes)?;
     Ok(())
 }
 
@@ -553,6 +554,31 @@ fn host_dir_append(
                 Error::msg(format!("append failed for `{}`: {e}", file.display_path().display()))
             })
         }
+    }
+}
+
+/// (RFC-0095) `dir_append_bytes(h, rel, data)`: append RAW bytes to a confined file,
+/// creating it if absent — `dir_append`'s confinement/rights with `dir_write_bytes`'
+/// binary marshalling. Streaming a large artifact chunk by chunk this way keeps the
+/// guest's working set flat (one chunk), where accumulating the whole in memory would
+/// exhaust it.
+fn host_dir_append_bytes(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+    data_ptr: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let rel = read_wstr(data, rel_ptr)?;
+    let bytes = read_wbytes(data, data_ptr)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    match dir_file_backing(&dir, &rel, true)? {
+        FileBacking::Fs(file) => file.append_all(&bytes).map_err(|e| {
+            Error::msg(format!("append failed for `{}`: {e}", file.display_path().display()))
+        }),
     }
 }
 

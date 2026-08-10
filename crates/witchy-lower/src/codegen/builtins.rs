@@ -1005,6 +1005,12 @@ impl Codegen<'_> {
                 let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
                 if self.collect_wir { call("dir_write_bytes", a) } else { nil0(host("dir_write_bytes_host", a)) }
             }
+            // RFC-0095: append Bytes to a file — a void effect, like `append` but binary.
+            ("append_bytes", 3) => {
+                self.used_dir_ops.insert("append_bytes");
+                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
+                if self.collect_wir { call("dir_append_bytes", a) } else { nil0(host("dir_append_bytes_host", a)) }
+            }
             ("write_out", 3) => {
                 self.used_build_ops.insert("write_out");
                 // BuildOut is checked at source level and granted by import

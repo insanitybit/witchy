@@ -183,6 +183,7 @@ pub const OPS: &[CapOp] = &[
     op!("rename", Dir, [String, String], Nil, "dir.rename(from, to)"),
     op!("read_bytes", Dir, [String], Bytes, "dir.read_bytes(path)"),
     op!("write_bytes", Dir, [String, Bytes], Nil, "dir.write_bytes(path, data)"),
+    op!("append_bytes", Dir, [String, Bytes], Nil, "dir.append_bytes(path, data)"),
     op!("connect", Net, [String], Socket, "net.connect(addr)"),
     op!("try_connect", Net, [String], OptionSocket, "net.try_connect(addr)"),
     op!("listen", Net, [String], Listener, "net.listen(addr)"),

@@ -2405,6 +2405,54 @@ impl Interpreter {
                 }
                 _ => err("append expects a Dir, a relative path, and contents"),
             },
+            // RFC-0095: append RAW bytes to a file (creating it if absent) — `append`'s
+            // confinement/rights with binary content, for streaming a large artifact.
+            "append_bytes" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [
+                    Value::Dir(DirValue::Fixture(handle), _),
+                    Value::Str(rel),
+                    Value::Bytes(data),
+                ] => {
+                    match self.invoke_fixture(HostRequest::DirAppend {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                        bytes: data.to_vec(),
+                    })? {
+                        HostResponse::Count(count) if count == data.len() => {
+                            Ok(Some(Value::Unit))
+                        }
+                        HostResponse::Count(count) => err(format!(
+                            "partial fixture append: wrote {count} of {} bytes",
+                            data.len()
+                        )),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
+                [Value::Dir(base, pol), Value::Str(rel), Value::Bytes(data)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
+                    match dir_file_value(base, rel, true)? {
+                        FileValue::Fs(file) => {
+                            match file.append_all(data) {
+                                Ok(()) => Ok(Some(Value::Unit)),
+                                Err(e) => err(format!(
+                                    "append failed for `{}`: {e}",
+                                    file.display_path().display()
+                                )),
+                            }
+                        }
+                        #[cfg(feature = "test-fixtures")]
+                        FileValue::Fixture(_) => err(
+                            "internal error: fixture File bypassed fixture dispatch",
+                        ),
+                    }
+                }
+                _ => err("append_bytes expects a Dir, a relative path, and Bytes"),
+            },
             // RFC-0095: read a file's RAW bytes (no UTF-8 validation) — a binary
             // artifact — yielding `Bytes`.
             "read_bytes" => match args {

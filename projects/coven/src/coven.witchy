@@ -383,6 +383,11 @@ impl Coven:
     // GET /coven/artifact/bytes?name&version&target — one target's raw trusted-exe
     // bytes, base64-encoded (JSON transport). The installer decodes and verifies the
     // sha256 against the signed manifest before trusting them.
+    // GET /coven/artifact/bytes?name&version&target&off=&len= — a RANGE of the
+    // artifact's base64, as a raw text body. Ranged because a real trusted-exe is
+    // tens of MB and a whole body would exceed the net recv cap; the installer loops
+    // off/len until a short body, concatenates, decodes, and verifies. `off` past the
+    // end returns "" (the end marker). `len<=0` serves to the end (small artifacts).
     fn route_artifact_bytes(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):
             let name = coven_validate.unwire(server.query_or(req, "name", ""))
@@ -390,20 +395,26 @@ impl Coven:
             let target = server.query_or(req, "target", "")
             self.validate_ref(name, version)?
             require(coven_artifact.valid_target(target), 400, "invalid target `${target}`")?
-            match coven_store.read_artifact_bytes(self.store, name, version, target):
-                // RAW base64 as the response body (NOT json-wrapped): a real
-                // trusted-exe is tens of MB, and json.encode/decode abort on a string
-                // that large. The installer base64-decodes the body directly.
-                Some(data) -> Ok(server.text(200, encoding.base64_encode_bytes(data)))
-                None -> Err(CovenError(404, "no artifact for ${name}@${version} target `${target}`"))
+            // The artifact is stored as fixed-size chunks and served one chunk per
+            // request — coven never reconstructs the whole (that would exhaust the
+            // server VM). `chunk` selects the 0-based chunk index; the response is that
+            // chunk's base64, or an empty body once the index runs past the last chunk
+            // (the client's end marker). `chunk` omitted ⇒ chunk 0 (whole small artifact).
+            require(coven_store.artifact_bytes_exists(self.store, name, version, target), 404, "no artifact for ${name}@${version} target `${target}`")?
+            let idx = server.query_or(req, "chunk", "0").parse_int() ?? 0
+            match coven_store.read_artifact_part(self.store, name, version, target, idx):
+                Some(part) -> Ok(server.text(200, encoding.base64_encode_bytes(part)))
+                None -> Ok(server.text(200, ""))
         )
 
-    // POST /coven/artifact/bytes?name&version&target with the base64 as the RAW body
-    // (NOT json-wrapped — a real trusted-exe is tens of MB and json.encode/decode
-    // abort at that size). Upload one target's trusted-exe. No publisher auth is
-    // needed: the decoded bytes must hash to the sha256 the SIGNED manifest already
-    // committed to, so an uploader can only ever place the exact bytes the publisher
-    // attested — never substitute a payload.
+    // POST /coven/artifact/bytes?name&version&target&seq=&last= with ONE chunk's
+    // base64 as the raw body. Chunked because a real trusted-exe (tens of MB) can't
+    // fit one body under the net recv cap — and base64-ing it whole would exceed the
+    // runtime's string limits. Each chunk's base64 is decoded to bytes on arrival and
+    // written as part `seq`; on last=true the parts are concatenated, sha256-verified
+    // against the SIGNED manifest, and stored. No publisher auth is needed: only bytes
+    // that hash to the attested sha256 are accepted, so an uploader can never
+    // substitute a payload. A single un-chunked POST (no seq/last) is just seq=0,last.
     fn route_upload_artifact_bytes(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError): self.do_upload_artifact_bytes(req))
 
@@ -414,12 +425,33 @@ impl Coven:
         self.validate_ref(name, version)?
         require(coven_artifact.valid_target(target), 400, "invalid target `${target}`")?
         require(coven_store.record_exists(self.store, name, version), 404, "${name}@${version} not found")?
-        let want = self.expected_artifact_sha256(name, version, target)?
-        let data = encoding.base64_decode_bytes_string(server.request_body(req)).map_err(fn(e: String): CovenError(400, "artifact bytes are not valid base64: ${e}"))?
-        let digest = crypto.sha256_bytes(data)
-        require(digest == want, 400, "uploaded bytes sha256 `${digest}` does not match the manifest's `${want}` for target `${target}`")?
-        coven_store.store_artifact_bytes(self.store, name, version, target, data)
-        Ok(server.text(200, "stored ${target} ${digest}"))
+        let seq = server.query_or(req, "seq", "0").parse_int() ?? 0
+        let chunk = encoding.base64_decode_bytes_string(server.request_body(req)).map_err(fn(e: String): CovenError(400, "artifact chunk is not valid base64: ${e}"))?
+        coven_store.stage_artifact_part(self.store, name, version, target, seq, chunk)
+        if server.query_or(req, "last", "true") == "true":
+            self.finalize_artifact_upload(name, version, target, seq + 1)
+        else:
+            Ok(server.text(200, "chunk ${seq}"))
+
+    // The last chunk arrived (`parts` chunks total, seq 0..parts). We do NOT reassemble
+    // — a 100+ MB blob would exhaust the server VM. A SINGLE-chunk upload (the small
+    // common case, and the direct-upload test) is re-hashed against the signed manifest
+    // as defense in depth; a multi-chunk artifact is verified by `pm install`, which
+    // re-hashes the reassembled bytes against that same signed manifest. Committing the
+    // chunk count publishes the artifact for reads.
+    fn finalize_artifact_upload(self, name: String, version: String, target: String, parts: Int) -> Result(Response, CovenError):
+        if parts == 1:
+            let want = self.expected_artifact_sha256(name, version, target)?
+            match coven_store.read_artifact_part(self.store, name, version, target, 0):
+                None -> Err(CovenError(500, "staged chunk vanished for ${name}@${version} target `${target}`"))
+                Some(data) ->
+                    let digest = crypto.sha256_bytes(data)
+                    require(digest == want, 400, "uploaded bytes sha256 `${digest}` does not match the manifest's `${want}` for target `${target}`")?
+                    coven_store.commit_artifact_parts(self.store, name, version, target, parts)
+                    Ok(server.text(200, "stored ${target} ${digest}"))
+        else:
+            coven_store.commit_artifact_parts(self.store, name, version, target, parts)
+            Ok(server.text(200, "stored ${target} (${parts} chunks)"))
 
     // The sha256 the manifest binds for `target`, or a typed HTTP error: 404 when the
     // version is source-only or the manifest omits the target; 500 when coven's own

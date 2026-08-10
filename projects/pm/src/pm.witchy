@@ -1284,7 +1284,7 @@ fn upload_artifact_dir(console: Console, net: Net, root: Dir, dir: String, manif
         var failed = 0
         for target in root.subtree(art_dir).list():
             let data = root.read_bytes(join_path(art_dir, target))
-            let resp = registry_post(net, origin, "/coven/artifact/bytes?name=${wire(name)}&version=${version}&target=${target}", encoding.base64_encode_bytes(data))
+            let resp = upload_artifact_chunked(net, origin, name, version, target, data)
             let st = http.status(resp)
             if st >= 200 && st < 300:
                 console.print("  artifact ${target}: ${st}")
@@ -1292,6 +1292,27 @@ fn upload_artifact_dir(console: Console, net: Net, root: Dir, dir: String, manif
                 console.print("  artifact ${target}: ${st} error=${resp_field(http.body(resp), "error")}")
                 failed = 1
         failed
+
+// (RFC-0095) Upload one target's bytes in BYTE ranges: each chunk's bytes are
+// base64-ed on their own (never the whole blob — that would exceed the runtime's
+// string limits) and POSTed under the net recv cap. Returns the finalize response
+// (or the first failing chunk's). A single-chunk artifact posts seq=0,last=true.
+fn upload_artifact_chunked(net: Net, origin: String, name: String, version: String, target: String, data: Bytes) -> Response:
+    let chunk = 6291456
+    let total = bytes.length(data)
+    let n = if total <= chunk: 1 else: (total + chunk - 1) / chunk
+    upload_chunk_seq(net, origin, name, version, target, data, chunk, total, n, 0)
+
+fn upload_chunk_seq(net: Net, origin: String, name: String, version: String, target: String, data: Bytes, chunk: Int, total: Int, n: Int, i: Int) -> Response:
+    let off = i * chunk
+    let end = if off + chunk > total: total else: off + chunk
+    let piece = encoding.base64_encode_bytes(bytes.slice(data, off, end))
+    let last = i >= n - 1
+    let resp = registry_post(net, origin, "/coven/artifact/bytes?name=${wire(name)}&version=${version}&target=${target}&seq=${i}&last=${last}", piece)
+    if last || http.status(resp) < 200 || http.status(resp) >= 300:
+        resp
+    else:
+        upload_chunk_seq(net, origin, name, version, target, data, chunk, total, n, i + 1)
 
 // Whether the manifest declares any path dependency (`{ path = ... }`). A published
 // rune must be self-contained / registry-only, so publish refuses these.
@@ -2722,32 +2743,46 @@ fn install_selected_entry(net: Net, origin: String, name: String, version: Strin
                         None -> Err("no artifact for target `${target}` (available: ${list.join(coven_artifact.targets(mani), ", ")})")
                         Some(entry) -> Ok((entry.command, entry.sha256))
 
-fn install_fetch_and_write(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, target: String, command: String, sha: String) -> Int:
-    let resp = registry_get(net, origin, "/coven/artifact/bytes?name=${wire(name)}&version=${version}&target=${target}")
-    if http.status(resp) != 200:
+fn install_fetch_and_write(console: Console, net: Net, home: Dir, origin: String, name: String, version: String, target: String, command: String, sha: String) -> Int:
+    // `home` is the granted $WITCHY_HOME provider; installs land in its `bin/` so an
+    // added-to-PATH launcher finds them. Stream the artifact chunk by chunk straight
+    // to disk (append_bytes) — a real trusted-exe is 100+ MB and can neither traverse
+    // one HTTP body nor be held whole in memory, so nothing ever accumulates the whole
+    // in the guest. Then read the written file back once to verify its sha256.
+    fs.ensure_dir(home, "bin")
+    let binpath = join_path("bin", command)
+    // Truncate/create the destination before appending, so a re-install never appends
+    // to a stale file.
+    home.write_bytes(binpath, bytes.from_string(""))
+    // state: 0 = downloading, 1 = complete, 2 = transport/decode error, 3 = no artifact
+    var idx = 0
+    var state = 0
+    while state == 0:
+        let resp = registry_get(net, origin, "/coven/artifact/bytes?name=${wire(name)}&version=${version}&target=${target}&chunk=${idx}")
+        if http.status(resp) != 200:
+            state = if idx == 0: 3 else: 2
+        else:
+            let body = http.body(resp)
+            if body.length() == 0:
+                state = 1
+            else:
+                match encoding.base64_decode_bytes_string(body):
+                    Err(_e) -> state = 2
+                    Ok(piece) ->
+                        home.append_bytes(binpath, piece)
+                        idx = idx + 1
+    if state == 3:
         console.print("BLOCK: registry has no artifact bytes for ${name}@${version} target `${target}`")
         1
+    else if state == 2:
+        console.print("BLOCK: failed to download the artifact for ${name}@${version} target `${target}`")
+        1
+    else if crypto.sha256_bytes(home.read_bytes(binpath)) != sha:
+        console.print("BLOCK: fetched artifact bytes do not match the signed sha256 (tampered mirror?)")
+        1
     else:
-        // The response body IS the base64 (raw, not json-wrapped — a real trusted-exe
-        // is tens of MB and json.decode aborts at that size). Decode + verify directly.
-        install_verify_bytes(console, root, command, sha, http.body(resp))
-
-fn install_verify_bytes(console: Console, home: Dir, command: String, sha: String, b64: String) -> Int:
-    match encoding.base64_decode_bytes_string(b64):
-        Err(e) ->
-            console.print("BLOCK: artifact bytes are not valid base64: ${e}")
-            1
-        Ok(data) ->
-            if crypto.sha256_bytes(data) != sha:
-                console.print("BLOCK: fetched artifact bytes do not match the signed sha256 (tampered mirror?)")
-                1
-            else:
-                // `home` is the granted $WITCHY_HOME provider; installs land in its
-                // `bin/` so an added-to-PATH launcher finds them.
-                fs.ensure_dir(home, "bin")
-                home.write_bytes(join_path("bin", command), data)
-                console.print("installed ${command} -> \$WITCHY_HOME/bin/${command}")
-                0
+        console.print("installed ${command} -> \$WITCHY_HOME/bin/${command}")
+        0
 
 // The value following a `--flag` in args, or "" if the flag is absent or last.
 fn flag_value(args: List(String), flag: String) -> String:

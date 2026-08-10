@@ -104,27 +104,47 @@ pub fn read_artifact_manifest(store: Dir, name: String, version: String) -> Opti
     else:
         None
 
-// The raw trusted-exe bytes for one target, keyed by the (validated) target
-// triple. `target` MUST already be checked with coven_artifact.valid_target — it
-// becomes a path component, so an unvalidated one could escape the store subtree.
-fn artifact_bytes_path(name: String, version: String, target: String) -> String:
-    "${name}/${version}/artifacts/${target}"
+// --- chunked artifact storage (RFC-0095) -------------------------------------
+// A real trusted-exe is 100+ MB. It can neither traverse one HTTP body (the net
+// recv cap is 64 MiB) nor be held whole in the registry's linear memory: coven is
+// a long-running server on one VM, and assembling 100+ MB into a single value
+// exhausts the guest after a few requests. So an artifact is stored — and served —
+// as fixed-size CHUNKS and NEVER reconstructed inside coven. Each request touches
+// at most one chunk (a few MB), so the server's working set stays flat regardless
+// of artifact size. Integrity is anchored by the SIGNED manifest: `pm install`
+// re-hashes the reassembled bytes against it, so a swapped chunk is caught at the
+// consumer. coven additionally re-hashes single-chunk uploads (the small common
+// case) as defense in depth; a multi-chunk blob is verified by the installer.
+fn artifact_part_path(name: String, version: String, target: String, seq: Int) -> String:
+    "${name}/${version}/artifacts/${target}.part.${seq}"
 
-// Whether this target's artifact bytes have already been uploaded (write-once).
-pub fn artifact_bytes_exists(store: Dir, name: String, version: String, target: String) -> Bool:
-    store.exists(artifact_bytes_path(name, version, target))
+fn artifact_count_path(name: String, version: String, target: String) -> String:
+    "${name}/${version}/artifacts/${target}.count"
 
-// Store one target's decoded trusted-exe bytes. Integrity is anchored elsewhere:
-// the signed record commits to the manifest digest, and the manifest commits to
-// each artifact's sha256, so a swapped byte blob is caught at install time.
-pub fn store_artifact_bytes(store: Dir, name: String, version: String, target: String, data: Bytes):
+// Write one chunk as part `seq` (idempotent — a retried seq overwrites).
+pub fn stage_artifact_part(store: Dir, name: String, version: String, target: String, seq: Int, data: Bytes):
     fs.ensure_dir(store, "${name}/${version}/artifacts")
-    store.write_bytes(artifact_bytes_path(name, version, target), data)
+    store.write_bytes(artifact_part_path(name, version, target, seq), data)
 
-// One target's stored artifact bytes, or None if not uploaded.
-pub fn read_artifact_bytes(store: Dir, name: String, version: String, target: String) -> Option(Bytes):
-    if store.exists(artifact_bytes_path(name, version, target)):
-        Some(store.read_bytes(artifact_bytes_path(name, version, target)))
+// Commit the chunk count — the marker that the artifact is complete and readable.
+pub fn commit_artifact_parts(store: Dir, name: String, version: String, target: String, count: Int):
+    store.replace(artifact_count_path(name, version, target), "${count}")
+
+// The number of chunks a stored artifact has, or 0 if none is stored.
+pub fn artifact_part_count(store: Dir, name: String, version: String, target: String) -> Int:
+    if store.exists(artifact_count_path(name, version, target)):
+        store.read(artifact_count_path(name, version, target)).parse_int() ?? 0
+    else:
+        0
+
+// Whether this target's artifact has been fully uploaded (the count marker exists).
+pub fn artifact_bytes_exists(store: Dir, name: String, version: String, target: String) -> Bool:
+    store.exists(artifact_count_path(name, version, target))
+
+// One chunk of a stored artifact, or None if `seq` is out of range.
+pub fn read_artifact_part(store: Dir, name: String, version: String, target: String, seq: Int) -> Option(Bytes):
+    if store.exists(artifact_part_path(name, version, target, seq)):
+        Some(store.read_bytes(artifact_part_path(name, version, target, seq)))
     else:
         None
 
