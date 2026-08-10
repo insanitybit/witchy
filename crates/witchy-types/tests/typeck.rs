@@ -507,7 +507,6 @@ mod tests {
             "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntrait Bad:\n    fn inspect(let owner: let('a) String, let holders: List(Holder('a))) -> Int\n",
             "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntype Subject:\n    Subject\n\ntrait Inspect:\n    fn inspect(self) -> Int\n\nimpl Inspect for Subject:\n    fn inspect(self, let owner: let('a) String, let holders: List(Holder('a))) -> Int:\n        0\n",
             "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn outer() -> Int:\n    let bad = fn(let owner: let('a) String, let holders: List(Holder('a))) -> Int:\n        0\n    0\n",
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn local(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    let holders: List(Holder('a)) = [holder]\n    0\n",
             "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let callback: fn(View(String, 'a), List(Holder('a))) -> Int) -> Int:\n    0\n",
         ];
         for source in cases {
@@ -519,6 +518,10 @@ mod tests {
                 "{error}"
             );
         }
+        check_str(
+            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn make(input: let('a) String) -> Holder('a):\n    Holder(input)\n\nfn local(let owner: let('a) String) -> Int:\n    let holders: List(Holder('a)) = [make(owner)]\n    let selected = list.at(holders, 0)\n    0\n",
+        )
+        .expect("a direct borrowed list is confined but valid within one function");
     }
 
     #[test]

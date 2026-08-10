@@ -774,6 +774,12 @@ fn reject_borrowed_nominal_containers(
         // callable surface still has to reject borrowed aggregate containers.
         ast::Type::Fn(parameters, result, conventions) => {
             for (index, parameter) in parameters.iter().enumerate() {
+                if let Some(element) = direct_borrowed_nominal_list_name(parameter, lifetime_nominals) {
+                    return terr(format!(
+                        "{context} stores a borrowed nominal relation inside `List` (element `{}`); direct borrowed lists are confined to one function until their cross-call descriptor/root-lowering stage ABI is implemented",
+                        element.rsplit('.').next().unwrap_or(element)
+                    ));
+                }
                 if conventions.get(index) == Some(&Convention::Own)
                     && let Some(relation) =
                         borrowed_nominal_relation_name(parameter, lifetime_nominals)
@@ -785,6 +791,12 @@ fn reject_borrowed_nominal_containers(
                     ));
                 }
                 reject_borrowed_nominal_containers(parameter, lifetime_nominals, context)?;
+            }
+            if let Some(element) = direct_borrowed_nominal_list_name(result, lifetime_nominals) {
+                return terr(format!(
+                    "{context} stores a borrowed nominal relation inside `List` (element `{}`); direct borrowed lists are confined to one function until their cross-call descriptor/root-lowering stage ABI is implemented",
+                    element.rsplit('.').next().unwrap_or(element)
+                ));
             }
             reject_borrowed_nominal_containers(result, lifetime_nominals, context)
         }
