@@ -28,7 +28,7 @@
 //! ui = { type = "UiRoot", policy = "coven-web" }
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
@@ -214,9 +214,18 @@ impl GrantDoc {
     }
 }
 
+/// The environment variable a secret provider reads, if it is an `env:` provider.
+/// `None` for any other (currently unsupported) provider spelling.
+pub fn secret_provider_variable(from: &str) -> Option<&str> {
+    from.strip_prefix("env:").filter(|variable| !variable.is_empty())
+}
+
 /// Resolve the shared RFC-0013/RFC-0092 environment-backed secret provider.
 /// The declarative document or executable plan carries only `env:NAME`; secret
 /// bytes are acquired by the trusted host at launch and never serialized.
+///
+/// This does NOT consume the variable — use [`resolve_and_consume_secret_env`],
+/// which is the launch path, so the variable cannot outlive resolution.
 pub fn resolve_secret_provider(from: &str) -> Result<Vec<u8>, String> {
     if let Some(variable) = from.strip_prefix("env:") {
         if variable.is_empty() {
@@ -230,6 +239,97 @@ pub fn resolve_secret_provider(from: &str) -> Result<Vec<u8>, String> {
             "unsupported secret resolver `{from}` (expected `env:VAR`)"
         ))
     }
+}
+
+/// Resolve every declared secret provider and **remove each backing environment
+/// variable from this process** before any guest code runs.
+///
+/// `SecretStore` and `Env` are independent authorities over the same bytes: a
+/// secret injected as `env:APP_TOKEN` was, until this ran, also readable by any
+/// program holding an `Env` that allowed that name — which silently defeats a
+/// `sealed` grant, since sealing protects the `Secret` HANDLE, not the variable
+/// behind it. Consuming the variable at resolution closes that second path, and
+/// also keeps the value out of any subprocess `Exec` spawns and out of crash
+/// reports.
+///
+/// Resolution and consumption are one operation on purpose: both launch paths
+/// (`--grants` and the trusted-executable plan) call this, so neither can
+/// resolve a secret and forget to strip it. Each variable is removed once, so
+/// two secrets may legitimately share one provider.
+///
+/// Callers must run [`reject_secret_env_overlap`] as well — a document that both
+/// injects a secret from a variable and allowlists that variable for `Env` is
+/// contradictory, and is rejected rather than silently resolved either way.
+///
+/// Input and output are BOTH keyed by secret name, so a caller cannot pair a name
+/// with another secret's bytes by iterating two collections in different orders —
+/// that mistake would hand a program the wrong secret under a trusted name.
+pub fn resolve_and_consume_secret_env<'a>(
+    secrets: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    // Collect the variables FIRST, then strip unconditionally — including on the
+    // error path. A later secret failing to resolve must not leave an
+    // already-resolved secret's variable behind in the environment for whatever
+    // handles the error (a retry, a diagnostic dump, a subprocess) to pick up.
+    let secrets: Vec<(&str, &str)> = secrets.into_iter().collect();
+    let consumed: BTreeSet<&str> =
+        secrets.iter().filter_map(|(_, from)| secret_provider_variable(from)).collect();
+    let mut resolved = BTreeMap::new();
+    let mut failure = None;
+    for (name, from) in &secrets {
+        match resolve_secret_provider(from) {
+            Ok(bytes) => {
+                resolved.insert((*name).to_string(), bytes);
+            }
+            // Keep going: every variable is stripped regardless, and the first
+            // failure is the one reported.
+            Err(error) => failure = failure.or(Some(error)),
+        }
+    }
+    for variable in consumed {
+        remove_process_env_var(variable);
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(resolved),
+    }
+}
+
+/// Remove one variable from this process's environment.
+///
+/// SAFETY (edition 2024 `unsafe`): `std::env::remove_var` is unsound only when
+/// another thread concurrently reads or writes the environment. Every caller is
+/// a LAUNCH path — grant resolution happens while assembling the capability set,
+/// before the VM is instantiated, before any guest code runs, and before the
+/// runtime spawns worker threads. No other thread exists to observe the change.
+#[allow(unsafe_code)]
+fn remove_process_env_var(variable: &str) {
+    unsafe { std::env::remove_var(variable) }
+}
+
+/// Reject a grant that both injects a secret from an environment variable and
+/// exposes that same variable through an `Env` allowlist.
+///
+/// The two readings contradict each other, and picking one silently would either
+/// defeat the hardening or ignore a documented grant. Naming the collision is the
+/// only reviewable outcome. `secrets` is `(secret name, provider spec)`.
+pub fn reject_secret_env_overlap<'a>(
+    secrets: impl IntoIterator<Item = (&'a str, &'a str)>,
+    env_allow: &BTreeMap<String, Vec<String>>,
+) -> Result<(), String> {
+    for (secret, from) in secrets {
+        let Some(variable) = secret_provider_variable(from) else { continue };
+        for (binding, names) in env_allow {
+            if names.iter().any(|name| name == variable) {
+                return Err(format!(
+                    "secret `{secret}` reads `{from}`, but `[env].{binding}` also allowlists \
+                     `{variable}` — a secret's variable cannot also be readable as ordinary \
+                     configuration. Remove it from `[env]`, or grant the value only as a secret."
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Canonicalize a declared right string to the static name the footprint uses.
@@ -460,4 +560,89 @@ mod tests {
         let r = cross_check(&CapSet::new(), &footprint);
         assert!(r.under_grant.contains_key("Net"), "missing Net is an under-grant");
     }
+
+    /// A secret injected from `env:VAR` must not ALSO be reachable as ordinary
+    /// configuration through an `Env` allowlist: `SecretStore` and `Env` are
+    /// independent authorities over the same bytes, so allowlisting the variable
+    /// silently defeats a `sealed` grant (sealing protects the `Secret` handle, not
+    /// the variable behind it). The contradiction is named rather than resolved.
+    #[test]
+    fn a_secrets_variable_cannot_also_be_allowlisted_for_env() {
+        let allow =
+            BTreeMap::from([("config".to_string(), vec!["HOME".to_string(), "APP_TOKEN".to_string()])]);
+        let error = reject_secret_env_overlap([("api_token", "env:APP_TOKEN")], &allow)
+            .expect_err("the overlap must be rejected");
+        assert!(error.contains("api_token"), "names the secret: {error}");
+        assert!(error.contains("APP_TOKEN"), "names the variable: {error}");
+        assert!(error.contains("[env].config"), "names the offending binding: {error}");
+
+        // A disjoint allowlist is fine — that is the ordinary case.
+        let disjoint = BTreeMap::from([("config".to_string(), vec!["HOME".to_string()])]);
+        reject_secret_env_overlap([("api_token", "env:APP_TOKEN")], &disjoint)
+            .expect("a disjoint Env allowlist is not an overlap");
+    }
+
+    /// Resolving an env-backed secret CONSUMES the variable, so nothing downstream in
+    /// this process can read the injected value: not a guest `Env` with an
+    /// unrestricted grant, and not a subprocess `Exec` spawns (children inherit the
+    /// environment). Two secrets may legitimately share one provider, so the removal
+    /// must not depend on being reached once.
+    ///
+    /// Serialized against the other env test: these mutate process-global state.
+    #[test]
+    fn resolving_an_env_secret_consumes_the_variable() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: single-threaded test body, guarded against the sibling env test.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("WITCHY_TEST_STRIP_ME", "s3cret");
+        }
+        let resolved = resolve_and_consume_secret_env([
+            ("first", "env:WITCHY_TEST_STRIP_ME"),
+            // The same provider twice: both secrets resolve, one removal.
+            ("second", "env:WITCHY_TEST_STRIP_ME"),
+        ])
+        .expect("the variable is set, so both resolve");
+        assert_eq!(resolved["first"], b"s3cret".to_vec());
+        assert_eq!(resolved["second"], b"s3cret".to_vec());
+        assert!(
+            std::env::var("WITCHY_TEST_STRIP_ME").is_err(),
+            "the backing variable must be gone once the secret is resolved"
+        );
+    }
+
+    /// A missing variable is a launch error naming it, not a silently-empty secret.
+    #[test]
+    fn an_unset_env_secret_is_a_named_error() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let error = resolve_and_consume_secret_env([("t", "env:WITCHY_TEST_DEFINITELY_UNSET")])
+            .expect_err("an unset variable cannot resolve");
+        assert!(error.contains("WITCHY_TEST_DEFINITELY_UNSET"), "names it: {error}");
+    }
+
+    /// A failure resolving ONE secret must still strip the variables of the secrets
+    /// that did resolve — otherwise an error path (a retry, a diagnostic dump, a
+    /// subprocess) could still observe a secret this launch had already read.
+    #[test]
+    fn a_failed_resolution_still_strips_the_variables_that_resolved() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: single-threaded test body, guarded against the sibling env tests.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("WITCHY_TEST_PARTIAL_OK", "resolved");
+        }
+        let error = resolve_and_consume_secret_env([
+            ("ok", "env:WITCHY_TEST_PARTIAL_OK"),
+            ("missing", "env:WITCHY_TEST_PARTIAL_UNSET"),
+        ])
+        .expect_err("one secret cannot resolve, so the launch fails");
+        assert!(error.contains("WITCHY_TEST_PARTIAL_UNSET"), "names the unset one: {error}");
+        assert!(
+            std::env::var("WITCHY_TEST_PARTIAL_OK").is_err(),
+            "the resolved secret's variable must be stripped even on the error path"
+        );
+    }
+
+    /// Process-global environment mutation is not safe to interleave.
+    static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }

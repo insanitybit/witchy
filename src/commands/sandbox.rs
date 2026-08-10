@@ -120,10 +120,21 @@ pub(crate) fn run_file_sandboxed(
     )
 }
 
-/// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
-/// holds. The grant document never carries the value — only where to fetch it.
-fn resolve_secret_from(from: &str) -> Result<Vec<u8>, String> {
-    grants::resolve_secret_provider(from).map_err(|error| format!("grant {error}"))
+/// Resolve every `[secrets]` entry's `from = "env:VAR"` to the bytes the host
+/// holds, CONSUMING each backing variable so no guest `Env` can read it back.
+/// The grant document never carries the value — only where to fetch it.
+fn resolve_secrets_from(
+    doc: &grants::GrantDoc,
+) -> Result<std::collections::BTreeMap<String, Vec<u8>>, String> {
+    grants::reject_secret_env_overlap(
+        doc.secrets.iter().map(|(name, s)| (name.as_str(), s.from.as_str())),
+        &doc.env,
+    )
+    .map_err(|error| format!("grant {error}"))?;
+    grants::resolve_and_consume_secret_env(
+        doc.secrets.iter().map(|(name, s)| (name.as_str(), s.from.as_str())),
+    )
+    .map_err(|error| format!("grant {error}"))
 }
 
 /// `witchy sandbox --grants app.grants.toml <prog.witchy>` (RFC-0013): run a
@@ -190,14 +201,22 @@ pub(crate) fn run_file_grants(
     let mut env_allow: Option<Vec<String>> = None;
     let mut exec_allow: Option<Vec<String>> = None;
     let mut exec_child_paths: Vec<std::path::PathBuf> = Vec::new();
+    // Resolve every secret up front, consuming each backing environment variable
+    // before the VM exists — so a guest `Env` cannot read the injected value back
+    // out. Bytes come back keyed BY NAME, so a name is never paired with another
+    // secret's value.
+    let mut resolved_secrets = resolve_secrets_from(&doc)?;
     let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
     for (name, s) in &doc.secrets {
+        let bytes = resolved_secrets
+            .remove(name)
+            .ok_or_else(|| format!("grant `{grants_path}` secret `{name}` did not resolve"))?;
         // BUG-146: carry the document's `sealed` modifier through to the runtime
         // grant — otherwise a grant that declares a signing/TLS key as unrevealable
         // was silently lowered to a revealable secret (`crypto.reveal` would leak it).
         named_secrets.push(runtime::SecretGrant {
             name: name.clone(),
-            bytes: resolve_secret_from(&s.from)?,
+            bytes,
             sealed: s.sealed,
         });
     }

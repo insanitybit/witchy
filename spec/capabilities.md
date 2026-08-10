@@ -382,6 +382,41 @@ exits 2 when a newer document drops `sealed = true` from a secret or introduces 
 new revealable one - both of which hand the program authority to read secret bytes
 it previously could only use by handle.
 
+### Env-injected secrets are consumed at launch
+
+A grant document names where a secret comes from, never its value:
+
+```toml
+[secrets]
+api_token = { from = "env:APP_TOKEN" }
+signing   = { from = "env:APP_SIGNING_SEED", sealed = true }
+```
+
+`SecretStore` and `Env` are independent authorities over the same bytes, so an
+injected variable that stayed in the environment would be a second path to the
+value - readable by an `Env` grant that allowed the name, inherited by any
+subprocess `Exec` spawns, and captured by crash reporters. Sealing does not help
+there: it protects the `Secret` handle, not the variable behind it.
+
+So the host **removes each backing variable as it resolves the secret**, before
+the VM is instantiated and before any guest code runs. Both launch paths
+(`--grants` and a trusted executable's binding plan) resolve through the same
+call, so neither can inject a secret and forget to strip it.
+
+A document that both injects a secret from a variable and allowlists that same
+variable for `Env` is contradictory, and is rejected at launch rather than
+silently resolved one way:
+
+```text
+grant secret `api_token` reads `env:APP_TOKEN`, but `[env].config` also allowlists
+`APP_TOKEN` - a secret's variable cannot also be readable as ordinary
+configuration. Remove it from `[env]`, or grant the value only as a secret.
+```
+
+This is defense in depth, not a substitute for the capability model: the strongest
+option remains not holding the secret at all (an injecting egress proxy leaves a
+program auditing as `Console, Fetch`).
+
 ### `Secret` rights: `Seal` and `Reveal`
 
 A `Secret`'s policy is spelled in its type, like every other capability's

@@ -502,17 +502,32 @@ pub fn resolve_binding_plan(
         file_rights.push(runtime::FsRights::new(file.rights.read, file.rights.write));
     }
 
+    // A secret's variable must not also be readable as ordinary configuration —
+    // that would defeat the sealing, since a grant seals the `Secret` handle, not
+    // the variable behind it.
+    if let Some(names) = env_allow.as_deref() {
+        let allow = BTreeMap::from([("names".to_string(), names.to_vec())]);
+        grants::reject_secret_env_overlap(
+            plan.secrets.iter().map(|s| (s.name.as_str(), s.from.as_str())),
+            &allow,
+        )
+        .map_err(|error| format!("trusted-exe {error}"))?;
+    }
+    // Resolve every secret and CONSUME its backing variable before the VM exists,
+    // so no guest `Env` (nor a subprocess `Exec` spawns) can read the value back.
+    let mut values = grants::resolve_and_consume_secret_env(
+        plan.secrets.iter().map(|secret| (secret.name.as_str(), secret.from.as_str())),
+    )
+    .map_err(|error| format!("trusted-exe secret provider cannot resolve: {error}"))?;
     let mut secrets = Vec::new();
     for secret in plan.secrets {
-        let value = grants::resolve_secret_provider(&secret.from).map_err(|error| {
-            format!(
-                "trusted-exe secret provider `{}` for `{}` cannot resolve: {error}",
-                secret.from, secret.name
-            )
+        // Keyed by name, so a name can never be bound to another secret's bytes.
+        let bytes = values.remove(&secret.name).ok_or_else(|| {
+            format!("trusted-exe secret `{}` did not resolve", secret.name)
         })?;
         secrets.push(runtime::SecretGrant {
             name: secret.name,
-            bytes: value,
+            bytes,
             sealed: secret.sealed,
         });
     }

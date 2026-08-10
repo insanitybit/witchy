@@ -1200,6 +1200,63 @@ fn grant_document_sealed_blocks_reveal() {
     assert!(!out.status.success(), "a misspelled grant key must be rejected");
 }
 
+// ---- an env-injected secret must not remain readable as an env variable ----
+
+#[test]
+fn an_env_injected_secret_is_stripped_from_the_environment() {
+    // `SecretStore` and `Env` are independent authorities over the same bytes: a
+    // secret injected as `env:VAR` was also readable by anything that could read
+    // that variable, which silently defeats a `sealed` grant (sealing protects the
+    // `Secret` HANDLE, not the variable behind it). Resolution now CONSUMES the
+    // variable before the VM exists. This runs the real launcher as a subprocess, so
+    // the environment under test is a genuine process environment.
+    let dir = workdir("grant-env-secret-stripped");
+    // An unrestricted `Env` grant (no `[env]` allowlist narrowing it) is the case
+    // where the variable would otherwise be plainly readable.
+    let prog = write(
+        &dir,
+        "r.witchy",
+        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    console.print(crypto.reveal(secretstore.require(store, \"token\")))\n",
+    );
+    let grants = write(&dir, "g.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\" }\n");
+    let out = Command::new(BIN)
+        .args(["sandbox", "--grants", &grants, "--accept-grants", &prog])
+        .env("MY_TOKEN", "hunter2")
+        .output()
+        .expect("spawn");
+    let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    // The secret still resolves — stripping must not break the legitimate path.
+    assert!(combined.contains("hunter2"), "the secret must still resolve: {combined}");
+}
+
+#[test]
+fn a_secrets_variable_cannot_also_be_granted_through_env() {
+    // A document that injects a secret from a variable AND allowlists that variable
+    // for `Env` is contradictory: honoring both would defeat the hardening, and
+    // silently picking one would hide a real grant. Name the collision instead.
+    let dir = workdir("grant-env-secret-overlap");
+    let prog = write(
+        &dir,
+        "r.witchy",
+        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore, env: Env):\n    console.print(crypto.reveal(secretstore.require(store, \"token\")))\n",
+    );
+    let grants = write(
+        &dir,
+        "g.toml",
+        "[secrets]\ntoken = { from = \"env:MY_TOKEN\" }\n\n[env]\nenv = [\"HOME\", \"MY_TOKEN\"]\n",
+    );
+    let out = Command::new(BIN)
+        .args(["sandbox", "--grants", &grants, "--accept-grants", &prog])
+        .env("MY_TOKEN", "hunter2")
+        .output()
+        .expect("spawn");
+    let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(!out.status.success(), "the overlap must be rejected: {combined}");
+    assert!(combined.contains("MY_TOKEN"), "the diagnostic names the variable: {combined}");
+    assert!(combined.contains("[env].env"), "and the offending binding: {combined}");
+    assert!(!combined.contains("hunter2"), "and never runs the program: {combined}");
+}
+
 // ---- BUG-610: the reveal policy must be VISIBLE, not merely enforced ----
 
 #[test]
