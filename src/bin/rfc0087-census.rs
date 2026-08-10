@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use witchy::{ast, parser, pipeline};
@@ -33,9 +34,30 @@ fn run() -> Result<(), String> {
     let mut rejected = Vec::new();
 
     println!("path\tline\tcategory\tcallee\tparameter\troot");
-    let mut parse_cache: BTreeMap<String, ast::Module> = BTreeMap::new();
-    for path in &files {
-        let report = link_file(path, &source_index, &mut parse_cache)?;
+    // Each file's census (link + typecheck + trait-lowering) is fully
+    // independent — no shared mutable state beyond the (thread-safe) parse
+    // cache above. With parsing now cached, this loop is CPU-bound on
+    // typecheck/trait-lowering, so it's a straightforward, zero-risk win to
+    // run every file's census on its own thread and only serialize the
+    // final output pass (which must stay in `files`' sorted order to match
+    // the checked-in TSV byte-for-byte). Measured 2026-08-10: cut the
+    // remaining post-parse-cache wall time roughly in proportion to the
+    // core count on a 10-core machine.
+    let parse_cache: Mutex<BTreeMap<String, Arc<OnceLock<Result<ast::Module, String>>>>> =
+        Mutex::new(BTreeMap::new());
+    let reports: Vec<Result<Census, String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = files
+            .iter()
+            .map(|path| {
+                let source_index = &source_index;
+                let parse_cache = &parse_cache;
+                scope.spawn(move || link_file(path, source_index, parse_cache))
+            })
+            .collect();
+        handles.into_iter().map(|handle| handle.join().unwrap()).collect()
+    });
+    for (path, report) in files.iter().zip(reports) {
+        let report = report?;
         record_report(
             display_from(root, path),
             report,
@@ -223,7 +245,7 @@ fn source_index(files: &[PathBuf]) -> BTreeMap<String, Vec<PathBuf>> {
 fn link_file(
     path: &Path,
     source_index: &BTreeMap<String, Vec<PathBuf>>,
-    parse_cache: &mut BTreeMap<String, ast::Module>,
+    parse_cache: &Mutex<BTreeMap<String, Arc<OnceLock<Result<ast::Module, String>>>>>,
 ) -> Result<Census, String> {
     let stem = path
         .file_stem()
@@ -259,14 +281,23 @@ fn link_file(
         // this is unconditionally correct even for two different projects
         // that happen to define a same-named-but-different-content local
         // module (their text differs, so they get distinct cache entries).
-        let module = if let Some(cached) = parse_cache.get(&source) {
-            cached.clone()
-        } else {
-            let parsed = parser::parse_module(&source)
-                .map_err(|e| format!("{}: {e}", source_path.display()))?;
-            parse_cache.insert(source, parsed.clone());
-            parsed
+        //
+        // Now that link_file runs one-thread-per-file (below), the cache is
+        // hit from many threads at once — hold the shared lock only for the
+        // brief `entry()` lookup, then race-free single-execution-per-key
+        // via `OnceLock::get_or_init` (blocking, not busy-waiting) so
+        // concurrent first-touches of the same cold module parse it exactly
+        // once instead of redundantly in parallel.
+        let cell = {
+            let mut cache = parse_cache.lock().unwrap_or_else(|p| p.into_inner());
+            cache.entry(source.clone()).or_insert_with(|| Arc::new(OnceLock::new())).clone()
         };
+        let error_context = source_path.display().to_string();
+        let module = cell
+            .get_or_init(|| {
+                parser::parse_module(&source).map_err(|e| format!("{error_context}: {e}"))
+            })
+            .clone()?;
         for import in &module.imports {
             if !loaded.contains(import) {
                 let sibling = source_path
