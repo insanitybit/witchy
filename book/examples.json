@@ -1326,7 +1326,7 @@
   {
     "block": 2,
     "browser_runnable": true,
-    "console_only": true,
+    "console_only": false,
     "expect_error": false,
     "file": "book/src/cookbook-crypto.md",
     "footprint": [
