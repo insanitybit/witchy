@@ -1,0 +1,44 @@
+name: Docs GitHub Pages
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-publish:
+    name: Build docs and publish to GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@9c091bb21d7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build Witchy (release)
+        run: cargo build --release
+      - name: Build browser-playground Wasm
+        run: cargo build --release --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown
+      - name: Build deployable docs bundle
+        env:
+          WITCHY_BROWSER_WASM: ${{ github.workspace }}/target/wasm32-unknown-unknown/release/witchy.wasm
+        run: ./scripts/build-docs.sh dist
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Upload docs artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
