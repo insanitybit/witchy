@@ -142,9 +142,12 @@ merge-queue.sh daemon                            start a new-session coordinator
 merge-queue.sh status                            JSON: queue entries with change ID,
                                                  readiness, waiting_on/blocked_by;
                                                  in-flight gate (branch, stage,
-                                                 elapsed, log age); recent journal
+                                                 elapsed, log age); blocked_on when
+                                                 the main checkout cannot land;
+                                                 recent journal
 merge-queue.sh doctor                            human health check: coordinator alive?
                                                  lock stale? which stage? log fresh?
+                                                 landing blocked?
 merge-queue.sh stats                             journal analytics: outcome counts,
                                                  last-10 gate seconds, repeat-red
                                                  branches, flake-shaped failures
@@ -495,6 +498,7 @@ you didn't drop a real commit that landed meanwhile.
 | Symptom | Action |
 |---|---|
 | doctor: coordinator NOT RUNNING | `./scripts/merge-queue.sh daemon` — state is on disk; nothing is lost between coordinators |
+| queue has ready entries but nothing gates; `status.blocked_on` / doctor `landing: BLOCKED` names tracked changes | the main checkout is on master with tracked edits, so the coordinator requeues instead of gating (it protects the post-gate fast-forward). Those edits are usually another agent's in-flight work: commit them on a branch and submit it — do NOT discard them. Untracked files never block. |
 | lock held, holder pid dead | next acquirer steals it automatically; or `rm -rf state/merge-queue/gate.lock` if nothing will acquire soon |
 | lock held, holder alive but gate silent | expected during the `test`-profile compile / test enumeration; the monitor kills after 600s of silence WITH an idle process group (a busy group is compiling, not hung), or after 1800s of busy silence. Only `kill <holder>` by hand if both clocks are somehow not progressing. |
 | journal says `blocked` | gate was GREEN: `git merge --ff-only <sha from journal>` in the main worktree, then `merge-queue.sh resolve <branch>` |

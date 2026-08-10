@@ -62,7 +62,10 @@
 #                                                   conflict/blocked/dropped),
 #                                                   print it as JSON; exit 0 iff merged.
 #                                                   Default timeout 3600s
-#   scripts/merge-queue.sh status                   queue + in-flight gate + recent journal (JSON)
+#   scripts/merge-queue.sh status                   queue + in-flight gate + recent journal (JSON).
+#                                                   `blocked_on` is non-null when the main checkout
+#                                                   cannot land a gated candidate (tracked edits on
+#                                                   master), which otherwise looks like an idle queue.
 #   scripts/merge-queue.sh drop <branch> <reason>   retire a pending submission without deleting
 #                                                   its branch; the reason is journaled and
 #                                                   dependents remain blocked until resubmitted
@@ -810,6 +813,23 @@ main_worktree_is_ready_to_land() {
         && git -C "$root" diff --cached --quiet --ignore-submodules --
 }
 
+# Why the main checkout currently blocks landing, as a one-line human reason —
+# or empty when it does not block. The deferral above is otherwise INVISIBLE in
+# `status`: a ready queue with a free gate lock looks idle, while the coordinator
+# silently requeues the same entry every poll. Reported by `status` (as
+# blocked_on) and `doctor` so a wedged queue is diagnosable without reading the
+# coordinator log or counting journal `requeued` events.
+main_worktree_block_reason() {
+    main_worktree_is_ready_to_land && { printf ''; return 0; }
+    local files
+    # Tracked paths only, matching the predicate's two checks (unstaged +
+    # staged). Named so the operator knows what to commit or move aside.
+    files="$(git -C "$root" diff --name-only --ignore-submodules -- 2>/dev/null;
+             git -C "$root" diff --cached --name-only --ignore-submodules -- 2>/dev/null)"
+    files="$(printf '%s\n' "$files" | grep -v '^$' | sort -u | tr '\n' ' ')"
+    printf 'main master checkout has tracked changes: %s' "${files% }"
+}
+
 # Is the gate's process group actively using CPU? `set -m` puts the gate in its
 # own group whose pgid == the launched pid, so `ps -g <pgid>` lists the whole
 # cargo/rustc/nextest tree. Sum their %cpu (a float across cores); "busy" means
@@ -1155,6 +1175,7 @@ cmd_status() {
     if ls "$queue_dir"/*.json >/dev/null 2>&1; then
         queue_json="$(queue_entries_with_status | jq -s .)"
     fi
+    local blocked_on; blocked_on="$(main_worktree_block_reason)"
     jq -n \
         --argjson q "$queue_json" \
         --slurpfile j <(tail -20 "$journal" 2>/dev/null || true) \
@@ -1162,10 +1183,12 @@ cmd_status() {
         --arg what "$lk_what" --arg branch "$lk_branch" \
         --arg log "$lk_log" --arg stage "$lk_stage" \
         --arg elapsed "$lk_elapsed" --arg log_age "$lk_log_age" \
+        --arg blocked_on "$blocked_on" \
         '{queue: $q,
           gate_lock: (if $pid == "" then null else
             {pid: $pid, gate_pgid: $gate_pgid, what: $what, branch: $branch, log: $log,
              stage: $stage, elapsed_s: $elapsed, log_age_s: $log_age} end),
+          blocked_on: (if $blocked_on == "" then null else $blocked_on end),
           recent: $j}'
 }
 
@@ -1198,6 +1221,15 @@ cmd_doctor() {
         echo "queue       : $n pending — ${queue_files[*]}"
     else
         echo "queue       : empty"
+    fi
+    # A pending queue that cannot land looks identical to a healthy idle one
+    # unless this is said out loud.
+    local blocked_on; blocked_on="$(main_worktree_block_reason)"
+    if [ -n "$blocked_on" ]; then
+        echo "landing     : BLOCKED — $blocked_on"
+        echo "              The coordinator requeues instead of gating. Commit"
+        echo "              those paths on a branch (they are someone's in-flight"
+        echo "              work — do not discard them) or check out master clean."
     fi
     if [ -d "$lock" ]; then
         inflight_vars

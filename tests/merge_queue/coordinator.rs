@@ -715,6 +715,38 @@ fn dirty_main_master_defers_the_queue_before_running_the_gate() {
     }));
 }
 
+// The deferral above is the queue's one silent failure mode: a ready entry with
+// a free gate lock reads as a healthy idle queue, so an operator watching
+// `status` sees nothing while the coordinator requeues every poll. `blocked_on`
+// names the cause and the offending paths.
+#[test]
+fn status_names_the_dirty_main_checkout_that_blocks_landing() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    assert!(
+        fixture.status()["blocked_on"].is_null(),
+        "a clean main checkout must not report a landing blocker"
+    );
+
+    fs::write(fixture.root.join("base.txt"), "locally edited\n")
+        .expect("dirty the main master checkout");
+    let blocked = fixture.status()["blocked_on"]
+        .as_str()
+        .expect("blocked_on names the dirty checkout")
+        .to_string();
+    assert!(blocked.contains("tracked changes"), "unexpected reason: {blocked}");
+    assert!(blocked.contains("base.txt"), "reason omits the offending path: {blocked}");
+
+    // Untracked files are deliberately not a blocker: they are common in the
+    // shared checkout and only conflict when a candidate writes the same path.
+    run_git(&fixture.root, &["checkout", "--", "base.txt"]);
+    fs::write(fixture.root.join("scratch-note.txt"), "untracked\n").expect("add untracked file");
+    assert!(
+        fixture.status()["blocked_on"].is_null(),
+        "untracked local state must not report a landing blocker"
+    );
+}
+
 #[test]
 fn status_reports_multiple_queue_entries_from_one_registry_snapshot() {
     let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
