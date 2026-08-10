@@ -29,9 +29,9 @@ book/src/mutating-methods.md#block-4	4	expression-position-mutator	dict.insert__
 book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__String__Int	-	-
 spec/language.md#block-16	7	expression-position-mutator	main.bump	-	-
 
-witchy-files	289
+witchy-files	290
 markdown-blocks	224
-checked	513
+checked	514
 rejected	0
 var-declarations	40
 resolved-var-calls	728
