@@ -19,8 +19,20 @@ pub(crate) fn run_parity() -> bool {
     if std::env::args().nth(1).as_deref() != Some("parity") {
         return false;
     }
-    let Some(path) = std::env::args().nth(2) else {
-        eprintln!("usage: witchy parity <file.witchy>");
+    let mut path = None;
+    let mut show_output = false;
+    for arg in std::env::args().skip(2) {
+        match arg.as_str() {
+            "--show-output" => show_output = true,
+            _ if path.is_none() => path = Some(arg),
+            _ => {
+                eprintln!("usage: witchy parity <file.witchy> [--show-output]");
+                std::process::exit(PARITY_EXIT_UNEXPECTED);
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("usage: witchy parity <file.witchy> [--show-output]");
         std::process::exit(PARITY_EXIT_UNEXPECTED);
     };
     let outcome = parity_check(&path);
@@ -28,6 +40,18 @@ pub(crate) fn run_parity() -> bool {
         println!("{}", outcome.message());
     } else {
         eprintln!("{}", outcome.message());
+    }
+    // Only Agree carries a single canonical output (Diverge/BothErrorAgree/
+    // Unexpected have no one line-for-line answer to print, and their
+    // `message` already shows what each backend produced). A caller that
+    // wants the program's output without a second subprocess passes
+    // `--show-output` and reads these lines before the `parity-stats` line.
+    if show_output {
+        if let ParityOutcome::Agree { output, .. } = &outcome {
+            for line in output {
+                println!("{line}");
+            }
+        }
     }
     println!(
         "parity-stats outcome={} compared={} file={path}",
@@ -70,8 +94,11 @@ fn seeded_divergence_armed() -> bool {
 /// here (RFC-0058 §2) — parity reports only what it observed; a generator decides
 /// whether a both-error-agree or an unexpected-error is acceptable.
 pub(crate) enum ParityOutcome {
-    /// Both backends produced equal output. Carries the compared line count.
-    Agree { compared: usize, message: String },
+    /// Both backends produced equal output. Carries the compared line count
+    /// and the (identical, by definition of this variant) output lines
+    /// themselves, so a caller that already paid for the parity check can
+    /// read the program's output without a second, separate run.
+    Agree { compared: usize, output: Vec<String>, message: String },
     /// Both backends errored with byte-for-byte identical diagnostics.
     BothErrorAgree { message: String },
     /// The backends diverge. `compared` is the matched-prefix line count.
@@ -213,6 +240,7 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
                 "\u{2713} {path}: interpreter and compiled WASM agree ({} line(s) of output)",
                 i.len()
             ),
+            output: i,
         },
         (Ok(i), Ok(c)) => {
             let compared = i.iter().zip(c.iter()).take_while(|(a, b)| a == b).count();
@@ -303,6 +331,35 @@ fn main(console: Console):
             "{}",
             outcome.message(),
         );
+    }
+
+    /// `ParityOutcome::Agree::output` (surfaced via `witchy parity --show-output`)
+    /// must carry the SAME lines a caller would get from a separate `witchy run`
+    /// — the whole point is letting a caller skip that second subprocess.
+    #[test]
+    fn agree_output_field_matches_program_output() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "witchy-parity-show-output-{}-{nonce}.witchy",
+            std::process::id(),
+        ));
+        std::fs::write(
+            &path,
+            "fn main(console: Console):\n    console.print(\"line one\")\n    console.print(\"line two\")\n",
+        )
+        .expect("write show-output parity fixture");
+        let outcome = parity_check(path.to_str().expect("UTF-8 fixture path"));
+        std::fs::remove_file(&path).expect("remove show-output parity fixture");
+        match outcome {
+            ParityOutcome::Agree { output, compared, .. } => {
+                assert_eq!(output, vec!["line one".to_string(), "line two".to_string()]);
+                assert_eq!(compared, 2);
+            }
+            other => panic!("expected Agree, got: {}", other.message()),
+        }
     }
 }
 

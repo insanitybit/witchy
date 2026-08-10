@@ -60,6 +60,42 @@ fn run_node_driver(relative_path: &str, success_marker: &str, label: &str) {
     );
 }
 
+/// Runs `witchy parity <program> --show-output` — ONE subprocess that both
+/// proves the backends agree AND returns the program's output, instead of the
+/// old pattern of a `parity` spawn followed by a separate plain-run spawn on
+/// the same program. Panics with the full parity transcript on any failure
+/// (compile error, disagreement, or a stray non-agree outcome); returns the
+/// program's stdout, reconstructed exactly as a plain `witchy <program>` run
+/// would have produced it (one line per `console.print`, newline-joined).
+fn program_output_via_parity(program: &Path, work: &Path) -> String {
+    let out = Command::new(BIN)
+        .arg("parity")
+        .arg(program)
+        .arg("--show-output")
+        .current_dir(work)
+        .output()
+        .expect("run witchy parity --show-output");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success() && stdout.contains("agree ("),
+        "{}: backends must agree:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        program.display()
+    );
+    // stdout is: the "✓ ... agree (N line(s) of output)" message, then N
+    // program output lines, then the "parity-stats ..." line. Strip the
+    // first and last line to recover exactly the program's output.
+    let mut lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.len() >= 2, "unexpected --show-output shape:\n{stdout}");
+    lines.pop(); // "parity-stats ..."
+    lines.remove(0); // "✓ ... agree (...)"
+    let mut joined = lines.join("\n");
+    if !lines.is_empty() {
+        joined.push('\n');
+    }
+    joined
+}
+
 /// RFC-0108: malformed optimized-protocol frames fail before returning a
 /// partial operation list, and sequence state advances only after successful
 /// all-or-nothing application.
@@ -210,27 +246,8 @@ fn main(console: Console):
     .unwrap();
 
     let program = work.join("keyed_plan.witchy");
-    let parity = Command::new(BIN)
-        .arg("parity")
-        .arg(&program)
-        .current_dir(&work)
-        .output()
-        .expect("run keyed planner parity");
-    let parity_stdout = String::from_utf8_lossy(&parity.stdout);
-    let parity_stderr = String::from_utf8_lossy(&parity.stderr);
-    assert!(
-        parity.status.success() && parity_stdout.contains("agree (7 line(s) of output)"),
-        "keyed planner backends must agree:\n{parity_stdout}\n{parity_stderr}"
-    );
-
-    let run = Command::new(BIN)
-        .arg(&program)
-        .current_dir(&work)
-        .output()
-        .expect("run keyed planner");
-    let stdout = String::from_utf8(run.stdout).expect("keyed planner output is UTF-8");
+    let stdout = program_output_via_parity(&program, &work);
     let _ = std::fs::remove_dir_all(&work);
-    assert!(run.status.success(), "keyed planner run failed: {}", String::from_utf8_lossy(&run.stderr));
     assert_eq!(
         stdout,
         "move 3 before 1\n\
@@ -303,31 +320,8 @@ fn main(console: Console):
     .unwrap();
 
     let program = work.join("branch_patch.witchy");
-    let parity = Command::new(BIN)
-        .arg("parity")
-        .arg(&program)
-        .current_dir(&work)
-        .output()
-        .expect("run branch patch parity");
-    let parity_stdout = String::from_utf8_lossy(&parity.stdout);
-    let parity_stderr = String::from_utf8_lossy(&parity.stderr);
-    assert!(
-        parity.status.success() && parity_stdout.contains("agree (7 line(s) of output)"),
-        "branch patch backends must agree:\n{parity_stdout}\n{parity_stderr}"
-    );
-
-    let run = Command::new(BIN)
-        .arg(&program)
-        .current_dir(&work)
-        .output()
-        .expect("run branch patch planner");
-    let stdout = String::from_utf8(run.stdout).expect("branch patch output is UTF-8");
+    let stdout = program_output_via_parity(&program, &work);
     let _ = std::fs::remove_dir_all(&work);
-    assert!(
-        run.status.success(),
-        "branch patch run failed: {}",
-        String::from_utf8_lossy(&run.stderr)
-    );
     assert_eq!(
         stdout,
         "60,1,8,40\n110,2,7,40,50,60,1,70,2,30\n60,1,13,41\n110,2,12,41,51,61,1,70,2,30\n68,1,14,20,80,90\n64,1,15,20,80\n68,1,14,20,80,91\n"
@@ -368,31 +362,8 @@ fn main(console: Console):
     .unwrap();
 
     let program = work.join("host_work.witchy");
-    let parity = Command::new(BIN)
-        .arg("parity")
-        .arg(&program)
-        .current_dir(&work)
-        .output()
-        .expect("run host-work parity");
-    let parity_stdout = String::from_utf8_lossy(&parity.stdout);
-    let parity_stderr = String::from_utf8_lossy(&parity.stderr);
-    assert!(
-        parity.status.success() && parity_stdout.contains("agree (2 line(s) of output)"),
-        "host-work frame backends must agree:\n{parity_stdout}\n{parity_stderr}"
-    );
-
-    let run = Command::new(BIN)
-        .arg(&program)
-        .current_dir(&work)
-        .output()
-        .expect("run host-work frame encoder");
-    let stdout = String::from_utf8(run.stdout).expect("host-work output is UTF-8");
+    let stdout = program_output_via_parity(&program, &work);
     let _ = std::fs::remove_dir_all(&work);
-    assert!(
-        run.status.success(),
-        "host-work frame run failed: {}",
-        String::from_utf8_lossy(&run.stderr)
-    );
     assert_eq!(
         stdout,
         "128,4,124,0,1,11,12,13,124,2,1,1,12,2,1,21,22,126,2,3,1,21,103,111,53,48\n104,2,104,1,31,32,0,1,41,42,43,104,0\n"
@@ -447,26 +418,9 @@ fn glamour_island_completion_frames_agree_on_both_backends() {
     );
     let program = work.join("completion.witchy");
     std::fs::write(&program, source).unwrap();
-    let parity = Command::new(BIN)
-        .arg("parity")
-        .arg(&program)
-        .current_dir(&work)
-        .output()
-        .expect("run completion-frame parity");
-    let parity_stdout = String::from_utf8_lossy(&parity.stdout);
-    let parity_stderr = String::from_utf8_lossy(&parity.stderr);
-    assert!(
-        parity.status.success() && parity_stdout.contains("agree (1 line(s) of output)"),
-        "completion-frame backends must agree:\n{parity_stdout}\n{parity_stderr}"
-    );
-    let run = Command::new(BIN)
-        .arg(&program)
-        .current_dir(&work)
-        .output()
-        .expect("run completion-frame decoder");
+    let stdout = program_output_via_parity(&program, &work);
     let _ = std::fs::remove_dir_all(&work);
-    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-    assert_eq!(String::from_utf8(run.stdout).unwrap(), "2,11,12,13,14,1,done\n");
+    assert_eq!(stdout, "2,11,12,13,14,1,done\n");
 }
 
 /// Typed CSS assignments stay distinct from generic style strings and lower to
@@ -508,31 +462,8 @@ fn main(console: Console):
     .unwrap();
 
     let program = work.join("custom_property_patch.witchy");
-    let parity = Command::new(BIN)
-        .arg("parity")
-        .arg(&program)
-        .current_dir(&work)
-        .output()
-        .expect("run custom-property patch parity");
-    let parity_stdout = String::from_utf8_lossy(&parity.stdout);
-    let parity_stderr = String::from_utf8_lossy(&parity.stderr);
-    assert!(
-        parity.status.success() && parity_stdout.contains("agree (1 line(s) of output)"),
-        "custom-property patch backends must agree:\n{parity_stdout}\n{parity_stderr}"
-    );
-
-    let run = Command::new(BIN)
-        .arg(&program)
-        .current_dir(&work)
-        .output()
-        .expect("run custom-property patch");
-    let stdout = String::from_utf8(run.stdout).expect("custom-property output is UTF-8");
+    let stdout = program_output_via_parity(&program, &work);
     let _ = std::fs::remove_dir_all(&work);
-    assert!(
-        run.status.success(),
-        "custom-property patch failed: {}",
-        String::from_utf8_lossy(&run.stderr)
-    );
     assert_eq!(stdout, "75,3,1,18,10,27,50,112,120\n");
 }
 
@@ -1021,14 +952,10 @@ fn glamour_version_and_trust_views_render_security_fields() {
         .unwrap();
         let prog = work.join(format!("{view}.witchy"));
 
-        // Both backends agree (the prime directive) ...
-        let par = Command::new(BIN).arg("parity").arg(&prog).current_dir(&work).output().expect("witchy parity");
-        let pout = String::from_utf8_lossy(&par.stdout);
-        assert!(par.status.success() && pout.contains("agree"), "{view} must render identically on both backends:\n{pout}");
-
-        // ... and the rendered VNode JSON carries the expected security fields.
-        let run = Command::new(BIN).arg(&prog).current_dir(&work).output().expect("witchy run");
-        let rout = String::from_utf8_lossy(&run.stdout);
+        // One subprocess proves both backends agree (the prime directive) AND
+        // returns the rendered VNode JSON, which must carry the expected
+        // security fields.
+        let rout = program_output_via_parity(&prog, &work);
         for needle in *must_contain {
             assert!(rout.contains(needle), "{view} should render `{needle}`:\n{rout}");
         }
