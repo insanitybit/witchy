@@ -367,3 +367,16 @@ fn main(console: Console):
         );
         assert_eq!(code, 0);
     }
+
+    /// `projects/coven/src/coven_test.witchy` is the coven registry's own unit rune
+    /// (validation, proto, footprint, trust, and the RFC-0095 artifact manifest).
+    /// The `examples/` sweep doesn't reach `projects/`, so drive it explicitly here
+    /// — `run_tests_in_file` links the sibling `coven_*` modules and runs every
+    /// `test_*`. This is the gate protection for the artifact-manifest logic.
+    #[test]
+    fn coven_unit_rune_tests_pass() {
+        let (passed, failed) =
+            crate::run_tests_in_file("projects/coven/src/coven_test.witchy").expect("run coven_test rune");
+        assert!(failed.is_empty(), "coven_test failures: {failed:?}");
+        assert!(!passed.is_empty(), "coven_test ran no test_* functions");
+    }

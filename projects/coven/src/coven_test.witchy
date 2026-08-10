@@ -8,6 +8,7 @@ import coven_validate
 import coven_proto
 import coven_footprint
 import coven_trust
+import coven_artifact
 import reflect
 import result
 import option
@@ -234,3 +235,40 @@ fn test_json_null_optional_is_none():
     match Sample.from_json(json.from_value(s)):
         Ok(b) -> testing.assert(option.is_none(b.note), "an absent optional decodes to None")
         Err(e) -> testing.assert(false, "round-trip failed: ${e}")
+
+// RFC-0095: the artifact manifest a released application version commits to.
+fn artifact_hex64() -> String:
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+fn test_artifact_manifest_parses_and_selects():
+    let h = artifact_hex64()
+    let good = "{\"version\":1,\"artifacts\":{\"aarch64-apple-darwin\":{\"kind\":\"witchy-trusted-exe-v1\",\"command\":\"wrg\",\"sha256\":\"" + h + "\",\"size\":12345,\"binding_plan_sha256\":\"" + h + "\",\"authority\":[\"root: cwd Dir[Read]\"]}}}"
+    match coven_artifact.parse(good):
+        Err(e) -> testing.assert(false, "valid manifest must parse: ${coven_artifact.artifact_error_message(e)}")
+        Ok(m) ->
+            testing.assert_eq(list.join(coven_artifact.targets(m), ","), "aarch64-apple-darwin")
+            match coven_artifact.select(m, "aarch64-apple-darwin"):
+                Some(entry) -> testing.assert_eq(entry.command, "wrg")
+                None -> testing.assert(false, "the selected target's artifact must be present")
+
+            testing.assert(!coven_artifact.manifest_digest(m).is_empty(), "a non-empty manifest has a digest")
+
+fn test_artifact_manifest_rejects_unsafe_command():
+    let h = artifact_hex64()
+    let bad = "{\"version\":1,\"artifacts\":{\"x86_64-unknown-linux-gnu\":{\"command\":\"../evil\",\"sha256\":\"" + h + "\",\"size\":1,\"binding_plan_sha256\":\"" + h + "\"}}}"
+    match coven_artifact.parse(bad):
+        Ok(_m) -> testing.assert(false, "a `..`-traversal command must be refused")
+        Err(e) ->
+            match e:
+                coven_artifact.BadCommand(_c) -> testing.assert(true, "unsafe command refused")
+                _ -> testing.assert(false, "wrong error for an unsafe command")
+
+fn test_artifact_manifest_rejects_bad_digest():
+    let h = artifact_hex64()
+    let bad = "{\"version\":1,\"artifacts\":{\"x86_64-unknown-linux-gnu\":{\"command\":\"wrg\",\"sha256\":\"deadbeef\",\"size\":1,\"binding_plan_sha256\":\"" + h + "\"}}}"
+    match coven_artifact.parse(bad):
+        Ok(_m) -> testing.assert(false, "a malformed sha256 must be refused")
+        Err(e) ->
+            match e:
+                coven_artifact.BadDigest(_d) -> testing.assert(true, "malformed digest refused")
+                _ -> testing.assert(false, "wrong error for a malformed digest")

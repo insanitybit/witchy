@@ -1,0 +1,150 @@
+// coven_artifact — the target-indexed artifact manifest a released application
+// version commits to (RFC-0095). A manifest maps a canonical target triple to the
+// publisher-built trusted-exe for that host: its command name, the SHA-256 of the
+// DECODED executable bytes, its size, and the trusted-exe binding-plan digest plus
+// rendered authority. Coven authenticates and freezes these; it does not build them.
+// The rendered authority is audit information, NOT a claim that a native publisher
+// is sandboxed from the user.
+
+import crypto
+import encoding
+import bytes
+import show
+import error
+import convert
+from json import Json
+
+// One target's artifact. `command` is a single portable filename component
+// (validated: non-empty, no separators, no `.`/`..`). `sha256`/`size` describe the
+// DECODED executable bytes — not any base64/JSON transport encoding.
+type ArtifactEntry:
+    kind: String
+    command: String
+    sha256: String
+    size: Int
+    binding_plan_sha256: String
+    authority: List(String)
+
+// The versioned manifest: a target triple -> its `ArtifactEntry`. A library release
+// has an empty manifest; an application release names one or more targets.
+type ArtifactManifest:
+    version: Int
+    artifacts: List((String, ArtifactEntry))
+
+// Matchable manifest faults. Malformed wire (JSON/shape) is kept distinct from a
+// semantically-invalid target/command/digest.
+type ArtifactError:
+    ManifestJson(String)
+    ManifestShape(String)
+    BadCommand(String)
+    BadTarget(String)
+    BadDigest(String)
+
+pub fn artifact_error_message(e: ArtifactError) -> String:
+    match e:
+        ManifestJson(r) -> "artifact manifest is not valid JSON: " + r
+        ManifestShape(r) -> "artifact manifest has the wrong shape: " + r
+        BadCommand(c) -> "artifact command name `" + c + "` is not a single safe filename component"
+        BadTarget(t) -> "artifact target `" + t + "` is not a valid target triple"
+        BadDigest(d) -> "artifact digest `" + d + "` is malformed (need 64 lowercase hex)"
+
+impl Show for ArtifactError:
+    fn show(self) -> String:
+        artifact_error_message(self)
+
+impl Error for ArtifactError
+
+impl From(ArtifactError) for String:
+    fn from(value: ArtifactError) -> Self:
+        artifact_error_message(value)
+
+// A command name must be a single portable filename component: non-empty, no path
+// separators, and not `.`/`..`. This is what stops a manifest from writing outside
+// the install Dir or supplying an untrusted platform suffix (RFC-0095).
+pub fn valid_command(name: String) -> Bool:
+    !name.is_empty() && !name.contains("/") && !name.contains("\\") && name != "." && name != ".." && !name.contains(" ")
+
+// A conservative target-triple shape check: non-empty, `-`-separated, no path
+// traversal or whitespace. The installer selects the host target ITSELF and never
+// trusts a manifest to pick a foreign one, so this is a hygiene gate, not the
+// authority for target selection.
+pub fn valid_target(t: String) -> Bool:
+    !t.is_empty() && t.contains("-") && !t.contains("/") && !t.contains("\\") && !t.contains(" ") && !t.contains("..")
+
+// A 64-char lowercase-hex digest (validated by decoding to exactly 32 bytes).
+fn valid_digest(d: String) -> Bool:
+    match encoding.hex_decode_bytes(d):
+        Ok(b) -> bytes.length(b) == 32
+        Err(_e) -> false
+
+// Parse + validate a manifest's JSON. Every target/command/digest is checked; a
+// malformed one is a typed error, never silently dropped.
+pub fn parse(text: String) -> Result(ArtifactManifest, ArtifactError):
+    match json.decode(text):
+        Err(e) -> Err(ManifestJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            let version = doc.get_int("version") ?? 0
+            match doc.get("artifacts"):
+                None -> Err(ManifestShape("missing `artifacts` object"))
+                Some(arts) ->
+                    match arts.as_object():
+                        None -> Err(ManifestShape("`artifacts` is not an object"))
+                        Some(entries) -> parse_entries(version, entries, [])
+
+fn parse_entries(version: Int, entries: List((String, Json)), acc: List((String, ArtifactEntry))) -> Result(ArtifactManifest, ArtifactError):
+    match entries:
+        [] -> Ok(ArtifactManifest(version, acc))
+        [pair, ..rest] ->
+            let (target, ev) = pair
+            if !valid_target(target):
+                Err(BadTarget(target))
+            else:
+                match parse_entry(ev):
+                    Err(e) -> Err(e)
+                    Ok(entry) -> parse_entries(version, rest, acc.concat([(target, entry)]))
+
+fn parse_entry(ev: Json) -> Result(ArtifactEntry, ArtifactError):
+    let command = ev.get_string("command") ?? ""
+    let sha = ev.get_string("sha256") ?? ""
+    if !valid_command(command):
+        Err(BadCommand(command))
+    else if !valid_digest(sha):
+        Err(BadDigest(sha))
+    else:
+        Ok(ArtifactEntry(ev.get_string("kind") ?? "", command, sha, ev.get_int("size") ?? 0, ev.get_string("binding_plan_sha256") ?? "", ev.get_strings("authority")))
+
+// The artifact for `target`, or None if the release has no artifact for that host.
+pub fn select(manifest: ArtifactManifest, target: String) -> Option(ArtifactEntry):
+    find_target(manifest.artifacts, target)
+
+fn find_target(entries: List((String, ArtifactEntry)), target: String) -> Option(ArtifactEntry):
+    match entries:
+        [] -> None
+        [pair, ..rest] -> if pair.0 == target: Some(pair.1) else: find_target(rest, target)
+
+// Every target the manifest carries an artifact for, sorted (the "available
+// targets" a missing-target error lists).
+pub fn targets(manifest: ArtifactManifest) -> List(String):
+    var names: List(String) = manifest.artifacts.map(fn(p: (String, ArtifactEntry)): p.0)
+    list.sort(names)
+    names
+
+// The canonical digest a release record commits to, binding the manifest into the
+// signed payload (RFC-0095). An empty manifest yields "" — a source-only release,
+// whose record signs the legacy payload byte-for-byte.
+pub fn manifest_digest(manifest: ArtifactManifest) -> String:
+    if list.length(manifest.artifacts) == 0:
+        ""
+    else:
+        "sha256:" + crypto.sha256(canonical(manifest))
+
+// An order-stable serialization for hashing: version, then each target sorted, as
+// `target|command|sha256|size|binding_plan_sha256` on its own line.
+fn canonical(manifest: ArtifactManifest) -> String:
+    let lines = targets(manifest).map(fn(t: String): entry_line(t, find_target(manifest.artifacts, t)))
+    "v${manifest.version}\n" + list.join(lines, "\n")
+
+fn entry_line(target: String, entry: Option(ArtifactEntry)) -> String:
+    match entry:
+        None -> target + "|"
+        Some(e) -> target + "|" + e.command + "|" + e.sha256 + "|${e.size}|" + e.binding_plan_sha256
