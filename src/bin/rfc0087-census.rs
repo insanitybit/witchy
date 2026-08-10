@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use witchy::{parser, pipeline};
+use witchy::{ast, parser, pipeline};
 use witchy_syntax::linker;
 use witchy_types::migration::{Category, Census};
 
@@ -33,8 +33,9 @@ fn run() -> Result<(), String> {
     let mut rejected = Vec::new();
 
     println!("path\tline\tcategory\tcallee\tparameter\troot");
+    let mut parse_cache: BTreeMap<String, ast::Module> = BTreeMap::new();
     for path in &files {
-        let report = link_file(path, &source_index)?;
+        let report = link_file(path, &source_index, &mut parse_cache)?;
         record_report(
             display_from(root, path),
             report,
@@ -222,6 +223,7 @@ fn source_index(files: &[PathBuf]) -> BTreeMap<String, Vec<PathBuf>> {
 fn link_file(
     path: &Path,
     source_index: &BTreeMap<String, Vec<PathBuf>>,
+    parse_cache: &mut BTreeMap<String, ast::Module>,
 ) -> Result<Census, String> {
     let stem = path
         .file_stem()
@@ -248,8 +250,23 @@ fn link_file(
                 .map(str::to_string)
                 .ok_or_else(|| format!("cannot read `{}`: {error}", source_path.display()))?,
         };
-        let module =
-            parser::parse_module(&source).map_err(|e| format!("{}: {e}", source_path.display()))?;
+        // Every corpus file transitively re-imports the same shared modules
+        // (std above all — ~49 modules, imported by nearly every one of the
+        // ~290 corpus files). Re-parsing identical source text per file made
+        // this the single slowest test in the suite (~885s measured
+        // 2026-08-10, dwarfing everything else). Cache by the exact source
+        // TEXT, not name or path: parsing is a pure function of the text, so
+        // this is unconditionally correct even for two different projects
+        // that happen to define a same-named-but-different-content local
+        // module (their text differs, so they get distinct cache entries).
+        let module = if let Some(cached) = parse_cache.get(&source) {
+            cached.clone()
+        } else {
+            let parsed = parser::parse_module(&source)
+                .map_err(|e| format!("{}: {e}", source_path.display()))?;
+            parse_cache.insert(source, parsed.clone());
+            parsed
+        };
         for import in &module.imports {
             if !loaded.contains(import) {
                 let sibling = source_path
