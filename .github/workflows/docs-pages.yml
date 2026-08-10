@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   build-and-publish:
+    outputs:
+      page_url: ${{ steps.deploy.outputs.page_url }}
     name: Build docs and publish to GitHub Pages
     runs-on: ubuntu-latest
     environment:
@@ -43,3 +45,29 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+  docs-vitals:
+    name: Production docs Core Web Vitals smoke
+    needs: [build-and-publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21d7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Generate deployed-docs production vitals
+        env:
+          WITCHY_DOCS_URL: ${{ needs.build-and-publish.outputs.page_url }}
+          WITCHY_VITALS_OUT: projects/glamour/acceptance
+          WITCHY_LHCI_RUNS: 1
+        run: |
+          node scripts/docs-vitals.mjs "${WITCHY_DOCS_URL}"
+      - name: Upload production vitals artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docs-vitals-${{ github.sha }}
+          path: projects/glamour/acceptance/*.json
+          if-no-files-found: error
+          retention-days: 14
