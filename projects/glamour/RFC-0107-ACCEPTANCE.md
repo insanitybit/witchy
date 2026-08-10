@@ -165,7 +165,7 @@ Only `PROVEN` rows may support public claims.
 | Global-rule ownership | PROVEN | Ordinary `css` remains scoped by construction. Deliberately unscoped rules require the distinct `global_css` tagged literal, retain their tag invocation origin and explicit route attachments, and cannot be paired with `css_scope`. Native publication independently validates the `global` sheet representation, lists every selector with its sheet, owner, and routes in the build report, and marks the sheet mode in the public manifest. Interpreter/Wasm parity proves the tag remains unscoped and origin-bearing; deterministic static publication and artifact re-audit cover the owner records. |
 | Portable Witchy server adapter | PROVEN | The capability-free `projects/glamour-server` companion turns a `FormSchema` into a `std/server` handler. It checks method and local action path, bounded URL-encoded POST bodies, strict percent escapes, configured same-origin Origin/Referer policy, and the shared decoder before invoking a typed callback. Its compiled package example proves 200 acceptance plus 403 origin, 422 schema, and 400 encoding failures. |
 | Book migration and static DOM oracle | PROVEN | `projects/docs/witchy.toml` builds all 56 `book/src` inputs through `web(StaticContent) -> Site`. The counter and every browser-runnable Witchy fence embed ordinary typed `Program` values through `Interactive`; production emits each complete editor cell as authenticated server HTML and lowers it to a load-activated resumable island. The small runnable host waits for activation and adopts the existing editor/output controls without replacing the compiler-owned cell; `witchy-runnable-adoption.test.mjs` proves identity retention, edited-source execution, and idempotence. Native publication emits one exact content-addressed route manifest per interactive page, deduplicates shared executable/artifact records, and rejects inconsistent shared metadata. `glamour-docs-bundle.test.mjs` proves all 56 routes, every route-manifest/DOM join, the complete fence-to-island census, GitHub Pages project-base rewriting, non-runnable zero-runtime routes, retired whole-page artifact omission, relaxed parent/capability-derived sandbox policy, and exact packaged artifact digests. The extracted-bundle Chrome proof resumes the published counter, activates the runner islands, executes the flagship and all 128 emitted runnable fences in opaque frames, and observes zero requests at the ungranted origin. |
-| Static-host and production-vitals evidence | EXTERNALLY OWNED | `./target/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-11.json` was run and passes all checks with portable/degraded enforcement semantics (`deployed-headers` reports per-route skips). Remaining externally-owned work is `Core Web Vitals` evidence from an approved deployment host and release-channel browser matrix. |
+| Static-host and production-vitals evidence | EXTERNALLY OWNED | `./target/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-10.json` was run and passes all checks with portable/degraded enforcement semantics (`deployed-headers` reports per-route skips). Remaining externally-owned work is `Core Web Vitals` evidence from an approved deployment host and release-channel browser matrix. |
 
 ### Phase 6
 
@@ -200,7 +200,7 @@ for RFC-0107 itself. Phase 6/7 no longer map to local implementation gaps.
 Phase-closure does not change RFC-0107's public `implemented` status; that
 status still requires the externally-owned evidence rows to be recorded.
 
-## Remaining-work triage (2026-08-11)
+## Remaining-work triage (2026-08-10)
 
 Every open row above was classified as either **in-sandbox** (code/tests that
 can still be written and proven on a developer machine) or **external** (needs
@@ -214,7 +214,7 @@ implemented as `witchy doctor --web --deployment <url>`.
 | --- | --- | --- | --- |
 | Typed HTTP/nav/storage/port/secret completion descriptors | 0107 | PROVEN | `web.rs` credential host-port callback bridge is implemented behind policy-checked callback lookup, and `projects/glamour/RFC-0107-ACCEPTANCE.md` row tests are green in merge-queue (commit `7ff29814`). Remaining non-local work is around relying-party payload contract alignment and policy governance. |
 | Complete browser accessibility matrix | 0107 | external | All three engines pass locally; only a successful public-CI run (an approved push) is missing. |
-| Static-host and production-vitals evidence | 0107 | external | `./target/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-11.json` was run and reports all checks passing under `portable/degraded` profile semantics (route-wise skips for strict header checks). Remaining externally-owned work is controlled Core Web Vitals and release-host browser evidence. |
+| Static-host and production-vitals evidence | 0107 | external | `./target/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-10.json` was run and reports all checks passing under `portable/degraded` profile semantics (route-wise skips for strict header checks). Remaining externally-owned work is controlled Core Web Vitals and release-host browser evidence. |
 | Release-channel browser matrix | 0108 | external | Local production matrix is green in Chromium/Firefox/WebKit for lifecycle and islands (`9/9` passing tests); release-CI matrix is still required before RFC-0108 phase exit. |
 | Controlled release-host timing report | 0108 | external | Needs pinned macOS-arm64 + Linux-x86-64 release-host records. |
 | Build-authenticated mount grants and browser policy | 0109 | external | `witchy doctor --web --deployment <url>` validates deployed-host browser-policy headers locally; only the approved WebAuthn exchange remains for completion. |
@@ -241,12 +241,12 @@ As of the latest local closeout evidence run on this checkout:
 
 - `node scripts/audit-browser-runnable.mjs` → 150/150 complete examples, ALL PASS.
 - `node scripts/validate_book_examples.mjs` → 165 runnable blocks in manifest lockstep, 59 non-runnable.
-- `./target/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-11.json` → all checks passed (portable/degraded mode, `deployed-headers` route-wise skip behavior).
-- `./target/debug/witchy doctor --web projects/docs --format json > projects/glamour/acceptance/doctor-local-2026-08-11.json` → all checks passed.
+- `./target/debug/witchy doctor --web --deployment https://insanitybit.github.io/witchy/ projects/docs --format json > projects/glamour/acceptance/doctor-gh-pages-2026-08-10.json` → all checks passed (portable/degraded mode, `deployed-headers` route-wise skip behavior).
+- `./target/debug/witchy doctor --web projects/docs --format json > projects/glamour/acceptance/doctor-local-2026-08-10.json` → all checks passed.
 - `node scripts/audit-browser-runnable.mjs` + acceptance artifact + doctor artifacts remain as local proof basis in
   `tests/browser/test-results/acceptance.json`,
-  `projects/glamour/acceptance/doctor-gh-pages-2026-08-11.json`, and
-  `projects/glamour/acceptance/doctor-local-2026-08-11.json`.
+  `projects/glamour/acceptance/doctor-gh-pages-2026-08-10.json`, and
+  `projects/glamour/acceptance/doctor-local-2026-08-10.json`.
 
 Current in-repo browser contract checks are green: `node scripts/audit-browser-runnable.mjs`
 reports 150/150 complete examples passing and `node scripts/validate_book_examples.mjs`
