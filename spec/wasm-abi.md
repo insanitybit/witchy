@@ -169,7 +169,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `print` | `(i32, i32)` | pure infrastructure | none | provided |
 | `console_read_len` | `() -> i32` | capability authority | Console.Read | omitted |
 | `crypto.sha256` | `(i32, i32)` | pure infrastructure | none | provided |
-| `crypto.sha256_bytes` | `(i32, i32)` | pure infrastructure | none | provided |
+| `crypto.sha256_bytes` | `(i32, i32)` | pure infrastructure | none | omitted |
 | `crypto.rune_hash` | `(i32, i32, i32)` | pure infrastructure | none | provided |
 | `compiler_footprint_len` | `(i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_diff_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |

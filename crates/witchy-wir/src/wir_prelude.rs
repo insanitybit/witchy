@@ -615,7 +615,6 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         name,
         "print"
             | "crypto.sha256"
-            | "crypto.sha256_bytes"
             | "crypto.rune_hash"
             | "user_cap_field_len"
             | "field_str_len"
