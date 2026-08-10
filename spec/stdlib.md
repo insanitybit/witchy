@@ -667,7 +667,7 @@ SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
 
 #### `fn sha256_bytes(data: Bytes) -> String`
 
-SHA-256 of RAW bytes, as 64 lowercase hex characters. Unlike `sha256` (which hashes a string's UTF-8), this hashes the exact `Bytes` — the digest a binary artifact (e.g. a trusted-exe) is verified against (RFC-0095). Native intrinsic; this body is a placeholder the runtime never executes.
+SHA-256 of RAW bytes, as 64 lowercase hex characters. Unlike `sha256` (which hashes a string's UTF-8), this hashes the exact `Bytes` - the digest a binary artifact (e.g. a trusted-exe) is verified against (RFC-0095). Native intrinsic; this body is a placeholder the runtime never executes.
 
 #### `fn rune_hash(paths: List(String), contents: List(String)) -> String`
 

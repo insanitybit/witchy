@@ -3751,7 +3751,7 @@ mod tests {
             .map(|spec| spec.name)
             .collect();
         assert_eq!(actual, expected);
-        assert_eq!(actual.len(), 14);
+        assert_eq!(actual.len(), 15);
 
         for name in CRYPTO_OPERATIONS {
             let spec = lookup(name).expect("crypto operation");
@@ -3821,6 +3821,11 @@ mod tests {
                 // (RFC-0106) SHAKE XOFs: __shake128/__shake256(Bytes, Int) -> Bytes.
                 IntrinsicSignature::BytesIntToBytes => {
                     (vec![named("Bytes"), named("Int")], named("Bytes"))
+                }
+                // (RFC-0095) crypto.sha256_bytes(Bytes) -> String: hashes raw
+                // decoded bytes (the trusted-exe artifact), not a UTF-8 String.
+                IntrinsicSignature::BytesToString => {
+                    (vec![named("Bytes")], named("String"))
                 }
                 other => panic!("unexpected crypto signature {other:?}"),
             }
