@@ -1,0 +1,378 @@
+{
+  "checks": [
+    {
+      "detail": "resolved `witchy-book`",
+      "id": "project",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "evaluated typed static Site with 56 routes",
+      "id": "target",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "static declaration evaluated with no minted capabilities",
+      "id": "authority",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "runtime is scoped to declared interactive regions",
+      "id": "runtime",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "two capability-free evaluations are identical",
+      "id": "determinism",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/ is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/appendix-ecosystem is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/appendix-operators is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/appendix-performance is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/appendix-recipes is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/appendix-stdlib is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/backends is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/capabilities is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/capabilities-authority is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/capabilities-narrowing is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/capabilities-optional is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/capabilities-sandbox is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-bytes is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-collections is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-config is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-crypto is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-errors is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-files is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-functional is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-iterators is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-json is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-numbers is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-text is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/cookbook-time is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/for-var is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/frontend is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/functional-in-place is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/getting-started is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/getting-started-hello is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/getting-started-installation is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/getting-started-toolbox is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/idioms is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/introduction is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/mutating-methods is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/packages is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/packages-build is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/packages-cli is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/project is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/running is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/shipping is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/structural-records is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/testing is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/title is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-async is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-comptime is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-data is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-errors is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-functions is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-generics is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-iterators is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-modules is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-reflection is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-values is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "/p/tour-vm is marked portable/degraded; skipping strict deployed-header enforcement",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "deployed host exposes declared route browser policy",
+      "id": "deployed-headers",
+      "remediation": null,
+      "status": "pass"
+    }
+  ],
+  "ok": true,
+  "schema": "witchy.web.doctor.v1"
+}

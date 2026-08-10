@@ -1,0 +1,36 @@
+{
+  "checks": [
+    {
+      "detail": "resolved `witchy-book`",
+      "id": "project",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "evaluated typed static Site with 56 routes",
+      "id": "target",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "static declaration evaluated with no minted capabilities",
+      "id": "authority",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "runtime is scoped to declared interactive regions",
+      "id": "runtime",
+      "remediation": null,
+      "status": "pass"
+    },
+    {
+      "detail": "two capability-free evaluations are identical",
+      "id": "determinism",
+      "remediation": null,
+      "status": "pass"
+    }
+  ],
+  "ok": true,
+  "schema": "witchy.web.doctor.v1"
+}
