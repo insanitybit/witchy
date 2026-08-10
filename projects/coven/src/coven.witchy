@@ -28,6 +28,7 @@ import coven_json
 import coven_store
 import coven_meta
 import coven_artifact
+import coven_typo
 import compiler
 // --- error flow --------------------------------------------------------------
 // A handler failure as an HTTP status + message. Handlers return
@@ -466,6 +467,21 @@ impl Coven:
     fn route_publish(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError): self.do_publish(body(req)?))
 
+    // (RFC-0095) A brand-new package NAME must not be confusably close to an
+    // existing one — that is the shape of a typosquat: a lookalike published to
+    // catch a fat-fingered `add`/`install`. Only the FIRST version of a name is
+    // gated (a new version of an existing name is unaffected). Reject at
+    // edit-distance 1 (a transposition, dropped letter, or adjacent-key swap).
+    fn typosquat_gate(self, name: String) -> Result(Nil, CovenError):
+        if list.length(coven_store.versions_of(self.store, name)) > 0:
+            Ok(Nil)
+        else:
+            let (other, dist) = coven_typo.nearest(name, coven_typo.same_namespace(name, coven_store.all_names(self.store)))
+            if other != "" && dist <= 1:
+                Err(CovenError(409, "package name `${name}` is edit-distance ${dist} from the existing `${other}` — too similar (possible typosquat); choose a more distinct name"))
+            else:
+                Ok(Nil)
+
     fn do_publish(self, doc: Json) -> Result(Response, CovenError):
         let req = coven_proto.publish_of(doc).map_err(fn(e: String): CovenError(400, e))?
         let name = toml.get(req.manifest, "rune.name").unwrap_or("")
@@ -473,6 +489,7 @@ impl Coven:
         require(coven_validate.valid_name(name), 400, "invalid rune name `${name}` (need lowercase `namespace/name`, no traversal)")?
         require(coven_validate.valid_version(version), 400, "invalid version `${version}`")?
         require(!coven_store.record_exists(self.store, name, version), 409, "${name}@${version} already published — versions are immutable, bump the version")?
+        self.typosquat_gate(name)?
         let (uploaded_by, claims) = self.authorized_publisher(req, self.clock.now() / 1000, name)?
         self.publish_checked(req.manifest, name, version, uploaded_by, claims, req.files, req.artifact)
 

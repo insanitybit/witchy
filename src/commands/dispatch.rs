@@ -456,6 +456,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             ("coven_proto", include_str!("../../projects/coven/src/coven_proto.witchy")),
             ("coven_meta", include_str!("../../projects/coven/src/coven_meta.witchy")),
             ("coven_artifact", include_str!("../../projects/coven/src/coven_artifact.witchy")),
+            ("coven_typo", include_str!("../../projects/coven/src/coven_typo.witchy")),
         ];
         // Whole-pipeline cached like `witchy pm` above (see embedded_wasm_cached).
         let wasm_result = commands::compile::embedded_wasm_cached("coven", || {

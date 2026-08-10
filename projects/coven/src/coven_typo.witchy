@@ -1,0 +1,74 @@
+// coven_typo — a typosquat guard for package names. A brand-new NAME that is
+// confusably close to an existing one (a transposition, a dropped letter, an
+// adjacent-key substitution) is very likely a typosquat: a lookalike published to
+// catch a fat-fingered `pm add`. Coven rejects a new name within edit-distance 1
+// of an existing one at publish time (only for the FIRST version of a name; new
+// versions of an existing name are unaffected).
+
+import string
+import list
+import math
+
+// Optimal string alignment distance (restricted Damerau-Levenshtein): the fewest
+// single-character insertions, deletions, substitutions, and ADJACENT transpositions
+// to turn `a` into `b`. An adjacent transposition costs 1, so "ab" -> "ba" is 1 — that
+// is what catches "requests" -> "reqeusts" (a swap plain Levenshtein scores as 2).
+pub fn distance(a: String, b: String) -> Int:
+    let sa = string.chars(a)
+    let sb = string.chars(b)
+    let n = list.length(sa)
+    let m = list.length(sb)
+    if n == 0:
+        m
+    else if m == 0:
+        n
+    else:
+        osa(sa, sb, n, m)
+
+// Flat (n+1)x(m+1) DP; cell (i, j) lives at i * (m + 1) + j.
+fn osa(sa: List(String), sb: List(String), n: Int, m: Int) -> Int:
+    let w = m + 1
+    var d = list.repeat(0, (n + 1) * w)
+    for i in 0..n + 1:
+        list.set_at(d, i * w, i)
+    for j in 0..m + 1:
+        list.set_at(d, j, j)
+    for i in 1..n + 1:
+        for j in 1..m + 1:
+            let cost = if list.at(sa, i - 1) == list.at(sb, j - 1): 0 else: 1
+            let del = list.at(d, (i - 1) * w + j) + 1
+            let ins = list.at(d, i * w + (j - 1)) + 1
+            let sub = list.at(d, (i - 1) * w + (j - 1)) + cost
+            var best = math.min(del, math.min(ins, sub))
+            if i > 1 && j > 1 && list.at(sa, i - 1) == list.at(sb, j - 2) && list.at(sa, i - 2) == list.at(sb, j - 1):
+                best = math.min(best, list.at(d, (i - 2) * w + (j - 2)) + 1)
+            list.set_at(d, i * w + j, best)
+    list.at(d, n * w + m)
+
+// The subset of `names` sharing `candidate`'s namespace (the segment before the
+// first `/`). Typosquat comparison is namespace-scoped: the SAME tool name under
+// DIFFERENT namespaces (`a/util` vs `b/util`) is normal — different owners — not a
+// squat. Namespaces are owner-bound (first publish binds one to a repo), so a
+// lookalike within a namespace is the case worth catching.
+pub fn same_namespace(candidate: String, names: List(String)) -> List(String):
+    let ns = namespace_of(candidate)
+    list.filter(names, fn(n: String): namespace_of(n) == ns)
+
+fn namespace_of(name: String) -> String:
+    match string.split(name, "/"):
+        [ns, .._rest] -> ns
+        [] -> name
+
+// The existing name closest to `candidate`, paired with that distance. Distinct
+// names only (an exact match is a re-publish, handled elsewhere). Returns
+// `("", big)` when there is nothing to compare against, so a first-ever name passes.
+pub fn nearest(candidate: String, existing: List(String)) -> (String, Int):
+    var best_name = ""
+    var best = 1000000
+    for other in existing:
+        if other != candidate:
+            let dd = distance(candidate, other)
+            if dd < best:
+                best = dd
+                best_name = other
+    (best_name, best)

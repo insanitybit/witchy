@@ -1150,3 +1150,33 @@ fn install_fetches_verifies_and_writes_a_trusted_exe() {
     assert!(!out4.status.success(), "installing a source-only package must fail");
     assert!(stdout(&out4).contains("source-only"), "explains source-only: {}", stdout(&out4));
 }
+
+/// A brand-new package name within edit-distance 1 of an existing one is a likely
+/// typosquat (a lookalike to catch a fat-fingered add/install). Coven refuses it at
+/// publish; a clearly-distinct name still publishes.
+#[test]
+fn publish_rejects_a_typosquat_of_an_existing_name() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "typo");
+    let real = fe.lib("acme/requests", "1.0.0", "pub fn go() -> String:\n    \"hi\"\n");
+    let ci = server.ci_token("acme-requests-repo", "release.yml");
+    let out = fe.pm(&real, &["publish", "."], Some(&ci));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "publish real: {}\n{}", stdout(&out), stderr(&out));
+
+    // "requests" -> "reqeusts" is a single adjacent transposition (distance 1) — refused.
+    let squat = fe.lib("acme/reqeusts", "1.0.0", "pub fn go() -> String:\n    \"hi\"\n");
+    let ci2 = server.ci_token("acme-requests-repo", "release.yml");
+    let out2 = fe.pm(&squat, &["publish", "."], Some(&ci2));
+    assert!(!out2.status.success(), "a typosquat publish must fail: {}", stdout(&out2));
+    assert!(
+        stdout(&out2).contains("too similar") || stdout(&out2).contains("typosquat"),
+        "the rejection explains the name is too similar: {}",
+        stdout(&out2)
+    );
+
+    // A clearly-distinct new name in the same namespace still publishes.
+    let ok = fe.lib("acme/wholly-different-tool", "1.0.0", "pub fn go() -> String:\n    \"hi\"\n");
+    let ci3 = server.ci_token("acme-requests-repo", "release.yml");
+    let out3 = fe.pm(&ok, &["publish", "."], Some(&ci3));
+    assert!(out3.status.success() && stdout(&out3).contains("publish: 200"), "distinct name must publish: {}\n{}", stdout(&out3), stderr(&out3));
+}

@@ -9,6 +9,7 @@ import coven_proto
 import coven_footprint
 import coven_trust
 import coven_artifact
+import coven_typo
 import reflect
 import result
 import option
@@ -309,3 +310,32 @@ fn test_artifact_manifest_rejects_bad_digest():
             match e:
                 coven_artifact.BadDigest(_d) -> testing.assert(true, "malformed digest refused")
                 _ -> testing.assert(false, "wrong error for a malformed digest")
+
+// (RFC-0095 typosquat) The name-distance metric catches the confusable edits a
+// typosquat relies on: adjacent transposition, a dropped/added letter, an
+// adjacent-key substitution — each edit-distance 1 from a real name.
+fn test_typo_distance_catches_confusable_names():
+    testing.assert_int_eq(coven_typo.distance("requests", "requests"), 0)
+    testing.assert_int_eq(coven_typo.distance("requests", "reqeusts"), 1)
+    testing.assert_int_eq(coven_typo.distance("acme/requests", "acme/request"), 1)
+    testing.assert_int_eq(coven_typo.distance("acme/color", "acme/colour"), 1)
+    testing.assert_int_eq(coven_typo.distance("kitten", "sitting"), 3)
+    testing.assert_int_eq(coven_typo.distance("", "abc"), 3)
+
+fn test_typo_nearest_reports_the_closest_existing_name():
+    let existing = ["acme/requests", "acme/json", "other/http"]
+    let (near, dist) = coven_typo.nearest("acme/reqeusts", existing)
+    testing.assert_eq(near, "acme/requests")
+    testing.assert_int_eq(dist, 1)
+    let (_n2, d2) = coven_typo.nearest("wholly/different", existing)
+    testing.assert(d2 > 2, "a clearly distinct name is far from every existing one")
+    let (_n3, d3) = coven_typo.nearest("first/ever", [])
+    testing.assert(d3 > 2, "with no existing names, a first package is never too close")
+
+// Namespace scoping: a shared tool name across DIFFERENT namespaces is not a squat.
+fn test_typo_is_namespace_scoped():
+    let existing = ["a/util", "acme/requests"]
+    testing.assert_int_eq(list.length(coven_typo.same_namespace("b/util", existing)), 0)
+    let scoped = coven_typo.same_namespace("acme/reqeusts", existing)
+    testing.assert_int_eq(list.length(scoped), 1)
+    testing.assert_eq(list.at(scoped, 0), "acme/requests")
