@@ -22,6 +22,32 @@
         interpreter::run_module(linked, ".", Vec::new()).expect("run")
     }
 
+    /// A bundled std module's parse result never changes within one process
+    /// run (`crate::bundled_module(name)` is a deterministic, static lookup —
+    /// unlike user source, there is no possibility of the same name meaning
+    /// different content). `resolve_std_src`/`try_link_std` are the shared
+    /// entry points behind hundreds of example/differential tests in this one
+    /// binary, each of which re-parsed the same ~49 std modules from scratch
+    /// with no reuse across calls; caching by name is unconditionally safe
+    /// here (2026-08-10, same redundant-parse class as the rfc0087-census
+    /// fix, which alone cut that test's wall time 34%).
+    fn std_module_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, ast::Module>> {
+        static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, ast::Module>>> =
+            std::sync::OnceLock::new();
+        CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+    }
+
+    fn parse_std_import_cached(name: &str) -> ast::Module {
+        let mut cache = std_module_cache().lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(cached) = cache.get(name) {
+            return cached.clone();
+        }
+        let source = crate::bundled_module(name).expect("a bundled std module");
+        let parsed = parser::parse_module(source).expect("parse std module");
+        cache.insert(name.to_string(), parsed.clone());
+        parsed
+    }
+
     /// Resolve `src`'s `import`s against the bundled std and link the whole set —
     /// the source-level analog of the CLI's `link_file` / the lib's
     /// `resolve_std_only`. The COMPILED backend needs every reached std function
@@ -39,8 +65,7 @@
                 if !loaded.insert(name.clone()) {
                     continue;
                 }
-                let source = crate::bundled_module(&name).expect("a bundled std module");
-                let parsed = parser::parse_module(source).expect("parse std module");
+                let parsed = parse_std_import_cached(&name);
                 queue.push_back(parsed.clone());
                 modules.push((name, parsed));
             }
@@ -63,8 +88,7 @@
                 if !loaded.insert(name.clone()) {
                     continue;
                 }
-                let source = crate::bundled_module(&name).expect("a bundled std module");
-                let parsed = parser::parse_module(source).expect("parse std module");
+                let parsed = parse_std_import_cached(&name);
                 queue.push_back(parsed.clone());
                 modules.push((name, parsed));
             }
