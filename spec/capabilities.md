@@ -403,6 +403,14 @@ the VM is instantiated and before any guest code runs. Both launch paths
 (`--grants` and a trusted executable's binding plan) resolve through the same
 call, so neither can inject a secret and forget to strip it.
 
+Mutating a process's environment is only sound before that process becomes
+multi-threaded, so the timing is a real correctness requirement rather than a
+style preference. It is enforced rather than assumed: every access goes through
+one audited gateway (`witchy_cap_model::process_env`) that holds a lock and, on
+debug and test builds, aborts if a second thread is already live. A future change
+that moved stripping after the runtime spawns a thread fails loudly in CI instead
+of corrupting memory in production.
+
 A document that both injects a secret from a variable and allowlists that same
 variable for `Env` is contradictory, and is rejected at launch rather than
 silently resolved one way:

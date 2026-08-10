@@ -15,3 +15,8 @@ toml = { version = "1.1.2", optional = true }
 
 [features]
 native = ["dep:serde", "dep:toml"]
+
+[dev-dependencies]
+# Grant tests stage environment variables through the audited gateway rather than
+# raw `unsafe`; this feature exposes the check-waiving staging helpers.
+witchy-cap-model = { path = "../witchy-cap-model", features = ["test-env-staging"] }

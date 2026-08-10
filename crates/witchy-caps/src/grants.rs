@@ -33,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 
 use crate::capabilities::{CapSet, Rights};
+use witchy_cap_model::process_env::ThreadCheck;
 
 /// A parsed grant document: the capabilities the host will hand to `main`, keyed
 /// by the `main` parameter name they bind to.
@@ -267,6 +268,16 @@ pub fn resolve_secret_provider(from: &str) -> Result<Vec<u8>, String> {
 pub fn resolve_and_consume_secret_env<'a>(
     secrets: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    resolve_and_consume_secret_env_checked(secrets, ThreadCheck::Enforce)
+}
+
+/// [`resolve_and_consume_secret_env`], with the process-env thread check
+/// selectable. Production always enforces; a test harness is multi-threaded by
+/// construction and passes a waiver so it can drive this exact code path.
+pub fn resolve_and_consume_secret_env_checked<'a>(
+    secrets: impl IntoIterator<Item = (&'a str, &'a str)>,
+    check: ThreadCheck,
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
     // Collect the variables FIRST, then strip unconditionally — including on the
     // error path. A later secret failing to resolve must not leave an
     // already-resolved secret's variable behind in the environment for whatever
@@ -287,24 +298,15 @@ pub fn resolve_and_consume_secret_env<'a>(
         }
     }
     for variable in consumed {
-        remove_process_env_var(variable);
+        // The audited gateway: it holds the process env lock and, on a debug/test
+        // build, refuses to mutate once this process is multi-threaded — so the
+        // "we run before any thread exists" claim is checked, not just asserted.
+        witchy_cap_model::process_env::remove_var_checked(variable, check);
     }
     match failure {
         Some(error) => Err(error),
         None => Ok(resolved),
     }
-}
-
-/// Remove one variable from this process's environment.
-///
-/// SAFETY (edition 2024 `unsafe`): `std::env::remove_var` is unsound only when
-/// another thread concurrently reads or writes the environment. Every caller is
-/// a LAUNCH path — grant resolution happens while assembling the capability set,
-/// before the VM is instantiated, before any guest code runs, and before the
-/// runtime spawns worker threads. No other thread exists to observe the change.
-#[allow(unsafe_code)]
-fn remove_process_env_var(variable: &str) {
-    unsafe { std::env::remove_var(variable) }
 }
 
 /// Reject a grant that both injects a secret from an environment variable and
@@ -592,16 +594,20 @@ mod tests {
     #[test]
     fn resolving_an_env_secret_consumes_the_variable() {
         let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: single-threaded test body, guarded against the sibling env test.
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::set_var("WITCHY_TEST_STRIP_ME", "s3cret");
-        }
-        let resolved = resolve_and_consume_secret_env([
-            ("first", "env:WITCHY_TEST_STRIP_ME"),
-            // The same provider twice: both secrets resolve, one removal.
-            ("second", "env:WITCHY_TEST_STRIP_ME"),
-        ])
+        // Staged through the audited gateway (no raw `unsafe` here): a test harness
+        // is multi-threaded, so the checked entry point cannot be used, and the
+        // waiver is explicit and shares the gateway's lock.
+        witchy_cap_model::process_env::set_var_for_test("WITCHY_TEST_STRIP_ME", "s3cret");
+        // The real production path, with only the harness's thread check waived —
+        // so this test exercises the same stripping code a launch does.
+        let resolved = resolve_and_consume_secret_env_checked(
+            [
+                ("first", "env:WITCHY_TEST_STRIP_ME"),
+                // The same provider twice: both secrets resolve, one removal.
+                ("second", "env:WITCHY_TEST_STRIP_ME"),
+            ],
+            ThreadCheck::WaiveForTest,
+        )
         .expect("the variable is set, so both resolve");
         assert_eq!(resolved["first"], b"s3cret".to_vec());
         assert_eq!(resolved["second"], b"s3cret".to_vec());
@@ -615,7 +621,10 @@ mod tests {
     #[test]
     fn an_unset_env_secret_is_a_named_error() {
         let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let error = resolve_and_consume_secret_env([("t", "env:WITCHY_TEST_DEFINITELY_UNSET")])
+        let error = resolve_and_consume_secret_env_checked(
+            [("t", "env:WITCHY_TEST_DEFINITELY_UNSET")],
+            ThreadCheck::WaiveForTest,
+        )
             .expect_err("an unset variable cannot resolve");
         assert!(error.contains("WITCHY_TEST_DEFINITELY_UNSET"), "names it: {error}");
     }
@@ -626,15 +635,14 @@ mod tests {
     #[test]
     fn a_failed_resolution_still_strips_the_variables_that_resolved() {
         let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: single-threaded test body, guarded against the sibling env tests.
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::set_var("WITCHY_TEST_PARTIAL_OK", "resolved");
-        }
-        let error = resolve_and_consume_secret_env([
-            ("ok", "env:WITCHY_TEST_PARTIAL_OK"),
-            ("missing", "env:WITCHY_TEST_PARTIAL_UNSET"),
-        ])
+        witchy_cap_model::process_env::set_var_for_test("WITCHY_TEST_PARTIAL_OK", "resolved");
+        let error = resolve_and_consume_secret_env_checked(
+            [
+                ("ok", "env:WITCHY_TEST_PARTIAL_OK"),
+                ("missing", "env:WITCHY_TEST_PARTIAL_UNSET"),
+            ],
+            ThreadCheck::WaiveForTest,
+        )
         .expect_err("one secret cannot resolve, so the launch fails");
         assert!(error.contains("WITCHY_TEST_PARTIAL_UNSET"), "names the unset one: {error}");
         assert!(

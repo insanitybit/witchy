@@ -6,4 +6,15 @@ publish = false
 license = "MIT OR Apache-2.0"
 description = "witchy compiler - dependency-bottom capability catalog and rights vocabulary"
 
+[features]
+# Exposes `process_env::{set_var,remove_var}_for_test`, which waive the
+# single-threaded check. Only ever enabled through a `dev-dependencies` entry, so
+# no production build can reach them.
+test-env-staging = []
+
 [dependencies]
+
+[dev-dependencies]
+# The crate's own tests exercise the staging helpers, so it enables its own
+# feature here rather than in `[features].default`.
+witchy-cap-model = { path = ".", features = ["test-env-staging"] }

@@ -2922,6 +2922,9 @@ dependencies = [
 [[package]]
 name = "witchy-cap-model"
 version = "0.1.0"
+dependencies = [
+ "witchy-cap-model",
+]
 
 [[package]]
 name = "witchy-caps"

@@ -7,6 +7,13 @@
 
 #![deny(unsafe_code)]
 
+/// The one audited gateway for this process's environment. `unsafe` is allowed
+/// ONLY here: environment mutation is unsound under edition 2024 and the module
+/// exists to concentrate it behind a checked wrapper, so the crate-wide deny stays
+/// in force everywhere else.
+#[allow(unsafe_code)]
+pub mod process_env;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CapabilityClass {
     Host,
