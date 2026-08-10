@@ -96,12 +96,6 @@ pub fn promote_body(name: String, version: String, factor: String, promoter: Str
 pub fn yank_body(name: String, version: String, id_token: Option(String)) -> String:
     json.encode(JsonObject(with_id_token([("name", JsonString(name)), ("version", JsonString(version))], id_token)))
 
-// (RFC-0095) The artifact-bytes upload body: one target's trusted-exe, base64
-// for JSON transport. The server re-hashes the decoded bytes against the signed
-// manifest, so this body needs no auth — only the correct bytes are accepted.
-pub fn artifact_upload_body(name: String, version: String, target: String, bytes_b64: String) -> String:
-    json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("target", JsonString(target)), ("bytes", JsonString(bytes_b64))]))
-
 // Append the `id_token` field only when a token is present, so an anonymous body omits it.
 fn with_id_token(fields: List((String, Json)), id_token: Option(String)) -> List((String, Json)):
     with_optional(fields, "id_token", id_token)

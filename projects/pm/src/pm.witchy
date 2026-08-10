@@ -1284,7 +1284,7 @@ fn upload_artifact_dir(console: Console, net: Net, root: Dir, dir: String, manif
         var failed = 0
         for target in root.subtree(art_dir).list():
             let data = root.read_bytes(join_path(art_dir, target))
-            let resp = registry_post(net, origin, "/coven/artifact/bytes", coven_proto.artifact_upload_body(name, version, target, encoding.base64_encode_bytes(data)))
+            let resp = registry_post(net, origin, "/coven/artifact/bytes?name=${wire(name)}&version=${version}&target=${target}", encoding.base64_encode_bytes(data))
             let st = http.status(resp)
             if st >= 200 && st < 300:
                 console.print("  artifact ${target}: ${st}")
@@ -2728,11 +2728,9 @@ fn install_fetch_and_write(console: Console, net: Net, root: Dir, origin: String
         console.print("BLOCK: registry has no artifact bytes for ${name}@${version} target `${target}`")
         1
     else:
-        match json.decode(http.body(resp)):
-            Err(e) ->
-                console.print("BLOCK: malformed artifact-bytes response: ${json.decode_error_message(e)}")
-                1
-            Ok(bdoc) -> install_verify_bytes(console, root, command, sha, jget(bdoc, "bytes"))
+        // The response body IS the base64 (raw, not json-wrapped — a real trusted-exe
+        // is tens of MB and json.decode aborts at that size). Decode + verify directly.
+        install_verify_bytes(console, root, command, sha, http.body(resp))
 
 fn install_verify_bytes(console: Console, home: Dir, command: String, sha: String, b64: String) -> Int:
     match encoding.base64_decode_bytes_string(b64):

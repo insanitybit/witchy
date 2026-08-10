@@ -1092,9 +1092,13 @@ fn publish_uploads_artifact_bytes_then_serves_them() {
         "served bytes are the base64 of the uploaded blob: {bytes_body}"
     );
 
-    // A direct upload of MISMATCHED bytes (base64("world")) is refused by the sha256 gate.
-    let bad = r#"{"name":"acme/wrg","version":"0.2.0","target":"aarch64-apple-darwin","bytes":"d29ybGQ="}"#;
-    let (mstatus, mbody) = http_post(&addr, "/coven/artifact/bytes", bad);
+    // A direct upload of MISMATCHED bytes (base64("world")) is refused by the sha256
+    // gate. Raw-body transport: name/version/target in the query, base64 as the body.
+    let (mstatus, mbody) = http_post(
+        &addr,
+        "/coven/artifact/bytes?name=acme~wrg&version=0.2.0&target=aarch64-apple-darwin",
+        "d29ybGQ=",
+    );
     assert_eq!(mstatus, 400, "mismatched bytes must be refused: {mbody}");
     assert!(
         mbody.contains("does not match"),
