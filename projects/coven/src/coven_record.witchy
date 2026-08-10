@@ -27,6 +27,11 @@ type Record derive(Reflect, Deserialize):
     promoted_by: Option(String)
     second_factor: Option(String)
     provenance: Option(String)
+    // (RFC-0095) The digest of the artifact manifest this version commits to, as
+    // `sha256:<hex>`. `None` for a source-only release (no trusted-exe), which
+    // signs the legacy coven-v1 payload byte-for-byte. A missing field on an
+    // older stored record deserializes to `None`, exactly like `provenance`.
+    artifact_digest: Option(String)
     released_at: Int
     sig: String
 
@@ -66,19 +71,27 @@ pub fn state_of(s: String) -> State:
 // The canonical, signed view of a record — every security-relevant field except the
 // signature. List fields are encoded as canonical JSON so their element boundaries
 // are part of what the signature commits to.
-// idiom-exempt: concatenation defines the signed coven-v1 payload byte format.
-pub fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
-    "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + string_list_payload(rt) + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
+// idiom-exempt: concatenation defines the signed payload byte format. An empty
+// `artifact_digest` signs coven-v1 (byte-identical to a source-only release
+// before RFC-0095); a non-empty one signs coven-v2, the same body plus a
+// trailing `artifact=<digest>` line, so a swapped or stripped manifest breaks
+// the signature. The version token is chosen by digest presence, never guessed.
+pub fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int, artifact_digest: String) -> String:
+    let body = "name=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + string_list_payload(rt) + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
+    if artifact_digest.is_empty():
+        "coven-v1\n" + body
+    else:
+        "coven-v2\n" + body + "\nartifact=" + artifact_digest
 
 fn string_list_payload(xs: List(String)) -> String:
     json.encode(JsonArray(xs.map(fn(x: String): JsonString(x))))
 
 // Build + sign a record, returning its coven.json text. `released_at` (unix seconds;
 // 0 = not yet released) is part of the signed payload — tamper-evident.
-pub fn sign_record(key: Secret, name: String, version: String, state: State, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
+pub fn sign_record(key: Secret, name: String, version: String, state: State, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int, artifact_digest: String) -> String:
     let sw = state_wire(state)
-    let sig = crypto.sign(key, signing_payload(name, version, sw, hash, rt, uploaded_by, promoted_by, factor, provenance, released_at))
-    let rec = Record(name, version, sw, hash, rt, [], "guaranteed", uploaded_by, opt_str(promoted_by), opt_str(factor), opt_str(provenance), released_at, sig)
+    let sig = crypto.sign(key, signing_payload(name, version, sw, hash, rt, uploaded_by, promoted_by, factor, provenance, released_at, artifact_digest))
+    let rec = Record(name, version, sw, hash, rt, [], "guaranteed", uploaded_by, opt_str(promoted_by), opt_str(factor), opt_str(provenance), opt_str(artifact_digest), released_at, sig)
     json.encode(json.from_value(rec))
 
 // Decode a stored coven.json into a typed `Record` (or a matchable parse error).
@@ -115,7 +128,7 @@ impl From(RecordParseError) for String:
 // the snapshot pins, so a record swapped to an older state stops matching.
 pub fn record_signing_payload(text: String) -> String:
     match parse(text):
-        Ok(r) -> signing_payload(r.name, r.version, r.state, r.hash, r.runtime_footprint, r.uploaded_by, str_or_empty(r.promoted_by), str_or_empty(r.second_factor), str_or_empty(r.provenance), r.released_at)
+        Ok(r) -> signing_payload(r.name, r.version, r.state, r.hash, r.runtime_footprint, r.uploaded_by, str_or_empty(r.promoted_by), str_or_empty(r.second_factor), str_or_empty(r.provenance), r.released_at, str_or_empty(r.artifact_digest))
         Err(e) -> corrupt_record(record_parse_error_message(e))
 
 // A stored record that no longer parses is corruption/tampering, not an empty payload:

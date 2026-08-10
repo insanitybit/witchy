@@ -420,7 +420,7 @@ impl Coven:
         // BUG-423: store the source only after EVERY validation has passed, so a rejected
         // publish never leaves poisoned source bytes on disk for this version.
         coven_store.store_source(self.store, name, version, files)
-        let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0)
+        let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0, "")
         // Finalize the claimed placeholder with the real signed record (atomic replace).
         coven_store.write_record(self.store, name, version, rec)
         self.rebuild_metadata()
@@ -452,7 +452,7 @@ impl Coven:
         // before mutating release state. A request marker is never proof.
         if let Some(c) = claims:
             let _ = self.consume_jti(c)?
-        let signed = coven_record.sign_record(self.key, name, version, Released, rec.hash, rec.runtime_footprint, rec.uploaded_by, promoter, factor, coven_record.str_or_empty(rec.provenance), self.clock.now() / 1000)
+        let signed = coven_record.sign_record(self.key, name, version, Released, rec.hash, rec.runtime_footprint, rec.uploaded_by, promoter, factor, coven_record.str_or_empty(rec.provenance), self.clock.now() / 1000, coven_record.str_or_empty(rec.artifact_digest))
         coven_store.write_record(self.store, name, version, signed)
         self.rebuild_metadata()
         let delta = rights.uncovered(coven_store.latest_released_footprint(self.store, name, version), rec.runtime_footprint)
@@ -468,7 +468,7 @@ impl Coven:
         require(coven_validate.valid_version(req.version), 400, "invalid version `${req.version}`")?
         let rec = self.load_record(req.name, req.version)?
         let _yanker = self.authorized_yanker(req.name, req.id_token, self.clock.now() / 1000)?
-        let signed = coven_record.sign_record(self.key, req.name, req.version, Yanked, rec.hash, rec.runtime_footprint, rec.uploaded_by, coven_record.str_or_empty(rec.promoted_by), coven_record.str_or_empty(rec.second_factor), coven_record.str_or_empty(rec.provenance), rec.released_at)
+        let signed = coven_record.sign_record(self.key, req.name, req.version, Yanked, rec.hash, rec.runtime_footprint, rec.uploaded_by, coven_record.str_or_empty(rec.promoted_by), coven_record.str_or_empty(rec.second_factor), coven_record.str_or_empty(rec.provenance), rec.released_at, coven_record.str_or_empty(rec.artifact_digest))
         coven_store.write_record(self.store, req.name, req.version, signed)
         self.rebuild_metadata()
         Ok(server.send(200, .{ok: true}))

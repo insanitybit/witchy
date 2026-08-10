@@ -73,10 +73,29 @@ fn test_state_round_trips():
 // Capability strings themselves may contain commas (`Net[Connect, Tcp]`), so a raw
 // comma join would make `["A,B"]` and `["A", "B"]` indistinguishable.
 fn test_runtime_footprint_payload_is_injective():
-    let one = coven_record.signing_payload("acme/net", "1.0.0", "released", "sha256:x", ["Net[Connect, Tcp]"], "ci", "alice", "webauthn", "prov", 1)
-    let split = coven_record.signing_payload("acme/net", "1.0.0", "released", "sha256:x", ["Net[Connect", " Tcp]"], "ci", "alice", "webauthn", "prov", 1)
+    let one = coven_record.signing_payload("acme/net", "1.0.0", "released", "sha256:x", ["Net[Connect, Tcp]"], "ci", "alice", "webauthn", "prov", 1, "")
+    let split = coven_record.signing_payload("acme/net", "1.0.0", "released", "sha256:x", ["Net[Connect", " Tcp]"], "ci", "alice", "webauthn", "prov", 1, "")
     testing.assert(one != split, "different footprint list shapes must produce different signed payloads")
     testing.assert(one.contains("rt=[\"Net[Connect, Tcp]\"]"), "the runtime footprint is encoded as a JSON array")
+
+// (RFC-0095) The signed payload is versioned by artifact-manifest presence: an
+// empty digest is byte-identical coven-v1 (a source-only release, unchanged from
+// before RFC-0095), and a non-empty digest is coven-v2 with a trailing
+// `artifact=` line. The version token must be chosen by presence, never guessed.
+fn test_signing_payload_versions_by_artifact_digest():
+    let v1 = coven_record.signing_payload("acme/wrg", "1.0.0", "released", "sha256:h", ["Dir[Read]"], "ci", "alice", "webauthn", "prov", 7, "")
+    testing.assert(v1.starts_with("coven-v1\n"), "an empty artifact digest signs coven-v1")
+    testing.assert(!v1.contains("\nartifact="), "coven-v1 carries no artifact line")
+
+    let dg = "sha256:416e71b2cf6ce3fb316381f0eec039aa5b586e931f925f4d1f0be1d2d5009b5d"
+    let v2 = coven_record.signing_payload("acme/wrg", "1.0.0", "released", "sha256:h", ["Dir[Read]"], "ci", "alice", "webauthn", "prov", 7, dg)
+    testing.assert(v2.starts_with("coven-v2\n"), "a present artifact digest signs coven-v2")
+    testing.assert(v2.ends_with("\nartifact=" + dg), "coven-v2 appends the artifact digest as the final line")
+    testing.assert(v1 != v2, "committing to an artifact changes the signed payload")
+
+    // Backward compatibility: coven-v1 is the old body with only the version tag
+    // swapped in — stripping the tag lines must leave identical bodies.
+    testing.assert_eq(v1.replace("coven-v1\n", ""), v2.replace("coven-v2\n", "").replace("\nartifact=" + dg, ""))
 
 fn test_record_parse_errors_are_typed():
     match coven_record.parse("{"):
