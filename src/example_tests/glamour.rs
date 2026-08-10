@@ -62,7 +62,7 @@ use crate::{codegen, interpreter, parser, typeck};
                    \x20   let second = jsx\"<p>${name}</p>\"\n\
                    \x20   (first, second)\n";
         let entry = parser::parse_module(src).expect("parse entry");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let linked = crate::pipeline::link_with_origins(
             vec![("main".to_string(), entry), ("glamour".to_string(), glamour)],
             "main",
@@ -219,7 +219,7 @@ use crate::{codegen, interpreter, parser, typeck};
     /// genuine differential test of the *expanded* `VNode`-constructing AST.
     fn glamour_run_both(src: &str) -> Vec<String> {
         let entry = parser::parse_module(src).expect("parse entry");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
         let linked = crate::pipeline::link(modules, "main").expect("link glamour consumer");
         typeck::check(&linked).expect("typecheck");
@@ -295,8 +295,8 @@ use crate::{codegen, interpreter, parser, typeck};
     /// Like [`glamour_run_both`] but also links `std/markdown` — for the docs renderer.
     fn markdown_run_both(src: &str) -> Vec<String> {
         let entry = parser::parse_module(src).expect("parse entry");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
-        let markdown = parser::parse_module(MARKDOWN_SRC).expect("parse markdown");
+        let glamour = glamour_module_cached();
+        let markdown = markdown_module_cached();
         let modules = vec![
             ("main".to_string(), entry),
             ("glamour".to_string(), glamour),
@@ -425,7 +425,7 @@ use crate::{codegen, interpreter, parser, typeck};
                    \x20   console.print(glamour.to_json(node, mj))\n\
                    \x20   console.print(json.encode(glamour.cmd_to_json(cmd, mj)))\n";
         let entry = parser::parse_module(src).expect("parse entry");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
         let linked = crate::pipeline::link(modules, "main").expect("link glamour consumer");
         typeck::check(&linked).expect("typecheck");
@@ -666,7 +666,7 @@ fn main(console: Console):
     #[test]
     fn glamour_rune_has_an_empty_capability_footprint() {
         let fp = crate::capabilities::analyze(
-            &parser::parse_module(GLAMOUR_SRC).expect("parse glamour"),
+            &glamour_module_cached(),
         );
         // `show_caps` renders the empty set as the literal `(none)`.
         assert_eq!(
@@ -695,7 +695,7 @@ fn main(console: Console):
                    \x20   let view = html\"<${t}>hi</${t}>\"\n\
                    \x20   console.print(glamour.to_html(view))\n";
         let entry = parser::parse_module(src).expect("parse entry");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
         let err = crate::pipeline::link(modules, "main")
             .expect_err("a tag-name hole must be a compile error");
@@ -720,7 +720,7 @@ fn main(console: Console):
                    \x20   let view = html\"<span>${5}</span>\"\n\
                    \x20   console.print(glamour.to_html(view))\n";
         let entry = parser::parse_module(src).expect("parse entry");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
         let linked = crate::pipeline::link(modules, "main").expect("link (expansion succeeds)");
         let err = typeck::check(&linked)
@@ -762,7 +762,7 @@ fn main(console: Console):
                    \x20   let view: VNode(Int) = html\"<a href=${destination}>Go</a>\"\n\
                    \x20   console.print(glamour.to_html(view))\n";
         let entry = parser::parse_module(src).expect("parse entry");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let linked = crate::pipeline::link(
             vec![("main".to_string(), entry), ("glamour".to_string(), glamour)],
             "main",
@@ -784,7 +784,7 @@ fn main(console: Console):
                    fn main(console: Console):\n\
                    \x20   console.print(glamour.to_html(html\"<a href=\\\"javascript:alert(1)\\\">bad</a>\"))\n";
         let entry = parser::parse_module(src).expect("parse entry");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let err = crate::pipeline::link(
             vec![("main".to_string(), entry), ("glamour".to_string(), glamour)],
             "main",
@@ -858,7 +858,7 @@ fn main(console: Console):
                    \x20   let sheet = css\".card { color: ${color}; }\"\n\
                    \x20   console.print(glamour.css_text(sheet))\n";
         let entry = parser::parse_module(src).expect("parse entry");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let linked = crate::pipeline::link(
             vec![("main".to_string(), entry), ("glamour".to_string(), glamour)],
             "main",
@@ -878,7 +878,7 @@ fn main(console: Console):
                       fn main(console: Console):\n\
                       \x20   console.print(glamour.css_text(css\".card { background-image: url('/logo.svg'); }\"))\n";
         let entry = parser::parse_module(direct).expect("parse direct CSS URL");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let err = crate::pipeline::link(
             vec![("main".to_string(), entry), ("glamour".to_string(), glamour)],
             "main",
@@ -911,7 +911,7 @@ fn main(console: Console):
                 );
             } else {
                 let entry = parser::parse_module(&source).expect("parse invalid media fixture");
-                let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+                let glamour = glamour_module_cached();
                 let error = crate::pipeline::link(
                     vec![("main".to_string(), entry), ("glamour".to_string(), glamour)],
                     "main",
@@ -932,7 +932,7 @@ fn main(console: Console):
                 "import glamour\n\nfn main(console: Console):\n    let sheet = css\"{stylesheet}\"\n    console.print(glamour.css_text(sheet))\n"
             );
             let entry = parser::parse_module(&source).expect("parse rejected at-rule fixture");
-            let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+            let glamour = glamour_module_cached();
             let linked = crate::pipeline::link(
                 vec![("main".to_string(), entry), ("glamour".to_string(), glamour)],
                 "main",
@@ -999,7 +999,7 @@ fn main(console: Console):
                           \x20       Err(_) -> console.print(\"invalid\")\n\
                           \x20       Ok(length) -> console.print(glamour.css_text(css\".card { color: ${length}; }\"))\n";
         let entry = parser::parse_module(mismatched).expect("parse mismatched CSS value");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let linked = crate::pipeline::link(
             vec![("main".to_string(), entry), ("glamour".to_string(), glamour)],
             "main",
@@ -1042,7 +1042,7 @@ fn main(console: Console):
                           \x20       Err(_) -> console.print(\"invalid\")\n\
                           \x20       Ok(angle) -> console.print(glamour.css_text(css\".card { transition-duration: ${angle}; }\"))\n";
         let entry = parser::parse_module(mismatched).expect("parse mismatched CSS category");
-        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let glamour = glamour_module_cached();
         let linked = crate::pipeline::link(
             vec![("main".to_string(), entry), ("glamour".to_string(), glamour)],
             "main",
@@ -1369,7 +1369,7 @@ fn main(console: Console):
                 literal.replace('"', "\\\""),
             );
             let entry = parser::parse_module(&src).expect("parse entry");
-            let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+            let glamour = glamour_module_cached();
             let err = crate::pipeline::link(
                 vec![("main".to_string(), entry), ("glamour".to_string(), glamour)],
                 "main",
