@@ -31,8 +31,12 @@ getrandom = { version = "0.4.2", optional = true }
 aws-lc-rs = "1"
 # (RFC-0106) Native-only SHAKE XOF via AWS-LC's EVP interface, which aws-lc-rs's
 # safe digest API does not expose. Pinned to the same AWS-LC build aws-lc-rs
-# selects (transitive already), so no second crypto provider is introduced.
-aws-lc-sys = "0.38"
+# selects (transitive already), so no second crypto provider is introduced —
+# and so cargo doesn't compile aws-lc-sys's C sources twice (a real ~50s
+# duplicate build observed 2026-08-09). This drifts out of sync whenever
+# aws-lc-rs bumps its own aws-lc-sys requirement; check `cargo tree -i
+# aws-lc-sys` for a duplicate before assuming this pin is still current.
+aws-lc-sys = "0.41"
 rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12", "logging"] }
 webpki-roots = "0.26"
 rustls-pemfile = "2"
