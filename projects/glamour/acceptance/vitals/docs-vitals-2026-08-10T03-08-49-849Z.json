@@ -1,0 +1,45 @@
+{
+  "schema": "witchy.docs.vitals.v1",
+  "recordedAt": "2026-08-10T03:08:49.851Z",
+  "runs": 1,
+  "command": "node scripts/docs-vitals.mjs https://insanitybit.github.io/witchy/",
+  "records": [
+    {
+      "url": "https://insanitybit.github.io/witchy/",
+      "runType": "full",
+      "performanceScore": 1,
+      "runtime": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+      "metrics": {
+        "first-contentful-paint": {
+          "score": 1,
+          "numericValue": 872.792
+        },
+        "largest-contentful-paint": {
+          "score": 1,
+          "numericValue": 920.792
+        },
+        "total-blocking-time": {
+          "score": 1,
+          "numericValue": 1.5
+        },
+        "cumulative-layout-shift": {
+          "score": 1,
+          "numericValue": 0
+        },
+        "speed-index": {
+          "score": 1,
+          "numericValue": 872.792
+        },
+        "interactive": {
+          "score": 1,
+          "numericValue": 949.9420000000001
+        },
+        "max-potential-fid": {
+          "score": 1,
+          "numericValue": 53
+        }
+      },
+      "reportFile": "insanitybit_github_io-_witchy_-2026_08_10_03_08_40.report.json"
+    }
+  ]
+}
