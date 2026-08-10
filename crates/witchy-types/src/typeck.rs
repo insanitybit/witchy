@@ -791,6 +791,24 @@ fn reject_borrowed_nominal_containers(
     }
 }
 
+fn direct_borrowed_nominal_list_name<'a>(
+    t: &'a ast::Type,
+    lifetime_nominals: &HashSet<String>,
+) -> Option<&'a str> {
+    let ast::Type::Named(name, arguments) = t else { return None };
+    if name != "List" || arguments.len() != 1 {
+        return None;
+    }
+    let ast::Type::Named(element, element_arguments) = arguments.first()? else {
+        return None;
+    };
+    (lifetime_nominals.contains(element)
+        || element_arguments
+            .iter()
+            .any(|argument| lifetime_argument_name(argument).is_some()))
+    .then_some(element.as_str())
+}
+
 fn validate_callable_nominal_lifetimes(
     name: &str,
     parameters: &[ast::Param],
@@ -806,6 +824,12 @@ fn validate_callable_nominal_lifetimes(
     let context = format!("callable `{}`", name.rsplit('.').next().unwrap_or(name));
     for parameter in parameters {
         if let Some(ty) = &parameter.ty {
+            if let Some(element) = direct_borrowed_nominal_list_name(ty, lifetime_nominals) {
+                return terr(format!(
+                    "{context} stores a borrowed nominal relation inside `List` (element `{}`); direct borrowed lists are confined to one function until their cross-call descriptor/root-lowering stage ABI is implemented",
+                    element.rsplit('.').next().unwrap_or(element)
+                ));
+            }
             if parameter.convention == Convention::Own
                 && let Some(relation) =
                     borrowed_nominal_relation_name(ty, lifetime_nominals)
