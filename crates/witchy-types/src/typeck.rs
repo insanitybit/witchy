@@ -914,6 +914,14 @@ fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError>
                 for variant in &definition.variants {
                     for field in &variant.fields {
                         validate_nominal_lifetime_uses(field, &declared, &context, true)?;
+                        if let Some(element) =
+                            direct_borrowed_nominal_list_name(field, &lifetime_nominals)
+                        {
+                            return terr(format!(
+                                "{context} stores a borrowed nominal relation inside `List` (element `{}`); direct borrowed lists are confined to one function until their stored descriptor/root-lowering stage ABI is implemented",
+                                element.rsplit('.').next().unwrap_or(element)
+                            ));
+                        }
                         reject_borrowed_nominal_containers(
                             field,
                             &lifetime_nominals,
