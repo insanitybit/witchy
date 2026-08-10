@@ -104,7 +104,13 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
     // `run_wasm_module` grants exactly the same authority (Dir grant ordinal 0 =
     // cwd, ordinal 1 = bin so `Exec` finds the compiler) and surfaces `main`'s
     // `Int` exit code.
-    match commands::wasm_exec::run_wasm_module(&wasm, vec![cwd, bin], Vec::new(), net_allow, Vec::new(), pm_args, None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled) {
+    // (RFC-0095 Cut 4) The witchy-home provider: a third `Dir` granted for
+    // $WITCHY_HOME (ordinal 2), so `install` can write trusted-exes into its `bin/`
+    // without reaching outside the project `Dir`. Resolve it (WITCHY_HOME, else
+    // ~/.witchy) and create it so the grant is valid; other commands ignore it.
+    let home = witchy_home_dir();
+    let _ = std::fs::create_dir_all(&home);
+    match commands::wasm_exec::run_wasm_module(&wasm, vec![cwd, bin, home], Vec::new(), net_allow, Vec::new(), pm_args, None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled) {
         Ok((lines, code)) => {
             for l in &lines {
                 println!("{l}");
@@ -116,6 +122,20 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
             std::process::exit(1);
         }
     }
+}
+
+/// (RFC-0095 Cut 4) The $WITCHY_HOME directory the `witchy-home` provider grants:
+/// `WITCHY_HOME` if set (so tests and packagers can redirect it), else `~/.witchy`,
+/// else `.witchy` under the cwd as a last resort. The caller creates it before
+/// granting so the `Dir` capability is valid.
+fn witchy_home_dir() -> std::path::PathBuf {
+    if let Some(h) = std::env::var_os("WITCHY_HOME") {
+        return std::path::PathBuf::from(h);
+    }
+    if let Some(h) = std::env::var_os("HOME") {
+        return std::path::PathBuf::from(h).join(".witchy");
+    }
+    std::path::PathBuf::from(".witchy")
 }
 
 /// The Net allow-list entry backing a `COVEN_URL` registry address. The scheme is

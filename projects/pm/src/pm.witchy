@@ -46,7 +46,7 @@ fn registry_post(net: Net[Connect, Tcp], origin: String, path: String, body: Str
 // tree the PM reads/writes; `bin` (handle 1) is where the compiler lives, used
 // only by `run`, which drives it through the `Exec` capability. See
 // rfcs/0004-self-hosted-cli.md.
-fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec, net: Net, env: Env, clock: Clock) -> Int:
+fn main(console: Console, args: List(String), root: Dir, bin: Dir, home: Dir, runner: Exec, net: Net, env: Env, clock: Clock) -> Int:
     let cmd = arg(args, 0)
     if cmd == "info":
         cmd_info(console, root, arg(args, 1))
@@ -66,7 +66,7 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec,
     else if cmd == "add":
         cmd_add(console, net, root, env, clock, args)
     else if cmd == "install":
-        cmd_install(console, net, root, env, clock, args)
+        cmd_install(console, net, home, env, clock, args)
     else if cmd == "publish":
         cmd_publish(console, net, root, env, args)
     else if cmd == "promote":
@@ -2646,7 +2646,7 @@ fn cmd_install(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
         let (name, req) = split_spec(spec)
         let target = flag_value(args, "--target")
         if target.is_empty():
-            console.print("install: --target <triple> is required (host-target auto-detection is not yet available)")
+            console.print("install: --target <triple> is required (host-target auto-detection is a follow-up)")
             1
         else:
             match parse_origin(coven_addr(env, arg(pos, 2))):
@@ -2734,7 +2734,7 @@ fn install_fetch_and_write(console: Console, net: Net, root: Dir, origin: String
                 1
             Ok(bdoc) -> install_verify_bytes(console, root, command, sha, jget(bdoc, "bytes"))
 
-fn install_verify_bytes(console: Console, root: Dir, command: String, sha: String, b64: String) -> Int:
+fn install_verify_bytes(console: Console, home: Dir, command: String, sha: String, b64: String) -> Int:
     match encoding.base64_decode_bytes_string(b64):
         Err(e) ->
             console.print("BLOCK: artifact bytes are not valid base64: ${e}")
@@ -2744,10 +2744,11 @@ fn install_verify_bytes(console: Console, root: Dir, command: String, sha: Strin
                 console.print("BLOCK: fetched artifact bytes do not match the signed sha256 (tampered mirror?)")
                 1
             else:
-                let path = join_path(".witchy/bin", command)
-                fs.ensure_dir(root, ".witchy/bin")
-                root.write_bytes(path, data)
-                console.print("installed ${command} -> ${path}")
+                // `home` is the granted $WITCHY_HOME provider; installs land in its
+                // `bin/` so an added-to-PATH launcher finds them.
+                fs.ensure_dir(home, "bin")
+                home.write_bytes(join_path("bin", command), data)
+                console.print("installed ${command} -> \$WITCHY_HOME/bin/${command}")
                 0
 
 // The value following a `--flag` in args, or "" if the flag is absent or last.

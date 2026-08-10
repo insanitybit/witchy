@@ -1133,8 +1133,8 @@ fn install_fetches_verifies_and_writes_a_trusted_exe() {
     let out = fe.pm(&consumer, &["install", "acme/wrg", "--target", "aarch64-apple-darwin"], None);
     assert!(out.status.success(), "install failed: {}\n{}", stdout(&out), stderr(&out));
     assert!(stdout(&out).contains("installed wrg"), "install receipt: {}", stdout(&out));
-    let installed = consumer.join(".witchy/bin/wrg");
-    assert!(installed.exists(), "the trusted-exe must be installed into .witchy/bin");
+    let installed = fe.home().join("bin").join("wrg");
+    assert!(installed.exists(), "the trusted-exe must be installed into $WITCHY_HOME/bin");
     assert_eq!(std::fs::read(&installed).unwrap(), b"hello", "installed bytes match the published, signed artifact");
 
     // A source-only package has nothing to install → refused.

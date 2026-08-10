@@ -451,11 +451,20 @@ impl<'a> FrontEnd<'a> {
             // so they exercise their own subject. The cooldown has its own test that
             // overrides this (fresh_releases_cool_down_before_resolving).
             .env("WITCHY_COOLDOWN_SECS", "0")
+            // (RFC-0095 Cut 4) A per-FrontEnd $WITCHY_HOME so `install` writes into a
+            // hermetic dir this test owns, never the developer's real ~/.witchy.
+            .env("WITCHY_HOME", self.home())
             .args(&full);
         if let Some(t) = id_token {
             cmd.env("COVEN_ID_TOKEN", t);
         }
         cmd.output().expect("spawn witchy pm")
+    }
+
+    /// The hermetic `$WITCHY_HOME` this FrontEnd points `install` at (RFC-0095 Cut 4);
+    /// installed trusted-exes land in `home()/bin/`.
+    pub(crate) fn home(&self) -> std::path::PathBuf {
+        self.base.join("witchy-home")
     }
 
     /// Publish + promote a library to the registry in one shot (the common case):
