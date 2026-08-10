@@ -26,11 +26,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows
 
+  # Sharded across a 4-way GitHub Actions matrix (nextest `--partition
+  # count:M/4`) rather than one serial job. A single dev machine can't get
+  # past its core-count ceiling, but CI can spin up N independent runners —
+  # this is the structural lever that actually cuts CI wall-clock for the
+  # unit+integration suite. Each shard runs its own `cargo build` (simplest,
+  # lowest-risk design: no cross-job artifact upload/download to get wrong
+  # blind, at the cost of ~4x the build compute-minutes vs. building once and
+  # sharing artifacts — accepted trade: CI minutes are cheap, wall-clock during
+  # review is not). Clippy runs once, on shard 1 only, since it's a single
+  # non-partitionable lint pass over the whole workspace and doesn't benefit
+  # from sharding. Partitioning only affects which tests each shard EXECUTES;
+  # the per-test-group `max-threads` bounds in .config/nextest.toml (e.g.
+  # registry-serial, gate-cold-heavy) still apply independently within each
+  # shard's own nextest process, so the flakiness-motivated serialization for
+  # e2e/heavy-compile clusters is unaffected by how the discovered set was
+  # split.
   test:
-    name: Build, lint, test
+    name: Build, lint, test (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -46,10 +66,16 @@ jobs:
       # Deny only the genuine-bug tiers (see scripts/check.sh CLIPPY_GATE_LINTS):
       # correctness + suspicious + dropped-must-use. Style/complexity/perf lints
       # still print but do not fail CI — a needless borrow is not a merge blocker.
+      # Runs once (shard 1) — it's a single workspace-wide lint pass, not a
+      # test-partitionable step, so duplicating it across shards would be pure
+      # waste.
       - name: Clippy (bug lints)
+        if: matrix.shard == 1
         run: cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
-      - name: Unit + integration tests
-        run: cargo nextest run --workspace --profile ci --all-targets
+      - name: Unit + integration tests (partition ${{ matrix.shard }}/4)
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: cargo nextest run --workspace --profile ci --all-targets --partition "count:${SHARD}/4"
 
   heap-check:
     name: Checked heap (RFC-0023)
