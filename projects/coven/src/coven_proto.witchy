@@ -16,6 +16,9 @@ type PublishRequest:
     files: List((String, String))
     uploaded_by: String
     id_token: Option(String)
+    // (RFC-0095) The artifact manifest JSON for an application release (a
+    // target -> trusted-exe map, coven_artifact). `None` for a source-only rune.
+    artifact: Option(String)
 
 // A promote: the decoded rune name + version, promoter identity, and identity token.
 // `second_factor` is only a local/anonymous-mode confirmation marker; a trusted
@@ -39,7 +42,7 @@ pub fn publish_of(doc: Json) -> Result(PublishRequest, String):
     let manifest = require_str(doc, "manifest_toml")?
     let files = source_files(doc)?
     let uploaded_by = coven_json.str(doc, "uploaded_by")
-    Ok(PublishRequest(manifest, files, uploaded_by, json.get_string(doc, "id_token")))
+    Ok(PublishRequest(manifest, files, uploaded_by, json.get_string(doc, "id_token"), json.get_string(doc, "artifact")))
 
 pub fn promote_of(doc: Json) -> Result(PromoteRequest, String):
     let name = require_str(doc, "name")?
@@ -83,8 +86,9 @@ fn file_pair(it: Json) -> Result((String, String), String):
 // `id_token` is the trusted-publishing identity token: `Some(t)` on a trusted registry,
 // `None` for an anonymous one. It is emitted only when present, matching the lenient
 // parsers (`publish_of`/`promote_of`/`yank_of`) which read it as an optional field.
-pub fn publish_body(manifest: String, files: List((String, String)), uploaded_by: String, id_token: Option(String)) -> String:
-    json.encode(JsonObject(with_id_token([("manifest_toml", JsonString(manifest)), ("source", JsonObject([("files", JsonArray(file_jsons(files)))])), ("uploaded_by", JsonString(uploaded_by))], id_token)))
+pub fn publish_body(manifest: String, files: List((String, String)), uploaded_by: String, id_token: Option(String), artifact: Option(String)) -> String:
+    let base = [("manifest_toml", JsonString(manifest)), ("source", JsonObject([("files", JsonArray(file_jsons(files)))])), ("uploaded_by", JsonString(uploaded_by))]
+    json.encode(JsonObject(with_optional(with_id_token(base, id_token), "artifact", artifact)))
 
 pub fn promote_body(name: String, version: String, factor: String, promoter: String, id_token: Option(String)) -> String:
     json.encode(JsonObject(with_id_token([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString(factor)), ("promoted_by", JsonString(promoter))], id_token)))
@@ -94,10 +98,15 @@ pub fn yank_body(name: String, version: String, id_token: Option(String)) -> Str
 
 // Append the `id_token` field only when a token is present, so an anonymous body omits it.
 fn with_id_token(fields: List((String, Json)), id_token: Option(String)) -> List((String, Json)):
-    match id_token:
-        Some(t) ->
+    with_optional(fields, "id_token", id_token)
+
+// Append a string field only when present, so an absent optional is omitted from
+// the wire body (matching the lenient `json.get_string` parsers).
+fn with_optional(fields: List((String, Json)), key: String, value: Option(String)) -> List((String, Json)):
+    match value:
+        Some(v) ->
             var out = fields
-            out.push(("id_token", JsonString(t)))
+            out.push((key, JsonString(v)))
             out
         None -> fields
 

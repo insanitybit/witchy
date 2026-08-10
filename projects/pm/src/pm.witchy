@@ -1232,13 +1232,26 @@ fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(Strin
                 else:
                     publish_checked(console, net, root, dir, manifest, origin, identity, env)
 
+// (RFC-0095) The artifact manifest a publisher ships beside witchy.toml, or None
+// for a source-only rune. It is uploaded verbatim; coven validates and freezes it.
+fn read_optional_artifact(root: Dir, dir: String) -> Option(String):
+    let path = join_path(dir, "artifact.json")
+    if root.exists(path):
+        Some(root.read(path))
+    else:
+        None
+
 // The wire envelope POST once the manifest has been validated. Split out of
 // `cmd_publish` so its `else` arm stays shallow (the WASM codegen recurses per
 // nesting level).
 fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manifest: String, origin: String, identity: String, env: Env) -> Int:
     let files = publish_files(root, dir, manifest)
     let token = id_token_from_env(env)
-    let resp = registry_post(net, origin, "/coven/publish", coven_proto.publish_body(manifest, files, identity, token))
+    // (RFC-0095) An application release ships an `artifact.json` manifest beside
+    // its witchy.toml (a target -> trusted-exe map). Attach it if present; a
+    // source-only rune omits it and the record stays coven-v1.
+    let artifact = read_optional_artifact(root, dir)
+    let resp = registry_post(net, origin, "/coven/publish", coven_proto.publish_body(manifest, files, identity, token, artifact))
     let status = http.status(resp)
     let response_body = http.body(resp)
     let error = resp_field(response_body, "error")

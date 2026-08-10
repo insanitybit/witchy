@@ -116,7 +116,7 @@ fn test_record_parse_errors_are_typed():
 // The client builders must emit `id_token` when a trusted-publishing token is present
 // (the parsers already read it), and omit it for an anonymous registry.
 fn test_publish_body_round_trips_id_token():
-    let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", Some("tok123"))
+    let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", Some("tok123"), None)
     match json.decode(body):
         Ok(doc) ->
             match coven_proto.publish_of(doc):
@@ -127,8 +127,26 @@ fn test_publish_body_round_trips_id_token():
         Err(e) -> testing.assert(false, "decode failed: ${json.decode_error_message(e)}")
 
 fn test_publish_body_omits_id_token_when_anonymous():
-    let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", None)
+    let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", None, None)
     testing.assert(!body.contains("id_token"), "an anonymous publish body omits id_token")
+
+// (RFC-0095) The publish body carries the optional artifact manifest: emitted
+// when present (an application release), omitted for a source-only rune.
+fn test_publish_body_round_trips_artifact():
+    let m = "{\"version\":1,\"artifacts\":{}}"
+    let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", None, Some(m))
+    match json.decode(body):
+        Ok(doc) ->
+            match coven_proto.publish_of(doc):
+                Ok(req) -> match req.artifact:
+                    Some(a) -> testing.assert_eq(a, m)
+                    None -> testing.assert(false, "artifact should round-trip as Some")
+                Err(e) -> testing.assert(false, "publish_of failed: ${e}")
+        Err(e) -> testing.assert(false, "decode failed: ${json.decode_error_message(e)}")
+
+fn test_publish_body_omits_artifact_when_source_only():
+    let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", None, None)
+    testing.assert(!body.contains("artifact"), "a source-only publish body omits the artifact field")
 
 fn test_yank_body_carries_id_token():
     let body = coven_proto.yank_body("acme/x", "1.0.0", Some("ytok"))

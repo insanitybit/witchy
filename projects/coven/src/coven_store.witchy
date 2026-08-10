@@ -79,6 +79,31 @@ pub fn content_hash(files: List((String, String))) -> String:
     let texts = files.map(fn(file: (String, String)): file.1)
     crypto.rune_hash(paths, texts)
 
+// --- artifact IO (RFC-0095) --------------------------------------------------
+// An application release commits to a target-indexed artifact manifest
+// (coven_artifact). It lives beside the record and is written once, by the same
+// single-writer publish that already claimed the version coordinate, so the
+// version's immutability covers it — a re-publish is refused before this runs.
+fn artifact_manifest_path(name: String, version: String) -> String:
+    "${name}/${version}/artifact.json"
+
+// Whether a version carries an artifact manifest (i.e. is an application release
+// rather than source-only).
+pub fn artifact_manifest_exists(store: Dir, name: String, version: String) -> Bool:
+    store.exists(artifact_manifest_path(name, version))
+
+// Store a version's artifact manifest JSON (atomic replace, like write_record).
+pub fn store_artifact_manifest(store: Dir, name: String, version: String, manifest: String):
+    fs.ensure_dir(store, "${name}/${version}")
+    store.replace(artifact_manifest_path(name, version), manifest)
+
+// A version's artifact manifest JSON, or None for a source-only release.
+pub fn read_artifact_manifest(store: Dir, name: String, version: String) -> Option(String):
+    if store.exists(artifact_manifest_path(name, version)):
+        Some(store.read(artifact_manifest_path(name, version)))
+    else:
+        None
+
 // --- walking -----------------------------------------------------------------
 // Every published version of a rune.
 pub fn versions_of(store: Dir, name: String) -> List(String):

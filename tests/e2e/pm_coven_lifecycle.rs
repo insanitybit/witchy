@@ -992,3 +992,57 @@ fn coven_registry_serves_a_human_landing_page_at_root() {
         assert!(body.contains(expectation), "landing page is missing `{expectation}`: {body}");
     }
 }
+
+/// RFC-0095: an application release ships an `artifact.json` manifest beside its
+/// `witchy.toml`. `pm publish` attaches it; coven validates + freezes it, the
+/// signed record commits to its digest (coven-v2), and `/coven/artifact` serves
+/// the manifest verbatim for the installer. A source-only sibling stays coven-v1
+/// and its `/coven/artifact` is a 404.
+#[test]
+fn publish_with_artifact_manifest_produces_coven_v2_and_serves_it() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "artifact");
+    let app = fe.lib("acme/wrg", "0.1.0", "pub fn go() -> String:\n    \"hi\"\n");
+    // A minimal, valid one-target artifact manifest (coven_artifact shape).
+    let manifest = "{\"version\":1,\"artifacts\":{\"aarch64-apple-darwin\":{\"kind\":\"trusted-exe\",\"command\":\"wrg\",\"sha256\":\"416e71b2cf6ce3fb316381f0eec039aa5b586e931f925f4d1f0be1d2d5009b5d\",\"size\":128,\"binding_plan_sha256\":\"\",\"authority\":[]}}}";
+    std::fs::write(app.join("artifact.json"), manifest).unwrap();
+
+    let ci = server.ci_token("acme-wrg-repo", "release.yml");
+    let out = fe.pm(&app, &["publish", "."], Some(&ci));
+    assert!(
+        out.status.success() && stdout(&out).contains("publish: 200"),
+        "publish with artifact: {}\n{}",
+        stdout(&out),
+        stderr(&out)
+    );
+
+    let addr = format!("127.0.0.1:{}", server.port);
+    // The signed record commits to the manifest digest (coven-v2).
+    let (rstatus, record) = http_get(&addr, "/coven/record?name=acme~wrg&version=0.1.0");
+    assert_eq!(rstatus, 200, "record fetch: {record}");
+    assert!(
+        record.contains("artifact_digest") && record.contains("sha256:"),
+        "record must carry a sha256 artifact_digest (coven-v2): {record}"
+    );
+    // The manifest is served back verbatim for the installer to read.
+    let (astatus, served) = http_get(&addr, "/coven/artifact?name=acme~wrg&version=0.1.0");
+    assert_eq!(astatus, 200, "artifact manifest fetch: {served}");
+    assert!(
+        served.contains("aarch64-apple-darwin") && served.contains("wrg"),
+        "served manifest is the one published: {served}"
+    );
+
+    // A source-only sibling has no artifact manifest → 404, and stays coven-v1.
+    // Same namespace + repo (so the binding matches), but a fresh single-use token.
+    let plain = fe.lib("acme/plain", "0.1.0", "pub fn go() -> String:\n    \"hi\"\n");
+    let ci_plain = server.ci_token("acme-wrg-repo", "release.yml");
+    let out2 = fe.pm(&plain, &["publish", "."], Some(&ci_plain));
+    assert!(out2.status.success() && stdout(&out2).contains("publish: 200"), "publish plain: {}", stdout(&out2));
+    let (n404, _) = http_get(&addr, "/coven/artifact?name=acme~plain&version=0.1.0");
+    assert_eq!(n404, 404, "a source-only release has no artifact manifest");
+    let (_, plain_rec) = http_get(&addr, "/coven/record?name=acme~plain&version=0.1.0");
+    assert!(
+        !plain_rec.contains("\"artifact_digest\":\"sha256:"),
+        "a source-only record must not commit to an artifact digest: {plain_rec}"
+    );
+}

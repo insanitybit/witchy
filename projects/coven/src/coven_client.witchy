@@ -30,7 +30,7 @@ fn main(console: Console, net: Net, clock: Clock, args: List(String)):
 
     // publish acme/money@1.0.0 (a pure library — no capabilities). Anonymous registry:
     // no identity token, so the builders pass `None`.
-    let pub1 = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml(), money_files(), "ci-bot", None))
+    let pub1 = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml(), money_files(), "ci-bot", None, None))
     let pub1_doc = json.decode(http.body(pub1)) ?? json.object_sorted([])
     console.print("publish:${http.status(pub1)} state=${json.get_string(pub1_doc, "state") ?? "?"}")
 
@@ -45,14 +45,14 @@ fn main(console: Console, net: Net, clock: Clock, args: List(String)):
 
     // publish v2, then attempt to promote it as the SAME identity that uploaded
     // it — separation of duties must refuse (403).
-    let pub2 = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml_v2(), money_files_v2(), "ci-bot", None))
+    let pub2 = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml_v2(), money_files_v2(), "ci-bot", None, None))
     console.print("publish2:${http.status(pub2)}")
     let sod = registry_post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "2.0.0", "webauthn", "ci-bot", None))
     console.print("selfpromote:${http.status(sod)}")
 
     // an under-declared rune: the code demands Net but the manifest declares
     // nothing — the server recomputes the footprint and refuses (400).
-    let leak = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(leak_toml(), leak_files(), "attacker", None))
+    let leak = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(leak_toml(), leak_files(), "attacker", None, None))
     console.print("underdeclared:${http.status(leak)}")
 
     let src = registry_get(net, host, port, "/coven/source?name=acme~money&version=1.0.0")

@@ -26,6 +26,7 @@ import coven_footprint
 import coven_json
 import coven_store
 import coven_meta
+import coven_artifact
 import compiler
 // --- error flow --------------------------------------------------------------
 // A handler failure as an HTTP status + message. Handlers return
@@ -206,6 +207,18 @@ fn body(req: Request) -> Result(Json, CovenError):
         Ok(doc) -> Ok(doc)
         Err(e) -> Err(CovenError(400, "bad request body: ${e}"))
 
+// (RFC-0095) The signed artifact-manifest digest for a publish: `None` -> "" (a
+// source-only release, which signs coven-v1). A present-but-malformed manifest is
+// a hard 400 — coven authenticates and freezes manifests, never storing an
+// unparseable one. An empty (zero-target) manifest also yields "" -> coven-v1.
+fn artifact_digest_of(artifact: Option(String)) -> Result(String, CovenError):
+    match artifact:
+        None -> Ok("")
+        Some(m) ->
+            match coven_artifact.parse(m):
+                Err(e) -> Err(CovenError(400, "invalid artifact manifest: " + coven_artifact.artifact_error_message(e)))
+                Ok(mani) -> Ok(coven_artifact.manifest_digest(mani))
+
 type Coven:
     store: Dir
     key: Secret
@@ -227,6 +240,7 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
         .get("/coven/catalog", c.route_catalog())
         .get("/coven/versions", c.route_versions())
         .get("/coven/record", c.route_record())
+        .get("/coven/artifact", c.route_artifact())
         .get("/coven/source", c.route_source())
         .get("/coven/doc", c.route_doc())
         .get("/coven/compartments", c.route_compartments())
@@ -349,6 +363,19 @@ impl Coven:
                 None -> Err(CovenError(404, "${name}@${version} not found in registry"))
         )
 
+    // (RFC-0095) The artifact manifest a version committed to at publish, as
+    // stored JSON. The installer reads this to select its host target and learn
+    // each artifact's command + sha256. 404 for a source-only release.
+    fn route_artifact(self) -> fn(Request) -> Response:
+        guard(fn(req: Request) -> Result(Response, CovenError):
+            let name = coven_validate.unwire(server.query_or(req, "name", ""))
+            let version = server.query_or(req, "version", "")
+            self.validate_ref(name, version)?
+            match coven_store.read_artifact_manifest(self.store, name, version):
+                Some(m) -> Ok(server.json(200, m))
+                None -> Err(CovenError(404, "${name}@${version} has no artifact manifest (source-only release)"))
+        )
+
     fn route_source(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):
             let name = coven_validate.unwire(server.query_or(req, "name", ""))
@@ -394,9 +421,9 @@ impl Coven:
         require(coven_validate.valid_version(version), 400, "invalid version `${version}`")?
         require(!coven_store.record_exists(self.store, name, version), 409, "${name}@${version} already published — versions are immutable, bump the version")?
         let (uploaded_by, claims) = self.authorized_publisher(req, self.clock.now() / 1000, name)?
-        self.publish_checked(req.manifest, name, version, uploaded_by, claims, req.files)
+        self.publish_checked(req.manifest, name, version, uploaded_by, claims, req.files, req.artifact)
 
-    fn publish_checked(self, manifest: String, name: String, version: String, uploaded_by: String, claims: Option(Json), files: List((String, String))) -> Result(Response, CovenError):
+    fn publish_checked(self, manifest: String, name: String, version: String, uploaded_by: String, claims: Option(Json), files: List((String, String)), artifact: Option(String)) -> Result(Response, CovenError):
         // BUG-422: a footprint that cannot be computed (source does not compile / bad
         // report) is a hard 400, never a silently-empty footprint that trivially passes
         // the under-declaration gate.
@@ -410,6 +437,10 @@ impl Coven:
             None -> "uploader=" + uploaded_by + "|hash=" + hash
 
         require(coven_validate.single_line(uploaded_by) && coven_validate.single_line(provenance), 400, "record fields must not contain newlines")?
+        // (RFC-0095) Validate any attached artifact manifest BEFORE claiming the
+        // coordinate — a malformed manifest is a 400, never a half-published version.
+        // The digest ("" for a source-only release) is what the record signs (coven-v2).
+        let artifact_digest = artifact_digest_of(artifact)?
         // SEC-049/RFC-0118: claim the coordinate atomically BEFORE writing any source.
         // Two concurrent first-publishes of the same name@version both pass do_publish's
         // fast `!record_exists` pre-check; this exclusive create is the authoritative
@@ -420,7 +451,13 @@ impl Coven:
         // BUG-423: store the source only after EVERY validation has passed, so a rejected
         // publish never leaves poisoned source bytes on disk for this version.
         coven_store.store_source(self.store, name, version, files)
-        let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0, "")
+        // Store the validated artifact manifest beside the source (single-writer,
+        // under the same claimed coordinate). Absent for a source-only release.
+        match artifact:
+            Some(m) -> coven_store.store_artifact_manifest(self.store, name, version, m)
+            None -> Nil
+
+        let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0, artifact_digest)
         // Finalize the claimed placeholder with the real signed record (atomic replace).
         coven_store.write_record(self.store, name, version, rec)
         self.rebuild_metadata()
