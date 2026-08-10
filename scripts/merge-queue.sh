@@ -1453,9 +1453,16 @@ evict_candidate_index() { # evict_candidate_index <log> <base>; echoes "<index> 
         | { grep -E '^[[:space:]]*(TRY [0-9]+ )?(FAIL|TIMEOUT|ABORT|SIGABRT|SIGSEGV|LEAK) \[' || true; } \
         | sed -n '1p')"
     if [ -n "$fail_line" ]; then
-        # `FAIL [   1.234s] crate[::binary] test::path`
+        # `FAIL [   1.234s] (NNN/MMMM) crate[::binary] test::path` — nextest's
+        # progress counter sits between the timing bracket and the actual
+        # crate/binary field. Strip it too, or `target`/`crate`/`binary` end
+        # up parsing the counter itself (e.g. `(1065/2643)`) instead of the
+        # real crate — a real bug found 2026-08-10: it silently produced
+        # nonsense tokens on every invocation, so the culprit-eviction
+        # heuristic's name-matching signal rarely fired as designed.
         # shellcheck disable=SC2046 — word splitting is the parse here.
-        set -- $(printf '%s\n' "$fail_line" | sed -E 's/^[[:space:]]*(TRY [0-9]+ )?[A-Z]+ \[[^]]*\][[:space:]]*//')
+        set -- $(printf '%s\n' "$fail_line" \
+            | sed -E 's/^[[:space:]]*(TRY [0-9]+ )?[A-Z]+ \[[^]]*\][[:space:]]*(\([0-9]+\/[0-9]+\)[[:space:]]*)?//')
         target="${1:-}"; test_path="${2:-}"
         crate="${target%%::*}"
         binary="${target##*::}"
@@ -1487,9 +1494,10 @@ evict_candidate_index() { # evict_candidate_index <log> <base>; echoes "<index> 
         tokens="$tokens $seg"
     done
 
-    local best=0 best_index="" tie=0 mi f nf stem score
+    local best=0 best_index="" tie=0 mi f nf stem score subcrate_touched
     for mi in "${!batch_submitted_shas[@]}"; do
         score=0
+        subcrate_touched=0
         while IFS= read -r f; do
             [ -n "$f" ] || continue
             nf="$(evict_normalize "$f")"
@@ -1506,13 +1514,31 @@ evict_candidate_index() { # evict_candidate_index <log> <base>; echoes "<index> 
             done
             case "$crate" in
                 "" | witchy)
-                    [ -n "$crate" ] && case "$f" in src/* | tests/*) score=$((score + 1)) ;; esac
+                    if [ -n "$crate" ]; then
+                        case "$f" in
+                            src/* | tests/*) score=$((score + 1)) ;;
+                            # The failing test's crate is the root `witchy` package,
+                            # which links every workspace crate — a regression can
+                            # legitimately come from ANY crates/*/src/* file, not just
+                            # root src/tests/ (this is exactly how a `wasm_abi_catalog`
+                            # surface test missed an `crates/witchy-interp/src/*`
+                            # culprit in production, 2026-08-09). Recorded per-branch,
+                            # not accumulated per file (see below), so a branch with a
+                            # large diff can't outscore a small true culprit purely by
+                            # file count.
+                            crates/*/src/*) subcrate_touched=1 ;;
+                        esac
+                    fi
                     ;;
                 *)
                     case "$f" in "crates/$crate/"*) score=$((score + 2)) ;; esac
                     ;;
             esac
         done < <(git -C "$root" diff --name-only --no-renames "$ev_base...${batch_submitted_shas[$mi]}" 2>/dev/null || true)
+        # Flat, once-per-branch bonus (not per matching file): weak tie-breaking
+        # signal only, same magnitude as the existing src/tests fallback above.
+        # The per-file token/err_path matches remain the strong evidence.
+        [ "$subcrate_touched" -eq 1 ] && score=$((score + 1))
         if [ "$score" -gt "$best" ]; then
             best="$score"; best_index="$mi"; tie=0
         elif [ "$score" -eq "$best" ] && [ "$best" -gt 0 ]; then
