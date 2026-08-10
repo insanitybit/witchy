@@ -2,7 +2,7 @@ use wasmtime::{Caller, Error, Extern, ExternRef, Linker, Result, Rooted};
 use witchy_test_host::{FixtureRoots, HostHandle, HostRequest, HostResponse};
 use witchy_testkit::{FixtureErrorCode, FixtureFetchRequest, SourceLocation, U64Text};
 
-use super::super::{memory_of, read_wstr, read_wstr_list, slice, VmState};
+use super::super::{memory_of, read_wbytes, read_wstr, read_wstr_list, slice, VmState};
 
 pub(in crate::runtime) fn link_basic(
     linker: &mut Linker<VmState>,
@@ -50,11 +50,13 @@ pub(in crate::runtime) fn link_granted_filesystem(
     linker.func_wrap("witchy", "dir_subdir", host_dir_subdir)?;
     linker.func_wrap("witchy", "dir_only", host_dir_only)?;
     linker.func_wrap("witchy", "dir_read_len", host_dir_read_len)?;
+    linker.func_wrap("witchy", "dir_read_bytes_len", host_dir_read_bytes_len)?;
     linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
     linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
     linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
     linker.func_wrap("witchy", "dir_open", host_dir_open)?;
     linker.func_wrap("witchy", "dir_write", host_dir_write)?;
+    linker.func_wrap("witchy", "dir_write_bytes", host_dir_write_bytes)?;
     linker.func_wrap("witchy", "dir_append", host_dir_append)?;
     linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
     linker.func_wrap("witchy", "dir_create", host_dir_create)?;
@@ -460,6 +462,44 @@ fn host_dir_write(
         HostResponse::Count(_) => Ok(()),
         response => Err(Error::msg(format!(
             "fixture Dir.write returned unexpected response {response:?}"
+        ))),
+    }
+}
+
+/// RFC-0095 `dir_read_bytes_len(d, path) -> len`: fixture bridge for the raw byte
+/// read; stages the file's bytes, guest allocates a Bytes and calls fill_pending.
+fn host_dir_read_bytes_len(
+    mut caller: Caller<'_, VmState>,
+    dir: Option<Rooted<ExternRef>>,
+    path_pointer: i32,
+) -> Result<i32> {
+    let dir = fixture_handle(&caller, dir, "Dir")?;
+    let memory = memory_of(&mut caller)?;
+    let path = read_wstr(memory.data(&caller), path_pointer)?;
+    match invoke(&mut caller, HostRequest::DirReadBytes { dir, path })? {
+        HostResponse::Bytes(bytes) => stage_bytes(&mut caller, bytes, "Dir read_bytes"),
+        response => Err(Error::msg(format!(
+            "fixture Dir.read_bytes returned unexpected response {response:?}"
+        ))),
+    }
+}
+
+/// RFC-0095 `dir_write_bytes(d, path, data)`: fixture bridge for the raw byte write.
+fn host_dir_write_bytes(
+    mut caller: Caller<'_, VmState>,
+    dir: Option<Rooted<ExternRef>>,
+    path_pointer: i32,
+    data_pointer: i32,
+) -> Result<()> {
+    let dir = fixture_handle(&caller, dir, "Dir")?;
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    let path = read_wstr(data, path_pointer)?;
+    let bytes = read_wbytes(data, data_pointer)?;
+    match invoke(&mut caller, HostRequest::DirWriteBytes { dir, path, bytes })? {
+        HostResponse::Count(_) => Ok(()),
+        response => Err(Error::msg(format!(
+            "fixture Dir.write_bytes returned unexpected response {response:?}"
         ))),
     }
 }

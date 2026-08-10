@@ -117,6 +117,8 @@ discarded. The tests run identically on both backends:
 
 ```witchy
 import testing
+import bytes
+import crypto
 
 fn test_reads_a_config_file(dir: Dir[Read]):
     testing.assert_eq(dir.read("config.toml"), "mode = \"docs\"\n")
@@ -136,6 +138,14 @@ fn test_atomic_create_replace_rename(dir: Dir):
     dir.rename("doc", "marker")
     testing.assert_eq(dir.read("marker"), "second")
     testing.assert(!dir.exists("doc"), "doc gone after rename")
+
+fn test_binary_round_trip(dir: Dir):
+    // read_bytes/write_bytes carry RAW bytes — a binary artifact, not UTF-8 text.
+    let raw = bytes.from_list([0, 255, 16, 200, 3]) ?? bytes.from_string("")
+    dir.write_bytes("blob.bin", raw)
+    let back = dir.read_bytes("blob.bin")
+    testing.assert_int_eq(bytes.length(back), 5)
+    testing.assert_eq(crypto.sha256_bytes(back), crypto.sha256_bytes(raw))
 ```
 
 You supply the starting contents in a small JSON fixture plan and run it with

@@ -192,10 +192,15 @@ impl Checker {
             ));
         }
         let rights = self.dir_cap_rights(name, &args[0])?;
-        // The trailing arguments (path, and for `write` the content) are strings.
-        for arg in &args[1..] {
+        // The trailing arguments follow the op's declared shapes: paths are strings,
+        // and `write_bytes`'s content is `Bytes` (RFC-0095); everything else is String.
+        for (arg, shape) in args[1..].iter().zip(operation.arguments.iter()) {
+            let want = match shape {
+                cap_ops::ArgumentShape::Bytes => Ty::Bytes,
+                _ => Ty::String,
+            };
             let at = self.infer(arg)?;
-            self.unify(&Ty::String, &at).map_err(|e| TypeError {
+            self.unify(&want, &at).map_err(|e| TypeError {
                 message: format!("in call to `{name}`: {}", e.message),
             })?;
         }
@@ -267,6 +272,25 @@ impl Checker {
                 if !rights.write {
                     return terr(format!(
                         "`{name}` needs `Write` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Unit
+            }
+            // RFC-0095 byte-safe I/O: read/write RAW bytes (a binary artifact), not a
+            // UTF-8 string. `read_bytes` needs `Read` and yields `Bytes`; `write_bytes`
+            // needs `Write` and takes `Bytes`.
+            "read_bytes" => {
+                if !rights.read {
+                    return terr(format!(
+                        "`read_bytes` needs `Read` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Bytes
+            }
+            "write_bytes" => {
+                if !rights.write {
+                    return terr(format!(
+                        "`write_bytes` needs `Write` but the capability is `{rights}`"
                     ));
                 }
                 Ty::Unit

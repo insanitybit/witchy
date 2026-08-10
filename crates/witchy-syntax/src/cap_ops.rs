@@ -58,6 +58,7 @@ impl ReceiverKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgumentShape {
     String,
+    Bytes,
     Int,
     Bool,
     Secret,
@@ -73,6 +74,7 @@ pub enum ResultShape {
     Nil,
     Int,
     String,
+    Bytes,
     Bool,
     ListString,
     OptionString,
@@ -179,6 +181,8 @@ pub const OPS: &[CapOp] = &[
     op!("create_new", Dir, [String, String], Bool, "dir.create_new(path, data)"),
     op!("replace", Dir, [String, String], Nil, "dir.replace(path, data)"),
     op!("rename", Dir, [String, String], Nil, "dir.rename(from, to)"),
+    op!("read_bytes", Dir, [String], Bytes, "dir.read_bytes(path)"),
+    op!("write_bytes", Dir, [String, Bytes], Nil, "dir.write_bytes(path, data)"),
     op!("connect", Net, [String], Socket, "net.connect(addr)"),
     op!("try_connect", Net, [String], OptionSocket, "net.try_connect(addr)"),
     op!("listen", Net, [String], Listener, "net.listen(addr)"),

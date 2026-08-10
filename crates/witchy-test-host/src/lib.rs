@@ -90,10 +90,12 @@ pub enum HostRequest {
     DirOnly { dir: HostHandle, refine: String },
     DirSubdir { dir: HostHandle, name: String },
     DirRead { dir: HostHandle, path: String },
+    DirReadBytes { dir: HostHandle, path: String },
     DirExists { dir: HostHandle, path: String },
     DirIsDir { dir: HostHandle, path: String },
     DirList { dir: HostHandle },
     DirWrite { dir: HostHandle, path: String, bytes: Vec<u8> },
+    DirWriteBytes { dir: HostHandle, path: String, bytes: Vec<u8> },
     DirAppend { dir: HostHandle, path: String, bytes: Vec<u8> },
     DirMakeDir { dir: HostHandle, path: String },
     DirOpen { dir: HostHandle, path: String },
@@ -195,11 +197,11 @@ fn decode_host_request(value: serde_json::Value) -> Result<HostRequest, WireProt
         "env_get" => &["operation", "env", "name"],
         "dir_only" => &["operation", "dir", "refine"],
         "dir_subdir" => &["operation", "dir", "name"],
-        "dir_read" | "dir_exists" | "dir_is_dir" | "dir_open" | "dir_create" => {
+        "dir_read" | "dir_read_bytes" | "dir_exists" | "dir_is_dir" | "dir_open" | "dir_create" => {
             &["operation", "dir", "path"]
         }
         "dir_list" => &["operation", "dir"],
-        "dir_write" | "dir_append" => &["operation", "dir", "path", "bytes"],
+        "dir_write" | "dir_write_bytes" | "dir_append" => &["operation", "dir", "path", "bytes"],
         "dir_make_dir" => &["operation", "dir", "path"],
         "file_read" => &["operation", "file"],
         "file_write" => &["operation", "file", "bytes"],
@@ -429,6 +431,10 @@ impl FixtureHost {
                 let dir = self.fs_handle(dir, "dir_read", source.clone())?;
                 self.session.dir_read(&dir, &path, source).map(HostResponse::Bytes)
             }
+            HostRequest::DirReadBytes { dir, path } => {
+                let dir = self.fs_handle(dir, "dir_read_bytes", source.clone())?;
+                self.session.dir_read_bytes(&dir, &path, source).map(HostResponse::Bytes)
+            }
             HostRequest::DirExists { dir, path } => {
                 let dir = self.fs_handle(dir, "dir_exists", source.clone())?;
                 self.session.dir_exists(&dir, &path, source).map(HostResponse::Bool)
@@ -445,6 +451,12 @@ impl FixtureHost {
                 let dir = self.fs_handle(dir, "dir_write", source.clone())?;
                 self.session
                     .dir_write(&dir, &path, &bytes, source)
+                    .map(HostResponse::Count)
+            }
+            HostRequest::DirWriteBytes { dir, path, bytes } => {
+                let dir = self.fs_handle(dir, "dir_write_bytes", source.clone())?;
+                self.session
+                    .dir_write_bytes(&dir, &path, &bytes, source)
                     .map(HostResponse::Count)
             }
             HostRequest::DirAppend { dir, path, bytes } => {

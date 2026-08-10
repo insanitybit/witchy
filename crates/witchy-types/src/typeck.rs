@@ -4977,6 +4977,7 @@ impl Checker {
         parameters.push(receiver.clone());
         parameters.extend(operation.arguments.iter().map(|argument| match argument {
             A::String => Ty::String,
+            A::Bytes => Ty::Bytes,
             A::Int => Ty::Int,
             A::Bool => Ty::Bool,
             A::Secret => Ty::Secret(SecretRights::full()),
@@ -4990,6 +4991,7 @@ impl Checker {
             O::Nil => Ty::Unit,
             O::Int => Ty::Int,
             O::String => Ty::String,
+            O::Bytes => Ty::Bytes,
             O::Bool => Ty::Bool,
             O::ListString => Ty::List(Box::new(Ty::String)),
             O::OptionString => Ty::Named("Option".into(), vec![Ty::String]),

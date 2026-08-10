@@ -44,6 +44,18 @@ pub(super) fn read_file_value(file: &FileValue) -> Result<String, RuntimeError> 
     }
 }
 
+// RFC-0095: read a confined file's RAW bytes (no UTF-8 validation).
+pub(super) fn read_file_value_bytes(file: &FileValue) -> Result<Vec<u8>, RuntimeError> {
+    match file {
+        FileValue::Fs(file) => match file.read_bytes() {
+            Ok(bytes) => Ok(bytes),
+            Err(e) => err(format!("read failed for `{}`: {e}", file.display_path().display())),
+        },
+        #[cfg(feature = "test-fixtures")]
+        FileValue::Fixture(_) => err("internal error: fixture File bypassed fixture dispatch"),
+    }
+}
+
 pub(super) fn write_file_value(file: &FileValue, contents: &str) -> Result<(), RuntimeError> {
     match file {
         FileValue::Fs(file) => {
@@ -56,6 +68,18 @@ pub(super) fn write_file_value(file: &FileValue, contents: &str) -> Result<(), R
         FileValue::Fixture(_) => {
             err("internal error: fixture File bypassed fixture dispatch")
         }
+    }
+}
+
+// RFC-0095: write RAW bytes to a confined file (no UTF-8 requirement).
+pub(super) fn write_file_value_bytes(file: &FileValue, contents: &[u8]) -> Result<(), RuntimeError> {
+    match file {
+        FileValue::Fs(file) => match file.write_all(contents) {
+            Ok(()) => Ok(()),
+            Err(e) => err(format!("write failed for `{}`: {e}", file.display_path().display())),
+        },
+        #[cfg(feature = "test-fixtures")]
+        FileValue::Fixture(_) => err("internal error: fixture File bypassed fixture dispatch"),
     }
 }
 

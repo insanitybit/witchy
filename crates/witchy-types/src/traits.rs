@@ -1775,6 +1775,7 @@ fn cap_op_result_type(e: &Expr, type_of: &dyn Fn(&Expr) -> Option<Type>) -> Opti
         cap_ops::ResultShape::Nil => Some(unit_type()),
         cap_ops::ResultShape::Int => Some(named_type("Int")),
         cap_ops::ResultShape::String => Some(named_type("String")),
+        cap_ops::ResultShape::Bytes => Some(named_type("Bytes")),
         cap_ops::ResultShape::Bool => Some(named_type("Bool")),
         cap_ops::ResultShape::ListString => {
             Some(Type::Named("List".to_string(), vec![named_type("String")]))

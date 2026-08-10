@@ -32,6 +32,37 @@ pub(in crate::wir_helpers) fn dir_read_helper() -> WirFunc {
     }
 }
 
+/// (RFC-0095) `$dir_read_bytes(h, rel) -> Bytes` — identical two-phase protocol to
+/// `$dir_read`, but reads RAW bytes (host `dir_read_bytes_len` skips UTF-8) and the
+/// value is typed `Bytes`. `Bytes` shares `Str`'s `[len][payload]` WIR representation.
+pub(in crate::wir_helpers) fn dir_read_bytes_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "dir_read_bytes".into(),
+        params: vec![
+            WirLocal { name: "h".into(), ty: WirTy::Extern },
+            WirLocal { name: "rel".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "len".into(), value: E::CallHost { import: "dir_read_bytes_len".into(), args: vec![getl("h"), getl("rel")] } },
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$file_read(f) -> i32` — the contents of file capability `f` as a String
 /// (RFC-0012/RFC-0005 Stage 2). A `File` is a leaf (no path), so this takes only
 /// the unforgeable externref. Two-phase host

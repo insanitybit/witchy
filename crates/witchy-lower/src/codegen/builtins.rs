@@ -993,6 +993,18 @@ impl Codegen<'_> {
                 let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
                 if self.collect_wir { call("dir_rename", a) } else { nil0(host("dir_rename_host", a)) }
             }
+            // RFC-0095 byte-safe I/O. `read_bytes` returns Bytes (a `[len][payload]`
+            // buffer wrapped as Bytes rather than String — identical representation);
+            // `write_bytes` is a void effect taking a Bytes arg.
+            ("read_bytes", 2) => {
+                self.used_dir_ops.insert("read_bytes");
+                call("dir_read_bytes", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("write_bytes", 3) => {
+                self.used_dir_ops.insert("write_bytes");
+                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
+                if self.collect_wir { call("dir_write_bytes", a) } else { nil0(host("dir_write_bytes_host", a)) }
+            }
             ("write_out", 3) => {
                 self.used_build_ops.insert("write_out");
                 // BuildOut is checked at source level and granted by import

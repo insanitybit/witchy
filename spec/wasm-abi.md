@@ -191,6 +191,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `env_len` | `(externref, i32) -> i32` | capability authority | Env | omitted |
 | `env_fill` | `(externref, i32, i32)` | capability authority | Env | omitted |
 | `dir_read_len` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_read_bytes_len` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_list_size` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
 | `args_size` | `() -> i32` | launch input | none | provided |
 | `write_pending_list` | `(i32)` | pure infrastructure | none | provided |
@@ -224,6 +225,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_exists` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_is_dir` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_write` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_write_bytes` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_append` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_make_dir` | `(externref, i32)` | capability authority | Dir.Write | omitted |
 | `dir_open` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |

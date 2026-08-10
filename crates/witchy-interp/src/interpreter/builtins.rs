@@ -2405,6 +2405,57 @@ impl Interpreter {
                 }
                 _ => err("append expects a Dir, a relative path, and contents"),
             },
+            // RFC-0095: read a file's RAW bytes (no UTF-8 validation) — a binary
+            // artifact — yielding `Bytes`.
+            "read_bytes" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(rel)] => {
+                    match self.invoke_fixture(HostRequest::DirReadBytes {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                    })? {
+                        HostResponse::Bytes(bytes) => Ok(Some(Value::Bytes(bytes))),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
+                [Value::Dir(base, pol), Value::Str(rel)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
+                    Ok(Some(Value::Bytes(read_file_value_bytes(&dir_file_value(base, rel, false)?)?)))
+                }
+                _ => err("read_bytes expects a Dir and a relative path"),
+            },
+            // RFC-0095: write RAW bytes to a file (no UTF-8 requirement).
+            "write_bytes" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [
+                    Value::Dir(DirValue::Fixture(handle), _),
+                    Value::Str(rel),
+                    Value::Bytes(data),
+                ] => {
+                    match self.invoke_fixture(HostRequest::DirWriteBytes {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                        bytes: data.clone(),
+                    })? {
+                        HostResponse::Count(_) => Ok(Some(Value::Unit)),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
+                [Value::Dir(base, pol), Value::Str(rel), Value::Bytes(data)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
+                    write_file_value_bytes(&dir_file_value(base, rel, true)?, data)?;
+                    Ok(Some(Value::Unit))
+                }
+                _ => err("write_bytes expects a Dir, a relative path, and Bytes"),
+            },
             // RFC-0118: atomically create `path` with `contents` iff it does not
             // already exist (one `O_CREAT|O_EXCL` step). Returns `true` when this
             // call created the file, `false` when it was already present — the

@@ -232,6 +232,18 @@ impl FixtureSession {
         )
     }
 
+    /// RFC-0095: byte-read. The fixture stores files as raw bytes, so a byte-read
+    /// is identical to a text read here — the UTF-8 distinction only matters on the
+    /// real filesystem.
+    pub fn dir_read_bytes(
+        &mut self,
+        handle: &FixtureHandle,
+        relative: &str,
+        source: Option<SourceLocation>,
+    ) -> FilesystemProviderResult<Vec<u8>> {
+        self.dir_read(handle, relative, source)
+    }
+
     pub fn dir_exists(
         &mut self,
         handle: &FixtureHandle,
@@ -320,6 +332,18 @@ impl FixtureSession {
     }
 
     pub fn dir_write(
+        &mut self,
+        handle: &FixtureHandle,
+        relative: &str,
+        bytes: &[u8],
+        source: Option<SourceLocation>,
+    ) -> FilesystemProviderResult<usize> {
+        self.write_from_dir(handle, relative, bytes, false, "dir_write", source)
+    }
+
+    /// RFC-0095: byte-write. Identical to `dir_write` at the fixture level (which is
+    /// byte-native); the UTF-8 distinction only matters on the real filesystem.
+    pub fn dir_write_bytes(
         &mut self,
         handle: &FixtureHandle,
         relative: &str,

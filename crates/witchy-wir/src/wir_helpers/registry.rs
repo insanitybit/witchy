@@ -536,6 +536,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "dir_write_bytes" => Some(WirHelperSpec {
+            func: host_void_helper_typed("dir_write_bytes", "dir_write_bytes", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
+            helper_deps: &[],
+            import_deps: &["dir_write_bytes"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "dir_write" => Some(WirHelperSpec {
             func: host_void_helper_typed("dir_write", "dir_write", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
             helper_deps: &[],
@@ -903,6 +910,14 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: dir_read_helper(),
             helper_deps: &["rc_alloc"],
             import_deps: &["dir_read_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        // RFC-0095 byte-safe read: same two-phase protocol as dir_read, raw bytes.
+        "dir_read_bytes" => Some(WirHelperSpec {
+            func: dir_read_bytes_helper(),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["dir_read_bytes_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),

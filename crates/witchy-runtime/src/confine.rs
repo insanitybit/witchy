@@ -435,6 +435,23 @@ impl ConfinedFile {
         }
     }
 
+    /// Read the confined file's RAW bytes without UTF-8 validation — for binary
+    /// artifacts (RFC-0095). Same confinement as `read_to_string`.
+    pub fn read_bytes(&self) -> std::io::Result<Vec<u8>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::io::Read;
+            let mut file = self.open_read_handle()?;
+            let mut contents = Vec::new();
+            file.read_to_end(&mut contents)?;
+            Ok(contents)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(unsupported())
+        }
+    }
+
     pub fn write_all(&self, contents: &[u8]) -> std::io::Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         {

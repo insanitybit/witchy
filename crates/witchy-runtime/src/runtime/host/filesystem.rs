@@ -1,7 +1,7 @@
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 
 use super::super::{
-    confine, memory_of, read_wstr, read_wstr_list, DirAuthority, DirBacking,
+    confine, memory_of, read_wbytes, read_wstr, read_wstr_list, DirAuthority, DirBacking,
     ExecAuthority, FileAuthority, FileBacking, FsRights, VmState,
 };
 
@@ -17,6 +17,7 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
     linker.func_wrap("witchy", "dir_subdir", host_dir_subdir)?;
     linker.func_wrap("witchy", "dir_only", host_dir_only)?;
     linker.func_wrap("witchy", "dir_read_len", host_dir_read_len)?;
+    linker.func_wrap("witchy", "dir_read_bytes_len", host_dir_read_bytes_len)?;
     linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
     linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
     linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
@@ -34,6 +35,7 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
     linker.func_wrap("witchy", "dir_create_new", host_dir_create_new)?;
     linker.func_wrap("witchy", "dir_replace", host_dir_replace)?;
     linker.func_wrap("witchy", "dir_rename", host_dir_rename)?;
+    linker.func_wrap("witchy", "dir_write_bytes", host_dir_write_bytes)?;
     Ok(())
 }
 
@@ -364,6 +366,57 @@ fn host_dir_read_len(
     let len = contents.len() as i32;
     caller.data_mut().pending = Some(contents.into_bytes());
     Ok(len)
+}
+
+/// (RFC-0095) `dir_read_bytes_len(h, rel) -> byte length`: like `dir_read_len` but
+/// reads the confined file's RAW bytes (no UTF-8 validation) — for a binary
+/// artifact. Stages the bytes; the guest allocates a `Bytes` and calls `fill_pending`.
+fn host_dir_read_bytes_len(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    let bytes = read_bytes_backing(&dir_file_backing(&dir, &rel, false)?)?;
+    let len = bytes.len() as i32;
+    caller.data_mut().pending = Some(bytes);
+    Ok(len)
+}
+
+/// (RFC-0095) `dir_write_bytes(h, rel, data)`: write a confined file from RAW bytes
+/// (read via `read_wbytes`, no UTF-8 requirement) — for a binary artifact. Mirrors
+/// `dir_write`'s confinement + write authority.
+fn host_dir_write_bytes(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+    data_ptr: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let rel = read_wstr(data, rel_ptr)?;
+    let bytes = read_wbytes(data, data_ptr)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    match dir_file_backing(&dir, &rel, true)? {
+        FileBacking::Fs(file) => file.write_all(&bytes).map_err(|e| {
+            Error::msg(format!("write failed for `{}`: {e}", file.display_path().display()))
+        }),
+    }
+}
+
+/// Read a confined file's raw bytes (RFC-0095), no UTF-8 validation.
+fn read_bytes_backing(file: &FileBacking) -> Result<Vec<u8>> {
+    match file {
+        FileBacking::Fs(file) => file.read_bytes().map_err(|e| {
+            Error::msg(format!("read failed for `{}`: {e}", file.display_path().display()))
+        }),
+    }
 }
 
 /// `exec_run(d, path, args, stdin) -> byte length`: spawn the executable named by
