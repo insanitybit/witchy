@@ -6,8 +6,11 @@
 //! instead of rediscovering ownership from syntax, rendered names, or individual
 //! container operations.
 
-use std::collections::HashMap;
 use std::fmt;
+
+// foldhash (not SipHash): all keys are compiler-internal names/ids, never
+// attacker-controlled — see witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _};
 
 use witchy_cap_model::CapabilityKind;
 use witchy_syntax::ast::{

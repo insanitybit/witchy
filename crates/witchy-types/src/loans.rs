@@ -27,7 +27,9 @@
 //! statement-identity loan events for lowering, so ownership and rooting consume
 //! this exact checker rather than approximating it.
 
-use std::collections::HashMap;
+// foldhash (not SipHash): all keys are compiler-internal names/ids, never
+// attacker-controlled — see witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _};
 
 use witchy_syntax::ast::{
     Block, Convention, Expr, Function, Item, Module, Param, Pattern, Stmt, Type, TypeQual, UnOp,
