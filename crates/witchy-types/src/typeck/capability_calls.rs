@@ -257,6 +257,15 @@ impl Checker {
                 }
                 Ty::Unit
             }
+            // RFC-0095: `chmod +x` a file — mutating its mode needs `Write`.
+            "set_executable" => {
+                if !rights.write {
+                    return terr(format!(
+                        "`set_executable` needs `Write` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Unit
+            }
             // RFC-0118 atomic primitives — all `Write`. `create_new` reports whether
             // this call won the exclusive create (`true`) or the path already existed
             // (`false`); `replace`/`rename` are atomic whole-file swaps returning Nil.

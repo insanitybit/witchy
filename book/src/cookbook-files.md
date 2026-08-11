@@ -158,6 +158,13 @@ fn test_streamed_binary(dir: Dir):
     dir.append_bytes("stream.bin", tail)
     let whole = bytes.from_list([1, 2, 3, 4, 5]) ?? bytes.from_string("")
     testing.assert_eq(crypto.sha256_bytes(dir.read_bytes("stream.bin")), crypto.sha256_bytes(whole))
+
+fn test_set_executable(dir: Dir):
+    // set_executable adds the +x bit to a file you wrote — how an installer makes a
+    // downloaded binary runnable. It needs Write and leaves the contents untouched.
+    dir.write_bytes("tool", bytes.from_string("#!/bin/sh\necho hi\n"))
+    dir.set_executable("tool")
+    testing.assert_eq(dir.read("tool"), "#!/bin/sh\necho hi\n")
 ```
 
 You supply the starting contents in a small JSON fixture plan and run it with

@@ -497,6 +497,28 @@ impl ConfinedFile {
         }
     }
 
+    /// Add the execute bits (`+x`, i.e. `chmod` the mode up to include `0o111`) to
+    /// this confined file, leaving the read/write bits untouched. Symlinks are never
+    /// followed. Backs `dir.set_executable` (RFC-0095): a freshly installed
+    /// trusted-exe is written non-executable, and the installer flips it runnable.
+    pub fn set_executable(&self) -> std::io::Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+            use cap_std::fs::PermissionsExt as _;
+            let mut options = cap_std::fs::OpenOptions::new();
+            options.read(true).follow(FollowSymlinks::No);
+            let file = self.parent.inner.open_with(&self.name, &options)?;
+            let mut permissions = file.metadata()?.permissions();
+            permissions.set_mode(permissions.mode() | 0o111);
+            file.set_permissions(permissions)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(unsupported())
+        }
+    }
+
     /// Atomically create this file with `contents` iff absent (`O_CREAT|O_EXCL`,
     /// symlinks never followed). `Ok(true)` = created here; `Ok(false)` = it was
     /// already present. Backs `ConfinedDir::create_new` (RFC-0118).

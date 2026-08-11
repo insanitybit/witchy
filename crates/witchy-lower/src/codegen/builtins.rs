@@ -1011,6 +1011,12 @@ impl Codegen<'_> {
                 let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
                 if self.collect_wir { call("dir_append_bytes", a) } else { nil0(host("dir_append_bytes_host", a)) }
             }
+            // RFC-0095: chmod +x a file — a void effect taking just a path.
+            ("set_executable", 2) => {
+                self.used_dir_ops.insert("set_executable");
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("dir_set_executable", a) } else { nil0(host("dir_set_executable_host", a)) }
+            }
             ("write_out", 3) => {
                 self.used_build_ops.insert("write_out");
                 // BuildOut is checked at source level and granted by import

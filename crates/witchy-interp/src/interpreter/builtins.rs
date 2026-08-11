@@ -2504,6 +2504,33 @@ impl Interpreter {
                 }
                 _ => err("write_bytes expects a Dir, a relative path, and Bytes"),
             },
+            // RFC-0095: add the execute bits to a file (`chmod +x`). The fixture FS
+            // does not model Unix modes, so under fixtures it is a no-op success —
+            // the effect is only observable on the real filesystem (the installer).
+            "set_executable" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(_), _), Value::Str(_)] => Ok(Some(Value::Unit)),
+                [Value::Dir(base, pol), Value::Str(rel)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
+                    match dir_file_value(base, rel, false)? {
+                        FileValue::Fs(file) =>
+                            match file.set_executable() {
+                                Ok(()) => Ok(Some(Value::Unit)),
+                                Err(e) => err(format!(
+                                    "set_executable failed for `{}`: {e}",
+                                    file.display_path().display()
+                                )),
+                            }
+                        #[cfg(feature = "test-fixtures")]
+                        FileValue::Fixture(_) => err(
+                            "internal error: fixture File bypassed fixture dispatch",
+                        ),
+                    }
+                }
+                _ => err("set_executable expects a Dir and a relative path"),
+            },
             // RFC-0118: atomically create `path` with `contents` iff it does not
             // already exist (one `O_CREAT|O_EXCL` step). Returns `true` when this
             // call created the file, `false` when it was already present — the

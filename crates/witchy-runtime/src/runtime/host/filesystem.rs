@@ -37,6 +37,7 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
     linker.func_wrap("witchy", "dir_rename", host_dir_rename)?;
     linker.func_wrap("witchy", "dir_write_bytes", host_dir_write_bytes)?;
     linker.func_wrap("witchy", "dir_append_bytes", host_dir_append_bytes)?;
+    linker.func_wrap("witchy", "dir_set_executable", host_dir_set_executable)?;
     Ok(())
 }
 
@@ -578,6 +579,27 @@ fn host_dir_append_bytes(
     match dir_file_backing(&dir, &rel, true)? {
         FileBacking::Fs(file) => file.append_all(&bytes).map_err(|e| {
             Error::msg(format!("append failed for `{}`: {e}", file.display_path().display()))
+        }),
+    }
+}
+
+/// (RFC-0095) `dir_set_executable(h, rel)`: add the execute bits to a confined file
+/// (`chmod +x`), leaving its contents untouched — a Write op (it mutates file
+/// metadata). The installer calls it after streaming a trusted-exe so the written
+/// file is runnable.
+fn host_dir_set_executable(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    match dir_file_backing(&dir, &rel, false)? {
+        FileBacking::Fs(file) => file.set_executable().map_err(|e| {
+            Error::msg(format!("set_executable failed for `{}`: {e}", file.display_path().display()))
         }),
     }
 }

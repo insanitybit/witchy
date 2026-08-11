@@ -36,6 +36,15 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
             pm_args.push(a);
         }
     }
+    // (RFC-0095) Host-target auto-detection: `witchy install <pkg>` with no explicit
+    // `--target` defaults to THIS build's host triple (from cargo's TARGET), so the
+    // common case needs no flag. An explicit `--target` anywhere still wins.
+    if pm_args.first().map(String::as_str) == Some("install")
+        && !pm_args.iter().any(|a| a == "--target")
+    {
+        pm_args.push("--target".to_string());
+        pm_args.push(env!("WITCHY_HOST_TARGET").to_string());
+    }
     // (BUG-406) Forward the user's `--net` grants to the front-end as trailing args
     // so `pm run/build` can propagate them to the INNER `sandbox` run of the compiled
     // app — otherwise a program that needs `Net` at runtime is compiled but then run

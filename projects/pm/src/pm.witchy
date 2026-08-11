@@ -2661,13 +2661,15 @@ fn cmd_install(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
     let pos = positionals(drop_flag_value(args, "--target"))
     let spec = arg(pos, 1)
     if spec.is_empty():
-        console.print("usage: pm install <pkg>[@<ver>] [host:port] --target <triple>")
+        console.print("usage: pm install <pkg>[@<ver>] [host:port] [--target <triple>]")
         1
     else:
         let (name, req) = split_spec(spec)
+        // The toolchain injects `--target <host-triple>` when the user omits it, so a
+        // bare `install` targets the host. An explicit `--target` still overrides.
         let target = flag_value(args, "--target")
         if target.is_empty():
-            console.print("install: --target <triple> is required (host-target auto-detection is a follow-up)")
+            console.print("install: could not determine a target triple; pass --target <triple>")
             1
         else:
             match parse_origin(coven_addr(env, arg(pos, 2))):
@@ -2781,6 +2783,9 @@ fn install_fetch_and_write(console: Console, net: Net, home: Dir, origin: String
         console.print("BLOCK: fetched artifact bytes do not match the signed sha256 (tampered mirror?)")
         1
     else:
+        // The verified trusted-exe is written non-executable; flip it runnable so the
+        // installed command can be launched directly from $WITCHY_HOME/bin.
+        home.set_executable(binpath)
         console.print("installed ${command} -> \$WITCHY_HOME/bin/${command}")
         0
 

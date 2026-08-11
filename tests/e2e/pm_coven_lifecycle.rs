@@ -1243,7 +1243,9 @@ fn install_and_run_a_trusted_application_end_to_end() {
         h.update(&bytes);
         h.finalize().iter().map(|b| format!("{b:02x}")).collect()
     };
-    let target = "host-native";
+    // Label the artifact with THIS build's host triple, so a bare `install` (no
+    // --target) auto-detects the same triple — exercising host-target auto-detection.
+    let target = env!("WITCHY_HOST_TARGET");
     let manifest = format!(
         "{{\"version\":1,\"artifacts\":{{\"{target}\":{{\"kind\":\"trusted-exe\",\"command\":\"minigrep\",\"sha256\":\"{sha}\",\"size\":{},\"binding_plan_sha256\":\"\",\"authority\":[]}}}}}}",
         bytes.len()
@@ -1272,9 +1274,10 @@ fn install_and_run_a_trusted_application_end_to_end() {
     let out = fe.pm(&app, &["promote", "acme/minigrep", "0.1.0"], Some(&alice));
     assert!(out.status.success() && stdout(&out).contains("promote: 200"), "promote: {}", stdout(&out));
 
-    // 6. Install into a hermetic consumer home: chunked fetch → sha256 verify → write.
+    // 6. Install into a hermetic consumer home with NO --target flag: the toolchain
+    //    auto-detects the host triple. (chunked fetch → sha256 verify → write → +x)
     let consumer = fe.new_app();
-    let out = fe.pm(&consumer, &["install", "acme/minigrep", "--target", target], None);
+    let out = fe.pm(&consumer, &["install", "acme/minigrep"], None);
     assert!(
         out.status.success() && stdout(&out).contains("installed minigrep"),
         "install: {}\n{}",
@@ -1289,11 +1292,13 @@ fn install_and_run_a_trusted_application_end_to_end() {
         "installed bytes are byte-identical to the published, signed artifact"
     );
 
-    // install writes the verified bytes; make it executable to launch (the +x
-    // Dir cap-op is deferred follow-up work — recorded in the RFC's roadmap).
-    let mut perms = std::fs::metadata(&installed).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&installed, perms).unwrap();
+    // install itself flips the +x bit (dir.set_executable), so the artifact is
+    // runnable as written — no test-side chmod. Assert the execute bit is set.
+    assert_ne!(
+        std::fs::metadata(&installed).unwrap().permissions().mode() & 0o111,
+        0,
+        "pm install must set the execute bit on the installed trusted-exe"
+    );
 
     // 7. RUN the installed trusted-exe: empty PATH, a fresh cwd, no grant flags — it
     //    is self-contained and its Dir[Read] follows launch cwd (RFC-0092).

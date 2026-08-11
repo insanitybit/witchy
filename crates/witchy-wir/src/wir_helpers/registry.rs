@@ -564,6 +564,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "dir_set_executable" => Some(WirHelperSpec {
+            func: host_void_helper_typed("dir_set_executable", "dir_set_executable", &[WirTy::Extern, WirTy::Str]),
+            helper_deps: &[],
+            import_deps: &["dir_set_executable"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "dir_make_dir" => Some(WirHelperSpec {
             func: host_void_helper_typed("dir_make_dir", "dir_make_dir", &[WirTy::Extern, WirTy::Str]),
             helper_deps: &[],
