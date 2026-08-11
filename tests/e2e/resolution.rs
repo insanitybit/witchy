@@ -439,7 +439,7 @@ fn pm_help_flag_prints_usage_and_exits_zero() {
         let out = Command::new(BIN).args(["pm", flag]).output().expect("spawn witchy pm");
         assert!(out.status.success(), "`pm {flag}` should exit 0: {}", stderr(&out));
         let s = format!("{}{}", stdout(&out), stderr(&out));
-        assert!(s.contains("usage: pm <command>"), "`pm {flag}` should print usage: {s}");
+        assert!(s.contains("usage: grimoire <command>"), "`pm {flag}` should print usage: {s}");
         assert!(!s.contains("unknown command"), "`pm {flag}` must not print an error: {s}");
     }
 }

@@ -129,7 +129,7 @@ fn dispatch_more(console: Console, root: Dir, args: List(String), cmd: String) -
 // --- info: a one-screen summary of a rune -----------------------------------
 fn cmd_info(console: Console, root: Dir, dir: String):
     if dir.is_empty():
-        console.print("usage: pm info <dir>")
+        console.print("usage: grimoire info <dir>")
     else:
         let manifest = root.read(join_path(dir, "witchy.toml"))
         console.print("name:     ${field(manifest, "rune.name")}")
@@ -156,7 +156,7 @@ fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, clock:
     if root.exists(join_path(dir, "witchy.toml")):
         run_project(console, runner, root, bin, dir, app_args)
     else if target.is_empty():
-        console.print("usage: pm run <file|dir>")
+        console.print("usage: grimoire run <file|dir>")
         1
     else:
         run_compiler(console, runner, bin, "run", flatten_argv([target], app_args))
@@ -214,7 +214,7 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
     let options = build_options(args)
     let dir = options.dir
     if !options.error.is_empty():
-        console.print("usage: pm build [--target trusted-exe] [--out <path>] [--release|--debug] [<dir>]")
+        console.print("usage: grimoire build [--target trusted-exe] [--out <path>] [--release|--debug] [<dir>]")
         console.print(options.error)
         1
     else if options.target != "wasm" && options.target != "trusted-exe":
@@ -749,7 +749,7 @@ fn run_compiler(console: Console, runner: Exec, bin: Dir, label: String, argv: L
 // cargo→rustc split.
 fn cmd_drive(console: Console, runner: Exec, bin: Dir, verb: String, argv: List(String)) -> Int:
     if list.at(argv, list.length(argv) - 1).is_empty():
-        console.print("usage: pm ${verb} <file>")
+        console.print("usage: grimoire ${verb} <file>")
         1
     else:
         let result = exec.run_args(runner, bin, "witchy", argv)
@@ -1039,7 +1039,7 @@ fn module_stem(file: String) -> String:
 // --- audit: the footprint a single file demands -----------------------------
 fn cmd_audit(console: Console, root: Dir, file: String):
     if file.is_empty():
-        console.print("usage: pm audit <file>")
+        console.print("usage: grimoire audit <file>")
     else:
         let report = compiler.footprint(root.read(file))
         match footprint_values(report, "total"):
@@ -1053,7 +1053,7 @@ fn cmd_audit(console: Console, root: Dir, file: String):
 // demanded full `Net` (the under-declaration a supply-chain attacker relies on).
 fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
     if dir.is_empty():
-        console.print("usage: pm check <dir>")
+        console.print("usage: grimoire check <dir>")
         1
     else:
         let manifest = root.read(join_path(dir, "witchy.toml"))
@@ -1097,7 +1097,7 @@ fn admits_any(declared: String, demanded: List(String)) -> Bool:
 // --- guard: block an upgrade that widens authority --------------------------
 fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
     if old.is_empty() || new.is_empty():
-        console.print("usage: pm guard <old-file> <new-file>")
+        console.print("usage: grimoire guard <old-file> <new-file>")
         1
     else:
         match footprint_diff_values(compiler.diff(root.read(old), root.read(new))):
@@ -1115,7 +1115,7 @@ fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
 // --- deps: list a rune's dependencies ---------------------------------------
 fn cmd_deps(console: Console, root: Dir, dir: String):
     if dir.is_empty():
-        console.print("usage: pm deps <dir>")
+        console.print("usage: grimoire deps <dir>")
     else:
         let manifest = root.read(join_path(dir, "witchy.toml"))
         let deps = toml.table(manifest, "dependencies")
@@ -1131,7 +1131,7 @@ fn cmd_deps(console: Console, root: Dir, dir: String):
 // diamond/cycle terminates via the visited set.
 fn cmd_tree(console: Console, root: Dir, dir: String):
     if dir.is_empty():
-        console.print("usage: pm tree <dir>")
+        console.print("usage: grimoire tree <dir>")
     else:
         let manifest = root.read(join_path(dir, "witchy.toml"))
         console.print(field(manifest, "rune.name"))
@@ -1154,7 +1154,7 @@ fn tree_children(console: Console, root: Dir, dir: String, indent: String, seen:
 // for offline, auditable builds. Copies each dep's src/*.witchy and manifest.
 fn cmd_vendor(console: Console, root: Dir, dir: String) -> Int:
     if dir.is_empty():
-        console.print("usage: pm vendor <dir>")
+        console.print("usage: grimoire vendor <dir>")
         1
     else:
         let vendor = join_path(dir, "vendor")
@@ -1210,7 +1210,7 @@ fn vendor_one(root: Dir, dep_dir: String, vendor: String, name: String) -> Int:
 fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
     let dir = arg(args, 1)
     if dir.is_empty():
-        console.print("usage: pm publish <dir> [host:port] [identity]")
+        console.print("usage: grimoire publish <dir> [host:port] [identity]")
         1
     else:
         let addr = coven_addr(env, arg(args, 2))
@@ -1354,7 +1354,7 @@ fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
     let version = arg(args, 2)
     if name.is_empty() || version.is_empty():
-        console.print("usage: pm promote <name> <version> [host:port] [identity]")
+        console.print("usage: grimoire promote <name> <version> [host:port] [identity]")
         1
     else:
         let addr = coven_addr(env, arg(args, 3))
@@ -1381,7 +1381,7 @@ fn cmd_outdated(console: Console, net: Net, root: Dir, args: List(String)) -> In
     let dir = arg(args, 1)
     let addr = arg(args, 2)
     if dir.is_empty() || addr.is_empty():
-        console.print("usage: pm outdated <dir> <coven-host:port>")
+        console.print("usage: grimoire outdated <dir> <coven-host:port>")
         1
     else:
         match parse_origin(addr):
@@ -1432,7 +1432,7 @@ fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
     let version = arg(args, 2)
     if name.is_empty() || version.is_empty():
-        console.print("usage: pm yank <name> <version> [host:port]")
+        console.print("usage: grimoire yank <name> <version> [host:port]")
         1
     else:
         let addr = coven_addr(env, arg(args, 3))
@@ -1457,7 +1457,7 @@ fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
 fn cmd_list(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
     if name.is_empty():
-        console.print("usage: pm list <name> [host:port]")
+        console.print("usage: grimoire list <name> [host:port]")
         1
     else:
         let addr = coven_addr(env, arg(args, 2))
@@ -1515,7 +1515,7 @@ fn resp_field(text: String, key: String) -> String:
 // name`), not only a direct match.
 fn cmd_why(console: Console, root: Dir, dir: String, name: String) -> Int:
     if dir.is_empty() || name.is_empty():
-        console.print("usage: pm why <dir> <name>")
+        console.print("usage: grimoire why <dir> <name>")
         1
     else:
         let manifest = root.read(join_path(dir, "witchy.toml"))
@@ -1552,7 +1552,7 @@ fn why_path(root: Dir, dir: String, target: String, seen: List(String)) -> Optio
 // why-cap <dir> <Cap> — which dependencies introduce a capability into the tree.
 fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
     if dir.is_empty() || cap.is_empty():
-        console.print("usage: pm why-cap <dir> <Cap>")
+        console.print("usage: grimoire why-cap <dir> <Cap>")
         1
     else:
         match gate_contributors(root, dir, cap):
@@ -1603,7 +1603,7 @@ fn version_source(let inline: String) -> String:
 // bytes on disk: `lock` writes the hashes, `verify` recomputes and compares.
 fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
     if dir.is_empty():
-        console.print("usage: pm lock <dir>")
+        console.print("usage: grimoire lock <dir>")
         1
     else:
         let manifest = root.read(join_path(dir, "witchy.toml"))
@@ -1667,7 +1667,7 @@ fn lock_problems(root: Dir, dir: String, manifest: String) -> List(String):
     for name, inline in toml.table(manifest, "dependencies"):
         match toml.inline_get(inline, "path"):
             None ->
-                out.push("BLOCK: `${name}` is a registry dependency — `pm lock` locks path dependencies only; run `pm add ${name}` to resolve and pin it")
+                out.push("BLOCK: `${name}` is a registry dependency — `grimoire lock` locks path dependencies only; run `grimoire add ${name}` to resolve and pin it")
             Some(rel) ->
                 let dep_toml = join_path(normalize_path(join_path(dir, rel)), "witchy.toml")
                 if !root.exists(dep_toml):
@@ -2121,10 +2121,10 @@ fn staged_pin_labels(root: Dir, lock_rel: String) -> List(String):
 fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
     let dir = arg(args, 1)
     if dir.is_empty():
-        console.print("usage: pm gate <dir> [allowed-cap..]")
+        console.print("usage: grimoire gate <dir> [allowed-cap..]")
         1
     else if !root.exists(join_path(dir, "witchy.lock")):
-        console.print("no witchy.lock — run `pm lock ${dir}` first")
+        console.print("no witchy.lock — run `grimoire lock ${dir}` first")
         1
     else:
         let lock = root.read(join_path(dir, "witchy.lock"))
@@ -2227,7 +2227,7 @@ fn add_unique(xs: List(String), x: String) -> List(String):
 // idiom-exempt: concatenation in this section is canonical lockfile serialization.
 fn generate_lock(root: Dir, dir: String) -> Result(String, FootprintError):
     let manifest = root.read(join_path(dir, "witchy.toml"))
-    var out = "# witchy.lock — generated by `pm lock`. Pins every dependency by content\n# hash. Regenerate with `pm lock`; verify with `pm verify`. Do not edit by hand.\n"
+    var out = "# witchy.lock — generated by `grimoire lock`. Pins every dependency by content\n# hash. Regenerate with `grimoire lock`; verify with `grimoire verify`. Do not edit by hand.\n"
     for name, inline in toml.table(manifest, "dependencies"):
         if toml.inline_get(inline, "path").is_none():
             out = out + registry_placeholder(name)
@@ -2237,7 +2237,7 @@ fn generate_lock(root: Dir, dir: String) -> Result(String, FootprintError):
     Ok(out)
 
 fn registry_placeholder(name: String) -> String:
-    "\n[[rune]]\nname = \"" + name + "\"\nsource = \"coven\"\n# unresolved: registry deps need coven (pm publish/fetch)\n"
+    "\n[[rune]]\nname = \"" + name + "\"\nsource = \"coven\"\n# unresolved: registry deps need coven (grimoire publish/fetch)\n"
 
 // A `[[rune]]` block for a resolved path-closure member. `dep_dir` is the resolved
 // directory (relative to the project); the `source` records it so the entry is
@@ -2661,7 +2661,7 @@ fn cmd_install(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
     let pos = positionals(drop_flag_value(args, "--target"))
     let spec = arg(pos, 1)
     if spec.is_empty():
-        console.print("usage: pm install <pkg>[@<ver>] [host:port] [--target <triple>]")
+        console.print("usage: grimoire install <pkg>[@<ver>] [host:port] [--target <triple>]")
         1
     else:
         let (name, req) = split_spec(spec)
@@ -2853,7 +2853,7 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
     let pos = positionals(args)
     let spec = arg(pos, 1)
     if spec.is_empty():
-        console.print("usage: pm add <pkg>[@<ver>] [host:port] [--allow-cap <Cap>]... [--allow-fresh] [--allow-staged --yes]")
+        console.print("usage: grimoire add <pkg>[@<ver>] [host:port] [--allow-cap <Cap>]... [--allow-fresh] [--allow-staged --yes]")
         1
     else:
         let (name, req) = split_spec(spec)
@@ -3214,7 +3214,7 @@ fn fetch_registry_rootpub(net: Net, origin: String) -> Result(String, RegistryRo
 // (a top-level key, emitted BEFORE any `[[rune]]` array-table per TOML rules).
 // idiom-exempt: concatenation in this section is canonical lockfile serialization.
 fn vendor_lock(root: Dir, snapshot_line: String) -> Result(String, VendoredRecordError):
-    var out = "# witchy.lock — generated by `pm add`. Pins every vendored dependency\n# by content hash. Regenerate with `pm add`. Do not edit by hand.\n" + snapshot_line
+    var out = "# witchy.lock — generated by `grimoire add`. Pins every vendored dependency\n# by content hash. Regenerate with `grimoire add`. Do not edit by hand.\n" + snapshot_line
     if root.exists("vendor"):
         for entry in root.subtree("vendor").list():
             let rune_dir = join_path("vendor", entry)
@@ -3355,7 +3355,7 @@ fn add_rune(console: Console, net: Net, root: Dir, origin: String, name: String,
                     // vendored at a version that does NOT satisfy the current
                     // requester's requirement. Fail loud (pm does not unify or
                     // backtrack) rather than silently keeping the first version.
-                    console.print("BLOCK: version conflict for `${name}` — already vendored at ${existing.version}, but `${req}` is also required and ${existing.version} does not satisfy it; reconcile the conflicting requirements (pm does not auto-unify)")
+                    console.print("BLOCK: version conflict for `${name}` — already vendored at ${existing.version}, but `${req}` is also required and ${existing.version} does not satisfy it; reconcile the conflicting requirements (grimoire does not auto-unify)")
                     2
                 else:
                     0
@@ -3861,7 +3861,7 @@ fn recorded_hash(text: String) -> String:
 // be validly signed, and the on-disk source must still hash to the signed hash.
 fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
     if dir.is_empty() || rootpub.is_empty():
-        console.print("usage: pm verify-rune <vendored-rune-dir> <registry-root-pubkey-hex>")
+        console.print("usage: grimoire verify-rune <vendored-rune-dir> <registry-root-pubkey-hex>")
         1
     else if !root.exists(join_path(dir, "coven.json")):
         console.print("no coven.json in ${dir} — not a rune fetched with provenance")
@@ -3875,7 +3875,7 @@ fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) ->
 // vendored dependency graph; exits 2 if any rune fails.
 fn cmd_verify_vendor(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
     if dir.is_empty() || rootpub.is_empty():
-        console.print("usage: pm verify-vendor <vendor-dir> <registry-root-pubkey-hex>")
+        console.print("usage: grimoire verify-vendor <vendor-dir> <registry-root-pubkey-hex>")
         1
     else if !root.exists(dir):
         console.print("no such directory: ${dir}")
@@ -4114,7 +4114,7 @@ fn json_index_str(j: Json, i: Int) -> String:
 // --- new: scaffold a rune ----------------------------------------------------
 fn cmd_new(console: Console, root: Dir, name: String) -> Int:
     if name.is_empty():
-        console.print("usage: pm new <name>")
+        console.print("usage: grimoire new <name>")
         1
     else if !valid_scaffold_name(name):
         // BUG-200: reject a name that would be spliced unescaped into the generated
@@ -4323,8 +4323,8 @@ fn join_path(let a: String, b: String) -> String:
     a + "/" + b
 
 fn usage(console: Console):
-    console.print("pm — the witchy package manager")
-    console.print("usage: pm <command> [args]")
+    console.print("grimoire — the witchy package manager")
+    console.print("usage: grimoire <command> [args]")
     console.print("  info  <dir>         summarize a rune")
     console.print("  audit <file>        footprint a source file demands")
     console.print("  check <dir>         declared footprint must admit the code")
