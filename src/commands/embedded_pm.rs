@@ -1,10 +1,11 @@
-//! Embedded package-manager (pm) launcher: the bundled pm rune is compiled
-//! and run in-process for `witchy pm ...`, and its module sources are served to
-//! the frontend/doc/expand commands. Extracted from the composition root.
+//! Embedded package-manager (grimoire) launcher: the bundled grimoire rune is
+//! compiled and run in-process for `witchy grimoire ...` (and its `witchy pm`
+//! compat alias), and its module sources are served to the frontend/doc/expand
+//! commands. Extracted from the composition root.
 
 use crate::{ast, bundled_module, commands, parser, pipeline};
 
-/// Run the EMBEDDED witchy package-manager front-end (`projects/pm/src/pm.witchy`)
+/// Run the EMBEDDED witchy package-manager front-end (`projects/grimoire/src/grimoire.witchy`)
 /// — the cargo-equivalent CLI, itself written in witchy and bundled into the
 /// toolchain like std (rfcs/0004-self-hosted-cli.md). `raw` is the front-end's
 /// argv (everything after the `witchy` subcommand): `--net <host:port>` flags are
@@ -65,11 +66,11 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
     // The embedded front-end's wasm: whole-pipeline cached (parse+link+check+
     // codegen all skipped on a warm hit — the sources are include_str! constants,
     // so the binary fingerprint keys them exactly; see embedded_wasm_cached).
-    let wasm = commands::compile::embedded_wasm_cached("pm", || {
+    let wasm = commands::compile::embedded_wasm_cached("grimoire", || {
         let mut modules: Vec<(String, ast::Module)> = Vec::new();
         let mut loaded: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<(String, String)> = VecDeque::new();
-        queue.push_back(("pm".to_string(), include_str!("../../projects/pm/src/pm.witchy").to_string()));
+        queue.push_back(("grimoire".to_string(), include_str!("../../projects/grimoire/src/grimoire.witchy").to_string()));
         while let Some((name, source)) = queue.pop_front() {
             if !loaded.insert(name.clone()) {
                 continue;
@@ -85,7 +86,7 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
             }
             modules.push((name, module));
         }
-        pipeline::link_checked(modules, "pm").map_err(|e| e.to_string())
+        pipeline::link_checked(modules, "grimoire").map_err(|e| e.to_string())
     });
     let wasm = match wasm {
         Ok(bytes) => bytes,

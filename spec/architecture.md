@@ -80,7 +80,7 @@ are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 | `witchy-caps` | `capabilities`, `grants` | The footprint analyzer (`witchy caps`, `caps-diff`) - recomputed from source, never trusted metadata - and grant-document (`--grants` TOML) parsing + cross-check (`witchy grants-check`). |
 | `witchy` *(root package)* | `main`, `cli`, `source`, `lib` (the wasm-playground `cdylib`), `lsp`, `idp` | The composition package: browser entrypoints, diagnostics LSP, trusted-publishing IdP *test* simulator, and native CLI orchestration. `cli` owns help/version presentation and shared flag/secret decoding; `source` owns native project discovery, bundled lookup, dependency-aware file loading/linking, and source expansion. Dispatch and command execution remain concentrated in `main.rs` and are tracked in the architecture ledger rather than described here as already thin. |
 
-`std/` is the standard library, written in witchy; `projects/pm`, `projects/coven`
+`std/` is the standard library, written in witchy; `projects/grimoire`, `projects/coven`
 are the package manager and registry, self-hosted in witchy.
 
 ## The parity discipline

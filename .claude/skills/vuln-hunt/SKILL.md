@@ -193,7 +193,7 @@ callee chain) are how you enumerate the other contexts.
 4. **`crates/witchy-caps/src/capabilities.rs` + sealing/narrowing in typeck +
    `crates/witchy-runtime/src/confine.rs`** — capability bypass, sealing escape,
    footprint truth.
-5. **`projects/coven` + `projects/pm`** — signature verification, caps-diff /
+5. **`projects/coven` + `projects/grimoire`** — signature verification, caps-diff /
    footprint evasion, trusted-publishing.
 
 ## Output

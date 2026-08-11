@@ -138,12 +138,12 @@ fn main(console: Console):
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
     }
 
-    /// `projects/pm` is the package manager itself, written in witchy. `pm audit`
+    /// `projects/grimoire` is the package manager itself, written in witchy. `pm audit`
     /// prints the capability footprint a source file demands — the self-hosted
     /// `witchy caps`, dispatched from a real CLI (`args: List(String)`).
     fn linked_pm() -> crate::ast::Module {
         let sources = [
-            ("pm", "projects/pm/src/pm.witchy"),
+            ("pm", "projects/grimoire/src/grimoire.witchy"),
             ("coven_proto", "projects/coven/src/coven_proto.witchy"),
             ("coven_json", "projects/coven/src/coven_json.witchy"),
             ("coven_validate", "projects/coven/src/coven_validate.witchy"),
@@ -178,7 +178,7 @@ fn main(console: Console):
         // Env, and `add`'s staging-cooldown gate reads the wall clock (Clock) —
         // Clock, Console, Dir, Env, Exec, Net. `compiler.*` is a host introspection
         // intrinsic, not a runtime capability.
-        let src = std::fs::read_to_string("projects/pm/src/pm.witchy").unwrap();
+        let src = std::fs::read_to_string("projects/grimoire/src/grimoire.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Clock, Console, Dir, Env, Exec, Net");
     }
@@ -206,7 +206,7 @@ fn main(console: Console):
     /// undeclared `Dir[Read]` is caught and the gate exits 2.
     #[test]
     fn pm_check_blocks_an_under_declared_rune() {
-        let (out, code) = run_pm(".", vec!["check".into(), "projects/pm/tests/fixtures/leaky".into()]);
+        let (out, code) = run_pm(".", vec!["check".into(), "projects/grimoire/tests/fixtures/leaky".into()]);
         assert_eq!(
             out,
             vec!["BLOCK: code demands authority not admitted by [capabilities]: Dir[Read]"]
@@ -219,7 +219,7 @@ fn main(console: Console):
     /// itself, proving the self-hosted gate is honest.
     #[test]
     fn pm_passes_its_own_check() {
-        let (out, code) = run_pm(".", vec!["check".into(), "projects/pm".into()]);
+        let (out, code) = run_pm(".", vec!["check".into(), "projects/grimoire".into()]);
         assert_eq!(out, vec!["OK: declared footprint admits the code, nothing unused"]);
         assert_eq!(code, 0);
     }
@@ -272,11 +272,11 @@ fn main(console: Console):
     /// `check` gate enforces.
     #[test]
     fn pm_info_summarizes_a_rune() {
-        let (out, code) = run_pm(".", vec!["info".into(), "projects/pm".into()]);
+        let (out, code) = run_pm(".", vec!["info".into(), "projects/grimoire".into()]);
         assert_eq!(
             out,
             vec![
-                "name:     pm",
+                "name:     grimoire",
                 "version:  0.1.0",
                 "declared: Console, Dir, Net, Exec, Env, Clock",
                 "actual:   Clock, Console, Dir, Env, Exec, Net",
@@ -335,7 +335,7 @@ fn main(console: Console):
             parser::parse_module(probe).expect("parse probe"),
         )];
         for (name, path) in [
-            ("pm", "projects/pm/src/pm.witchy"),
+            ("pm", "projects/grimoire/src/grimoire.witchy"),
             ("coven_proto", "projects/coven/src/coven_proto.witchy"),
             ("coven_json", "projects/coven/src/coven_json.witchy"),
             ("coven_validate", "projects/coven/src/coven_validate.witchy"),

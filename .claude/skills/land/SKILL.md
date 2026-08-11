@@ -25,7 +25,7 @@ green *focused shard*, a submission, and a watched outcome.
 | Diff touches | Shard |
 |---|---|
 | Rust in `crates/` or `src/` | `./scripts/check.sh --fast` (always, for any code change) |
-| `projects/pm`, `projects/coven`, server/registry/publish code | also `./scripts/check.sh --e2e` |
+| `projects/grimoire`, `projects/coven`, server/registry/publish code | also `./scripts/check.sh --e2e` |
 | `examples/`, `book/`, `std/*.witchy` | also `./scripts/check.sh --examples` |
 | codegen / lowering / anything wasm-shaped | also `./scripts/check.sh --wasm` |
 | docs/markdown only (no code, no executed ```witchy blocks) | no shard needed |

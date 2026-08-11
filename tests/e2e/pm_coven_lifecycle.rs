@@ -641,7 +641,7 @@ fn witchy_coven_promote_delta_immutability_and_error_paths() {
 }
 
 /// The embedded witchy package-manager front-end, invoked as `witchy pm <cmd>`
-/// (RFC-0004 §5 bootstrap): the front-end `projects/pm/src/pm.witchy` is bundled
+/// (RFC-0004 §5 bootstrap): the front-end `projects/grimoire/src/grimoire.witchy` is bundled
 /// into the toolchain like std and run capability-confined. This is the first
 /// slice of the e2e migration off the Rust CLI — as the front-end ports more of
 /// `src/pm`'s behavior, this coverage grows until it can replace the Rust-CLI
@@ -662,7 +662,7 @@ fn witchy_pm_embedded_frontend() {
 
     // check: the pm rune's declared footprint admits its own code.
     let check = Command::new(BIN)
-        .args(["pm", "check", "projects/pm"])
+        .args(["pm", "check", "projects/grimoire"])
         .output()
         .expect("run `witchy pm check`");
     assert!(check.status.success(), "pm check failed: {}", String::from_utf8_lossy(&check.stderr));
@@ -674,11 +674,11 @@ fn witchy_pm_embedded_frontend() {
 
     // tree: the rune and its (zero) dependencies.
     let tree = Command::new(BIN)
-        .args(["pm", "tree", "projects/pm"])
+        .args(["pm", "tree", "projects/grimoire"])
         .output()
         .expect("run `witchy pm tree`");
     assert!(tree.status.success(), "pm tree failed: {}", String::from_utf8_lossy(&tree.stderr));
-    assert!(String::from_utf8_lossy(&tree.stdout).contains("pm"), "pm tree output");
+    assert!(String::from_utf8_lossy(&tree.stdout).contains("grimoire"), "pm tree output");
 }
 
 /// The front-end drives the compiler through the `Exec` capability: `witchy pm

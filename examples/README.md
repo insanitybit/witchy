@@ -152,7 +152,7 @@ lockfiles, and capability manifests — built and run through the package manage
   processing across rune boundaries
 
 The package manager itself is also written in witchy: see
-[`projects/pm`](../projects/pm) (the client) and
+[`projects/grimoire`](../projects/grimoire) (the client) and
 [`projects/coven`](../projects/coven) (the registry server).
 
 ## Complete rune inventory

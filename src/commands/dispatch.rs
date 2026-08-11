@@ -332,7 +332,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         return Ok(());
     }
     // `witchy pm <args...>` runs the EMBEDDED witchy package-manager front-end
-    // (projects/pm/src/pm.witchy) — the cargo-equivalent CLI, itself written in
+    // (projects/grimoire/src/grimoire.witchy) — the cargo-equivalent CLI, itself written in
     // witchy and bundled into the toolchain like std. It runs capability-confined:
     // Console, the project `Dir` (cwd, grant ordinal 0), a `Dir` to the
     // toolchain bin (grant ordinal 1, so it can drive the compiler via `Exec`),

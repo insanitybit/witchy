@@ -172,6 +172,6 @@ rejecting an over-reaching upgrade:
 The repository's [`spec/local-registry.md`](https://github.com/insanitybit/witchy/blob/master/spec/local-registry.md)
 walks through it step by step, and [`rfcs/package-manager.md`](https://github.com/insanitybit/witchy/blob/master/rfcs/package-manager.md)
 is the full design and threat model. The package manager and the registry are
-themselves written in witchy ([`projects/pm`](https://github.com/insanitybit/witchy/tree/master/projects/pm)
+themselves written in witchy ([`projects/grimoire`](https://github.com/insanitybit/witchy/tree/master/projects/grimoire)
 and [`projects/coven`](https://github.com/insanitybit/witchy/tree/master/projects/coven)) -
 the language eats its own dog food, sandboxable footprint and all.

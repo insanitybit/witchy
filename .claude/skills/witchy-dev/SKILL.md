@@ -170,7 +170,7 @@ code belongs in the owning crate.**
 | `witchy-caps` | footprint analyzer, grant documents |
 | `witchy` (root) | CLI, LSP, wasm playground — composition only |
 
-`std/` is the standard library, written in witchy. `projects/pm` and
+`std/` is the standard library, written in witchy. `projects/grimoire` and
 `projects/coven` are the package manager and registry, self-hosted in witchy.
 
 **Ports and adapters is the house style.** Define the domain contract in a

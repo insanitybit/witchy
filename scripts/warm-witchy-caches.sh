@@ -4,7 +4,7 @@
 # (.config/nextest.toml) ahead of the e2e binary.
 #
 # Why: the e2e suite spawns `witchy pm ...` / `witchy coven-serve` subprocesses
-# dozens of times. Each spawn compiles projects/pm / projects/coven to wasm
+# dozens of times. Each spawn compiles projects/grimoire / projects/coven to wasm
 # unless the on-disk caches (~/.cache/witchy/{src,optimized-wasm,wasm}) are warm — and
 # those caches are keyed on the binary's mtime+size, so EVERY rebuild (i.e.
 # every merge) invalidates them. Until this script existed, the first gate
@@ -31,7 +31,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. The pm front-end (projects/pm): any subcommand compiles it. `pm list` in
+# 1. The pm front-end (projects/grimoire): any subcommand compiles it. `pm list` in
 #    an empty home exits nonzero (no project) — the compile, and therefore the
 #    cache write, happens regardless. Run in background so it overlaps coven.
 WITCHY_HOME="$home/pm" "$BIN" pm list >/dev/null 2>&1 &

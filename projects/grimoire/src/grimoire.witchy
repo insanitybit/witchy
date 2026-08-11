@@ -1,10 +1,10 @@
-// pm — the witchy package manager, written in witchy. It reads `witchy.toml`
+// grimoire — the witchy package manager, written in witchy. It reads `witchy.toml`
 // manifests, audits a rune's capability footprint, checks that the declared
 // footprint *admits* what the code actually demands (rights-precisely), and
 // guards an upgrade against any widening of authority. The capability work goes
 // through `compiler` (a host introspection intrinsic) and host capabilities; the
-// embedded `witchy pm` command runs this front-end on the compiled WASM tier.
-// It is the package manager's heart, self-hosted.
+// embedded `witchy grimoire` command (and its `witchy pm` compat alias) runs this
+// front-end on the compiled WASM tier. It is the package manager's heart, self-hosted.
 //
 //   witchy pm <command> [args]
 //

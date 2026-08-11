@@ -198,7 +198,7 @@ ownership paths:
 | `std/` | Standard library embedded by the linker and documented from source comments | KEEP | A standard-library registry with generated API docs. |
 | Browser/playground modules | `linker::std_source` is now a pure standard-library registry; `linker::playground_source` owns the glamour/markdown experiments; `linker::bundled_source` (std ∪ playground) is the general import resolver. Browser/native/LSP resolution uses `bundled_source`. | KEEP | Provenance is now explicit (StandardLibrary vs Playground); std_source no longer conflates glamour. |
 | `examples/` | Teaching programs and executable parity evidence | KEEP | Remain outside bundled library identity. |
-| `projects/pm`, `projects/coven`, `projects/coven-web` | Self-hosted ecosystem applications | KEEP | Product/project registry and explicit support classification. |
+| `projects/grimoire`, `projects/coven`, `projects/coven-web` | Self-hosted ecosystem applications | KEEP | Product/project registry and explicit support classification. |
 | `projects/glamour` and experiments | Product experiments also used by browser/e2e fixtures | NARROW | Keep experimental status explicit; inject into playgrounds without calling it standard library. |
 | Tracked generated-looking fixtures | Mixed placement, including source-controlled fixture output | CONSOLIDATE | Inventory before moving; distinguish retained evidence, source fixture, reproducible output, and accidental residue. |
 
