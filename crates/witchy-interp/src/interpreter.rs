@@ -1527,13 +1527,17 @@ impl Interpreter {
                 Ok(true)
             }
             Expr::Binary { op: BinOp::Add, .. } => {
+                // Cheap check first: this fast path only ever applies to a
+                // unique `String` slot, so most `+`-shaped assignments (Int
+                // accumulators, the common case) bail here before paying for
+                // the AST spine walk and self-reference scan below.
+                if !matches!(env.slot_mut(name), Some((Value::Str(_), true))) {
+                    return Ok(false);
+                }
                 let Some(rights) = concat_spine(rhs, name) else {
                     return Ok(false);
                 };
                 if rights.iter().any(|r| expr_mentions(r, name)) {
-                    return Ok(false);
-                }
-                if !matches!(env.slot_mut(name), Some((Value::Str(_), true))) {
                     return Ok(false);
                 }
                 let Some((slot, true)) = env.slot_mut(name) else { unreachable!() };
