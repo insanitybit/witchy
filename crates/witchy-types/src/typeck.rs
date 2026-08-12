@@ -1267,15 +1267,10 @@ fn validate_type_model(
     known: &HashSet<&str>,
     arities: &HashMap<&str, usize>,
     type_defs: &HashMap<&str, &ast::TypeDef>,
+    nominal_parameters: &HashMap<&str, Vec<String>>,
     storage: &ReferenceStorageClassifier<'_>,
 ) -> Result<(), TypeError> {
-    let nominal_parameters = type_defs
-        .iter()
-        .map(|(name, definition)| {
-            (*name, ast::effective_nominal_type_def_params(definition))
-        })
-        .collect();
-    validate_type(t, known, arities, &nominal_parameters)?;
+    validate_type(t, known, arities, nominal_parameters)?;
     reject_structural_authority_type(t, type_defs)?;
     reject_borrowed_capability_views(t, storage)
 }
@@ -1308,6 +1303,15 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             }
         }
     }
+    // Computed once per module check: `validate_type_model` previously rebuilt
+    // this map (recomputing `effective_nominal_type_def_params` for every type
+    // def) on EVERY call, and it's called once per type annotation across the
+    // whole module — quadratic in (annotations x type defs). It depends only
+    // on `type_defs`, which is fixed for the rest of this function.
+    let nominal_parameters: HashMap<&str, Vec<String>> = type_defs
+        .iter()
+        .map(|(name, definition)| (*name, ast::effective_nominal_type_def_params(definition)))
+        .collect();
     let reference_storage = ReferenceStorageClassifier::new(module);
     for item in &module.items {
         let in_ctx = |e: TypeError, ctx: &str| TypeError {
@@ -1318,18 +1322,19 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             known: &HashSet<&str>,
             arities: &HashMap<&str, usize>,
             type_defs: &HashMap<&str, &ast::TypeDef>,
+            nominal_parameters: &HashMap<&str, Vec<String>>,
             storage: &ReferenceStorageClassifier<'_>,
             ctx: &str,
             in_ctx: &impl Fn(TypeError, &str) -> TypeError,
         ) -> Result<(), TypeError> {
             if let Some(region) = &block.region {
                 if let Some(ty) = &region.ty {
-                    validate_type_model(ty, known, arities, type_defs, storage)
+                    validate_type_model(ty, known, arities, type_defs, nominal_parameters, storage)
                         .map_err(|e| in_ctx(e, ctx))?;
                 }
             }
             for stmt in &block.stmts {
-                validate_stmt_types(stmt, known, arities, type_defs, storage, ctx, in_ctx)?;
+                validate_stmt_types(stmt, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
             }
             Ok(())
         }
@@ -1338,6 +1343,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             known: &HashSet<&str>,
             arities: &HashMap<&str, usize>,
             type_defs: &HashMap<&str, &ast::TypeDef>,
+            nominal_parameters: &HashMap<&str, Vec<String>>,
             storage: &ReferenceStorageClassifier<'_>,
             ctx: &str,
             in_ctx: &impl Fn(TypeError, &str) -> TypeError,
@@ -1345,17 +1351,17 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             match stmt {
                 Stmt::Let { ty, value, .. } => {
                     if let Some(ty) = ty {
-                        validate_type_model(ty, known, arities, type_defs, storage)
+                        validate_type_model(ty, known, arities, type_defs, nominal_parameters, storage)
                             .map_err(|e| in_ctx(e, ctx))?;
                     }
-                    validate_expr_types(value, known, arities, type_defs, storage, ctx, in_ctx)
+                    validate_expr_types(value, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)
                 }
                 Stmt::Assign { value, .. }
                 | Stmt::LetPattern { value, .. }
                 | Stmt::Return(Some(value))
                 | Stmt::Yield(value)
                 | Stmt::Expr(value) => {
-                    validate_expr_types(value, known, arities, type_defs, storage, ctx, in_ctx)
+                    validate_expr_types(value, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)
                 }
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => Ok(()),
             }
@@ -1365,6 +1371,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             known: &HashSet<&str>,
             arities: &HashMap<&str, usize>,
             type_defs: &HashMap<&str, &ast::TypeDef>,
+            nominal_parameters: &HashMap<&str, Vec<String>>,
             storage: &ReferenceStorageClassifier<'_>,
             ctx: &str,
             in_ctx: &impl Fn(TypeError, &str) -> TypeError,
@@ -1379,25 +1386,25 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                 | Expr::TaggedLit { .. } => Ok(()),
                 Expr::List(values) | Expr::Tuple(values) => {
                     for value in values {
-                        validate_expr_types(value, known, arities, type_defs, storage, ctx, in_ctx)?;
+                        validate_expr_types(value, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     }
                     Ok(())
                 }
                 Expr::Call { args, .. } | Expr::AnonCtor { args, .. } => {
                     for arg in args {
-                        validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
+                        validate_expr_types(arg, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     }
                     Ok(())
                 }
                 Expr::Ctor { args, .. } => {
                     for arg in args {
-                        validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
+                        validate_expr_types(arg, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     }
                     Ok(())
                 }
             Expr::LabeledCall { args, .. } => {
                 for (_, arg) in args {
-                    validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
+                    validate_expr_types(arg, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                 }
                 Ok(())
             }
@@ -1407,19 +1414,20 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     known,
                     arities,
                     type_defs,
+                    nominal_parameters,
                     storage,
                     ctx,
                     in_ctx,
                 )?;
                 for (_, arg) in args {
-                    validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
+                    validate_expr_types(arg, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                 }
                 Ok(())
             }
             Expr::MethodCall { receiver, args, .. } => {
-                validate_expr_types(receiver, known, arities, type_defs, storage, ctx, in_ctx)?;
+                validate_expr_types(receiver, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                 for arg in args {
-                    validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
+                    validate_expr_types(arg, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                 }
                     Ok(())
                 }
@@ -1430,111 +1438,111 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     result,
                     ..
                 } => {
-                    validate_expr_types(receiver, known, arities, type_defs, storage, ctx, in_ctx)?;
+                    validate_expr_types(receiver, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     for arg in args {
-                        validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
+                        validate_expr_types(arg, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     }
-                    validate_type_model(ty, known, arities, type_defs, storage)
+                    validate_type_model(ty, known, arities, type_defs, nominal_parameters, storage)
                         .map_err(|e| in_ctx(e, ctx))?;
-                    validate_type_model(result, known, arities, type_defs, storage)
+                    validate_type_model(result, known, arities, type_defs, nominal_parameters, storage)
                         .map_err(|e| in_ctx(e, ctx))
                 }
                 Expr::Apply { func, args } => {
-                    validate_expr_types(func, known, arities, type_defs, storage, ctx, in_ctx)?;
+                    validate_expr_types(func, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     for arg in args {
-                        validate_expr_types(arg, known, arities, type_defs, storage, ctx, in_ctx)?;
+                        validate_expr_types(arg, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     }
                     Ok(())
                 }
                 Expr::Unary { expr, .. }
                 | Expr::Field { base: expr, .. }
                 | Expr::Try(expr) => {
-                    validate_expr_types(expr, known, arities, type_defs, storage, ctx, in_ctx)
+                    validate_expr_types(expr, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)
                 }
                 Expr::As { expr, ty } => {
-                    validate_expr_types(expr, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    validate_type_model(ty, known, arities, type_defs, storage)
+                    validate_expr_types(expr, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
+                    validate_type_model(ty, known, arities, type_defs, nominal_parameters, storage)
                         .map_err(|e| in_ctx(e, ctx))
                 }
                 Expr::ExistentialPack { expr, ty, .. } => {
-                    validate_expr_types(expr, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    validate_type_model(ty, known, arities, type_defs, storage)
+                    validate_expr_types(expr, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
+                    validate_type_model(ty, known, arities, type_defs, nominal_parameters, storage)
                         .map_err(|e| in_ctx(e, ctx))
                 }
                 Expr::ExistentialUpcast { expr, ty } => {
-                    validate_expr_types(expr, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    validate_type_model(ty, known, arities, type_defs, storage)
+                    validate_expr_types(expr, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
+                    validate_type_model(ty, known, arities, type_defs, nominal_parameters, storage)
                         .map_err(|e| in_ctx(e, ctx))
                 }
                 Expr::Lambda { params, body, ret } => {
                     for param in params {
                         if let Some(ty) = &param.ty {
-                            validate_type_model(ty, known, arities, type_defs, storage)
+                            validate_type_model(ty, known, arities, type_defs, nominal_parameters, storage)
                                 .map_err(|e| in_ctx(e, ctx))?;
                         }
                     }
                     if let Some(ret) = ret {
-                        validate_type_model(ret, known, arities, type_defs, storage)
+                        validate_type_model(ret, known, arities, type_defs, nominal_parameters, storage)
                             .map_err(|e| in_ctx(e, ctx))?;
                     }
-                    validate_block_types(body, known, arities, type_defs, storage, ctx, in_ctx)
+                    validate_block_types(body, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)
                 }
                 Expr::RecordUpdate { name: _, base, fields } => {
-                    validate_expr_types(base, known, arities, type_defs, storage, ctx, in_ctx)?;
+                    validate_expr_types(base, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     for (_, value) in fields {
-                        validate_expr_types(value, known, arities, type_defs, storage, ctx, in_ctx)?;
+                        validate_expr_types(value, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     }
                     Ok(())
                 }
                 Expr::Record { fields, spread, .. } => {
                     for (_, value) in fields {
-                        validate_expr_types(value, known, arities, type_defs, storage, ctx, in_ctx)?;
+                        validate_expr_types(value, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     }
                     if let Some(base) = spread {
-                        validate_expr_types(base, known, arities, type_defs, storage, ctx, in_ctx)?;
+                        validate_expr_types(base, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     }
                     Ok(())
                 }
                 Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => {
-                    validate_expr_types(lhs, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    validate_expr_types(rhs, known, arities, type_defs, storage, ctx, in_ctx)
+                    validate_expr_types(lhs, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
+                    validate_expr_types(rhs, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)
                 }
                 Expr::If { cond, then_block, else_block } => {
-                    validate_expr_types(cond, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    validate_block_types(then_block, known, arities, type_defs, storage, ctx, in_ctx)?;
+                    validate_expr_types(cond, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
+                    validate_block_types(then_block, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     if let Some(block) = else_block {
-                        validate_block_types(block, known, arities, type_defs, storage, ctx, in_ctx)?;
+                        validate_block_types(block, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     }
                     Ok(())
                 }
                 Expr::Match { scrutinee, arms } => {
-                    validate_expr_types(scrutinee, known, arities, type_defs, storage, ctx, in_ctx)?;
+                    validate_expr_types(scrutinee, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     for arm in arms {
                         if let Some(guard) = &arm.guard {
-                            validate_expr_types(guard, known, arities, type_defs, storage, ctx, in_ctx)?;
+                            validate_expr_types(guard, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                         }
-                        validate_expr_types(&arm.body, known, arities, type_defs, storage, ctx, in_ctx)?;
+                        validate_expr_types(&arm.body, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
                     }
                     Ok(())
                 }
                 Expr::Block(block) => {
-                    validate_block_types(block, known, arities, type_defs, storage, ctx, in_ctx)
+                    validate_block_types(block, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)
                 }
                 Expr::While { cond, body } => {
-                    validate_expr_types(cond, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    validate_block_types(body, known, arities, type_defs, storage, ctx, in_ctx)
+                    validate_expr_types(cond, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
+                    validate_block_types(body, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)
                 }
                 Expr::For { iter, body, .. } => {
-                    validate_expr_types(iter, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    validate_block_types(body, known, arities, type_defs, storage, ctx, in_ctx)
+                    validate_expr_types(iter, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
+                    validate_block_types(body, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)
                 }
                 Expr::Index { base, index } => {
-                    validate_expr_types(base, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    validate_expr_types(index, known, arities, type_defs, storage, ctx, in_ctx)
+                    validate_expr_types(base, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
+                    validate_expr_types(index, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)
                 }
                 Expr::WhileLet { scrutinee, body, .. } => {
-                    validate_expr_types(scrutinee, known, arities, type_defs, storage, ctx, in_ctx)?;
-                    validate_block_types(body, known, arities, type_defs, storage, ctx, in_ctx)
+                    validate_expr_types(scrutinee, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)?;
+                    validate_block_types(body, known, arities, type_defs, nominal_parameters, storage, ctx, in_ctx)
                 }
             }
         }
@@ -1542,7 +1550,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             Item::Function(f) => {
                 for p in &f.params {
                     if let Some(t) = &p.ty {
-                        validate_type_model(t, &known, &arities, &type_defs, &reference_storage)
+                        validate_type_model(t, &known, &arities, &type_defs, &nominal_parameters, &reference_storage)
                             .map_err(|e| in_ctx(e, &f.name))?;
                         reject_cap_slot_boundary(
                             t,
@@ -1554,7 +1562,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     }
                 }
                 if let Some(t) = &f.ret {
-                    validate_type_model(t, &known, &arities, &type_defs, &reference_storage)
+                    validate_type_model(t, &known, &arities, &type_defs, &nominal_parameters, &reference_storage)
                         .map_err(|e| in_ctx(e, &f.name))?;
                     reject_cap_slot_boundary(
                         t,
@@ -1579,6 +1587,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     &known,
                     &arities,
                     &type_defs,
+                    &nominal_parameters,
                     &reference_storage,
                     &f.name,
                     &in_ctx,
@@ -1597,6 +1606,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                                 &trait_known,
                                 &trait_arities,
                                 &type_defs,
+                                &nominal_parameters,
                                 &reference_storage,
                             )
                                 .map_err(|e| in_ctx(e, &tr.name))?;
@@ -1621,6 +1631,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                             &trait_known,
                             &trait_arities,
                             &type_defs,
+                            &nominal_parameters,
                             &reference_storage,
                         )
                             .map_err(|e| in_ctx(e, &tr.name))?;
@@ -1644,6 +1655,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                             &trait_known,
                             &trait_arities,
                             &type_defs,
+                            &nominal_parameters,
                             &reference_storage,
                             &tr.name,
                             &in_ctx,
@@ -1668,11 +1680,12 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     &known,
                     &arities,
                     &type_defs,
+                    &nominal_parameters,
                     &reference_storage,
                 )
                     .map_err(|e| in_ctx(e, &im.type_name))?;
                 for arg in &im.trait_args {
-                    validate_type_model(arg, &known, &arities, &type_defs, &reference_storage)
+                    validate_type_model(arg, &known, &arities, &type_defs, &nominal_parameters, &reference_storage)
                         .map_err(|e| in_ctx(e, &im.type_name))?;
                 }
                 for (_, _, trait_args) in &im.bounds {
@@ -1682,6 +1695,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                             &known,
                             &arities,
                             &type_defs,
+                            &nominal_parameters,
                             &reference_storage,
                         )
                             .map_err(|e| in_ctx(e, &im.type_name))?;
@@ -1699,6 +1713,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                                 &method_known,
                                 &method_arities,
                                 &type_defs,
+                                &nominal_parameters,
                                 &reference_storage,
                             )
                                 .map_err(|e| in_ctx(e, &method.name))?;
@@ -1723,6 +1738,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                             &method_known,
                             &method_arities,
                             &type_defs,
+                            &nominal_parameters,
                             &reference_storage,
                         )
                             .map_err(|e| in_ctx(e, &method.name))?;
@@ -1747,6 +1763,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                                 &method_known,
                                 &method_arities,
                                 &type_defs,
+                                &nominal_parameters,
                                 &reference_storage,
                             )
                                 .map_err(|e| in_ctx(e, &method.name))?;
@@ -1757,6 +1774,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                         &method_known,
                         &method_arities,
                         &type_defs,
+                        &nominal_parameters,
                         &reference_storage,
                         &method.name,
                         &in_ctx,
@@ -1774,6 +1792,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                             &known,
                             &arities,
                             &type_defs,
+                            &nominal_parameters,
                             &reference_storage,
                         )
                             .map_err(|e| in_ctx(e, &t.name))?;
@@ -1819,6 +1838,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     &known,
                     &arities,
                     &type_defs,
+                    &nominal_parameters,
                     &reference_storage,
                     "<const>",
                     &in_ctx,
@@ -1830,13 +1850,14 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     &known,
                     &arities,
                     &type_defs,
+                    &nominal_parameters,
                     &reference_storage,
                     "comptime",
                     &in_ctx,
                 )?;
             }
             Item::TypeAlias { ty, name, .. } => {
-                validate_type_model(ty, &known, &arities, &type_defs, &reference_storage)
+                validate_type_model(ty, &known, &arities, &type_defs, &nominal_parameters, &reference_storage)
                     .map_err(|e| in_ctx(e, name))?;
             }
         }
