@@ -1,0 +1,17 @@
+[PASS] coven starts
+[PASS] coven-web starts
+[PASS] publish sample rune
+[PASS] webauthn registration payload
+[PASS] challenge for login @
+[PASS] webauthn sign-in produces token
+[PASS] session token non-empty
+[PASS] challenge for promote demo/verify@1.0.0
+[PASS] promote-2fa requires session token
+[PASS] challenge for promote demo/verify@1.0.0
+[PASS] webauthn promote executes with assertion
+[PASS] consumed challenge is rejected
+[PASS] challenge for yank demo/verify@1.0.0
+[PASS] tampered signature fails
+[PASS] challenge for yank demo/verify@1.0.0
+[PASS] valid yank assertion
+ALL CHECKS PASSED

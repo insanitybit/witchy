@@ -1,0 +1,14 @@
+[
+  {
+    "url": "https://insanitybit.github.io/witchy/",
+    "isRepresentativeRun": true,
+    "htmlPath": "/Users/cobrien/workspace/witchy/projects/glamour/acceptance/vitals/insanitybit_github_io-_witchy_-2026_08_12_13_10_13.report.html",
+    "jsonPath": "/Users/cobrien/workspace/witchy/projects/glamour/acceptance/vitals/insanitybit_github_io-_witchy_-2026_08_12_13_10_13.report.json",
+    "summary": {
+      "performance": 0.98,
+      "accessibility": 0.81,
+      "best-practices": 0.96,
+      "seo": 0.82
+    }
+  }
+]

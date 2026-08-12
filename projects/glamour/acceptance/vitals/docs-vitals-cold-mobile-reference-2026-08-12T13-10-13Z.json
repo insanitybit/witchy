@@ -1,0 +1,29 @@
+{
+  "schema": "witchy.docs.vitals.v1",
+  "recordedAt": "2026-08-12T13:10:37.837Z",
+  "source": "projects/glamour/acceptance/vitals/insanitybit_github_io-_witchy_-2026_08_12_13_10_13.report.json",
+  "deployment": "https://insanitybit.github.io/witchy/",
+  "environment": {
+    "formFactor": "mobile",
+    "throttlingMethod": "simulate",
+    "throttling": {
+      "rttMs": 150,
+      "throughputKbps": 1600,
+      "requestLatencyMs": 150,
+      "downloadThroughputKbps": 1400,
+      "uploadThroughputKbps": 768,
+      "cpuSlowdownMultiplier": 4
+    },
+    "fetchTime": "2026-08-12T13:10:13.969Z"
+  },
+  "metrics": {
+    "performanceScore": 0.98,
+    "firstContentfulPaintMs": 1213.8225,
+    "largestContentfulPaintMs": 2290.8225,
+    "totalBlockingTimeMs": 7.5,
+    "speedIndexMs": 1513.662821856498,
+    "cumulativeLayoutShift": 0,
+    "interactionToNextPaintMs": null
+  },
+  "raw_report": "projects/glamour/acceptance/vitals/insanitybit_github_io-_witchy_-2026_08_12_13_10_13.report.json"
+}

@@ -1,0 +1,82 @@
+{
+  "rfc": "0107",
+  "goal": "public-closeout-external-buckets",
+  "updated_at_utc": "2026-08-12",
+  "cold_mobile_reference": {
+    "status": "PROVEN",
+    "url": "https://insanitybit.github.io/witchy/",
+    "artifact": "projects/glamour/acceptance/vitals/docs-vitals-cold-mobile-reference-2026-08-12T13-10-13Z.json"
+  },
+  "release_ci_browser_matrix": {
+    "status": "PROVEN",
+    "run": {
+      "id": "31293360549",
+      "url": "https://github.com/insanitybit/witchy/actions/runs/31293360549",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "name": "Glamour browser acceptance (chromium)",
+          "job_id": "93194345491",
+          "job_url": "https://github.com/insanitybit/witchy/actions/runs/31293360549/job/93194345491"
+        },
+        {
+          "name": "Glamour browser acceptance (firefox)",
+          "job_id": "93194345499",
+          "job_url": "https://github.com/insanitybit/witchy/actions/runs/31293360549/job/93194345499"
+        },
+        {
+          "name": "Glamour browser acceptance (webkit)",
+          "job_id": "93194345479",
+          "job_url": "https://github.com/insanitybit/witchy/actions/runs/31293360549/job/93194345479"
+        }
+      ],
+      "artifacts": [
+        {
+          "name": "glamour-browser-chromium",
+          "id": "9032181061"
+        },
+        {
+          "name": "glamour-browser-firefox",
+          "id": "9032180144"
+        },
+        {
+          "name": "glamour-browser-webkit",
+          "id": "9032180819"
+        }
+      ]
+    }
+  },
+  "static_host_and_vitals": {
+    "status": "PROVEN",
+    "doctor_local": "projects/glamour/acceptance/doctor-local-2026-08-13.json",
+    "doctor_deployed": "projects/glamour/acceptance/doctor-gh-pages-2026-08-14.json",
+    "vitals": "projects/glamour/acceptance/vitals/docs-vitals-2026-08-10T18-33-13-223Z.json",
+    "deploy_run": {
+      "id": "31293360553",
+      "url": "https://github.com/insanitybit/witchy/actions/runs/31293360553",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "name": "build",
+          "job_id": "93194345350",
+          "job_url": "https://github.com/insanitybit/witchy/actions/runs/31293360553/job/93194345350"
+        },
+        {
+          "name": "deploy",
+          "job_id": "93195075349",
+          "job_url": "https://github.com/insanitybit/witchy/actions/runs/31293360553/job/93195075349"
+        }
+      ],
+      "artifact": {
+        "name": "github-pages",
+        "id": "9032223449"
+      }
+    }
+  },
+  "webauthn_relying_party_exchange": {
+    "status": "PROVEN",
+    "evidence": "projects/glamour/acceptance/webauthn-rp-payload-alignment-2026-08-12.log",
+    "notes": "Run proves register, login token issuance, session-bound assertion promotion, replay rejection, tampered signature rejection, and yank flow."
+  },
+  "remaining_external": []
+}
