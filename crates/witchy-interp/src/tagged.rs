@@ -43,7 +43,11 @@
 use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Stmt, Type};
 use witchy_syntax::origin::{OriginTable, SourcePosition, SourceSpan};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+
+// foldhash (not SipHash): keys are module/tag names, compiler-internal and
+// never attacker-controlled — matching the interpreter's own FxHashMap
+// convention (see interpreter.rs).
+use foldhash::{HashMap, HashMapExt as _};
 
 /// A tag may emit a tag (re-expansion); cap the nesting so a self-referential or
 /// runaway tag fails loudly rather than looping.

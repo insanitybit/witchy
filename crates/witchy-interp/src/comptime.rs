@@ -19,9 +19,14 @@ use witchy_syntax::ast::{
     BinOp, Block, Expr, Function, ImplOrigin, Item, Module, Param, Stmt, Type,
 };
 use witchy_syntax::origin::{ExpansionOrigin, OriginTable, SourceSpan};
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
+
+// foldhash (not SipHash): the expansion cache is keyed by an already-computed
+// u64 digest of compiler-internal syntax (never attacker-controlled), and sits
+// on the comptime re-expansion hot path — matching the interpreter's own
+// FxHashMap convention (see interpreter.rs).
+use foldhash::{HashMap, HashMapExt as _};
 
 const MAX_COMPTIME_BLOCKS: usize = 256;
 // Per module, after generated `gen`/`async` helpers are lowered into real items.

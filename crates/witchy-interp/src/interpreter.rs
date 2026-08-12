@@ -20,7 +20,7 @@
 // `return`/`?` in the oracle's hot path; the larger Result is the right trade.
 #![allow(clippy::result_large_err)]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 // foldhash (not SipHash) for the interpreter's OWN lookup tables: keys are
 // program identifiers (function/ctor/binding names), never attacker-controlled
 // hash-flood surface, and `functions.get(name)` sits on the call hot path.
@@ -2086,7 +2086,7 @@ impl Interpreter {
                 }
             }
             Expr::Lambda { params, body, .. } => {
-                let mut mentioned = HashSet::new();
+                let mut mentioned = FxHashSet::default();
                 idents_in_block(body, &mut |n| {
                     if !mentioned.contains(n) {
                         mentioned.insert(n.to_string());

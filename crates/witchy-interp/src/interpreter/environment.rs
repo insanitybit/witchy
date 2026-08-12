@@ -2,8 +2,12 @@
 //! (`Env`) and the assignment-kind marker (`Assign`). Verbatim move from the
 //! evaluator; pure environment state.
 
-use std::collections::HashSet;
 use std::rc::Rc;
+
+// foldhash (not SipHash): `mentioned` holds program identifiers collected from
+// a closure body — compiler-internal, never attacker-controlled — matching the
+// interpreter's own FxHashSet convention (see interpreter.rs).
+use foldhash::HashSet as FxHashSet;
 
 use super::Value;
 
@@ -105,7 +109,7 @@ impl Env {
     /// to cloning the whole environment (a name the body never mentions can
     /// never be looked up), without the O(everything) copy per closure created
     /// or applied.
-    pub(super) fn capture(&self, mentioned: &HashSet<String>) -> Env {
+    pub(super) fn capture(&self, mentioned: &FxHashSet<String>) -> Env {
         let mut scope: Vec<(Rc<str>, Value, bool)> = Vec::new();
         for s in &self.scopes {
             for (n, v, m) in s {
