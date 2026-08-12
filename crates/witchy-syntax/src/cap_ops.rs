@@ -5,6 +5,11 @@
 //! calls preserves the fact that the user wrote method syntax. RFC-0076's
 //! bare-form rejection depends on that distinction.
 
+use std::sync::OnceLock;
+
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashSet, HashSetExt as _};
+
 pub const PREFIX: &str = "__capop.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,9 +244,18 @@ pub fn is_marked(name: &str) -> bool {
     name.starts_with(PREFIX)
 }
 
+fn op_names() -> &'static HashSet<&'static str> {
+    static NAMES: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        let mut set = HashSet::with_capacity(OPS.len());
+        set.extend(OPS.iter().map(|op| op.name));
+        set
+    })
+}
+
 pub fn is_op_name(name: &str) -> bool {
     let name = surface_name(name);
-    OPS.iter().any(|op| op.name == name)
+    op_names().contains(name)
 }
 
 pub(crate) fn op_info(name: &str, total_arity: usize) -> Option<&'static CapOp> {
