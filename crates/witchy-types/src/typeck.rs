@@ -4326,6 +4326,17 @@ impl Checker {
         matches!(self.resolve(ty), Ty::List(element) if self.is_direct_borrowed_nominal(&element))
     }
 
+    fn is_nested_borrowed_nominal_list(&self, ty: &Ty) -> bool {
+        match self.resolve(ty) {
+            Ty::List(element) => {
+                self.is_direct_borrowed_nominal(&element)
+                    || matches!(self.resolve(&element), Ty::List(_))
+                        && self.is_nested_borrowed_nominal_list(&element)
+            }
+            _ => false,
+        }
+    }
+
     fn borrowed_shell_binding_source(value: &Expr) -> bool {
         matches!(value, Expr::Ctor { .. } | Expr::Call { .. } | Expr::List(_))
     }
@@ -4347,6 +4358,19 @@ impl Checker {
     fn is_authorized_borrowed_shell_value(&self, value: &Expr, ty: &Ty) -> bool {
         self.is_direct_borrowed_nominal(ty)
             && matches!(value, Expr::Var(name) if self.is_borrowed_shell_binding(name))
+    }
+
+    fn is_nested_borrowed_nominal_projection(&self, value: &Expr, ty: &Ty) -> bool {
+        if !self.is_direct_borrowed_nominal(ty) {
+            return false;
+        }
+        match value {
+            Expr::Call { name, .. } => {
+                witchy_syntax::intrinsics::canonical_operation_name(name)
+                    == witchy_syntax::intrinsics::LIST_AT
+            }
+            _ => false,
+        }
     }
 
     fn is_borrowed_shell_self_update(&self, name: &str, existing: &Ty, value: &Expr) -> bool {
@@ -6249,12 +6273,18 @@ impl Checker {
                 self.infer_expected(arg, param_ty)
             }
             .map_err(|e| in_call_context(&display, e))?;
-            let borrowed_list_read = self.is_direct_borrowed_nominal_list(&at)
+            let borrowed_list_read = self.is_nested_borrowed_nominal_list(&at)
                 && matches!(
                     witchy_syntax::intrinsics::canonical_operation_name(&call_name),
                     witchy_syntax::intrinsics::LIST_AT | witchy_syntax::intrinsics::LIST_LENGTH
                 );
-            if !borrowed_list_read {
+            let borrowed_list_nested_access = index == 0
+                && matches!(
+                    witchy_syntax::intrinsics::canonical_operation_name(&call_name),
+                    witchy_syntax::intrinsics::LIST_AT
+                )
+                && self.is_nested_borrowed_nominal_projection(arg, &at);
+            if !borrowed_list_read && !borrowed_list_nested_access {
                 self.reject_borrowed_nominal_runtime_ty(
                     &at,
                     &format!("call to `{display}`"),
@@ -6394,7 +6424,11 @@ impl Checker {
         self.reject_externref_cap_aggregate_ty(&ret, &format!("call to `{call_name}`"))?;
         self.reject_structural_authority_ty(&ret, &format!("call to `{call_name}`"))?;
         self.reject_runtime_compiler_syntax_ty(&ret, &format!("call to `{call_name}`"))?;
-        if !self.is_direct_borrowed_nominal(&ret) {
+        let operation_is_nested_list_projection = matches!(
+            witchy_syntax::intrinsics::canonical_operation_name(&call_name),
+            witchy_syntax::intrinsics::LIST_AT
+        ) && self.is_nested_borrowed_nominal_list(&ret);
+        if !self.is_direct_borrowed_nominal(&ret) && !operation_is_nested_list_projection {
             self.reject_borrowed_nominal_runtime_ty(
                 &ret,
                 &format!("call to `{display}` result"),
@@ -7261,7 +7295,9 @@ impl Checker {
             }
             Expr::Field { base, field } => {
                 let bt = self.infer(base)?;
-                if !self.is_authorized_borrowed_shell_value(base, &bt) {
+                if !self.is_authorized_borrowed_shell_value(base, &bt)
+                    && !self.is_nested_borrowed_nominal_projection(base, &bt)
+                {
                     self.reject_borrowed_nominal_runtime_ty(
                         &bt,
                         &format!("field projection `.{field}`"),
