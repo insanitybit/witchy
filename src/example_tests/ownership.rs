@@ -24,6 +24,22 @@ use crate::{ast, interpreter, parser, typeck};
     }
 
     #[test]
+    fn rfc0112_borrowed_parser_iterator_agrees_on_both_backends() {
+        let src = "mode opt\n\n\
+             type Parser('a):\n    input: View(String, 'a)\n    offset: Int\n\n\
+             type TokenIter('a):\n    input: View(String, 'a)\n    index: Int\n\n\
+             type Token('a):\n    text: View(String, 'a)\n    width: Int\n\n\
+             fn parser(input: let('a) String) -> Parser('a):\n    Parser(input, 2)\n\n\
+             fn tokens(input: let('a) String) -> TokenIter('a):\n    TokenIter(input, 3)\n\n\
+             fn scan(input: let('a) String) -> Int:\n    let p = parser(input)\n    let it = tokens(p.input)\n    let values: List(Token('a)) = [Token(p.input, p.offset), Token(it.input, it.index)]\n    var total = 0\n    for token in values:\n        total = total + token.width\n    total\n\n\
+             fn main(console: Console):\n    console.print(\"${scan(\"source\")}\")\n";
+        let want = ["5"];
+        assert_eq!(link_run(src), want, "interpreter parser/iterator result");
+        let (compiled, _) = wasm_run_reowns(src);
+        assert_eq!(compiled, want, "compiled parser/iterator result");
+    }
+
+    #[test]
     fn rfc0083_view_may_not_cross_async_suspension_unmaterialized() {
         let src = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console) -> Nil:\n    var text = \"borrowed\"\n    let w = view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let err = try_link_std(src).expect_err("a borrowed view may not cross an await");
