@@ -36,7 +36,7 @@ use witchy_syntax::ast::{
     Type, TypeQual, UnOp,
 };
 
-pub use crate::access::{LoanProjection, LoanProjectionStep};
+pub use crate::access::{BorrowKind, LoanProjection, LoanProjectionStep};
 use crate::access::{AccessKind, AccessSignature, BorrowRelation, BorrowRelationCatalog};
 use crate::typeck::{TypeError, TypeTable, ty_to_ast};
 
@@ -83,7 +83,7 @@ struct ReturnOwnerPosition {
 /// The borrow qualifier's lifetime name on a parameter/return type, if any.
 fn view_lifetime(ty: &Type) -> Option<&str> {
     match ty {
-        Type::Qualified(TypeQual::Borrow(life), _) => Some(life),
+        Type::Qualified(TypeQual::Borrow(life) | TypeQual::BorrowMut(life), _) => Some(life),
         _ => None,
     }
 }
@@ -233,6 +233,9 @@ pub struct LoanEvent {
     /// Empty means the complete borrowed value depends on the owner.
     pub borrower_projection: LoanProjection,
     pub origin: String,
+    /// Shared loans permit overlapping reads; exclusive loans reserve the
+    /// logical place and carry an affine mutable-reference capability.
+    pub kind: BorrowKind,
     /// Type of the projected storage. This is deliberately not part of
     /// [`LoanOwnerRoot`]: a field's storage type cannot classify or bias the
     /// containing owner object's RC base.
@@ -257,6 +260,7 @@ impl LoanEvent {
             projection: place.projection,
             borrower_projection,
             origin,
+            kind: BorrowKind::Shared,
             owner_type: place.storage_type,
             owner_root: place.root,
         }
@@ -935,6 +939,7 @@ fn facts_impl(
                                 projection: slot.projection.clone(),
                                 borrower_projection: slot.projection,
                                 origin: f.name.clone(),
+                                kind: slot.kind,
                                 owner_type: slot.storage_type,
                                 temporary: false,
                             })
@@ -1050,6 +1055,7 @@ fn check_lambda_body(
                         projection: slot.projection.clone(),
                         borrower_projection: slot.projection,
                         origin: name.to_string(),
+                        kind: slot.kind,
                         owner_type: slot.storage_type,
                         temporary: false,
                     })
@@ -1516,6 +1522,7 @@ struct Loan {
     borrower_projection: LoanProjection,
     /// Callee whose return type created this loan (for diagnostics).
     origin: String,
+    kind: BorrowKind,
     owner_type: Type,
 }
 
@@ -1527,6 +1534,7 @@ struct BorrowSource {
     projection: LoanProjection,
     borrower_projection: LoanProjection,
     origin: String,
+    kind: BorrowKind,
     owner_type: Type,
     temporary: bool,
 }
@@ -1537,6 +1545,7 @@ fn same_source(left: &BorrowSource, right: &BorrowSource) -> bool {
         && left.projection == right.projection
         && left.borrower_projection == right.borrower_projection
         && left.origin == right.origin
+        && left.kind == right.kind
 }
 
 fn strip_projection_prefix(
@@ -1951,6 +1960,7 @@ impl LoanCtx<'_> {
                             projection: source.projection.clone(),
                             borrower_projection: source.borrower_projection.clone(),
                             origin: source.origin.clone(),
+                            kind: source.kind,
                             owner_type: source.owner_type.clone(),
                             owner_root: LoanOwnerRoot {
                                 local: source.owner.clone(),
@@ -2002,6 +2012,7 @@ impl LoanCtx<'_> {
                         projection: owner.projection,
                         borrower_projection: owner.borrower_projection,
                         origin: owner.origin,
+                        kind: owner.kind,
                         owner_type: owner.owner_type,
                     };
                     let event = LoanEvent::from(loan.clone());
@@ -2051,6 +2062,7 @@ impl LoanCtx<'_> {
                             projection: source.projection,
                             borrower_projection: source.borrower_projection,
                             origin: source.origin,
+                            kind: source.kind,
                             owner_type: source.owner_type,
                         };
                         let event = LoanEvent::from(loan.clone());
@@ -2177,6 +2189,7 @@ impl LoanCtx<'_> {
                                 projection: projection.clone(),
                                 borrower_projection: LoanProjection::default(),
                                 origin: old_loan.origin.clone(),
+                                kind: old_loan.kind,
                                 owner_type: old_loan.owner_type.clone(),
                                 temporary: false,
                             },
@@ -2201,6 +2214,7 @@ impl LoanCtx<'_> {
                     projection: source.projection,
                     borrower_projection: source.borrower_projection,
                     origin: source.origin,
+                    kind: source.kind,
                     owner_type: source.owner_type,
                 };
                 if !replacements.contains(&loan) {
@@ -2324,6 +2338,7 @@ impl LoanCtx<'_> {
                             projection: loan.projection.clone(),
                             borrower_projection: loan.borrower_projection.clone(),
                             origin: loan.origin.clone(),
+                            kind: loan.kind,
                             owner_type: loan.owner_type.clone(),
                             temporary: false,
                         });
@@ -2473,7 +2488,7 @@ impl LoanCtx<'_> {
             // root/projection fact as an older view-returning call, so all of the
             // established last-use, conflict, aggregate, and root-lifetime logic
             // applies without a parallel borrow checker.
-            Expr::Unary { op: UnOp::Borrow, expr } => {
+            Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, expr } => {
                 if let Some((root, PlaceProjection::Fixed(projection))) = expr_place(expr) {
                     let root_type = self.checked_root_type(expr);
                     self.push_source(BorrowSource {
@@ -2482,6 +2497,11 @@ impl LoanCtx<'_> {
                         projection,
                         borrower_projection: LoanProjection::default(),
                         origin: "explicit borrow".into(),
+                        kind: if matches!(e, Expr::Unary { op: UnOp::BorrowMut, .. }) {
+                            BorrowKind::Exclusive
+                        } else {
+                            BorrowKind::Shared
+                        },
                         owner_type: root_type.unwrap_or_else(|| Type::Named("Unknown".into(), Vec::new())),
                         temporary: false,
                     }, out);
@@ -2497,6 +2517,7 @@ impl LoanCtx<'_> {
                             projection: LoanProjection::default(),
                             borrower_projection: LoanProjection::default(),
                             origin: "explicit borrow".into(),
+                            kind: BorrowKind::Shared,
                             owner_type: Type::Named("Unknown".into(), Vec::new()),
                             temporary: true,
                         }, out);
@@ -2675,6 +2696,7 @@ impl LoanCtx<'_> {
                             projection: argument_projection.extended(owner.input_projection()),
                             borrower_projection: LoanProjection::default(),
                             origin: callee.to_string(),
+                            kind: relation.kind(),
                             owner_type: relation.storage_type().clone(),
                             temporary: false,
                         });
@@ -2700,6 +2722,7 @@ impl LoanCtx<'_> {
                         projection: LoanProjection::default(),
                         borrower_projection: relation.output_projection().clone(),
                         origin: callee.to_string(),
+                        kind: relation.kind(),
                         owner_type: relation.storage_type().clone(),
                         temporary: true,
                     });
@@ -2707,6 +2730,7 @@ impl LoanCtx<'_> {
                 for mut source in sources {
                     source.borrower_projection = relation.output_projection().clone();
                     source.origin = callee.to_string();
+                    source.kind = relation.kind();
                     source.owner_type = relation.storage_type().clone();
                     self.push_source(source, out);
                 }
@@ -3360,6 +3384,7 @@ impl From<Loan> for LoanEvent {
             projection: loan.projection,
             borrower_projection: loan.borrower_projection,
             origin: loan.origin,
+            kind: loan.kind,
             owner_type: loan.owner_type,
             owner_root,
         }

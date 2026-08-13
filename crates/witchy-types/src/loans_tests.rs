@@ -10,7 +10,8 @@
     use witchy_syntax::ast::{Convention, Expr, Item, Stmt, Type};
 
     use super::{
-        BorrowRelationCatalog, BorrowSource, LoanEdgeKind, LoanProjection, LoanProjectionStep,
+        BorrowKind, BorrowRelationCatalog, BorrowSource, LoanEdgeKind, LoanProjection,
+        LoanProjectionStep,
         authenticated_borrow_escape_boundary, authenticated_generic_materializer,
         projections_overlap,
     };
@@ -282,6 +283,7 @@
             projection: LoanProjection::default(),
             borrower_projection: LoanProjection::default(),
             origin: "view".into(),
+            kind: BorrowKind::Shared,
             owner_type: Type::Named("String".into(), Vec::new()),
             temporary: false,
         };
