@@ -1,10 +1,10 @@
 ---
 rfc: 0122
-title: "First-class references and explicit lifetimes"
+title: "Opt-mode first-class references and explicit lifetimes"
 status: proposed
 created: 2026-08-13
 updated: 2026-08-13
-tracking: "Long-term reference model; syntax replacement for RFC-0083 and semantic completion of shared and exclusive borrowing"
+tracking: "Opt-mode reference model; syntax replacement for RFC-0083 and semantic completion of shared and exclusive borrowing"
 predecessors:
   - "[0026](0026-unique-qualifier.md) (`unique` and `local unique` ownership contracts)"
   - "[0083](0083-opt-mode-lifetimes.md) (`let('a) T`, `View(T, 'a)`, and shared owner loans)"
@@ -13,11 +13,34 @@ predecessors:
   - "[0112](0112-borrowed-aggregate-types.md) (lifetime-bearing nominal values and projection-aware loans)"
 ---
 
-# RFC-0122: First-class references and explicit lifetimes
+# RFC-0122: Opt-mode first-class references and explicit lifetimes
 
 ## Summary
 
-Witchy gains explicit shared and exclusive reference types:
+Normal Witchy remains a reference-free value language. A normal file never
+writes a lifetime, reference type, borrow expression, dereference, or mutable
+reference. It never receives a borrow-checker error caused by a hidden compiler
+reference. Values continue to copy at boundaries and the compiler silently
+repairs missing ownership facts when needed.
+
+```text
+fn normalize(text: String) -> String:
+    text.trim().to_lower()
+
+let result = normalize(text)
+```
+
+That remains the complete normal-mode model. No annotation is required to make
+this code safe or correct.
+
+`mode opt` is the explicit boundary where a programmer may drop into a
+lower-level ownership model for higher performance:
+
+```text
+mode opt
+```
+
+Only inside that mode, Witchy unlocks shared and exclusive reference types:
 
 ```text
 &'a T
@@ -67,10 +90,10 @@ x: &'a T            first-class shared reference argument
 x: &'a mut T        first-class exclusive reference argument
 ```
 
-This RFC replaces all ordinary-borrow spellings based on `let('a)`,
+Inside `mode opt`, this RFC replaces borrowed spellings based on `let('a)`,
 `var('a)`, `View(T, 'a)`, and direct lifetime lifting such as `T('a)`. Nominal
-types may still declare lifetime parameters, but their borrowed fields use
-reference types:
+types may declare lifetime parameters only in `mode opt`, and their borrowed
+fields use reference types:
 
 ```text
 type Parser('input):
@@ -87,13 +110,29 @@ diagnostics and are not aliases.
 
 ## Decision principles
 
+### Normal Witchy has zero reference burden
+
+References are a mode-only performance tool, not the default programming model.
+The parser accepts `&'a T`, `&'a mut T`, `&place`, `&mut place`, `*reference`,
+and nominal lifetime declarations only after a file has opted into `mode opt`.
+
+Normal functions cannot name, accept, return, store, infer, or reflect reference
+types. The optimizer may use internal loans to avoid copies, but those loans are
+not source types and may never cause a normal program to be rejected. If a proof
+is missing, normal mode takes the correct repair path.
+
+An opt module may expose an owned, reference-free facade to normal callers. A
+reference-bearing item is visible only to opt callers. No mode boundary may
+silently inject a reference into normal source or require a normal caller to
+understand when a loan ends.
+
 ### Borrowing is a type-level capability
 
-A declaration should say directly whether it accepts an owned value, a shared
-reference, or an exclusive reference:
+Within `mode opt`, a declaration says directly whether it accepts an owned
+value, a shared reference, or an exclusive reference:
 
 ```text
-fn consume(text: String) -> Int
+fn consume(own text: String) -> Int
 fn inspect(text: &'a String) -> Int
 fn edit(text: &'a mut String) -> Nil
 ```
@@ -112,7 +151,7 @@ distinction. The accepted form uses one reference type in both positions:
 fn first(text: &'a String) -> &'a String
 ```
 
-### Shared and exclusive references are first-class
+### Shared and exclusive references are first-class inside opt mode
 
 Both reference kinds may be passed, returned, placed in aggregates, projected,
 reborrowed, and captured by a non-escaping closure while their lifetimes permit.
@@ -125,8 +164,9 @@ any competing path while an exclusive reference is live.
 
 `unique T` describes owned storage and supports in-place optimization.
 `&'a mut T` describes temporary exclusive access to a logical place. A mutable
-borrow may require a repair copy before it opens when the runtime allocation is
-not unique. The reference remains exclusive even when such a repair is needed.
+borrow opens only when opt-mode analysis proves that the place has uniquely
+mutable storage and no competing loan. A missing proof is a compile error, not
+a repair copy.
 
 The source type of the reference does not change:
 
@@ -135,8 +175,8 @@ var text: String = source
 let editable = &mut text
 ```
 
-Borrowing from a `unique T` place can prove that no repair is necessary. That
-proof is attached to borrow creation, not encoded as `unique &'a mut T`.
+Borrowing from a `unique T` place supplies that proof directly. The proof is
+attached to borrow creation, not encoded as `unique &'a mut T`.
 
 ### `var` and `&mut` remain different
 
@@ -149,9 +189,9 @@ therefore express stored exclusive access and lending APIs that `var` cannot.
 
 ### Public relations are explicit; concrete duration is inferred
 
-Public signatures name every lifetime relation that reaches a result or stored
-field. Borrow expressions do not spell a lifetime. The checker infers concrete
-roots, reborrow duration, branches, overwrites, and last uses.
+Reference-bearing opt signatures name every lifetime relation that reaches a
+result or stored field. Borrow expressions do not spell a lifetime. The checker
+infers concrete roots, reborrow duration, branches, overwrites, and last uses.
 
 ### Syntax does not promise a raw pointer
 
@@ -161,6 +201,11 @@ copy-in/write-back shadow. Both backends consume the same checked reference
 facts and must agree observably.
 
 ## Surface syntax
+
+Everything in this section is available only in a file whose leading directive
+is `mode opt`. The same token sequences in a normal file receive one concise
+mode-boundary diagnostic; the compiler does not continue into lifetime or loan
+diagnostics.
 
 ### Reference types
 
@@ -182,9 +227,9 @@ List(&'input Token)
 Option(&'a mut Buffer)
 ```
 
-Every reference type written in a declaration has an explicit lifetime. Local
-borrow expressions infer an internal lifetime and normally need no annotation.
-This RFC does not add lifetime elision or `'static`.
+Every reference type written in an opt declaration has an explicit lifetime.
+Local borrow expressions infer an internal lifetime and normally need no
+annotation. This RFC does not add lifetime elision or `'static`.
 
 `mut` is contextual after a reference lifetime. Witchy uses `mut` rather than
 `var` here because the two words describe different operations: `mut` grants
@@ -221,10 +266,9 @@ The checker relates each inferred local lifetime to named lifetimes when a
 reference crosses a declared boundary.
 
 `&mut` additionally requires a mutable place. It establishes uniquely mutable
-runtime representation before exposing the reference. Normal mode may perform
-one repair copy while opening the borrow; `mode opt` rejects that borrow when
-the required no-copy proof is unavailable. Mutation through an established
-exclusive reference never performs a later alias-repair copy.
+runtime representation before exposing the reference. If the required no-copy
+proof is unavailable, the opt file does not compile. Mutation through an
+established exclusive reference never performs an alias-repair copy.
 
 ### Dereference and projection
 
@@ -408,7 +452,7 @@ unforgeable lease. `&'a Dir` does not manufacture or widen authority.
 Reference kinds and lifetime relations are part of callable identity:
 
 ```text
-fn(String) -> String
+fn(own String) -> String
 fn(let String) -> Int
 fn(&'a String) -> &'a String
 fn(&'a mut String) -> &'a String
@@ -422,6 +466,68 @@ adapters, generated wrappers, and proper-tail dispatch preserve the complete
 reference contract. A cast or adapter that erases a reference kind, lifetime,
 affinity, parameter convention, or ownership requirement is rejected.
 
+Reference-bearing callable types exist only in opt-mode type environments. They
+are omitted from the interface presented to a normal importer, including when
+hidden inside an alias, trait, existential, closure, or generated adapter.
+
+### Normal and opt boundaries
+
+Normal-to-opt calls use reference-free signatures only:
+
+```text
+// fast_text.witchy
+mode opt
+
+fn first_ref(text: &'a String) -> &'a String:
+    text
+
+pub fn first(let text: String) -> String:
+    first_ref(&text).owned()
+```
+
+```text
+// app.witchy, normal mode
+import fast_text
+
+let result = fast_text.first(text)
+```
+
+The normal caller sees an ordinary `String`-to-`String` value API. It neither
+creates a source loan nor tracks the internal reference. Every reference opened
+by the facade must close before the facade returns. The facade may return an
+owned value, a capability, or another normal-mode type, never a reference or a
+nominal value containing one.
+
+A reference-bearing opt item may still be `pub` for use by other opt modules.
+Attempting to import or call it from normal code reports:
+
+```text
+`first_ref` exposes opt-mode references and is unavailable in normal mode;
+call a reference-free facade or add `mode opt` to this file
+```
+
+There is no implicit boundary rewrite from `first(text)` to `first_ref(&text)`,
+and no automatic materialization of a reference result in normal code. Both
+would make cost and loan creation depend on hidden overload or adapter behavior.
+
+An opt caller may pass an owned value to a normal API only through the existing
+permitted standard-library boundary or a typed adapter. A reference must be
+materialized with `.owned()` before entering a normal value parameter. Normal
+code therefore never acquires a loan, even indirectly through a function value,
+trait witness, nominal aggregate, `Dynamic`, reflection, or generated wrapper.
+
+The existing mode rules remain: opt imports are transitive across user modules,
+and reference-free normal-to-opt calls use the ordinary value access envelope.
+Reference syntax itself counts as an explicit opt access contract, so an opt
+parameter of `&'a T` or `&'a mut T` does not also require a `let`, `var`, or
+`own` convention.
+
+This boundary supersedes RFC-0083's rule that a normal caller may receive and
+locally track a borrowed result, and RFC-0110's rule that such a result retains
+its loan in the normal caller. Those rules preserved safety but imposed hidden
+borrow-checker reasoning on normal code. Under this RFC, the opt implementation
+must close or materialize the reference behind an owned facade instead.
+
 ## Lifetime binding and owner relations
 
 ### Implicit quantification
@@ -434,7 +540,7 @@ from a declared relation in an input aggregate:
 fn forward(value: &'a String) -> &'a String:
     value
 
-fn bad(value: String) -> &'a String:
+fn bad(own value: String) -> &'a String:
     &value                         // error: 'a has no surviving input owner
 ```
 
@@ -515,6 +621,10 @@ exclusive-reference aggregate transfers its obligations and kills the source.
 
 ## Interaction with ownership features
 
+These combinations are checked only in `mode opt`. Normal code retains ordinary
+value types and the optional `let`, `var`, `own`, `move`, and region knobs it
+already has; none of those forms requires explicit lifetime reasoning.
+
 ### `unique`
 
 `unique T` remains an owned-value contract. It says that the logical value has
@@ -538,10 +648,10 @@ let parser = parse(&bytes)                          // borrow creation retains u
 
 `unique &'a T`, `&'a unique T`, `unique &'a mut T`, and corresponding
 `local unique` forms are rejected as category errors. The optimizer records
-whether the owner was unique when the borrow opened. In normal mode, an
-exclusive borrow may repair a non-unique runtime allocation before mutation.
-In `mode opt`, a no-copy requirement must be proven at borrow creation and the
-diagnostic points to the owner provenance.
+whether the owner was unique when the borrow opened. The no-copy requirement
+must be proven at borrow creation and the diagnostic points to the owner
+provenance. Normal mode retains its ordinary copy-correct mutation path because
+it has no source-level exclusive borrow.
 
 ### `local unique`
 
@@ -631,8 +741,8 @@ An exclusive borrow opens in this order:
 
 1. evaluate the owner place and projection coordinates once;
 2. reject any overlapping live access;
-3. repair runtime sharing when normal-mode value semantics require it;
-4. create an affine reference to the resulting logical place; and
+3. prove uniquely mutable runtime storage without repair;
+4. create an affine reference to the logical place; and
 5. keep the owner and every competing path inaccessible until the reference
    closes or moves.
 
@@ -708,7 +818,7 @@ Origins are propagated at CFG points so impossible sibling-path loans do not
 remain live:
 
 ```text
-fn get_or_insert(table: &'a mut Dict(String, Value), key: String) -> &'a Value:
+fn get_or_insert(table: &'a mut Dict(String, Value), let key: String) -> &'a Value:
     match table.get_ref(&key):
         Some(value) -> value
         None ->
@@ -770,6 +880,10 @@ Neither reference kind may be:
 - captured by an escaping closure or task; or
 - held live across `await` or `yield` in the initial implementation.
 
+Neither kind may cross into a normal-mode type environment. This is stricter
+than merely erasing the lifetime: the reference kind, owner relation, and affine
+state all remain opt-only and must close or materialize at the boundary.
+
 Synchronous calls before or after suspension remain valid. A future scoped
 concurrency or coroutine RFC may relax these restrictions only with explicit
 owner, cancellation, and cleanup contracts.
@@ -807,11 +921,14 @@ relations:
 ```
 
 Direct-storage lowering is legal only when checked-place, uniqueness, overlap,
-escape, layout, and cleanup proofs hold. Otherwise normal mode may repair or use
-a shadow. `mode opt` rejects a missing no-copy proof when the API or local
-optimization contract requires one.
+escape, layout, and cleanup proofs hold. Compiled opt code rejects a missing
+no-copy proof. The interpreter and forced-copy differential backend may use a
+shadow solely as a semantic oracle; that representation does not weaken the
+compiled opt contract.
 
-The interpreter is the semantic oracle and compiled Wasm must agree on values,
+Reference-free normal code keeps its existing forced-copy-correct semantics and
+cannot be rejected because an internal optimization loan was imprecise. The
+interpreter is the semantic oracle and compiled Wasm must agree on values,
 owner mutations, `var` write-backs, traps, accepted programs, and rejection
 boundaries. Cleanup covers fallthrough, explicit return, `?`, branches, loops,
 reborrow end, affine move, and generated adapters.
@@ -848,9 +965,21 @@ and pass a mutable borrow with `&mut text`
 The `String('a)` diagnostic is emitted only when `String` declares no nominal
 lifetime parameter. Declared forms such as `Parser('a)` remain valid.
 
+In a normal file, reference syntax stops at the mode boundary:
+
+```text
+explicit references are available only in `mode opt` files;
+normal Witchy uses owned values and does not require lifetime annotations
+```
+
+The compiler must not follow that error with origin, loan, reborrow, or lifetime
+diagnostics. Normal code that never writes an opt-only construct receives no
+reference diagnostic, including when it calls a reference-free facade in an opt
+module.
+
 ## Migration
 
-Acceptance triggers one AST-based migration:
+Acceptance triggers one AST-based migration of `mode opt` files:
 
 | Legacy declaration | Reference-model declaration |
 |---|---|
@@ -880,6 +1009,12 @@ calls, quoted types, generated fixtures, and documentation examples. It reports
 rather than guesses when owner mutability, overload resolution, macro output, or
 legacy convention combinations are ambiguous.
 
+The migration never introduces `mode opt` into a normal file. A legacy
+reference-bearing declaration outside opt mode is reported for architectural
+repair: move the implementation into an opt module and expose an owned facade,
+or retain an ordinary value implementation. This prevents a mechanical rewrite
+from spreading reference reasoning into normal code.
+
 The compiler, formatter, reflection vocabulary, `meta.type_*` builders,
 highlighter, language server, stdlib docs, book, spec, examples, differential
 fixtures, serialized metadata, and cached modules change in the same cut. The
@@ -896,18 +1031,24 @@ bodies are not rewritten.
 - Freeze the complete RFC-0083 and RFC-0112 positive and negative corpus.
 - Add explicit shared, exclusive, reborrow, affine-move, aggregate, conditional,
   lending, erasure, and boundary fixtures before changing syntax.
+- Add a frozen normal-mode corpus that contains no reference syntax and must
+  produce no lifetime, loan, reborrow, or hidden-reference diagnostics.
+- Add normal-to-opt facade fixtures and reject every direct reference-bearing
+  crossing before implementing reference internals.
 - Build a small reference semantics model over owner roots, projections,
   reference moves, reborrows, and logical write-back shadows.
 - Use interpreter behavior as the language oracle and the model as the loan
   checker oracle for new exclusive cases.
 - Record an acceptance ledger divided into syntax, type checking, callable
   identity, interpreter, Wasm, tooling, migration, docs, and evidence tracks.
-- Record checker time, fact counts, peak memory, root counters, repair copies,
-  allocations, and parser/iterator throughput on a pinned corpus.
+- Record checker time, fact counts, peak memory, root counters, rejected no-copy
+  proofs, allocations, and parser/iterator throughput on a pinned corpus.
 
 ### Phase 1: syntax and checked types
 
 - Parse `&'a T`, `&'a mut T`, `&place`, `&mut place`, and `*reference`.
+- Gate every reference and nominal-lifetime form on the declaring file's
+  `mode opt` directive before lifetime checking begins.
 - Add explicit shared/exclusive reference nodes to AST, checked types, runtime
   types, reflection, quotations, and callable identities.
 - Preserve nominal lifetime arguments while deleting direct lifetime lifting.
@@ -915,6 +1056,8 @@ bodies are not rewritten.
 - Update aliases, formatter, linker, type resolution, derive expansion,
   highlighter, LSP, diagnostics, and metadata encoding.
 - Add parser-independent signature tests for every valid and invalid form.
+- Ensure normal-mode syntax failures emit only the concise mode-boundary
+  diagnostic and never cascade into borrow-checker terminology.
 
 ### Phase 2: shared-reference migration
 
@@ -926,6 +1069,10 @@ bodies are not rewritten.
   function values, traits, witnesses, generated adapters, and tail dispatch.
 - Prove matched legacy and migrated fixtures have identical acceptance, owner
   sets, values, roots, and materialization counters.
+- Filter reference-bearing functions, types, traits, aliases, and generated
+  adapters from the interface presented to a normal importer.
+- Require explicit owned facades for every normal-to-opt crossing and prove
+  their internal references close before return.
 
 ### Phase 3: exclusive references
 
@@ -951,7 +1098,8 @@ bodies are not rewritten.
 ### Phase 5: migration and repository cut
 
 - Implement `witchy migrate references` and review every ambiguity report.
-- Rewrite the repository in one cut with no accepted legacy syntax.
+- Rewrite opt files in one cut with no accepted legacy syntax and introduce no
+  reference syntax or `mode opt` directive into normal files.
 - Update `spec/language.md`, `spec/performance.md`, ownership and performance
   book chapters, stdlib docs, reflection docs, and runnable examples.
 - Update generated manifests, censuses, snapshots, and metadata with the slice
@@ -964,56 +1112,91 @@ bodies are not rewritten.
 
 ## Acceptance criteria
 
-1. `&'a T`, `&'a mut T`, `&place`, `&mut place`, and `*reference` parse,
-   format, reflect, quote, highlight, and survive every compiler stage.
-2. Reference types work uniformly for built-ins, type variables, nominal types,
-   fields, tuples, nested containers, parameters, results, aliases, traits, and
-   function types without direct `T('a)` lifting.
-3. Nominal `Parser('a)` remains distinct from `&'a Parser`; the parser, kind
-   checker, formatter, reflection, and migration tool preserve that distinction.
-4. Every migrated RFC-0083/RFC-0112 fixture has matched acceptance, diagnostic
+1. A normal file cannot name, create, dereference, store, infer, reflect, accept,
+   or return a reference or nominal lifetime. An attempted explicit form emits
+   one mode-boundary diagnostic without lifetime or loan follow-ons.
+2. A normal program containing no opt-only syntax receives no reference-related
+   diagnostic, including when internal optimization facts are imprecise or it
+   calls a reference-free facade in an opt module. Missing proofs take the
+   existing copy-correct path.
+3. No reference-bearing function, type, trait, alias, closure, existential,
+   `Dynamic` value, reflection value, or generated adapter enters the interface
+   presented to a normal importer. Cross-mode calls use owned signatures only,
+   and every facade reference closes before return.
+4. Inside `mode opt`, `&'a T`, `&'a mut T`, `&place`, `&mut place`, and
+   `*reference` parse, format, reflect, quote, highlight, and survive every
+   compiler stage. Reference types themselves satisfy the mode's explicit
+   parameter-access requirement.
+5. Opt reference types work uniformly for built-ins, type variables, nominal
+   types, fields, tuples, nested containers, parameters, results, aliases,
+   traits, and function types without direct `T('a)` lifting.
+6. Opt nominal `Parser('a)` remains distinct from `&'a Parser`; parsing, kind
+   checking, formatting, reflection, and migration preserve that distinction,
+   while both forms remain unavailable in normal mode.
+7. Every migrated RFC-0083/RFC-0112 fixture has matched acceptance, diagnostic
    intent, interpreter value, Wasm value, owner sets, root balance, and
    materialization counters.
-5. Shared references copy and reborrow safely, permit overlapping reads, and
+8. Shared references copy and reborrow safely, permit overlapping reads, and
    reject overlapping mutation, exclusive borrow, `var` access, consumption,
    move, drop, and erasing escape until path-sensitive final use.
-6. Exclusive references are affine, allow mutation through the referent, reject
-   every competing overlap, suspend parent references during reborrow, and
-   transfer all loan obligations on move.
-7. Mutable-to-shared conversion relinquishes exclusive capability through the
-   converted handle; shortening never lengthens an owner relation.
-8. `unique T`, `local unique T`, and `frozen T` retain owned-storage meanings.
-   Invalid qualifier/reference combinations receive category-specific
-   diagnostics, and `&mut frozen T` is rejected.
-9. `let`, `var`, and `own` remain distinct from reference kinds in callable
-   identity. Applying them to a reference handle affects the handle, never
-   silently changes referent access.
-10. No cast, trait witness, closure, adapter, existential edge, or tail call
+9. Exclusive references are affine, allow mutation through the referent, reject
+   every competing overlap, suspend parent references during reborrow, transfer
+   obligations on move, and reject borrow creation when no-copy uniqueness
+   cannot be proven.
+10. Mutable-to-shared conversion relinquishes exclusive capability through the
+    converted handle; shortening never lengthens an owner relation.
+11. `unique T`, `local unique T`, and `frozen T` retain owned-storage meanings.
+    Invalid qualifier/reference combinations receive category-specific
+    diagnostics, and `&mut` of frozen storage is rejected.
+12. `let`, `var`, and `own` remain distinct from reference kinds in callable
+    identity. Applying them to a reference handle affects the handle, never
+    silently changes referent access.
+13. No cast, trait witness, closure, adapter, existential edge, or tail call
     erases lifetime, shared/exclusive kind, affinity, parameter convention, or
-    ownership requirements.
-11. Conditional-return and lending-iterator fixtures compile under
+    ownership requirements inside the opt graph.
+14. Conditional-return and lending-iterator fixtures compile under
     point-sensitive analysis without weakening negative cases. Rejections name
     the exact reaching loan and conflict point.
-12. Borrowed nominal aggregates, nested projections, multiple owner relations,
+15. Borrowed nominal aggregates, nested projections, multiple owner relations,
     shared-reference containers, and affine-reference containers preserve exact
     roots through copy or move, overwrite, destructure, iteration, return, and
     drop.
-13. Interpreter shadows, forced-copy Wasm, and optimized direct-place Wasm agree
+16. Interpreter shadows, forced-copy Wasm, and optimized direct-place Wasm agree
     on values, owner mutations, `var` write-backs, traps, and accepted programs.
-    Checked-heap, poison, no-reuse, and UAF tests detect stale roots, double
-    commits, premature release, aliasing, and leaks.
-14. Async, generator, task, channel, escaping closure, `Dynamic`, serialization,
-    existential, and host-capability boundaries either preserve every reference
-    and lease explicitly or reject with a scoped/materialization remedy.
-15. The migration command rewrites every unambiguous declaration and call,
+    Compiled opt code performs no repair copy when an exclusive-reference
+    contract requires direct storage. Heap checks detect stale roots, premature
+    release, aliasing, and leaks.
+17. Async, generator, task, channel, escaping closure, serialization, and
+    host-capability boundaries either preserve every opt relation and lease
+    explicitly within the opt graph or reject with a scoped/materialization
+    remedy; none can tunnel a reference into normal code.
+18. The migration command rewrites every unambiguous opt declaration and call,
     reports every ambiguous case, preserves nominal lifetime arguments, leaves
-    no accepted legacy syntax, and validates a clean metadata rebuild.
-16. Reference-free bodies show no material checker-time regression. The pinned
-    corpus reports checker time, loan and subset-edge counts, peak memory,
-    allocations, repair copies, root operations, and execution throughput before
-    and after each precision phase.
+    no accepted legacy syntax, and never adds reference syntax or `mode opt` to
+    a normal file.
+19. Reference-free normal bodies show no material checker-time regression. The
+    pinned opt corpus reports checker time, loan and subset-edge counts, peak
+    memory, rejected no-copy proofs, allocations, root operations, and execution
+    throughput before and after each precision phase.
 
 ## Alternatives
+
+### References throughout Witchy
+
+Making references ordinary language-wide types gives every module one uniform
+surface, but makes value-oriented programmers understand borrows, lifetimes,
+reborrowing, and affine errors merely to consume libraries. It also lets an opt
+API impose loan restrictions on an otherwise normal caller. That contradicts
+the defining mode split: normal Witchy is the high-level value language;
+`mode opt` is the deliberate lower-level escape hatch.
+
+### Let normal callers consume opt references implicitly
+
+The compiler could insert `&` on arguments and `.owned()` on results at a mode
+boundary. This hides syntax but not complexity: cost depends on overload
+resolution, an owner may become unexpectedly unavailable, and diagnostics still
+need to explain hidden loans. An explicit owned facade gives normal callers a
+complete value contract and keeps all reference reasoning inside the opt module.
 
 ### `let('a) text: T` plus `T('a)`
 
@@ -1073,12 +1256,18 @@ keeps the solver implementation replaceable.
 
 ## Drawbacks
 
-- `&`, `mut`, and `*` add syntax and make borrowing visible at call sites.
+- `&`, `mut`, and `*` add syntax and make borrowing visible at opt call sites.
 - First-class `&mut` introduces mutation through references and affine values,
-  expanding Witchy's previous value-only source semantics.
+  expanding opt-mode source semantics while leaving normal semantics unchanged.
 - Reference-typed APIs require rules for moves, reborrows, aggregate storage,
   closure capture, traits, async boundaries, reflection, and every callable
   adapter.
+- Opt libraries that serve normal callers must maintain explicit owned facades;
+  a reference-heavy implementation cannot leak its most specialized API across
+  that boundary.
+- A normal caller may pay materialization at an owned facade even when an opt
+  caller could retain a view. That cost is deliberate and visible in the facade
+  contract.
 - The migration changes declarations and calls and is intentionally breaking.
 - Explicit borrow expressions are noisier than convention-directed implicit
   borrowing for simple read-only calls.
@@ -1117,6 +1306,12 @@ keeps the solver implementation replaceable.
 > mechanics, overloaded nominal type application, and left exclusive access on
 > a separate mechanism. This revision adopts explicit `&'a T` and `&'a mut T`
 > reference types, explicit borrow expressions, and affine mutable references.
+>
+> 2026-08-13 mode-boundary revision: explicit references are confined to
+> `mode opt`. Normal files retain reference-free value semantics, cannot receive
+> reference-bearing interfaces or hidden-loan diagnostics, and cross into opt
+> modules only through owned facades. Exclusive opt borrows require a proven
+> no-copy path rather than silently repairing sharing.
 
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.
