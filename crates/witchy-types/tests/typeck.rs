@@ -3390,4 +3390,43 @@ fn main():
             "{aggregate}"
         );
     }
+
+    #[test]
+    fn borrowed_nominal_list_overwrite_closes_and_reopens_owned_roots() {
+        check_str(
+            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String, value: Int) -> Cursor('a):\n    Cursor(input, value)\n\nfn replace(left: let('a) String, right: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(left, 7)]\n    let cursors = [make(right, 9)]\n    list.length(cursors)\n",
+        )
+        .expect("a list of borrowed shells can be reassigned to another borrowed shell list in one function");
+    }
+
+    #[test]
+    fn borrowed_nominal_list_drop_releases_its_checked_root_companions() {
+        check_str(
+            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String, value: Int) -> Cursor('a):\n    Cursor(input, value)\n\nfn clear(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input, 7)]\n    let cursors = []\n    0\n",
+        )
+            .expect("dropping the last borrowed shell from a list via assignment must close its root");
+    }
+
+    #[test]
+    fn borrowed_nominal_nested_list_supports_borrowed_shell_roots() {
+        check_str(
+            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String, value: Int) -> Cursor('a):\n    Cursor(input, value)\n\nfn nested(input: let('a) String) -> Int:\n    list.at(list.at([[make(input, 7)]], 0), 0).offset\n",
+        )
+        .expect("nested borrowed-shell list access now projects through list-at aliases");
+    }
+
+    #[test]
+    fn borrowed_nominal_list_relation_erasing_through_generic_function_is_rejected() {
+        let err = check_str(
+            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n\nfn erase(owner: let('a) String) -> Int:\n    let values: List(Cursor('a)) = [Cursor(owner)]\n    let take: fn(List(a)) -> Int = fn(xs): list.length(xs)\n    take(values)\n",
+        )
+            .expect_err("typed function values must not erase borrowed-shell list roots");
+        assert!(
+            err.contains("erases")
+                || err.contains("BorrowRelation")
+                || err.contains("parameter")
+                || err.contains("expected `a`, found `Cursor('a)`"),
+            "{err}"
+        );
+    }
 }

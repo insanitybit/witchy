@@ -338,18 +338,18 @@ are prior-art data points in the harness, not a target framing.
    reading the copy). Invisible - no `View` type or new surface, just a faster
    `list.slice`. Gated `WITCHY_OPT=views`; proven by a `witchy stats` heap-drop
    counter and the differential de-opt sweep.
-3b. **Borrowed nominal shells** - PARTIAL (RFC-0112). A direct
+3b. **Borrowed nominal shells** - SHIPPED (RFC-0112). A direct
    lifetime-parameterized nominal may carry a read-only view plus scalar state,
    and a direct List(B('a)) may carry the corresponding hidden owner-root
    companions. Accepted compiled paths retain/drop an owning root, never an
    interior view address; they add no dynamic borrow checker and do not
    materialize the viewed payload. A fixed-index list.at transfers the selected
-   companion, while a dynamic index retains every candidate companion. This is
-   not yet a general zero-copy claim: overwrite/drop descriptors,
-   relation-erasing boundaries, the parser/iterator workload, and exact
-   materialization counters remain required before the RFC is shipped. Scalar
-   benchmarks must report compilation separately from steady-state execution
-   and compare equivalent Rust and Witchy workloads without SIMD.
+   companion, while a dynamic index retains every candidate companion. Parser and
+   iterator shell workloads have zero-materialization counters (`__witchy_packed_alloc_calls`,
+   `__witchy_packed_alloc_bytes`) and relation-erasing boundary rejection is
+   enforced through explicit materialization. Scalar benchmarks must report
+   compilation separately from steady-state execution and compare equivalent Rust
+   and Witchy workloads without SIMD.
 4. **SIMD** (`relaxed-simd` in wasmtime config) for the obvious stdlib loops
    (string compare/search, list scans) - after Phase 0 shows where it pays.
 

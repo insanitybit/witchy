@@ -230,6 +230,18 @@
             &access,
             std::slice::from_ref(&direct),
         ));
+        assert!(authenticated_generic_materializer(
+            "main.Owned__a__owned_companion",
+            0,
+            &access,
+            std::slice::from_ref(&direct),
+        ));
+        assert!(!authenticated_generic_materializer(
+            "main.Owned__b__owned_companion",
+            0,
+            &access,
+            std::slice::from_ref(&direct),
+        ));
 
         let shell = BorrowSource {
             borrower_projection: LoanProjection {
@@ -241,7 +253,13 @@
             "borrow.Owned__a__owned",
             0,
             &access,
-            &[shell],
+            &[shell.clone()],
+        ));
+        assert!(!authenticated_generic_materializer(
+            "main.Owned__a__owned_companion",
+            0,
+            &access,
+            &[shell.clone()],
         ));
         assert!(!authenticated_generic_materializer(
             "main.Owned__a__owned",

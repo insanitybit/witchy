@@ -951,9 +951,9 @@ constructed, read with `list.at`, and traversed with `for`. The compiler keeps
 hidden owner-root companions for the list and transfers the selected companions
 to a value read from `list.at`; a dynamic index conservatively retains every
 possible element root. A loop binder is a read-only borrowed shell and keeps
-the list companions live for the iterator expression. List mutation, nesting,
-`Dict`, and lifetime-erasing boundaries remain rejected until their element
-overwrite/drop representations are specified.
+the list companions live for the iterator expression. Overwrite, drop, and nested
+containers are now supported; relation-erasing boundaries remain rejected unless
+explicitly materialized through a typed owned-companion conversion.
 
 Binding a returned view loans the corresponding owner until the view's final
 use. During that interval the owner may be read, but it may not be moved,

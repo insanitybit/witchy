@@ -1,5 +1,10 @@
 //! RFC-0112 structural callable-owner evidence.
 
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::Mutex;
+
+use witchy::runtime::{Capabilities, Runtime};
+use witchy::{codegen, interpreter};
 use witchy_syntax::ast::{Expr, Function, Item, Module, Stmt, Type};
 use witchy_types::access::{
     AccessKind, AccessQualifier, AccessSignature, LoanProjection, LoanProjectionStep,
@@ -63,6 +68,36 @@ fn function<'module>(module: &'module Module, name: &str) -> &'module Function {
             _ => None,
         })
         .unwrap_or_else(|| panic!("missing function `{name}`"))
+}
+
+fn run_compiled_with_runtime_checks(
+    checked: &witchy_types::pipeline::CheckedModule,
+    env: RuntimeCheckEnv,
+) -> (Vec<String>, i64, i64) {
+    with_runtime_check_env(env, || {
+        let bytes = codegen::compile_checked_module_binary(checked)
+            .expect_lowered("compile RFC-0112 parity fixture");
+        let mut runtime = Runtime::batch().expect("runtime");
+        let mut actor = runtime
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    ..Default::default()
+                },
+                256,
+            )
+            .expect("spawn RFC-0112 parity fixture");
+        actor.run().expect("run RFC-0112 parity fixture");
+        let packed_alloc_calls = actor.packed_alloc_calls().unwrap_or(0);
+        let packed_alloc_bytes = actor.packed_alloc_bytes().unwrap_or(0);
+        (actor.output(), packed_alloc_calls, packed_alloc_bytes)
+    })
+}
+
+fn run_compiled(checked: &witchy_types::pipeline::CheckedModule) -> Vec<String> {
+    run_compiled_with_runtime_checks(checked, RuntimeCheckEnv::default()).0
 }
 
 fn binding<'module>(module: &'module Module, name: &str) -> &'module Expr {
@@ -209,6 +244,160 @@ fn assert_runtime_holder_construction_is_gated(module: &Module, static_name: &st
     // separately accepted lowering contract.
 }
 
+#[derive(Copy, Clone)]
+struct RuntimeCheckEnv {
+    heap_check: bool,
+    uaf_check: bool,
+}
+
+impl RuntimeCheckEnv {
+    const fn default() -> Self {
+        Self {
+            heap_check: false,
+            uaf_check: false,
+        }
+    }
+
+    const fn checked_heap() -> Self {
+        Self {
+            heap_check: true,
+            uaf_check: false,
+        }
+    }
+
+    const fn checked_heap_uaf() -> Self {
+        Self {
+            heap_check: true,
+            uaf_check: true,
+        }
+    }
+}
+
+static RUNTIME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn with_runtime_check_env<R>(env: RuntimeCheckEnv, action: impl FnOnce() -> R) -> R {
+    let _guard = RUNTIME_ENV_LOCK.lock().unwrap();
+
+    let previous = [
+        ("WITCHY_HEAP_CHECK".to_string(), std::env::var_os("WITCHY_HEAP_CHECK")),
+        ("WITCHY_UAF_CHECK".to_string(), std::env::var_os("WITCHY_UAF_CHECK")),
+    ];
+
+    if env.heap_check {
+        unsafe {
+            std::env::set_var("WITCHY_HEAP_CHECK", "1");
+        }
+    } else {
+        unsafe {
+            std::env::remove_var("WITCHY_HEAP_CHECK");
+        }
+    }
+    if env.uaf_check {
+        unsafe {
+            std::env::set_var("WITCHY_UAF_CHECK", "1");
+        }
+    } else {
+        unsafe {
+            std::env::remove_var("WITCHY_UAF_CHECK");
+        }
+    }
+
+    let outcome = panic::catch_unwind(AssertUnwindSafe(action));
+
+    for (name, previous) in previous {
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var(name, value);
+            },
+            None => unsafe {
+                std::env::remove_var(name);
+            },
+        }
+    }
+
+    match outcome {
+        Ok(value) => value,
+        Err(payload) => panic::resume_unwind(payload),
+    }
+}
+
+const PARSER_ITERATOR_WORKLOAD: &str = r#"mode opt
+type Parser('a):
+    input: View(String, 'a)
+    offset: Int
+
+type TokenIter('a):
+    input: View(String, 'a)
+    index: Int
+
+type Token('a):
+    text: View(String, 'a)
+    width: Int
+
+fn parser(input: let('a) String) -> Parser('a):
+    Parser(input, 2)
+
+fn tokens(input: let('a) String) -> TokenIter('a):
+    TokenIter(input, 3)
+
+fn scan(input: let('a) String) -> Int:
+    let p = parser(input)
+    let it = tokens(p.input)
+    let values: List(Token('a)) = [Token(p.input, p.offset), Token(it.input, it.index)]
+    var total = 0
+    for token in values:
+        total = total + token.width
+    total
+
+fn main(console: Console):
+    console.print("${scan(\"source\")}")
+"#;
+
+const ROOT_LIFECYCLE_WORKLOAD: &str = r#"mode opt
+type Cursor('a):
+    view: View(String, 'a)
+    offset: Int
+
+fn make(input: let('a) String) -> Cursor('a):
+    Cursor(input, 7)
+
+fn early(input: let('a) String) -> Int:
+    var cursor = make(input)
+    return cursor.offset
+
+fn branch(input: let('a) String, take: Bool) -> Int:
+    var cursor = make(input)
+    if take:
+        return cursor.offset
+    cursor.offset
+
+fn looped(input: let('a) String) -> Int:
+    var cursor = make(input)
+    var i = 0
+    while (i < 3):
+        i = i + 1
+    cursor.offset + i
+
+fn fail() -> Result(Int, String):
+    Err("stop")
+
+fn finish(input: let('a) String) -> Result(Int, String):
+    var cursor = make(input)
+    let value = fail()?
+    Ok(cursor.offset + value)
+
+fn main(console: Console):
+    let input = "root"
+    console.print("${early(input)}")
+    console.print("${branch(input, true)}")
+    console.print("${branch(input, false)}")
+    console.print("${looped(input)}")
+    let result = match finish(input):
+        Ok(value) -> value
+        Err(_) -> 0
+    console.print("${result}")
+"#;
+
 #[test]
 fn callable_shapes_share_one_exact_structural_owner_identity() {
     let parsed = witchy_syntax::parser::parse_module(CALLABLE_OWNER_MATRIX)
@@ -283,4 +472,64 @@ fn relation_changing_callable_ascription_is_rejected() {
         diagnostic,
         "function value `wrong` erases or changes its ownership/access contract (parameter 1 does not preserve BorrowRelation)"
     );
+}
+
+#[test]
+fn borrowed_parser_and_iterator_shells_match_interpreter_and_wasm_without_materialization() {
+    let checked = witchy::resolve_std_only_checked(PARSER_ITERATOR_WORKLOAD)
+        .expect("resolve parser/iterator fixture");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpreter RFC-0112 parser/iterator fixture");
+
+    let runs = [
+        ("default", RuntimeCheckEnv::default()),
+        ("checked-heap", RuntimeCheckEnv::checked_heap()),
+        ("checked-heap-and-uaf", RuntimeCheckEnv::checked_heap_uaf()),
+    ];
+
+    for (label, env) in runs {
+        let (compiled, packed_alloc_calls, packed_alloc_bytes) =
+            run_compiled_with_runtime_checks(&checked, env);
+        assert_eq!(
+            compiled,
+            interpreted,
+            "compiled parser/iterator fixture diverges from interpreter oracle under {label}"
+        );
+        assert_eq!(
+            packed_alloc_calls,
+            0,
+            "packed allocation calls must stay zero for parser/iterator shell under {label}"
+        );
+        assert_eq!(
+            packed_alloc_bytes,
+            0,
+            "packed allocation bytes must stay zero for parser/iterator shell under {label}"
+        );
+    }
+}
+
+#[test]
+fn borrowed_shell_root_lifecycle_holds_under_checked_heap_and_uaf_modes() {
+    let checked = witchy::resolve_std_only_checked(ROOT_LIFECYCLE_WORKLOAD)
+        .expect("resolve borrowed shell lifecycle fixture");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpreter RFC-0112 root-lifecycle fixture");
+    let expected = vec!["7", "7", "7", "10", "0"];
+    assert_eq!(interpreted, expected, "interpreter RFC-0112 root-lifecycle fixture");
+
+    let runs = [
+        ("checked-heap", RuntimeCheckEnv::checked_heap()),
+        ("checked-heap-and-uaf", RuntimeCheckEnv::checked_heap_uaf()),
+    ];
+    for (label, env) in runs {
+        let compiled = run_compiled_with_runtime_checks(&checked, env).0;
+        assert_eq!(
+            compiled,
+            expected,
+            "compiled root-lifecycle fixture diverges from interpreter under {label}"
+        );
+    }
+
+    let compiled = run_compiled(&checked);
+    assert_eq!(compiled, expected, "default compiled root-lifecycle fixture diverges from interpreter");
 }

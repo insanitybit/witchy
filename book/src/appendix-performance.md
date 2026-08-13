@@ -264,6 +264,6 @@ after the write-back reads it and then retains the replacement root.
 `List(B('a))` is supported for a direct borrowed nominal `B`: list literals,
 `list.at`, and `for` traversal preserve hidden owner companions without copying
 the viewed payload. A dynamic `list.at` deliberately retains every possible
-element owner, which is conservative and correct. Mutating such a list or
-passing it through a relation-erasing boundary remains unavailable until the
-compiler has per-element overwrite/drop descriptors.
+element owner, which is conservative and correct. Overwrite, drop, and nested list
+containers are now supported; relation-erasing boundaries remain rejected until an
+owned-companion conversion explicitly materializes the value.

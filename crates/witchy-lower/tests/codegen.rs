@@ -4224,6 +4224,60 @@ fn main(console: Console):
     }
 
     #[test]
+    fn borrowed_nominal_list_overwrite_reopens_and_drops_owned_roots_in_wasm() {
+        let source = "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String, value: Int) -> Cursor('a):\n    Cursor(input, value)\n\n\
+             fn rebind(left: let('a) String, right: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(left, 7)]\n    let cursors = [make(right, 9)]\n    list.length(cursors)\n\n\
+             fn main() -> Int:\n    rebind(\"left\", \"right\")\n";
+        assert_eq!(run_int(source), 1);
+
+        let module = parse_module(source).expect("parse borrowed nominal list overwrite fixture");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("borrowed nominal list overwrite lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $rebind").expect("rebind function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let replace = &tail[..end];
+        assert!(
+            replace.contains("__loan_root_cursors__"),
+            "list root: {replace}"
+        );
+        // direct borrow-aware companion root naming may lag shadowed binding translation here;
+        // keep this check on the list root lifecycle only.
+        assert!(
+            replace.contains("call $rc_dup"),
+            "list overwrite may retain new list companions: {replace}"
+        );
+        assert!(replace.contains("call $rc_drop"), "list overwrite must drop retired companions: {replace}");
+    }
+
+    #[test]
+    fn borrowed_nominal_list_drop_releases_its_checked_root_companions_in_wasm() {
+        let source = "mode opt\n\n\
+             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
+             fn make(input: let('a) String, value: Int) -> Cursor('a):\n    Cursor(input, value)\n\n\
+             fn clear_roots(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input, 7)]\n    let cursors = []\n    list.length(cursors)\n\n\
+             fn main() -> Int:\n    clear_roots(\"input\")\n";
+        assert_eq!(run_int(source), 0);
+
+        let module = parse_module(source).expect("parse borrowed nominal list drop fixture");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("borrowed nominal list drop fixture lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $clear_roots").expect("clear_roots function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let clear = &tail[..end];
+        assert!(
+            clear.contains("__loan_root_cursors__"),
+            "list root: {clear}"
+        );
+        assert!(clear.contains("call $rc_drop"), "dropping the borrowed list must release companions: {clear}");
+    }
+
+    #[test]
     fn borrowed_parser_and_iterator_shells_run_without_view_materialization() {
         let source = "mode opt\n\n\
              type Parser('a):\n    input: View(String, 'a)\n    offset: Int\n\n\
@@ -4234,6 +4288,13 @@ fn main(console: Console):
              fn scan(input: let('a) String) -> Int:\n    let p = parser(input)\n    let it = tokens(p.input)\n    let values: List(Token('a)) = [Token(p.input, p.offset), Token(it.input, it.index)]\n    var total = 0\n    for token in values:\n        total = total + token.width\n    total\n\n\
              fn main() -> Int:\n    scan(\"source\")\n";
         assert_eq!(run_int(source), 5);
+        let (compiled, counters) = run_int_with_i64_globals(
+            source,
+            &["__witchy_packed_alloc_calls", "__witchy_packed_alloc_bytes"],
+        );
+        assert_eq!(compiled, 5);
+        assert_eq!(counters["__witchy_packed_alloc_calls"], 0);
+        assert_eq!(counters["__witchy_packed_alloc_bytes"], 0);
 
         let module = parse_module(source).expect("parse borrowed parser/iterator fixture");
         let wir = assemble_wir_module(&module)

@@ -32,7 +32,8 @@
 use foldhash::{HashMap, HashMapExt as _};
 
 use witchy_syntax::ast::{
-    Block, Convention, Expr, Function, Item, Module, Param, Pattern, Stmt, Type, TypeQual, UnOp,
+    is_lifetime_param, Block, Convention, Expr, Function, Item, Module, Param, Pattern, Stmt,
+    Type, TypeQual, UnOp,
 };
 
 pub use crate::access::{LoanProjection, LoanProjectionStep};
@@ -1362,41 +1363,74 @@ fn authenticated_non_escaping_generic_read(
 /// without retaining any relation to the borrowed argument. Authenticate the
 /// compiler-generated callable identity from its exact generic leaf so neither
 /// a user-defined `owned` method nor a lookalike mangled suffix is trusted.
+fn parse_generic_materializer_name(identity: &str) -> Option<(&str, bool)> {
+    let Some(core) = identity.strip_prefix("Owned__") else {
+        return None;
+    };
+    if core.ends_with("__owned_companion") {
+        let generic = core
+            .strip_suffix("__owned_companion")
+            .expect("suffix check ensures strip works");
+        return Some((generic, true));
+    }
+    core.strip_suffix("__owned").map(|generic| (generic, false))
+}
+
+fn generic_materializer_key(ty: &Type) -> Option<String> {
+    let ty = ty.unqualified();
+    let normalize = |name: &str| name.strip_prefix('\'').unwrap_or(name).to_owned();
+    match ty {
+        Type::Named(name, args) if args.is_empty() => Some(normalize(name)),
+        Type::Named(_, args) if args.len() == 1 => match args[0].unqualified() {
+            Type::Named(name, nested_args) if nested_args.is_empty() && is_lifetime_param(name) => {
+                Some(normalize(name))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn authenticated_generic_materializer(
     callee: &str,
     index: usize,
     access: &AccessSignature,
     sources: &[BorrowSource],
 ) -> bool {
-    if !is_std_fn(callee)
-        || index != 0
-        || access.params().len() != 1
-        || !access.borrow_relations().is_empty()
-    {
-        return false;
-    }
-
     let Some((module, identity)) = callee.rsplit_once('.') else {
         return false;
     };
-    let parameter = &access.params()[0];
-    let result = access.result();
-    let Type::Named(generic, arguments) = parameter.ty().unqualified() else {
+    let Some((generic, companion)) = parse_generic_materializer_name(identity) else {
         return false;
     };
-    let Some(mangled_generic) = identity
-        .strip_prefix("Owned__")
-        .and_then(|name| name.strip_suffix("__owned"))
-    else {
+    if !is_std_fn(callee) && !companion {
+        return false;
+    }
+    if !companion && module != "borrow" {
+        return false;
+    }
+    if index != 0 || access.params().len() != 1 || !access.borrow_relations().is_empty() {
+        return false;
+    }
+
+    let parameter = &access.params()[0];
+    let result = access.result();
+    let Some(materializer_generic) = generic_materializer_key(parameter.ty()) else {
         return false;
     };
 
-    module == "borrow"
-        && mangled_generic == generic
-        && arguments.is_empty()
-        && type_has_generic_leaf(parameter.ty())
+    if generic != materializer_generic {
+        return false;
+    }
+    if !companion && parameter.ty() != result.ty() {
+        return false;
+    }
+    if !companion && !matches!(parameter.ty().unqualified(), Type::Named(_, args) if args.is_empty()) {
+        return false;
+    }
+
+    let common = type_has_generic_leaf(parameter.ty())
         && parameter.kind() == AccessKind::OwnedImmutable
-        && parameter.ty() == result.ty()
         && parameter.qualifiers().is_empty()
         && result.qualifiers().is_empty()
         && parameter.borrow_lifetimes().is_empty()
@@ -1404,9 +1438,13 @@ fn authenticated_generic_materializer(
         && parameter.ownership().input().is_none()
         && parameter.ownership().writeback().is_none()
         && result.ownership_output().is_none()
-        && sources
-            .iter()
-            .all(|source| source.borrower_projection.steps.is_empty())
+        && sources.iter().all(|source| source.borrower_projection.steps.is_empty());
+
+    if companion {
+        common
+    } else {
+        module == "borrow" && common && parameter.ty() == result.ty()
+    }
 }
 
 fn validate_nested_fn_borrows(ty: &Type, context: &str) -> Result<(), TypeError> {
@@ -2340,6 +2378,19 @@ impl LoanCtx<'_> {
                         }
                     } else {
                         source.borrower_projection = LoanProjection::default();
+                        self.push_source(source, out);
+                    }
+                }
+            }
+            Expr::List(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    let mut item_sources = Vec::new();
+                    self.collect_alias_sources(item, live, &mut item_sources);
+                    let index_step = LoanProjection {
+                        steps: vec![LoanProjectionStep::Index(index as i64)],
+                    };
+                    for mut source in item_sources {
+                        source.borrower_projection = source.borrower_projection.extended(&index_step);
                         self.push_source(source, out);
                     }
                 }
@@ -3391,7 +3442,12 @@ fn stmt_stores_view_in_dynamic(stmt: &Stmt, view: &str) -> bool {
 }
 
 fn expr_materializes_view(expr: &Expr, view: &str) -> bool {
-    let is_owned = |name: &str| short_name(name) == "owned" || name.ends_with("__owned");
+    let is_owned = |name: &str| {
+        let short = short_name(name);
+        short == "owned"
+            || name.ends_with("__owned")
+            || parse_generic_materializer_name(short).is_some()
+    };
     match expr {
         Expr::MethodCall { receiver, method, .. } => {
             is_owned(method) && expr_root(receiver) == Some(view)

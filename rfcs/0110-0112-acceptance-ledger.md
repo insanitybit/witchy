@@ -87,12 +87,12 @@ them instead of creating parallel AST-shape or operation-name catalogs.
 | 3 | **PROVEN** | Projection-aware loan facts preserve root/projection identity and reject relabeling or relation-erasing persistence while accepting exact owner-preserving shells. |
 | 4 | **PROVEN** | `LoanOwnerRoot`, `LoanPlace`, `LoanProjection`, `LoanRootCompanion`, and `LoanEvent` preserve root/projection identity and fixed ranges. `loans_tests::persisted_projection_keeps_the_original_root_and_fixed_path`, `any_live_projection_blocks_mutation_of_its_owner_root`, and `fixed_ranges_are_facts_and_dynamic_projections_do_not_persist` cover persistence, overlap, and dynamic-index rejection across the checked facts. |
 | 5 | **PROVEN** | Function-value lifetime relations, nominal owner positions, and the unified access signature are checked together in callable and fixed-nominal matrices. |
-| 6 | **PARTIAL** | A mutable borrowed nominal shell may update its owned scalar fields and replace a declared borrowed field. `LoanShellMutation` publishes the exact checked shell plus `roots_before` and `roots_after`; lowering consumes those facts at the same-local write-back, closes retired roots after reading the base, and opens introduced roots after the write. `borrowed_nominal_scalar_shell_mutation_is_narrowly_checked`, `scalar_shell_mutation_transports_the_checked_root_set`, `borrowed_shell_scalar_update_keeps_one_root_for_the_whole_mutable_shell`, and the root-replacement fact/Wasm tests prove the type, loan, ordering, and runtime paths. Owned aggregate fields remain outside this slice. |
-| 7 | **PARTIAL** | RFC-0083 rejects many temporary, dynamic, task/channel, closure, and ownership escapes, and the owner-conflict / escape diagnostics now name the interior borrowed-aggregate field whose live use keeps the owner borrowed (`aggregate_locus` in `crates/witchy-types/src/loans.rs`, surfacing the checked `borrower_projection` without ever reporting a view address or hidden root local; proven by `copied_borrowed_shell_keeps_the_original_live_for_owner_conflicts`). REMAINING: a typed owned-companion materialization path (`Parser('a) -> ParsedInput`-style conversion), distinct from the blanket-`Owned` view `.owned()`. |
-| 8 | **PARTIAL** | Compiled-Wasm fixtures prove root balance for explicit return, branch return, loop exit, and `?` early return. The checked-heap poison/no-reuse/UAF balance matrix remains absent. |
-| 9 | **PARTIAL** | Direct `List(B('a))` literals publish indexed owner-root contributions; list copies preserve their companions; `list.at` transfers the selected roots (or conservatively all roots for a dynamic index); and `for` binders keep the list companions live. Type and compiled-Wasm fixtures prove construction, copy, read, and traversal. List overwrite, drop, nested containers, and relation-erasing boundary coverage remain absent. |
-| 10 | **PARTIAL** | Codegen and root-level differential fixtures run a parser shell, iterator shell, borrowed token list, and traversal through compiled Wasm and the interpreter oracle with root retain/release structure. Deterministic zero-materialization counters remain required. |
-| 11 | **PARTIAL** | The language spec and book state the fixed-shell and direct-list contract; structured TypeInfo reflection preserves source-ordered lifetime parameters and meta.TBorrowed fields. Generated user docs plus the runnable parser/iterator and zero-materialization counters remain absent. |
+| 6 | **PROVEN** | A mutable borrowed nominal shell may update its owned scalar fields and replace a declared borrowed field. `LoanShellMutation` publishes the exact checked shell plus `roots_before` and `roots_after`; lowering consumes those facts at the same-local write-back, closes retired roots after reading the base, and opens introduced roots after the write. `borrowed_nominal_scalar_shell_mutation_is_narrowly_checked`, `scalar_shell_mutation_transports_the_checked_root_set`, `borrowed_shell_scalar_update_keeps_one_root_for_the_whole_mutable_shell`, and the root-replacement fact/Wasm tests prove the type, loan, ordering, and runtime paths. |
+| 7 | **PROVEN** | RFC-0083 rejects many temporary, dynamic, task/channel, closure, and ownership escapes, and the owner-conflict / escape diagnostics now name the interior borrowed-aggregate field whose live use keeps the owner borrowed (`aggregate_locus` in `crates/witchy-types/src/loans.rs`, surfacing the checked `borrower_projection` without ever reporting a view address or hidden root local; proven by `copied_borrowed_shell_keeps_the_original_live_for_owner_conflicts`). Owned-companion materialization now has a dedicated conversion (`main.Owned__a__owned_companion`) in addition to blanket `.owned()`. |
+| 8 | **PROVEN** | Compiled-Wasm fixtures prove root balance for explicit return, branch return, loop exit, and `?` early return. Checked-heap/no-reuse mode and UAF stress now run these same root-cycle workloads with correct close discipline. |
+| 9 | **PROVEN** | Direct `List(B('a))` literals publish indexed owner-root contributions; list copies preserve their companions; `list.at` transfers the selected roots (or conservatively all roots for a dynamic index); and `for` binders keep the list companions live. Type and compiled-Wasm fixtures now also cover list overwrite, list drop, nested containers, and relation-erasing boundary rejection. |
+| 10 | **PROVEN** | Codegen and root-level differential fixtures run a parser shell, iterator shell, borrowed token list, and traversal through compiled Wasm and interpreter sanity checks with root retain/release structure. Deterministic zero-materialization counters (`__witchy_packed_alloc_calls`, `__witchy_packed_alloc_bytes`) are asserted on these workloads. |
+| 11 | **PROVEN** | The language spec and book state the fixed-shell and direct-list contract; structured TypeInfo reflection preserves source-ordered lifetime parameters and meta.TBorrowed fields; generated user docs and parser/iterator counter evidence are included. |
 
 ## Required closeout evidence
 
@@ -118,11 +118,10 @@ marks the RFCs implemented. At minimum, the checked evidence set contains:
 Passing a narrower predecessor test, compiling an interface, or landing a
 foundation stage changes a row to **PARTIAL** at most; it is not completion.
 
-## Remaining-work triage (2026-08-04)
+## Remaining-work triage (2026-08-13)
 
-RFC-0111 and RFC-0110 are now **implemented** (all rows PROVEN). RFC-0112 is
-**in-sandbox but deep** — no external-evidence blocker, but each remaining row is
-multi-session compiler work over a large surface, not a bounded slice:
+RFC-0111 and RFC-0110 are now **implemented** (all rows PROVEN). RFC-0112 is now
+**implemented** as a full track in this checkout:
 
 - **RFC-0110** (all ten rows PROVEN): normal-mode **one-copy repair** (a `unique`
   parameter without a uniqueness proof takes one defensive operation-level
@@ -133,13 +132,7 @@ multi-session compiler work over a large surface, not a bounded slice:
   substrate (`crates/witchy-types/src/access.rs`, `crates/witchy-lower/src/analysis.rs`,
   `crates/witchy-lower/src/codegen/mod.rs`) and the tail-call transform
   (`crates/witchy-wir/src/wir_opt/tail_calls.rs`).
-- **RFC-0112** (rows 6 and 7 PARTIAL; rows 8, 9, 10, 11 MISSING): owned-scalar
-  borrowed-shell mutation and unchanged-root write-back have landed; borrowed-field
-  replacement plus old/new root sequencing remain for row 6, alongside the aggregate
-  retain/drop-balance matrix (8), `List(B('a))` lifecycle (9), a runnable
-  zero-copy parser + borrowed iterator with zero-materialization counters (10),
-  and the shipped-contract docs (11). The largest remaining track; mostly unbuilt
-  runtime + codegen.
-
-RFC-0112 is a candidate for the queue-sharded fan-out (RFC-0079) rather than a
-single session; it is not externally blocked.
+- **RFC-0112** (rows 6-11 PROVEN): mutable shell updates and replacement,
+  typed owned-companion conversion, checked-root lifecycle under return/branch/loop/
+  `?` and checked-heap stress, complete `List(B('a))` lifecycle behavior,
+  parser/iterator zero-materialization counters, and completed contract docs.
