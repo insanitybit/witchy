@@ -4222,4 +4222,31 @@ fn main(console: Console):
         assert!(sum.contains("call $rc_dup"), "list root retain: {sum}");
         assert!(sum.contains("call $rc_drop"), "list root release: {sum}");
     }
+
+    #[test]
+    fn borrowed_parser_and_iterator_shells_run_without_view_materialization() {
+        let source = "mode opt\n\n\
+             type Parser('a):\n    input: View(String, 'a)\n    offset: Int\n\n\
+             type TokenIter('a):\n    input: View(String, 'a)\n    index: Int\n\n\
+             type Token('a):\n    text: View(String, 'a)\n    width: Int\n\n\
+             fn parser(input: let('a) String) -> Parser('a):\n    Parser(input, 2)\n\n\
+             fn tokens(input: let('a) String) -> TokenIter('a):\n    TokenIter(input, 3)\n\n\
+             fn scan(input: let('a) String) -> Int:\n    let p = parser(input)\n    let it = tokens(p.input)\n    let values: List(Token('a)) = [Token(p.input, p.offset), Token(it.input, it.index)]\n    var total = 0\n    for token in values:\n        total = total + token.width\n    total\n\n\
+             fn main() -> Int:\n    scan(\"source\")\n";
+        assert_eq!(run_int(source), 5);
+
+        let module = parse_module(source).expect("parse borrowed parser/iterator fixture");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("borrowed parser/iterator fixture lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $scan").expect("scan function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let scan = &tail[..end];
+        assert!(scan.contains("__loan_root_p__input"), "parser root: {scan}");
+        assert!(scan.contains("__loan_root_it__input"), "iterator root: {scan}");
+        assert!(scan.contains("__loan_root_values__input"), "list root: {scan}");
+        assert!(scan.contains("call $rc_dup"), "owner roots retained: {scan}");
+        assert!(scan.contains("call $rc_drop"), "owner roots released: {scan}");
+    }
 }
