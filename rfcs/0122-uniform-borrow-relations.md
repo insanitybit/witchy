@@ -1,10 +1,10 @@
 ---
 rfc: 0122
-title: "Named access lifetimes and uniform borrowed values"
+title: "First-class references and explicit lifetimes"
 status: proposed
 created: 2026-08-13
 updated: 2026-08-13
-tracking: "Long-term design proposal; syntax replacement for RFC-0083 and semantic completion of named shared/exclusive access"
+tracking: "Long-term reference model; syntax replacement for RFC-0083 and semantic completion of shared and exclusive borrowing"
 predecessors:
   - "[0026](0026-unique-qualifier.md) (`unique` and `local unique` ownership contracts)"
   - "[0083](0083-opt-mode-lifetimes.md) (`let('a) T`, `View(T, 'a)`, and shared owner loans)"
@@ -13,847 +13,877 @@ predecessors:
   - "[0112](0112-borrowed-aggregate-types.md) (lifetime-bearing nominal values and projection-aware loans)"
 ---
 
-# RFC-0122: Named access lifetimes and uniform borrowed values
+# RFC-0122: First-class references and explicit lifetimes
 
 ## Summary
 
-Witchy has two related but different things to spell:
-
-1. a parameter opens access to a caller-owned place; and
-2. a first-class value carries a dependency on that access after the call.
-
-This RFC gives each one a single syntax:
+Witchy gains explicit shared and exclusive reference types:
 
 ```text
-fn first(let('a) text: String) -> String('a):
+&'a T
+&'a mut T
+```
+
+An ampersand always means a reference. The lifetime states how long the
+reference may remain valid. `mut` states that the reference grants exclusive
+mutation of its referent.
+
+```text
+fn first(text: &'a String) -> &'a String:
+    text
+
+fn normalize(text: &'a mut String) -> &'a String:
+    *text = text.trim().to_lower()
     text
 ```
 
-`let('a)` opens named shared access to `text`. Inside the function, `text` may
-produce read-only values tied to `'a`. `String('a)` is such a value: logically a
-`String`, but represented using storage that remains valid only while the loan
-identified by `'a` is live.
-
-The exclusive counterpart extends the existing `var` convention rather than
-introducing a mutable-reference type:
+Borrow expressions create references from stable places:
 
 ```text
-fn normalize(var('a) text: unique String) -> String('a):
-    text = text.trim().to_lower()
-    text
+let view = &text
+let editable = &mut text
+
+let first_view = first(&text)
+let normalized = normalize(&mut text)
 ```
 
-`var('a)` opens named exclusive move-in/write-back access. The callee mutates an
-ordinary local value, every structured return writes its final value back, and
-the returned `String('a)` is a shared view of that final caller-owned value.
-`unique` retains its existing meaning: the input must be uniquely owned so the
-implementation can update it without a repair copy. It does not become a
-reference kind.
-
-The long-term surface is therefore:
+The type system therefore has four independent concepts:
 
 ```text
-let x: T                  anonymous shared access for one call
-let('a) x: T              named shared access that may flow into results
-var x: T                  anonymous exclusive write-back access for one call
-var('a) x: T              named exclusive write-back access that may flow into results
-own x: T                  consume an owned or first-class value
-x: T                      ordinary value parameter
-
-T                         owned value
-T('a)                     read-only value dependent on 'a
-unique T                  uniquely owned value
-local unique T            activation-confined uniquely owned value
+T                  owned logical value
+unique T           uniquely owned logical value
+&'a T              shared reference valid for 'a
+&'a mut T          exclusive reference valid for 'a
 ```
 
-There is deliberately no first-class `unique T('a)` mutable reference in this
-RFC. Exclusive access belongs to `var('a)`, remains scoped to a call, and
-commits through Witchy's existing value/write-back semantics. A later proposal
-may add first-class exclusive references only if a real workload cannot be
-expressed by named `var` access, but it would be a new source-semantics feature,
-not a consequence of this syntax.
-
-This RFC replaces the current `let('a) T` input type and `View(T, 'a)` result
-type. It preserves the implemented shared-loan behavior, completes named
-exclusive access without observable aliasing, and adopts point-sensitive
-origin/loan analysis inspired by Polonius. The migration is intentionally
-breaking and mechanical.
-
-## Decision principles
-
-The final form follows six principles.
-
-### Access creation belongs to a parameter convention
-
-`let`, `var`, and `own` already state what a call may do with an argument.
-Naming a shared or exclusive access belongs on `let` or `var`, not inside the
-argument's ordinary type annotation.
-
-This avoids the visual duplication in the current form:
+`let`, `var`, and `own` remain parameter conventions. They describe how a
+parameter value crosses a call boundary. They do not spell references:
 
 ```text
-fn first(let text: let('a) String) -> View(String, 'a)
+let x: T            non-escaping read access to a value argument
+var x: T            move-in/write-back value argument
+own x: T            consumed value argument
+x: &'a T            first-class shared reference argument
+x: &'a mut T        first-class exclusive reference argument
 ```
 
-and avoids overloading this form:
-
-```text
-fn first(let text: String('a)) -> String('a)
-```
-
-That spelling does not reveal whether the call opens a fresh loan from an owned
-argument or merely receives an already borrowed value. The chosen syntax does:
-
-```text
-fn first(let('a) text: String) -> String('a)       // opens access
-fn forward(text: String('a)) -> String('a)         // receives a borrowed value
-```
-
-### Borrowed values are first-class read-only values
-
-`T('a)` may appear wherever a type may appear: results, fields, tuples,
-containers, function values, trait methods, aliases, and parameter types. It is
-copyable under ordinary Witchy value semantics because copying it creates
-another read-only handle to the same owner obligation, not shared mutation.
-
-### Exclusive mutation remains value/write-back
-
-Witchy has no observable shared mutable storage. `var` preserves that property:
-the callee receives a value, mutates its local binding, and returns a final value
-through a hidden write-back channel. `var('a)` names that access so a result can
-depend on the committed value; it does not expose an address that can be moved
-elsewhere and mutated later.
-
-### Lifetime, convention, and uniqueness remain separate axes
-
-- `'a` relates result validity to an input access;
-- `let`/`var`/`own` choose the calling protocol; and
-- `unique`/`local unique`/`frozen` constrain an owned value.
-
-Useful combinations remain direct:
-
-```text
-fn scan(let('a) bytes: frozen Bytes) -> TokenIter('a)
-fn normalize(var('a) text: unique String) -> String('a)
-fn consume(own parser: Parser('a)) -> Int
-```
-
-### API relations are explicit; concrete duration is inferred
-
-A public signature says which output may depend on which input. The checker
-infers concrete owner roots, branches, last uses, overwrites, and loan end
-points. Users never annotate lexical end points or solver facts.
-
-### Syntax does not promise runtime representation
-
-Lifetime arguments are erased relation-kind arguments. They do not create
-runtime generics, monomorphized copies, pointers, identity, or a dynamic borrow
-checker. Lowering retains only the owner roots and projection metadata required
-by the checked program.
-
-## Surface syntax
-
-### Named shared access
-
-`let('a)` names an immutable parameter access:
-
-```text
-fn first(let('a) text: String) -> String('a):
-    text
-
-fn field(let('record) record: Record) -> Bytes('record):
-    record.bytes
-```
-
-An owned argument or an existing read-only borrowed value may satisfy the
-parameter. At the call site, an owned argument opens a loan on its exact place;
-an existing borrowed argument reborrows its current owner set for the new
-relation.
-
-The parameter binding is immutable. Any number of shared values may derive from
-it. The owner may be read, but overlapping mutation, `var` access, `own`
-consumption, move, reassignment, or drop is rejected until every dependent value
-reaches its path-sensitive last use.
-
-Plain `let` remains the elided form when no result exposes the access:
-
-```text
-fn length(let text: String) -> Int:
-    text.length()
-```
-
-The compiler may internally assign an anonymous origin, but it does not become
-part of callable identity or source diagnostics unless needed to explain an
-error.
-
-### Named exclusive access
-
-`var('a)` names an exclusive move-in/write-back parameter access:
-
-```text
-fn normalize(var('a) text: String) -> String('a):
-    text = text.trim().to_lower()
-    text
-```
-
-Every argument must be a mutable caller place, exactly as for existing `var`.
-Evaluation reserves that place until the call's structured completion. The
-callee mutates an ordinary local binding. Its final value writes back before the
-ordinary result is exposed to the caller.
-
-A result carrying `'a` depends on the committed final value, not the pre-call
-value and not a hidden mutable alias. After write-back, the exclusive reservation
-becomes one or more shared loans represented by the returned values. The caller
-may mutate the place again after their last use.
-
-```text
-var text = "  Hello  "
-let normalized = normalize(text)
-console.print(normalized)
-text = "done"                    // accepted: normalized's last use has passed
-```
-
-Structured completion follows RFC-0087: body tail, explicit `return`, and `?`
-all commit every `var` output before control continues. A trap has no
-source-observable partial-write-back guarantee, and a trapped VM is terminal.
-
-Plain `var` remains the elided form when no result exposes a relation to the
-written-back value.
-
-### Borrowed value types
-
-`T('a)` is the canonical spelling for a read-only value dependent on relation
-`'a`:
-
-```text
-String('a)
-Bytes('a)
-List(Int, 'a)
-Parser('a)
-PairView(Int, 'left, 'right)
-```
-
-The grammar uses ordinary parenthesized type arguments:
-
-```text
-type-argument = type | lifetime
-lifetime      = "'" identifier
-named-type    = qualified-name ["(" type-argument {"," type-argument} ")"]
-```
-
-Lifetime arguments have relation kind. Ordinary type arguments have type kind.
-The parser preserves both; kind checking validates positions after aliases and
-nominal declarations are known.
-
-For built-in storage types, a trailing lifetime is the direct storage relation:
-
-```text
-String('a)
-List(Int, 'a)
-Dict(String, Int, 'a)
-```
-
-For a type variable, applying a lifetime is relation lifting:
-
-```text
-fn identity(let('a) value: t) -> t('a):
-    value
-```
-
-`t('a)` means the same logical `t` represented through a read-only dependency on
-`'a`. It does not require higher-kinded user syntax and does not permit arbitrary
-ordinary arguments on `t`.
-
-Relation lifting is legal for scalar instantiations so generic APIs do not split
-by representation. `Int('a)` retains its relation in callable identity and loan
-checking, but needs no runtime owner root; materialization is representation-
-identity. The optimizer may erase the vacuous root operation, not the API
-relation.
-
-Capabilities cannot be relation-lifted by an ordinary lifetime. A host-backed
-view needs both a data relation and an unforgeable lease supplied by its
-capability-specific API. `Dir('a)` is rejected.
-
-### Lifetime-bearing nominal types
-
-Nominal declarations retain relation parameters:
+This RFC replaces all ordinary-borrow spellings based on `let('a)`,
+`var('a)`, `View(T, 'a)`, and direct lifetime lifting such as `T('a)`. Nominal
+types may still declare lifetime parameters, but their borrowed fields use
+reference types:
 
 ```text
 type Parser('input):
-    input: String('input)
+    input: &'input String
+    offset: Int
+```
+
+The distinction between a nominal lifetime argument and a reference is now
+visible. `Parser('input)` is an owned parser containing a reference;
+`&'parser Parser('input)` is a reference to that parser.
+
+The migration is intentionally breaking. Legacy forms remain only as targeted
+diagnostics and are not aliases.
+
+## Decision principles
+
+### Borrowing is a type-level capability
+
+A declaration should say directly whether it accepts an owned value, a shared
+reference, or an exclusive reference:
+
+```text
+fn consume(text: String) -> Int
+fn inspect(text: &'a String) -> Int
+fn edit(text: &'a mut String) -> Nil
+```
+
+The previous proposal split this contract between a parameter convention and a
+result type:
+
+```text
+fn first(let('a) text: String) -> String('a)
+```
+
+That distinction reflected compiler mechanics, not a useful source-level type
+distinction. The accepted form uses one reference type in both positions:
+
+```text
+fn first(text: &'a String) -> &'a String
+```
+
+### Shared and exclusive references are first-class
+
+Both reference kinds may be passed, returned, placed in aggregates, projected,
+reborrowed, and captured by a non-escaping closure while their lifetimes permit.
+
+Shared references are copyable. Exclusive references are affine: they cannot be
+copied, but they may be moved or reborrowed. The owner is inaccessible through
+any competing path while an exclusive reference is live.
+
+### Exclusive access is not uniqueness
+
+`unique T` describes owned storage and supports in-place optimization.
+`&'a mut T` describes temporary exclusive access to a logical place. A mutable
+borrow may require a repair copy before it opens when the runtime allocation is
+not unique. The reference remains exclusive even when such a repair is needed.
+
+The source type of the reference does not change:
+
+```text
+var text: String = source
+let editable = &mut text
+```
+
+Borrowing from a `unique T` place can prove that no repair is necessary. That
+proof is attached to borrow creation, not encoded as `unique &'a mut T`.
+
+### `var` and `&mut` remain different
+
+`var` is Witchy's value-oriented move-in/write-back convention. The callee owns
+a local logical value and commits its final value on structured completion.
+
+`&mut` is an explicit reference to an existing place. Mutation occurs through
+that reference, and the reference may outlive the call that received it. It can
+therefore express stored exclusive access and lending APIs that `var` cannot.
+
+### Public relations are explicit; concrete duration is inferred
+
+Public signatures name every lifetime relation that reaches a result or stored
+field. Borrow expressions do not spell a lifetime. The checker infers concrete
+roots, reborrow duration, branches, overwrites, and last uses.
+
+### Syntax does not promise a raw pointer
+
+`&` specifies source semantics, not physical representation. A reference may be
+lowered to a pointer, an owner root plus projection, a typed GC reference, or a
+copy-in/write-back shadow. Both backends consume the same checked reference
+facts and must agree observably.
+
+## Surface syntax
+
+### Reference types
+
+The grammar adds:
+
+```text
+reference-type = "&" lifetime ["mut"] type
+lifetime       = "'" identifier
+```
+
+Examples:
+
+```text
+&'a String
+&'a mut String
+&'items List(Token)
+&'outer Parser('input)
+List(&'input Token)
+Option(&'a mut Buffer)
+```
+
+Every reference type written in a declaration has an explicit lifetime. Local
+borrow expressions infer an internal lifetime and normally need no annotation.
+This RFC does not add lifetime elision or `'static`.
+
+`mut` is contextual after a reference lifetime. Witchy uses `mut` rather than
+`var` here because the two words describe different operations: `mut` grants
+mutation through a referent, while `var` writes a parameter value back to its
+caller slot.
+
+### Borrow expressions
+
+The grammar adds:
+
+```text
+borrow-expression = "&" place-expression
+                  | "&" "mut" place-expression
+deref-expression  = "*" expression
+```
+
+The operand must be a stable place: a local binding, parameter place,
+dereference, field, tuple element, or checked index/range projection. Borrowing
+an unbound temporary is rejected rather than receiving a temporary-lifetime
+extension rule:
+
+```text
+let bad = &make_string()       // error: bind the owner before borrowing it
+```
+
+Borrow expressions do not contain lifetime names:
+
+```text
+let view = &text
+let editable = &mut text
+```
+
+The checker relates each inferred local lifetime to named lifetimes when a
+reference crosses a declared boundary.
+
+`&mut` additionally requires a mutable place. It establishes uniquely mutable
+runtime representation before exposing the reference. Normal mode may perform
+one repair copy while opening the borrow; `mode opt` rejects that borrow when
+the required no-copy proof is unavailable. Mutation through an established
+exclusive reference never performs a later alias-repair copy.
+
+### Dereference and projection
+
+`*reference` denotes the referent place. Reading through either reference kind
+is allowed. Assignment through a shared reference is rejected; assignment
+through an exclusive reference is allowed:
+
+```text
+fn clear(text: &'a mut String) -> Nil:
+    *text = ""
+```
+
+Field access, indexing, and method lookup transparently project through a
+reference when the operation is unambiguous:
+
+```text
+fn rename(account: &'a mut Account) -> Nil:
+    account.name = account.name.trim()
+```
+
+This is projection sugar over `(*account).name`; it does not copy, materialize,
+or widen access. Explicit `*` remains available when the whole referent is
+needed.
+
+### Shared references
+
+`&'a T` grants read-only access to `T` for `'a`. It is copyable under Witchy's
+value semantics because each copy carries the same owner obligation and grants
+no mutation.
+
+Any number of overlapping shared references may coexist. While any shared
+reference is live, overlapping mutation, `var` access, mutable borrowing,
+consumption, reassignment, move, or drop of the owner is rejected.
+
+```text
+var text = "hello"
+let left = &text
+let right = &text
+console.print(first(left))
+console.print(first(right))
+text = "done"                 // accepted after both final uses
+```
+
+Passing a shared reference under the default convention copies its reference
+value. `own` may consume one reference handle, but consuming it does not consume
+the owner.
+
+### Exclusive references
+
+`&'a mut T` grants read and write access to `T` for `'a`. It excludes every
+overlapping shared or exclusive access, including access through the original
+owner binding.
+
+```text
+var text = "hello"
+let editable = &mut text
+editable.push("!")
+console.print(text)            // error: editable keeps text exclusively borrowed
+editable.push("?")             // later use keeps the exclusive loan live
+```
+
+Exclusive references are affine. Assignment, aggregate construction, closure
+capture, and `own` parameters may move them, but no operation may copy them.
+After a move, the old binding is unavailable.
+
+Passing an exclusive reference under the default parameter convention creates
+an exclusive reborrow for the call. It does not copy or permanently consume the
+outer reference:
+
+```text
+fn append_mark(text: &'call mut String) -> Nil:
+    text.push("!")
+
+fn twice(text: &'outer mut String) -> Nil:
+    append_mark(text)
+    append_mark(text)
+```
+
+If a called function returns a reference derived from that reborrow, the outer
+reference remains unavailable until the returned reference's final use.
+`own` on an exclusive-reference parameter consumes the handle instead of
+reborrowing it.
+
+### Mutable-to-shared reborrowing
+
+An exclusive reference may be shortened and reborrowed as shared:
+
+```text
+fn finish(text: &'a mut String) -> &'a String:
+    text.trim_in_place()
+    text
+```
+
+The return coerces `&'a mut String` to `&'a String`. The exclusive capability is
+not recoverable from that shared result. A shorter shared reborrow may end while
+the exclusive reference remains usable afterward:
+
+```text
+fn inspect_then_edit(text: &'outer mut String) -> Nil:
+    let view = &*text
+    console_free_inspect(view)
+    text.push("!")
+```
+
+Exclusive projection may also return a mutable reference:
+
+```text
+fn name(account: &'a mut Account) -> &'a mut String:
+    &mut account.name
+```
+
+### Nominal lifetime parameters
+
+Nominal declarations retain lifetime parameters only for relations stored in
+their fields:
+
+```text
+type Parser('input):
+    input: &'input String
     offset: Int
 
 type PairView(t, 'left, 'right):
-    first: t('left)
-    second: t('right)
+    first: &'left t
+    second: &'right t
 ```
 
-`Parser('input)` is an owned parser shell whose `input` field depends on
-`'input`. Construction must prove every declared relation from its fields. An
-unused relation declaration is an error.
-
-A named access may borrow the parser shell independently of the relations
-already carried by its fields:
+`Parser('input)` is an owned parser shell. Borrowing the shell uses the ordinary
+reference constructor instead of adding an undeclared trailing relation:
 
 ```text
-fn inspect(let('parser) parser: Parser('input)) -> Int:
+fn inspect(parser: &'parser Parser('input)) -> Int:
     parser.offset
-```
 
-If a result is a view of the parser shell itself, the direct shell relation is a
-trailing relation after the declaration's own parameters:
-
-```text
-fn shell(let('parser) parser: Parser('input)) -> Parser('input, 'parser):
+fn shell(parser: &'parser Parser('input)) -> &'parser Parser('input):
     parser
 ```
 
-The kind checker knows that `Parser` declares one relation. Its first lifetime
-argument fills `'input`; the optional final relation is the direct shell view.
-A type has at most one direct relation in addition to its declared relation
-parameters.
+Construction must prove every declared lifetime from reference-bearing fields.
+An unused declared lifetime is an error. Variance is derived from field uses.
 
-Reborrowing a shell replaces that direct relation with a shorter one while
-preserving declared field relations:
+### Containers and nested references
+
+Reference placement states exactly which storage is borrowed:
 
 ```text
-Parser('input, 'outer)  ->  Parser('input, 'inner)
+List(&'input Token)             // owned list containing shared references
+&'list List(Token)              // shared reference to list storage
+&'list mut List(Token)          // exclusive reference to list storage
+&'list List(&'input Token)      // list reference whose elements borrow input
 ```
 
-where `'inner` is bounded by `'outer`. Direct relation lifting therefore never
-grows an unbounded chain such as `Parser('a, 'b, 'c)`.
+Tuples, structural records, nominal aggregates, and supported containers carry
+the union of their fields' owner obligations. Copying an aggregate containing
+only shared references copies those obligations. An aggregate containing an
+exclusive reference is affine.
 
-A nominal type with no declared relation uses its first lifetime as the optional
-direct relation: `Account('a)` is a read-only view of an `Account`. For a type
-with ordinary parameters, declared arguments come first and the direct relation
-remains last: `Pair(String, Int, 'a)`.
+### Generic references
 
-### Reborrowing, shortening, and variance
-
-A shared value can always be reborrowed for a relation no longer than its
-current one:
+References apply directly to type variables without relation lifting:
 
 ```text
-fn shorten(let('short) value: String('long)) -> String('short):
+fn identity(value: &'a t) -> &'a t:
     value
+
+fn swap(left: &'a mut t, right: &'b mut t) -> Nil:
+    let temporary = (*left).owned()
+    *left = (*right).owned()
+    *right = temporary
 ```
 
-The signature introduces `'short` through named access to an already borrowed
-value. Type checking records `'short` as a subset of `'long`; it cannot infer the
-reverse edge. There is no source `outlives` clause in this RFC. Input access,
-result flow, and aggregate construction generate all required subset constraints.
+`&'a Int` is legal even when its runtime projection can be represented without
+an owner root. The API relation remains part of callable identity.
 
-The direct shared relation on `T('a)` is covariant: a value valid for a longer
-relation may be shortened. Declared nominal relation parameters derive variance
-from their field uses. A relation used only in shared fields/results is
-covariant; one used in a callable input or another invariant position is checked
-with the corresponding structural variance. The initial implementation may
-treat an unresolved nominal position invariant, but it may not accept an
-unsound extension.
-
-Mutable bindings do not make a relation contravariant. Replacing a borrowed
-field or rebinding a borrowed variable must satisfy the binding's already checked
-relation type; mutation cannot relabel an owner.
-
-`'static` is not introduced. Frozen storage is still owned storage and does not
-manufacture an unbounded relation. A future static-data or host-lease design must
-define its own valid origin.
-
-### Containers and nested relations
-
-The location of a relation remains meaningful:
-
-```text
-List(Token('input))        // owned list of tokens borrowing input
-List(Token, 'list)         // read-only view of list storage
-List(Token('input), 'list) // list view whose elements also borrow input
-```
-
-These types have different owner sets and drop/root obligations. The formatter
-does not normalize one into another.
-
-Tuples and structural records carry the union of their fields' owner sets. A
-nominal aggregate carries the relations declared by its type. Containers may
-hold borrowed elements only when their layout descriptor transports and drops
-the required roots, as completed for `List(B('a))` by RFC-0112.
+Capabilities and host leases are not generally referenceable in the initial
+implementation. A host-backed reference must be introduced by a
+capability-specific API that transports both its data relation and its
+unforgeable lease. `&'a Dir` does not manufacture or widen authority.
 
 ### Function types
 
-Named access binders and result relations are part of callable identity:
+Reference kinds and lifetime relations are part of callable identity:
 
 ```text
-fn(let('a) String) -> String('a)
-fn(var('a) unique String) -> String('a)
-fn(String('a)) -> String('a)
+fn(String) -> String
+fn(let String) -> Int
+fn(&'a String) -> &'a String
+fn(&'a mut String) -> &'a String
 ```
 
-The first opens shared access from a caller argument. The second opens exclusive
-write-back access and requires unique owned storage. The third accepts an
-already borrowed value under ordinary value passing. They are not interchangeable
-function types.
-
-Lifetime names are alpha-normalized within each callable identity. Renaming
-`'a` to `'input` does not change the type; changing which parameter binds the
-result does.
+Lifetime names are alpha-normalized inside each callable. Renaming `'a` to
+`'input` does not change the type; changing which input bounds a result does.
 
 Direct calls, methods, UFCS calls, closures, trait witnesses, existential
-adapters, generated wrappers, and proper-tail dispatch preserve the same access
-envelope. Any cast or adapter that erases a convention, named origin, result
-relation, write-back output, or uniqueness requirement is rejected.
+adapters, generated wrappers, and proper-tail dispatch preserve the complete
+reference contract. A cast or adapter that erases a reference kind, lifetime,
+affinity, parameter convention, or ownership requirement is rejected.
 
 ## Lifetime binding and owner relations
 
 ### Implicit quantification
 
-Lifetime names in a callable are implicitly universally quantified. A named
-`let('a)` or `var('a)` parameter introduces an origin. An already borrowed input
-may also introduce a relation for forwarding:
+Lifetime names in callable types are implicitly universally quantified. Every
+result lifetime must be reachable from an input reference with the same name or
+from a declared relation in an input aggregate:
 
 ```text
-fn forward(value: String('a)) -> String('a):
+fn forward(value: &'a String) -> &'a String:
+    value
+
+fn bad(value: String) -> &'a String:
+    &value                         // error: 'a has no surviving input owner
+```
+
+No source `outlives` clause is introduced in this RFC. Borrow creation,
+reborrowing, input relations, result flow, and aggregate construction generate
+the required subset constraints.
+
+### Shortening and variance
+
+A reference valid for a longer lifetime may be reborrowed for a shorter one:
+
+```text
+fn reborrow(value: &'a String) -> &'a String:
     value
 ```
 
-Every result lifetime must be reachable from an input origin or an input
-borrowed value of the same name. A result cannot invent an owner:
-
-```text
-fn bad(value: String) -> String('a)       // error: 'a has no input source
-```
+At each invocation, `'a` may be instantiated to a duration shorter than the
+input reference's remaining validity. No separately named output lifetime is
+needed. Shared references are covariant in their lifetime and target according
+to the target's derived variance. Exclusive references are covariant in their
+lifetime but invariant in their target type, because writing through a coerced
+mutable reference could otherwise violate the original place type. Nominal
+lifetime parameters derive variance from their field positions; unresolved
+positions are invariant until proven safe.
 
 ### Independent inputs
 
-Distinct names state an exact result dependency:
+Distinct names state an exact dependency:
 
 ```text
-fn left(let('left) left: String,
-        let('right) right: String) -> String('left):
+fn left(left: &'left String, right: &'right String) -> &'left String:
     left
 ```
 
-The result loans only `left`.
+The result keeps only `left` loaned.
 
-### One result relation with several possible owners
+### Several possible owners
 
-The same origin name may be introduced by several shared inputs:
+The same lifetime may appear on several shared inputs:
 
 ```text
-fn choose(let('a) left: String,
-          let('a) right: String,
-          pick: Bool) -> String('a):
+fn choose(left: &'a String, right: &'a String, pick: Bool) -> &'a String:
     if pick: left else: right
 ```
 
-`'a` represents the union of owners that can reach the result. It does not claim
-that `left` and `right` are the same allocation. At a call, every possible owner
-remains loaned until point-sensitive analysis proves that a path selects only
-one. A conservative implementation may retain both; it may not forget either.
+`'a` is instantiated to a duration valid for every possible result owner. The
+result's point-sensitive owner set contains the roots that can reach that
+program point. A conservative join may retain both roots but may not forget
+either.
 
-The same-name form is unavailable for two `var` parameters because RFC-0087
-requires exclusive write-back places and distinct result dependencies must remain
-distinguishable. Use separate origins and return an aggregate carrying both:
+Two exclusive inputs may share a lifetime name, but their argument places must
+still be proven disjoint:
 
 ```text
-fn edit_both(var('left) left: String,
-             var('right) right: String) -> PairView(String, 'left, 'right)
+fn edit_pair(left: &'a mut String, right: &'a mut String) -> Nil
 ```
+
+Unknown overlap is overlap. Separate lifetime names improve diagnostics but do
+not replace place-disjointness checking.
 
 ### Owner sets and projections
 
-Each borrowed value has an `OwnerSet` containing:
+Each reference value has an `OwnerSet` containing:
 
 - one or more stable owner roots;
 - a projection path or checked range;
-- the symbolic relation positions exposed by its type; and
-- open, transfer, and close points.
+- shared or exclusive access kind;
+- open, reborrow, transfer, and close points; and
+- symbolic lifetime positions exposed by its type.
 
-Projection composes paths and ranges with the existing root. It never treats an
-interior address as an owning RC base. Shared projections may overlap. Any live
-projection blocks an overlapping mutation or move of its root.
+Projection composes paths and ranges with the root. It never treats an interior
+address as an owning RC base. Shared projections may overlap. Exclusive
+projections must be disjoint from every other live access.
 
-Joins union possible roots. Destructuring transfers each field's owner set to
-the corresponding bindings. Copying a borrowed aggregate creates another
-read-only obligation; every copy must reach its final use before the owner is
-released.
+Joins union possible roots. Destructuring transfers each field's owner set.
+Copying a shared-reference aggregate creates another obligation. Moving an
+exclusive-reference aggregate transfers its obligations and kills the source.
 
 ## Interaction with ownership features
 
 ### `unique`
 
-`unique T` remains an owned-value contract: the value is the sole owning
-reference and can be reused in place. It strengthens named access without
-changing its kind:
+`unique T` remains an owned-value contract. It says that the logical value has
+the only owning reference and may be reused in place:
 
 ```text
-fn parse(let('a) input: unique Bytes) -> Parser('a)
-fn normalize(var('a) text: unique String) -> String('a)
+fn parse(input: &'a unique Bytes) -> Parser('a)    // rejected: see below
 ```
 
-For shared `let('a)`, uniqueness can eliminate an initial repair or retain but
-the body still receives read-only access. For `var('a)`, uniqueness certifies
-that direct caller storage may be updated without copy-in/copy-back. In normal
-mode a missing uniqueness proof may insert one repair copy where the existing
-contract allows it; in `mode opt` it is an error with ownership provenance.
-
-`unique T('a)` and `local unique T('a)` are rejected. `T('a)` is by definition
-a first-class shared read-only value; applying an owned-storage uniqueness
-qualifier would suggest a first-class exclusive reference and delayed mutation
-channel that this RFC does not define. The supported exclusive form is:
+Uniqueness qualifiers do not belong inside reference targets. Shared access
+cannot promise that it is the only access, and exclusive access already grants
+the relevant temporary exclusivity. The supported forms are:
 
 ```text
-var('a) value: unique T
+fn parse(input: &'a Bytes) -> Parser('a)
+fn normalize(text: &'a mut String) -> &'a String
+
+var bytes: unique Bytes = source
+let parser = parse(&bytes)                          // borrow creation retains uniqueness fact
 ```
 
-This is not a loss of current expressiveness: RFC-0083 and RFC-0112 expose only
-shared borrowed values. It is a deliberate boundary against accidentally adding
-Rust-style `&mut` semantics under the name `unique`.
+`unique &'a T`, `&'a unique T`, `unique &'a mut T`, and corresponding
+`local unique` forms are rejected as category errors. The optimizer records
+whether the owner was unique when the borrow opened. In normal mode, an
+exclusive borrow may repair a non-unique runtime allocation before mutation.
+In `mode opt`, a no-copy requirement must be proven at borrow creation and the
+diagnostic points to the owner provenance.
 
 ### `local unique`
 
-`local unique T` remains a unique owned value confined to one activation. It
-composes with `let` and `var`; a named result may borrow from it only when the
-result itself cannot escape the activation:
+`local unique T` remains owned storage confined to one activation. It may be
+borrowed locally, but no resulting reference may escape that activation:
 
 ```text
-fn inspect_local(let('a) value: local unique T) -> T('a)
+var value: local unique Buffer = make_buffer()
+let view = &value
+inspect(view)
 ```
 
-Such a function may be private and immediately consumed within the proven local
-scope. A public or escaping result is rejected because the owner's local-unique
-contract cannot be extended by naming a lifetime.
+An escaping return, closure, aggregate, or task is rejected even if its source
+type names a lifetime. A lifetime cannot extend the owner's confinement.
 
 ### `frozen`
 
-`frozen T` is deeply immutable owned storage. Shared named access is valid and
-can be returned:
+`frozen T` is deeply immutable owned storage. It may produce shared references
+that preserve the frozen guarantee when useful:
 
 ```text
-fn slice(let('a) text: frozen String) -> frozen String('a)
+fn view(text: &'a frozen String) -> &'a frozen String:
+    text
 ```
 
-`var frozen T` and `var('a) frozen T` remain errors. `frozen T('a)` is useful
-because it carries both the owner's deep-immutability promise and the view's
-validity relation.
+`&mut` of frozen storage is rejected. `frozen &'a T` is rejected because
+`frozen` qualifies owned storage, not a reference handle.
 
 ### `own`
 
-`own` consumes its argument value. It does not introduce a lifetime because the
-caller owner does not remain available to bound a returned borrow:
+`own` consumes its argument value:
 
 ```text
 fn digest(own bytes: Bytes) -> Digest
 fn count(own parser: Parser('a)) -> Int
-fn consume_view(own text: String('a)) -> Int
+fn consume_view(own text: &'a String) -> Int
+fn store_edit(own text: &'a mut String) -> EditGuard('a)
 ```
 
-The latter two consume first-class relation-bearing values and transfer their
-root obligations into the callee. The underlying owner is not consumed through
-a shared view; it merely remains loaned until the consumed value's final use.
+Consuming a shared reference kills that handle but not its owner. Consuming an
+exclusive reference transfers its exclusive capability. There is no `own('a)`;
+lifetimes belong to reference and nominal types.
 
-There is no `own('a)` form. A function that consumes owned storage and returns
-part of the same allocation should return an owned result, use `var('a)` so a
-caller place survives as the owner, or package the owner and projection in a
-new owned nominal type. A borrow may not depend on a caller binding that `own`
-killed.
+An owned value consumed by `own` cannot directly produce a reference result,
+because no caller-owned root survives to bound it. Return an owned result or an
+owned object that packages both storage and projection.
 
-### `var` applied to borrowed values
+### `let` and `var` on reference values
 
-This form remains distinct:
+Parameter conventions remain orthogonal to reference types:
 
 ```text
-fn select(var view: String('a), replacement: String('a)) -> Nil
+fn inspect_handle(let view: &'a String) -> Int
+fn replace_handle(var slot: &'a String, replacement: &'a String) -> Nil
 ```
 
-It writes a final read-only view handle back to a caller variable already typed
-`String('a)`. It does not mutate the owner named by `'a`. Only `var('a) x: T`
-opens named exclusive access to an owned caller place.
+`let` borrows the reference handle without extending its lifetime. `var` writes
+a final handle back to the caller slot; it does not mutate the referent. A
+`var` parameter of exclusive-reference type may replace or return the affine
+handle but must preserve exclusivity and lifetime constraints.
 
-`var('a)` rejects a parameter annotation that already has a direct relation,
-such as `var('new) view: String('old)`. That spelling would ambiguously reserve
-the caller's view-handle slot while appearing to grant exclusive access to the
-underlying string. Use plain `var view: String('old)` to replace the handle, or
-`var('new) owner: String` to reserve and mutate owned string storage. A nominal
-shell may still contain declared borrowed fields:
+These forms are valid but uncommon. Ordinary reference parameters are the
+canonical API surface.
 
-```text
-fn advance(var('cursor) cursor: Parser('input)) -> Parser('input, 'cursor)
-```
+## Materialization and recovery
 
-Here named `var` reserves the owned `Parser` shell; it does not grant mutation of
-the separate input owner named by `'input`.
-
-## Materialization and ownership recovery
-
-`.owned()` removes a direct borrowed relation by producing an independent owned
-logical value:
+`.owned()` reads through a shared or exclusive reference and produces an
+independent owned logical value:
 
 ```text
-fn copy(view: String('a)) -> String:
+fn copy(view: &'a String) -> String:
     view.owned()
 ```
 
-The materialization use can close the loan immediately. On an owned value,
-`.owned()` remains identity through the existing blanket trait.
+Materialization can end that handle's loan at its final use. Borrowed nominal
+aggregates use an explicit owned-companion conversion when their owned shape
+differs. The compiler never drops references or lifetime arguments and guesses
+an owned representation.
 
-Borrowed nominal aggregates use an explicit owned-companion conversion when
-their owned shape differs. The compiler never drops lifetime arguments and
-guesses an owned representation.
+There is no conversion from `&'a T` or `&'a mut T` to `unique T`. A materialized
+copy may subsequently satisfy a uniqueness proof, but it does not recover
+ownership of the original referent.
 
-There is no conversion from `T('a)` to `unique T`. A caller may materialize and
-then prove the new owned copy unique:
+## Mutable references and observability
 
-```text
-let owned = view.owned()
-```
+An exclusive borrow opens in this order:
 
-but this does not recover exclusive access to the original owner.
+1. evaluate the owner place and projection coordinates once;
+2. reject any overlapping live access;
+3. repair runtime sharing when normal-mode value semantics require it;
+4. create an affine reference to the resulting logical place; and
+5. keep the owner and every competing path inaccessible until the reference
+   closes or moves.
 
-## Mutation, failure, and observability
+Mutation through `&mut` changes the referenced logical place. A reborrow may
+shorten access but cannot widen it. Moving the reference transfers its open
+exclusive loan. Converting it to shared access permanently relinquishes
+exclusive capability through that handle.
 
-Named `var` access preserves RFC-0087 exactly:
+No pointer identity is observable. Equality, reflection, pattern matching, and
+formatting see logical values. A trap is terminal on both backends, so partially
+performed mutations are not observable after resumption. Structured `return`
+and `?` preserve mutations already performed through the reference.
 
-1. evaluate the caller place and projection coordinates once;
-2. reserve the place against overlapping `var` arguments;
-3. move or copy its logical value into the callee;
-4. run the callee with an ordinary mutable local binding;
-5. produce the ordinary result and every final `var` value;
-6. atomically commit all write-backs on structured completion; and
-7. open result loans against the committed roots.
+`var` retains its RFC-0087 atomic multi-write-back rules. This RFC does not
+redefine `var` in terms of `&mut`, even when optimized lowering shares machinery.
 
-The return expression is evaluated against the callee's final local value, but
-the caller observes the result only after write-back. Lowering transports the
-result's owner relation to the committed root, including when replacement
-changes the runtime root or capacity token.
-
-No pointer identity or mutation-through-view is observable. Equality,
-reflection, and pattern matching see logical values. A forced-copy execution is
-the semantic oracle for shared views and named exclusive write-back.
-
-## Flow-sensitive loan analysis
+## Flow-sensitive reference analysis
 
 ### Origins and loans
 
-A source lifetime is an origin in a callable contract. Each access at a call or
-construction creates concrete loans:
+A named lifetime is an origin in a callable contract. Each borrow or reborrow
+creates a concrete loan:
 
 ```text
 LoanFact {
     id,
     origin,
-    kind: Shared | ExclusiveReservation,
+    kind: Shared | Exclusive,
     owner_root,
     projection,
     introduced_at,
 }
 ```
 
-`ExclusiveReservation` exists only while a `var` call is evaluating. Returned
-`T('a)` values carry shared loans after commit. There is no first-class exclusive
-loan value in this RFC.
-
-The checker records point-indexed relations:
+The checker records point-indexed facts:
 
 ```text
 origin_subset_at(sub, sup, point)
 origin_live_at(origin, point)
 loan_killed_at(loan, point)
-place_invalidated_at(root, projection, access, point)
-var_commit_at(origin, old_root, new_root, point)
+place_accessed_at(root, projection, access, point)
+reference_moved_at(reference, point)
+reference_reborrowed_at(parent, child, point)
 ```
 
-A loan is live at a point when it can reach a live origin through the
-point-sensitive subset graph and has not been killed by last use, overwrite,
-materialization, or a valid transfer. An invalidation is accepted only when no
-incompatible loan reaches that exact point.
+A loan is live when it can reach a live origin through the point-sensitive
+subset graph and has not been killed by final use, overwrite, materialization,
+or transfer. An access is accepted only when no incompatible loan reaches that
+exact point.
 
-This adopts the useful Polonius distinction between origins and loans without
-requiring its historical Datalog implementation. Point-indexed facts are the
-semantic interface. The solver may be a graph worklist, localized reachability,
-incremental engine, or another measured implementation.
+This adopts Polonius's useful separation of origins from loans without requiring
+its historical Datalog implementation. Point-indexed facts are the semantic
+interface. The solver may use a graph worklist, localized reachability,
+incremental computation, or another measured implementation.
 
 ### Conflict rules
 
 For overlapping places:
 
-| Existing access | Shared read | `var` reservation | Move/drop owner |
-|---|---:|---:|---:|
-| shared loan | allowed | rejected | rejected |
-| live `var` reservation | rejected | rejected | rejected |
+| Existing access | Shared read | Shared borrow | Exclusive borrow | Owner mutation or move |
+|---|---:|---:|---:|---:|
+| shared loan | allowed | allowed | rejected | rejected |
+| exclusive loan | through that reference | reborrow only | reborrow only | through that reference |
 
-Reads and writes of the callee's move-in local are operations inside the
-reservation, not new accesses to the caller place. No independently evaluated
-caller expression may read that place until write-back commits.
-
-Two `var` reservations must be proven disjoint under RFC-0087. Static
-record/tuple fields and distinct constant indices are the initial proof set.
-Unknown overlap is overlap. Dynamic range disjointness is a later precision
-improvement, not a reason to weaken safety.
+Access through an exclusive reference is part of its loan, not competing owner
+access. An exclusive reborrow temporarily suspends use of its parent reference.
+Unknown projection overlap is treated as overlap. Static record and tuple
+fields and distinct constant indices form the initial disjointness proof set.
 
 ### Conditional returns
 
-The solver tracks origin subsets at control-flow points so a returned borrow on
-one branch does not keep an impossible loan alive on a sibling branch:
+Origins are propagated at CFG points so impossible sibling-path loans do not
+remain live:
 
 ```text
-fn get_or_insert(var('a) table: unique Dict(String, Value), key: String)
-    -> Value('a)
+fn get_or_insert(table: &'a mut Dict(String, Value), key: String) -> &'a Value:
+    match table.get_ref(&key):
+        Some(value) -> value
+        None ->
+            table.insert(key, default_value())
+            table.get_ref(&key).unwrap()
 ```
 
-If the existing-value path returns a projection and the missing-value path
-updates before returning a new projection, the update is legal when no loan from
-the first path reaches that point. A whole-function union would reject this
-sound program; point-sensitive propagation accepts it.
+The mutation on the missing path is legal because the existing-value loan from
+the other branch cannot reach it. A whole-function owner union would reject
+this sound program.
 
 ### Lending iteration
 
-A lending iterator may return a view whose relation is bounded by named access
-to the iterator's caller place:
+First-class exclusive references express lending directly:
 
 ```text
 trait LendingIterator(item):
-    fn next(var('next) self: Self) -> Option(item('next))
+    fn next(self: &'next mut Self) -> Option(&'next item)
 ```
 
-Each item loans the committed iterator state. Calling `next` again requires the
-previous item to be dead or materialized. This expresses the main lending
-pattern without a first-class mutable reference: mutation remains one
-synchronous `var` call, while each yielded item is read-only.
+Each item is a shared reborrow of the iterator state. Calling `next` again
+requires the prior item to be dead or materialized. Implementations may also
+return `Option(&'next mut item)` when exclusive element access is intended.
 
-The exact trait syntax for relation-lifting an associated `item` follows the
-ordinary `t('a)` rule and must be proven through direct, witness, and function-
-value calls before stabilization.
+Trait witnesses, dynamic dispatch, and function values must preserve the
+relation between the mutable receiver reborrow and the yielded item.
 
 ### Precision stages
 
-Analysis precision advances without changing source syntax:
+Analysis precision advances without changing syntax:
 
 1. preserve current straight-line last-use and projection owner sets;
-2. add named `var` commit-to-result-root facts;
-3. compute path-sensitive origin subsets for conditional returns;
-4. compute loop fixpoints with overwrite kills for lending iterators; and
-5. add dynamic disjoint-range proofs only when corpus evidence justifies cost.
+2. represent explicit shared references and reborrows;
+3. add affine exclusive references, parent suspension, and move tracking;
+4. compute path-sensitive origin subsets for conditional returns;
+5. compute loop fixpoints with overwrite kills for lending iteration; and
+6. add dynamic disjoint-range proofs only when corpus evidence justifies cost.
 
 A cheap pass may select conflict-relevant CFG components for precise solving,
-but it may not reject a program. Rejection requires a concrete incompatible loan
-at the invalidating point. Bodies with no named or first-class borrowed values
-stay on the existing cheap path.
+but it may not reject a program. Rejection requires a concrete incompatible
+loan at the invalidating point. Reference-free bodies stay on the existing
+cheap path.
 
 ## Escapes and boundaries
 
-A `T('a)` value may be:
+A shared reference may be passed, returned, copied into a
+relation-preserving aggregate, projected, destructured, and captured by a
+proven non-escaping closure within its owner lifetime.
 
-- passed under ordinary, `let`, or `own` conventions;
-- returned when `'a` is bound by an input relation;
-- copied into another relation-preserving aggregate;
-- projected, destructured, and placed in supported borrowed containers; and
-- captured by a proven non-escaping closure within every owner lifetime.
+An exclusive reference may perform the same operations only by affine move or
+reborrow. It may not be copied or aliased.
 
-It may not be:
+Neither reference kind may be:
 
-- stored in a type that erases `'a`;
+- stored in a type that erases its lifetime or access kind;
 - converted to `Dynamic` or an owned existential without materialization;
+- serialized as an address-bearing representation;
 - sent through a channel or isolated worker;
-- captured by an escaping closure or task;
-- held live across `await` or `yield` in the initial implementation; or
-- serialized or reflected as an address-bearing representation.
+- captured by an escaping closure or task; or
+- held live across `await` or `yield` in the initial implementation.
 
-Async `var('a)` is excluded initially because it reserves a caller place across
-suspension. Synchronous named-access calls before or after suspension remain
-valid. A future scoped-concurrency or coroutine-access RFC may relax this only
-with an explicit owner and cancellation/cleanup contract.
+Synchronous calls before or after suspension remain valid. A future scoped
+concurrency or coroutine RFC may relax these restrictions only with explicit
+owner, cancellation, and cleanup contracts.
 
-Capabilities remain outside ordinary lifetime lifting. Host buffers require a
-lease-bearing API whose callable envelope transports both data lifetime and host
-lease. A lifetime cannot widen a grant or keep authority alive by itself.
+Host references require lease-bearing APIs. A lifetime cannot widen a grant or
+keep capability authority alive by itself.
 
 ## Representation and lowering
 
-Lifetime arguments have no payload representation. The checker and lowering
-retain:
+Lifetimes have no runtime payload. Checked reference values retain:
 
 - owner-root identities;
 - projection descriptors;
-- relation positions in callable and nominal types;
-- open/transfer/commit/close events; and
-- representation-specific root or lease obligations.
+- shared or exclusive access kind;
+- affine state for exclusive references;
+- lifetime positions in callable and nominal types; and
+- representation-specific root, repair, write-back, or lease obligations.
 
-Compiled shared views retain each distinct linear-memory owner root until the
-checked last use. Typed GC roots remain typed references. Lowering never emits
-owning retain/drop operations on an interior projection.
+Compiled shared references retain each distinct linear-memory root until the
+checked final use. Typed GC references remain typed. Lowering never emits an
+owning retain or drop on an interior projection.
 
-Named `var` access uses the existing logical envelope:
+An optimized exclusive reference may be a direct pointer or checked projection.
+The interpreter and forced-copy Wasm path may instead use a logical shadow with
+a write-back chain, provided all reads, mutations, reborrows, structured exits,
+and drops agree with direct-place semantics. Parent references remain suspended
+while a reborrow is live in every representation.
+
+The existing RFC-0110 access envelope gains explicit reference inputs and owner
+relations:
 
 ```text
-(explicit arguments, ownership inputs)
-    -> (ordinary result, var write-backs, ownership outputs, result owner relations)
+(explicit arguments, value ownership inputs, reference access inputs)
+    -> (ordinary result, var write-backs, ownership outputs, result references)
 ```
 
-The physical ABI may flatten or omit empty components. Direct caller-storage
-lowering is legal only when checked-place, uniqueness, overlap, escape, and
-layout proofs all hold. Otherwise normal mode uses copy-in/copy-back. `mode opt`
-rejects a missing proof when the signature promises `unique` no-copy access.
+Direct-storage lowering is legal only when checked-place, uniqueness, overlap,
+escape, layout, and cleanup proofs hold. Otherwise normal mode may repair or use
+a shadow. `mode opt` rejects a missing no-copy proof when the API or local
+optimization contract requires one.
 
-The interpreter may materialize shared views and implement `var` as copy-in/
-copy-back. Compiled Wasm may retain roots and update direct storage. Both consume
-the same checked facts and must agree on values, write-backs, traps, and accepted
-programs.
-
-Cleanup covers fallthrough, explicit return, `?`, branches, loops, and generated
-adapters. A trap makes the VM terminal so no host API can resume or inspect a
-partially committed instance.
+The interpreter is the semantic oracle and compiled Wasm must agree on values,
+owner mutations, `var` write-backs, traps, accepted programs, and rejection
+boundaries. Cleanup covers fallthrough, explicit return, `?`, branches, loops,
+reborrow end, affine move, and generated adapters.
 
 ## Diagnostics
 
-Diagnostics name:
+Reference diagnostics name:
 
-- the owner and projection;
-- the named `let` or `var` access that introduced the relation;
-- the borrowed value keeping it live;
-- the conflicting mutation, write-back, move, drop, erasure, or suspension;
+- the owner and overlapping projection;
+- the borrow expression and reference kind;
+- the value or reborrow keeping the loan live;
+- the conflicting read, mutation, borrow, write-back, move, drop, erasure, or
+  suspension;
 - the path-sensitive final use when available; and
-- a repair: shorten use, preserve the relation, materialize with `.owned()`,
-  split relations, or move the mutation after the loan closes.
+- a repair such as shortening use, reborrowing, materializing with `.owned()`,
+  splitting places, or moving mutation after the loan closes.
 
-They render source forms such as `String('a)` and `var('a)`, never internal
-`View`, origin numbers, hidden roots, capacity tokens, or solver edges.
+Diagnostics render `&'a T` and `&'a mut T`, never internal `View`, origin
+numbers, hidden roots, capacity tokens, shadow cells, or solver edges.
 
-Targeted syntax diagnostics guide migration:
+Targeted migration diagnostics include:
 
 ```text
-`let('a) String` is the retired borrowed-type spelling;
-name the parameter access instead: `let('a) text: String`
+`let('a) String` is retired; write the reference type `&'a String`
 
-`View(String, 'a)` is the retired borrowed-value spelling;
-write `String('a)`
+`View(String, 'a)` is retired; write `&'a String`
+
+`String('a)` is not an ordinary borrowed String; write `&'a String`
+
+`var('a) text: String` is retired; write `text: &'a mut String`
+and pass a mutable borrow with `&mut text`
 ```
+
+The `String('a)` diagnostic is emitted only when `String` declares no nominal
+lifetime parameter. Declared forms such as `Parser('a)` remain valid.
 
 ## Migration
 
-Acceptance triggers one mechanical source migration:
+Acceptance triggers one AST-based migration:
 
-| Old declaration | New declaration |
+| Legacy declaration | Reference-model declaration |
 |---|---|
-| `let text: let('a) String` | `let('a) text: String` |
-| `text: let('a) String` | `let('a) text: String` |
-| `var text: let('a) String` | rejected today; choose `var('a) text: String` only when exclusive semantics are intended |
-| `View(String, 'a)` | `String('a)` |
-| `View(List(Int), 'a)` | `List(Int, 'a)` |
-| `View(t, 'a)` | `t('a)` |
+| `let text: let('a) String` | `text: &'a String` |
+| `text: let('a) String` | `text: &'a String` |
+| `let('a) text: String` | `text: &'a String` |
+| `var('a) text: String` | `text: &'a mut String` |
+| `View(String, 'a)` | `&'a String` |
+| `String('a)` where `String` declares no lifetime | `&'a String` |
+| `List(Token('a))` | `List(&'a Token)` |
+| `List(Token, 'a)` direct storage relation | `&'a List(Token)` |
 | `type Parser('a)` | unchanged |
+| field `input: String('a)` | `input: &'a String` |
 
-`witchy migrate borrowed-relations <paths...>` performs AST-based rewrites for
-unambiguous shared forms, including nested types, function types, aliases,
-quoted types, generated fixtures, and documentation examples. It reports rather
-than guesses for old illegal or ambiguous convention combinations.
+Call sites also become explicit:
+
+```text
+first(text)          -> first(&text)
+normalize(text)      -> normalize(&mut text)
+forward(view)        -> forward(view)
+```
+
+`witchy migrate references <paths...>` uses resolved AST information to
+distinguish nominal lifetime arguments from retired direct relation lifting. It
+rewrites declarations, nested types, function types, aliases, borrow-producing
+calls, quoted types, generated fixtures, and documentation examples. It reports
+rather than guesses when owner mutability, overload resolution, macro output, or
+legacy convention combinations are ambiguous.
 
 The compiler, formatter, reflection vocabulary, `meta.type_*` builders,
-highlighter, language server, stdlib docs, book, spec, examples, and differential
-fixtures change in the same cut. The old `View` and type-position `let('a)` forms
-remain only as targeted parse diagnostics; they are not aliases and do not
-survive formatting.
-
-Serialized compiler metadata and cached modules bump their format version.
-There is no compatibility shim. Packages must migrate source before rebuilding.
+highlighter, language server, stdlib docs, book, spec, examples, differential
+fixtures, serialized metadata, and cached modules change in the same cut. The
+metadata format version is bumped. No compatibility shim survives the cut.
 
 RFC-0083 and RFC-0112 remain frozen historical records. Once this RFC is
 accepted and implemented, their metadata receives a supersession note; their
@@ -861,223 +891,232 @@ bodies are not rewritten.
 
 ## Implementation plan
 
-### Phase 0: executable design model
+### Phase 0: executable semantic model and ledger
 
-- Add parser-independent signature tests for every form in this RFC.
-- Freeze the complete RFC-0083/RFC-0112 positive and negative corpus.
-- Add named-`var` return, conditional-return, lending-iterator, multi-owner, and
-  callable-erasure fixtures before changing syntax.
-- Build a small reference access interpreter over values, owner sets, and
-  structured write-back; use it as the semantic oracle for new exclusive cases.
-- Record checker time, fact counts, peak memory, root counters, allocations, and
-  parser/iterator throughput on the pinned corpus.
+- Freeze the complete RFC-0083 and RFC-0112 positive and negative corpus.
+- Add explicit shared, exclusive, reborrow, affine-move, aggregate, conditional,
+  lending, erasure, and boundary fixtures before changing syntax.
+- Build a small reference semantics model over owner roots, projections,
+  reference moves, reborrows, and logical write-back shadows.
+- Use interpreter behavior as the language oracle and the model as the loan
+  checker oracle for new exclusive cases.
+- Record an acceptance ledger divided into syntax, type checking, callable
+  identity, interpreter, Wasm, tooling, migration, docs, and evidence tracks.
+- Record checker time, fact counts, peak memory, root counters, repair copies,
+  allocations, and parser/iterator throughput on a pinned corpus.
 
-### Phase 1: syntax and kind model
+### Phase 1: syntax and checked types
 
-- Parse `let('a)` and `var('a)` as conventions with optional origin binders.
-- Parse lifetime arguments through the ordinary type-argument loop.
-- Replace source `TypeQual::Borrow` with relation lifting in the checked type
-  model while preserving the current internal lowering path during migration.
-- Record each nominal constructor's declared relation arity and one optional
-  direct relation.
-- Implement generic `t('a)` relation lifting and reject capability lifting.
-- Update aliases, formatter, linker, type resolution, quotations, reflection,
-  derive expansion, highlighter, LSP, and diagnostics.
-- Ship the AST migration command.
+- Parse `&'a T`, `&'a mut T`, `&place`, `&mut place`, and `*reference`.
+- Add explicit shared/exclusive reference nodes to AST, checked types, runtime
+  types, reflection, quotations, and callable identities.
+- Preserve nominal lifetime arguments while deleting direct lifetime lifting.
+- Derive copyability and affinity structurally for reference aggregates.
+- Update aliases, formatter, linker, type resolution, derive expansion,
+  highlighter, LSP, diagnostics, and metadata encoding.
+- Add parser-independent signature tests for every valid and invalid form.
 
-Phase 1 migrates shared syntax only. Matched tests must prove identical
-acceptance, owner sets, generated values, root operations, and materialization
-counters before named `var` is enabled.
+### Phase 2: shared-reference migration
 
-### Phase 2: callable access envelopes
-
-- Extend RFC-0110 callable identity with optional origins on `let` and `var`.
-- Preserve relation binders through direct calls, methods, UFCS, closures,
+- Lower explicit shared borrows through the existing RFC-0083/RFC-0112 owner
+  root and projection path during the transition.
+- Implement borrow expressions, stable-place checking, shared reborrowing,
+  dereference, projection, copying, and materialization.
+- Preserve reference relations through direct calls, methods, UFCS, closures,
   function values, traits, witnesses, generated adapters, and tail dispatch.
-- Define owned-to-shared borrowing and borrowed-to-shared reborrowing.
-- Reject every convention, origin, result-relation, or ownership-state erasure.
+- Prove matched legacy and migrated fixtures have identical acceptance, owner
+  sets, values, roots, and materialization counters.
 
-### Phase 3: named `var` access
+### Phase 3: exclusive references
 
-- Extend checked-place facts with named reservation and commit-to-root events.
-- Reuse RFC-0087 evaluation order, overlap, structured return, and atomic commit.
-- Attach returned shared relations to the final committed roots, including root
-  replacement and capacity-token changes.
-- Implement interpreter and forced-copy Wasm copy-in/copy-back first.
-- Enable direct-storage lowering only from the same checked facts.
-- Cover `var('a) T`, `var('a) unique T`, multiple disjoint `var` parameters,
-  `?`, explicit return, traps, projections, and result aggregates.
+- Add affine state, exclusive place loans, parent-reference suspension,
+  exclusive and shared reborrowing, and mutable-to-shared coercion.
+- Define the interaction with owner mutability, `unique`, `local unique`,
+  `frozen`, `let`, `var`, `own`, move, drop, and structured control flow.
+- Implement interpreter and forced-copy Wasm shadow/write-back semantics first.
+- Enable direct-place Wasm lowering only from the same checked facts.
+- Cover root replacement, capacity-token change, projection mutation, multiple
+  disjoint borrows, explicit return, `?`, and terminal traps.
 
 ### Phase 4: point-sensitive precision
 
 - Introduce origin/loan subset reachability at CFG points.
 - Handle conditional returns and sibling-path invalidations.
-- Add loop fixpoints and overwrite kills for lending iteration.
+- Add loop fixpoints, overwrite kills, and lending iterator reborrows.
 - Keep precise solving local to conflict-relevant components.
-- Validate against the reference access model and frozen negative corpus.
+- Add dynamic disjoint-range proofs only after corpus evidence justifies cost.
+- Validate every precision change against the semantic model and frozen negative
+  corpus.
 
-### Phase 5: migration and documentation
+### Phase 5: migration and repository cut
 
-- Rewrite the repository with the migration command and inspect every reported
-  ambiguity.
-- Update `spec/language.md`, `spec/performance.md`, book ownership/performance
-  chapters, standard-library docs, reflection docs, and runnable examples.
-- Publish old/new syntax, shared/named-exclusive behavior, materialization, and
-  diagnostic examples.
-- Land independently green compiler, runtime, tooling, tests, docs, and evidence
-  slices through the merge queue while one integration track stays runnable.
-- Mark the RFC implemented only when every criterion below has current evidence
-  on `master`.
+- Implement `witchy migrate references` and review every ambiguity report.
+- Rewrite the repository in one cut with no accepted legacy syntax.
+- Update `spec/language.md`, `spec/performance.md`, ownership and performance
+  book chapters, stdlib docs, reflection docs, and runnable examples.
+- Update generated manifests, censuses, snapshots, and metadata with the slice
+  that invalidates them.
+- Land independently green syntax, type, interpreter, Wasm, tooling, tests,
+  docs, and evidence slices through the merge queue while an integration branch
+  keeps the migrated end-to-end path runnable.
+- Mark this RFC implemented only when every acceptance criterion has current
+  evidence on `master`.
 
 ## Acceptance criteria
 
-1. `let('a)` and `var('a)` parse, format, reflect, quote, and survive every
-   callable representation as named shared/exclusive access conventions.
-2. `T('a)` parses, kind-checks, aliases, reflects, and resolves uniformly for
-   built-ins, type variables, nominal types, fields, nested containers,
-   parameters, results, and function types.
-3. Every migrated RFC-0083/RFC-0112 shared fixture has identical acceptance,
-   owner sets, diagnostics intent, interpreter result, Wasm result, root balance,
-   and materialization counters.
-4. `let('a) x: T`, `var('a) x: T`, and `x: T('a)` remain distinct in callable
-   identity and no cast, trait witness, closure, adapter, or tail edge erases the
-   distinction.
-5. Shared loans permit overlapping reads and reject overlapping mutation,
-   write-back, move, consumption, and erasing escape until path-sensitive last
-   use or materialization.
-6. Named `var` writes back before exposing its ordinary result and attaches every
-   returned `'a` relation to the final committed root on tail, explicit return,
-   and `?` paths.
-7. `var('a) unique T` enforces the existing no-copy contract without creating a
-   first-class exclusive reference. `unique T('a)` is rejected with a diagnostic
-   pointing to named `var` access when mutation is intended.
-8. Conditional-return and lending-iterator fixtures compile under point-sensitive
-   analysis without weakening any negative case. Rejections identify the exact
-   reaching loan and invalidation point.
-9. Borrowed nominal shells, nested projections, multiple owner relations, and
-   `List(B('a))` preserve exact roots through copy, overwrite, destructure,
-   iteration, return, and drop.
-10. Interpreter copy-in/copy-back, forced-copy Wasm, and optimized direct-storage
-    Wasm agree on values, write-backs, traps, and accepted programs. Checked-heap,
-    poison, no-reuse, and UAF tests detect stale roots, double commits, premature
-    release, and leaks.
-11. Async, generator, task, channel, escaping closure, `Dynamic`, serialization,
-    existential, and host-capability boundaries either preserve every relation
-    and lease explicitly or reject with a scoping/materialization remedy.
-12. The migration command rewrites every unambiguous old spelling, reports every
-    ambiguous convention combination, leaves no accepted legacy syntax, and a
-    clean rebuild validates the new metadata format.
-13. Borrow-free bodies show no material checker-time regression. The pinned
-    corpus reports checker time, loan count, subset-edge count, peak memory,
-    allocations, root operations, and execution throughput before and after each
-    precision phase.
+1. `&'a T`, `&'a mut T`, `&place`, `&mut place`, and `*reference` parse,
+   format, reflect, quote, highlight, and survive every compiler stage.
+2. Reference types work uniformly for built-ins, type variables, nominal types,
+   fields, tuples, nested containers, parameters, results, aliases, traits, and
+   function types without direct `T('a)` lifting.
+3. Nominal `Parser('a)` remains distinct from `&'a Parser`; the parser, kind
+   checker, formatter, reflection, and migration tool preserve that distinction.
+4. Every migrated RFC-0083/RFC-0112 fixture has matched acceptance, diagnostic
+   intent, interpreter value, Wasm value, owner sets, root balance, and
+   materialization counters.
+5. Shared references copy and reborrow safely, permit overlapping reads, and
+   reject overlapping mutation, exclusive borrow, `var` access, consumption,
+   move, drop, and erasing escape until path-sensitive final use.
+6. Exclusive references are affine, allow mutation through the referent, reject
+   every competing overlap, suspend parent references during reborrow, and
+   transfer all loan obligations on move.
+7. Mutable-to-shared conversion relinquishes exclusive capability through the
+   converted handle; shortening never lengthens an owner relation.
+8. `unique T`, `local unique T`, and `frozen T` retain owned-storage meanings.
+   Invalid qualifier/reference combinations receive category-specific
+   diagnostics, and `&mut frozen T` is rejected.
+9. `let`, `var`, and `own` remain distinct from reference kinds in callable
+   identity. Applying them to a reference handle affects the handle, never
+   silently changes referent access.
+10. No cast, trait witness, closure, adapter, existential edge, or tail call
+    erases lifetime, shared/exclusive kind, affinity, parameter convention, or
+    ownership requirements.
+11. Conditional-return and lending-iterator fixtures compile under
+    point-sensitive analysis without weakening negative cases. Rejections name
+    the exact reaching loan and conflict point.
+12. Borrowed nominal aggregates, nested projections, multiple owner relations,
+    shared-reference containers, and affine-reference containers preserve exact
+    roots through copy or move, overwrite, destructure, iteration, return, and
+    drop.
+13. Interpreter shadows, forced-copy Wasm, and optimized direct-place Wasm agree
+    on values, owner mutations, `var` write-backs, traps, and accepted programs.
+    Checked-heap, poison, no-reuse, and UAF tests detect stale roots, double
+    commits, premature release, aliasing, and leaks.
+14. Async, generator, task, channel, escaping closure, `Dynamic`, serialization,
+    existential, and host-capability boundaries either preserve every reference
+    and lease explicitly or reject with a scoped/materialization remedy.
+15. The migration command rewrites every unambiguous declaration and call,
+    reports every ambiguous case, preserves nominal lifetime arguments, leaves
+    no accepted legacy syntax, and validates a clean metadata rebuild.
+16. Reference-free bodies show no material checker-time regression. The pinned
+    corpus reports checker time, loan and subset-edge counts, peak memory,
+    allocations, repair copies, root operations, and execution throughput before
+    and after each precision phase.
 
 ## Alternatives
 
-### `let text: T('a)`
+### `let('a) text: T` plus `T('a)`
 
-Compact, but overloaded: it can mean either “open a borrow from this owned
-argument” or “receive an existing borrowed value.” The distinction matters to
-callable identity, owner rooting, `var`, and `own`. This RFC uses
-`let('a) text: T` for access creation and `text: T('a)` for a first-class
-borrowed input.
+This separates loan creation from first-class borrowed values, but the same API
+appears to accept `T` and return a different nominal-looking type. It also
+requires an extra direct-relation position on every type constructor and creates
+forms such as `Parser('input, 'parser)`. Explicit references state both sides of
+the contract with one type constructor.
 
-### Keep `let('a) T` and `View(T, 'a)`
+### `text: T('a)` with implicit borrowing
 
-Implemented and explicit, but the parameter convention and input type repeat
-`let`, results use a different shape, and nominal aggregates already use
-relation arguments. The chosen syntax preserves the semantic distinction while
-removing the duplication.
+This is more uniform than named `let`, but it still looks like ordinary generic
+application and cannot cleanly distinguish `List(T('a))` from a reference to
+list storage without a special trailing-argument rule. It also has no natural
+exclusive counterpart other than overloading `unique` or adding another wrapper.
 
-### Prefix lifetime types: `'a T`
+### `View(T, 'a)` and `MutView(T, 'a)`
 
-Concise, but composition with qualified and nested types is less clear, and it
-does not match existing nominal relation arguments. `T('a)` keeps the logical
-type at the head and uses one argument grammar.
+Wrapper names are unambiguous but make references look like unrelated nominal
+types, compose poorly in signatures, and duplicate a concept with established
+prefix syntax. `&` makes reference nesting and target position immediately
+visible.
 
-### `View(T, 'a)` everywhere
+### `&'a var T`
 
-Uniform and unambiguous, but presents a logical `T` as a parallel wrapper type,
-does not align with `Parser('a)`, and makes generic/nested signatures noisier.
-`T('a)` is relation lifting, not a user-defined nominal wrapper.
+This would reuse Witchy's existing vocabulary, but `var` already means
+move-in/write-back of a parameter binding. Using it for mutation through a
+referent would make `var x: &'a var T` describe two unrelated write channels
+with one word. Contextual `mut` keeps those axes separate.
 
-### First-class `unique T('a)` exclusive references
+### Shared references only
 
-Expressive, but materially changes Witchy's source semantics. Such a value would
-need affine movement, mutable reborrowing, delayed commit or mutation-through-
-reference, interaction with `own`, and rules for storage in aggregates and
-across suspension. Forced-copy parity would also need to preserve observable
-mutation timing.
+Shared-only references preserve more of the previous value surface, but leave
+mutation-followed-by-borrow, stored exclusive access, and lending iteration on a
+separate named-`var` mechanism. The resulting type system remains hybrid.
+First-class affine exclusive references complete the model directly.
 
-Named `var('a)` handles the identified workloads - mutation followed by a
-returned view, conditional lookup/insert, and lending iteration - while keeping
-exclusive mutation synchronous and value-based. This RFC therefore rejects
-first-class exclusive references rather than pretending `unique` already means
-one.
+### Implicit borrow insertion at calls
 
-### `own('a)`
+Allowing `first(text)` where `first` expects `&'a String` would preserve old call
+sites, but hide the creation of a loan and make ownership effects depend on
+overload resolution. This RFC requires `first(&text)` and `edit(&mut text)`.
+Passing an existing reference remains direct, and exclusive-reference arguments
+receive the defined automatic reborrow.
 
-Rejected because `own` kills the caller binding that would bound `'a`. Returning
-a view of consumed storage either needs an owned result, a surviving `var('a)`
-place, or an owned object packaging both storage and projection.
+### Infer every lifetime relation
 
-### Infer every result relation
+Inference should determine concrete roots and duration. Public and multi-owner
+APIs must still state which results depend on which inputs so modules, traits,
+function values, and reviewers retain the contract.
 
-Inference should determine concrete roots and duration, but public and
-multi-owner APIs must state which result depends on which input so modules,
-traits, function values, and reviewers retain the contract.
+### Keep the conservative loan engine
 
-### Keep the current conservative loan engine
-
-Safe, but unnecessarily rejects conditional-return and lending patterns. The
-point-sensitive origin/loan model improves precision behind the same API syntax
-and keeps solver implementation replaceable.
+It is safe but rejects conditional-return and lending patterns. Point-sensitive
+origin/loan propagation improves precision behind the same reference syntax and
+keeps the solver implementation replaceable.
 
 ## Drawbacks
 
-- `let('a)` and `var('a)` make parameter conventions slightly heavier when an
-  access escapes through a result.
-- `T('a)` resembles ordinary generic application even though lifetime arguments
-  have relation kind and no runtime representation.
-- A nominal type with declared field relations plus a direct shell relation can
-  have forms such as `Parser('input, 'parser)`, which require explanation.
-- `List(T('a))` and `List(T, 'a)` are intentionally different.
-- The syntax and compiler metadata migration are breaking.
-- Point-sensitive loan solving can regress compile time on very large bodies and
-  requires cardinality metrics plus a cheap borrow-free path.
-- Named `var` results add owner-root transport to write-back lowering and every
-  callable adapter.
-- The design deliberately withholds first-class mutable references. A future
-  workload may prove that boundary too restrictive and require a separate RFC.
+- `&`, `mut`, and `*` add syntax and make borrowing visible at call sites.
+- First-class `&mut` introduces mutation through references and affine values,
+  expanding Witchy's previous value-only source semantics.
+- Reference-typed APIs require rules for moves, reborrows, aggregate storage,
+  closure capture, traits, async boundaries, reflection, and every callable
+  adapter.
+- The migration changes declarations and calls and is intentionally breaking.
+- Explicit borrow expressions are noisier than convention-directed implicit
+  borrowing for simple read-only calls.
+- Point-sensitive loan solving can regress compile time on large bodies and
+  requires cardinality metrics plus a cheap reference-free path.
+- Forced-copy parity for long-lived exclusive references requires a disciplined
+  shadow/write-back model even when optimized Wasm uses direct places.
+- General references to host capabilities remain unavailable until their lease
+  semantics are specified.
 
 ## Prior art
 
-- Rust lifetimes demonstrate erased API relations; Rust's [2026 Polonius
-  goal](https://rust-lang.github.io/rust-project-goals/2026/polonius.html) and
-  [nightly alpha announcement](https://blog.rust-lang.org/2026/08/04/enabling-polonius-alpha-on-nighty/)
-  motivate origins-as-loan-sets, point-sensitive propagation, conditional-return
-  acceptance, lending iterators, formal modeling, and measured rollout. Witchy
-  adopts those analytical lessons, not Rust's reference syntax or implementation
-  wholesale.
+- Rust reference syntax demonstrates a clear distinction between owned values,
+  shared references, and affine mutable references. Rust's [2026 Polonius
+  goal](https://rust-lang.github.io/goals/2026/polonius.html) and [current
+  nightly status](https://rust-lang.github.io/polonius/current_status.html)
+  motivate origins-as-loan-sets, point-sensitive propagation, conditional
+  returns, lending iterators, formal modeling, and measured rollout.
 - [Implementation Strategies for Mutable Value
   Semantics](../external-refs/mutable-value-semantics-2022/notes.md) supplies the
-  read/exclusive/consume access model behind `let`/`var`/`own` and supports
-  exclusive mutation through move-in/write-back without shared mutable aliases.
+  read, exclusive, and consume access model behind `let`, `var`, and `own` and
+  shows how optimized direct access can preserve value behavior.
 - [Counting Immutable
   Beans](../external-refs/counting-immutable-beans-2019/notes.md) demonstrates
   inferred borrowed references as an RC-traffic optimization.
 - Swift borrowing, Hylo access lifetimes, Vale regions, Cyclone regions, and
-  lending iterators reinforce the separation between access mode, ownership,
-  and validity relation.
+  lending iterators inform affine access, reborrowing, and owner-relative
+  validity.
 
 ---
 
-> 2026-08-13 design revision: the initial draft placed a lifetime directly on
-> input types (`let text: T('a)`) and proposed first-class `unique T('a)`
-> exclusive references. Long-term analysis found that this overloaded access
-> creation with borrowed-value passing and silently expanded `unique` into a
-> mutable-reference kind. The revised design names origins on `let`/`var`, keeps
-> `T('a)` read-only, and confines exclusive mutation to synchronous write-back.
+> 2026-08-13 design revision: the first draft used direct lifetime lifting such
+> as `T('a)` and first-class exclusive values derived from `unique`. The second
+> draft moved loan creation to `let('a)` and `var('a)` while retaining `T('a)`
+> for results. Further long-term analysis found that both forms exposed compiler
+> mechanics, overloaded nominal type application, and left exclusive access on
+> a separate mechanism. This revision adopts explicit `&'a T` and `&'a mut T`
+> reference types, explicit borrow expressions, and affine mutable references.
 
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.
