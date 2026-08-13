@@ -383,9 +383,31 @@ impl LoanProjection {
     }
 }
 
+/// The capability carried by one lifetime-bearing reference slot.
+///
+/// This is deliberately part of the callable relation rather than inferred
+/// from a storage type: a shared result may be derived from an exclusive input,
+/// but an exclusive result may only be derived from exclusive input storage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BorrowKind {
+    Shared,
+    Exclusive,
+}
+
+impl BorrowKind {
+    fn can_supply(self, requested: Self) -> bool {
+        matches!(
+            (self, requested),
+            (Self::Shared, Self::Shared)
+                | (Self::Exclusive, Self::Shared | Self::Exclusive)
+        )
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct BorrowSlot {
     pub(crate) lifetime: String,
+    pub(crate) kind: BorrowKind,
     pub(crate) projection: LoanProjection,
     pub(crate) storage_type: Type,
 }
@@ -432,7 +454,8 @@ impl BorrowRelationCatalog {
         active_nominals: &mut Vec<(String, Type)>,
     ) -> Vec<BorrowSlot> {
         match ty {
-            Type::Qualified(TypeQual::Borrow(lifetime), inner) => {
+            Type::Qualified(TypeQual::Borrow(lifetime), inner)
+            | Type::Qualified(TypeQual::BorrowMut(lifetime), inner) => {
                 let nested = self.slots_with(inner, lifetimes, types, active_nominals);
                 if !nested.is_empty() {
                     nested
@@ -442,6 +465,11 @@ impl BorrowRelationCatalog {
                             .get(lifetime)
                             .cloned()
                             .unwrap_or_else(|| lifetime.clone()),
+                        kind: if matches!(ty, Type::Qualified(TypeQual::BorrowMut(_), _)) {
+                            BorrowKind::Exclusive
+                        } else {
+                            BorrowKind::Shared
+                        },
                         projection: LoanProjection::default(),
                         storage_type: substitute_borrow_slot_type(inner, types),
                     }]
@@ -629,16 +657,22 @@ fn coarse_borrow_slots(
     fn collect(
         ty: &Type,
         substitutions: &HashMap<String, String>,
-        found: &mut Vec<String>,
+        found: &mut Vec<(String, BorrowKind)>,
     ) {
         match ty {
-            Type::Qualified(TypeQual::Borrow(lifetime), inner) => {
+            Type::Qualified(TypeQual::Borrow(lifetime), inner)
+            | Type::Qualified(TypeQual::BorrowMut(lifetime), inner) => {
                 let lifetime = substitutions
                     .get(lifetime)
                     .cloned()
                     .unwrap_or_else(|| lifetime.clone());
-                if !found.contains(&lifetime) {
-                    found.push(lifetime);
+                let kind = if matches!(ty, Type::Qualified(TypeQual::BorrowMut(_), _)) {
+                    BorrowKind::Exclusive
+                } else {
+                    BorrowKind::Shared
+                };
+                if !found.iter().any(|(known, _)| known == &lifetime) {
+                    found.push((lifetime, kind));
                 }
                 collect(inner, substitutions, found);
             }
@@ -651,8 +685,10 @@ fn coarse_borrow_slots(
                     .get(lifetime)
                     .cloned()
                     .unwrap_or_else(|| lifetime.to_string());
-                if !found.contains(&lifetime) {
-                    found.push(lifetime);
+                if !found.iter().any(|(known, _)| known == &lifetime) {
+                    // A bare nominal lifetime argument records a relation but
+                    // carries no mutable-reference capability by itself.
+                    found.push((lifetime, BorrowKind::Shared));
                 }
             }
             Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
@@ -675,8 +711,9 @@ fn coarse_borrow_slots(
     let storage_type = substitute_borrow_slot_type(ty, types);
     lifetimes
         .into_iter()
-        .map(|lifetime| BorrowSlot {
+        .map(|(lifetime, kind)| BorrowSlot {
             lifetime,
+            kind,
             projection: LoanProjection::default(),
             storage_type: storage_type.clone(),
         })
@@ -860,6 +897,7 @@ impl BorrowOwnerRelation {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BorrowRelation {
     lifetime: String,
+    kind: BorrowKind,
     output_projection: LoanProjection,
     owners: Vec<BorrowOwnerRelation>,
     storage_type: Type,
@@ -868,6 +906,10 @@ pub struct BorrowRelation {
 impl BorrowRelation {
     pub fn lifetime(&self) -> &str {
         &self.lifetime
+    }
+
+    pub fn kind(&self) -> BorrowKind {
+        self.kind
     }
 
     pub fn output_projection(&self) -> &LoanProjection {
@@ -1188,7 +1230,7 @@ impl AccessSignature {
             let mut owners = Vec::new();
             for (position, param) in access_params.iter().enumerate() {
                 for input in catalog.slots(&param.ty) {
-                    if input.lifetime == slot.lifetime {
+                    if input.lifetime == slot.lifetime && input.kind.can_supply(slot.kind) {
                         owners.push(BorrowOwnerRelation {
                             position,
                             input_projection: input.projection,
@@ -1203,6 +1245,7 @@ impl AccessSignature {
             }
             borrow_relations.push(BorrowRelation {
                 lifetime: slot.lifetime,
+                kind: slot.kind,
                 output_projection: slot.projection,
                 owners,
                 storage_type: slot.storage_type,
@@ -1542,6 +1585,10 @@ fn encode_access_identity(signature: &AccessSignature) -> Vec<u8> {
     encoder.usize(signature.borrow_relations.len());
     for relation in &signature.borrow_relations {
         encoder.lifetime(&relation.lifetime);
+        encoder.tag(match relation.kind {
+            BorrowKind::Shared => 0,
+            BorrowKind::Exclusive => 1,
+        });
         encoder.projection(&relation.output_projection);
         encoder.usize(relation.owners.len());
         for owner in &relation.owners {
@@ -1559,6 +1606,7 @@ fn borrow_relation_compatible(
     lifetimes: &LifetimeBijection,
 ) -> bool {
     lifetimes.matches(&required.lifetime, &candidate.lifetime)
+        && required.kind == candidate.kind
         && required.output_projection == candidate.output_projection
         && required.owners.len() == candidate.owners.len()
         && required
@@ -1921,6 +1969,15 @@ fn compare_type(
         (
             Type::Qualified(TypeQual::Borrow(left), left_inner),
             Type::Qualified(TypeQual::Borrow(right), right_inner),
+        ) => {
+            if !lifetimes.relate(left, right) {
+                return Err(AccessMismatchKind::BorrowRelation);
+            }
+            compare_type(left_inner, right_inner, lifetimes)
+        }
+        (
+            Type::Qualified(TypeQual::BorrowMut(left), left_inner),
+            Type::Qualified(TypeQual::BorrowMut(right), right_inner),
         ) => {
             if !lifetimes.relate(left, right) {
                 return Err(AccessMismatchKind::BorrowRelation);

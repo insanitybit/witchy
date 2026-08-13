@@ -2,7 +2,7 @@ use witchy_syntax::ast::{Block, Convention, Function, Param, Type, TypeQual};
 
 use crate::access::{
     AccessKind, AccessMismatchKind, AccessQualifier, AccessSignature, AccessSignatureError,
-    BorrowRelationCatalog, CheckedPlaceStep, LoanProjection, LoanProjectionStep,
+    BorrowKind, BorrowRelationCatalog, CheckedPlaceStep, LoanProjection, LoanProjectionStep,
     OwnershipStateClass, SignaturePosition, checked_facts, checked_place_facts,
     ownership_state_class,
 };
@@ -526,6 +526,33 @@ fn exact_verifier_accepts_alpha_renamed_borrow_relations() {
 
     required.verify_exact(&renamed).expect("lifetime names alpha-rename");
     renamed.verify_exact(&required).expect("compatibility is symmetric");
+}
+
+#[test]
+fn exclusive_relation_keeps_its_capability_and_may_supply_a_shared_result() {
+    let exclusive = qualified(TypeQual::BorrowMut("slot".to_string()), named("String"));
+    let shared = qualified(TypeQual::Borrow("slot".to_string()), named("String"));
+
+    let exclusive_result = signature(
+        vec![exclusive.clone()],
+        exclusive.clone(),
+        vec![Convention::Let],
+    );
+    assert_eq!(exclusive_result.borrow_relations()[0].kind(), BorrowKind::Exclusive);
+
+    let shared_result = signature(vec![exclusive], shared, vec![Convention::Let]);
+    assert_eq!(shared_result.borrow_relations()[0].kind(), BorrowKind::Shared);
+
+    let error = AccessSignature::from_parts(
+        vec![qualified(TypeQual::Borrow("slot".to_string()), named("String"))],
+        qualified(TypeQual::BorrowMut("slot".to_string()), named("String")),
+        vec![Convention::Let],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        AccessSignatureError::UnboundResultLifetime { lifetime: "slot".to_string() }
+    );
 }
 
 #[test]
