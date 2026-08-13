@@ -121,18 +121,40 @@ types. The optimizer may use internal loans to avoid copies, but those loans are
 not source types and may never cause a normal program to be rejected. If a proof
 is missing, normal mode takes the correct repair path.
 
-An opt module may expose an owned, reference-free facade to normal callers. A
-reference-bearing item is visible only to opt callers. No mode boundary may
-silently inject a reference into normal source or require a normal caller to
-understand when a loan ends.
+An opt module exposes conventional `let`/`var`/`own` functions directly to
+normal callers. The compiler selects a proven access entry or a copy-correct
+adapter without changing the source API. A reference-bearing item remains
+visible only to opt callers. No mode boundary may inject a reference into normal
+source or require a normal caller to understand when an internal loan ends.
+
+### One conventional syntax across both modes
+
+`let`, `var`, and `own` are the common access vocabulary:
+
+```text
+fn inspect(let text: String) -> Int
+fn normalize(var text: String) -> Nil
+fn consume(own text: String) -> Digest
+```
+
+They retain the same logical meaning in both modes. Normal mode may copy or
+repair representation to preserve that meaning. Opt mode requires its promised
+access path to be statically available or rejects the opt implementation.
+
+Explicit `&'a T` and `&'a mut T` do not replace these conventions. They are used
+only when shared or exclusive access itself becomes a first-class value that is
+returned, stored, reborrowed, or passed through a lending API. Most opt
+functions therefore use exactly the same parameter syntax as normal functions.
 
 ### Borrowing is a type-level capability
 
-Within `mode opt`, a declaration says directly whether it accepts an owned
-value, a shared reference, or an exclusive reference:
+Within `mode opt`, a declaration says whether it accepts a conventional value
+access or a first-class reference:
 
 ```text
 fn consume(own text: String) -> Int
+fn inspect_call(let text: String) -> Int
+fn edit_call(var text: String) -> Nil
 fn inspect(text: &'a String) -> Int
 fn edit(text: &'a mut String) -> Nil
 ```
@@ -472,10 +494,98 @@ hidden inside an alias, trait, existential, closure, or generated adapter.
 
 ### Normal and opt boundaries
 
-Normal-to-opt calls use reference-free signatures only:
+Normal-to-opt calls use conventional reference-free signatures:
 
 ```text
 // fast_text.witchy
+mode opt
+
+pub fn inspect(let text: String) -> Int:
+    text.length()
+
+pub fn normalize(var text: String) -> Nil:
+    text = text.trim().to_lower()
+
+pub fn digest(own text: String) -> Digest:
+    digest_string(text)
+```
+
+```text
+// app.witchy, normal mode
+import fast_text
+
+var text = "  Hello  "
+let size = fast_text.inspect(text)
+fast_text.normalize(text)
+let fingerprint = fast_text.digest(move text)
+```
+
+The caller uses the same `let`/`var`/`own` contract that any normal Witchy API
+uses. There is one source function and one callable identity. The compiler may
+emit two internal entry paths:
+
+1. a proven access entry that uses the opt representation directly; and
+2. a repair adapter that establishes the entry proof by copying, re-owning, or
+   copy-in/write-back before entering the same opt body.
+
+A normal call selects the proven entry whenever its ordinary ownership facts
+are sufficient. Otherwise it selects the repair adapter. The call remains
+correct and does not produce an optimization error. An opt caller must satisfy
+the proven entry directly; a missing proof is an opt compile error.
+
+The adapter is compiler-generated from the checked conventional signature and
+the RFC-0110 access envelope. Library authors do not maintain a second wrapper,
+name, or implementation. Direct calls, methods, UFCS, function values, trait
+witnesses, and generated adapters all make the same selection from the same
+typed facts.
+
+For `let`, the fast path passes shared access without creating a source
+reference in the normal caller. For `var`, it uses direct caller storage when
+proven and otherwise performs copy-in/write-back. For `own`, it transports an
+already movable ownership state or establishes one before entering the opt
+body. Qualifiers such as `unique` refine the same decision.
+
+A reference-bearing opt item may still be `pub` for use by other opt modules.
+Attempting to import or call it from normal code reports:
+
+```text
+`first_ref` exposes opt-mode references and is unavailable in normal mode;
+call a conventional value API or add `mode opt` to this file
+```
+
+There is no source-level rewrite from `first(text)` to `first_ref(&text)`, and a
+reference-typed result never enters the normal type environment. The generated
+adapter operates on the conventional access envelope, not by pretending the
+normal source expression had reference type.
+
+### Owner-backed representation of normal values
+
+The source firewall is not a representation firewall. A result whose normal
+source type is owned `T` may temporarily use an owner root plus projection,
+copy-on-write storage, or another owner-backed representation after an opt
+call. It remains logically owned and the normal type table records only `T`.
+
+This representation is not a non-owning reference and does not keep a source
+loan live. It carries its own root-retention obligation, remains valid if the
+source binding is moved or dropped, and does not make that binding unavailable.
+Mutating either logical value first detaches the side that needs independent
+storage. Dropping the result releases its retained root exactly once.
+
+Before owner mutation, independent escape, channel/task transfer, serialization,
+host return, or another operation that could distinguish aliasing from a value
+snapshot, lowering silently detaches or materializes the logical value. If the
+program only reads or consumes it while the representation remains valid, that
+copy can disappear entirely.
+
+This optimization may never make an owner unavailable in normal source, emit a
+borrow diagnostic, change equality or mutation results, or expose pointer
+identity. A failed proof or unsupported boundary materializes eagerly. The
+forced-copy path is the semantic oracle.
+
+For example, an opt implementation can have a private reference helper and one
+conventional public API:
+
+```text
 mode opt
 
 fn first_ref(text: &'a String) -> &'a String:
@@ -485,30 +595,9 @@ pub fn first(let text: String) -> String:
     first_ref(&text).owned()
 ```
 
-```text
-// app.witchy, normal mode
-import fast_text
-
-let result = fast_text.first(text)
-```
-
-The normal caller sees an ordinary `String`-to-`String` value API. It neither
-creates a source loan nor tracks the internal reference. Every reference opened
-by the facade must close before the facade returns. The facade may return an
-owned value, a capability, or another normal-mode type, never a reference or a
-nominal value containing one.
-
-A reference-bearing opt item may still be `pub` for use by other opt modules.
-Attempting to import or call it from normal code reports:
-
-```text
-`first_ref` exposes opt-mode references and is unavailable in normal mode;
-call a reference-free facade or add `mode opt` to this file
-```
-
-There is no implicit boundary rewrite from `first(text)` to `first_ref(&text)`,
-and no automatic materialization of a reference result in normal code. Both
-would make cost and loan creation depend on hidden overload or adapter behavior.
+A normal caller sees only `String -> String`. Lowering may defer or remove the
+explicit materialization when later uses preserve value semantics. The source
+function remains single and reference-free; `first_ref` is an opt-only helper.
 
 An opt caller may pass an owned value to a normal API only through the existing
 permitted standard-library boundary or a typed adapter. A reference must be
@@ -526,7 +615,101 @@ This boundary supersedes RFC-0083's rule that a normal caller may receive and
 locally track a borrowed result, and RFC-0110's rule that such a result retains
 its loan in the normal caller. Those rules preserved safety but imposed hidden
 borrow-checker reasoning on normal code. Under this RFC, the opt implementation
-must close or materialize the reference behind an owned facade instead.
+exposes an owned source type while lowering may preserve an owner-backed
+representation under normal value semantics.
+
+## Paired mode examples
+
+### Shared read uses the same function syntax
+
+Normal mode:
+
+```text
+fn total(let values: List(Int)) -> Int:
+    var result = 0
+    for value in values:
+        result = result + value
+    result
+```
+
+Opt mode adds only the file directive:
+
+```text
+mode opt
+
+fn total(let values: List(Int)) -> Int:
+    var result = 0
+    for value in values:
+        result = result + value
+    result
+```
+
+Both signatures mean call-scoped shared access. Normal lowering may use any
+copy-correct implementation. Opt lowering must preserve the proven shared
+access path and reports a missed performance contract.
+
+### Exclusive write-back uses `var` in both modes
+
+Normal mode:
+
+```text
+fn normalize(var text: String) -> Nil:
+    text = text.trim().to_lower()
+```
+
+Opt mode:
+
+```text
+mode opt
+
+fn normalize(var text: String) -> Nil:
+    text = text.trim().to_lower()
+```
+
+Normal lowering may use copy-in/write-back. Opt lowering requires direct
+exclusive storage inside the opt entry. A normal caller that lacks that proof
+uses the generated repair adapter, which establishes exclusive storage before
+entering the opt body.
+
+### Consuming pipelines use `own` and `move` in both modes
+
+Opt library:
+
+```text
+mode opt
+
+pub fn compact(own values: List(Int)) -> List(Int):
+    values.compact()
+```
+
+Normal caller:
+
+```text
+import fast_lists
+
+let compacted = fast_lists.compact(move values)
+```
+
+If `values` is already movable, the ownership state transports directly. If a
+normal boundary needs repair, the generated adapter establishes the owned input
+without changing source syntax. An opt caller must prove the direct transport.
+
+### First-class references remain an opt-only extension
+
+```text
+mode opt
+
+fn identity(text: &'a String) -> &'a String:
+    text
+
+fn edit(text: &'a mut String) -> &'a String:
+    text.trim_in_place()
+    text
+```
+
+These functions expose access itself as a value, so their signatures use
+references and are callable only from opt code. Conventional call-scoped access
+continues to use `let` and `var`.
 
 ## Lifetime binding and owner relations
 
@@ -884,6 +1067,11 @@ Neither kind may cross into a normal-mode type environment. This is stricter
 than merely erasing the lifetime: the reference kind, owner relation, and affine
 state all remain opt-only and must close or materialize at the boundary.
 
+This restriction applies to source reference values. It does not prohibit
+lowering from retaining an owning root behind a logically owned normal `T`;
+that optimization is governed by the detachment rules above and never grants
+source access to the reference handle.
+
 Synchronous calls before or after suspension remain valid. A future scoped
 concurrency or coroutine RFC may relax these restrictions only with explicit
 owner, cancellation, and cleanup contracts.
@@ -919,6 +1107,22 @@ relations:
 (explicit arguments, value ownership inputs, reference access inputs)
     -> (ordinary result, var write-backs, ownership outputs, result references)
 ```
+
+A conventional opt function has one checked source identity and two physical
+entry strategies derived from this envelope. The proven entry accepts exactly
+the ownership and access facts required by the opt body. The repair entry has
+the same logical source signature but establishes those facts for a normal
+caller before tailing into the proven entry. It is not a second overload and
+cannot diverge in behavior.
+
+An ordinary result may carry an internal owner relation in lowering even though
+its source type is owned. That relation is representation metadata, not part of
+the normal callable identity. Unlike an opt reference, it includes an owning
+root carrier that survives source drop and participates in balanced retain/drop.
+Every operation capable of observing independent value identity queries the
+same facts and inserts copy-on-write detachment when required. Opaque module,
+serialization, host, and dynamic boundaries materialize unless their typed ABI
+explicitly transports the owned representation safely.
 
 Direct-storage lowering is legal only when checked-place, uniqueness, overlap,
 escape, layout, and cleanup proofs hold. Compiled opt code rejects a missing
@@ -974,8 +1178,13 @@ normal Witchy uses owned values and does not require lifetime annotations
 
 The compiler must not follow that error with origin, loan, reborrow, or lifetime
 diagnostics. Normal code that never writes an opt-only construct receives no
-reference diagnostic, including when it calls a reference-free facade in an opt
-module.
+reference diagnostic, including when it calls a conventional API in an opt
+module through a generated adapter.
+
+A missing fast-path proof at a conventional normal-to-opt call is not an error
+and is not rendered as a borrow failure; lowering selects the repair entry. The
+same missing proof at an opt call is an optimization-contract error naming the
+`let`, `var`, `own`, uniqueness, overlap, or layout fact that was not proven.
 
 ## Migration
 
@@ -1011,9 +1220,9 @@ legacy convention combinations are ambiguous.
 
 The migration never introduces `mode opt` into a normal file. A legacy
 reference-bearing declaration outside opt mode is reported for architectural
-repair: move the implementation into an opt module and expose an owned facade,
-or retain an ordinary value implementation. This prevents a mechanical rewrite
-from spreading reference reasoning into normal code.
+repair: move the implementation into an opt module and expose a conventional
+value API, or retain an ordinary value implementation. This prevents a
+mechanical rewrite from spreading reference reasoning into normal code.
 
 The compiler, formatter, reflection vocabulary, `meta.type_*` builders,
 highlighter, language server, stdlib docs, book, spec, examples, differential
@@ -1033,8 +1242,9 @@ bodies are not rewritten.
   lending, erasure, and boundary fixtures before changing syntax.
 - Add a frozen normal-mode corpus that contains no reference syntax and must
   produce no lifetime, loan, reborrow, or hidden-reference diagnostics.
-- Add normal-to-opt facade fixtures and reject every direct reference-bearing
-  crossing before implementing reference internals.
+- Add normal-to-opt conventional-call fixtures covering proven and repair entry
+  selection, and reject every source reference crossing before implementing
+  reference internals.
 - Build a small reference semantics model over owner roots, projections,
   reference moves, reborrows, and logical write-back shadows.
 - Use interpreter behavior as the language oracle and the model as the loan
@@ -1042,7 +1252,8 @@ bodies are not rewritten.
 - Record an acceptance ledger divided into syntax, type checking, callable
   identity, interpreter, Wasm, tooling, migration, docs, and evidence tracks.
 - Record checker time, fact counts, peak memory, root counters, rejected no-copy
-  proofs, allocations, and parser/iterator throughput on a pinned corpus.
+  proofs, proven/repair entry selections, detachments, materializations,
+  allocations, and parser/iterator throughput on a pinned corpus.
 
 ### Phase 1: syntax and checked types
 
@@ -1071,8 +1282,10 @@ bodies are not rewritten.
   sets, values, roots, and materialization counters.
 - Filter reference-bearing functions, types, traits, aliases, and generated
   adapters from the interface presented to a normal importer.
-- Require explicit owned facades for every normal-to-opt crossing and prove
-  their internal references close before return.
+- Generate proven access and repair entries for conventional `let`/`var`/`own`
+  APIs from one checked source identity.
+- Add owner-backed representations for logically owned normal results and
+  prove silent detachment before every observable invalidation or escape.
 
 ### Phase 3: exclusive references
 
@@ -1117,66 +1330,79 @@ bodies are not rewritten.
    one mode-boundary diagnostic without lifetime or loan follow-ons.
 2. A normal program containing no opt-only syntax receives no reference-related
    diagnostic, including when internal optimization facts are imprecise or it
-   calls a reference-free facade in an opt module. Missing proofs take the
-   existing copy-correct path.
+   calls a conventional API in an opt module. Missing proofs select a generated
+   copy-correct repair entry.
 3. No reference-bearing function, type, trait, alias, closure, existential,
    `Dynamic` value, reflection value, or generated adapter enters the interface
-   presented to a normal importer. Cross-mode calls use owned signatures only,
-   and every facade reference closes before return.
-4. Inside `mode opt`, `&'a T`, `&'a mut T`, `&place`, `&mut place`, and
+   presented to a normal importer. Cross-mode source calls use conventional
+   value signatures only.
+4. `let`, `var`, and `own` have the same source meaning in both modes. A single
+   opt source function provides a proven access entry and compiler-generated
+   repair entry without a hand-written facade or second callable identity.
+5. A normal caller selects the proven entry when its ordinary facts suffice and
+   the repair entry otherwise. An opt caller must satisfy the proven entry, and
+   both paths produce identical observable values and write-backs.
+6. A logically owned normal `T` may use an owner-backed internal representation
+   with its own balanced root-retention obligation,
+   but owner mutation, independent escape, task/channel transfer, serialization,
+   host return, and every other observable invalidation detach or materialize it
+   without source loans or diagnostics.
+7. Inside `mode opt`, `&'a T`, `&'a mut T`, `&place`, `&mut place`, and
    `*reference` parse, format, reflect, quote, highlight, and survive every
    compiler stage. Reference types themselves satisfy the mode's explicit
    parameter-access requirement.
-5. Opt reference types work uniformly for built-ins, type variables, nominal
+8. Opt reference types work uniformly for built-ins, type variables, nominal
    types, fields, tuples, nested containers, parameters, results, aliases,
    traits, and function types without direct `T('a)` lifting.
-6. Opt nominal `Parser('a)` remains distinct from `&'a Parser`; parsing, kind
+9. Opt nominal `Parser('a)` remains distinct from `&'a Parser`; parsing, kind
    checking, formatting, reflection, and migration preserve that distinction,
    while both forms remain unavailable in normal mode.
-7. Every migrated RFC-0083/RFC-0112 fixture has matched acceptance, diagnostic
+10. Every migrated RFC-0083/RFC-0112 fixture has matched acceptance, diagnostic
    intent, interpreter value, Wasm value, owner sets, root balance, and
    materialization counters.
-8. Shared references copy and reborrow safely, permit overlapping reads, and
+11. Shared references copy and reborrow safely, permit overlapping reads, and
    reject overlapping mutation, exclusive borrow, `var` access, consumption,
    move, drop, and erasing escape until path-sensitive final use.
-9. Exclusive references are affine, allow mutation through the referent, reject
+12. Exclusive references are affine, allow mutation through the referent, reject
    every competing overlap, suspend parent references during reborrow, transfer
    obligations on move, and reject borrow creation when no-copy uniqueness
    cannot be proven.
-10. Mutable-to-shared conversion relinquishes exclusive capability through the
+13. Mutable-to-shared conversion relinquishes exclusive capability through the
     converted handle; shortening never lengthens an owner relation.
-11. `unique T`, `local unique T`, and `frozen T` retain owned-storage meanings.
+14. `unique T`, `local unique T`, and `frozen T` retain owned-storage meanings.
     Invalid qualifier/reference combinations receive category-specific
     diagnostics, and `&mut` of frozen storage is rejected.
-12. `let`, `var`, and `own` remain distinct from reference kinds in callable
+15. `let`, `var`, and `own` remain distinct from reference kinds in callable
     identity. Applying them to a reference handle affects the handle, never
     silently changes referent access.
-13. No cast, trait witness, closure, adapter, existential edge, or tail call
+16. No cast, trait witness, closure, adapter, existential edge, or tail call
     erases lifetime, shared/exclusive kind, affinity, parameter convention, or
     ownership requirements inside the opt graph.
-14. Conditional-return and lending-iterator fixtures compile under
+17. Conditional-return and lending-iterator fixtures compile under
     point-sensitive analysis without weakening negative cases. Rejections name
     the exact reaching loan and conflict point.
-15. Borrowed nominal aggregates, nested projections, multiple owner relations,
+18. Borrowed nominal aggregates, nested projections, multiple owner relations,
     shared-reference containers, and affine-reference containers preserve exact
     roots through copy or move, overwrite, destructure, iteration, return, and
     drop.
-16. Interpreter shadows, forced-copy Wasm, and optimized direct-place Wasm agree
+19. Interpreter shadows, forced-copy Wasm, and optimized direct-place Wasm agree
     on values, owner mutations, `var` write-backs, traps, and accepted programs.
     Compiled opt code performs no repair copy when an exclusive-reference
-    contract requires direct storage. Heap checks detect stale roots, premature
-    release, aliasing, and leaks.
-17. Async, generator, task, channel, escaping closure, serialization, and
+    contract requires direct storage. Owner-backed normal results agree with
+    eager materialization. Heap checks detect stale roots, unbalanced retained
+    roots, premature release, aliasing, and leaks.
+20. Async, generator, task, channel, escaping closure, serialization, and
     host-capability boundaries either preserve every opt relation and lease
     explicitly within the opt graph or reject with a scoped/materialization
     remedy; none can tunnel a reference into normal code.
-18. The migration command rewrites every unambiguous opt declaration and call,
+21. The migration command rewrites every unambiguous opt declaration and call,
     reports every ambiguous case, preserves nominal lifetime arguments, leaves
     no accepted legacy syntax, and never adds reference syntax or `mode opt` to
     a normal file.
-19. Reference-free normal bodies show no material checker-time regression. The
+22. Reference-free normal bodies show no material checker-time regression. The
     pinned opt corpus reports checker time, loan and subset-edge counts, peak
-    memory, rejected no-copy proofs, allocations, root operations, and execution
+    memory, rejected no-copy proofs, proven/repair entry selections,
+    detachments, materializations, allocations, root operations, and execution
     throughput before and after each precision phase.
 
 ## Alternatives
@@ -1195,8 +1421,9 @@ the defining mode split: normal Witchy is the high-level value language;
 The compiler could insert `&` on arguments and `.owned()` on results at a mode
 boundary. This hides syntax but not complexity: cost depends on overload
 resolution, an owner may become unexpectedly unavailable, and diagnostics still
-need to explain hidden loans. An explicit owned facade gives normal callers a
-complete value contract and keeps all reference reasoning inside the opt module.
+need to explain hidden loans. This RFC instead adapts the conventional
+`let`/`var`/`own` access envelope and keeps the normal source type owned. Any
+owner-backed representation is detached before it can affect source behavior.
 
 ### `let('a) text: T` plus `T('a)`
 
@@ -1262,12 +1489,13 @@ keeps the solver implementation replaceable.
 - Reference-typed APIs require rules for moves, reborrows, aggregate storage,
   closure capture, traits, async boundaries, reflection, and every callable
   adapter.
-- Opt libraries that serve normal callers must maintain explicit owned facades;
-  a reference-heavy implementation cannot leak its most specialized API across
-  that boundary.
-- A normal caller may pay materialization at an owned facade even when an opt
-  caller could retain a view. That cost is deliberate and visible in the facade
-  contract.
+- Lowering must generate and validate proven-access and repair entries for
+  conventional opt APIs across direct, indirect, trait, and tail calls.
+- Owner-backed owned results require reliable invalidation barriers at mutation,
+  escape, concurrency, serialization, and host boundaries.
+- A normal caller may still pay repair or materialization when its facts do not
+  support the optimized representation. That cost preserves the normal value
+  contract and never becomes a compile error.
 - The migration changes declarations and calls and is intentionally breaking.
 - Explicit borrow expressions are noisier than convention-directed implicit
   borrowing for simple read-only calls.
@@ -1310,8 +1538,14 @@ keeps the solver implementation replaceable.
 > 2026-08-13 mode-boundary revision: explicit references are confined to
 > `mode opt`. Normal files retain reference-free value semantics, cannot receive
 > reference-bearing interfaces or hidden-loan diagnostics, and cross into opt
-> modules only through owned facades. Exclusive opt borrows require a proven
-> no-copy path rather than silently repairing sharing.
+> modules through conventional value APIs. Exclusive opt borrows require a
+> proven no-copy path rather than silently repairing sharing.
+>
+> 2026-08-13 unified-surface revision: `let`, `var`, and `own` remain the common
+> API syntax across both modes. The compiler generates proven-access and repair
+> entries for a single opt source function. Normal source types remain owned,
+> while lowering may use owner-backed representations and silently materialize
+> before any operation that could expose aliasing.
 
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.
