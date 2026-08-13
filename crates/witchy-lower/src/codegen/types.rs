@@ -35,7 +35,7 @@ impl Codegen<'_> {
             Expr::Unary { op, expr } => match op {
                 // `!x` is a bool (i32); negation/complement keep the operand kind.
                 UnOp::Not => Kind::I32,
-                UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => self.kind_of(expr),
+                UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await | UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref => self.kind_of(expr),
             },
             Expr::Binary { op, lhs, rhs } => match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd
@@ -315,7 +315,7 @@ impl Codegen<'_> {
             Expr::Str(_) => ValType::Str,
             Expr::Unary { op, expr } => match op {
                 UnOp::Not => ValType::Bool,
-                UnOp::Neg | UnOp::Move | UnOp::Await => self.val_type_of(expr),
+                UnOp::Neg | UnOp::Move | UnOp::Await | UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref => self.val_type_of(expr),
                 UnOp::BitNot => ValType::Int,
             },
             Expr::Binary { op, lhs, rhs } => match op {

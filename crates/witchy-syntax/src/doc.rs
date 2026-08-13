@@ -445,6 +445,9 @@ fn unop_str(op: UnOp) -> &'static str {
         UnOp::Neg => "-",
         UnOp::Not => "!",
         UnOp::BitNot => "~",
+        UnOp::Borrow => "&",
+        UnOp::BorrowMut => "&mut ",
+        UnOp::Deref => "*",
         UnOp::Move => "move ",
         UnOp::Await => "await ",
     }
@@ -850,8 +853,8 @@ mod tests {
             "lifetime relations missing from declaration heading: {md}"
         );
         assert!(md.contains("Two views tied to independent owners."), "{md}");
-        assert!(md.contains("first: View(a, 'left)"), "borrowed field missing: {md}");
-        assert!(md.contains("second: View(a, 'right)"), "borrowed field missing: {md}");
+        assert!(md.contains("first: &'left a"), "borrowed field missing: {md}");
+        assert!(md.contains("second: &'right a"), "borrowed field missing: {md}");
     }
 
     // BUG-207: RFC-0056 default values appear in the rendered signature.

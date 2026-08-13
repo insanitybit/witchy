@@ -632,6 +632,7 @@ fn statement_value(stmt: &Stmt) -> Option<&Expr> {
 fn transparent_value(mut value: &Expr) -> &Expr {
     loop {
         match value {
+            Expr::Unary { op: UnOp::Borrow | UnOp::Deref, expr } => value = expr,
             Expr::As { expr, .. } | Expr::Try(expr) => value = expr,
             _ => return value,
         }
@@ -2299,6 +2300,9 @@ impl LoanCtx<'_> {
     /// the loan merely because the original name's last use is the aliasing let.
     fn collect_alias_sources(&self, value: &Expr, live: &[Loan], out: &mut Vec<BorrowSource>) {
         match value {
+            Expr::Unary { op: UnOp::Borrow | UnOp::Deref, expr } => {
+                self.collect_alias_sources(expr, live, out);
+            }
             Expr::Var(name) => {
                 if let Some(sources) = self.input_borrows.get(name) {
                     for source in sources {
@@ -2465,6 +2469,40 @@ impl LoanCtx<'_> {
         out: &mut Vec<BorrowSource>,
     ) {
         match e {
+            // RFC-0122 explicit shared-borrow origin. It uses the same stable
+            // root/projection fact as an older view-returning call, so all of the
+            // established last-use, conflict, aggregate, and root-lifetime logic
+            // applies without a parallel borrow checker.
+            Expr::Unary { op: UnOp::Borrow, expr } => {
+                if let Some((root, PlaceProjection::Fixed(projection))) = expr_place(expr) {
+                    let root_type = self.checked_root_type(expr);
+                    self.push_source(BorrowSource {
+                        owner: root.to_string(),
+                        root_type: root_type.clone(),
+                        projection,
+                        borrower_projection: LoanProjection::default(),
+                        origin: "explicit borrow".into(),
+                        owner_type: root_type.unwrap_or_else(|| Type::Named("Unknown".into(), Vec::new())),
+                        temporary: false,
+                    }, out);
+                } else {
+                    // `&*view` and `&view` are shared reborrows. Their owner
+                    // relation comes from the live/input source, not from the
+                    // reference-handle variable itself.
+                    self.collect_alias_sources(expr, live, out);
+                    if out.is_empty() {
+                        self.push_source(BorrowSource {
+                            owner: String::new(),
+                            root_type: None,
+                            projection: LoanProjection::default(),
+                            borrower_projection: LoanProjection::default(),
+                            origin: "explicit borrow".into(),
+                            owner_type: Type::Named("Unknown".into(), Vec::new()),
+                            temporary: true,
+                        }, out);
+                    }
+                }
+            }
             Expr::Call { name: callee, args } => {
                 let Some(sig) = self.sigs.get(callee).or_else(|| callables.get(callee)) else {
                     return;

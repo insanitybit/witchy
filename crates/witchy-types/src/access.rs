@@ -54,6 +54,7 @@ pub enum AccessQualifier {
     Unique,
     LocalUnique,
     Borrow(String),
+    BorrowMut(String),
 }
 
 impl From<&TypeQual> for AccessQualifier {
@@ -63,6 +64,7 @@ impl From<&TypeQual> for AccessQualifier {
             TypeQual::Unique => Self::Unique,
             TypeQual::LocalUnique => Self::LocalUnique,
             TypeQual::Borrow(lifetime) => Self::Borrow(lifetime.clone()),
+            TypeQual::BorrowMut(lifetime) => Self::BorrowMut(lifetime.clone()),
         }
     }
 }
@@ -955,6 +957,7 @@ impl AccessSignature {
                 AccessQualifier::Unique => TypeQual::Unique,
                 AccessQualifier::LocalUnique => TypeQual::LocalUnique,
                 AccessQualifier::Borrow(lifetime) => TypeQual::Borrow(lifetime.clone()),
+                AccessQualifier::BorrowMut(lifetime) => TypeQual::BorrowMut(lifetime.clone()),
             };
             ty = Type::Qualified(qualifier, Box::new(ty));
         }
@@ -1143,7 +1146,10 @@ impl AccessSignature {
             if matches!(kind, AccessKind::ExclusiveWriteback | AccessKind::Consuming)
                 && qualifiers
                     .iter()
-                    .any(|qualifier| matches!(qualifier, AccessQualifier::Borrow(_)))
+                    .any(|qualifier| matches!(
+                        qualifier,
+                        AccessQualifier::Borrow(_) | AccessQualifier::BorrowMut(_)
+                    ))
             {
                 return Err(AccessSignatureError::MutableBorrowedView { position });
             }
@@ -1377,6 +1383,10 @@ fn encode_access_identity(signature: &AccessSignature) -> Vec<u8> {
                 AccessQualifier::LocalUnique => self.tag(2),
                 AccessQualifier::Borrow(lifetime) => {
                     self.tag(3);
+                    self.lifetime(lifetime);
+                }
+                AccessQualifier::BorrowMut(lifetime) => {
+                    self.tag(4);
                     self.lifetime(lifetime);
                 }
             }
@@ -1857,7 +1867,7 @@ fn type_has_qualifier(ty: &Type, predicate: impl Copy + Fn(&TypeQual) -> bool) -
 fn type_has_ownership_qualifier(ty: &Type) -> bool {
     match ty {
         Type::Qualified(
-            TypeQual::Unique | TypeQual::LocalUnique | TypeQual::Borrow(_),
+            TypeQual::Unique | TypeQual::LocalUnique | TypeQual::Borrow(_) | TypeQual::BorrowMut(_),
             _,
         ) => true,
         Type::Qualified(TypeQual::Frozen, inner) => type_has_ownership_qualifier(inner),
@@ -1999,6 +2009,11 @@ fn compare_qualifiers(
     for (required, candidate) in required.iter().zip(candidate) {
         match (required, candidate) {
             (AccessQualifier::Borrow(required), AccessQualifier::Borrow(candidate)) => {
+                if !lifetimes.relate(required, candidate) {
+                    return Err(AccessMismatchKind::BorrowRelation);
+                }
+            }
+            (AccessQualifier::BorrowMut(required), AccessQualifier::BorrowMut(candidate)) => {
                 if !lifetimes.relate(required, candidate) {
                     return Err(AccessMismatchKind::BorrowRelation);
                 }

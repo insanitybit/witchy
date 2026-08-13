@@ -983,6 +983,10 @@ fn runtime_access_qualifier_expr(qualifier: &crate::runtime_type::RuntimeAccessQ
             "dynamic.AccessView",
             vec![Expr::Int(i64::from(*lifetime))],
         ),
+        Qualifier::BorrowMut(lifetime) => (
+            "dynamic.AccessMutReference",
+            vec![Expr::Int(i64::from(*lifetime))],
+        ),
     };
     Expr::Ctor { name: name.into(), args }
 }

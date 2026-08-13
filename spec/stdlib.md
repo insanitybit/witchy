@@ -1004,6 +1004,7 @@ Logical callable access metadata. Every position and projection names a source t
 - `AccessUnique`
 - `AccessLocalUnique`
 - `AccessView(Int)`
+- `AccessMutReference(Int)`
 
 #### `sealed type RuntimeQualifierPathStep`
 
@@ -2568,6 +2569,7 @@ A declared type expression, exposed as data so generators do not have to parse s
 - `TFn(List(TypeExpr), TypeExpr, List(String))`
 - `TQualified(String, TypeExpr)`
 - `TBorrowed(TypeExpr, String)`
+- `TReference(String, TypeExpr, String)`
 
 #### `type TypeKind`
 

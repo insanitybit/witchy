@@ -553,7 +553,8 @@ fn collect_effective_type_params(ty: &Type, parameters: &mut Vec<String>) {
 }
 
 /// An ownership/immutability qualifier (RFC-0025 `frozen`, RFC-0026 `unique`,
-/// RFC-0083 borrowed view). Not `Copy`: [`TypeQual::Borrow`] carries a lifetime name.
+/// RFC-0083/RFC-0122 reference access). Not `Copy`: reference qualifiers carry
+/// a lifetime name.
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeQual {
@@ -574,6 +575,12 @@ pub enum TypeQual {
     /// matching names within one signature is the output-to-input relation the
     /// checker enforces.
     Borrow(String),
+    /// (RFC-0122) An explicit exclusive reference, written `&'a mut T`.
+    ///
+    /// Unlike [`Borrow`](Self::Borrow), this is affine and grants mutation of the
+    /// referent. The syntax node is separate even while the initial migration
+    /// shares the existing owner-root representation for shared references.
+    BorrowMut(String),
 }
 
 impl TypeQual {
@@ -587,6 +594,7 @@ impl TypeQual {
             TypeQual::Unique => "unique",
             TypeQual::LocalUnique => "local unique",
             TypeQual::Borrow(_) => "view",
+            TypeQual::BorrowMut(_) => "mut view",
         }
     }
 
@@ -594,6 +602,7 @@ impl TypeQual {
     pub fn borrow_lifetime(&self) -> Option<&str> {
         match self {
             TypeQual::Borrow(life) => Some(life),
+            TypeQual::BorrowMut(life) => Some(life),
             _ => None,
         }
     }
@@ -883,6 +892,13 @@ pub enum UnOp {
     Neg,
     Not,
     BitNot,
+    /// `&place` — an explicit shared borrow; accepted only in `mode opt`.
+    Borrow,
+    /// `&mut place` — an explicit exclusive borrow; accepted once affine loans
+    /// are checked (kept distinct from [`Borrow`](Self::Borrow)).
+    BorrowMut,
+    /// `*reference` — project the referent place.
+    Deref,
     /// `move x` — a use-site ownership transfer. Value-neutral (it evaluates to
     /// its operand); the caller relinquishes the binding (use-after-move is a
     /// compile error). Carried as a unary op so every AST walker that already

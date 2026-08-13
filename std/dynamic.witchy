@@ -31,6 +31,7 @@ sealed type RuntimeAccessQualifier:
     AccessUnique
     AccessLocalUnique
     AccessView(Int)
+    AccessMutReference(Int)
 
 sealed type RuntimeQualifierPathStep:
     AccessTypeArgument(Int)

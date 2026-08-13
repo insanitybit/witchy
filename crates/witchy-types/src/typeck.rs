@@ -991,6 +991,10 @@ fn validate_type(
     nominal_parameters: &HashMap<&str, Vec<String>>,
 ) -> Result<(), TypeError> {
     match t {
+        ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _) => terr(
+            "`&'a mut T` is parsed and retained in callable identity, but is not accepted until \
+             RFC-0122's affine-loan checker enforces its exclusive-access contract",
+        ),
         ast::Type::Qualified(_, inner) => {
             validate_type(inner, known, arities, nominal_parameters)
         }
@@ -3363,6 +3367,8 @@ struct Checker {
     /// `comptime:` block; ordinary runtime modules cannot traffic in compiler
     /// syntax values such as `meta.ItemSyntax`.
     compiler_syntax_allowed: bool,
+    /// Explicit references are an opt-mode-only source capability.
+    opt_mode: bool,
 }
 
 /// Render a canonical `module.Name` for a diagnostic: strip the qualifier when it
@@ -7264,6 +7270,15 @@ impl Checker {
                     // `await e` has the type of `e` (Phase 1: the awaited value is
                     // the value itself; suspension is invisible to the type).
                     UnOp::Await => Ok(t),
+                    // Shared borrows and dereferences retain their referent's
+                    // runtime shape; the loan pass consumes the source operator.
+                    UnOp::Borrow | UnOp::Deref if self.opt_mode => Ok(t),
+                    UnOp::Borrow | UnOp::Deref => terr(
+                        "explicit references are available only in `mode opt` files; normal Witchy uses owned values and does not require lifetime annotations",
+                    ),
+                    UnOp::BorrowMut => terr(
+                        "`&mut` requires RFC-0122's affine-loan checker before it can be accepted",
+                    ),
                     UnOp::Not => {
                         self.unify(&Ty::Bool, &t)?;
                         Ok(Ty::Bool)
@@ -9456,6 +9471,7 @@ fn run_check_selected(
             .clone()
             .unwrap_or_else(|| detect_entry_module(module)),
         compiler_syntax_allowed,
+        opt_mode: module.modes.iter().any(|mode| mode == "opt"),
     };
 
     let option_a = c.fresh();

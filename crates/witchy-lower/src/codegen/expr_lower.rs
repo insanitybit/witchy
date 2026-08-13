@@ -112,7 +112,9 @@ impl<'types> Codegen<'types> {
             }
             Expr::Unary { op, expr } => match op {
                 // value-neutral on WASM (value semantics): lower the operand.
-                UnOp::Move | UnOp::Await => return self.lower_expr(expr),
+                UnOp::Move | UnOp::Await | UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref => {
+                    return self.lower_expr(expr)
+                }
                 UnOp::Not => W::Unary {
                     op: witchy_wir::wir::UnOp::Not,
                     kind: witchy_wir::wir::Kind::I32,

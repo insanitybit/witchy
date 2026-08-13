@@ -1370,6 +1370,48 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
     }
 
     #[test]
+    fn explicit_reference_types_parse_and_retain_access_kind() {
+        let module = parse_module(
+            "mode opt\n\nfn read(value: &'value String) -> &'value String:\n    value\n\nfn edit(value: &'value mut String) -> &'value mut String:\n    value\n",
+        )
+        .expect("RFC-0122 reference signatures parse");
+        let Item::Function(read) = &module.items[0] else { panic!("read function") };
+        assert!(matches!(
+            read.params[0].ty,
+            Some(Type::Qualified(TypeQual::Borrow(ref lifetime), _)) if lifetime == "value"
+        ));
+        let Item::Function(edit) = &module.items[1] else { panic!("edit function") };
+        assert!(matches!(
+            edit.params[0].ty,
+            Some(Type::Qualified(TypeQual::BorrowMut(ref lifetime), _)) if lifetime == "value"
+        ));
+    }
+
+    #[test]
+    fn reference_type_requires_an_explicit_lifetime() {
+        let err = parse_module("mode opt\n\nfn bad(value: &String) -> String:\n    value\n")
+            .expect_err("references without lifetimes are rejected");
+        assert!(err.message.contains("explicit lifetime"), "{err:?}");
+    }
+
+    #[test]
+    fn explicit_borrow_and_deref_expressions_parse() {
+        let module = parse_module(
+            "mode opt\n\nfn main():\n    var text = \"x\"\n    let view = &text\n    let again = &*view\n",
+        )
+        .expect("RFC-0122 borrow expressions parse");
+        let Item::Function(main) = &module.items[0] else { panic!("main function") };
+        let Stmt::Let { value, .. } = &main.body.stmts[1] else { panic!("view binding") };
+        assert!(matches!(value, Expr::Unary { op: UnOp::Borrow, .. }));
+        let Stmt::Let { value, .. } = &main.body.stmts[2] else { panic!("reborrow binding") };
+        assert!(matches!(
+            value,
+            Expr::Unary { op: UnOp::Borrow, expr }
+                if matches!(expr.as_ref(), Expr::Unary { op: UnOp::Deref, .. })
+        ));
+    }
+
+    #[test]
     fn borrowed_nominal_parameters_and_arguments_keep_their_kinds() {
         let module = parse_module(
             "mode opt\n\ntype Pair(a, 'left, 'right):\n    first: View(a, 'left)\n    second: View(a, 'right)\n\nfn keep(let left: let('left) Int, let right: let('right) Int, pair: Pair(Int, 'left, 'right)) -> Pair(Int, 'left, 'right):\n    pair\n",

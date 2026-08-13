@@ -114,6 +114,10 @@ fn type_expr(t: &Type) -> Expr {
             name: "meta.TBorrowed".into(),
             args: vec![type_expr(inner), s(lifetime)],
         },
+        Type::Qualified(TypeQual::BorrowMut(lifetime), inner) => Expr::Ctor {
+            name: "meta.TReference".into(),
+            args: vec![Expr::Str("mut".into()), type_expr(inner), Expr::Str(lifetime.clone())],
+        },
         Type::Qualified(q, inner) => Expr::Ctor {
             name: "meta.TQualified".into(),
             args: vec![s(q.as_str()), type_expr(inner)],

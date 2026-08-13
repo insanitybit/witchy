@@ -830,14 +830,12 @@
 
     #[test]
     fn borrowed_views_round_trip_canonically() {
-        // (RFC-0083) Both view surfaces format to the canonical `View(T, 'a)`, which
-        // re-parses to the same node — so formatting is idempotent. The `let('a) T`
-        // spelling on a parameter canonicalizes to `View(T, 'a)`.
+        // RFC-0122 canonicalizes retired view spellings to explicit references.
         let src =
             "mode opt\n\nfn first(text: let('a) String) -> View(String, 'a):\n    text\n";
         let out = reformat(src).expect("view signature round-trips");
-        assert!(out.contains("text: View(String, 'a)"), "param view canonicalized: {out}");
-        assert!(out.contains("-> View(String, 'a)"), "result view survives: {out}");
+        assert!(out.contains("text: &'a String"), "param reference canonicalized: {out}");
+        assert!(out.contains("-> &'a String"), "result reference survives: {out}");
         assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
     }
 
@@ -849,7 +847,7 @@
             out.contains("type Pair(a, 'left, 'right) packed derive(Reflect, Show):"),
             "mixed parameters/modifiers drifted: {out}"
         );
-        assert!(out.contains("type Span('a):\n    Span(View(Bytes, 'a), Int, Int)"), "{out}");
+        assert!(out.contains("type Span('a):\n    Span(&'a Bytes, Int, Int)"), "{out}");
         assert!(out.contains("Pair(Int, 'left, 'right)"), "lifetime arguments drifted: {out}");
         assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
     }

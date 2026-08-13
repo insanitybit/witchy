@@ -1590,6 +1590,9 @@ fn unary_prefix(op: UnOp) -> &'static str {
         UnOp::Neg => "-",
         UnOp::Not => "!",
         UnOp::BitNot => "~",
+        UnOp::Borrow => "&",
+        UnOp::BorrowMut => "&mut ",
+        UnOp::Deref => "*",
         UnOp::Move => "move ",
         UnOp::Await => "await ",
     }
@@ -1982,8 +1985,9 @@ pub fn type_str(t: &Type) -> String {
         // (RFC-0083) A borrowed view canonicalizes to `View(T, 'a)`, which
         // re-parses to the same node in every type position (idempotent). Both
         // input (`let('a) T`) and result surfaces render this one way.
-        Type::Qualified(TypeQual::Borrow(life), inner) => {
-            format!("View({}, '{life})", type_str(inner))
+        Type::Qualified(TypeQual::Borrow(life), inner) => format!("&'{life} {}", type_str(inner)),
+        Type::Qualified(TypeQual::BorrowMut(life), inner) => {
+            format!("&'{life} mut {}", type_str(inner))
         }
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_str(inner)),
         // (RFC-0081) Canonical existential rendering: `dyn Render`,

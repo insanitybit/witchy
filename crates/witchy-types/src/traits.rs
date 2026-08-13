@@ -1716,7 +1716,7 @@ fn local_expr_type(
         | Expr::ExistentialUpcast { ty, .. } => Some(ty.clone()),
         Expr::Unary { op, expr } => match op {
             UnOp::Not => Some(named_type("Bool")),
-            UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => type_of(expr),
+            UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await | UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref => type_of(expr),
         },
         Expr::Binary { op, lhs, rhs } => match op {
             BinOp::Eq
@@ -3135,6 +3135,10 @@ fn specialization_type_key(
                     TypeQual::Borrow(lifetime) => {
                         let id = lifetime_id(lifetimes, lifetime);
                         key.push_str(&format!("qb{id}<"));
+                    }
+                    TypeQual::BorrowMut(lifetime) => {
+                        let id = lifetime_id(lifetimes, lifetime);
+                        key.push_str(&format!("qm{id}<"));
                     }
                 }
                 render(inner, lifetimes, key);

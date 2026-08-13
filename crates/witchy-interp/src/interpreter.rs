@@ -2078,6 +2078,9 @@ impl Interpreter {
                     // yields its operand and runs sequentially, identical on both
                     // backends. Suspension semantics arrive with the executor.
                     (UnOp::Await, v) => Ok(v),
+                    // References are compile-time access contracts. The interpreter
+                    // remains the value-semantics oracle until direct-place lowering.
+                    (UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref, v) => Ok(v),
                     // Negation wraps (matching the WASM backend's `0 - x`): so
                     // `-INT_MIN` is `INT_MIN`, not a host panic / divergence.
                     (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(n.wrapping_neg())),

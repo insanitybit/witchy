@@ -88,6 +88,8 @@ pub enum RuntimeAccessQualifier {
     /// Canonical callable-local lifetime number. Source lifetime spelling is
     /// deliberately not part of runtime identity.
     Borrow(u32),
+    /// Canonical callable-local lifetime number for an affine exclusive reference.
+    BorrowMut(u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -260,6 +262,9 @@ impl RuntimeLifetimeNormalizer {
             AccessQualifier::LocalUnique => RuntimeAccessQualifier::LocalUnique,
             AccessQualifier::Borrow(lifetime) => {
                 RuntimeAccessQualifier::Borrow(self.id(lifetime)?)
+            }
+            AccessQualifier::BorrowMut(lifetime) => {
+                RuntimeAccessQualifier::BorrowMut(self.id(lifetime)?)
             }
         })
     }

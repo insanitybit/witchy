@@ -619,6 +619,7 @@ type TypeExpr:
     TFn(List(TypeExpr), TypeExpr, List(String))
     TQualified(String, TypeExpr)
     TBorrowed(TypeExpr, String)
+    TReference(String, TypeExpr, String)
 
 // The declaration shape. `TypeUninhabited` is intentionally not called "unit":
 // a fieldless declaration has no constructor and therefore no values.
@@ -711,7 +712,8 @@ pub fn type_source(ty: TypeExpr) -> String:
         TTuple(slots) -> "(" + list.join(type_sources(slots), ", ") + ")"
         TFn(params, ret, conventions) -> "fn(" + list.join(function_type_sources(params, conventions), ", ") + ") -> " + type_source(ret)
         TQualified(q, inner) -> q + " " + type_source(inner)
-        TBorrowed(inner, lifetime) -> "View(" + type_source(inner) + ", '" + lifetime + ")"
+        TBorrowed(inner, lifetime) -> "&'" + lifetime + " " + type_source(inner)
+        TReference(kind, inner, lifetime) -> "&'" + lifetime + " " + kind + " " + type_source(inner)
 
 // `derive(Show)` -> constructor-shaped rendering with each field/payload rendered
 // through its own `Show` impl. Primitive fields still match structural

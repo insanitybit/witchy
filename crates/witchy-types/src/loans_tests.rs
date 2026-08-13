@@ -94,9 +94,71 @@
     #[test]
     fn well_formed_view_signature_checks() {
         check_str(
-            "mode opt\n\nfn first(text: let('a) String) -> View(String, 'a):\n    text\n",
+            "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n",
         )
-        .expect("a well-formed borrowed view signature checks");
+        .expect("a well-formed explicit reference signature checks");
+    }
+
+    #[test]
+    fn explicit_reference_type_requires_mode_opt_without_loan_follow_ons() {
+        let err = check_str("fn first(text: &'a String) -> &'a String:\n    text\n")
+            .expect_err("references are opt-only");
+        assert!(err.contains("mode opt"), "{err}");
+        assert!(!err.contains("loan"), "normal-mode error must stop at the mode boundary: {err}");
+    }
+
+    #[test]
+    fn exclusive_reference_syntax_cannot_erase_its_affine_contract() {
+        let err = check_str(
+            "mode opt\n\nfn edit(text: &'a mut String) -> &'a mut String:\n    text\n",
+        )
+        .expect_err("exclusive references wait for affine loan enforcement");
+        assert!(err.contains("affine-loan checker"), "{err}");
+    }
+
+    #[test]
+    fn explicit_shared_borrow_blocks_owner_mutation_until_its_final_use() {
+        let err = check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    text = \"changed\"\n    console.print(view)\n",
+        )
+        .expect_err("an explicit borrow keeps its owner loaned");
+        assert!(err.contains("reassigned"), "{err}");
+    }
+
+    #[test]
+    fn explicit_shared_borrow_closes_after_its_final_use() {
+        check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    console.print(view)\n    text = \"changed\"\n",
+        )
+        .expect("last use closes the explicit shared borrow");
+    }
+
+    #[test]
+    fn explicit_shared_reborrow_preserves_the_original_owner_relation() {
+        let err = check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let first = &text\n    let second = &*first\n    text = \"changed\"\n    console.print(second)\n",
+        )
+        .expect_err("a shared reborrow keeps the original owner loaned");
+        assert!(err.contains("reassigned"), "{err}");
+    }
+
+    #[test]
+    fn explicit_borrow_argument_retains_the_returned_reference_owner() {
+        let err = check_str(
+            "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = first(&text)\n    text = \"changed\"\n    console.print(view)\n",
+        )
+        .expect_err("a returned reference retains the explicitly borrowed owner");
+        assert!(err.contains("reassigned"), "{err}");
+    }
+
+    #[test]
+    fn explicit_borrow_expression_requires_mode_opt() {
+        let err = check_str(
+            "fn main(console: Console):\n    let text = \"hello\"\n    let view = &text\n    console.print(view)\n",
+        )
+        .expect_err("normal mode cannot create a source reference");
+        assert!(err.contains("only in `mode opt`"), "{err}");
+        assert!(!err.contains("loan"), "{err}");
     }
 
     // --- owner loans: rejection (acceptance 2) ------------------------------

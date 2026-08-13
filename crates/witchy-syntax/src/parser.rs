@@ -1256,6 +1256,28 @@ impl Parser {
             let life = self.lifetime_name()?;
             return Ok(Type::Named(format!("'{life}"), Vec::new()));
         }
+        // RFC-0122 explicit references. `&'a T` is the source spelling for a
+        // shared loan and `&'a mut T` reserves a distinct AST qualifier for the
+        // affine exclusive-reference track. A lifetime is deliberately required:
+        // public relations are never inferred from an omitted source name.
+        if self.eat(&Tok::Amp) {
+            let life = self.lifetime_name().map_err(|_| self.error(
+                "a reference type needs an explicit lifetime: write `&'a T` or `&'a mut T`"
+            ))?;
+            let mutable = if self.at_ident("mut") {
+                self.advance();
+                true
+            } else {
+                false
+            };
+            let inner = self.ty()?;
+            let qualifier = if mutable {
+                TypeQual::BorrowMut(life)
+            } else {
+                TypeQual::Borrow(life)
+            };
+            return Ok(Type::Qualified(qualifier, Box::new(inner)));
+        }
         // Ownership/immutability qualifiers (RFC-0025/0026): `frozen T`, `unique T`,
         // `local unique T`. Contextual — only a qualifier keyword FOLLOWED BY a type
         // is one; a bare `frozen` (nothing following) stays an ordinary type variable.
@@ -1693,6 +1715,18 @@ impl Parser {
                 op: UnOp::BitNot,
                 expr: Box::new(expr),
             });
+        }
+        if self.eat(&Tok::Amp) {
+            let mutable = if self.at_ident("mut") { self.advance(); true } else { false };
+            let expr = self.prefix()?;
+            return Ok(Expr::Unary {
+                op: if mutable { UnOp::BorrowMut } else { UnOp::Borrow },
+                expr: Box::new(expr),
+            });
+        }
+        if self.eat(&Tok::Star) {
+            let expr = self.prefix()?;
+            return Ok(Expr::Unary { op: UnOp::Deref, expr: Box::new(expr) });
         }
         // `move x` — a use-site ownership transfer; evaluates to `x` but tells the
         // compiler the caller is done with the binding (so it can be moved, not
