@@ -19,6 +19,15 @@ fn rfc0122_returned_exclusive_reborrow_preserves_the_caller_place_on_both_backen
     assert_eq!(compiled, want, "compiled backend preserves the returned projected place");
 }
 
+#[test]
+fn rfc0122_function_value_returned_reference_preserves_its_projected_place() {
+    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn left(pair: &'a mut Pair) -> &'a mut Int:\n    &mut pair.left\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let project = left\n    let slot = project(&mut pair)\n    *slot = 9\n    console.print(\"${pair.left}:${pair.right}\")\n";
+    let want = ["9:2"];
+    assert_eq!(link_run(src), want, "interpreter preserves the opaque returned place");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled function values preserve returned reference places");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.

@@ -113,6 +113,18 @@ impl<'types> Codegen<'types> {
             match stmt {
                 Stmt::Let { name, value, .. } => {
                     let reference_place = self.static_reference_place(value);
+                    let reference_function_target = match value {
+                        Expr::Var(target) => self.checked_module.items.iter().find_map(|item| match item {
+                            Item::Function(function)
+                                if function.name == *target
+                                    || function.name.rsplit('.').next() == Some(target) =>
+                            {
+                                Some(function.name.clone())
+                            }
+                            _ => None,
+                        }),
+                        _ => None,
+                    };
                     // (RFC-0035 step 3) If this binds a dup-eligible container read
                     // (`let x = list.at(xs, i)` where the element is a provably offset-0 rc
                     // value and rc-floor is on), the read is `$rc_dup`'d in `lower_expr`, so
@@ -458,6 +470,11 @@ impl<'types> Codegen<'types> {
                         self.reference_places.insert(name.clone(), place);
                     } else {
                         self.reference_places.remove(name);
+                    }
+                    if let Some(target) = reference_function_target {
+                        self.reference_function_targets.insert(name.clone(), target);
+                    } else {
+                        self.reference_function_targets.remove(name);
                     }
                     tail_is_value = false;
                 }
