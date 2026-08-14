@@ -1627,6 +1627,46 @@ fn main(console: Console):
     }
 
     #[test]
+    fn exclusive_reference_preserves_a_projected_place_across_a_call() {
+        let src = r#"
+mode opt
+
+type Pair:
+    left: Int
+    right: Int
+
+fn write_value(slot: &'a mut Int):
+    *slot = 9
+
+fn main(console: Console):
+    var pair = Pair(1, 2)
+    let left = &mut pair.left
+    write_value(left)
+    console.print("${pair.left}:${pair.right}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["9:2"]);
+    }
+
+    #[test]
+    fn projected_owner_assignment_observes_promoted_reference_storage() {
+        let src = r#"
+mode opt
+
+type Pair:
+    left: Int
+    right: Int
+
+fn main(console: Console):
+    var pair = Pair(1, 2)
+    let left = &mut pair.left
+    pair.right = 3
+    *left = 9
+    console.print("${pair.left}:${pair.right}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["9:3"]);
+    }
+
+    #[test]
     fn shared_reborrow_reads_through_an_exclusive_reference() {
         let src = r#"
 mode opt

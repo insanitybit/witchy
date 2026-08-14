@@ -9,8 +9,8 @@ use witchy_syntax::intrinsics;
 
 use super::Value;
 
-#[derive(Clone)]
-pub(super) enum PlaceProjection {
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlaceProjection {
     Field(String),
     Index(Value),
 }

@@ -66,7 +66,7 @@ impl Interpreter {
     }
 
     pub(super) fn read_place_value(&self, place: &CapturedPlace, env: &Env) -> Result<Value, Flow> {
-        let mut value = env
+        let value = env
             .get(&place.root)
             .cloned()
             .ok_or_else(|| Flow::from(RuntimeError {
@@ -74,8 +74,18 @@ impl Interpreter {
                     "`var` argument root `{}` must be a local variable",
                     place.root
                 ),
-            }))?;
-        for projection in &place.projections {
+            }))?
+            .read_owner();
+        self.read_projected_value(&value, &place.projections)
+    }
+
+    pub(super) fn read_projected_value(
+        &self,
+        value: &Value,
+        projections: &[PlaceProjection],
+    ) -> Result<Value, Flow> {
+        let mut value = value.clone();
+        for projection in projections {
             value = match projection {
                 PlaceProjection::Field(field) => {
                     let index = self.place_field_index(&value, field)?;
@@ -240,7 +250,7 @@ impl Interpreter {
             Flow::from(RuntimeError {
                 message: format!("cannot assign to unbound variable `{name}`"),
             })
-        })?;
+        })?.read_owner();
         self.store_assignment_place_value(
             &mut current,
             &projections,
@@ -275,7 +285,7 @@ impl Interpreter {
                         ),
                     })
                 })?;
-                roots.push((place.root.clone(), current));
+                roots.push((place.root.clone(), current.read_owner()));
                 &mut roots.last_mut().expect("just pushed root").1
             };
             self.store_place_value(root, &place.projections, value)?;

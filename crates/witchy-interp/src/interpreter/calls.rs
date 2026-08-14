@@ -194,18 +194,31 @@ impl Interpreter {
         for (index, arg) in args.iter().enumerate() {
             let param = params.get(index);
             if param.is_some_and(parameter_writes_back) {
-                let place_expr = if param.is_some_and(is_exclusive_reference) {
-                    match arg {
-                        Expr::Unary { op: UnOp::BorrowMut, expr } => &**expr,
-                        _ => return err("an `&mut` argument must be written `&mut place`"),
+                if param.is_some_and(is_exclusive_reference)
+                    && !matches!(arg, Expr::Unary { op: UnOp::BorrowMut, .. })
+                {
+                    let value = self.eval(arg, env)?;
+                    if !matches!(value, Value::Reference { mutable: true, .. }) {
+                        return err("an `&mut` parameter requires an exclusive reference or `&mut place`");
                     }
+                    // A first-class reference already identifies the caller's
+                    // storage.  Do not turn it back into a copy/write-back pair.
+                    values.push(value);
+                    places.push(None);
                 } else {
-                    arg
-                };
-                let place = self.capture_place(place_expr, env)?;
-                let value = self.read_place_value(&place, env)?;
-                values.push(value);
-                places.push(Some(place));
+                    let place_expr = if param.is_some_and(is_exclusive_reference) {
+                        match arg {
+                            Expr::Unary { op: UnOp::BorrowMut, expr } => &**expr,
+                            _ => unreachable!("the direct reference arm returned above"),
+                        }
+                    } else {
+                        arg
+                    };
+                    let place = self.capture_place(place_expr, env)?;
+                    let value = self.read_place_value(&place, env)?;
+                    values.push(value);
+                    places.push(Some(place));
+                }
             } else {
                 values.push(self.eval(arg, env)?);
                 if any_writeback {
@@ -512,16 +525,14 @@ impl Interpreter {
                 argvals.len()
             ));
         }
-        let mut writebacks: Vec<CapturedPlace> = Vec::new();
+        let mut writeback_indices: Vec<(usize, CapturedPlace)> = Vec::new();
         for (i, param) in func.params.iter().enumerate() {
             if parameter_writes_back(param) {
-                let place = places
-                    .get(i)
-                    .and_then(Clone::clone)
-                    .ok_or_else(|| Flow::from(RuntimeError {
-                        message: format!("`var` argument to `{name}` must be a mutable place"),
-                    }))?;
-                writebacks.push(place);
+                if let Some(place) = places.get(i).and_then(Clone::clone) {
+                    writeback_indices.push((i, place));
+                } else if !is_exclusive_reference(param) {
+                    return err(format!("`var` argument to `{name}` must be a mutable place"));
+                }
             }
         }
         // The callee's own `?` early-return stops at this callable boundary; it
@@ -529,21 +540,18 @@ impl Interpreter {
         let outcome = self.run_callable(TailCallable::Function(func), argvals)?;
         let result = outcome.value;
         let fenv = outcome.env;
-        let var_values: Vec<_> = outcome
-            .function
-            .params
-            .iter()
-            .filter(|param| parameter_writes_back(param))
-            .map(|param| {
+        let writebacks = writeback_indices
+            .into_iter()
+            .map(|(index, place)| {
+                let param = &outcome.function.params[index];
+                let value =
                 fenv.get(&param.name)
                     .cloned()
-                    .expect("terminal var parameter is bound")
+                    .expect("terminal var parameter is bound");
+                (place, value)
             })
             .collect();
-        if writebacks.len() != var_values.len() {
-            return err("internal: a tail call changed the var write-back envelope");
-        }
-        self.commit_writebacks(writebacks.into_iter().zip(var_values).collect(), env)?;
+        self.commit_writebacks(writebacks, env)?;
         Ok(result)
     }
 }

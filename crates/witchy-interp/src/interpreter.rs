@@ -199,7 +199,11 @@ pub enum Value {
     /// A first-class opt-mode reference to promoted owner storage. `mutable`
     /// records the capability; the loan checker independently proves its
     /// lifetime and exclusivity.
-    Reference { cell: Rc<RefCell<Value>>, mutable: bool },
+    Reference {
+        cell: Rc<RefCell<Value>>,
+        projections: Vec<PlaceProjection>,
+        mutable: bool,
+    },
     /// A build-time capability, minted only for a rune's `build` entrypoint and
     /// carrying its confined grant (an output/read directory, or an allow-list).
     /// The build sandbox is where these enter — never `main`.
@@ -2062,8 +2066,12 @@ impl Interpreter {
                 };
                 let value = self.eval(replacement, env)?;
                 match self.eval(reference, env)? {
-                    Value::Reference { cell, mutable: true } => {
-                        *cell.borrow_mut() = value;
+                    Value::Reference {
+                        cell,
+                        projections,
+                        mutable: true,
+                    } => {
+                        self.store_place_value(&mut cell.borrow_mut(), &projections, value)?;
                         Ok(Value::Unit)
                     }
                     Value::Reference { mutable: false, .. } => err(
@@ -2126,21 +2134,20 @@ impl Interpreter {
                         Value::Reference { mutable, .. } if exclusive && !mutable => {
                             err("cannot reborrow a shared reference as `&mut`")
                         }
-                        Value::Reference { cell, .. } => Ok(Value::Reference {
+                        Value::Reference { cell, projections, .. } => Ok(Value::Reference {
                             cell,
+                            projections,
                             mutable: exclusive,
                         }),
                         value => err(format!("cannot reborrow non-reference `{value}`")),
                     };
                 }
-                let Expr::Var(name) = &**expr else {
-                    return err("a reference currently requires a local owner place");
-                };
-                let Some((slot, mutable)) = env.slot_mut(name) else {
-                    return err(format!("unbound variable `{name}`"));
+                let place = self.capture_place(expr, env)?;
+                let Some((slot, mutable)) = env.slot_mut(&place.root) else {
+                    return err(format!("unbound variable `{}`", place.root));
                 };
                 if exclusive && !mutable {
-                    return err(format!("cannot borrow immutable `{name}` as `&mut`"));
+                    return err(format!("cannot borrow immutable `{}` as `&mut`", place.root));
                 }
                 let cell = match slot {
                     Value::ReferenceCell(cell) => cell.clone(),
@@ -2150,11 +2157,13 @@ impl Interpreter {
                         cell
                     }
                 };
-                Ok(Value::Reference { cell, mutable: exclusive })
+                Ok(Value::Reference { cell, projections: place.projections, mutable: exclusive })
             }
             Expr::Unary { op: UnOp::Deref, expr } => {
                 match self.eval(expr, env)? {
-                    Value::Reference { cell, .. } => Ok(cell.borrow().clone()),
+                    Value::Reference { cell, projections, .. } => {
+                        self.read_projected_value(&cell.borrow(), &projections)
+                    }
                     value => err(format!("cannot dereference `{value}`")),
                 }
             }
