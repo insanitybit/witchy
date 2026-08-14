@@ -159,6 +159,31 @@
     }
 
     #[test]
+    fn exclusive_parameter_requires_an_explicit_exclusive_reference() {
+        let err = check_str(
+            "mode opt\n\nfn clear(text: &'a mut String) -> Nil:\n    Nil\n\nfn main():\n    var text = \"hello\"\n    clear(text)\n",
+        )
+        .expect_err("ordinary values must not satisfy an exclusive-reference parameter");
+        assert!(err.contains("exclusive reference (`&mut place`)"), "{err}");
+    }
+
+    #[test]
+    fn exclusive_parameter_accepts_an_explicit_exclusive_reference() {
+        check_str(
+            "mode opt\n\nfn clear(text: &'a mut String) -> Nil:\n    Nil\n\nfn main():\n    var text = \"hello\"\n    clear(&mut text)\n",
+        )
+        .expect("the call preserves the exclusive-reference contract");
+    }
+
+    #[test]
+    fn shared_parameter_accepts_a_short_shared_reborrow_of_an_exclusive_reference() {
+        check_str(
+            "mode opt\n\nfn inspect(text: &'a String) -> Nil:\n    Nil\n\nfn main():\n    var text = \"hello\"\n    let editable = &mut text\n    inspect(&*editable)\n",
+        )
+        .expect("an exclusive handle may create a short shared reborrow");
+    }
+
+    #[test]
     fn explicit_shared_borrow_blocks_owner_mutation_until_its_final_use() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    text = \"changed\"\n    console.print(view)\n",
