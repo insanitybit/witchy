@@ -505,7 +505,10 @@ fn lifetime_argument_name(t: &ast::Type) -> Option<&str> {
 
 fn collect_parameter_lifetime_binders(t: &ast::Type, lifetimes: &mut HashSet<String>) {
     match t {
-        ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), inner) => {
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+            inner,
+        ) => {
             lifetimes.insert(lifetime.clone());
             collect_parameter_lifetime_binders(inner, lifetimes);
         }
@@ -534,7 +537,10 @@ fn validate_nominal_lifetime_uses(
     borrowed_qualifiers_must_be_bound: bool,
 ) -> Result<(), TypeError> {
     match t {
-        ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), inner) => {
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+            inner,
+        ) => {
             if borrowed_qualifiers_must_be_bound && !lifetimes.contains(lifetime) {
                 return terr(format!(
                     "{context} uses lifetime `'{lifetime}` but does not declare it; add \
@@ -618,7 +624,10 @@ fn validate_nominal_lifetime_uses(
 
 fn collect_declared_lifetime_uses(t: &ast::Type, used: &mut HashSet<String>) {
     match t {
-        ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), inner) => {
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+            inner,
+        ) => {
             used.insert(lifetime.clone());
             collect_declared_lifetime_uses(inner, used);
         }
@@ -646,7 +655,7 @@ fn collect_declared_lifetime_uses(t: &ast::Type, used: &mut HashSet<String>) {
 
 fn type_contains_nominal_lifetime_relation(t: &ast::Type) -> bool {
     match t {
-        ast::Type::Qualified(ast::TypeQual::Borrow(_), _) => true,
+        ast::Type::Qualified(ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_), _) => true,
         ast::Type::Qualified(_, inner) => type_contains_nominal_lifetime_relation(inner),
         ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
             arguments.iter().any(|argument| {
@@ -671,7 +680,9 @@ fn borrowed_nominal_relation_name<'a>(
     lifetime_nominals: &HashSet<String>,
 ) -> Option<&'a str> {
     match t {
-        ast::Type::Qualified(ast::TypeQual::Borrow(_), _) => Some("View"),
+        ast::Type::Qualified(ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_), _) => {
+            Some("View")
+        }
         ast::Type::Qualified(_, inner) => {
             borrowed_nominal_relation_name(inner, lifetime_nominals)
         }
@@ -991,10 +1002,6 @@ fn validate_type(
     nominal_parameters: &HashMap<&str, Vec<String>>,
 ) -> Result<(), TypeError> {
     match t {
-        ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _) => terr(
-            "`&'a mut T` is parsed and retained in callable identity, but is not accepted until \
-             RFC-0122's affine-loan checker enforces its exclusive-access contract",
-        ),
         ast::Type::Qualified(_, inner) => {
             validate_type(inner, known, arities, nominal_parameters)
         }
@@ -1234,7 +1241,10 @@ fn reject_borrowed_capability_views(
     storage: &ReferenceStorageClassifier<'_>,
 ) -> Result<(), TypeError> {
     match ty {
-        ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), inner) => {
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+            inner,
+        ) => {
             if let Some(capability) = storage.first_stored_capability(inner) {
                 return terr(format!(
                     "borrowed view `View({}, '{lifetime})` names capability `{capability}` as an \
@@ -2874,7 +2884,10 @@ fn check_build_signature(module: &Module) -> Result<(), TypeError> {
 /// checked view, and the loan checker validates that relation below.
 fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
     let returned_lifetime = func.ret.as_ref().and_then(|ty| match ty {
-        ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), _) => Some(lifetime.as_str()),
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+            _,
+        ) => Some(lifetime.as_str()),
         _ => None,
     });
     let borrowed: Vec<&str> = func
@@ -2883,7 +2896,10 @@ fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
         .filter(|p| p.convention == Convention::Borrow)
         .filter(|p| {
             let input_lifetime = p.ty.as_ref().and_then(|ty| match ty {
-                ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), _) => {
+                ast::Type::Qualified(
+                    ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+                    _,
+                ) => {
                     Some(lifetime.as_str())
                 }
                 _ => None,
@@ -7276,8 +7292,9 @@ impl Checker {
                     UnOp::Borrow | UnOp::Deref => terr(
                         "explicit references are available only in `mode opt` files; normal Witchy uses owned values and does not require lifetime annotations",
                     ),
+                    UnOp::BorrowMut if self.opt_mode => Ok(t),
                     UnOp::BorrowMut => terr(
-                        "`&mut` requires RFC-0122's affine-loan checker before it can be accepted",
+                        "explicit references are available only in `mode opt` files; normal Witchy uses owned values and does not require lifetime annotations",
                     ),
                     UnOp::Not => {
                         self.unify(&Ty::Bool, &t)?;

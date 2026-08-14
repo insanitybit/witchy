@@ -109,12 +109,39 @@
     }
 
     #[test]
-    fn exclusive_reference_syntax_cannot_erase_its_affine_contract() {
-        let err = check_str(
+    fn exclusive_reference_signature_retains_its_affine_contract() {
+        check_str(
             "mode opt\n\nfn edit(text: &'a mut String) -> &'a mut String:\n    text\n",
         )
-        .expect_err("exclusive references wait for affine loan enforcement");
-        assert!(err.contains("affine-loan checker"), "{err}");
+        .expect("exclusive reference signatures are checked, not erased");
+    }
+
+    #[test]
+    fn exclusive_borrow_rejects_an_overlapping_shared_loan() {
+        let err = check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    let editable = &mut text\n    console.print(view)\n    console.print(editable)\n",
+        )
+        .expect_err("an exclusive reference requires sole access");
+        assert!(err.contains("cannot create exclusive reference"), "{err}");
+    }
+
+    #[test]
+    fn shared_borrow_rejects_an_overlapping_exclusive_loan() {
+        let err = check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let editable = &mut text\n    let view = &text\n    console.print(editable)\n    console.print(view)\n",
+        )
+        .expect_err("a shared reference cannot overlap an exclusive loan");
+        assert!(err.contains("cannot create exclusive reference"), "{err}");
+    }
+
+    #[test]
+    fn exclusive_borrow_of_disjoint_record_fields_is_accepted() {
+        check_str(
+            "mode opt\n\n\
+             type Pair:\n    left: String\n    right: String\n\
+             fn main(console: Console):\n    var pair = Pair(\"left\", \"right\")\n    let left = &mut pair.left\n    let right = &mut pair.right\n    console.print(left)\n    console.print(right)\n",
+        )
+        .expect("fixed disjoint record fields are independently borrowable");
     }
 
     #[test]

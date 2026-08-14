@@ -1186,10 +1186,13 @@ fn validate_signature(
         )));
     }
 
-    // A borrowed parameter must not carry a mutable convention: a view is
-    // read-only, so `var`/`own` on it is a contradiction.
+    // A shared reference is read-only, so `var`/`own` on it is a contradiction.
+    // An exclusive reference is affine and may intentionally be transferred by
+    // `own`; later affine-state checking validates that transfer.
     for p in &f.params {
-        if p.ty.as_ref().is_some_and(|ty| !catalog.slots(ty).is_empty())
+        if p.ty.as_ref().is_some_and(|ty| {
+            catalog.slots(ty).iter().any(|slot| slot.kind == BorrowKind::Shared)
+        })
             && p.convention.binds_mutable()
         {
             return Err(terr(format!(
@@ -1681,7 +1684,6 @@ fn projection_steps_equal(left: &LoanProjectionStep, right: &LoanProjectionStep)
         }
 }
 
-#[cfg(test)]
 fn fixed_interval(step: &LoanProjectionStep) -> Option<(i128, i128)> {
     match step {
         LoanProjectionStep::Index(value) => {
@@ -1704,7 +1706,6 @@ fn fixed_interval(step: &LoanProjectionStep) -> Option<(i128, i128)> {
     }
 }
 
-#[cfg(test)]
 fn projection_steps_overlap(left: &LoanProjectionStep, right: &LoanProjectionStep) -> bool {
     let left_interval = fixed_interval(left);
     let right_interval = fixed_interval(right);
@@ -1727,14 +1728,18 @@ fn projection_steps_overlap(left: &LoanProjectionStep, right: &LoanProjectionSte
     }
 }
 
-#[cfg(test)]
-fn projections_overlap(left: &LoanProjection, right: &LoanProjection) -> bool {
+fn projections_overlap_any(left: &LoanProjection, right: &LoanProjection) -> bool {
     for (left, right) in left.steps.iter().zip(&right.steps) {
         if !projection_steps_overlap(left, right) {
             return false;
         }
     }
     true
+}
+
+#[cfg(test)]
+fn projections_overlap(left: &LoanProjection, right: &LoanProjection) -> bool {
+    projections_overlap_any(left, right)
 }
 
 /// A parenthetical clause naming the interior field/slot of a borrowed aggregate
@@ -2015,6 +2020,15 @@ impl LoanCtx<'_> {
                         kind: owner.kind,
                         owner_type: owner.owner_type,
                     };
+                    let conflicts_with_live = live.iter().any(|open| {
+                        open.owner == loan.owner
+                            && projections_overlap_any(&open.projection, &loan.projection)
+                            && (loan.kind == BorrowKind::Exclusive || open.kind == BorrowKind::Exclusive)
+                    });
+                    if conflicts_with_live
+                    {
+                        return Err(self.exclusive_overlap(&loan));
+                    }
                     let event = LoanEvent::from(loan.clone());
                     self.facts.opens_after.entry(stmt_key(stmt)).or_default().push(event.clone());
 
@@ -3353,6 +3367,17 @@ impl LoanCtx<'_> {
             aggregate_locus(loan),
             loan.view,
             loan.owner,
+        ))
+    }
+
+    fn exclusive_overlap(&self, loan: &Loan) -> TypeError {
+        terr(format!(
+            "in `{}`: cannot create exclusive reference `{}` to `{}` at `{}` while overlapping \
+             access is live — `&mut` requires sole access to its referent until its final use",
+            short_name(self.fn_name),
+            loan.view,
+            loan.owner,
+            projection_display(&loan.projection),
         ))
     }
 
