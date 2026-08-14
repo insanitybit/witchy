@@ -20,6 +20,7 @@
 // `return`/`?` in the oracle's hot path; the larger Result is the right trade.
 #![allow(clippy::result_large_err)]
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 // foldhash (not SipHash) for the interpreter's OWN lookup tables: keys are
 // program identifiers (function/ctor/binding names), never attacker-controlled
@@ -191,6 +192,14 @@ pub enum Value {
     /// An immutable associative map, kept as insertion-ordered key/value pairs
     /// (keys compared by value equality). `Dict(K, V)` in the type system.
     Dict(Rc<Vec<(Value, Value)>>),
+    /// Backing storage promoted from an owner binding when a first-class
+    /// reference is created. Source reads of the owner resolve this cell; it is
+    /// never observable as a language value.
+    ReferenceCell(Rc<RefCell<Value>>),
+    /// A first-class opt-mode reference to promoted owner storage. `mutable`
+    /// records the capability; the loan checker independently proves its
+    /// lifetime and exclusivity.
+    Reference { cell: Rc<RefCell<Value>>, mutable: bool },
     /// A build-time capability, minted only for a rune's `build` entrypoint and
     /// carrying its confined grant (an output/read directory, or an allow-list).
     /// The build sandbox is where these enter — never `main`.
@@ -226,6 +235,13 @@ impl Value {
 
     pub fn str(s: impl Into<String>) -> Value {
         Value::Str(Rc::new(s.into()))
+    }
+
+    fn read_owner(&self) -> Value {
+        match self {
+            Value::ReferenceCell(cell) => cell.borrow().clone(),
+            value => value.clone(),
+        }
     }
 }
 
@@ -404,6 +420,8 @@ impl fmt::Display for Value {
                 write!(f, "<function/{}>", function.params.len())
             }
             Value::Existential { .. } => write!(f, "<existential>"),
+            Value::ReferenceCell(cell) => write!(f, "{}", cell.borrow()),
+            Value::Reference { .. } => write!(f, "<reference>"),
             Value::Dict(entries) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in entries.iter().enumerate() {
@@ -2010,7 +2028,7 @@ impl Interpreter {
                 Ok(Value::tuple(vals))
             }
             Expr::Var(name) => match env.get(name) {
-                Some(v) => Ok(v.clone()),
+                Some(v) => Ok(v.read_owner()),
                 None => match self.functions.get(name).cloned() {
                     // A bare top-level function name is a first-class function
                     // value: wrap it as a closure over an empty environment
@@ -2080,6 +2098,33 @@ impl Interpreter {
                 let name = self.intern(&format!(".{tag}"));
                 Ok(Value::ctor(name, fields))
             }
+            Expr::Unary { op: op @ (UnOp::Borrow | UnOp::BorrowMut), expr } => {
+                let Expr::Var(name) = &**expr else {
+                    return err("a reference currently requires a local owner place");
+                };
+                let Some((slot, mutable)) = env.slot_mut(name) else {
+                    return err(format!("unbound variable `{name}`"));
+                };
+                let exclusive = matches!(op, UnOp::BorrowMut);
+                if exclusive && !mutable {
+                    return err(format!("cannot borrow immutable `{name}` as `&mut`"));
+                }
+                let cell = match slot {
+                    Value::ReferenceCell(cell) => cell.clone(),
+                    current => {
+                        let cell = Rc::new(RefCell::new(current.clone()));
+                        *current = Value::ReferenceCell(cell.clone());
+                        cell
+                    }
+                };
+                Ok(Value::Reference { cell, mutable: exclusive })
+            }
+            Expr::Unary { op: UnOp::Deref, expr } => {
+                match self.eval(expr, env)? {
+                    Value::Reference { cell, .. } => Ok(cell.borrow().clone()),
+                    value => err(format!("cannot dereference `{value}`")),
+                }
+            }
             Expr::Unary { op, expr } => {
                 let v = self.eval(expr, env)?;
                 match (op, v) {
@@ -2091,9 +2136,6 @@ impl Interpreter {
                     // yields its operand and runs sequentially, identical on both
                     // backends. Suspension semantics arrive with the executor.
                     (UnOp::Await, v) => Ok(v),
-                    // References are compile-time access contracts. The interpreter
-                    // remains the value-semantics oracle until direct-place lowering.
-                    (UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref, v) => Ok(v),
                     // Negation wraps (matching the WASM backend's `0 - x`): so
                     // `-INT_MIN` is `INT_MIN`, not a host panic / divergence.
                     (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(n.wrapping_neg())),
@@ -2103,6 +2145,12 @@ impl Interpreter {
                     (UnOp::Not, other) => err(format!("cannot apply `!` to `{other}`")),
                     (UnOp::BitNot, Value::Int(n)) => Ok(Value::Int(!n)),
                     (UnOp::BitNot, other) => err(format!("cannot apply `~` to `{other}`")),
+                    // These forms are handled by the two dedicated branches
+                    // above. Keep this arm explicit because `op` is borrowed
+                    // here and Rust cannot use that earlier structural split.
+                    (UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref, _) => {
+                        unreachable!("reference unary operations are handled before value evaluation")
+                    }
                 }
             }
             Expr::Lambda { params, body, .. } => {

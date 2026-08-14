@@ -1580,6 +1580,53 @@ fn main(console: Console):
     }
 
     #[test]
+    fn exclusive_reference_reads_the_owner_after_owner_assignment() {
+        let src = r#"
+mode opt
+
+fn main(console: Console):
+    var value = 1
+    let reference = &mut value
+    value = 9
+    console.print("${*reference}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["9"]);
+    }
+
+    #[test]
+    fn exclusive_reference_can_escape_a_function_call() {
+        let src = r#"
+mode opt
+
+fn identity(value: Int) -> Int:
+    value
+
+fn main(console: Console):
+    var value = 1
+    let reference = identity(&mut value)
+    value = 9
+    console.print("${*reference}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["9"]);
+    }
+
+    #[test]
+    fn shared_reference_is_a_first_class_read_value() {
+        let src = r#"
+mode opt
+
+fn identity(value: Int) -> Int:
+    value
+
+fn main(console: Console):
+    let value = 9
+    let reference = identity(&value)
+    console.print("${*reference}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["9"]);
+    }
+
+    #[test]
     fn nested_explicit_return_is_a_tail_position() {
         let src = r#"
 fn down(n: Int) -> Int:

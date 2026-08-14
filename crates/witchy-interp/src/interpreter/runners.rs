@@ -414,6 +414,9 @@ fn compiler_value(value: Value) -> Result<CompilerValue, RuntimeError> {
                 .map(|(key, value)| Ok((compiler_value(key)?, compiler_value(value)?)))
                 .collect::<Result<Vec<_>, RuntimeError>>()?,
         )),
+        // An owner cell is an implementation detail. Compile-time evaluation
+        // observes its current value, just as an ordinary owner read does.
+        Value::ReferenceCell(cell) => compiler_value(cell.borrow().clone()),
         Value::Unit => Ok(CompilerValue::Unit),
         Value::Cap(_)
         | Value::Dir(_, _)
@@ -426,6 +429,7 @@ fn compiler_value(value: Value) -> Result<CompilerValue, RuntimeError> {
         | Value::Listener(_)
         | Value::Closure { .. }
         | Value::Existential { .. }
+        | Value::Reference { .. }
         | Value::Build(_) => err(
             "compiler evaluation produced an authority-bearing or opaque value",
         ),

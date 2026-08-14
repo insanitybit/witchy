@@ -93,7 +93,15 @@ impl Env {
             for (n, slot, mutable) in scope.iter_mut().rev() {
                 if &**n == name {
                     if *mutable {
-                        *slot = value;
+                        // Taking an exclusive reference promotes an owner slot
+                        // into a stable cell. Keep that cell in place so later
+                        // assignments through the owner and through references
+                        // observe the same storage.
+                        if let Value::ReferenceCell(cell) = slot {
+                            *cell.borrow_mut() = value;
+                        } else {
+                            *slot = value;
+                        }
                         return Assign::Done;
                     }
                     return Assign::Immutable;
