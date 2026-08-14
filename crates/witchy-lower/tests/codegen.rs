@@ -999,6 +999,33 @@ fn main(console: Console):
     }
 
     #[test]
+    fn local_exclusive_reborrow_preserves_the_original_projected_place() {
+        let source = r#"
+mode opt
+
+type Counter:
+    value: Int
+
+fn main(console: Console):
+    var counter = Counter(1)
+    let parent = &mut counter.value
+    let child = &mut parent
+    *child = 9
+    console.print("${counter.value}")
+"#;
+        let module = parse_module(source).expect("parse local exclusive reborrow fixture");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("compiled backend lowers local exclusive reborrow fixture");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap();
+        assert_eq!(captured.lock().unwrap().as_slice(), ["9"]);
+    }
+
+    #[test]
     fn declared_packed_layout_survives_user_module_linking() {
         let model = parse_module(r#"
 mode opt

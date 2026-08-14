@@ -7278,6 +7278,9 @@ impl<'types> Codegen<'types> {
     pub(crate) fn static_reference_place(&self, expr: &Expr) -> Option<CodegenPlace> {
         match expr {
             Expr::Unary { op: UnOp::BorrowMut, expr } => self.static_reference_place(expr),
+            Expr::Var(reference) if self.reference_places.contains_key(reference) => {
+                self.reference_places.get(reference).cloned()
+            }
             Expr::Var(root) if self.locals.contains_key(root) => {
                 Some(CodegenPlace::Root(root.clone()))
             }
