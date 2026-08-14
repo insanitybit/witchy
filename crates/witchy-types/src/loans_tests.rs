@@ -117,6 +117,20 @@
     }
 
     #[test]
+    fn owned_exclusive_reference_is_a_consuming_affine_parameter() {
+        check_str(
+            "mode opt\n\nfn take(own text: &'a mut String) -> &'a mut String:\n    text\n",
+        )
+        .expect("an exclusive reference may be consumed and returned");
+
+        let err = check_str(
+            "mode opt\n\nfn bad(own text: &'a String) -> &'a String:\n    text\n",
+        )
+        .expect_err("a shared reference cannot be consumed");
+        assert!(err.contains("to `own`"), "{err}");
+    }
+
+    #[test]
     fn dereference_assignment_requires_and_accepts_an_exclusive_reference() {
         check_str(
             "mode opt\n\nfn edit(text: &'a mut Int) -> Nil:\n    *text = 42\n",

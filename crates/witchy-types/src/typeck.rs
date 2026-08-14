@@ -806,6 +806,7 @@ fn reject_borrowed_nominal_containers(
                     ));
                 }
                 if conventions.get(index) == Some(&Convention::Own)
+                    && !type_is_exclusive_reference(parameter)
                     && let Some(relation) =
                         borrowed_nominal_relation_name(parameter, lifetime_nominals)
                 {
@@ -868,6 +869,7 @@ fn validate_callable_nominal_lifetimes(
                 ));
             }
             if parameter.convention == Convention::Own
+                && !type_is_exclusive_reference(ty)
                 && let Some(relation) =
                     borrowed_nominal_relation_name(ty, lifetime_nominals)
             {

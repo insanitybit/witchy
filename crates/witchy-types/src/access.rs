@@ -1187,7 +1187,7 @@ impl AccessSignature {
             let explicit_exclusive_reference = qualifiers
                 .iter()
                 .any(|qualifier| matches!(qualifier, AccessQualifier::BorrowMut(_)));
-            let kind = if explicit_exclusive_reference {
+            let kind = if explicit_exclusive_reference && convention != Convention::Own {
                 AccessKind::ExclusiveWriteback
             } else {
                 AccessKind::from(convention)
@@ -1200,10 +1200,7 @@ impl AccessSignature {
             if matches!(convention, Convention::Var | Convention::Own)
                 && qualifiers
                     .iter()
-                    .any(|qualifier| matches!(
-                        qualifier,
-                        AccessQualifier::Borrow(_) | AccessQualifier::BorrowMut(_)
-                    ))
+                    .any(|qualifier| matches!(qualifier, AccessQualifier::Borrow(_)))
             {
                 return Err(AccessSignatureError::MutableBorrowedView { position });
             }
