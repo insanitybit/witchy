@@ -131,6 +131,21 @@
     }
 
     #[test]
+    fn exclusive_borrow_of_frozen_storage_is_rejected() {
+        let err = check_str(
+            "mode opt\n\nfn main():\n    let text: frozen String = \"hello\"\n    let editable = &mut text\n",
+        )
+        .expect_err("frozen storage cannot grant exclusive mutable access");
+        assert!(err.contains("frozen") && err.contains("exclusive reference"), "{err}");
+
+        let err = check_str(
+            "mode opt\n\nfn edit(text: &'a mut frozen String) -> Nil:\n    Nil\n",
+        )
+        .expect_err("owned qualifiers do not belong inside a reference target");
+        assert!(err.contains("frozen") && err.contains("reference target"), "{err}");
+    }
+
+    #[test]
     fn exclusive_borrow_rejects_an_overlapping_shared_loan() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    let editable = &mut text\n    console.print(view)\n    console.print(editable)\n",

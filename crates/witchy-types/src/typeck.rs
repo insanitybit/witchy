@@ -1295,8 +1295,50 @@ fn validate_type_model(
     storage: &ReferenceStorageClassifier<'_>,
 ) -> Result<(), TypeError> {
     validate_type(t, known, arities, nominal_parameters)?;
+    reject_owned_qualifiers_inside_references(t)?;
     reject_structural_authority_type(t, type_defs)?;
     reject_borrowed_capability_views(t, storage)
+}
+
+/// `frozen`, `unique`, and `local unique` describe owned storage or a reference
+/// handle. They are not target qualifiers: `&'a mut frozen T` would misleadingly
+/// promise write access to immutable storage. Apply such a qualifier outside the
+/// reference when the handle itself needs that contract.
+fn reject_owned_qualifiers_inside_references(t: &ast::Type) -> Result<(), TypeError> {
+    fn visit(t: &ast::Type) -> Result<(), TypeError> {
+        match t {
+            ast::Type::Qualified(
+                ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_),
+                inner,
+            ) => {
+                if let ast::Type::Qualified(qualifier, _) = inner.as_ref()
+                    && matches!(
+                        qualifier,
+                        ast::TypeQual::Frozen | ast::TypeQual::Unique | ast::TypeQual::LocalUnique
+                    )
+                {
+                    return terr(format!(
+                        "`{}` may qualify an owned value or reference handle, not a reference target",
+                        qualifier.as_str()
+                    ));
+                }
+                visit(inner)
+            }
+            ast::Type::Qualified(_, inner) => visit(inner),
+            ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
+                arguments.iter().try_for_each(visit)
+            }
+            ast::Type::RecordCompose { base, fields } => {
+                visit(base)?;
+                fields.iter().try_for_each(|(_, field)| visit(field))
+            }
+            ast::Type::Fn(parameters, result, _) => {
+                parameters.iter().try_for_each(visit)?;
+                visit(result)
+            }
+        }
+    }
+    visit(t)
 }
 
 /// Reject references to undeclared types in function signatures. The
@@ -3308,6 +3350,9 @@ struct Checker {
     /// as an ordinary parameter has no compiler-owned root companions at this
     /// boundary, so it must retain the RFC-0112 stage-1 runtime guard.
     borrowed_shell_bindings: Vec<HashSet<String>>,
+    /// Bindings declared with `frozen`. Qualifiers erase from [`Ty`], but
+    /// exclusive borrowing must still respect the source storage contract.
+    frozen_bindings: Vec<HashSet<String>>,
     /// Sealed record capabilities (`capability X:` with named fields). Their
     /// fields are opaque: `.field` access is rejected so the only way to reach a
     /// carried capability is `match`, which the linker confines to the home
@@ -4387,6 +4432,33 @@ impl Checker {
             .insert(name);
     }
 
+    fn authorize_frozen_binding(&mut self, name: String) {
+        self.frozen_bindings
+            .last_mut()
+            .expect("frozen bindings track type scopes")
+            .insert(name);
+    }
+
+    fn is_frozen_binding(&self, name: &str) -> bool {
+        self.frozen_bindings
+            .iter()
+            .rev()
+            .any(|bindings| bindings.contains(name))
+    }
+
+    fn exclusive_borrow_targets_frozen_storage(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Var(name) => self.is_frozen_binding(name),
+            Expr::Field { base, .. } | Expr::Index { base, .. } => {
+                self.exclusive_borrow_targets_frozen_storage(base)
+            }
+            Expr::Unary { op: UnOp::Deref, expr } => {
+                self.exclusive_borrow_targets_frozen_storage(expr)
+            }
+            _ => false,
+        }
+    }
+
     fn is_authorized_borrowed_shell_value(&self, value: &Expr, ty: &Ty) -> bool {
         self.is_direct_borrowed_nominal(ty)
             && matches!(value, Expr::Var(name) if self.is_borrowed_shell_binding(name))
@@ -4580,10 +4652,12 @@ impl Checker {
     fn push(&mut self) {
         self.scopes.push(HashMap::new());
         self.borrowed_shell_bindings.push(HashSet::new());
+        self.frozen_bindings.push(HashSet::new());
     }
     fn pop(&mut self) {
         self.scopes.pop();
         self.borrowed_shell_bindings.pop();
+        self.frozen_bindings.pop();
     }
     /// The (name, type) bindings introduced in the innermost scope frame — used to
     /// compare what each or-pattern alternative binds (RFC-0052 binding-consistency).
@@ -5737,6 +5811,9 @@ impl Checker {
                         )?;
                     }
                     self.define(name.clone(), vt, *mutable);
+                    if decl.as_ref().is_some_and(is_frozen_type) {
+                        self.authorize_frozen_binding(name.clone());
+                    }
                     if borrowed_shell_binding {
                         self.authorize_borrowed_shell_binding(name.clone());
                     }
@@ -7320,7 +7397,14 @@ impl Checker {
                     UnOp::Borrow | UnOp::Deref => terr(
                         "explicit references are available only in `mode opt` files; normal Witchy uses owned values and does not require lifetime annotations",
                     ),
-                    UnOp::BorrowMut if self.opt_mode => Ok(t),
+                    UnOp::BorrowMut if self.opt_mode => {
+                        if self.exclusive_borrow_targets_frozen_storage(expr) {
+                            return terr(
+                                "cannot create an exclusive reference to `frozen` storage; frozen values permit shared reads only",
+                            );
+                        }
+                        Ok(t)
+                    }
                     UnOp::BorrowMut => terr(
                         "explicit references are available only in `mode opt` files; normal Witchy uses owned values and does not require lifetime annotations",
                     ),
@@ -8659,6 +8743,7 @@ impl Checker {
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
         self.borrowed_shell_bindings = vec![HashSet::new()];
+        self.frozen_bindings = vec![HashSet::new()];
         self.consumed.clear();
         self.current_ret = Some(ret.clone());
         self.current_isolated_callback = isolated_vm_callback_contract(
@@ -8720,6 +8805,9 @@ impl Checker {
                 ty.clone(),
                 param.convention.binds_mutable() || parameter_binds_exclusive_reference(param),
             );
+            if param.ty.as_ref().is_some_and(is_frozen_type) {
+                self.authorize_frozen_binding(param.name.clone());
+            }
         }
         let body = if func.ret.is_some() {
             self.infer_block_tail_expected(&func.body, &ret).map_err(|e| {
@@ -9483,6 +9571,7 @@ fn run_check_selected(
             .collect(),
         borrowed_shell_update_target: None,
         borrowed_shell_bindings: vec![HashSet::new()],
+        frozen_bindings: vec![HashSet::new()],
         sealed_types: HashSet::new(),
         construction_sealed_types: HashSet::new(),
         transparent_externref_brands: HashMap::new(),
