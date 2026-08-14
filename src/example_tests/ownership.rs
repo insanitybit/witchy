@@ -1,6 +1,15 @@
 use super::*;
 use crate::{ast, interpreter, parser, typeck};
 
+#[test]
+fn rfc0122_local_exclusive_reference_write_agrees_on_both_backends() {
+    let src = "mode opt\n\nfn main(console: Console):\n    var value = 1\n    let reference = &mut value\n    *reference = 42\n    console.print(\"${value}\")\n    console.print(\"${*reference}\")\n";
+    let want = ["42", "42"];
+    assert_eq!(link_run(src), want, "interpreter writes through the local reference place");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled local reference write updates its owner place");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.

@@ -55,12 +55,34 @@ impl<'types> Codegen<'types> {
                     return None;
                 };
                 let value = self.lower_expr(replacement)?;
-                W::Seq(vec![
-                    N::SetLocal { local: reference.clone(), value },
-                    // An assignment evaluates to `Nil`; its ABI is the unit
-                    // i32 slot, not the replacement value's scalar width.
-                    N::Push(W::ConstI32(0)),
-                ])
+                let owner = self
+                    .active_loan_events
+                    .iter()
+                    .rev()
+                    .find(|loan| {
+                        loan.view == *reference
+                            && loan.kind == witchy_types::access::BorrowKind::Exclusive
+                            && loan.projection.steps.is_empty()
+                    })
+                    .map(|loan| loan.owner.clone());
+                let mut writes = vec![N::SetLocal { local: reference.clone(), value }];
+                // A local `&mut owner` is a first-class handle in the
+                // interpreter, not an independent copied value. The checked
+                // whole-place loan identifies the owner local that must observe
+                // the write on this forced-copy path. Keep the handle local in
+                // sync for subsequent reads through the same reference.
+                if let Some(owner) = owner
+                    && owner != *reference
+                {
+                    writes.push(N::SetLocal {
+                        local: owner,
+                        value: W::GetLocal(reference.clone()),
+                    });
+                }
+                // An assignment evaluates to `Nil`; its ABI is the unit i32
+                // slot, not the replacement value's scalar width.
+                writes.push(N::Push(W::ConstI32(0)));
+                W::Seq(writes)
             }
             Expr::Int(n) | Expr::Duration(n) => W::ConstI64(*n),
             Expr::Float(x) => W::ConstF64(*x),
