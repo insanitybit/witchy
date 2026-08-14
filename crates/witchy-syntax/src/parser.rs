@@ -1670,6 +1670,16 @@ impl Parser {
         let start = self.pos;
         let mut lhs = self.prefix()?;
         loop {
+            // A following dereference assignment begins with `*`, which is also
+            // an infix multiplication token. At a statement boundary it must
+            // start the next statement instead of extending an initializer such
+            // as `let reference = &mut value` into `&mut value * reference`.
+            if self.pos > 0
+                && self.cur().line > self.toks[self.pos - 1].end_line
+                && self.is_assignment()
+            {
+                break;
+            }
             // Inside a match-arm body, a `-` that starts a new line is the next
             // arm's negative pattern, not a continuation of this expression.
             if self.in_match_arm

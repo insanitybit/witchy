@@ -418,6 +418,21 @@ fn replace(reference: &'a mut Int):
                 args: vec![Expr::Var("reference".into()), Expr::Int(42)],
             })
         );
+
+        let local = fn_body(r#"
+mode opt
+
+fn replace():
+    var value = 0
+    let reference = &mut value
+    *reference = 42
+"#);
+        assert!(matches!(
+            local.last(),
+            Some(Stmt::Expr(Expr::Call { name, args }))
+                if name == crate::intrinsics::REFERENCE_WRITE
+                    && matches!(args.as_slice(), [Expr::Var(reference), Expr::Int(42)] if reference == "reference")
+        ));
     }
 
     #[test]
