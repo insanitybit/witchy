@@ -598,6 +598,10 @@ pub const LIST_LENGTH: &str = "list.length";
 pub const LIST_AT: &str = "list.at";
 pub const LIST_PUSH: &str = "list.__push";
 pub const LIST_SET_AT: &str = "list.__set_at";
+/// Compiler-owned assignment through an explicit opt-mode reference. The parser
+/// alone emits this call for `*reference = value`; it is not source-callable.
+/// Backends consume it as a place write, never as an ordinary function call.
+pub const REFERENCE_WRITE: &str = "@reference_write";
 pub const LIST_CONCAT: &str = "list.concat";
 pub const LIST_POP_EXTRACT: &str = "list.__pop_extract";
 

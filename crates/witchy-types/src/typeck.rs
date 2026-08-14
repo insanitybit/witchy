@@ -6008,6 +6008,20 @@ impl Checker {
         args: &[Expr],
         expected: Option<&Ty>,
     ) -> Result<Ty, TypeError> {
+        // `*reference = value` is represented after parsing as a private
+        // place-write call so every later AST traversal sees one ordinary
+        // expression shape. It is not source-callable (the `@` spelling is
+        // unlexable by user code); the loan pass separately proves that its
+        // first argument is a live exclusive reference.
+        if name == intrinsics::REFERENCE_WRITE {
+            if args.len() != 2 {
+                return terr("internal: reference write requires a reference and a value");
+            }
+            let reference = self.infer(&args[0])?;
+            let value = self.infer_expected(&args[1], &reference)?;
+            self.unify(&reference, &value)?;
+            return Ok(Ty::Unit);
+        }
         let is_cap_op = cap_ops::is_marked(name);
         let call_name = cap_ops::surface_name(name);
         if expected.is_none()

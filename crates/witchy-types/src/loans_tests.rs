@@ -117,6 +117,20 @@
     }
 
     #[test]
+    fn dereference_assignment_requires_and_accepts_an_exclusive_reference() {
+        check_str(
+            "mode opt\n\nfn edit(text: &'a mut Int) -> Nil:\n    *text = 42\n",
+        )
+        .expect("an exclusive reference permits a place write");
+
+        let err = check_str(
+            "mode opt\n\nfn inspect(text: &'a Int) -> Nil:\n    *text = 42\n",
+        )
+        .expect_err("a shared reference cannot be written through");
+        assert!(err.contains("shared reference"), "{err}");
+    }
+
+    #[test]
     fn exclusive_borrow_rejects_an_overlapping_shared_loan() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    let editable = &mut text\n    console.print(view)\n    console.print(editable)\n",

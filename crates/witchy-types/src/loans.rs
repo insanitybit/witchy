@@ -35,6 +35,7 @@ use witchy_syntax::ast::{
     is_lifetime_param, Block, Convention, Expr, Function, Item, Module, Param, Pattern, Stmt,
     Type, TypeQual, UnOp,
 };
+use witchy_syntax::intrinsics;
 
 pub use crate::access::{BorrowKind, LoanProjection, LoanProjectionStep};
 use crate::access::{AccessKind, AccessSignature, BorrowRelation, BorrowRelationCatalog};
@@ -3175,6 +3176,43 @@ impl LoanCtx<'_> {
         open: &[Loan],
         callables: &HashMap<String, BorrowSig>,
     ) -> Result<(), TypeError> {
+        // The parser represents `*reference = value` as a private call so it
+        // survives all existing expression walkers. Its first operand must
+        // still name a live exclusive relation: a shared view (or an ordinary
+        // value after an erased reference contract) must never become writable
+        // merely because the surface dereference was desugared.
+        let mut write_error = None;
+        walk_stmt_exprs(stmt, &mut |expr| {
+            if write_error.is_some() {
+                return;
+            }
+            let Expr::Call { name, args } = expr else { return };
+            if name != intrinsics::REFERENCE_WRITE {
+                return;
+            }
+            let Some(reference) = args.first() else {
+                write_error = Some(terr("internal: malformed reference write".into()));
+                return;
+            };
+            let mut sources = self.borrow_sources(reference, callables, open);
+            self.collect_alias_sources(reference, open, &mut sources);
+            match sources.iter().find(|source| source.kind == BorrowKind::Exclusive) {
+                Some(_) => {}
+                None if sources.is_empty() => {
+                    write_error = Some(terr(
+                        "cannot assign through this value: `*place = value` requires a live `&mut` reference".into(),
+                    ));
+                }
+                None => {
+                    write_error = Some(terr(
+                        "cannot assign through a shared reference; create an exclusive `&mut place` instead".into(),
+                    ));
+                }
+            }
+        });
+        if let Some(error) = write_error {
+            return Err(error);
+        }
         if let Some(source) = self.escape_call_source(stmt, callables, open) {
             return Err(terr(format!(
                 "in `{}`: the borrowed result from `{}` escapes through a task or channel — \

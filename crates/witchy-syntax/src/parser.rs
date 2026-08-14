@@ -5,6 +5,7 @@ use std::fmt;
 use foldhash::HashSet;
 
 use crate::ast::*;
+use crate::intrinsics;
 use crate::lexer::{tokenize, Tok, Token};
 use crate::origin::SourcePosition;
 
@@ -1025,14 +1026,21 @@ impl Parser {
     }
 
     fn is_assignment(&self) -> bool {
-        if !matches!(self.kind(), Tok::Ident(_)) {
+        // A dereference is itself a place: `*reference = value` (and nested
+        // dereferences) travel through the same assignment pipeline as fields
+        // and indices. Its final lowering is the private REFERENCE_WRITE node.
+        let mut i = self.pos;
+        while matches!(self.toks.get(i).map(|t| &t.kind), Some(Tok::Star)) {
+            i += 1;
+        }
+        if !matches!(self.toks.get(i).map(|t| &t.kind), Some(Tok::Ident(_))) {
             return false;
         }
         // Scan past a place chain — `name`, `name[idx]…`, `name.field…`, and any
         // mix (`g[i].f[j]`) — then require an assignment operator. This is what
         // makes `d[k] = v` and `u.field = v` parse as assignments (RFC-0022),
         // not bare expression statements.
-        let mut i = self.pos + 1;
+        i += 1;
         loop {
             match self.toks.get(i).map(|t| &t.kind) {
                 Some(Tok::LBracket) => {
@@ -4256,6 +4264,10 @@ fn bin_op(t: &Tok) -> BinOp {
 pub fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
     match place {
         Expr::Var(name) => Ok(Stmt::Assign { name, value }),
+        Expr::Unary { op: UnOp::Deref, expr } => Ok(Stmt::Expr(Expr::Call {
+            name: intrinsics::REFERENCE_WRITE.to_string(),
+            args: vec![*expr, value],
+        })),
         Expr::Index { base, index } => {
             let new_base = Expr::MethodCall {
                 receiver: base.clone(),

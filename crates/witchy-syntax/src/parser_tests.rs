@@ -404,6 +404,23 @@ fn f():
     }
 
     #[test]
+    fn dereference_assignment_desugars_to_the_private_place_write() {
+        let stmts = fn_body(r#"
+mode opt
+
+fn replace(reference: &'a mut Int):
+    *reference = 42
+"#);
+        assert_eq!(
+            stmts[0],
+            Stmt::Expr(Expr::Call {
+                name: crate::intrinsics::REFERENCE_WRITE.into(),
+                args: vec![Expr::Var("reference".into()), Expr::Int(42)],
+            })
+        );
+    }
+
+    #[test]
     fn or_patterns_desugar_to_one_arm_per_alternative() {
         // `1 | 2 | 3 -> body` becomes three arms sharing the body.
         let stmts = fn_body(r#"
