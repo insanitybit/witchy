@@ -7195,6 +7195,14 @@ impl<'types> Codegen<'types> {
     ) -> Option<CodegenPlace> {
         use witchy_wir::wir::WirNode as N;
         match expr {
+            // The forced-copy envelope receives an explicit `&mut place` as
+            // the same caller place it will commit after the callee returns.
+            // Direct-place lowering can replace this transparent unwrap later;
+            // preserving it here keeps the ABI and observable write-back aligned
+            // with the interpreter today.
+            Expr::Unary { op: UnOp::BorrowMut, expr } => {
+                self.capture_codegen_place(expr, next_coordinate, prelude)
+            }
             Expr::Var(root) if self.locals.contains_key(root) => {
                 Some(CodegenPlace::Root(root.clone()))
             }

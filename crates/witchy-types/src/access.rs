@@ -1179,13 +1179,25 @@ impl AccessSignature {
         let mut access_params = Vec::with_capacity(params.len());
         for (position, (ty, convention)) in params.into_iter().zip(conventions).enumerate() {
             let qualifiers = leading_qualifiers(&ty);
-            let kind = AccessKind::from(convention);
+            // An explicit `&'a mut T` carries the same write-back effect as a
+            // `var T` parameter in the current forced-copy ABI. Keeping that
+            // effect in the canonical access signature lets every consumer
+            // (interpreter, Wasm, adapters) agree while direct-place lowering
+            // is introduced incrementally.
+            let explicit_exclusive_reference = qualifiers
+                .iter()
+                .any(|qualifier| matches!(qualifier, AccessQualifier::BorrowMut(_)));
+            let kind = if explicit_exclusive_reference {
+                AccessKind::ExclusiveWriteback
+            } else {
+                AccessKind::from(convention)
+            };
             if matches!(kind, AccessKind::ExclusiveWriteback | AccessKind::Consuming)
                 && qualifiers.contains(&AccessQualifier::Frozen)
             {
                 return Err(AccessSignatureError::FrozenMutableParameter { position });
             }
-            if matches!(kind, AccessKind::ExclusiveWriteback | AccessKind::Consuming)
+            if matches!(convention, Convention::Var | Convention::Own)
                 && qualifiers
                     .iter()
                     .any(|qualifier| matches!(

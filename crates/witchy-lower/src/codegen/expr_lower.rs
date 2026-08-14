@@ -57,7 +57,9 @@ impl<'types> Codegen<'types> {
                 let value = self.lower_expr(replacement)?;
                 W::Seq(vec![
                     N::SetLocal { local: reference.clone(), value },
-                    N::Push(W::ConstI64(0)),
+                    // An assignment evaluates to `Nil`; its ABI is the unit
+                    // i32 slot, not the replacement value's scalar width.
+                    N::Push(W::ConstI32(0)),
                 ])
             }
             Expr::Int(n) | Expr::Duration(n) => W::ConstI64(*n),
