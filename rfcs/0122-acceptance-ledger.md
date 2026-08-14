@@ -17,7 +17,7 @@ the named evidence. “Queued” is not acceptance. Every other row remains open
 | 10 migrated fixture parity | evidence | open | migration corpus matrix with both backends and counters |
 | 11 shared loans | checker | partial | merged shared loan tests; add copy, escape, `var`, consume, drop matrix |
 | 12 exclusive loans | checker/runtime/wasm | queued/open | queued `e07819bd`; affine moves, writes, suspension, no-copy proof remain |
-| 13 mutable-to-shared conversion | checker/runtime | open | relinquish and shortened-reborrow tests |
+| 13 mutable-to-shared conversion | checker/runtime | partial | merged `bcea90b4` relinquishes the old `&mut` handle; checker covers short shared reborrow; runtime parity and shortening matrix remain |
 | 14 owned qualifiers | checker | open | frozen/unique/local-unique combination diagnostics |
 | 15 convention/reference orthogonality | contract/checker | partial | callable identity test; handle write-back/own behavior remains |
 | 16 no opt-graph erasure | contract | partial | signature preservation; casts/traits/closures/adapters/tails matrix remains |
