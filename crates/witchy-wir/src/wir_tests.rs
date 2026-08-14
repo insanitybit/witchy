@@ -1,6 +1,30 @@
     use super::*;
 
     #[test]
+    fn place_reference_reborrow_preserves_root_access_and_evaluated_projection() {
+        let parent = PlaceReference::new("account", PlaceAccess::Exclusive).reborrow([
+            PlaceProjection::Field("profile".into()),
+            PlaceProjection::Index {
+                coordinate: "__reference_index".into(),
+            },
+        ]);
+        let child = parent.reborrow([PlaceProjection::Field("name".into())]);
+
+        assert_eq!(child.root, "account");
+        assert_eq!(child.access, PlaceAccess::Exclusive);
+        assert_eq!(
+            child.projections,
+            vec![
+                PlaceProjection::Field("profile".into()),
+                PlaceProjection::Index {
+                    coordinate: "__reference_index".into(),
+                },
+                PlaceProjection::Field("name".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn existential_wrapper_keeps_payload_reference_typed() {
         let wrapper = existential_wrapper_struct();
         assert_eq!(

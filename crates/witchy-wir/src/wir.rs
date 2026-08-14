@@ -47,6 +47,61 @@ pub enum Kind {
     GcRef(u32),
 }
 
+/// The access capability carried by an opt-mode place reference.
+///
+/// This is deliberately separate from [`Kind`]. A place reference can be
+/// represented by a pointer, a shadow cell, or a typed GC object; the access
+/// capability and the referent's value representation must survive those
+/// lowering choices unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PlaceAccess {
+    Shared,
+    Exclusive,
+}
+
+/// One runtime projection from a place-reference root.
+///
+/// Dynamic coordinates name an already-evaluated WIR local. This makes the
+/// reference descriptor preserve evaluation order instead of re-running an
+/// index expression when a read, write, reborrow, or close occurs.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PlaceProjection {
+    Field(String),
+    Tuple(u32),
+    Index { coordinate: String },
+    Range { lo: String, hi: String, inclusive: bool },
+}
+
+/// The runtime identity of a first-class reference after source lifetimes have
+/// been checked. Lifetimes have no runtime payload; this descriptor retains the
+/// root and evaluated projection needed to read, write, reborrow, or close the
+/// reference without treating an interior address as an owning root.
+///
+/// `root` is a lowering-owned stable location name. Backends choose its physical
+/// representation (direct place, owner-backed shadow, or GC cell), while every
+/// caller uses the same logical identity and projection path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PlaceReference {
+    pub root: String,
+    pub projections: Vec<PlaceProjection>,
+    pub access: PlaceAccess,
+}
+
+impl PlaceReference {
+    pub fn new(root: impl Into<String>, access: PlaceAccess) -> Self {
+        Self { root: root.into(), projections: Vec::new(), access }
+    }
+
+    /// Derive a child reference without changing the owner root or access
+    /// capability. Checker facts decide whether the requested reborrow is legal;
+    /// WIR only preserves the already-proven logical place.
+    pub fn reborrow(&self, projections: impl IntoIterator<Item = PlaceProjection>) -> Self {
+        let mut child = self.clone();
+        child.projections.extend(projections);
+        child
+    }
+}
+
 /// The exact wasm function type used by a closure `call_indirect`.
 ///
 /// Source closures use [`gc_slot_closure_signature`] or a fully typed variant;
