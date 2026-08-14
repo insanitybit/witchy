@@ -95,7 +95,10 @@ fn view_lifetime(ty: &Type) -> Option<&str> {
 /// representation qualifiers.
 fn direct_reference_kind(ty: &Type) -> Option<BorrowKind> {
     match ty {
-        Type::Qualified(TypeQual::Borrow(_), _) => Some(BorrowKind::Shared),
+        // `Borrow` still also represents the RFC-0083 `let('a)` surface while
+        // the migration is live. Its conventional calls remain source-compatible
+        // until the parser records the legacy spelling separately. `BorrowMut`
+        // is new and unambiguous, so it can already require `&mut place`.
         Type::Qualified(TypeQual::BorrowMut(_), _) => Some(BorrowKind::Exclusive),
         Type::Qualified(_, inner) => direct_reference_kind(inner),
         _ => None,
