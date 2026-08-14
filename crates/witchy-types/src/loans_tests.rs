@@ -645,6 +645,23 @@
     }
 
     #[test]
+    fn reference_function_types_preserve_kind_and_lifetime_identity() {
+        check_str(
+            "mode opt\n\nfn first(input: &'a String) -> &'a String:\n    input\n\nfn apply(f: fn(&'a String) -> &'a String, input: &'a String) -> &'a String:\n    f(input)\n\nfn main(console: Console):\n    let text = \"value\"\n    let result = apply(first, &text)\n    console.print(result)\n",
+        )
+        .expect("a shared reference function type preserves its callable contract");
+
+        let error = check_str(
+            "mode opt\n\nfn mutate(input: &'a mut String) -> &'a String:\n    input\n\nfn apply(f: fn(&'a String) -> &'a String, input: &'a String) -> &'a String:\n    f(input)\n\nfn main():\n    let text = \"value\"\n    apply(mutate, &text)\n",
+        )
+        .expect_err("a mutable-reference function cannot erase to shared callable identity");
+        assert!(
+            error.contains("erases or changes its borrow/convention relation"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn nominal_record_fields_keep_their_contract_across_order_projection_and_update() {
         check_str(
             "mode opt\n\n\
