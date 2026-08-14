@@ -29,7 +29,7 @@
 
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-controlled — see witchy-types/src/typeck.rs.
-use foldhash::{HashMap, HashMapExt as _};
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use witchy_syntax::ast::{
     is_lifetime_param, Block, Convention, Expr, Function, Item, Module, Param, Pattern, Stmt,
@@ -1932,6 +1932,10 @@ impl LoanCtx<'_> {
         function_body: bool,
     ) -> Result<(), TypeError> {
         let mut local: Vec<Loan> = Vec::new();
+        // Exclusive references are affine. Once a local handle moves, its old
+        // spelling must not become an alias that reopens the same exclusive
+        // loan later in the block.
+        let mut moved_exclusive: HashSet<String> = HashSet::new();
         let mut callables = inherited_callables.clone();
         for (idx, stmt) in block.stmts.iter().enumerate() {
             // Drop local loans whose view is never mentioned again from here on.
@@ -1943,6 +1947,13 @@ impl LoanCtx<'_> {
                 stmt_key(stmt),
                 live.iter().cloned().map(LoanEvent::from).collect(),
             );
+
+            if let Some(name) = moved_exclusive.iter().find(|name| stmt_mentions(stmt, name)) {
+                return Err(terr(format!(
+                    "in `{}`: moved exclusive reference `{name}` cannot be used again",
+                    short_name(self.fn_name),
+                )));
+            }
 
             // A conflicting operation on any live loan's owner (in this statement's
             // own expressions, not counting nested blocks) is rejected.
@@ -2009,6 +2020,44 @@ impl LoanCtx<'_> {
             // `if`/`match`/block whose branches return views) opens a loan per
             // distinct owner it borrows.
             if let Stmt::Let { name, ty, value, mutable } = stmt {
+                if let Expr::Var(source) = value {
+                    let transferred: Vec<Loan> = local
+                        .iter()
+                        .filter(|loan| loan.view == *source && loan.kind == BorrowKind::Exclusive)
+                        .cloned()
+                        .collect();
+                    if !transferred.is_empty() {
+                        for old in &transferred {
+                            let old_event = LoanEvent::from(old.clone());
+                            self.remove_scheduled_close(&old_event);
+                            push_unique_event(
+                                self.facts.closes_after.entry(stmt_key(stmt)).or_default(),
+                                old_event,
+                            );
+
+                            let mut next = old.clone();
+                            next.view = name.clone();
+                            let next_event = LoanEvent::from(next.clone());
+                            push_unique_event(
+                                self.facts.opens_after.entry(stmt_key(stmt)).or_default(),
+                                next_event.clone(),
+                            );
+                            self.schedule_close(block, idx, &next_event);
+                            local.push(next);
+                        }
+                        local.retain(|loan| {
+                            !(loan.view == *source && loan.kind == BorrowKind::Exclusive)
+                        });
+                        moved_exclusive.insert(source.clone());
+                        self.reject_callable_erasure(name, value, ty.as_ref(), None, &callables)?;
+                        if let Some(sig) = self.callable_value_sig(value, ty.as_ref(), &callables) {
+                            callables.insert(name.clone(), sig);
+                        } else {
+                            callables.remove(name);
+                        }
+                        continue;
+                    }
+                }
                 if self.has_dynamic_borrow_projection(value, &callables, &live) {
                     return Err(self.dynamic_projection());
                 }
@@ -3217,6 +3266,23 @@ impl LoanCtx<'_> {
         open: &[Loan],
         callables: &HashMap<String, BorrowSig>,
     ) -> Result<(), TypeError> {
+        for loan in open.iter().filter(|loan| loan.kind == BorrowKind::Exclusive) {
+            let mut uses = 0;
+            walk_stmt_exprs(stmt, &mut |expr| {
+                if matches!(expr, Expr::Var(name) if name == &loan.view) {
+                    uses += 1;
+                }
+            });
+            if uses > 1 {
+                return Err(terr(format!(
+                    "in `{}`: exclusive reference `{}` is used more than once in one expression; \
+                     an exclusive reference is affine and cannot be copied",
+                    short_name(self.fn_name),
+                    loan.view,
+                )));
+            }
+        }
+
         // The parser represents `*reference = value` as a private call so it
         // survives all existing expression walkers. Its first operand must
         // still name a live exclusive relation: a shared view (or an ordinary
