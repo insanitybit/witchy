@@ -862,7 +862,9 @@ pub enum LinkMode {
 }
 
 fn returns_borrowed_view(ty: Option<&Type>) -> bool {
-    ty.is_some_and(|ty| matches!(ty, Type::Qualified(TypeQual::Borrow(_), _)))
+    ty.is_some_and(|ty| {
+        matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _))
+    })
 }
 
 fn returns_view_callable(ty: Option<&Type>) -> bool {
@@ -870,7 +872,10 @@ fn returns_view_callable(ty: Option<&Type>) -> bool {
         matches!(
             ty.unqualified(),
             Type::Fn(_, result, _)
-                if matches!(result.as_ref(), Type::Qualified(TypeQual::Borrow(_), _))
+                if matches!(
+                    result.as_ref(),
+                    Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _)
+                )
         )
     })
 }
@@ -4574,6 +4579,25 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    #[test]
+    fn imported_exclusive_reference_result_is_not_erased_at_an_async_boundary() {
+        let views = crate::parser::parse_module(
+            "mode opt\n\npub fn edit(text: &'a mut String) -> &'a mut String:\n    text\n",
+        )
+        .expect("exclusive-reference module parses");
+        let user = crate::parser::parse_module(
+            "mode opt\n\nimport views\n\nasync fn bad(console: Console):\n    var text = \"x\"\n    let editable = views.edit(&mut text)\n    let _ = task.done(0).await\n    console.print(editable)\n",
+        )
+        .expect("consumer parses");
+        let error = link(
+            vec![("views".into(), views), ("user".into(), user)],
+            "user",
+            noop_expand,
+        )
+        .expect_err("exclusive references must remain visible across imports");
+        assert!(error.message.contains("remains live across `await`"), "{}", error.message);
     }
 
     #[test]
