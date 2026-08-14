@@ -4637,6 +4637,35 @@ pub struct BoundaryRepair {
     pub arg_index: usize,
 }
 
+/// The compiler-owned entry selected for a conventional call.  This is not a
+/// source-level overload: both arms target the one declared function identity.
+/// `Repair` means the normal-mode copy-correct adapter must establish the
+/// access proof before entering that body; `Proven` may enter it directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundaryEntry {
+    Proven,
+    Repair,
+}
+
+/// Checked, address-keyed conventional-call entry selection for one exact AST.
+/// A pointer not present in `repair_sites` is deliberately `Proven`: the
+/// no-copy walker records every checked unique-access miss, while conventional
+/// signatures with no such requirement have no adapter work to perform.
+#[derive(Clone, Debug, Default)]
+pub struct BoundaryEntrySelection {
+    repair_sites: foldhash::HashSet<usize>,
+}
+
+impl BoundaryEntrySelection {
+    pub fn entry_for(&self, call: &Expr) -> BoundaryEntry {
+        if self.repair_sites.contains(&(call as *const Expr as usize)) {
+            BoundaryEntry::Repair
+        } else {
+            BoundaryEntry::Proven
+        }
+    }
+}
+
 /// The set of normal-mode one-copy repair sites: exactly the no-copy misses —
 /// a site that `mode opt` rejects for a missing uniqueness proof is the same
 /// site normal mode repairs by re-owning the argument (the zero-token
@@ -4680,6 +4709,19 @@ pub fn module_boundary_repair_ptrs(
         }
     }
     ptrs
+}
+
+/// Derive the one conventional-call entry selection consumed by lowering.  The
+/// same checked access graph drives opt diagnostics, normal repair selection,
+/// and the repair telemetry; no backend is allowed to reconstruct this choice
+/// from spelling or a separate ownership heuristic.
+pub fn boundary_entry_selection(
+    module: &Module,
+    access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
+) -> BoundaryEntrySelection {
+    BoundaryEntrySelection {
+        repair_sites: module_boundary_repair_ptrs(module, access),
+    }
 }
 
 fn module_no_copy_misses_with_access(
@@ -4874,6 +4916,54 @@ mod no_copy_tests {
         .expect("parse fresh");
         witchy_types::typeck::check(&fresh).expect("type check fresh");
         assert!(module_boundary_repairs(&fresh).is_empty(), "a fresh owner needs no repair");
+    }
+
+    #[test]
+    fn checked_boundary_entry_selection_distinguishes_proven_and_repair_calls() {
+        fn entry(source: &str) -> BoundaryEntry {
+            let parsed = parser::parse_module(source).expect("parse");
+            let lowered = witchy_types::traits::lower(parsed);
+            let typed = witchy_types::typeck::annotate_checked(lowered).expect("type check");
+            let access = witchy_types::access::checked_facts(typed.module(), typed.table())
+                .expect("access facts");
+            let selection = boundary_entry_selection(typed.module(), Some(&access));
+            let caller = typed
+                .module()
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Function(function) if function.name == "caller" => Some(function),
+                    _ => None,
+                })
+                .expect("caller");
+            let call = caller
+                .body
+                .stmts
+                .last()
+                .and_then(|statement| match statement {
+                    Stmt::Expr(call @ Expr::Call { .. }) => Some(call),
+                    _ => None,
+                })
+                .expect("terminal direct call");
+            selection.entry_for(call)
+        }
+
+        assert_eq!(
+            entry(
+                "fn take(own xs: unique List(Int)) -> Nil:\n    return\n\n\
+                 fn caller() -> Nil:\n    var xs = [1]\n    let alias = xs\n    take(xs)\n",
+            ),
+            BoundaryEntry::Repair,
+            "an aliased unique value selects the normal repair adapter"
+        );
+        assert_eq!(
+            entry(
+                "fn take(own xs: unique List(Int)) -> Nil:\n    return\n\n\
+                 fn caller() -> Nil:\n    take([1])\n",
+            ),
+            BoundaryEntry::Proven,
+            "a fresh value enters the same opt body through its proven access path"
+        );
     }
 
     #[test]

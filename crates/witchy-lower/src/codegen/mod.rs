@@ -1128,7 +1128,7 @@ struct Codegen<'types> {
     /// from the checked access graph, not the `InPlace`/`inplace_push` lever), so
     /// `__witchy_boundary_reown_copies` counts the same under every `WITCHY_OPT`.
     /// Populated in `register_module_items`; empty if the access graph is absent.
-    boundary_repair_sites: foldhash::HashSet<usize>,
+    boundary_entry_selection: analysis::BoundaryEntrySelection,
     /// Exact access rows for the tiny compiler-owned forwarding calls created
     /// after type annotation. Source calls must be present in `access_facts`;
     /// only an address explicitly registered here may use a declaration row.
@@ -1630,7 +1630,7 @@ impl<'types> Codegen<'types> {
             loan_facts,
             checked_module,
             access_facts,
-            boundary_repair_sites: foldhash::HashSet::default(),
+            boundary_entry_selection: analysis::BoundaryEntrySelection::default(),
             synthesized_call_access: HashMap::new(),
             active_loan_events: Vec::new(),
             cur_fn_own_param: None,
@@ -8959,7 +8959,7 @@ impl<'types> Codegen<'types> {
         lowered: witchy_wir::wir::WirExpr,
     ) -> witchy_wir::wir::WirExpr {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
-        if !self.boundary_repair_sites.contains(&(call as *const Expr as usize)) {
+        if self.boundary_entry_selection.entry_for(call) != analysis::BoundaryEntry::Repair {
             return lowered;
         }
         W::Seq(vec![
