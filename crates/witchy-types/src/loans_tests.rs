@@ -268,6 +268,26 @@
     }
 
     #[test]
+    fn returned_exclusive_reference_reborrows_an_exclusive_argument() {
+        check_str(
+            "mode opt\n\n\
+             type Pair:\n    left: String\n    right: String\n\
+             fn left(pair: &'a mut Pair) -> &'a mut String:\n    &mut pair.left\n\n\
+             fn main(console: Console):\n    var pair = Pair(\"left\", \"right\")\n    let parent = &mut pair\n    let slot = left(parent)\n    *slot = \"changed\"\n    console.print(pair.right)\n",
+        )
+        .expect("an exclusive result reborrows and retires the input handle");
+
+        let err = check_str(
+            "mode opt\n\n\
+             type Pair:\n    left: String\n    right: String\n\
+             fn left(pair: &'a mut Pair) -> &'a mut String:\n    &mut pair.left\n\n\
+             fn main(console: Console):\n    var pair = Pair(\"left\", \"right\")\n    let parent = &mut pair\n    let slot = left(parent)\n    *parent = Pair(\"again\", \"right\")\n    console.print(slot)\n",
+        )
+        .expect_err("the returned exclusive reborrow retires the old handle");
+        assert!(err.contains("moved exclusive reference `parent`"), "{err}");
+    }
+
+    #[test]
     fn explicit_shared_borrow_blocks_owner_mutation_until_its_final_use() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    text = \"changed\"\n    console.print(view)\n",
