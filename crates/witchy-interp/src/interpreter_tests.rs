@@ -208,12 +208,12 @@ fn echo(page: Page) -> Page:
         let source = r#"
 mode opt
 
-fn replace(value: &'a mut Int) -> Nil:
+fn set_answer(value: &'a mut Int) -> Nil:
     value = 42
 
 fn main() -> Int:
     var number = 1
-    replace(&mut number)
+    set_answer(&mut number)
     number
 "#;
         assert_eq!(run_exit(source), 42);

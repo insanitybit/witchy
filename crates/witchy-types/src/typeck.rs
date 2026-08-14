@@ -55,6 +55,16 @@ use compiler_syntax::{
     is_compiler_generated_structural_impl,
 };
 
+/// `&mut` is a reference capability, not the public `var` convention, but the
+/// referent is writable inside the callee.  The loan checker proves that this
+/// local mutability is exclusive; ordinary `let` parameters remain immutable.
+fn parameter_binds_exclusive_reference(param: &ast::Param) -> bool {
+    matches!(
+        param.ty,
+        Some(ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _))
+    )
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
     Int,
@@ -7104,7 +7114,11 @@ impl Checker {
                     })
                     .collect();
                 for (p, ty) in params.iter().zip(&param_tys) {
-                    self.define(p.name.clone(), ty.clone(), p.convention.binds_mutable());
+                    self.define(
+                        p.name.clone(),
+                        ty.clone(),
+                        p.convention.binds_mutable() || parameter_binds_exclusive_reference(p),
+                    );
                 }
                 // The closure is its OWN `?` boundary: a `?` in its body propagates
                 // to the closure's return type, not the enclosing function's. Use
@@ -8687,7 +8701,11 @@ impl Checker {
                     }
                 }
             }
-            self.define(param.name.clone(), ty.clone(), param.convention.binds_mutable());
+            self.define(
+                param.name.clone(),
+                ty.clone(),
+                param.convention.binds_mutable() || parameter_binds_exclusive_reference(param),
+            );
         }
         let body = if func.ret.is_some() {
             self.infer_block_tail_expected(&func.body, &ret).map_err(|e| {
