@@ -109,6 +109,15 @@ fn rfc0122_closure_returned_bool_reference_reads_at_runtime() {
     assert_eq!(compiled, want, "compiled closure decodes the projected Bool slot");
 }
 
+#[test]
+fn rfc0122_mutable_exclusive_parameter_writes_back_on_both_backends() {
+    let src = "mode opt\n\nfn replace(var text: &'a mut Int) -> Nil:\n    *text = 42\n\nfn main(console: Console):\n    var value = 1\n    let reference = &mut value\n    replace(reference)\n    console.print(\"${value}\")\n";
+    let want = ["42"];
+    assert_eq!(link_run(src), want, "interpreter writes through a mutable exclusive parameter");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled backend writes through a mutable exclusive parameter");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.
