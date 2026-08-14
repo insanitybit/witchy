@@ -245,6 +245,13 @@ struct World {
     fns: HashMap<String, HashSet<String>>,
     /// Public functions exported by a module. Used for cross-module imports.
     pub_fns: HashMap<String, HashSet<String>>,
+    /// Types whose declaration carries a first-class reference. A normal module
+    /// must not be able to spell these through an opt-mode interface.
+    reference_bearing_types: HashMap<String, HashSet<String>>,
+    /// Traits whose method surface carries a first-class reference.
+    reference_bearing_traits: HashMap<String, HashSet<String>>,
+    /// Modules that opted into the explicit reference surface.
+    opt_modules: HashSet<String>,
     /// module -> the ambient-named types it declares (`cmp.Ordering`, `set.Set`,
     /// `iter.Iter`, `option.Option`). Kept OUT of `types` — they stay bare (a bare
     /// `Ordering` is ambient) — but recorded so the qualified spelling `cmp.Ordering`
@@ -347,9 +354,15 @@ impl World {
         let mut traits: HashMap<String, HashSet<String>> = HashMap::new();
         let mut fns: HashMap<String, HashSet<String>> = HashMap::new();
         let mut pub_fns: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut reference_bearing_types: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut reference_bearing_traits: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut opt_modules = HashSet::new();
         let mut ambient: HashMap<String, HashSet<String>> = HashMap::new();
         let mut ambient_traits: HashMap<String, HashSet<String>> = HashMap::new();
         for (name, m) in modules {
+            if m.modes.iter().any(|mode| mode == "opt") {
+                opt_modules.insert(name.clone());
+            }
             let mt = types.entry(name.clone()).or_default();
             let trset = traits.entry(name.clone()).or_default();
             let fset = fns.entry(name.clone()).or_default();
@@ -362,6 +375,14 @@ impl World {
                     }
                     Item::Type(t) => {
                         mt.types.insert(t.name.clone());
+                        if t
+                            .variants
+                            .iter()
+                            .flat_map(|variant| &variant.fields)
+                            .any(type_mentions_reference)
+                        {
+                            reference_bearing_types.entry(name.clone()).or_default().insert(t.name.clone());
+                        }
                         if t.sealed {
                             mt.sealed.insert(t.name.clone());
                         }
@@ -383,6 +404,9 @@ impl World {
                     }
                     Item::Trait(tr) => {
                         trset.insert(tr.name.clone());
+                        if tr.methods.iter().any(method_mentions_reference) {
+                            reference_bearing_traits.entry(name.clone()).or_default().insert(tr.name.clone());
+                        }
                     }
                     Item::TypeAlias { name: alias, .. } => {
                         aliases.entry(name.clone()).or_default().insert(alias.clone());
@@ -397,7 +421,19 @@ impl World {
                 }
             }
         }
-        World { types, constants, aliases, traits, fns, pub_fns, ambient, ambient_traits }
+        World {
+            types,
+            constants,
+            aliases,
+            traits,
+            fns,
+            pub_fns,
+            reference_bearing_types,
+            reference_bearing_traits,
+            opt_modules,
+            ambient,
+            ambient_traits,
+        }
     }
 
     fn module_has_constant(&self, module: &str, constant: &str) -> bool {
@@ -421,6 +457,24 @@ impl World {
 
     fn module_has_trait(&self, module: &str, name: &str) -> bool {
         self.traits.get(module).is_some_and(|traits| traits.contains(name))
+    }
+
+    fn reference_bearing_type_is_hidden_from(&self, importer: &str, module: &str, ty: &str) -> bool {
+        !self.opt_modules.contains(importer)
+            && self.opt_modules.contains(module)
+            && self
+                .reference_bearing_types
+                .get(module)
+                .is_some_and(|types| types.contains(ty))
+    }
+
+    fn reference_bearing_trait_is_hidden_from(&self, importer: &str, module: &str, tr: &str) -> bool {
+        !self.opt_modules.contains(importer)
+            && self.opt_modules.contains(module)
+            && self
+                .reference_bearing_traits
+                .get(module)
+                .is_some_and(|traits| traits.contains(tr))
     }
 
     /// Whether `module` declares the ambient-named type `ty` (e.g. `cmp`/`Ordering`).
@@ -482,6 +536,32 @@ impl World {
         v.sort();
         v
     }
+}
+
+fn type_mentions_reference(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(_, inner) => type_mentions_reference(inner),
+        Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
+            arguments.iter().any(type_mentions_reference)
+        }
+        Type::RecordCompose { base, fields } => {
+            type_mentions_reference(base)
+                || fields.iter().any(|(_, field)| type_mentions_reference(field))
+        }
+        Type::Fn(parameters, result, _) => {
+            parameters.iter().any(type_mentions_reference) || type_mentions_reference(result)
+        }
+    }
+}
+
+fn method_mentions_reference(method: &MethodSig) -> bool {
+    method
+        .params
+        .iter()
+        .filter_map(|parameter| parameter.ty.as_ref())
+        .any(type_mentions_reference)
+        || method.ret.as_ref().is_some_and(type_mentions_reference)
 }
 
 /// The per-module resolution maps: what each bare name canonicalizes to.
@@ -687,6 +767,16 @@ impl<'a> Scope<'a> {
                          function named `{name}`, and no trait named `{name}`"
                     ));
                 }
+                if brought_type && world.reference_bearing_type_is_hidden_from(home, srcmod, name) {
+                    return lerr(format!(
+                        "normal module `{home}` cannot import reference-bearing opt type `{srcmod}.{name}`"
+                    ));
+                }
+                if brought_trait && world.reference_bearing_trait_is_hidden_from(home, srcmod, name) {
+                    return lerr(format!(
+                        "normal module `{home}` cannot import reference-bearing opt trait `{srcmod}.{name}`"
+                    ));
+                }
                 if let Some(prev) = unqual.get(name.as_str()) {
                     return lerr(format!(
                         "`from {srcmod} import {name}` collides with {prev} — both bind `{name}` \
@@ -819,6 +909,12 @@ impl<'a> Scope<'a> {
                 }
                 return lerr(format!("module `{module}` has no type `{ty}`"));
             }
+            if self.world.reference_bearing_type_is_hidden_from(self.home, module, ty) {
+                return lerr(format!(
+                    "normal module `{}` cannot name reference-bearing opt type `{name}`",
+                    self.home
+                ));
+            }
             return Ok(name.to_string());
         }
         if is_ambient_type(name) || name == "Self" || is_synthetic_type(name) {
@@ -890,12 +986,31 @@ impl<'a> Scope<'a> {
             if !self.world.module_has_trait(module, trait_name) {
                 return lerr(format!("module `{module}` has no trait `{trait_name}`"));
             }
+            if self
+                .world
+                .reference_bearing_trait_is_hidden_from(self.home, module, trait_name)
+            {
+                return lerr(format!(
+                    "normal module `{}` cannot name reference-bearing opt trait `{name}`",
+                    self.home
+                ));
+            }
             return Ok(name.to_string());
         }
         if is_ambient_trait(name) {
             return Ok(name.to_string());
         }
         if let Some(canonical) = self.trait_map.get(name) {
+            if let Some((module, trait_name)) = canonical.split_once('.')
+                && self
+                    .world
+                    .reference_bearing_trait_is_hidden_from(self.home, module, trait_name)
+            {
+                return lerr(format!(
+                    "normal module `{}` cannot name reference-bearing opt trait `{canonical}`",
+                    self.home
+                ));
+            }
             return Ok(canonical.clone());
         }
         if let Some(modules) = self.ambiguous_traits.get(name) {
@@ -1797,6 +1912,56 @@ mod tests {
         };
         assert_eq!(name, "views.Parser");
         assert_eq!(arguments, &[Type::Named("'a".into(), Vec::new())]);
+    }
+
+    #[test]
+    fn normal_modules_cannot_import_or_name_reference_bearing_opt_declarations() {
+        let api = "mode opt\n\n\
+                   type View('a):\n    value: &'a String\n\n\
+                   trait Inspect:\n    fn inspect(let self, text: &'a String) -> &'a String\n";
+
+        let err = resolve_src(&[
+            ("api", api),
+            ("normal", "from api import View\n\nfn main():\n    Nil\n"),
+        ])
+        .expect_err("normal source must not import a reference-bearing opt type");
+        assert!(err.message.contains("reference-bearing opt type `api.View`"), "{}", err.message);
+
+        let err = resolve_src(&[
+            ("api", api),
+            (
+                "normal",
+                "import api\n\nfn use(value: api.View) -> Nil:\n    Nil\n",
+            ),
+        ])
+        .expect_err("normal source must not name a reference-bearing opt type");
+        assert!(err.message.contains("reference-bearing opt type `api.View`"), "{}", err.message);
+
+        let err = resolve_src(&[
+            ("api", api),
+            ("normal", "from api import Inspect\n\nfn main():\n    Nil\n"),
+        ])
+        .expect_err("normal source must not import a reference-bearing opt trait");
+        assert!(err.message.contains("reference-bearing opt trait `api.Inspect`"), "{}", err.message);
+
+        let err = resolve_src(&[
+            ("api", api),
+            (
+                "normal",
+                "import api\n\nfn use(value: dyn Inspect) -> Nil:\n    Nil\n",
+            ),
+        ])
+        .expect_err("plain imports must not put a reference-bearing opt trait in normal scope");
+        assert!(err.message.contains("reference-bearing opt trait `api.Inspect`"), "{}", err.message);
+
+        resolve_src(&[
+            ("api", "mode opt\n\ntype Token:\n    value: Int\n"),
+            (
+                "normal",
+                "from api import Token\n\nfn use(value: Token) -> Nil:\n    Nil\n",
+            ),
+        ])
+        .expect("normal modules retain conventional opt type interfaces");
     }
 
     #[test]
