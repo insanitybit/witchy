@@ -111,8 +111,8 @@ fn type_expr(t: &Type) -> Expr {
         // it structured lets generators distinguish `View(T, 'left)` from
         // `View(T, 'right)` without treating either lifetime as a runtime type.
         Type::Qualified(TypeQual::Borrow(lifetime), inner) => Expr::Ctor {
-            name: "meta.TBorrowed".into(),
-            args: vec![type_expr(inner), s(lifetime)],
+            name: "meta.TReference".into(),
+            args: vec![Expr::Str("shared".into()), type_expr(inner), s(lifetime)],
         },
         Type::Qualified(TypeQual::BorrowMut(lifetime), inner) => Expr::Ctor {
             name: "meta.TReference".into(),
@@ -234,8 +234,9 @@ mod tests {
         let Expr::Ctor { name, args: borrow, .. } = &first_field[1] else {
             panic!("expected structured borrowed field relation")
         };
-        assert_eq!(name, "meta.TBorrowed");
-        assert_eq!(borrow[1], Expr::Str("left".into()));
+        assert_eq!(name, "meta.TReference");
+        assert_eq!(borrow[0], Expr::Str("shared".into()));
+        assert_eq!(borrow[2], Expr::Str("left".into()));
     }
 
     #[test]

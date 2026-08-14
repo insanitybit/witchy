@@ -87,13 +87,13 @@ comptime:
             emit("    \"" + list.join(t.params, ",") + "\"")
             let first = list.at(t.fields, 0)
             match first.type_expr:
-                meta.TBorrowed(inner, lifetime) ->
+                meta.TReference("shared", inner, lifetime) ->
                     emit("fn generated_first_relation() -> String:")
                     emit("    \"" + meta.type_source(inner) + ":'" + lifetime + "\"")
                 _ -> emit("fn generated_first_relation() -> String:\n    \"not-borrowed\"")
             let second = list.at(t.fields, 1)
             match second.type_expr:
-                meta.TBorrowed(inner, lifetime) ->
+                meta.TReference("shared", inner, lifetime) ->
                     emit("fn generated_second_relation() -> String:")
                     emit("    \"" + meta.type_source(inner) + ":'" + lifetime + "\"")
                 _ -> emit("fn generated_second_relation() -> String:\n    \"not-borrowed\"")
