@@ -298,6 +298,10 @@ struct EtaSig {
     /// Part of this module's public API. Same-module calls may use private
     /// helpers; imported or module-qualified cross-module calls may not.
     public: bool,
+    /// A normal importer must not be able to name an API that carries a
+    /// first-class reference. Conventional `let`/`var`/`own` APIs remain
+    /// callable across the mode boundary.
+    reference_bearing: bool,
     /// A compiler-provided module-function alias for an inherent method declared
     /// in this module. `list.map(xs, f)` and `list.map` as a value target the
     /// generated method implementation; the method body stays the single
@@ -307,6 +311,23 @@ struct EtaSig {
     /// It is appended by trait/impl lowering, so linker output may reference it
     /// before it exists in the item list.
     alias_target: Option<String>,
+}
+
+fn type_mentions_reference(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(_, inner) => type_mentions_reference(inner),
+        Type::Named(_, args) | Type::Tuple(args) | Type::Dyn(_, args) => {
+            args.iter().any(type_mentions_reference)
+        }
+        Type::RecordCompose { base, fields } => {
+            type_mentions_reference(base)
+                || fields.iter().any(|(_, field)| type_mentions_reference(field))
+        }
+        Type::Fn(params, result, _) => {
+            params.iter().any(type_mentions_reference) || type_mentions_reference(result)
+        }
+    }
 }
 
 /// The source of a bundled standard-library module, if `name` is one. This is
@@ -1806,6 +1827,12 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                         arity: f.params.len(),
                         conventions: f.params.iter().map(|param| param.convention).collect(),
                         public: f.public,
+                        reference_bearing: f
+                            .params
+                            .iter()
+                            .filter_map(|param| param.ty.as_ref())
+                            .any(type_mentions_reference)
+                            || f.ret.as_ref().is_some_and(type_mentions_reference),
                         method_alias: false,
                         alias_target: None,
                     },
@@ -1829,9 +1856,15 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                                 .params
                                 .iter()
                                 .map(|param| param.convention)
-                                .collect(),
-                            public: true,
-                            method_alias: true,
+                            .collect(),
+                        public: true,
+                        reference_bearing: method
+                            .params
+                            .iter()
+                            .filter_map(|param| param.ty.as_ref())
+                            .any(type_mentions_reference)
+                            || method.ret.as_ref().is_some_and(type_mentions_reference),
+                        method_alias: true,
                             alias_target: Some(inherent_method_symbol(im, &method.name)),
                         },
                     );
@@ -1925,6 +1958,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                         &user_std_shadows,
                         mode,
                         entry,
+                        is_opt(m),
                     )?;
                     item_map[source_index].push(items.len());
                     items.push(Item::Function(f2));
@@ -1967,6 +2001,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                                 &user_std_shadows,
                         mode,
                         entry,
+                        is_opt(m),
                             )?;
                         }
                     }
@@ -1995,6 +2030,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                             &user_std_shadows,
                         mode,
                         entry,
+                        is_opt(m),
                         )?;
                     }
                     item_map[source_index].push(items.len());
@@ -2466,6 +2502,7 @@ struct RewriteContext<'a> {
     bound: &'a HashSet<String>,
     user_std_shadows: &'a HashSet<String>,
     definition_site: bool,
+    opt: bool,
 }
 
 /// Resolve the direct function names in compiler-owned expression syntax
@@ -2523,6 +2560,12 @@ pub fn mark_definition_site_expr(
                             .map(|param| param.convention)
                             .collect(),
                         public: function.public,
+                        reference_bearing: function
+                            .params
+                            .iter()
+                            .filter_map(|param| param.ty.as_ref())
+                            .any(type_mentions_reference)
+                            || function.ret.as_ref().is_some_and(type_mentions_reference),
                         method_alias: false,
                         alias_target: None,
                     },
@@ -2555,6 +2598,7 @@ pub fn mark_definition_site_expr(
         bound: &bound,
         user_std_shadows: &user_std_shadows,
         definition_site: true,
+        opt: true,
     };
     rewrite_expr(expr, &context, None)
 }
@@ -2570,10 +2614,12 @@ fn rewrite_block(
     user_std_shadows: &HashSet<String>,
     _mode: LinkMode,
     _entry: &str,
+    opt: bool,
 ) -> Result<(), LinkError> {
     let context = RewriteContext {
         module: m, imports: imps, bare_imports, fns, bound,
         user_std_shadows, definition_site: false,
+        opt,
     };
     rewrite_block_with_context(b, &context)
 }
@@ -3256,6 +3302,7 @@ fn resolve_call(
         bound,
         user_std_shadows,
         definition_site: _,
+        opt,
     } = *context;
     if let Some(target) = call_site_expr_target(name) {
         if context.definition_site {
@@ -3284,7 +3331,17 @@ fn resolve_call(
             Some(_) if private_intrinsic_friend_call(modname, fname, m) => {
                 accept(name.to_string())
             }
-            Some(sig) if sig.public => accept(name.to_string()),
+            Some(sig) if sig.public && (modname == m || opt || !sig.reference_bearing) => {
+                accept(name.to_string())
+            }
+            Some(sig) if sig.public && sig.reference_bearing => lerr_at(
+                format!(
+                    "normal module `{m}` cannot use reference-bearing opt API `{modname}.{fname}`; \
+                     call a conventional `let`/`var`/`own` export instead"
+                ),
+                m,
+                line,
+            ),
             Some(_) => lerr_at(
                 format!("function `{modname}.{fname}` is private to module `{modname}`"),
                 m,
@@ -3309,6 +3366,21 @@ fn resolve_call(
     }
     if !bound.contains(name) {
         if let Some(srcmod) = bare_imports.and_then(|imports| imports.get(name)) {
+            if !opt
+                && fns
+                    .get(srcmod)
+                    .and_then(|functions| functions.get(name))
+                    .is_some_and(|signature| signature.reference_bearing)
+            {
+                return lerr_at(
+                    format!(
+                        "normal module `{m}` cannot use reference-bearing opt API `{srcmod}.{name}`; \
+                         call a conventional `let`/`var`/`own` export instead"
+                    ),
+                    m,
+                    line,
+                );
+            }
             return accept(format!("{srcmod}.{name}"));
         }
         if let Some(srcmod) = imps
@@ -4518,6 +4590,94 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    #[test]
+    fn normal_importer_cannot_call_a_reference_bearing_opt_export() {
+        let api = crate::parser::parse_module(
+            "mode opt\n\npub fn first(text: &'a String) -> &'a String:\n    text\n\n\
+             pub fn edit(text: &'a mut String) -> &'a mut String:\n    text\n",
+        )
+        .expect("opt API parses");
+        let normal = crate::parser::parse_module(
+            "import api\n\nfn main() -> String:\n    api.first(\"hello\")\n",
+        )
+        .expect("normal caller parses");
+
+        let error = link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect_err("normal source must not see reference-bearing opt exports");
+        assert!(error.message.contains("reference-bearing opt API `api.first`"), "{}", error.message);
+
+        let api = crate::parser::parse_module(
+            "mode opt\n\npub fn edit(text: &'a mut String) -> &'a mut String:\n    text\n",
+        )
+        .expect("exclusive opt API parses");
+        let normal = crate::parser::parse_module(
+            "import api\n\nfn main() -> String:\n    api.edit(\"hello\")\n",
+        )
+        .expect("normal caller parses");
+        let error = link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect_err("exclusive references are equally hidden from normal source");
+        assert!(error.message.contains("reference-bearing opt API `api.edit`"), "{}", error.message);
+
+        let api = crate::parser::parse_module(
+            "mode opt\n\npub fn first(text: &'a String) -> &'a String:\n    text\n",
+        )
+        .expect("opt API parses");
+        let normal = crate::parser::parse_module(
+            "from api import first\n\nfn main() -> String:\n    first(\"hello\")\n",
+        )
+        .expect("normal caller parses");
+        let error = link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect_err("from-import must not expose a reference-bearing export");
+        assert!(error.message.contains("reference-bearing opt API `api.first`"), "{}", error.message);
+
+        let api = crate::parser::parse_module(
+            "mode opt\n\npub fn first(text: &'a String) -> &'a String:\n    text\n",
+        )
+        .expect("opt API parses");
+        let normal = crate::parser::parse_module(
+            "import api\n\nfn main() -> String:\n    let first = api.first\n    first(\"hello\")\n",
+        )
+        .expect("normal function-value caller parses");
+        let error = link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect_err("function values must not leak reference-bearing exports");
+        assert!(error.message.contains("reference-bearing opt API `api.first`"), "{}", error.message);
+    }
+
+    #[test]
+    fn normal_importer_keeps_conventional_opt_exports() {
+        let api = crate::parser::parse_module(
+            "mode opt\n\npub fn normalize(let text: String) -> String:\n    text\n",
+        )
+        .expect("opt API parses");
+        let normal = crate::parser::parse_module(
+            "import api\n\nfn main() -> String:\n    api.normalize(\"hello\")\n",
+        )
+        .expect("normal caller parses");
+
+        link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect("normal callers retain conventional opt APIs");
     }
 
     #[test]
