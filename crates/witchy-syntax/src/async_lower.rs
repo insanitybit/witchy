@@ -77,7 +77,7 @@ impl BorrowedShellCatalog {
 
     fn type_is_borrowed(&self, ty: &Type) -> bool {
         match ty {
-            Type::Qualified(TypeQual::Borrow(_), _) => true,
+            Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
             Type::Qualified(_, inner) => self.type_is_borrowed(inner),
             Type::Named(name, arguments) => {
                 if is_lifetime_param(name) {
@@ -2051,6 +2051,17 @@ mod tests {
             .expect_err("a nested lifetime-bearing shell cannot enter an async task");
 
         assert!(error.contains("lifetime-bearing shell"), "{error}");
+        assert!(error.contains("parameter or result"), "{error}");
+    }
+
+    #[test]
+    fn lowering_rejects_exclusive_reference_async_signatures() {
+        let source = "mode opt\n\nasync fn bad(input: &'a mut String) -> Nil:\n    task.done(0).await\n";
+        let module = crate::parser::parse_module(source).expect("parse exclusive async signature");
+        let error = lower_module(module)
+            .expect_err("an exclusive reference cannot cross an async boundary");
+
+        assert!(error.contains("async fn `bad`"), "{error}");
         assert!(error.contains("parameter or result"), "{error}");
     }
 
