@@ -191,6 +191,23 @@
     }
 
     #[test]
+    fn exclusive_reference_arguments_must_be_disjoint_at_one_call_boundary() {
+        let err = check_str(
+            "mode opt\n\nfn edit_pair(left: &'a mut String, right: &'a mut String) -> Nil:\n    Nil\n\nfn main():\n    var text = \"hello\"\n    edit_pair(&mut text, &mut text)\n",
+        )
+        .expect_err("one call cannot receive two aliases to the same exclusive place");
+        assert!(
+            err.contains("cannot create exclusive reference") || err.contains("overlapping"),
+            "{err}"
+        );
+
+        check_str(
+            "mode opt\n\ntype Pair:\n    left: String\n    right: String\n\nfn edit_pair(left: &'a mut String, right: &'a mut String) -> Nil:\n    Nil\n\nfn main():\n    var pair = Pair(\"left\", \"right\")\n    edit_pair(&mut pair.left, &mut pair.right)\n",
+        )
+        .expect("disjoint field projections may satisfy separate exclusive parameters");
+    }
+
+    #[test]
     fn exclusive_reference_bindings_move_instead_of_copying() {
         check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let editable = &mut text\n    let moved = editable\n    console.print(moved)\n",

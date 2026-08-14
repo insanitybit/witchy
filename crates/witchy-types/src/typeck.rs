@@ -3372,6 +3372,10 @@ struct Checker {
     gc_cap_aggregates: HashSet<String>,
     adt_variants: HashMap<String, Vec<String>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
+    /// Whether each source parameter is an explicit `&mut` reference. This is
+    /// deliberately tracked beside conventions: `&mut T` keeps the public
+    /// `let` convention while still reserving an exclusive caller place.
+    fn_exclusive_reference_params: HashMap<String, Vec<bool>>,
     /// Source parameter names paired with [`Self::fn_conventions`]. Names are
     /// diagnostic metadata only; function-type identity remains positional.
     fn_param_names: HashMap<String, Vec<String>>,
@@ -6494,6 +6498,33 @@ impl Checker {
         if !is_cap_op && let Some(convs) = self.fn_conventions.get(name).cloned() {
             let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
             for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
+                let explicit_exclusive = self
+                    .fn_exclusive_reference_params
+                    .get(name)
+                    .and_then(|params| params.get(i))
+                    .copied()
+                    .unwrap_or(false);
+                if explicit_exclusive {
+                    let Expr::Unary { op: UnOp::BorrowMut, expr } = arg else {
+                        // Type compatibility reports the primary error; this
+                        // branch is only reached for an already-rejected call.
+                        continue;
+                    };
+                    let Some(place) = crate::access::checked_place(expr) else {
+                        continue;
+                    };
+                    for (previous_index, previous) in &var_places {
+                        if previous.overlaps(&place) {
+                            return terr(format!(
+                                "arguments {} and {} to `{name}` are overlapping exclusive reference places rooted in `{}`",
+                                previous_index + 1,
+                                i + 1,
+                                place.root()
+                            ));
+                        }
+                    }
+                    var_places.push((i, place));
+                }
                 match conv {
                     Convention::Var => {
                         let parameter = self.var_parameter_context(name, i);
@@ -9533,6 +9564,7 @@ fn run_check_selected(
         fn_sigs: HashMap::new(),
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
+        fn_exclusive_reference_params: HashMap::new(),
         fn_param_names: HashMap::new(),
         ctor_sigs: HashMap::new(),
         ctor_typarams: HashMap::new(),
@@ -9689,6 +9721,10 @@ fn run_check_selected(
                 c.fn_bounds.insert(f.name.clone(), bounds);
                 c.fn_conventions
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
+                c.fn_exclusive_reference_params.insert(
+                    f.name.clone(),
+                    f.params.iter().map(parameter_binds_exclusive_reference).collect(),
+                );
                 c.fn_param_names
                     .insert(f.name.clone(), f.params.iter().map(|p| p.name.clone()).collect());
             }
