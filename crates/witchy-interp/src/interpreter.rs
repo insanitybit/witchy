@@ -2116,13 +2116,29 @@ impl Interpreter {
                 Ok(Value::ctor(name, fields))
             }
             Expr::Unary { op: op @ (UnOp::Borrow | UnOp::BorrowMut), expr } => {
+                let exclusive = matches!(op, UnOp::BorrowMut);
+                // Reborrow an existing reference without materializing its
+                // pointee. The checker proves the short lifetime and any
+                // exclusivity constraint; the interpreter preserves the same
+                // owner cell so a reborrow remains a first-class value.
+                if let Expr::Unary { op: UnOp::Deref, expr: source } = &**expr {
+                    return match self.eval(source, env)? {
+                        Value::Reference { mutable, .. } if exclusive && !mutable => {
+                            err("cannot reborrow a shared reference as `&mut`")
+                        }
+                        Value::Reference { cell, .. } => Ok(Value::Reference {
+                            cell,
+                            mutable: exclusive,
+                        }),
+                        value => err(format!("cannot reborrow non-reference `{value}`")),
+                    };
+                }
                 let Expr::Var(name) = &**expr else {
                     return err("a reference currently requires a local owner place");
                 };
                 let Some((slot, mutable)) = env.slot_mut(name) else {
                     return err(format!("unbound variable `{name}`"));
                 };
-                let exclusive = matches!(op, UnOp::BorrowMut);
                 if exclusive && !mutable {
                     return err(format!("cannot borrow immutable `{name}` as `&mut`"));
                 }

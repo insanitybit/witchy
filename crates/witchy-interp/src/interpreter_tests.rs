@@ -1611,7 +1611,7 @@ fn main(console: Console):
     }
 
     #[test]
-fn exclusive_reference_writes_its_owner_place() {
+    fn exclusive_reference_writes_its_owner_place() {
     let src = r#"
 mode opt
 
@@ -1622,6 +1622,20 @@ fn main(console: Console):
     var value = 1
     write_value(&mut value)
     console.print("${value}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["9"]);
+    }
+
+    #[test]
+    fn shared_reborrow_reads_through_an_exclusive_reference() {
+        let src = r#"
+mode opt
+
+fn main(console: Console):
+    var value = 9
+    let editable = &mut value
+    let view = &*editable
+    console.print("${*view}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["9"]);
     }
