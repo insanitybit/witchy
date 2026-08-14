@@ -276,7 +276,10 @@ impl<'a> ExistentialCheck<'a> {
         match t {
             // (v1 exclusion) A dyn directly wrapped in a borrow. `frozen` /
             // `unique` wrapping stays legal (the Qualified arm below).
-            ast::Type::Qualified(ast::TypeQual::Borrow(_), inner)
+            ast::Type::Qualified(
+                ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_),
+                inner,
+            )
                 if matches!(inner.unqualified(), ast::Type::Dyn(..)) =>
             {
                 let ast::Type::Dyn(name, _) = inner.unqualified() else {
@@ -465,7 +468,13 @@ fn method_safety_violations(
     }
 
     // Rule 5 (v1): no result borrowed from the hidden receiver.
-    if matches!(method.ret, Some(ast::Type::Qualified(ast::TypeQual::Borrow(_), _))) {
+    if matches!(
+        method.ret,
+        Some(ast::Type::Qualified(
+            ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_),
+            _,
+        ))
+    ) {
         out.push(format!(
             "method `{}` returns a result borrowed from the hidden receiver",
             method.name
