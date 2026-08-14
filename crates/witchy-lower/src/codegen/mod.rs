@@ -806,6 +806,11 @@ struct SavedScope {
     closure_elide_called: HashSet<String>,
     closure_elide_reassigned: HashSet<String>,
     elide_index_list: Vec<(String, String)>,
+    /// Local first-class references whose referent is a statically recoverable
+    /// caller place. The WIR reference descriptor is the cross-backend contract;
+    /// this map is the initial forced-copy lowering that materializes its write
+    /// back to an aggregate root.
+    reference_places: HashMap<String, CodegenPlace>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1054,6 +1059,11 @@ struct Codegen<'types> {
     /// push their own pair (a same-named inner loop disqualifies the outer, so a stale
     /// pair never shadows). Empty ⇒ every `list.at` keeps its trap guard.
     elide_index_list: Vec<(String, String)>,
+    /// Local first-class references whose referent is a statically recoverable
+    /// caller place. The WIR reference descriptor is the cross-backend contract;
+    /// this map is the initial forced-copy lowering that materializes its write
+    /// back to an aggregate root.
+    reference_places: HashMap<String, CodegenPlace>,
     /// (RFC-0028) Confined slice *views*: `let w = list.slice(src, lo, hi)` bindings
     /// the escape analysis proved read-only-by-`at`/`length` over an unmutated
     /// source, so the slice copy is elided — `w` keeps `${w}$src`/`${w}$lo`/`${w}$hi`
@@ -1611,6 +1621,7 @@ impl<'types> Codegen<'types> {
             closure_elide_called: HashSet::new(),
             closure_elide_reassigned: HashSet::new(),
             elide_index_list: Vec::new(),
+            reference_places: HashMap::new(),
             view_candidates: HashSet::new(),
             view_active: HashSet::new(),
             packed_candidates: HashSet::new(),
@@ -7260,6 +7271,24 @@ impl<'types> Codegen<'types> {
         }
     }
 
+    /// Recover a reference place without evaluating a coordinate expression.
+    /// Dynamic projections graduate to the full `PlaceReference` ABI; field
+    /// projections are already stable and can use the forced-copy write-back
+    /// path today.
+    pub(crate) fn static_reference_place(&self, expr: &Expr) -> Option<CodegenPlace> {
+        match expr {
+            Expr::Unary { op: UnOp::BorrowMut, expr } => self.static_reference_place(expr),
+            Expr::Var(root) if self.locals.contains_key(root) => {
+                Some(CodegenPlace::Root(root.clone()))
+            }
+            Expr::Field { base, field } => Some(CodegenPlace::Field {
+                base: Box::new(self.static_reference_place(base)?),
+                field: field.clone(),
+            }),
+            _ => None,
+        }
+    }
+
     fn codegen_place_read(place: &CodegenPlace) -> Expr {
         let root = Expr::Var(Self::codegen_place_root(place).to_string());
         Self::codegen_place_read_from(place, &root)
@@ -8751,6 +8780,7 @@ impl<'types> Codegen<'types> {
             closure_elide_called: std::mem::take(&mut self.closure_elide_called),
             closure_elide_reassigned: std::mem::take(&mut self.closure_elide_reassigned),
             elide_index_list: std::mem::take(&mut self.elide_index_list),
+            reference_places: std::mem::take(&mut self.reference_places),
         }
     }
 
@@ -8806,6 +8836,7 @@ impl<'types> Codegen<'types> {
         self.closure_elide_called = s.closure_elide_called;
         self.closure_elide_reassigned = s.closure_elide_reassigned;
         self.elide_index_list = s.elide_index_list;
+        self.reference_places = s.reference_places;
     }
 
     /// The scalar `$key_eq` comparison mode for a Dict key expression: 0 for

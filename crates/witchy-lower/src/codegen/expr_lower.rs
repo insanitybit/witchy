@@ -55,6 +55,39 @@ impl<'types> Codegen<'types> {
                     return None;
                 };
                 let value = self.lower_expr(replacement)?;
+                if let Some(place) = self.reference_places.get(reference).cloned() {
+                    let replacement_kind = self.kind_of(replacement);
+                    let replacement_valtype = self.val_type_of(replacement);
+                    let replacement_local = var_scratch("result", 0, replacement_kind);
+                    let root = Self::codegen_place_root(&place).to_string();
+                    let root_kind = self.locals.get(&root).copied()?;
+                    let update = Self::codegen_place_update_from(
+                        &place,
+                        Expr::Var(replacement_local.clone()),
+                        &Expr::Var(root.clone()),
+                    );
+                    self.locals.insert(replacement_local.clone(), replacement_kind);
+                    self.local_val_types
+                        .insert(replacement_local.clone(), replacement_valtype);
+                    let updated = self.lower_expr(&update)?;
+                    self.locals.remove(&replacement_local);
+                    self.local_val_types.remove(&replacement_local);
+                    return Some(W::Seq(vec![
+                        N::SetLocal {
+                            local: replacement_local.clone(),
+                            value,
+                        },
+                        N::SetLocal {
+                            local: root,
+                            value: Self::wir_convert(updated, root_kind, root_kind),
+                        },
+                        N::SetLocal {
+                            local: reference.clone(),
+                            value: W::GetLocal(replacement_local),
+                        },
+                        N::Push(W::ConstI32(0)),
+                    ]));
+                }
                 let owner = self
                     .active_loan_events
                     .iter()
