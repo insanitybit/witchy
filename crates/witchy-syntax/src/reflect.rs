@@ -239,6 +239,28 @@ mod tests {
     }
 
     #[test]
+    fn reflected_mutable_reference_uses_structured_reference_metadata() {
+        let reference = Type::Qualified(
+            TypeQual::BorrowMut("owner".into()),
+            Box::new(Type::Named("String".into(), Vec::new())),
+        );
+        assert_eq!(
+            type_expr(&reference),
+            Expr::Ctor {
+                name: "meta.TReference".into(),
+                args: vec![
+                    Expr::Str("mut".into()),
+                    Expr::Ctor {
+                        name: "meta.TNamed".into(),
+                        args: vec![Expr::Str("String".into()), Expr::List(Vec::new())],
+                    },
+                    Expr::Str("owner".into()),
+                ],
+            }
+        );
+    }
+
+    #[test]
     fn normalized_typeinfo_preserves_parameter_order_across_alias_expansion() {
         let module = crate::parser::parse_module(
             "type Flip(x, y) = (y, x)\n\ntype Mixed(a):\n    payload: Flip(b, c)\n",

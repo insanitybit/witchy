@@ -711,8 +711,17 @@ pub(super) fn compiler_reflected_type(value: &Value) -> Result<Type, RuntimeErro
             TypeQual::Borrow(lifetime.to_string()),
             Box::new(compiler_reflected_type(inner)?),
         )),
+        ("TReference", [Value::Str(kind), inner, Value::Str(lifetime)]) if kind.as_str() == "mut" => {
+            Ok(Type::Qualified(
+                TypeQual::BorrowMut(lifetime.to_string()),
+                Box::new(compiler_reflected_type(inner)?),
+            ))
+        }
         (kind, _)
-            if matches!(kind, "TNamed" | "TTuple" | "TFn" | "TQualified" | "TBorrowed") => {
+            if matches!(
+                kind,
+                "TNamed" | "TTuple" | "TFn" | "TQualified" | "TBorrowed" | "TReference"
+            ) => {
             err(format!("meta.type_expr `{kind}` carried an invalid payload"))
         }
         (kind, _) => err(format!("meta.type_expr expected TypeExpr, got `{kind}`")),
@@ -790,6 +799,31 @@ mod tests {
             compiler_reflected_type(&reflected).expect("borrow relation converts to type syntax"),
             Type::Qualified(
                 TypeQual::Borrow("owner".into()),
+                Box::new(Type::Named("String".into(), Vec::new())),
+            )
+        );
+    }
+
+    #[test]
+    fn reflected_mutable_reference_retains_its_lifetime_and_access_kind() {
+        let reflected = Value::Ctor {
+            name: "meta.TReference".into(),
+            fields: Rc::new(vec![
+                Value::Str(Rc::new("mut".into())),
+                Value::Ctor {
+                    name: "meta.TNamed".into(),
+                    fields: Rc::new(vec![
+                        Value::Str(Rc::new("String".into())),
+                        Value::List(Rc::new(Vec::new())),
+                    ]),
+                },
+                Value::Str(Rc::new("owner".into())),
+            ]),
+        };
+        assert_eq!(
+            compiler_reflected_type(&reflected).expect("mutable reference converts to type syntax"),
+            Type::Qualified(
+                TypeQual::BorrowMut("owner".into()),
                 Box::new(Type::Named("String".into(), Vec::new())),
             )
         );
