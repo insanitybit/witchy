@@ -1173,7 +1173,16 @@ impl Parser {
         while !self.at(&Tok::RParen) {
             // `var` mutates in place and writes back; `own` consumes (takes
             // ownership).
+            let mut legacy_var_lifetime = None;
             let convention = if self.eat(&Tok::Var) {
+                // RFC-0122 migration input: `var('a) value: T` was the old
+                // spelling for a mutable borrowed parameter. Preserve its
+                // relation in the parsed type so the migration can print the
+                // canonical `value: &'a mut T` form.
+                if self.eat(&Tok::LParen) {
+                    legacy_var_lifetime = Some(self.lifetime_name()?);
+                    self.expect(&Tok::RParen)?;
+                }
                 Convention::Var
             } else if self.eat(&Tok::Own) {
                 Convention::Own
@@ -1200,6 +1209,16 @@ impl Parser {
                 }
             } else {
                 None
+            };
+            let ty = match (legacy_var_lifetime, ty) {
+                (Some(lifetime), Some(ty)) => Some(Type::Qualified(
+                    TypeQual::BorrowMut(lifetime),
+                    Box::new(ty),
+                )),
+                (Some(_), None) => {
+                    return Err(self.error("`var('a)` requires a parameter type"));
+                }
+                (None, ty) => ty,
             };
             // (RFC-0056) An optional closed-constant default: `port: Int = 443`.
             let default = if allow_defaults && self.eat(&Tok::Eq) {

@@ -2657,8 +2657,11 @@ fn rewrite_reference_function(function: &mut Function) {
             // shared reference. In RFC-0122 the reference type carries that
             // capability, so retaining the convention would misleadingly
             // preserve a second borrow operation.
-            if parameter.convention == Convention::Borrow
-                && matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
+            if matches!(
+                (parameter.convention, &*ty),
+                (Convention::Borrow, Type::Qualified(TypeQual::Borrow(_), _))
+                    | (Convention::Var, Type::Qualified(TypeQual::BorrowMut(_), _))
+            )
             {
                 parameter.convention = Convention::Let;
             }

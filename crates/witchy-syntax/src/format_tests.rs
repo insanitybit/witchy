@@ -862,6 +862,13 @@
         assert!(reformat_references("fn plain(value: String) -> String:\n    value\n").is_none());
     }
 
+    #[test]
+    fn rfc0122_reference_migration_rewrites_legacy_var_lifetime_parameters() {
+        let src = "mode opt\n\nfn normalize(var('a) value: String) -> &'a mut String:\n    value\n";
+        let out = reformat_references(src).expect("legacy mutable reference parameter migrates");
+        assert!(out.contains("fn normalize(value: &'a mut String) -> &'a mut String"), "{out}");
+    }
+
     // ---- RFC-0081: existential trait types -------------------------------
 
     #[test]
