@@ -1484,6 +1484,7 @@ impl Parser {
             matches!(
                 t,
                 Some(Tok::Ident(_))
+                    | Some(Tok::Amp)
                     | Some(Tok::LParen)
                     | Some(Tok::Fn)
                     | Some(Tok::DotLBrace)

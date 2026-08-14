@@ -63,7 +63,16 @@ fn parameter_binds_exclusive_reference(param: &ast::Param) -> bool {
 }
 
 fn type_is_exclusive_reference(ty: &ast::Type) -> bool {
-    matches!(ty, ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _))
+    match ty {
+        ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _) => true,
+        // Ownership qualifiers apply to the reference handle. They do not
+        // change the exclusive capability of the underlying `&mut` relation.
+        ast::Type::Qualified(
+            ast::TypeQual::Frozen | ast::TypeQual::Unique | ast::TypeQual::LocalUnique,
+            inner,
+        ) => type_is_exclusive_reference(inner),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

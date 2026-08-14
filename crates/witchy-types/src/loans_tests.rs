@@ -131,6 +131,31 @@
     }
 
     #[test]
+    fn reference_handle_qualifiers_remain_distinct_from_reference_targets() {
+        check_str(
+            "mode opt\n\nfn take(own text: unique &'a mut String) -> unique &'a mut String:\n    text\n",
+        )
+        .expect("a unique exclusive-reference handle may be consumed and returned");
+
+        check_str(
+            "mode opt\n\nfn inspect(text: frozen &'a String) -> frozen &'a String:\n    text\n",
+        )
+        .expect("a frozen shared-reference handle remains a read-only handle");
+
+        let err = check_str(
+            "mode opt\n\nfn bad(text: &'a mut frozen String) -> Nil:\n    Nil\n",
+        )
+        .expect_err("a target qualifier cannot weaken an exclusive reference");
+        assert!(err.contains("frozen") && err.contains("reference target"), "{err}");
+
+        let err = check_str(
+            "mode opt\n\nfn bad(text: &'a mut String) -> local unique &'a mut String:\n    text\n",
+        )
+        .expect_err("a local unique reference handle cannot escape in a result");
+        assert!(err.contains("local unique") && err.contains("escape"), "{err}");
+    }
+
+    #[test]
     fn dereference_assignment_requires_and_accepts_an_exclusive_reference() {
         check_str(
             "mode opt\n\nfn edit(text: &'a mut Int) -> Nil:\n    *text = 42\n",
