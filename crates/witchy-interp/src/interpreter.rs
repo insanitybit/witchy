@@ -2143,6 +2143,24 @@ impl Interpreter {
                     };
                 }
                 let place = self.capture_place(expr, env)?;
+                // A projection rooted at an existing reference borrows the
+                // same promoted owner cell.  Extend that reference's checked
+                // projection instead of promoting the reference handle itself
+                // into a cell; the latter would turn `&mut pair.left` into a
+                // reference to the handle rather than to `pair.left`.
+                if let Some(Value::Reference {
+                    cell,
+                    projections,
+                    mutable,
+                }) = env.get(&place.root).cloned()
+                {
+                    if exclusive && !mutable {
+                        return err("cannot reborrow a shared reference as `&mut`");
+                    }
+                    let mut projections = projections;
+                    projections.extend(place.projections);
+                    return Ok(Value::Reference { cell, projections, mutable: exclusive });
+                }
                 let Some((slot, mutable)) = env.slot_mut(&place.root) else {
                     return err(format!("unbound variable `{}`", place.root));
                 };

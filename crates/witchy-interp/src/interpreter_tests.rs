@@ -1648,6 +1648,27 @@ fn main(console: Console):
     }
 
     #[test]
+    fn exclusive_reference_can_return_a_projection_of_an_exclusive_reference() {
+        let src = r#"
+mode opt
+
+type Pair:
+    left: Int
+    right: Int
+
+fn left(pair: &'a mut Pair) -> &'a mut Int:
+    &mut pair.left
+
+fn main(console: Console):
+    var pair = Pair(1, 2)
+    let slot = left(&mut pair)
+    *slot = 9
+    console.print("${pair.left}:${pair.right}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["9:2"]);
+    }
+
+    #[test]
     fn projected_owner_assignment_observes_promoted_reference_storage() {
         let src = r#"
 mode opt
