@@ -1307,20 +1307,22 @@ fn validate_type_model(
 fn reject_owned_qualifiers_inside_references(t: &ast::Type) -> Result<(), TypeError> {
     fn visit(t: &ast::Type) -> Result<(), TypeError> {
         match t {
-            ast::Type::Qualified(
-                ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_),
-                inner,
-            ) => {
-                if let ast::Type::Qualified(qualifier, _) = inner.as_ref()
-                    && matches!(
+            ast::Type::Qualified(reference, inner)
+                if matches!(reference, ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_)) => {
+                if let ast::Type::Qualified(qualifier, _) = inner.as_ref() {
+                    let invalid = matches!(
                         qualifier,
-                        ast::TypeQual::Frozen | ast::TypeQual::Unique | ast::TypeQual::LocalUnique
-                    )
-                {
+                        ast::TypeQual::Unique | ast::TypeQual::LocalUnique
+                    ) || matches!(
+                        (reference, qualifier),
+                        (ast::TypeQual::BorrowMut(_), ast::TypeQual::Frozen)
+                    );
+                    if invalid {
                     return terr(format!(
                         "`{}` may qualify an owned value or reference handle, not a reference target",
                         qualifier.as_str()
                     ));
+                    }
                 }
                 visit(inner)
             }
