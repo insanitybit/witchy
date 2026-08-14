@@ -2652,7 +2652,18 @@ fn rewrite_reference_module(module: &mut Module) {
 
 fn rewrite_reference_function(function: &mut Function) {
     for parameter in &mut function.params {
-        if let Some(ty) = &mut parameter.ty { rewrite_reference_type(ty); }
+        if let Some(ty) = &mut parameter.ty {
+            // `let value: let('a) T` was the old two-part spelling of a
+            // shared reference. In RFC-0122 the reference type carries that
+            // capability, so retaining the convention would misleadingly
+            // preserve a second borrow operation.
+            if parameter.convention == Convention::Borrow
+                && matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
+            {
+                parameter.convention = Convention::Let;
+            }
+            rewrite_reference_type(ty);
+        }
     }
     if let Some(ty) = &mut function.ret { rewrite_reference_type(ty); }
     for (_, _, arguments) in &mut function.bounds {
