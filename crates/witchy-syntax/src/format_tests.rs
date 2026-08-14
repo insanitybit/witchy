@@ -852,6 +852,15 @@
         assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
     }
 
+    #[test]
+    fn rfc0122_reference_migration_canonicalizes_legacy_type_positions() {
+        let src = "mode opt\n\nfn first(value: let('a) String) -> View(String, 'a):\n    value\n";
+        let out = reformat_references(src).expect("opt legacy reference types migrate");
+        assert!(out.contains("fn first(value: &'a String) -> &'a String"), "{out}");
+        assert_eq!(reformat_references(&out).as_deref(), Some(out.as_str()));
+        assert!(reformat_references("fn plain(value: String) -> String:\n    value\n").is_none());
+    }
+
     // ---- RFC-0081: existential trait types -------------------------------
 
     #[test]

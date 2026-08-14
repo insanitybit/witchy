@@ -2595,6 +2595,87 @@ pub fn reformat_cap_methods(src: &str) -> Option<String> {
     }
 }
 
+/// RFC-0122's syntax-only migration. It is deliberately AST based: parsed
+/// legacy views already carry the same qualified type node as `&'a T`, so the
+/// canonical printer emits the reference spelling without guessing at text.
+/// Calls remain untouched here; their required borrow kind depends on resolved
+/// overloads and is reported by the CLI's semantic migration phase.
+pub fn reformat_references(src: &str) -> Option<String> {
+    let mut target = crate::parser::parse_module(src).ok()?;
+    if !target.modes.iter().any(|mode| mode == "opt") {
+        return None;
+    }
+    rewrite_reference_module(&mut target);
+    let out = module_with_trailing(
+        &target,
+        &crate::lexer::own_line_comments(src),
+        &crate::lexer::trailing_comments(src),
+    )?;
+    let reparsed = crate::parser::parse_module(&out).ok()?;
+    let mut want = target;
+    let mut got = reparsed.clone();
+    canon_module(&mut want);
+    canon_module(&mut got);
+    if want != got { return None; }
+    let again = module_with_trailing(
+        &reparsed,
+        &crate::lexer::own_line_comments(&out),
+        &crate::lexer::trailing_comments(&out),
+    )?;
+    (out == again).then_some(out)
+}
+
+fn rewrite_reference_module(module: &mut Module) {
+    for item in &mut module.items {
+        match item {
+            Item::Function(function) => rewrite_reference_function(function),
+            Item::Type(definition) => for variant in &mut definition.variants {
+                for field in &mut variant.fields { rewrite_reference_type(field); }
+            },
+            Item::Trait(trait_def) => for method in &mut trait_def.methods {
+                for parameter in &mut method.params {
+                    if let Some(ty) = &mut parameter.ty { rewrite_reference_type(ty); }
+                }
+                if let Some(ty) = &mut method.ret { rewrite_reference_type(ty); }
+            },
+            Item::Impl(implementation) => {
+                for ty in implementation.trait_args.iter_mut().chain(implementation.target_args.iter_mut()) {
+                    rewrite_reference_type(ty);
+                }
+                for method in &mut implementation.methods { rewrite_reference_function(method); }
+            }
+            Item::TypeAlias { ty, .. } => rewrite_reference_type(ty),
+            Item::Const { .. } | Item::Comptime(_) => {}
+        }
+    }
+}
+
+fn rewrite_reference_function(function: &mut Function) {
+    for parameter in &mut function.params {
+        if let Some(ty) = &mut parameter.ty { rewrite_reference_type(ty); }
+    }
+    if let Some(ty) = &mut function.ret { rewrite_reference_type(ty); }
+    for (_, _, arguments) in &mut function.bounds {
+        for argument in arguments { rewrite_reference_type(argument); }
+    }
+}
+
+fn rewrite_reference_type(ty: &mut Type) {
+    match ty {
+        Type::Named(_, arguments) | Type::Dyn(_, arguments) => for argument in arguments { rewrite_reference_type(argument); },
+        Type::Tuple(items) => for item in items { rewrite_reference_type(item); },
+        Type::RecordCompose { base, fields } => {
+            rewrite_reference_type(base);
+            for (_, field) in fields { rewrite_reference_type(field); }
+        }
+        Type::Fn(parameters, result, _) => {
+            for parameter in parameters { rewrite_reference_type(parameter); }
+            rewrite_reference_type(result);
+        }
+        Type::Qualified(_, inner) => rewrite_reference_type(inner),
+    }
+}
+
 
 
 

@@ -752,6 +752,44 @@ pub(crate) fn run() -> wasmtime::Result<()> {
     if commands::compile::run_emit() {
         return Ok(());
     }
+    // RFC-0122: migrate legacy opt-mode reference annotations through the
+    // parser/formatter rather than textual replacement. This initial command
+    // rewrites only declarations whose legacy forms have an unambiguous AST
+    // representation; call-site borrowing is resolved by the semantic phase.
+    if std::env::args().nth(1).as_deref() == Some("migrate") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let Some((kind, paths)) = args.split_first() else {
+            eprintln!("usage: witchy migrate references <file.witchy>...");
+            std::process::exit(1);
+        };
+        if kind != "references" || paths.is_empty() {
+            eprintln!("usage: witchy migrate references <file.witchy>...");
+            std::process::exit(1);
+        }
+        let mut failed = false;
+        for path in paths {
+            match std::fs::read_to_string(path) {
+                Ok(source) => match format::reformat_references(&source) {
+                    Some(rewritten) => {
+                        if let Err(error) = std::fs::write(path, rewritten) {
+                            eprintln!("witchy migrate references: `{path}`: {error}");
+                            failed = true;
+                        }
+                    }
+                    None => {
+                        eprintln!("witchy migrate references: `{path}`: expected a parseable `mode opt` module");
+                        failed = true;
+                    }
+                },
+                Err(error) => {
+                    eprintln!("witchy migrate references: cannot read `{path}`: {error}");
+                    failed = true;
+                }
+            }
+        }
+        if failed { std::process::exit(1); }
+        return Ok(());
+    }
     // `witchy fmt <file>` rewrites a source file in canonical brace-free form.
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         // `witchy fmt [--check] [--cap-methods] <file.witchy>...` formats (or,
