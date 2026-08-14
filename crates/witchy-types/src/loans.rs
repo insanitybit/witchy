@@ -2259,6 +2259,58 @@ impl LoanCtx<'_> {
                         continue;
                     }
                 }
+                // Returning an exclusive reference from an exclusive argument
+                // transfers the affine handle. The returned place may be a
+                // projection selected by the callee body, but its owner root is
+                // still the same checked input loan; retaining the old handle
+                // would manufacture an overlapping `&mut` loan at the caller.
+                let returned_exclusive = self.returned_exclusive_arguments(value, &callables);
+                if !returned_exclusive.is_empty() {
+                    let mut transferred_any = false;
+                    for source in returned_exclusive {
+                        let transferred: Vec<Loan> = local
+                            .iter()
+                            .filter(|loan| {
+                                loan.view == source && loan.kind == BorrowKind::Exclusive
+                            })
+                            .cloned()
+                            .collect();
+                        for old in &transferred {
+                            transferred_any = true;
+                            let old_event = LoanEvent::from(old.clone());
+                            self.remove_scheduled_close(&old_event);
+                            push_unique_event(
+                                self.facts.closes_after.entry(stmt_key(stmt)).or_default(),
+                                old_event,
+                            );
+
+                            let mut next = old.clone();
+                            next.view = name.clone();
+                            let next_event = LoanEvent::from(next.clone());
+                            push_unique_event(
+                                self.facts.opens_after.entry(stmt_key(stmt)).or_default(),
+                                next_event.clone(),
+                            );
+                            self.schedule_close(block, idx, &next_event);
+                            local.push(next);
+                        }
+                        if !transferred.is_empty() {
+                            local.retain(|loan| {
+                                !(loan.view == source && loan.kind == BorrowKind::Exclusive)
+                            });
+                            moved_exclusive.insert(source);
+                        }
+                    }
+                    if transferred_any {
+                        self.reject_callable_erasure(name, value, ty.as_ref(), None, &callables)?;
+                        if let Some(sig) = self.callable_value_sig(value, ty.as_ref(), &callables) {
+                            callables.insert(name.clone(), sig);
+                        } else {
+                            callables.remove(name);
+                        }
+                        continue;
+                    }
+                }
                 if self.has_dynamic_borrow_projection(value, &callables, &live) {
                     return Err(self.dynamic_projection());
                 }
