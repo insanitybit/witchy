@@ -945,6 +945,34 @@ fn main(console: Console):
     }
 
     #[test]
+    fn exclusive_reference_projected_place_write_matches_the_interpreter_oracle() {
+        let source = r#"
+mode opt
+
+type Counter:
+    value: Int
+
+fn write_value(slot: &'a mut Int) -> Nil:
+    *slot = 9
+
+fn main(console: Console):
+    var counter = Counter(1)
+    write_value(&mut counter.value)
+    console.print("${counter.value}")
+"#;
+        let module = parse_module(source).expect("parse projected exclusive reference fixture");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("compiled backend lowers projected exclusive reference fixture");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap();
+        assert_eq!(captured.lock().unwrap().as_slice(), ["9"]);
+    }
+
+    #[test]
     fn declared_packed_layout_survives_user_module_linking() {
         let model = parse_module(r#"
 mode opt
