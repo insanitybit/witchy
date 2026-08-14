@@ -259,6 +259,12 @@
         )
         .expect_err("the shared result does not retain mutable capability");
         assert!(err.contains("exclusive reference (`&mut place`)"), "{err}");
+
+        let err = check_str(
+            "mode opt\n\nfn finish(text: &'a mut String) -> &'a String:\n    text\n\nfn main(console: Console):\n    var text = \"hello\"\n    let editable = &mut text\n    let observed = finish(editable)\n    *editable = \"changed\"\n    console.print(observed)\n",
+        )
+        .expect_err("converting an exclusive handle into a shared result retires the old handle");
+        assert!(err.contains("moved exclusive reference `editable`"), "{err}");
     }
 
     #[test]
