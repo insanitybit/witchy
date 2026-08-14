@@ -217,10 +217,12 @@ infers concrete roots, reborrow duration, branches, overwrites, and last uses.
 
 ### Syntax does not promise a raw pointer
 
-`&` specifies source semantics, not physical representation. A reference may be
-lowered to a pointer, an owner root plus projection, a typed GC reference, or a
-copy-in/write-back shadow. Both backends consume the same checked reference
-facts and must agree observably.
+`&` specifies source semantics, not a raw-pointer ABI. Every implementation,
+however, carries a first-class *place reference* value: an owner/root carrier,
+its projection path, reference kind, and checked provenance. A backend may use
+a direct pointer or typed GC carrier, but it may not recover a caller place from
+the spelling of an expression after a call. Both backends consume the same
+checked reference facts and must agree observably.
 
 ## Surface syntax
 
@@ -1090,15 +1092,24 @@ Lifetimes have no runtime payload. Checked reference values retain:
 - lifetime positions in callable and nominal types; and
 - representation-specific root, repair, write-back, or lease obligations.
 
+The runtime value is a `PlaceReference`, not lowering metadata attached to a
+local variable. Its carrier remains valid through direct calls, function values,
+closures, trait dispatch, generated adapters, returns, and reborrows. The
+interpreter realizes it as a mutable owner cell plus projections. Compiled Wasm
+realizes it as a typed GC carrier or a direct-place descriptor. Both operations
+have one meaning: read follows the current place; write updates that same place;
+and reborrow preserves the root while extending the projection path.
+
 Compiled shared references retain each distinct linear-memory root until the
 checked final use. Typed GC references remain typed. Lowering never emits an
 owning retain or drop on an interior projection.
 
 An optimized exclusive reference may be a direct pointer or checked projection.
-The interpreter and forced-copy Wasm path may instead use a logical shadow with
-a write-back chain, provided all reads, mutations, reborrows, structured exits,
-and drops agree with direct-place semantics. Parent references remain suspended
-while a reborrow is live in every representation.
+Forced-copy Wasm may initially use an owner cell with a write-back adapter, but
+the cell itself remains the reference value and crosses every callable ABI at
+its typed representation. It is never an invisible copied argument followed by
+static caller-place recovery. Parent references remain suspended while a
+reborrow is live in every representation.
 
 The existing RFC-0110 access envelope gains explicit reference inputs and owner
 relations:
@@ -1126,9 +1137,9 @@ explicitly transports the owned representation safely.
 
 Direct-storage lowering is legal only when checked-place, uniqueness, overlap,
 escape, layout, and cleanup proofs hold. Compiled opt code rejects a missing
-no-copy proof. The interpreter and forced-copy differential backend may use a
-shadow solely as a semantic oracle; that representation does not weaken the
-compiled opt contract.
+no-copy proof. The interpreter and forced-copy differential backend may choose
+a cell-backed carrier while direct-place lowering is incomplete; it is still an
+executable reference and does not weaken the compiled opt contract.
 
 Reference-free normal code keeps its existing forced-copy-correct semantics and
 cannot be rejected because an internal optimization loan was imprecise. The
@@ -1245,8 +1256,8 @@ bodies are not rewritten.
 - Add normal-to-opt conventional-call fixtures covering proven and repair entry
   selection, and reject every source reference crossing before implementing
   reference internals.
-- Build a small reference semantics model over owner roots, projections,
-  reference moves, reborrows, and logical write-back shadows.
+- Build a small reference semantics model over executable owner cells,
+  projections, reference moves, reborrows, reads, and writes.
 - Use interpreter behavior as the language oracle and the model as the loan
   checker oracle for new exclusive cases.
 - Record an acceptance ledger divided into syntax, type checking, callable
@@ -1293,8 +1304,10 @@ bodies are not rewritten.
   exclusive and shared reborrowing, and mutable-to-shared coercion.
 - Define the interaction with owner mutability, `unique`, `local unique`,
   `frozen`, `let`, `var`, `own`, move, drop, and structured control flow.
-- Implement interpreter and forced-copy Wasm shadow/write-back semantics first.
-- Enable direct-place Wasm lowering only from the same checked facts.
+- Implement interpreter and forced-copy Wasm executable place-reference
+  carriers first, including typed ABI transport through function values.
+- Enable direct-place Wasm lowering only from the same checked facts and keep
+  it observationally identical to the carrier path.
 - Cover root replacement, capacity-token change, projection mutation, multiple
   disjoint borrows, explicit return, `?`, and terminal traps.
 
@@ -1385,7 +1398,8 @@ bodies are not rewritten.
     shared-reference containers, and affine-reference containers preserve exact
     roots through copy or move, overwrite, destructure, iteration, return, and
     drop.
-19. Interpreter shadows, forced-copy Wasm, and optimized direct-place Wasm agree
+19. Interpreter place references, forced-copy Wasm carriers, and optimized
+    direct-place Wasm agree
     on values, owner mutations, `var` write-backs, traps, and accepted programs.
     Compiled opt code performs no repair copy when an exclusive-reference
     contract requires direct storage. Owner-backed normal results agree with
