@@ -28,6 +28,17 @@ fn rfc0122_function_value_returned_reference_preserves_its_projected_place() {
     assert_eq!(compiled, want, "compiled function values preserve returned reference places");
 }
 
+/// An opt-mode reference is an executable value, not a source-local place
+/// annotation: an indirect call receives the same mutable carrier.
+#[test]
+fn rfc0122_indirect_exclusive_scalar_reference_uses_a_runtime_carrier() {
+    let src = "mode opt\n\nfn write(value: &'a mut Int) -> Nil:\n    *value = 42\n    return\n\nfn main(console: Console):\n    var value = 1\n    let forward = write\n    forward(&mut value)\n    console.print(\"${value}\")\n";
+    let want = ["42"];
+    assert_eq!(link_run(src), want, "interpreter transports the reference through call_indirect");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled call_indirect transports the executable reference cell");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.

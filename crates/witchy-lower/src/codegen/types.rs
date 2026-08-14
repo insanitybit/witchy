@@ -35,7 +35,15 @@ impl Codegen<'_> {
             Expr::Unary { op, expr } => match op {
                 // `!x` is a bool (i32); negation/complement keep the operand kind.
                 UnOp::Not => Kind::I32,
-                UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await | UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref => self.kind_of(expr),
+                UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await | UnOp::Borrow | UnOp::Deref => self.kind_of(expr),
+                // Local `&mut Int` bindings do not always retain a TypeTable
+                // row after the surface expression is rewritten. Recover the
+                // executable carrier from the scalar referent instead of
+                // declaring the binding as its old i64 payload kind.
+                UnOp::BorrowMut if self.kind_of(expr) == Kind::I64 => {
+                    Kind::GcRef(super::PLACE_REFERENCE_ID)
+                }
+                UnOp::BorrowMut => self.kind_of(expr),
             },
             Expr::Binary { op, lhs, rhs } => match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd

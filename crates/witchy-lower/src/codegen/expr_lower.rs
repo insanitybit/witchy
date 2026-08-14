@@ -55,6 +55,24 @@ impl<'types> Codegen<'types> {
                     return None;
                 };
                 let value = self.lower_expr(replacement)?;
+                if self.kind_of(&Expr::Var(reference.clone())) == Kind::GcRef(PLACE_REFERENCE_ID) {
+                    return Some(W::Seq(vec![
+                        N::StructSet {
+                            struct_id: REFERENCE_I64_CELL_ID,
+                            field: 0,
+                            base: W::RefCast {
+                                struct_id: REFERENCE_I64_CELL_ID,
+                                value: Box::new(W::StructGet {
+                                    struct_id: PLACE_REFERENCE_ID,
+                                    field: 0,
+                                    base: Box::new(W::GetLocal(reference.clone())),
+                                }),
+                            },
+                            value,
+                        },
+                        N::Push(W::ConstI32(0)),
+                    ]));
+                }
                 if let Some(place) = self.reference_places.get(reference).cloned() {
                     let replacement_kind = self.kind_of(replacement);
                     let replacement_valtype = self.val_type_of(replacement);
@@ -121,7 +139,24 @@ impl<'types> Codegen<'types> {
             Expr::Float(x) => W::ConstF64(*x),
             Expr::Bool(b) => W::ConstI32(if *b { 1 } else { 0 }),
             Expr::Str(s) => W::StrPtr(self.intern(s)),
-            Expr::Var(name) if self.is_plain_local_var(name) => W::GetLocal(name.clone()),
+            Expr::Var(name) if self.is_plain_local_var(name) => {
+                if let Some(cell) = self.reference_cells.get(name) {
+                    W::StructGet {
+                        struct_id: REFERENCE_I64_CELL_ID,
+                        field: 0,
+                        base: Box::new(W::RefCast {
+                            struct_id: REFERENCE_I64_CELL_ID,
+                            value: Box::new(W::StructGet {
+                                struct_id: PLACE_REFERENCE_ID,
+                                field: 0,
+                                base: Box::new(W::GetLocal(cell.clone())),
+                            }),
+                        }),
+                    }
+                } else {
+                    W::GetLocal(name.clone())
+                }
+            }
             // A bare top-level function name used as a VALUE (`list.filter(xs,
             // is_odd)`): materialize it as a forwarding closure `fn(p..): name(p..)`,
             // reusing the lambda machinery. Only fires for a known function that
@@ -185,9 +220,49 @@ impl<'types> Codegen<'types> {
                 return lowered;
             }
             Expr::Unary { op, expr } => match op {
-                // value-neutral on WASM (value semantics): lower the operand.
-                UnOp::Move | UnOp::Await | UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref => {
-                    return self.lower_expr(expr)
+                UnOp::Move | UnOp::Await | UnOp::Borrow => return self.lower_expr(expr),
+                UnOp::BorrowMut => {
+                    let Expr::Var(owner) = expr.as_ref() else { return None };
+                    if self.kind_of(expr) != Kind::I64 { return None; }
+                    if let Some(cell) = self.reference_cells.get(owner) {
+                        return Some(W::GetLocal(cell.clone()));
+                    }
+                    let cell = format!("__witchy_refcell_{owner}");
+                    self.locals.insert(cell.clone(), Kind::GcRef(PLACE_REFERENCE_ID));
+                    self.reference_cells.insert(owner.clone(), cell.clone());
+                    return Some(W::Seq(vec![
+                        N::SetLocal {
+                            local: cell.clone(),
+                            value: W::StructNew {
+                                struct_id: PLACE_REFERENCE_ID,
+                                args: vec![
+                                    W::StructNew {
+                                        struct_id: REFERENCE_I64_CELL_ID,
+                                        args: vec![W::GetLocal(owner.clone())],
+                                    },
+                                    W::ConstI32(0),
+                                ],
+                            },
+                        },
+                        N::Push(W::GetLocal(cell)),
+                    ]));
+                }
+                UnOp::Deref => {
+                    if self.kind_of(expr) == Kind::GcRef(PLACE_REFERENCE_ID) {
+                        return Some(W::StructGet {
+                            struct_id: REFERENCE_I64_CELL_ID,
+                            field: 0,
+                            base: Box::new(W::RefCast {
+                                struct_id: REFERENCE_I64_CELL_ID,
+                                value: Box::new(W::StructGet {
+                                    struct_id: PLACE_REFERENCE_ID,
+                                    field: 0,
+                                    base: Box::new(self.lower_expr(expr)?),
+                                }),
+                            }),
+                        });
+                    }
+                    return self.lower_expr(expr);
                 }
                 UnOp::Not => W::Unary {
                     op: witchy_wir::wir::UnOp::Not,
@@ -2463,6 +2538,7 @@ impl<'types> Codegen<'types> {
                 let has_var = call_access.as_ref().is_some_and(|signature| {
                     signature.params().iter().any(|param| {
                         param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                            && !Self::is_explicit_reference_type(param.ty())
                     })
                 });
                 // An `var` user call: the callee returns its declared value plus one

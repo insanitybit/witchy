@@ -248,6 +248,27 @@ pub fn existential_wrapper_struct() -> WirStructDef {
     }
 }
 
+/// The executable representation of an `&'a Int` / `&'a mut Int` in opt mode.
+/// The cell owns the current scalar payload; a reference is the typed GC handle
+/// itself, so it survives calls and `call_indirect` without relying on a
+/// caller-local address being recoverable after lowering.
+pub fn reference_i64_cell_struct() -> WirStructDef {
+    WirStructDef {
+        fields: vec![Kind::I64],
+        mutable: true,
+    }
+}
+
+/// Uniform ABI wrapper for an executable opt-mode reference. `root` is erased
+/// so one reference type can cross a function-value boundary regardless of the
+/// owner's concrete representation; `projection` selects the checked path.
+pub fn place_reference_struct() -> WirStructDef {
+    WirStructDef {
+        fields: vec![Kind::StructRef, Kind::I32],
+        mutable: false,
+    }
+}
+
 /// A binary operator, abstract over the operand `Kind` (the printer picks the
 /// concrete mnemonic, e.g. `i64.add` vs `f64.add`). Comparisons yield an i32 bool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

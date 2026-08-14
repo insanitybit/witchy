@@ -86,7 +86,7 @@ use std::fmt;
 
 use witchy_syntax::ast::{
     collect_type_vars, BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Param,
-    Pattern, Stmt, Type, UnOp,
+    Pattern, Stmt, Type, TypeQual, UnOp,
 };
 use witchy_types::storage::externref_cap_name;
 use specialization::{CallableSpecializationKey, GenericCallableInstances};
@@ -389,6 +389,13 @@ const CLOSURE_WRAPPER_ID: u32 = 0;
 /// The erased RFC-0081 envelope follows the closure wrapper in every module.
 /// Its payload is a `structref`; each witness gets a separate concrete box.
 const EXISTENTIAL_WRAPPER_ID: u32 = 1;
+/// Stable GC type for the first executable place-reference carrier. Keep this
+/// before module-specific aggregate layouts so signatures agree module-wide.
+const REFERENCE_I64_CELL_ID: u32 = 2;
+/// Stable, uniform ABI carrier for every executable opt-mode reference. The
+/// current scalar slice uses projection 0 for an i64 owner cell; aggregate
+/// projections extend that descriptor without changing `&'a T` call ABI.
+const PLACE_REFERENCE_ID: u32 = 3;
 const GC_LIST_SRC_TMP: &str = "__witchy_gc_list_src";
 const GC_LIST_RIGHT_TMP: &str = "__witchy_gc_list_right";
 const GC_LIST_DST_TMP: &str = "__witchy_gc_list_dst";
@@ -816,6 +823,11 @@ struct SavedScope {
     /// preserves the caller place until the executable place-reference ABI can
     /// carry an opaque target through arbitrary closure values.
     reference_function_targets: HashMap<String, String>,
+    /// Scalar owners promoted to an executable reference cell. Reads of the
+    /// owner become `struct.get`; writes through any transported reference use
+    /// the same cell. This is deliberately distinct from `reference_places`,
+    /// which is only static aggregate-place recovery.
+    reference_cells: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1071,6 +1083,7 @@ struct Codegen<'types> {
     reference_places: HashMap<String, CodegenPlace>,
     /// See [`SavedScope::reference_function_targets`].
     reference_function_targets: HashMap<String, String>,
+    reference_cells: HashMap<String, String>,
     /// (RFC-0028) Confined slice *views*: `let w = list.slice(src, lo, hi)` bindings
     /// the escape analysis proved read-only-by-`at`/`length` over an unmutated
     /// source, so the slice copy is elided — `w` keeps `${w}$src`/`${w}$lo`/`${w}$hi`
@@ -1630,6 +1643,7 @@ impl<'types> Codegen<'types> {
             elide_index_list: Vec::new(),
             reference_places: HashMap::new(),
             reference_function_targets: HashMap::new(),
+            reference_cells: HashMap::new(),
             view_candidates: HashSet::new(),
             view_active: HashSet::new(),
             packed_candidates: HashSet::new(),
@@ -1744,6 +1758,11 @@ impl<'types> Codegen<'types> {
     }
 
     fn kind_for_type(&self, t: &Type) -> Kind {
+        if matches!(t, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), inner)
+            if matches!(inner.unqualified(), Type::Named(name, _) if name == "Int"))
+        {
+            return Kind::GcRef(PLACE_REFERENCE_ID);
+        }
         let t = t.unqualified();
         match t {
             Type::Dyn(_, _) => Kind::GcRef(EXISTENTIAL_WRAPPER_ID),
@@ -2285,9 +2304,27 @@ impl<'types> Codegen<'types> {
             // Generic and uniform callables retain the compatibility state
             // channel. Named exact-layout callables refine it below.
             own_capacity_param: fact.consuming_state_param(),
-            var_capacity_params: fact.var_capacity_params().to_vec(),
+            // `&mut T` is exclusive access, but it is not Witchy's legacy
+            // move-in/write-back `var T` ABI. Its typed PlaceReference carries
+            // mutation directly, so it neither receives a capacity token nor
+            // returns a write-back result.
+            var_capacity_params: fact
+                .var_capacity_params()
+                .iter()
+                .copied()
+                .filter(|index| {
+                    !signature
+                        .params()
+                        .get(*index)
+                        .is_some_and(|param| Self::is_explicit_reference_type(param.ty()))
+                })
+                .collect(),
             unique_capacity_result: fact.unique_capacity_result(),
         }
+    }
+
+    fn is_explicit_reference_type(ty: &Type) -> bool {
+        matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _))
     }
 
     fn ownership_envelope_for_named_signature(
@@ -2481,6 +2518,7 @@ impl<'types> Codegen<'types> {
         for (index, arg) in args.iter().enumerate() {
             let is_var = access.params().get(index).is_some_and(|param| {
                 param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                    && !Self::is_explicit_reference_type(param.ty())
             });
             let kind = if is_var {
                 param_kinds.get(index).copied().unwrap_or_else(|| self.kind_of(arg))
@@ -3747,6 +3785,8 @@ impl<'types> Codegen<'types> {
         self.local_list_nesting.clear();
         self.local_fn_ret_kind.clear();
         self.local_fn_ownership.clear();
+        self.reference_places.clear();
+        self.reference_cells.clear();
         for p in &resolved_params {
             let k = p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
@@ -3861,6 +3901,7 @@ impl<'types> Codegen<'types> {
                 access_signature.as_ref().is_some_and(|signature| {
                     signature.params().get(*index).is_some_and(|param| {
                         param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                            && !Self::is_explicit_reference_type(param.ty())
                     })
                 })
             })
@@ -4026,11 +4067,16 @@ impl<'types> Codegen<'types> {
         // `.kind()` is all the encoder reads: `Bool` => i32, `Int` => i64.
         let i32t = || WirTy::Bool;
         let i64t = || WirTy::Int;
-        let unit_gc_ids = self.unit_gc_ids(
+        let mut unit_gc_ids = self.unit_gc_ids(
             params.iter().filter_map(|param| param.ty.clone()),
             result.cloned(),
             &f.body,
         );
+        // The uniform reference carrier may occur in synthesized call-result
+        // and assignment scratch even when the source function only borrows at
+        // an inner expression. Reserve it in every WIR unit so those generated
+        // locals retain their typed GC representation.
+        unit_gc_ids.insert(PLACE_REFERENCE_ID);
         let mut params: Vec<WirLocal> = params
             .iter()
             .map(|p| WirLocal {
@@ -4058,6 +4104,12 @@ impl<'types> Codegen<'types> {
         for name in &lets {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
+        }
+        let mut reference_cells: Vec<&String> = self.reference_cells.values().collect();
+        reference_cells.sort();
+        reference_cells.dedup();
+        for cell in reference_cells {
+            locals.push(WirLocal { name: cell.clone(), ty: WirTy::GcRef(PLACE_REFERENCE_ID) });
         }
         // RFC-0083 owner roots are explicit i32 rc-region pointers. They are
         // retained after the view-producing binding and released at last use or
@@ -8250,6 +8302,7 @@ impl<'types> Codegen<'types> {
                     signature.params().get(*index).is_some_and(|access| {
                         access.kind()
                             == witchy_types::access::AccessKind::ExclusiveWriteback
+                            && !Self::is_explicit_reference_type(access.ty())
                     })
                 })
             })
@@ -8399,6 +8452,7 @@ impl<'types> Codegen<'types> {
                     None,
                     body,
                 );
+                unit_gc_ids.insert(PLACE_REFERENCE_ID);
                 for kind in param_kinds
                     .iter()
                     .copied()
@@ -8469,6 +8523,15 @@ impl<'types> Codegen<'types> {
                 for name in &lets {
                     let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
                     locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
+                }
+                let mut reference_cells: Vec<&String> = self.reference_cells.values().collect();
+                reference_cells.sort();
+                reference_cells.dedup();
+                for cell in reference_cells {
+                    locals.push(WirLocal {
+                        name: cell.clone(),
+                        ty: WirTy::GcRef(PLACE_REFERENCE_ID),
+                    });
                 }
                 let mut scalar_sums: Vec<(&String, &ScalarSumLayout)> =
                     self.scalar_sum_active.iter().collect();
@@ -8856,6 +8919,7 @@ impl<'types> Codegen<'types> {
             elide_index_list: std::mem::take(&mut self.elide_index_list),
             reference_places: std::mem::take(&mut self.reference_places),
             reference_function_targets: std::mem::take(&mut self.reference_function_targets),
+            reference_cells: std::mem::take(&mut self.reference_cells),
         }
     }
 
@@ -8913,6 +8977,7 @@ impl<'types> Codegen<'types> {
         self.elide_index_list = s.elide_index_list;
         self.reference_places = s.reference_places;
         self.reference_function_targets = s.reference_function_targets;
+        self.reference_cells = s.reference_cells;
     }
 
     /// The scalar `$key_eq` comparison mode for a Dict key expression: 0 for
