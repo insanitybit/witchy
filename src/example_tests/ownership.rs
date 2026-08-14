@@ -135,6 +135,54 @@ fn rfc0122_local_exclusive_reference_write_agrees_on_both_backends() {
         );
     }
 
+    /// RFC-0122's normal-to-opt boundary exposes only the ordinary access
+    /// envelope. The normal caller neither spells nor receives a reference,
+    /// while `let`, `var`, and `own` retain their usual value semantics on both
+    /// execution backends.
+    #[test]
+    fn rfc0122_normal_callers_use_conventional_opt_access_on_both_backends() {
+        let api = r#"
+mode opt
+
+pub fn inspect(let text: String) -> String:
+    text + "!"
+
+pub fn normalize(var text: String) -> Nil:
+    text = text.trim()
+
+pub fn consume(own text: String) -> Int:
+    text.length()
+"#;
+        let app = r#"
+import api
+
+fn main(console: Console):
+    var text = "  hello  "
+    api.normalize(text)
+    let decorated = api.inspect(text)
+    let length = api.consume(move decorated)
+    console.print("${text}:${length}")
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app")
+            .expect("a normal caller may use conventional opt exports");
+        typeck::check(&linked).expect("normal source has no reference contract to check");
+        let expected = ["hello:6"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter preserves conventional access semantics",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled backend preserves conventional access semantics",
+        );
+    }
+
     /// RFC-0088 baseline: update-and-extract returns the exact old leaf while
     /// committing the repaired collection. Shared snapshots remain unchanged;
     /// empty/missing operations return None. The structural helper performs the
