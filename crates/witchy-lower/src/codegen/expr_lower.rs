@@ -43,6 +43,23 @@ impl<'types> Codegen<'types> {
             {
                 return self.lower_dynamic_try_decode(e, args);
             }
+            // The parser represents `*reference = value` as this private call.
+            // In the initial forced-copy envelope an exclusive parameter is a
+            // writable local whose final value is committed by the caller's
+            // existing write-back path. Direct-place reference lowering replaces
+            // this local store once references may escape the call boundary.
+            Expr::Call { name, args }
+                if name == witchy_syntax::intrinsics::REFERENCE_WRITE =>
+            {
+                let [Expr::Var(reference), replacement] = args.as_slice() else {
+                    return None;
+                };
+                let value = self.lower_expr(replacement)?;
+                W::Seq(vec![
+                    N::SetLocal { local: reference.clone(), value },
+                    N::Push(W::ConstI64(0)),
+                ])
+            }
             Expr::Int(n) | Expr::Duration(n) => W::ConstI64(*n),
             Expr::Float(x) => W::ConstF64(*x),
             Expr::Bool(b) => W::ConstI32(if *b { 1 } else { 0 }),
