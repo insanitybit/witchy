@@ -89,6 +89,19 @@ fn view_lifetime(ty: &Type) -> Option<&str> {
     }
 }
 
+/// The direct reference capability written at a callable boundary. Nested
+/// reference fields are handled by the catalog's slot relations; call arguments
+/// need this direct check because checker `Ty` intentionally erases runtime
+/// representation qualifiers.
+fn direct_reference_kind(ty: &Type) -> Option<BorrowKind> {
+    match ty {
+        Type::Qualified(TypeQual::Borrow(_), _) => Some(BorrowKind::Shared),
+        Type::Qualified(TypeQual::BorrowMut(_), _) => Some(BorrowKind::Exclusive),
+        Type::Qualified(_, inner) => direct_reference_kind(inner),
+        _ => None,
+    }
+}
+
 fn is_opt_function(name: &str, modes: &[String]) -> bool {
     if let Some((module, _)) = name.rsplit_once('.') {
         return modes.iter().any(|mode| mode == &format!("@opt:{module}"));
@@ -3126,6 +3139,31 @@ impl LoanCtx<'_> {
         for (index, arg) in args.iter().enumerate() {
             let mut sources = self.borrow_sources(arg, callables, live);
             self.collect_alias_sources(arg, live, &mut sources);
+            if let Some(access) = signature.access.as_ref()
+                && let Some(parameter) = access.params().get(index)
+                && let Some(required) = direct_reference_kind(parameter.ty())
+            {
+                let supplied = sources.iter().map(|source| source.kind).max_by_key(|kind| {
+                    matches!(kind, BorrowKind::Exclusive)
+                });
+                let compatible = matches!(
+                    (required, supplied),
+                    (BorrowKind::Shared, Some(BorrowKind::Shared | BorrowKind::Exclusive))
+                        | (BorrowKind::Exclusive, Some(BorrowKind::Exclusive))
+                );
+                if !compatible {
+                    let required = match required {
+                        BorrowKind::Shared => "a shared reference (`&place`)",
+                        BorrowKind::Exclusive => "an exclusive reference (`&mut place`)",
+                    };
+                    return Err(terr(format!(
+                        "argument {} passed to `{}` must be {required}; ordinary values do not \
+                         implicitly become references",
+                        index + 1,
+                        short_name(callee),
+                    )));
+                }
+            }
             if sources.is_empty() {
                 continue;
             }
