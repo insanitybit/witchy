@@ -204,6 +204,20 @@
     }
 
     #[test]
+    fn returned_shared_reference_relinquishes_exclusive_access() {
+        check_str(
+            "mode opt\n\nfn finish(text: &'a mut String) -> &'a String:\n    text\n\nfn main(console: Console):\n    var text = \"hello\"\n    let editable = &mut text\n    let view = finish(editable)\n    console.print(view)\n",
+        )
+        .expect("an exclusive reference may be relinquished as a shared result");
+
+        let err = check_str(
+            "mode opt\n\nfn finish(text: &'a mut String) -> &'a String:\n    text\n\nfn change(text: &'b mut String) -> Nil:\n    *text = \"changed\"\n\nfn main(console: Console):\n    var text = \"hello\"\n    let editable = &mut text\n    let observed = finish(editable)\n    change(observed)\n",
+        )
+        .expect_err("the shared result does not retain mutable capability");
+        assert!(err.contains("exclusive reference (`&mut place`)"), "{err}");
+    }
+
+    #[test]
     fn explicit_shared_borrow_blocks_owner_mutation_until_its_final_use() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    text = \"changed\"\n    console.print(view)\n",

@@ -2063,6 +2063,30 @@ impl LoanCtx<'_> {
                 }
                 let mut sources = self.borrow_sources(value, &callables, &live);
                 self.collect_alias_sources(value, &live, &mut sources);
+                // Returning a shared reference from an exclusive input consumes
+                // the exclusive capability. The shared result keeps the owner
+                // loan, but the caller can no longer use the old `&mut` handle.
+                for source in self.relinquished_exclusive_arguments(value, &callables) {
+                    let retired: Vec<Loan> = local
+                        .iter()
+                        .filter(|loan| loan.view == source && loan.kind == BorrowKind::Exclusive)
+                        .cloned()
+                        .collect();
+                    for old in &retired {
+                        let event = LoanEvent::from(old.clone());
+                        self.remove_scheduled_close(&event);
+                        push_unique_event(
+                            self.facts.closes_after.entry(stmt_key(stmt)).or_default(),
+                            event,
+                        );
+                    }
+                    if !retired.is_empty() {
+                        local.retain(|loan| {
+                            !(loan.view == source && loan.kind == BorrowKind::Exclusive)
+                        });
+                        moved_exclusive.insert(source);
+                    }
+                }
                 if let Some(source) = self.aggregate_borrow_source(value, &callables, &live) {
                     return Err(self.aggregate_view_storage(&source.origin));
                 }
@@ -2086,7 +2110,7 @@ impl LoanCtx<'_> {
                         kind: owner.kind,
                         owner_type: owner.owner_type,
                     };
-                    let conflicts_with_live = live.iter().any(|open| {
+                    let conflicts_with_live = inherited.iter().chain(local.iter()).any(|open| {
                         open.owner == loan.owner
                             && projections_overlap_any(&open.projection, &loan.projection)
                             && (loan.kind == BorrowKind::Exclusive || open.kind == BorrowKind::Exclusive)
@@ -2816,6 +2840,35 @@ impl LoanCtx<'_> {
                 }
             }
         }
+    }
+
+    /// Names of local exclusive handles that a direct call converts into a
+    /// returned shared reference. This is a capability transition, not a copy:
+    /// the resulting shared loan remains live, while the `&mut` spelling is
+    /// retired at the call site.
+    fn relinquished_exclusive_arguments(
+        &self,
+        value: &Expr,
+        callables: &HashMap<String, BorrowSig>,
+    ) -> Vec<String> {
+        let Expr::Call { name, args } = value else { return Vec::new() };
+        let Some(signature) = self.sigs.get(name).or_else(|| callables.get(name)) else {
+            return Vec::new();
+        };
+        let mut result = Vec::new();
+        for relation in signature
+            .relations
+            .iter()
+            .filter(|relation| relation.kind() == BorrowKind::Shared)
+        {
+            for owner in relation.owners() {
+                let Some(Expr::Var(name)) = args.get(owner.position()) else { continue };
+                if !result.contains(name) {
+                    result.push(name.clone());
+                }
+            }
+        }
+        result
     }
 
     fn push_source(&self, source: BorrowSource, out: &mut Vec<BorrowSource>) {
