@@ -1900,9 +1900,14 @@ impl LoanCtx<'_> {
             .and_then(|table| table.type_of(value))
             .and_then(ty_to_ast)
         {
-            return matches!(ty, Type::Named(name, _) if self.catalog.borrowed_record(&name));
+            return matches!(ty, Type::Named(name, _) if self.catalog.borrowed_record(&name))
+                || matches!(value, Expr::Unary { op: UnOp::Borrow, .. });
         }
         match value {
+            // An explicit shared reference is a first-class value. `List(&'a T)`
+            // retains the element's owner contribution just like the legacy
+            // borrowed shell, rather than erasing it at aggregate storage.
+            Expr::Unary { op: UnOp::Borrow, .. } => true,
             Expr::Ctor { name, .. } => self.catalog.borrowed_constructor(name),
             Expr::Record { name, .. } => self.catalog.borrowed_record(name),
             Expr::Call { name, .. } => self

@@ -942,6 +942,20 @@
     }
 
     #[test]
+    fn explicit_shared_references_may_be_stored_and_projected_from_a_list() {
+        let err = check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"hi\"\n    let refs = [&text]\n    let first = refs[0]\n    text = \"changed\"\n    console.print(first)\n",
+        )
+        .expect_err("the projected reference must keep the original owner loan live");
+        assert!(err.contains("reassigned"), "{err}");
+
+        check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"hi\"\n    let refs = [&text]\n    let first = refs[0]\n    console.print(*first)\n",
+        )
+        .expect("an opt list may own a shared reference value and project it later");
+    }
+
+    #[test]
     fn returned_view_provenance_must_match_the_function_signature() {
         let bad = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn hide(text: let('a) String) -> String:\n    let w = borrow(text)\n    w\n";
         let err = check_str(bad).expect_err("an owned return may not hide a borrowed alias");
