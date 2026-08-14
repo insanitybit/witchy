@@ -4,6 +4,26 @@
 
 use super::*;
 
+/// An exclusive reference has the public `let` calling convention, but its
+/// runtime envelope carries one writable caller place.  Keeping this separate
+/// from `var` is important: `var` is a move-in/move-out value convention,
+/// whereas `&mut` preserves reference identity and will eventually lower to a
+/// direct place rather than this interpreter write-back representation.
+fn is_exclusive_reference(param: &Param) -> bool {
+    matches!(
+        param.ty,
+        Some(Type::Qualified(TypeQual::BorrowMut(_), _))
+    )
+}
+
+fn parameter_writes_back(param: &Param) -> bool {
+    param.convention == Convention::Var || is_exclusive_reference(param)
+}
+
+fn parameter_binds_mutable(param: &Param) -> bool {
+    param.convention.binds_mutable() || is_exclusive_reference(param)
+}
+
 impl Interpreter {
     pub(super) fn run_callable(
         &mut self,
@@ -41,7 +61,7 @@ impl Interpreter {
                             Some(names) => names[index].clone(),
                             None => Rc::from(param.name.as_str()),
                         };
-                        env.define(name, value, param.convention.binds_mutable());
+                        env.define(name, value, parameter_binds_mutable(param));
                     }
                     (function, env, false)
                 }
@@ -63,7 +83,7 @@ impl Interpreter {
                             Some(names) => names[index].clone(),
                             None => Rc::from(param.name.as_str()),
                         };
-                        env.define(name, value, param.convention.binds_mutable());
+                        env.define(name, value, parameter_binds_mutable(param));
                     }
                     (function, env, true)
                 }
@@ -107,7 +127,7 @@ impl Interpreter {
             .params
             .iter()
             .enumerate()
-            .filter(|(_, param)| param.convention == Convention::Var)
+            .filter(|(_, param)| parameter_writes_back(param))
             .map(|(index, param)| {
                 let value = outcome
                     .env
@@ -163,23 +183,32 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<(Vec<Value>, Vec<Option<CapturedPlace>>), Flow> {
         let mut values = Vec::with_capacity(args.len());
-        // The overwhelmingly common call has no `var` parameter; leave `places`
+        // The overwhelmingly common call has no writable-place parameter; leave `places`
         // unallocated then (`Vec::new` doesn't allocate, and every consumer
         // reads it through `.get(i)`, where absent == None).
-        let any_var = params
+        let any_writeback = params
             .iter()
             .take(args.len())
-            .any(|param| param.convention == Convention::Var);
-        let mut places = if any_var { Vec::with_capacity(args.len()) } else { Vec::new() };
+            .any(parameter_writes_back);
+        let mut places = if any_writeback { Vec::with_capacity(args.len()) } else { Vec::new() };
         for (index, arg) in args.iter().enumerate() {
-            if params.get(index).map(|param| param.convention) == Some(Convention::Var) {
-                let place = self.capture_place(arg, env)?;
+            let param = params.get(index);
+            if param.is_some_and(parameter_writes_back) {
+                let place_expr = if param.is_some_and(is_exclusive_reference) {
+                    match arg {
+                        Expr::Unary { op: UnOp::BorrowMut, expr } => &**expr,
+                        _ => return err("an `&mut` argument must be written `&mut place`"),
+                    }
+                } else {
+                    arg
+                };
+                let place = self.capture_place(place_expr, env)?;
                 let value = self.read_place_value(&place, env)?;
                 values.push(value);
                 places.push(Some(place));
             } else {
                 values.push(self.eval(arg, env)?);
-                if any_var {
+                if any_writeback {
                     places.push(None);
                 }
             }
@@ -373,7 +402,7 @@ impl Interpreter {
             ));
         }
         for (index, param) in outcome.function.params.iter().enumerate().skip(1) {
-            if param.convention != Convention::Var {
+            if !parameter_writes_back(param) {
                 continue;
             }
             let place = explicit_places
@@ -429,7 +458,7 @@ impl Interpreter {
                     .iter()
                     .enumerate()
                     .filter_map(|(index, param)| {
-                        (param.convention == Convention::Var)
+                        (parameter_writes_back(param))
                             .then(|| places.get(index).and_then(Clone::clone))
                             .flatten()
                     })
@@ -455,7 +484,7 @@ impl Interpreter {
                     .iter()
                     .enumerate()
                     .filter_map(|(index, param)| {
-                        (param.convention == Convention::Var).then_some(index)
+                        (parameter_writes_back(param)).then_some(index)
                     })
                     .collect();
                 if let [index] = var_indices.as_slice() {
@@ -485,7 +514,7 @@ impl Interpreter {
         }
         let mut writebacks: Vec<CapturedPlace> = Vec::new();
         for (i, param) in func.params.iter().enumerate() {
-            if matches!(param.convention, Convention::Var) {
+            if parameter_writes_back(param) {
                 let place = places
                     .get(i)
                     .and_then(Clone::clone)
@@ -504,7 +533,7 @@ impl Interpreter {
             .function
             .params
             .iter()
-            .filter(|param| param.convention == Convention::Var)
+            .filter(|param| parameter_writes_back(param))
             .map(|param| {
                 fenv.get(&param.name)
                     .cloned()

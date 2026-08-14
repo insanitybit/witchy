@@ -204,6 +204,22 @@ fn echo(page: Page) -> Page:
     }
 
     #[test]
+    fn exclusive_reference_parameter_writes_back_to_its_caller_place() {
+        let source = r#"
+mode opt
+
+fn replace(value: &'a mut Int) -> Nil:
+    value = 42
+
+fn main() -> Int:
+    var number = 1
+    replace(&mut number)
+    number
+"#;
+        assert_eq!(run_exit(source), 42);
+    }
+
+    #[test]
     fn existential_dispatch_uses_the_closed_witness_plan() {
         let source = r#"
 trait Render:
