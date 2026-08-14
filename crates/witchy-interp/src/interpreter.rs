@@ -2038,6 +2038,19 @@ impl Interpreter {
                     None => err(format!("unbound variable `{name}`")),
                 },
             },
+            Expr::Call { name, args } if name == intrinsics::REFERENCE_WRITE => {
+                let [Expr::Var(reference), replacement] = args.as_slice() else {
+                    return err("internal: reference write requires a direct reference binding");
+                };
+                let value = self.eval(replacement, env)?;
+                match env.assign(reference, value) {
+                    Assign::Done => Ok(Value::Unit),
+                    Assign::Immutable => err(
+                        "cannot assign through this reference: it is not an exclusive `&mut` binding",
+                    ),
+                    Assign::Unbound => err("internal: reference write uses an unbound reference"),
+                }
+            }
             Expr::Call { name, args } => self.eval_call(name, args, env),
             Expr::Apply { func, args } => {
                 let clo = self.eval(func, env)?;

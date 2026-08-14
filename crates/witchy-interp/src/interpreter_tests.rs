@@ -209,7 +209,7 @@ fn echo(page: Page) -> Page:
 mode opt
 
 fn set_answer(value: &'a mut Int) -> Nil:
-    value = 42
+    *value = 42
 
 fn main() -> Int:
     var number = 1
