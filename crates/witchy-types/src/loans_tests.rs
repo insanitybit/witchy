@@ -156,6 +156,14 @@
     }
 
     #[test]
+    fn mutable_exclusive_reference_retains_writeback_access() {
+        check_str(
+            "mode opt\n\nfn replace(var text: &'a mut String) -> Nil:\n    *text = \"changed\"\n",
+        )
+        .expect("an exclusive reference may use the established write-back convention");
+    }
+
+    #[test]
     fn dereference_assignment_requires_and_accepts_an_exclusive_reference() {
         check_str(
             "mode opt\n\nfn edit(text: &'a mut Int) -> Nil:\n    *text = 42\n",
