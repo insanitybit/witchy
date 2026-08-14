@@ -869,6 +869,22 @@
         assert!(out.contains("fn normalize(value: &'a mut String) -> &'a mut String"), "{out}");
     }
 
+    #[test]
+    fn rfc0122_reference_migration_distinguishes_nominal_and_direct_lifetimes() {
+        let src = "mode opt\n\n\
+                   type Token:\n    value: String\n\n\
+                   type Parser('a):\n    input: String('a)\n\n\
+                   type Holder:\n    token: Token('a)\n    items: List(Token, 'a)\n\n\
+                   fn first(text: String('a)) -> Token('a):\n    Token(text)\n";
+        let out = reformat_references(src).expect("direct lifetime relations migrate");
+        assert!(out.contains("input: &'a String"), "{out}");
+        assert!(out.contains("token: &'a Token"), "{out}");
+        assert!(out.contains("items: &'a List(Token)"), "{out}");
+        assert!(out.contains("first(text: &'a String) -> &'a Token"), "{out}");
+        assert!(out.contains("type Parser('a):"), "{out}");
+        assert_eq!(reformat_references(&out).as_deref(), Some(out.as_str()));
+    }
+
     // ---- RFC-0081: existential trait types -------------------------------
 
     #[test]

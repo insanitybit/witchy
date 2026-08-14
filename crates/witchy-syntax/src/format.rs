@@ -2626,31 +2626,54 @@ pub fn reformat_references(src: &str) -> Option<String> {
 }
 
 fn rewrite_reference_module(module: &mut Module) {
+    // A trailing lifetime is a retired direct relation only when the receiving
+    // nominal declaration does not itself declare lifetime parameters. Keep
+    // this map local to the parsed module: an imported declaration without
+    // resolved provenance is deliberately left for the semantic migration
+    // phase rather than guessed from its spelling.
+    let local_nominals: std::collections::HashMap<String, bool> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(definition) => Some((
+                definition.name.clone(),
+                definition.params.iter().any(|parameter| is_lifetime_param(parameter)),
+            )),
+            Item::TypeAlias { name, params, .. } => Some((
+                name.clone(),
+                params.iter().any(|parameter| is_lifetime_param(parameter)),
+            )),
+            _ => None,
+        })
+        .collect();
     for item in &mut module.items {
         match item {
-            Item::Function(function) => rewrite_reference_function(function),
+            Item::Function(function) => rewrite_reference_function(function, &local_nominals),
             Item::Type(definition) => for variant in &mut definition.variants {
-                for field in &mut variant.fields { rewrite_reference_type(field); }
+                for field in &mut variant.fields { rewrite_reference_type(field, &local_nominals); }
             },
             Item::Trait(trait_def) => for method in &mut trait_def.methods {
                 for parameter in &mut method.params {
-                    if let Some(ty) = &mut parameter.ty { rewrite_reference_type(ty); }
+                    if let Some(ty) = &mut parameter.ty { rewrite_reference_type(ty, &local_nominals); }
                 }
-                if let Some(ty) = &mut method.ret { rewrite_reference_type(ty); }
+                if let Some(ty) = &mut method.ret { rewrite_reference_type(ty, &local_nominals); }
             },
             Item::Impl(implementation) => {
                 for ty in implementation.trait_args.iter_mut().chain(implementation.target_args.iter_mut()) {
-                    rewrite_reference_type(ty);
+                    rewrite_reference_type(ty, &local_nominals);
                 }
-                for method in &mut implementation.methods { rewrite_reference_function(method); }
+                for method in &mut implementation.methods { rewrite_reference_function(method, &local_nominals); }
             }
-            Item::TypeAlias { ty, .. } => rewrite_reference_type(ty),
+            Item::TypeAlias { ty, .. } => rewrite_reference_type(ty, &local_nominals),
             Item::Const { .. } | Item::Comptime(_) => {}
         }
     }
 }
 
-fn rewrite_reference_function(function: &mut Function) {
+fn rewrite_reference_function(
+    function: &mut Function,
+    local_nominals: &std::collections::HashMap<String, bool>,
+) {
     for parameter in &mut function.params {
         if let Some(ty) = &mut parameter.ty {
             // `let value: let('a) T` was the old two-part spelling of a
@@ -2665,28 +2688,59 @@ fn rewrite_reference_function(function: &mut Function) {
             {
                 parameter.convention = Convention::Let;
             }
-            rewrite_reference_type(ty);
+            rewrite_reference_type(ty, local_nominals);
         }
     }
-    if let Some(ty) = &mut function.ret { rewrite_reference_type(ty); }
+    if let Some(ty) = &mut function.ret { rewrite_reference_type(ty, local_nominals); }
     for (_, _, arguments) in &mut function.bounds {
-        for argument in arguments { rewrite_reference_type(argument); }
+        for argument in arguments { rewrite_reference_type(argument, local_nominals); }
     }
 }
 
-fn rewrite_reference_type(ty: &mut Type) {
+fn rewrite_reference_type(
+    ty: &mut Type,
+    local_nominals: &std::collections::HashMap<String, bool>,
+) {
     match ty {
-        Type::Named(_, arguments) | Type::Dyn(_, arguments) => for argument in arguments { rewrite_reference_type(argument); },
-        Type::Tuple(items) => for item in items { rewrite_reference_type(item); },
+        Type::Named(name, arguments) => {
+            for argument in arguments.iter_mut() { rewrite_reference_type(argument, local_nominals); }
+            let lifetime = arguments
+                .last()
+                .and_then(|argument| match argument {
+                    Type::Named(name, nested) if nested.is_empty() => name.strip_prefix('\''),
+                    _ => None,
+                })
+                .map(str::to_string);
+            let locally_value_only = local_nominals.get(name).is_some_and(|has_lifetime| !has_lifetime);
+            let builtin_value_only = matches!(name.as_str(), "String" | "Bytes");
+            if let Some(lifetime) = lifetime
+                && (locally_value_only || builtin_value_only || (name == "List" && arguments.len() == 2))
+            {
+                if arguments.len() == 1 {
+                    *ty = Type::Qualified(
+                        TypeQual::Borrow(lifetime),
+                        Box::new(Type::Named(name.clone(), Vec::new())),
+                    );
+                } else if name == "List" && arguments.len() == 2 {
+                    let element = arguments.remove(0);
+                    *ty = Type::Qualified(
+                        TypeQual::Borrow(lifetime),
+                        Box::new(Type::Named("List".into(), vec![element])),
+                    );
+                }
+            }
+        }
+        Type::Dyn(_, arguments) => for argument in arguments { rewrite_reference_type(argument, local_nominals); },
+        Type::Tuple(items) => for item in items { rewrite_reference_type(item, local_nominals); },
         Type::RecordCompose { base, fields } => {
-            rewrite_reference_type(base);
-            for (_, field) in fields { rewrite_reference_type(field); }
+            rewrite_reference_type(base, local_nominals);
+            for (_, field) in fields { rewrite_reference_type(field, local_nominals); }
         }
         Type::Fn(parameters, result, _) => {
-            for parameter in parameters { rewrite_reference_type(parameter); }
-            rewrite_reference_type(result);
+            for parameter in parameters { rewrite_reference_type(parameter, local_nominals); }
+            rewrite_reference_type(result, local_nominals);
         }
-        Type::Qualified(_, inner) => rewrite_reference_type(inner),
+        Type::Qualified(_, inner) => rewrite_reference_type(inner, local_nominals),
     }
 }
 
