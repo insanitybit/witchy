@@ -208,6 +208,18 @@
     }
 
     #[test]
+    fn exclusive_function_values_retain_disjoint_place_requirements() {
+        let err = check_str(
+            "mode opt\n\nfn edit_pair(left: &'a mut String, right: &'a mut String) -> Nil:\n    Nil\n\nfn main():\n    let edit = edit_pair\n    var text = \"hello\"\n    edit(&mut text, &mut text)\n",
+        )
+        .expect_err("a function value cannot erase an exclusive-place relation");
+        assert!(
+            err.contains("cannot create exclusive reference") || err.contains("overlapping"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn exclusive_reference_bindings_move_instead_of_copying() {
         check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let editable = &mut text\n    let moved = editable\n    console.print(moved)\n",

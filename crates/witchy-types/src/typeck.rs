@@ -59,10 +59,11 @@ use compiler_syntax::{
 /// referent is writable inside the callee.  The loan checker proves that this
 /// local mutability is exclusive; ordinary `let` parameters remain immutable.
 fn parameter_binds_exclusive_reference(param: &ast::Param) -> bool {
-    matches!(
-        param.ty,
-        Some(ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _))
-    )
+    param.ty.as_ref().is_some_and(type_is_exclusive_reference)
+}
+
+fn type_is_exclusive_reference(ty: &ast::Type) -> bool {
+    matches!(ty, ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,8 +129,11 @@ pub enum Ty {
     /// arity, and pairwise-unifying arguments — `dyn Sub` never unifies with
     /// `dyn Super` in this slice.
     Dyn(String, Vec<Ty>),
-    /// A function type: parameter types, return type, and parameter conventions.
-    Fn(Vec<Ty>, Box<Ty>, Vec<Convention>),
+    /// A function type: parameter types, return type, conventions, and explicit
+    /// mutable-reference positions.  The final vector is semantic identity, not
+    /// an ABI convention: `let x: &'a mut T` accepts `&mut place`, whereas a
+    /// `var x: T` accepts a caller write-back place.
+    Fn(Vec<Ty>, Box<Ty>, Vec<Convention>, Vec<bool>),
     Var(u32),
 }
 
@@ -202,7 +206,7 @@ impl fmt::Display for Ty {
                 }
                 Ok(())
             }
-            Ty::Fn(params, ret, conventions) => {
+            Ty::Fn(params, ret, conventions, _) => {
                 write!(f, "fn(")?;
                 for (i, t) in params.iter().enumerate() {
                     if i > 0 {
@@ -241,7 +245,7 @@ fn collect_callable_lifetime_markers(ty: &Ty, markers: &mut HashMap<String, Stri
             }
         }
         // Nested function types introduce their own binders.
-        Ty::Fn(_, _, _)
+        Ty::Fn(_, _, _, _)
         | Ty::Int
         | Ty::Float
         | Ty::Duration
@@ -306,9 +310,9 @@ fn normalize_callable_lifetime_markers(
                 .map(|argument| normalize_callable_lifetime_markers(argument, markers))
                 .collect(),
         ),
-        Ty::Fn(parameters, result, conventions) => {
+            Ty::Fn(parameters, result, conventions, reference_params) => {
             let (parameters, result) = alpha_normalize_callable(parameters, result);
-            Ty::Fn(parameters, Box::new(result), conventions.clone())
+                Ty::Fn(parameters, Box::new(result), conventions.clone(), reference_params.clone())
         }
         other => other.clone(),
     }
@@ -2359,7 +2363,7 @@ fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
         Ty::Named(_, args) => args.iter().find_map(float_key_position),
         Ty::List(e) => float_key_position(e),
         Ty::Tuple(ts) => ts.iter().find_map(float_key_position),
-        Ty::Fn(ps, r, _) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(float_key_position),
+        Ty::Fn(ps, r, _, _) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(float_key_position),
         _ => None,
     }
 }
@@ -2388,7 +2392,7 @@ fn first_type_var(t: &Ty) -> Option<u32> {
         Ty::List(e) => first_type_var(e),
         Ty::Tuple(ts) => ts.iter().find_map(first_type_var),
         Ty::Named(_, args) => args.iter().find_map(first_type_var),
-        Ty::Fn(ps, r, _) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(first_type_var),
+        Ty::Fn(ps, r, _, _) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(first_type_var),
         _ => None,
     }
 }
@@ -3644,6 +3648,7 @@ impl Checker {
                     params.iter().map(|t| self.to_ty(t)).collect(),
                     Box::new(self.to_ty(ret)),
                     conventions.clone(),
+                    params.iter().map(type_is_exclusive_reference).collect(),
                 );
             }
             // (RFC-0081) A first-class existential identity: the bare trait
@@ -3694,6 +3699,7 @@ impl Checker {
                 params.iter().map(|t| self.to_ty_generic(t, vars)).collect(),
                 Box::new(self.to_ty_generic(ret, vars)),
                 conventions.clone(),
+                params.iter().map(type_is_exclusive_reference).collect(),
             ),
             // (RFC-0081) First-class existential identity; arguments recurse so
             // a signature's generic vars inside `dyn T(a)` stay shared (the
@@ -3787,10 +3793,11 @@ impl Checker {
             Ty::Dyn(n, args) => {
                 Ty::Dyn(n, args.iter().map(|x| self.subst_vars(x, map)).collect())
             }
-            Ty::Fn(params, ret, conventions) => Ty::Fn(
+            Ty::Fn(params, ret, conventions, reference_params) => Ty::Fn(
                 params.iter().map(|x| self.subst_vars(x, map)).collect(),
                 Box::new(self.subst_vars(&ret, map)),
                 conventions,
+                reference_params,
             ),
             other => other,
         }
@@ -3806,10 +3813,11 @@ impl Checker {
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
             Ty::Named(n, args) => Ty::Named(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
             Ty::Dyn(n, args) => Ty::Dyn(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
-            Ty::Fn(params, ret, conventions) => Ty::Fn(
+            Ty::Fn(params, ret, conventions, reference_params) => Ty::Fn(
                 params.iter().map(|t| self.resolve(t)).collect(),
                 Box::new(self.resolve(ret)),
                 conventions.clone(),
+                reference_params.clone(),
             ),
             _ => t.clone(),
         }
@@ -3881,7 +3889,7 @@ impl Checker {
             match resolved {
                 Ty::List(inner) => go(c, &inner, seen),
                 Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
-                Ty::Fn(params, ret, _) => params
+                Ty::Fn(params, ret, _, _) => params
                     .iter()
                     .find_map(|p| go(c, p, seen))
                     .or_else(|| go(c, &ret, seen)),
@@ -3929,7 +3937,7 @@ impl Checker {
     fn ty_carries_function_value(&self, t: &Ty) -> bool {
         fn go(c: &Checker, t: &Ty, seen: &mut HashSet<String>) -> bool {
             match c.resolve(t) {
-                Ty::Fn(_, _, _) => true,
+                Ty::Fn(..) => true,
                 Ty::List(inner) => go(c, &inner, seen),
                 Ty::Tuple(items) | Ty::Dyn(_, items) => {
                     items.iter().any(|item| go(c, item, seen))
@@ -4005,7 +4013,7 @@ impl Checker {
             match resolved {
                 Ty::List(inner) => go(c, &inner, seen),
                 Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
-                Ty::Fn(params, ret, _) => params
+                Ty::Fn(params, ret, _, _) => params
                     .iter()
                     .find_map(|p| go(c, p, seen))
                     .or_else(|| go(c, &ret, seen)),
@@ -4100,7 +4108,7 @@ impl Checker {
                     child.push(format!("tuple[{index}]"));
                     go(checker, item, visiting, &child)
                 }),
-                Ty::Fn(params, result, _) => params
+                Ty::Fn(params, result, _, _) => params
                     .iter()
                     .enumerate()
                     .find_map(|(index, param)| {
@@ -4245,7 +4253,7 @@ impl Checker {
             Ty::BuildExec => Some("BuildExec".to_string()),
             Ty::List(inner) => self.ty_authority_taint(&inner, seen),
             Ty::Tuple(items) => items.iter().find_map(|item| self.ty_authority_taint(item, seen)),
-            Ty::Fn(params, ret, _) => params
+            Ty::Fn(params, ret, _, _) => params
                 .iter()
                 .chain(std::iter::once(ret.as_ref()))
                 .find_map(|item| self.ty_authority_taint(item, seen)),
@@ -4291,7 +4299,7 @@ impl Checker {
             Ty::Tuple(items) => {
                 items.iter().try_for_each(|item| self.reject_structural_authority_ty(item, ctx))
             }
-            Ty::Fn(params, ret, _) => {
+            Ty::Fn(params, ret, _, _) => {
                 params.iter().try_for_each(|param| self.reject_structural_authority_ty(param, ctx))?;
                 self.reject_structural_authority_ty(&ret, ctx)
             }
@@ -4322,7 +4330,7 @@ impl Checker {
             Ty::List(inner) => self.compiler_syntax_ty(&inner),
             Ty::Dyn(_, args) => args.iter().find_map(|arg| self.compiler_syntax_ty(arg)),
             Ty::Tuple(items) => items.iter().find_map(|item| self.compiler_syntax_ty(item)),
-            Ty::Fn(params, ret, _) => params
+            Ty::Fn(params, ret, _, _) => params
                 .iter()
                 .chain(std::iter::once(ret.as_ref()))
                 .find_map(|item| self.compiler_syntax_ty(item)),
@@ -4362,7 +4370,7 @@ impl Checker {
             // A callable carries independently quantified relations in its type;
             // it is not itself a borrowed shell. Invocation checks its operands
             // and results at the corresponding runtime boundary.
-            Ty::Fn(_, _, _)
+            Ty::Fn(..)
             | Ty::Int
             | Ty::Float
             | Ty::Duration
@@ -4566,7 +4574,7 @@ impl Checker {
                 }
                 Ok(())
             }
-            Ty::Fn(params, ret, _) => {
+            Ty::Fn(params, ret, _, _) => {
                 params
                     .iter()
                     .try_for_each(|param| self.reject_externref_cap_aggregate_ty(param, ctx))?;
@@ -4619,9 +4627,18 @@ impl Checker {
                 }
                 Ok(())
             }
-            (Ty::Fn(xp, xr, xc), Ty::Fn(yp, yr, yc))
+            (Ty::Fn(xp, xr, xc, xrefs), Ty::Fn(yp, yr, yc, yrefs))
                 if xp.len() == yp.len() && xc == yc =>
             {
+                let reference_positions_match = (0..xp.len()).all(|index| {
+                    xrefs.get(index).copied().unwrap_or(false)
+                        == yrefs.get(index).copied().unwrap_or(false)
+                });
+                if !reference_positions_match {
+                    return terr(
+                        "function type erases or changes its borrow/convention relation",
+                    );
+                }
                 // Lifetime names in a function type are local universal binders,
                 // so `fn(...'a...)` and `fn(...'b...)` have the same identity
                 // when their relation positions agree. Normalize each callable
@@ -4647,7 +4664,7 @@ impl Checker {
             Ty::List(inner) => self.occurs(x, &inner),
             Ty::Tuple(items) => items.iter().any(|i| self.occurs(x, i)),
             Ty::Named(_, args) | Ty::Dyn(_, args) => args.iter().any(|a| self.occurs(x, a)),
-            Ty::Fn(params, ret, _) => {
+            Ty::Fn(params, ret, _, _) => {
                 params.iter().any(|p| self.occurs(x, p)) || self.occurs(x, &ret)
             }
             _ => false,
@@ -5109,6 +5126,7 @@ impl Checker {
                     vec![value.clone()],
                     Box::new(value.clone()),
                     vec![Convention::Let],
+                    vec![false],
                 );
                 Some((vec![dict.clone(), key, value, update], dict))
             }
@@ -5645,7 +5663,7 @@ impl Checker {
     /// elsewhere).
     fn uncomparable_kind(&self, t: &Ty, seen: &mut HashSet<String>) -> Option<Uncomparable> {
         match t {
-            Ty::Fn(_, _, _) => Some(Uncomparable::Function),
+            Ty::Fn(..) => Some(Uncomparable::Function),
             Ty::Dyn(_, _) => Some(Uncomparable::Existential),
             Ty::Console(_)
             | Ty::Clock
@@ -6136,7 +6154,7 @@ impl Checker {
                     .get(function)
                     .cloned()
                     .unwrap_or_else(|| vec![Convention::Let; params.len()]);
-                let function_ty = Ty::Fn(params, Box::new(ret), conventions);
+                let function_ty = Ty::Fn(params, Box::new(ret), conventions, vec![false; args.len()]);
                 if call_name != "vm.with_dir"
                     && let Some(cap) = self.ty_carries_externref_cap(&function_ty)
                 {
@@ -6153,7 +6171,7 @@ impl Checker {
         // yet unconstrained variable (which we pin to a function type).
         if !is_cap_op && let Some(vty) = self.lookup(name) {
             match self.resolve(&vty) {
-                Ty::Fn(param_tys, ret, conventions) => {
+                Ty::Fn(param_tys, ret, conventions, reference_params) => {
                     if self.current_isolated_callback.as_deref() != Some(name) {
                         self.reject_externref_cap_aggregate_ty(
                             &vty,
@@ -6201,7 +6219,7 @@ impl Checker {
                             &format!("function value `{name}`"),
                         )?;
                     }
-                    self.enforce_function_value_conventions(name, args, &conventions)?;
+                    self.enforce_function_value_conventions(name, args, &conventions, &reference_params)?;
                     self.reject_borrowed_nominal_runtime_ty(
                         ret.as_ref(),
                         &format!("call to function value `{display}` result"),
@@ -6225,6 +6243,7 @@ impl Checker {
                             argtys,
                             Box::new(ret.clone()),
                             vec![Convention::Let; args.len()],
+                            vec![false; args.len()],
                         ),
                     )?;
                     self.reject_externref_cap_aggregate_ty(
@@ -6391,10 +6410,12 @@ impl Checker {
                     .get(function)
                     .cloned()
                     .unwrap_or_else(|| vec![Convention::Let; callback_params.len()]);
+                let callback_param_count = callback_params.len();
                 Ok(Ty::Fn(
                     callback_params,
                     Box::new(callback_ret),
                     conventions,
+                    vec![false; callback_param_count],
                 ))
             } else if exact_generic {
                 self.infer(arg)
@@ -6611,9 +6632,26 @@ impl Checker {
         name: &str,
         args: &[Expr],
         conventions: &[Convention],
+        reference_params: &[bool],
     ) -> Result<(), TypeError> {
         let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
         for (index, (arg, convention)) in args.iter().zip(conventions).enumerate() {
+            if reference_params.get(index).copied().unwrap_or(false)
+                && let Expr::Unary { op: UnOp::BorrowMut, expr } = arg
+                && let Some(place) = crate::access::checked_place(expr)
+            {
+                for (previous_index, previous) in &var_places {
+                    if previous.overlaps(&place) {
+                        return terr(format!(
+                            "arguments {} and {} to `{name}` are overlapping exclusive reference places rooted in `{}`",
+                            previous_index + 1,
+                            index + 1,
+                            place.root()
+                        ));
+                    }
+                }
+                var_places.push((index, place));
+            }
             match convention {
                 Convention::Var => {
                     let parameter = self.var_parameter_context(name, index);
@@ -6750,7 +6788,7 @@ impl Checker {
         self.fn_conventions.get(name).cloned().or_else(|| {
             let ty = self.lookup(name)?;
             match self.resolve(&ty) {
-                Ty::Fn(_, _, conventions) => Some(conventions.clone()),
+                Ty::Fn(_, _, conventions, _) => Some(conventions.clone()),
                 _ => None,
             }
         })
@@ -7185,7 +7223,13 @@ impl Checker {
                         .get(name)
                         .cloned()
                         .unwrap_or_else(|| vec![Convention::Let; params.len()]);
-                    let function_ty = Ty::Fn(params, Box::new(ret), conventions);
+                    let param_count = params.len();
+                    let reference_params = self
+                        .fn_exclusive_reference_params
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| vec![false; param_count]);
+                    let function_ty = Ty::Fn(params, Box::new(ret), conventions, reference_params);
                     self.reject_externref_cap_aggregate_ty(
                         &function_ty,
                         &format!("function value `{name}`"),
@@ -7268,9 +7312,9 @@ impl Checker {
                 self.current_ret = saved_ret;
                 self.pop();
                 let conventions = params.iter().map(|p| p.convention).collect();
-                let function_ty = Ty::Fn(param_tys, Box::new(lambda_ret), conventions);
+                let function_ty = Ty::Fn(param_tys, Box::new(lambda_ret), conventions, vec![false; params.len()]);
                 if ret.is_none()
-                    && let Ty::Fn(_, result, _) = &function_ty
+                    && let Ty::Fn(_, result, _, _) = &function_ty
                 {
                     self.reject_borrowed_nominal_runtime_ty(
                         result,
@@ -7285,7 +7329,7 @@ impl Checker {
                 // The callee is an arbitrary expression of function type; unify
                 // it with `fn(argtys) -> r` and yield `r`.
                 let fty = self.infer(func)?;
-                if let Ty::Fn(param_tys, ret, conventions) = self.resolve(&fty) {
+                if let Ty::Fn(param_tys, ret, conventions, reference_params) = self.resolve(&fty) {
                     self.reject_externref_cap_aggregate_ty(&fty, "function value")?;
                     if param_tys.len() != args.len() {
                         return terr(format!(
@@ -7316,6 +7360,7 @@ impl Checker {
                         "function value",
                         args,
                         &conventions,
+                        &reference_params,
                     )?;
                     self.reject_borrowed_nominal_runtime_ty(
                         ret.as_ref(),
@@ -7339,6 +7384,7 @@ impl Checker {
                         argtys,
                         Box::new(ret.clone()),
                         vec![Convention::Let; args.len()],
+                        vec![false; args.len()],
                     ),
                 )
                     .map_err(|e| TypeError {
@@ -9336,7 +9382,7 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
             n.clone(),
             args.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
         ),
-        Ty::Fn(params, ret, conventions) => T::Fn(
+        Ty::Fn(params, ret, conventions, _) => T::Fn(
             params.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
             Box::new(ty_to_ast(ret)?),
             conventions.clone(),
@@ -9351,7 +9397,7 @@ fn ty_has_var(t: &Ty) -> bool {
         Ty::List(e) => ty_has_var(e),
         Ty::Tuple(ts) => ts.iter().any(ty_has_var),
         Ty::Named(_, args) | Ty::Dyn(_, args) => args.iter().any(ty_has_var),
-        Ty::Fn(ps, r, _) => ps.iter().any(ty_has_var) || ty_has_var(r),
+        Ty::Fn(ps, r, _, _) => ps.iter().any(ty_has_var) || ty_has_var(r),
         _ => false,
     }
 }
