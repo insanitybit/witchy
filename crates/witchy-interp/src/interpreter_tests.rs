@@ -1611,6 +1611,22 @@ fn main(console: Console):
     }
 
     #[test]
+fn exclusive_reference_writes_its_owner_place() {
+    let src = r#"
+mode opt
+
+fn write_value(slot: &'a mut Int):
+    *slot = 9
+
+fn main(console: Console):
+    var value = 1
+    write_value(&mut value)
+    console.print("${value}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["9"]);
+    }
+
+    #[test]
     fn shared_reference_is_a_first_class_read_value() {
         let src = r#"
 mode opt

@@ -2057,16 +2057,33 @@ impl Interpreter {
                 },
             },
             Expr::Call { name, args } if name == intrinsics::REFERENCE_WRITE => {
-                let [Expr::Var(reference), replacement] = args.as_slice() else {
-                    return err("internal: reference write requires a direct reference binding");
+                let [reference, replacement] = args.as_slice() else {
+                    return err("internal: reference write requires a reference and replacement");
                 };
                 let value = self.eval(replacement, env)?;
-                match env.assign(reference, value) {
-                    Assign::Done => Ok(Value::Unit),
-                    Assign::Immutable => err(
+                match self.eval(reference, env)? {
+                    Value::Reference { cell, mutable: true } => {
+                        *cell.borrow_mut() = value;
+                        Ok(Value::Unit)
+                    }
+                    Value::Reference { mutable: false, .. } => err(
                         "cannot assign through this reference: it is not an exclusive `&mut` binding",
                     ),
-                    Assign::Unbound => err("internal: reference write uses an unbound reference"),
+                    // The forced-copy envelope uses a writable parameter as its
+                    // place. Retain that representation until direct-place Wasm
+                    // lowering is available for every call shape.
+                    _ => match reference {
+                        Expr::Var(reference) => match env.assign(reference, value) {
+                            Assign::Done => Ok(Value::Unit),
+                            Assign::Immutable => err(
+                                "cannot assign through this reference: it is not an exclusive `&mut` binding",
+                            ),
+                            Assign::Unbound => err(
+                                "internal: reference write uses an unbound reference",
+                            ),
+                        },
+                        _ => err("internal: reference write requires a reference value"),
+                    },
                 }
             }
             Expr::Call { name, args } => self.eval_call(name, args, env),
