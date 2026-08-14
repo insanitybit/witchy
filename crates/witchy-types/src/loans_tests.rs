@@ -897,6 +897,18 @@
     }
 
     #[test]
+    fn exclusive_reference_sent_through_a_channel_is_rejected() {
+        let err = linked_main(
+            "mode opt\n\nimport chan\nimport task\n\nfn bad(tx: chan.Sender(String), input: &'a mut String) -> task.Task(Nil):\n    chan.send(tx, input)\n\nfn main(console: Console):\n    console.print(\"done\")\n",
+        )
+        .expect_err("an exclusive reference cannot escape through a channel");
+        assert!(
+            err.message.contains("escapes through a task or channel"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn local_send_lookalike_does_not_create_an_escape_boundary() {
         check_str(&opt(
             "    var s = \"hi\"\n    let w = borrow(s)\n    let _ = send(s, w)\n    console.print(w)\n",
