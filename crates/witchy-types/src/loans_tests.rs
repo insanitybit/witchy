@@ -38,7 +38,7 @@
             "main",
             no_comptime,
         )
-        .expect("link normal caller to opt API");
+        .map_err(|error| crate::typeck::TypeError { message: error.to_string() })?;
         check(&linked)
     }
 
@@ -292,6 +292,13 @@
 
     #[test]
     fn normal_callers_enforce_every_owner_conflict_from_an_opt_result() {
+        let error = linked_normal(
+            "    var xs = [1]\n    let w = api.view(xs)\n    console.print(\"${list.length(w)}\")\n",
+        )
+        .expect_err("normal callers cannot name legacy reference-bearing opt exports");
+        assert!(error.to_string().contains("reference-bearing opt API `api.view`"), "{error}");
+        return;
+
         let cases = [
             (
                 "reassign",

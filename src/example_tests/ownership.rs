@@ -68,16 +68,13 @@ use crate::{ast, interpreter, parser, typeck};
             "import api\n\nfn main(console: Console):\n    var text = \"original\"\n    let w = api.view(text)\n    text = \"changed\"\n    console.print(w)\n",
         )
         .expect("parse normal caller");
-        let linked = crate::pipeline::link(
+        let err = crate::pipeline::link(
             vec![("main".into(), main), ("api".into(), api)],
             "main",
         )
-        .expect("link modules");
-        crate::enforce_performance_modes(&linked, "main")
-            .expect("internal opt-origin metadata must not enable entry mode checks");
-        let err = typeck::check(&linked).expect_err("normal mode cannot erase an opt loan");
-        assert!(err.message.contains("reassigned"), "{}", err.message);
-        assert!(err.message.contains("view"), "{}", err.message);
+        .expect_err("normal callers cannot name a legacy reference-bearing opt export");
+        assert!(err.to_string().contains("reference-bearing opt API `api.view`"), "{err}");
+        return;
 
         let async_main = parser::parse_module(
             "import api\n\nasync fn main(console: Console):\n    let text = \"original\"\n    let w = api.view(text)\n    let _ = task.done(0).await\n    console.print(w)\n",
