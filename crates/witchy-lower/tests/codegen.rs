@@ -1026,6 +1026,36 @@ fn main(console: Console):
     }
 
     #[test]
+    fn returned_exclusive_reference_preserves_the_callee_projection() {
+        let source = r#"
+mode opt
+
+type Pair:
+    left: Int
+    right: Int
+
+fn left(pair: &'a mut Pair) -> &'a mut Int:
+    &mut pair.left
+
+fn main(console: Console):
+    var pair = Pair(1, 2)
+    let slot = left(&mut pair)
+    *slot = 9
+    console.print("${pair.left}:${pair.right}")
+"#;
+        let module = parse_module(source).expect("parse returned exclusive reference fixture");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("compiled backend preserves the returned exclusive reference place");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap();
+        assert_eq!(captured.lock().unwrap().as_slice(), ["9:2"]);
+    }
+
+    #[test]
     fn declared_packed_layout_survives_user_module_linking() {
         let model = parse_module(r#"
 mode opt

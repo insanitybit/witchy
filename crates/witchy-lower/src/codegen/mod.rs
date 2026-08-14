@@ -7278,6 +7278,7 @@ impl<'types> Codegen<'types> {
     pub(crate) fn static_reference_place(&self, expr: &Expr) -> Option<CodegenPlace> {
         match expr {
             Expr::Unary { op: UnOp::BorrowMut, expr } => self.static_reference_place(expr),
+            Expr::Call { name, args } => self.returned_reference_place(name, args),
             Expr::Var(reference) if self.reference_places.contains_key(reference) => {
                 self.reference_places.get(reference).cloned()
             }
@@ -7290,6 +7291,57 @@ impl<'types> Codegen<'types> {
             }),
             _ => None,
         }
+    }
+
+    /// Recover the place behind a direct call that returns an explicit exclusive
+    /// reference by projecting from one of its `&mut` parameters. This is the
+    /// forced-copy lowering counterpart of the interpreter's first-class place
+    /// reference: the callee still returns the payload, while the caller retains
+    /// the exact caller-side place for later writes through the returned handle.
+    ///
+    /// Keep this deliberately narrow. A branch, closure, trait dispatch, or
+    /// computed index needs the full `PlaceReference` value ABI, not a guessed
+    /// source-level projection.
+    fn returned_reference_place(&self, name: &str, args: &[Expr]) -> Option<CodegenPlace> {
+        let function = self.checked_module.items.iter().find_map(|item| match item {
+            Item::Function(function) if function.name == name => Some(function),
+            _ => None,
+        })?;
+        let returned = match function.body.stmts.as_slice() {
+            [Stmt::Expr(expr)] | [Stmt::Return(Some(expr))] => expr,
+            _ => return None,
+        };
+        let (param, fields) = Self::returned_reference_projection(returned)?;
+        let position = function.params.iter().position(|candidate| candidate.name == param)?;
+        let place = self.static_reference_place(args.get(position)?)?;
+        Some(Self::project_codegen_place_fields(place, &fields))
+    }
+
+    fn returned_reference_projection(expr: &Expr) -> Option<(&str, Vec<String>)> {
+        let Expr::Unary { op: UnOp::BorrowMut, expr } = expr else {
+            return None;
+        };
+        let mut fields = Vec::new();
+        let mut current = expr.as_ref();
+        while let Expr::Field { base, field } = current {
+            fields.push(field.clone());
+            current = base;
+        }
+        let Expr::Var(param) = current else {
+            return None;
+        };
+        fields.reverse();
+        Some((param, fields))
+    }
+
+    fn project_codegen_place_fields(mut place: CodegenPlace, fields: &[String]) -> CodegenPlace {
+        for field in fields {
+            place = CodegenPlace::Field {
+                base: Box::new(place),
+                field: field.clone(),
+            };
+        }
+        place
     }
 
     fn codegen_place_read(place: &CodegenPlace) -> Expr {
