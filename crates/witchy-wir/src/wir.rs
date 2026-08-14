@@ -269,6 +269,15 @@ pub fn place_reference_struct() -> WirStructDef {
     }
 }
 
+/// Owner cell for an aggregate still represented by a linear-memory pointer.
+/// It shares the uniform PlaceReference wrapper with scalar and GC roots.
+pub fn reference_i32_cell_struct() -> WirStructDef {
+    WirStructDef {
+        fields: vec![Kind::I32],
+        mutable: true,
+    }
+}
+
 /// A binary operator, abstract over the operand `Kind` (the printer picks the
 /// concrete mnemonic, e.g. `i64.add` vs `f64.add`). Comparisons yield an i32 bool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

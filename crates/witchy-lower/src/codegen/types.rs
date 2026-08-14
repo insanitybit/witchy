@@ -40,7 +40,7 @@ impl Codegen<'_> {
                 // row after the surface expression is rewritten. Recover the
                 // executable carrier from the scalar referent instead of
                 // declaring the binding as its old i64 payload kind.
-                UnOp::BorrowMut if self.kind_of(expr) == Kind::I64 => {
+                UnOp::BorrowMut if matches!(self.kind_of(expr), Kind::I64 | Kind::I32) => {
                     Kind::GcRef(super::PLACE_REFERENCE_ID)
                 }
                 UnOp::BorrowMut => self.kind_of(expr),

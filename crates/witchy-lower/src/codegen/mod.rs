@@ -396,6 +396,9 @@ const REFERENCE_I64_CELL_ID: u32 = 2;
 /// current scalar slice uses projection 0 for an i64 owner cell; aggregate
 /// projections extend that descriptor without changing `&'a T` call ABI.
 const PLACE_REFERENCE_ID: u32 = 3;
+/// Root cell for a linear-memory aggregate. Its `PlaceReference` projection
+/// selects a field or element without changing the reference call ABI.
+const REFERENCE_I32_CELL_ID: u32 = 4;
 const GC_LIST_SRC_TMP: &str = "__witchy_gc_list_src";
 const GC_LIST_RIGHT_TMP: &str = "__witchy_gc_list_right";
 const GC_LIST_DST_TMP: &str = "__witchy_gc_list_dst";
@@ -1758,9 +1761,7 @@ impl<'types> Codegen<'types> {
     }
 
     fn kind_for_type(&self, t: &Type) -> Kind {
-        if matches!(t, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), inner)
-            if matches!(inner.unqualified(), Type::Named(name, _) if name == "Int"))
-        {
+        if matches!(t, Type::Qualified(TypeQual::BorrowMut(_), _)) {
             return Kind::GcRef(PLACE_REFERENCE_ID);
         }
         let t = t.unqualified();
@@ -3266,6 +3267,9 @@ impl<'types> Codegen<'types> {
                         .and_then(witchy_types::typeck::ty_to_ast);
                     let inferred_type = if needs_resolved_type
                         || matches!(resolved_type.as_ref().map(Type::unqualified), Some(Type::Fn(..)))
+                        || resolved_type
+                            .as_ref()
+                            .is_some_and(|ty| Self::is_explicit_reference_type(ty))
                     {
                         resolved_type.clone()
                     } else {

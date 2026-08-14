@@ -431,6 +431,13 @@ impl<'types> Codegen<'types> {
                         && !sroa_done
                         && !closure_elide_done
                     {
+                        // A recovered returned/place borrow is now carried by
+                        // the uniform executable reference wrapper even when
+                        // legacy pre-inference saw only the referent's scalar
+                        // kind. Correct the binding before emitting its local.
+                        if reference_place.is_some() {
+                            self.locals.insert(name.clone(), Kind::GcRef(PLACE_REFERENCE_ID));
+                        }
                         let v = self.lower_expr(value)?;
                         seq.push(N::SetLocal { local: name.clone(), value: v });
                         // A fresh non-empty list literal is already uniquely owned

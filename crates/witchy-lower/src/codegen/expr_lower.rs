@@ -55,25 +55,12 @@ impl<'types> Codegen<'types> {
                     return None;
                 };
                 let value = self.lower_expr(replacement)?;
-                if self.kind_of(&Expr::Var(reference.clone())) == Kind::GcRef(PLACE_REFERENCE_ID) {
-                    return Some(W::Seq(vec![
-                        N::StructSet {
-                            struct_id: REFERENCE_I64_CELL_ID,
-                            field: 0,
-                            base: W::RefCast {
-                                struct_id: REFERENCE_I64_CELL_ID,
-                                value: Box::new(W::StructGet {
-                                    struct_id: PLACE_REFERENCE_ID,
-                                    field: 0,
-                                    base: Box::new(W::GetLocal(reference.clone())),
-                                }),
-                            },
-                            value,
-                        },
-                        N::Push(W::ConstI32(0)),
-                    ]));
-                }
-                if let Some(place) = self.reference_places.get(reference).cloned() {
+                if let Some(place) = self.reference_places.get(reference).cloned().filter(|place| {
+                    // Scalar owners have already been promoted to an executable
+                    // cell. Their reference must write that cell, not rebuild a
+                    // stale scalar local through the legacy static bridge.
+                    !self.reference_cells.contains_key(Self::codegen_place_root(place))
+                }) {
                     let replacement_kind = self.kind_of(replacement);
                     let replacement_valtype = self.val_type_of(replacement);
                     let replacement_local = var_scratch("result", 0, replacement_kind);
@@ -90,7 +77,7 @@ impl<'types> Codegen<'types> {
                     let updated = self.lower_expr(&update)?;
                     self.locals.remove(&replacement_local);
                     self.local_val_types.remove(&replacement_local);
-                    return Some(W::Seq(vec![
+                    let mut writes = vec![
                         N::SetLocal {
                             local: replacement_local.clone(),
                             value,
@@ -99,9 +86,34 @@ impl<'types> Codegen<'types> {
                             local: root,
                             value: Self::wir_convert(updated, root_kind, root_kind),
                         },
-                        N::SetLocal {
+                    ];
+                    // A carrier remains a carrier after its referent mutates.
+                    // The old scalar place bridge refreshed its local with the
+                    // replacement value; doing that to a PlaceReference would
+                    // erase its executable handle.
+                    if self.kind_of(&Expr::Var(reference.clone())) != Kind::GcRef(PLACE_REFERENCE_ID) {
+                        writes.push(N::SetLocal {
                             local: reference.clone(),
                             value: W::GetLocal(replacement_local),
+                        });
+                    }
+                    writes.push(N::Push(W::ConstI32(0)));
+                    return Some(W::Seq(writes));
+                }
+                if self.kind_of(&Expr::Var(reference.clone())) == Kind::GcRef(PLACE_REFERENCE_ID) {
+                    return Some(W::Seq(vec![
+                        N::StructSet {
+                            struct_id: REFERENCE_I64_CELL_ID,
+                            field: 0,
+                            base: W::RefCast {
+                                struct_id: REFERENCE_I64_CELL_ID,
+                                value: Box::new(W::StructGet {
+                                    struct_id: PLACE_REFERENCE_ID,
+                                    field: 0,
+                                    base: Box::new(W::GetLocal(reference.clone())),
+                                }),
+                            },
+                            value,
                         },
                         N::Push(W::ConstI32(0)),
                     ]));
@@ -222,7 +234,38 @@ impl<'types> Codegen<'types> {
             Expr::Unary { op, expr } => match op {
                 UnOp::Move | UnOp::Await | UnOp::Borrow => return self.lower_expr(expr),
                 UnOp::BorrowMut => {
+                    if let Expr::Field { base, .. } = expr.as_ref()
+                        && self.kind_of(base) == Kind::GcRef(PLACE_REFERENCE_ID)
+                    {
+                        return Some(W::StructNew {
+                            struct_id: PLACE_REFERENCE_ID,
+                            args: vec![
+                                W::StructGet {
+                                    struct_id: PLACE_REFERENCE_ID,
+                                    field: 0,
+                                    base: Box::new(self.lower_expr(base)?),
+                                },
+                                // Descriptor one is the first aggregate-field
+                                // projection. Descriptor dispatch is added with
+                                // the aggregate carrier slice; known writes use
+                                // the checked static place bridge above today.
+                                W::ConstI32(1),
+                            ],
+                        });
+                    }
                     let Expr::Var(owner) = expr.as_ref() else { return None };
+                    if self.kind_of(expr) == Kind::I32 {
+                        return Some(W::StructNew {
+                            struct_id: PLACE_REFERENCE_ID,
+                            args: vec![
+                                W::StructNew {
+                                    struct_id: REFERENCE_I32_CELL_ID,
+                                    args: vec![W::GetLocal(owner.clone())],
+                                },
+                                W::ConstI32(0),
+                            ],
+                        });
+                    }
                     if self.kind_of(expr) != Kind::I64 { return None; }
                     if let Some(cell) = self.reference_cells.get(owner) {
                         return Some(W::GetLocal(cell.clone()));
