@@ -78,6 +78,15 @@ fn rfc0122_function_value_float_reference_uses_the_typed_scalar_carrier() {
     assert_eq!(compiled, want, "compiled function value transports the Float reference carrier");
 }
 
+#[test]
+fn rfc0122_direct_string_reference_uses_the_typed_scalar_carrier() {
+    let src = "mode opt\n\nfn set(value: &'a mut String) -> Nil:\n    *value = \"updated\"\n\nfn main(console: Console):\n    var value = \"initial\"\n    set(&mut value)\n    console.print(value)\n";
+    let want = ["updated"];
+    assert_eq!(link_run(src), want, "interpreter writes through the String reference place");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled String reference preserves its pointer-valued scalar");
+}
+
 /// Projected references are values for reads as well as writes: the descriptor
 /// selects the aggregate slot after an opaque closure returns the handle.
 #[test]
