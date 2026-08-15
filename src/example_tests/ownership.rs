@@ -51,6 +51,15 @@ fn rfc0122_closure_returned_projected_reference_dispatches_at_runtime() {
     assert_eq!(compiled, want, "compiled closure dispatches the returned place reference");
 }
 
+#[test]
+fn rfc0122_direct_bool_reference_uses_the_typed_scalar_carrier() {
+    let src = "mode opt\n\nfn set(value: &'a mut Bool) -> Nil:\n    *value = true\n\nfn main(console: Console):\n    var value = false\n    set(&mut value)\n    console.print(\"${value}\")\n";
+    let want = ["true"];
+    assert_eq!(link_run(src), want, "interpreter writes through the Bool reference place");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled Bool reference preserves its typed scalar value");
+}
+
 /// Projected references are values for reads as well as writes: the descriptor
 /// selects the aggregate slot after an opaque closure returns the handle.
 #[test]

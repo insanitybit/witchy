@@ -143,7 +143,15 @@ impl<'types> Codegen<'types> {
                                 struct_id: REFERENCE_I64_CELL_ID,
                                 field: 0,
                                 base: scalar_cell(),
-                                value: value.clone(),
+                                // Scalar roots use the same universal slot as
+                                // aggregate fields.  A Bool or pointer root
+                                // therefore remains an executable reference
+                                // instead of depending on the old Int-only
+                                // cell representation.
+                                value: W::ToSlot(
+                                    Box::new(value.clone()),
+                                    Self::wir_kind(self.kind_of(replacement)),
+                                ),
                             }],
                             // Aggregate descriptors are their linear-memory
                             // slot offset.  Unlike source-level field indices,
@@ -204,18 +212,21 @@ impl<'types> Codegen<'types> {
             Expr::Str(s) => W::StrPtr(self.intern(s)),
             Expr::Var(name) if self.is_plain_local_var(name) => {
                 if let Some(cell) = self.reference_cells.get(name) {
-                    W::StructGet {
-                        struct_id: REFERENCE_I64_CELL_ID,
-                        field: 0,
-                        base: Box::new(W::RefCast {
+                    W::FromSlot(
+                        Box::new(W::StructGet {
                             struct_id: REFERENCE_I64_CELL_ID,
-                            value: Box::new(W::StructGet {
-                                struct_id: PLACE_REFERENCE_ID,
-                                field: 0,
-                                base: Box::new(W::GetLocal(cell.clone())),
+                            field: 0,
+                            base: Box::new(W::RefCast {
+                                struct_id: REFERENCE_I64_CELL_ID,
+                                value: Box::new(W::StructGet {
+                                    struct_id: PLACE_REFERENCE_ID,
+                                    field: 0,
+                                    base: Box::new(W::GetLocal(cell.clone())),
+                                }),
                             }),
                         }),
-                    }
+                        Self::wir_kind(self.kind_of(&Expr::Var(name.clone()))),
+                    )
                 } else {
                     W::GetLocal(name.clone())
                 }
@@ -331,7 +342,7 @@ impl<'types> Codegen<'types> {
                         return self.lower_expr(expr);
                     }
                     let Expr::Var(owner) = expr.as_ref() else { return None };
-                    if self.kind_of(expr) == Kind::I32 {
+                    if self.kind_of(expr) == Kind::I32 && self.record_type_of(expr).is_some() {
                         return Some(W::StructNew {
                             struct_id: PLACE_REFERENCE_ID,
                             args: vec![
@@ -343,7 +354,7 @@ impl<'types> Codegen<'types> {
                             ],
                         });
                     }
-                    if self.kind_of(expr) != Kind::I64 { return None; }
+                    if !matches!(self.kind_of(expr), Kind::I32 | Kind::I64) { return None; }
                     if let Some(cell) = self.reference_cells.get(owner) {
                         return Some(W::GetLocal(cell.clone()));
                     }
@@ -358,7 +369,10 @@ impl<'types> Codegen<'types> {
                                 args: vec![
                                     W::StructNew {
                                         struct_id: REFERENCE_I64_CELL_ID,
-                                        args: vec![W::GetLocal(owner.clone())],
+                                        args: vec![W::ToSlot(
+                                            Box::new(W::GetLocal(owner.clone())),
+                                            Self::wir_kind(self.kind_of(expr)),
+                                        )],
                                     },
                                     W::ConstI32(0),
                                 ],
