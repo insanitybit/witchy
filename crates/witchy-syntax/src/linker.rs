@@ -330,6 +330,115 @@ fn type_mentions_reference(ty: &Type) -> bool {
     }
 }
 
+/// Compute the opt-only nominal interface transitively. A normal importer must
+/// not be able to hide a reference merely by naming an opt type whose fields
+/// (or nested nominal fields) contain one.
+fn reference_bearing_type_names(modules: &[(String, Module)]) -> HashSet<String> {
+    let mut bearing = HashSet::new();
+    loop {
+        let before = bearing.len();
+        for (_, module) in modules {
+            for item in &module.items {
+                let Item::Type(definition) = item else { continue };
+                if definition.variants.iter().any(|variant| {
+                    variant.fields.iter().any(|field| {
+                        type_mentions_reference(field)
+                            || type_mentions_named_reference(field, &bearing)
+                    })
+                }) {
+                    bearing.insert(definition.name.clone());
+                }
+            }
+        }
+        if bearing.len() == before {
+            return bearing;
+        }
+    }
+}
+
+fn type_mentions_named_reference(ty: &Type, bearing: &HashSet<String>) -> bool {
+    match ty {
+        Type::Qualified(_, inner) => type_mentions_named_reference(inner, bearing),
+        Type::Named(name, args) => {
+            bearing.contains(name) || args.iter().any(|arg| type_mentions_named_reference(arg, bearing))
+        }
+        Type::Tuple(args) | Type::Dyn(_, args) => {
+            args.iter().any(|arg| type_mentions_named_reference(arg, bearing))
+        }
+        Type::RecordCompose { base, fields } => {
+            type_mentions_named_reference(base, bearing)
+                || fields.iter().any(|(_, field)| type_mentions_named_reference(field, bearing))
+        }
+        Type::Fn(params, result, _) => {
+            params.iter().any(|param| type_mentions_named_reference(param, bearing))
+                || type_mentions_named_reference(result, bearing)
+        }
+    }
+}
+
+fn named_reference_type<'a>(ty: &'a Type, bearing: &HashSet<String>) -> Option<&'a str> {
+    match ty {
+        Type::Qualified(_, inner) => named_reference_type(inner, bearing),
+        Type::Named(name, args) => bearing
+            .contains(name)
+            .then_some(name.as_str())
+            .or_else(|| args.iter().find_map(|arg| named_reference_type(arg, bearing))),
+        Type::Tuple(args) | Type::Dyn(_, args) => args
+            .iter()
+            .find_map(|arg| named_reference_type(arg, bearing)),
+        Type::RecordCompose { base, fields } => named_reference_type(base, bearing).or_else(|| {
+            fields
+                .iter()
+                .find_map(|(_, field)| named_reference_type(field, bearing))
+        }),
+        Type::Fn(params, result, _) => params
+            .iter()
+            .find_map(|param| named_reference_type(param, bearing))
+            .or_else(|| named_reference_type(result, bearing)),
+    }
+}
+
+fn check_normal_reference_type_interfaces(modules: &[(String, Module)]) -> Result<(), LinkError> {
+    let bearing = reference_bearing_type_names(modules);
+    if bearing.is_empty() {
+        return Ok(());
+    }
+    for (module_name, module) in modules {
+        if module.modes.iter().any(|mode| mode == "opt") {
+            continue;
+        }
+        for item in &module.items {
+            let mut types = Vec::new();
+            match item {
+                Item::Function(function) => {
+                    types.extend(function.params.iter().filter_map(|param| param.ty.as_ref()));
+                    types.extend(function.ret.iter());
+                }
+                Item::Type(definition) => for variant in &definition.variants {
+                    types.extend(variant.fields.iter());
+                },
+                Item::Trait(trait_def) => for method in &trait_def.methods {
+                    types.extend(method.params.iter().filter_map(|param| param.ty.as_ref()));
+                    types.extend(method.ret.iter());
+                },
+                Item::Impl(implementation) => for method in &implementation.methods {
+                    types.extend(method.params.iter().filter_map(|param| param.ty.as_ref()));
+                    types.extend(method.ret.iter());
+                },
+                Item::TypeAlias { ty, .. } => types.push(ty),
+                Item::Const { .. } | Item::Comptime(_) => {}
+            }
+            if let Some(ty) = types.into_iter().find_map(|ty| named_reference_type(ty, &bearing)) {
+                return lerr(format!(
+                    "normal module `{module_name}` cannot name reference-bearing opt type `{ty}`; \
+                     expose a conventional value type instead"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The source of a bundled standard-library module, if `name` is one. This is
 /// the canonical std registry: the linker treats it as a built-in search path,
 /// and the CLI/test harness resolve `import` against it too.
@@ -1806,6 +1915,10 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                 .map_err(|message| LinkError { message, location: None })
         })
         .collect::<Result<Vec<_>, _>>()?;
+
+    // Type aliases are expanded above, so this sees the same canonical nominal
+    // identities that function signatures and the later checker consume.
+    check_normal_reference_type_interfaces(&modules)?;
 
     // RFC-0002 sealing: a `capability` (a sealed type) may be CONSTRUCTED or
     // DESTRUCTURED only inside the module that declares it. Run AFTER
@@ -4659,6 +4772,30 @@ mod tests {
         )
         .expect_err("function values must not leak reference-bearing exports");
         assert!(error.message.contains("reference-bearing opt API `api.first`"), "{}", error.message);
+    }
+
+    #[test]
+    fn normal_importer_cannot_name_an_opt_type_that_contains_a_reference() {
+        let api = crate::parser::parse_module(
+            "mode opt\n\ntype Holder:\n    Holder(&'a String)\n\npub fn make(text: &'a String) -> Holder:\n    Holder(text)\n",
+        )
+        .expect("opt API parses");
+        let normal = crate::parser::parse_module(
+            "import api\n\nfn retain(holder: api.Holder) -> Int:\n    0\n\nfn main() -> Int:\n    0\n",
+        )
+        .expect("normal importer parses");
+
+        let error = link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect_err("normal source must not name a reference-bearing opt type");
+        assert!(
+            error.message.contains("reference-bearing opt type `api.Holder`"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
