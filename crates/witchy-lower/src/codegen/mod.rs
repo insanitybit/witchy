@@ -7285,13 +7285,6 @@ impl<'types> Codegen<'types> {
             Expr::Unary { op: UnOp::BorrowMut, expr } => {
                 self.capture_codegen_place(expr, next_coordinate, prelude)
             }
-            // A named exclusive reference carries the caller's place. Preserve
-            // that identity when a `var` parameter uses the forced-copy
-            // write-back ABI; treating the binding itself as a root would only
-            // update the transient reference payload.
-            Expr::Var(reference) if self.reference_places.contains_key(reference) => {
-                self.reference_places.get(reference).cloned()
-            }
             Expr::Var(root) if self.locals.contains_key(root) => {
                 Some(CodegenPlace::Root(root.clone()))
             }
