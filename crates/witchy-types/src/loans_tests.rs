@@ -101,6 +101,19 @@
     }
 
     #[test]
+    fn reference_cannot_cross_the_dynamic_persistence_boundary() {
+        let err = linked_main(
+            "mode opt\n\nimport dynamic\n\nfn erase(text: &'a String) -> dynamic.Dynamic:\n    dynamic.dynamic(text)\n\nfn main():\n    Nil\n",
+        )
+        .expect_err("a reference cannot be stored in Dynamic");
+        assert!(
+            err.message.contains("cannot be stored in Dynamic")
+                && err.message.contains("owned()"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn explicit_reference_type_requires_mode_opt_without_loan_follow_ons() {
         let err = check_str("fn first(text: &'a String) -> &'a String:\n    text\n")
             .expect_err("references are opt-only");

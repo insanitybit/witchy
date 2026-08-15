@@ -3476,6 +3476,14 @@ impl LoanCtx<'_> {
                 short_name(&source.origin),
             )));
         }
+        if let Some(source) = self.input_reference_dynamic_source(stmt) {
+            return Err(terr(format!(
+                "in `{}`: reference parameter from `{}` cannot be stored in Dynamic — \
+                 materialize it with `.owned()` before calling `dynamic.dynamic`",
+                short_name(self.fn_name),
+                short_name(&source.origin),
+            )));
+        }
         if matches!(stmt, Stmt::Break | Stmt::Continue)
             && let Some(loan) = open.first()
         {
@@ -3519,6 +3527,27 @@ impl LoanCtx<'_> {
         // in this statement's expressions.
         self.reject_owner_transfer(stmt, open, callables)?;
         Ok(())
+    }
+
+    fn input_reference_dynamic_source(&self, stmt: &Stmt) -> Option<&BorrowSource> {
+        let mut input = None;
+        walk_stmt_exprs(stmt, &mut |expr| {
+            if input.is_some() {
+                return;
+            }
+            let Expr::Call { name, args } = expr else { return };
+            if name != "dynamic.dynamic" && !name.starts_with("dynamic.dynamic__") {
+                return;
+            }
+            input = args.iter().find_map(|argument| match argument {
+                Expr::Var(name) => self
+                    .input_borrows
+                    .get(name)
+                    .and_then(|sources| sources.first()),
+                _ => None,
+            });
+        });
+        input
     }
 
     fn escape_call_source(
