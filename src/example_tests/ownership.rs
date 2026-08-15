@@ -118,6 +118,15 @@ fn rfc0122_mutable_exclusive_parameter_writes_back_on_both_backends() {
     assert_eq!(compiled, want, "compiled backend writes through a mutable exclusive parameter");
 }
 
+#[test]
+fn rfc0122_owned_exclusive_parameter_transfers_its_place_on_both_backends() {
+    let src = "mode opt\n\nfn forward(own text: &'a mut Int) -> &'a mut Int:\n    text\n\nfn main(console: Console):\n    var value = 1\n    let editable = &mut value\n    let returned = forward(editable)\n    *returned = 42\n    console.print(\"${value}\")\n";
+    let want = ["42"];
+    assert_eq!(link_run(src), want, "interpreter transfers an owned exclusive reference place");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled backend transports the owned exclusive reference place");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.
