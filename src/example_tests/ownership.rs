@@ -62,6 +62,17 @@ fn rfc0122_closure_returned_projected_reference_reads_at_runtime() {
     assert_eq!(compiled, want, "compiled closure reads the returned place reference");
 }
 
+/// The descriptor dispatch decodes the universal field slot to its declared
+/// type instead of treating every projected reference as an `Int`.
+#[test]
+fn rfc0122_closure_returned_bool_reference_reads_at_runtime() {
+    let src = "mode opt\n\ntype Flags:\n    left: Bool\n    right: Bool\n\nfn read(slot: &'a mut Bool) -> Bool:\n    *slot\n\nfn main(console: Console):\n    var flags = Flags(false, true)\n    let project = fn(flags: &'a mut Flags) -> &'a mut Bool:\n        &mut flags.right\n    let slot = project(&mut flags)\n    console.print(\"${read(slot)}\")\n";
+    let want = ["true"];
+    assert_eq!(link_run(src), want, "interpreter decodes a projected Bool reference");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled closure decodes the projected Bool slot");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.

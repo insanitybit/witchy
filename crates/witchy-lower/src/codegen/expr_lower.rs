@@ -387,18 +387,21 @@ impl<'types> Codegen<'types> {
                             field: 1,
                             base: Box::new(W::GetLocal(carrier.clone())),
                         };
-                        let scalar = W::StructGet {
-                            struct_id: REFERENCE_I64_CELL_ID,
-                            field: 0,
-                            base: Box::new(W::RefCast {
+                        let scalar = W::FromSlot(
+                            Box::new(W::StructGet {
                                 struct_id: REFERENCE_I64_CELL_ID,
-                                value: Box::new(W::StructGet {
-                                    struct_id: PLACE_REFERENCE_ID,
-                                    field: 0,
-                                    base: Box::new(W::GetLocal(carrier.clone())),
+                                field: 0,
+                                base: Box::new(W::RefCast {
+                                    struct_id: REFERENCE_I64_CELL_ID,
+                                    value: Box::new(W::StructGet {
+                                        struct_id: PLACE_REFERENCE_ID,
+                                        field: 0,
+                                        base: Box::new(W::GetLocal(carrier.clone())),
+                                    }),
                                 }),
                             }),
-                        };
+                            Self::wir_kind(result_kind),
+                        );
                         let aggregate_root = W::StructGet {
                             struct_id: REFERENCE_I32_CELL_ID,
                             field: 0,
@@ -424,16 +427,19 @@ impl<'types> Codegen<'types> {
                                     rhs: Box::new(W::ConstI32(0)),
                                 },
                                 then_: vec![N::Push(scalar)],
-                                els: vec![N::Push(W::Load {
-                                    ptr: Box::new(W::Binary {
-                                        op: witchy_wir::wir::BinOp::Add,
-                                        kind: witchy_wir::wir::Kind::I32,
-                                        lhs: Box::new(aggregate_root),
-                                        rhs: Box::new(projection),
+                                els: vec![N::Push(W::FromSlot(
+                                    Box::new(W::Load {
+                                        ptr: Box::new(W::Binary {
+                                            op: witchy_wir::wir::BinOp::Add,
+                                            kind: witchy_wir::wir::Kind::I32,
+                                            lhs: Box::new(aggregate_root),
+                                            rhs: Box::new(projection),
+                                        }),
+                                        kind: witchy_wir::wir::Kind::I64,
+                                        offset: 0,
                                     }),
-                                    kind: witchy_wir::wir::Kind::I64,
-                                    offset: 0,
-                                })],
+                                    Self::wir_kind(result_kind),
+                                ))],
                                 result: Some(Self::wir_ty_for_kind(result_kind)),
                             },
                         ]));
