@@ -1311,6 +1311,7 @@ fn validate_type_model(
 ) -> Result<(), TypeError> {
     validate_type(t, known, arities, nominal_parameters)?;
     reject_owned_qualifiers_inside_references(t)?;
+    reject_contradictory_exclusive_reference_handle_qualifiers(t)?;
     reject_structural_authority_type(t, type_defs)?;
     reject_borrowed_capability_views(t, storage)
 }
@@ -1345,6 +1346,54 @@ fn reject_owned_qualifiers_inside_references(t: &ast::Type) -> Result<(), TypeEr
             ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
                 arguments.iter().try_for_each(visit)
             }
+            ast::Type::RecordCompose { base, fields } => {
+                visit(base)?;
+                fields.iter().try_for_each(|(_, field)| visit(field))
+            }
+            ast::Type::Fn(parameters, result, _) => {
+                parameters.iter().try_for_each(visit)?;
+                visit(result)
+            }
+        }
+    }
+    visit(t)
+}
+
+/// `frozen` makes a handle read-only while `unique` / `local unique` promise
+/// exclusive mutable authority. They are individually meaningful wrappers for
+/// references, but cannot describe the same `&mut` handle at once.
+fn reject_contradictory_exclusive_reference_handle_qualifiers(t: &ast::Type) -> Result<(), TypeError> {
+    fn visit(t: &ast::Type) -> Result<(), TypeError> {
+        let mut cursor = t;
+        let mut frozen = false;
+        let mut unique = false;
+        loop {
+            match cursor {
+                ast::Type::Qualified(ast::TypeQual::Frozen, inner) => {
+                    frozen = true;
+                    cursor = inner;
+                }
+                ast::Type::Qualified(
+                    ast::TypeQual::Unique | ast::TypeQual::LocalUnique,
+                    inner,
+                ) => {
+                    unique = true;
+                    cursor = inner;
+                }
+                ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _) if frozen && unique => {
+                    return terr(
+                        "`frozen` and `unique` cannot qualify the same exclusive reference handle; \
+                         drop `frozen` for mutable access or use a shared `&'a T` reference",
+                    );
+                }
+                _ => break,
+            }
+        }
+        match t {
+            ast::Type::Qualified(_, inner) => visit(inner),
+            ast::Type::Named(_, arguments)
+            | ast::Type::Tuple(arguments)
+            | ast::Type::Dyn(_, arguments) => arguments.iter().try_for_each(visit),
             ast::Type::RecordCompose { base, fields } => {
                 visit(base)?;
                 fields.iter().try_for_each(|(_, field)| visit(field))

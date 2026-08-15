@@ -156,6 +156,18 @@
         .expect("a frozen shared-reference handle remains a read-only handle");
 
         let err = check_str(
+            "mode opt\n\nfn bad(text: frozen unique &'a mut String) -> Nil:\n    Nil\n",
+        )
+        .expect_err("frozen and unique cannot qualify the same exclusive reference handle");
+        assert!(err.contains("frozen") && err.contains("unique") && err.contains("exclusive reference"), "{err}");
+
+        let err = check_str(
+            "mode opt\n\nfn bad(text: unique frozen &'a mut String) -> Nil:\n    Nil\n",
+        )
+        .expect_err("qualifier order cannot hide the contradictory exclusive handle");
+        assert!(err.contains("frozen") && err.contains("unique") && err.contains("exclusive reference"), "{err}");
+
+        let err = check_str(
             "mode opt\n\nfn bad(text: &'a mut frozen String) -> Nil:\n    Nil\n",
         )
         .expect_err("a target qualifier cannot weaken an exclusive reference");
