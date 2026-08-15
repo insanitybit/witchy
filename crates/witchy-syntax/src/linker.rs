@@ -4681,6 +4681,26 @@ mod tests {
     }
 
     #[test]
+    fn normal_importer_cannot_call_an_opt_export_that_hides_a_reference_in_a_type_alias() {
+        let api = crate::parser::parse_module(
+            "mode opt\n\ntype Callback = fn(&'a String) -> Int\n\npub fn apply(callback: Callback) -> Int:\n    callback(\"value\")\n",
+        )
+        .expect("opt API with a reference-bearing alias parses");
+        let normal = crate::parser::parse_module(
+            "import api\n\nfn main() -> Int:\n    api.apply(fn(value):\n        0\n    )\n",
+        )
+        .expect("normal caller parses before interface filtering");
+
+        let error = link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect_err("alias expansion must not hide an opt reference from a normal importer");
+        assert!(error.message.contains("reference-bearing opt API `api.apply`"), "{}", error.message);
+    }
+
+    #[test]
     fn linker_repairs_constructors_for_imports_added_after_parsing() {
         let lib = crate::parser::parse_module(
             "type Choice:\n    Pick(Int)\n",
