@@ -51,6 +51,17 @@ fn rfc0122_closure_returned_projected_reference_dispatches_at_runtime() {
     assert_eq!(compiled, want, "compiled closure dispatches the returned place reference");
 }
 
+/// Projected references are values for reads as well as writes: the descriptor
+/// selects the aggregate slot after an opaque closure returns the handle.
+#[test]
+fn rfc0122_closure_returned_projected_reference_reads_at_runtime() {
+    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn read(slot: &'a mut Int) -> Int:\n    *slot\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let project = fn(pair: &'a mut Pair) -> &'a mut Int:\n        &mut pair.right\n    let slot = project(&mut pair)\n    let seen = read(slot)\n    console.print(\"${seen}\")\n";
+    let want = ["2"];
+    assert_eq!(link_run(src), want, "interpreter reads the projected place");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled closure reads the returned place reference");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.

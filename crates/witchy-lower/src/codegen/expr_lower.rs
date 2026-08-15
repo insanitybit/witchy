@@ -369,7 +369,25 @@ impl<'types> Codegen<'types> {
                 }
                 UnOp::Deref => {
                     if self.kind_of(expr) == Kind::GcRef(PLACE_REFERENCE_ID) {
-                        return Some(W::StructGet {
+                        // A carrier's root is either an i64 scalar cell
+                        // (descriptor zero) or an aggregate pointer cell whose
+                        // descriptor is the selected universal-slot offset.
+                        // Stage the handle once: a reference expression is a
+                        // value and must not be reconstructed on both sides of
+                        // the dispatch.
+                        let carrier = call_result_gc_tmp(PLACE_REFERENCE_ID);
+                        self.locals
+                            .insert(carrier.clone(), Kind::GcRef(PLACE_REFERENCE_ID));
+                        let result_kind = self
+                            .ast_type_of_expr(e)
+                            .map(|ty| self.kind_for_type(&ty))
+                            .unwrap_or(Kind::I64);
+                        let projection = W::StructGet {
+                            struct_id: PLACE_REFERENCE_ID,
+                            field: 1,
+                            base: Box::new(W::GetLocal(carrier.clone())),
+                        };
+                        let scalar = W::StructGet {
                             struct_id: REFERENCE_I64_CELL_ID,
                             field: 0,
                             base: Box::new(W::RefCast {
@@ -377,10 +395,48 @@ impl<'types> Codegen<'types> {
                                 value: Box::new(W::StructGet {
                                     struct_id: PLACE_REFERENCE_ID,
                                     field: 0,
-                                    base: Box::new(self.lower_expr(expr)?),
+                                    base: Box::new(W::GetLocal(carrier.clone())),
                                 }),
                             }),
-                        });
+                        };
+                        let aggregate_root = W::StructGet {
+                            struct_id: REFERENCE_I32_CELL_ID,
+                            field: 0,
+                            base: Box::new(W::RefCast {
+                                struct_id: REFERENCE_I32_CELL_ID,
+                                value: Box::new(W::StructGet {
+                                    struct_id: PLACE_REFERENCE_ID,
+                                    field: 0,
+                                    base: Box::new(W::GetLocal(carrier.clone())),
+                                }),
+                            }),
+                        };
+                        return Some(W::Seq(vec![
+                            N::SetLocal {
+                                local: carrier,
+                                value: self.lower_expr(expr)?,
+                            },
+                            N::If {
+                                cond: W::Binary {
+                                    op: witchy_wir::wir::BinOp::Eq,
+                                    kind: witchy_wir::wir::Kind::I32,
+                                    lhs: Box::new(projection.clone()),
+                                    rhs: Box::new(W::ConstI32(0)),
+                                },
+                                then_: vec![N::Push(scalar)],
+                                els: vec![N::Push(W::Load {
+                                    ptr: Box::new(W::Binary {
+                                        op: witchy_wir::wir::BinOp::Add,
+                                        kind: witchy_wir::wir::Kind::I32,
+                                        lhs: Box::new(aggregate_root),
+                                        rhs: Box::new(projection),
+                                    }),
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    offset: 0,
+                                })],
+                                result: Some(Self::wir_ty_for_kind(result_kind)),
+                            },
+                        ]));
                     }
                     return self.lower_expr(expr);
                 }

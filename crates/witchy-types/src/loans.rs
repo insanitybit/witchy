@@ -2475,7 +2475,12 @@ impl LoanCtx<'_> {
     /// the loan merely because the original name's last use is the aliasing let.
     fn collect_alias_sources(&self, value: &Expr, live: &[Loan], out: &mut Vec<BorrowSource>) {
         match value {
-            Expr::Unary { op: UnOp::Borrow | UnOp::Deref, expr } => {
+            // Borrowing a view preserves its owner relation; dereferencing one
+            // materializes the referent value and therefore must not publish a
+            // second borrowed result. `&*view` reaches this helper through the
+            // outer borrow arm above, which deliberately recovers the live
+            // source from its operand.
+            Expr::Unary { op: UnOp::Borrow, expr } => {
                 self.collect_alias_sources(expr, live, out);
             }
             Expr::Var(name) => {
@@ -2670,7 +2675,11 @@ impl LoanCtx<'_> {
                     // `&*view` and `&view` are shared reborrows. Their owner
                     // relation comes from the live/input source, not from the
                     // reference-handle variable itself.
-                    self.collect_alias_sources(expr, live, out);
+                    let source = match expr.as_ref() {
+                        Expr::Unary { op: UnOp::Deref, expr } => expr.as_ref(),
+                        source => source,
+                    };
+                    self.collect_alias_sources(source, live, out);
                     if out.is_empty() {
                         self.push_source(BorrowSource {
                             owner: String::new(),

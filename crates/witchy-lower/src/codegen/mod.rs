@@ -2042,6 +2042,14 @@ impl<'types> Codegen<'types> {
     }
 
     fn collect_unit_gc_ids_expr(&self, expr: &Expr, ids: &mut BTreeSet<u32>) {
+        // Address-taking and dereference can have an ordinary referent type in
+        // the checked expression table while lowering needs the uniform
+        // PlaceReference scratch carrier. Keep the local declaration contract
+        // tied to those executable forms instead of relying on erased result
+        // types to mention the carrier.
+        if matches!(expr, Expr::Unary { op: UnOp::BorrowMut | UnOp::Deref, .. }) {
+            ids.insert(PLACE_REFERENCE_ID);
+        }
         if let Some(ty) = self.ast_type_of_expr(expr) {
             self.collect_unit_gc_ids_type(&ty, ids);
         }
