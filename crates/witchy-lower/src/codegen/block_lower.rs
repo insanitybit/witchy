@@ -440,9 +440,8 @@ impl<'types> Codegen<'types> {
                             .is_some_and(|signature| {
                                 Self::is_executable_reference_type(signature.result().ty())
                             });
-                        if reference_place.is_some()
-                            && (self.kind_of(value) == Kind::GcRef(PLACE_REFERENCE_ID)
-                                || executable_reference_result)
+                        if self.kind_of(value) == Kind::GcRef(PLACE_REFERENCE_ID)
+                            || executable_reference_result
                         {
                             self.locals.insert(name.clone(), Kind::GcRef(PLACE_REFERENCE_ID));
                         }
