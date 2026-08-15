@@ -296,6 +296,89 @@ impl<'types> Codegen<'types> {
             Expr::Unary { op, expr } => match op {
                 UnOp::Move | UnOp::Await | UnOp::Borrow => return self.lower_expr(expr),
                 UnOp::BorrowMut => {
+                    if let Expr::Call { name, args }
+                        = expr.as_ref()
+                        && name == witchy_syntax::intrinsics::LIST_AT
+                        && let [base, index] = args.as_slice()
+                    {
+                        // Lists store their elements as contiguous universal
+                        // slots after the four-byte length header. Preserve the
+                        // list pointer plus the checked element offset in the
+                        // same PlaceReference carrier used for record fields.
+                        // The `list_at` call performs the bounds check before
+                        // the i64 index narrows for address arithmetic.
+                        let level = self.assign_level;
+                        if level >= SCRUT_POOL { return None; }
+                        self.assign_level = level + 1;
+                        let lowered = (|| {
+                            let list = if self.kind_of(base) == Kind::GcRef(PLACE_REFERENCE_ID) {
+                                W::FromSlot(
+                                    Box::new(W::StructGet {
+                                        struct_id: REFERENCE_I64_CELL_ID,
+                                        field: 0,
+                                        base: Box::new(W::RefCast {
+                                            struct_id: REFERENCE_I64_CELL_ID,
+                                            value: Box::new(W::StructGet {
+                                                struct_id: PLACE_REFERENCE_ID,
+                                                field: 0,
+                                                base: Box::new(self.lower_expr(base)?),
+                                            }),
+                                        }),
+                                    }),
+                                    witchy_wir::wir::Kind::I32,
+                                )
+                            } else {
+                                if self.kind_of(base) != Kind::I32 { return None; }
+                                self.lower_expr(base)?
+                            };
+                            let index = Self::wir_convert(
+                                self.lower_expr(index)?,
+                                self.kind_of(index),
+                                Kind::I64,
+                            );
+                            Some((list, index))
+                        })();
+                        self.assign_level = level;
+                        let (list, index) = lowered?;
+                        let list_tmp = assign_scratch("list", level);
+                        let index_tmp = assign_scratch("index", level);
+                        let offset = W::Binary {
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: witchy_wir::wir::Kind::I32,
+                            lhs: Box::new(W::ConstI32(4)),
+                            rhs: Box::new(W::Binary {
+                                op: witchy_wir::wir::BinOp::Mul,
+                                kind: witchy_wir::wir::Kind::I32,
+                                lhs: Box::new(Self::wir_convert(
+                                    W::GetLocal(index_tmp.clone()),
+                                    Kind::I64,
+                                    Kind::I32,
+                                )),
+                                rhs: Box::new(W::ConstI32(8)),
+                            }),
+                        };
+                        return Some(W::Seq(vec![
+                            N::SetLocal { local: list_tmp.clone(), value: list },
+                            N::SetLocal { local: index_tmp.clone(), value: index },
+                            N::Drop(W::Call {
+                                func: "list_at".into(),
+                                args: vec![
+                                    W::GetLocal(list_tmp.clone()),
+                                    W::GetLocal(index_tmp.clone()),
+                                ],
+                            }),
+                            N::Push(W::StructNew {
+                                struct_id: PLACE_REFERENCE_ID,
+                                args: vec![
+                                    W::StructNew {
+                                        struct_id: REFERENCE_I32_CELL_ID,
+                                        args: vec![W::GetLocal(list_tmp)],
+                                    },
+                                    offset,
+                                ],
+                            }),
+                        ]));
+                    }
                     if let Expr::Field { base, field } = expr.as_ref() {
                         let base_type = self.record_type_of(base)?;
                         let fields = self.record_fields.get(&base_type)?;

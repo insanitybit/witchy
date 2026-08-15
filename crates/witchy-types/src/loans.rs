@@ -1392,31 +1392,41 @@ fn type_has_generic_leaf(ty: &Type) -> bool {
     }
 }
 
-/// `list.length` is a compiler-owned, non-escaping read primitive. Its generic
-/// names the list element representation, not an ownership slot for the outer
-/// list view passed at this call site. Keep this exception exact: arbitrary
-/// composite generic parameters remain relation-erasing even with an owned
-/// result because their implementation may retain the argument elsewhere.
+/// Compiler-owned collection reads are non-escaping. Their generic arguments
+/// describe the collection's elements, keys, or values, not ownership slots for
+/// the outer reference passed at this call site. This permits `&mut xs[i]` to
+/// preserve an already-checked place relation while keeping arbitrary generic
+/// calls relation-erasing.
 fn authenticated_non_escaping_generic_read(
     callee: &str,
     index: usize,
     access: &AccessSignature,
 ) -> bool {
-    if callee != "list.length"
-        || !is_std_fn(callee)
-        || index != 0
-        || access.params().len() != 1
-        || !access.borrow_relations().is_empty()
-    {
+    if !is_std_fn(callee) || index != 0 || !access.borrow_relations().is_empty() {
         return false;
     }
-    matches!(
-        access.params()[0].ty().unqualified(),
-        Type::Named(name, arguments) if name == "List" && arguments.len() == 1
-    ) && matches!(
-        access.result().ty().unqualified(),
-        Type::Named(name, arguments) if name == "Int" && arguments.is_empty()
-    )
+    match callee {
+        "list.length" => {
+            access.params().len() == 1
+                && matches!(
+                    access.params()[0].ty().unqualified(),
+                    Type::Named(name, arguments) if name == "List" && arguments.len() == 1
+                )
+                && matches!(
+                    access.result().ty().unqualified(),
+                    Type::Named(name, arguments) if name == "Int" && arguments.is_empty()
+                )
+        }
+        witchy_syntax::intrinsics::LIST_AT => {
+            access.params().len() == 2
+                && matches!(
+                    access.params()[0].ty().unqualified(),
+                    Type::Named(name, arguments) if name == "List" && arguments.len() == 1
+                )
+                && type_has_generic_leaf(access.result().ty())
+        }
+        _ => false,
+    }
 }
 
 /// The bundled `borrow.Owned` blanket implementation is the one authenticated
