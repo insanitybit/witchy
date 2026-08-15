@@ -2238,3 +2238,22 @@
             witchy_syntax::ast::Type::Named("String".into(), Vec::new())
         );
     }
+
+    #[test]
+    fn loan_telemetry_summarizes_checked_events_without_exposing_addresses() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             fn first(text: &'a String) -> &'a String:\n    text\n\n\
+             fn main(console: Console):\n    var text = \"value\"\n    let view = first(&text)\n    console.print(view)\n",
+        )
+        .expect("parse telemetry fixture");
+        let facts = facts(&module).expect("check telemetry fixture");
+        let telemetry = facts.telemetry();
+
+        assert!(telemetry.active_points > 0, "{telemetry:?}");
+        assert!(telemetry.active_events > 0, "{telemetry:?}");
+        assert!(telemetry.opens > 0, "{telemetry:?}");
+        assert!(telemetry.closes > 0, "{telemetry:?}");
+        assert!(telemetry.control_flow_edges > 0, "{telemetry:?}");
+        assert_eq!(telemetry.subset_edges, 0, "no subset solver is active yet");
+    }

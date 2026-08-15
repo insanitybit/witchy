@@ -379,6 +379,25 @@ pub struct LoanFacts {
     edges: HashMap<LoanPoint, Vec<LoanEdgeFacts>>,
 }
 
+/// Stable aggregate counts from the checked loan graph.
+///
+/// These are intentionally facts, rather than timings: a corpus runner can
+/// pair them with its own wall-clock and allocation measurements without
+/// re-walking a source module or depending on lowerer internals. The current
+/// graph has no origin-subset solver, so `subset_edges` remains zero until that
+/// precision phase publishes real subset facts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LoanFactTelemetry {
+    pub active_points: usize,
+    pub active_events: usize,
+    pub opens: usize,
+    pub closes: usize,
+    pub return_transfers: usize,
+    pub shell_mutations: usize,
+    pub control_flow_edges: usize,
+    pub subset_edges: usize,
+}
+
 fn stmt_key(stmt: &Stmt) -> usize {
     stmt as *const Stmt as usize
 }
@@ -388,6 +407,21 @@ fn block_key(block: &Block) -> usize {
 }
 
 impl LoanFacts {
+    /// Count the authoritative events and control-flow edges retained for this
+    /// checked module. No address-keyed identity escapes this summary.
+    pub fn telemetry(&self) -> LoanFactTelemetry {
+        LoanFactTelemetry {
+            active_points: self.active.len(),
+            active_events: self.active.values().map(Vec::len).sum(),
+            opens: self.opens_after.values().map(Vec::len).sum(),
+            closes: self.closes_after.values().map(Vec::len).sum(),
+            return_transfers: self.return_transfers.values().map(Vec::len).sum(),
+            shell_mutations: self.shell_mutations.len(),
+            control_flow_edges: self.edges.values().map(Vec::len).sum(),
+            subset_edges: 0,
+        }
+    }
+
     pub fn point(&self, stmt: &Stmt) -> LoanPoint {
         LoanPoint { statement: stmt_key(stmt), phase: LoanPointPhase::Entry }
     }
