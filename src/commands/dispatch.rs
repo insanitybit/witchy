@@ -753,9 +753,9 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         return Ok(());
     }
     // RFC-0122: migrate legacy opt-mode reference annotations through the
-    // parser/formatter rather than textual replacement. This initial command
-    // rewrites only declarations whose legacy forms have an unambiguous AST
-    // representation; call-site borrowing is resolved by the semantic phase.
+    // parser/formatter rather than textual replacement. Direct local calls
+    // whose typed parameter proves an owner borrow are rewritten too; every
+    // other call is reported without changing the file.
     if std::env::args().nth(1).as_deref() == Some("migrate") {
         let args: Vec<String> = std::env::args().skip(2).collect();
         let Some((kind, paths)) = args.split_first() else {
@@ -769,12 +769,19 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         let mut failed = false;
         for path in paths {
             match std::fs::read_to_string(path) {
-                Ok(source) => match format::reformat_references(&source) {
-                    Some(rewritten) => {
+                Ok(source) => match format::migrate_references(&source) {
+                    Some(migration) if migration.ambiguities.is_empty() => {
+                        let rewritten = migration.source;
                         if let Err(error) = std::fs::write(path, rewritten) {
                             eprintln!("witchy migrate references: `{path}`: {error}");
                             failed = true;
                         }
+                    }
+                    Some(migration) => {
+                        for ambiguity in migration.ambiguities {
+                            eprintln!("witchy migrate references: `{path}`: {ambiguity}");
+                        }
+                        failed = true;
                     }
                     None => {
                         eprintln!("witchy migrate references: `{path}`: expected a parseable `mode opt` module");

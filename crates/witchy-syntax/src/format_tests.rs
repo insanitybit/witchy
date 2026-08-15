@@ -894,6 +894,24 @@
         assert_eq!(reformat_references(&out).as_deref(), Some(out.as_str()));
     }
 
+    #[test]
+    fn rfc0122_reference_migration_rewrites_proven_local_parameter_calls() {
+        let src = "mode opt\n\nfn first(text: String('a)) -> String('a):\n    text\n\nfn caller(text: String) -> String:\n    first(text)\n";
+        let migration = migrate_references(src).expect("opt legacy module migrates");
+        assert!(migration.ambiguities.is_empty(), "{:?}", migration.ambiguities);
+        assert!(migration.source.contains("first(&text)"), "{}", migration.source);
+        assert_eq!(reformat_references(src).as_deref(), Some(migration.source.as_str()));
+    }
+
+    #[test]
+    fn rfc0122_reference_migration_reports_unresolved_call_ownership() {
+        let src = "mode opt\n\nfn first(text: String('a)) -> String('a):\n    text\n\nfn caller() -> String:\n    first(\"value\")\n";
+        let migration = migrate_references(src).expect("opt legacy module migrates");
+        assert_eq!(migration.ambiguities.len(), 1, "{:?}", migration.ambiguities);
+        assert!(migration.ambiguities[0].contains("call `first` argument 1"));
+        assert!(reformat_references(src).is_none(), "ambiguous migration must not produce a guessed rewrite");
+    }
+
     // ---- RFC-0081: existential trait types -------------------------------
 
     #[test]

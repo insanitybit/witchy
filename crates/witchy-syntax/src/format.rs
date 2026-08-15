@@ -2598,14 +2598,45 @@ pub fn reformat_cap_methods(src: &str) -> Option<String> {
 /// RFC-0122's syntax-only migration. It is deliberately AST based: parsed
 /// legacy views already carry the same qualified type node as `&'a T`, so the
 /// canonical printer emits the reference spelling without guessing at text.
-/// Calls remain untouched here; their required borrow kind depends on resolved
-/// overloads and is reported by the CLI's semantic migration phase.
-pub fn reformat_references(src: &str) -> Option<String> {
+/// The migration also handles direct local calls when typed parameters prove
+/// whether an explicit borrow is required; every other call is reported by the
+/// CLI instead of guessed from its spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferenceMigration {
+    pub source: String,
+    pub ambiguities: Vec<String>,
+}
+
+/// Migrate legacy reference declarations and the direct calls whose borrow kind
+/// follows from local, explicitly typed declarations.  The latter is purposely
+/// narrow: an untyped local, a function value, an import, or a non-place
+/// argument needs the resolver's expected-parameter type and is reported for
+/// the command-level semantic phase instead of being guessed from spelling.
+pub fn migrate_references(src: &str) -> Option<ReferenceMigration> {
     let mut target = crate::parser::parse_module(src).ok()?;
     if !target.modes.iter().any(|mode| mode == "opt") {
         return None;
     }
     rewrite_reference_module(&mut target);
+    let signatures = reference_parameter_signatures(&target);
+    let mut ambiguities = Vec::new();
+    for item in &mut target.items {
+        if let Item::Function(function) = item {
+            let parameters = function
+                .params
+                .iter()
+                .filter_map(|parameter| parameter.ty.as_ref().map(|ty| {
+                    (parameter.name.clone(), reference_parameter_kind(ty))
+                }))
+                .collect();
+            rewrite_reference_calls_block(
+                &mut function.body,
+                &parameters,
+                &signatures,
+                &mut ambiguities,
+            );
+        }
+    }
     let out = module_with_trailing(
         &target,
         &crate::lexer::own_line_comments(src),
@@ -2622,7 +2653,166 @@ pub fn reformat_references(src: &str) -> Option<String> {
         &crate::lexer::own_line_comments(&out),
         &crate::lexer::trailing_comments(&out),
     )?;
-    (out == again).then_some(out)
+    (out == again).then_some(ReferenceMigration {
+        source: out,
+        ambiguities,
+    })
+}
+
+pub fn reformat_references(src: &str) -> Option<String> {
+    let migration = migrate_references(src)?;
+    migration.ambiguities.is_empty().then_some(migration.source)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReferenceParameterKind {
+    Shared,
+    Exclusive,
+}
+
+fn reference_parameter_kind(ty: &Type) -> Option<ReferenceParameterKind> {
+    match ty {
+        Type::Qualified(TypeQual::Borrow(_), _) => Some(ReferenceParameterKind::Shared),
+        Type::Qualified(TypeQual::BorrowMut(_), _) => Some(ReferenceParameterKind::Exclusive),
+        _ => None,
+    }
+}
+
+fn reference_parameter_signatures(
+    module: &Module,
+) -> std::collections::HashMap<String, Vec<Option<ReferenceParameterKind>>> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function) => Some((
+                function.name.clone(),
+                function
+                    .params
+                    .iter()
+                    .map(|parameter| parameter.ty.as_ref().and_then(reference_parameter_kind))
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+fn rewrite_reference_calls_block(
+    block: &mut Block,
+    parameters: &std::collections::HashMap<String, Option<ReferenceParameterKind>>,
+    signatures: &std::collections::HashMap<String, Vec<Option<ReferenceParameterKind>>>,
+    ambiguities: &mut Vec<String>,
+) {
+    for statement in &mut block.stmts {
+        match statement {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. }
+            | Stmt::Return(Some(value)) | Stmt::Yield(value) | Stmt::Expr(value) => {
+                rewrite_reference_calls_expr(value, parameters, signatures, ambiguities);
+            }
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn rewrite_reference_calls_expr(
+    expr: &mut Expr,
+    parameters: &std::collections::HashMap<String, Option<ReferenceParameterKind>>,
+    signatures: &std::collections::HashMap<String, Vec<Option<ReferenceParameterKind>>>,
+    ambiguities: &mut Vec<String>,
+) {
+    match expr {
+        Expr::Call { name, args } => {
+            for argument in args.iter_mut() {
+                rewrite_reference_calls_expr(argument, parameters, signatures, ambiguities);
+            }
+            if let Some(expected) = signatures.get(name) {
+                for (index, (argument, expected)) in args.iter_mut().zip(expected).enumerate() {
+                    let Some(kind) = expected else { continue };
+                    match argument {
+                        Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. } => {}
+                        Expr::Var(variable) if parameters.get(variable).is_some_and(|kind| kind.is_none()) => {
+                            *argument = Expr::Unary {
+                                op: match kind {
+                                    ReferenceParameterKind::Shared => UnOp::Borrow,
+                                    ReferenceParameterKind::Exclusive => UnOp::BorrowMut,
+                                },
+                                expr: Box::new(Expr::Var(variable.clone())),
+                            };
+                        }
+                        Expr::Var(variable) if parameters.get(variable).is_some_and(|kind| kind.is_some()) => {}
+                        _ => ambiguities.push(format!(
+                            "call `{name}` argument {} needs an explicit {} borrow but its owner/reference identity is unresolved",
+                            index + 1,
+                            match kind { ReferenceParameterKind::Shared => "shared", ReferenceParameterKind::Exclusive => "exclusive" },
+                        )),
+                    }
+                }
+            }
+        }
+        Expr::LabeledCall { args, .. } => for (_, argument) in args {
+            rewrite_reference_calls_expr(argument, parameters, signatures, ambiguities);
+        },
+        Expr::LabeledMethodCall { receiver, args, .. } => {
+            rewrite_reference_calls_expr(receiver, parameters, signatures, ambiguities);
+            for (_, argument) in args { rewrite_reference_calls_expr(argument, parameters, signatures, ambiguities); }
+        }
+        Expr::List(values) | Expr::Tuple(values) | Expr::Ctor { args: values, .. }
+        | Expr::AnonCtor { args: values, .. } => for value in values {
+            rewrite_reference_calls_expr(value, parameters, signatures, ambiguities);
+        },
+        Expr::Apply { func, args } => {
+            rewrite_reference_calls_expr(func, parameters, signatures, ambiguities);
+            for argument in args { rewrite_reference_calls_expr(argument, parameters, signatures, ambiguities); }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. } | Expr::ExistentialUpcast { expr, .. }
+        | Expr::Field { base: expr, .. } => rewrite_reference_calls_expr(expr, parameters, signatures, ambiguities),
+        Expr::ExistentialCall { receiver, args, .. } | Expr::MethodCall { receiver, args, .. } => {
+            rewrite_reference_calls_expr(receiver, parameters, signatures, ambiguities);
+            for argument in args { rewrite_reference_calls_expr(argument, parameters, signatures, ambiguities); }
+        }
+        Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. }
+        | Expr::Index { base: lhs, index: rhs } => {
+            rewrite_reference_calls_expr(lhs, parameters, signatures, ambiguities);
+            rewrite_reference_calls_expr(rhs, parameters, signatures, ambiguities);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            rewrite_reference_calls_expr(scrutinee, parameters, signatures, ambiguities);
+            rewrite_reference_calls_block(body, parameters, signatures, ambiguities);
+        }
+        Expr::Lambda { body, .. } | Expr::Block(body) => rewrite_reference_calls_block(body, parameters, signatures, ambiguities),
+        Expr::RecordUpdate { base, fields, .. } => {
+            rewrite_reference_calls_expr(base, parameters, signatures, ambiguities);
+            for (_, value) in fields { rewrite_reference_calls_expr(value, parameters, signatures, ambiguities); }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, value) in fields { rewrite_reference_calls_expr(value, parameters, signatures, ambiguities); }
+            if let Some(spread) = spread { rewrite_reference_calls_expr(spread, parameters, signatures, ambiguities); }
+        }
+        Expr::If { cond, then_block, else_block } => {
+            rewrite_reference_calls_expr(cond, parameters, signatures, ambiguities);
+            rewrite_reference_calls_block(then_block, parameters, signatures, ambiguities);
+            if let Some(block) = else_block { rewrite_reference_calls_block(block, parameters, signatures, ambiguities); }
+        }
+        Expr::Match { scrutinee, arms } => {
+            rewrite_reference_calls_expr(scrutinee, parameters, signatures, ambiguities);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard { rewrite_reference_calls_expr(guard, parameters, signatures, ambiguities); }
+                rewrite_reference_calls_expr(&mut arm.body, parameters, signatures, ambiguities);
+            }
+        }
+        Expr::While { cond, body } => {
+            rewrite_reference_calls_expr(cond, parameters, signatures, ambiguities);
+            rewrite_reference_calls_block(body, parameters, signatures, ambiguities);
+        }
+        Expr::For { iter, body, .. } => {
+            rewrite_reference_calls_expr(iter, parameters, signatures, ambiguities);
+            rewrite_reference_calls_block(body, parameters, signatures, ambiguities);
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::TaggedLit { .. } | Expr::Var(_) => {}
+    }
 }
 
 fn rewrite_reference_module(module: &mut Module) {
