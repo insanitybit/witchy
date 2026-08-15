@@ -411,7 +411,7 @@ impl LoanFacts {
     /// checked module. No address-keyed identity escapes this summary.
     pub fn telemetry(&self) -> LoanFactTelemetry {
         LoanFactTelemetry {
-            active_points: self.active.len(),
+            active_points: self.active.values().filter(|events| !events.is_empty()).count(),
             active_events: self.active.values().map(Vec::len).sum(),
             opens: self.opens_after.values().map(Vec::len).sum(),
             closes: self.closes_after.values().map(Vec::len).sum(),
