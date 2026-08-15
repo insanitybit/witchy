@@ -400,7 +400,8 @@ fn named_reference_type<'a>(ty: &'a Type, bearing: &HashSet<String>) -> Option<&
 
 fn check_normal_reference_type_interfaces(modules: &[(String, Module)]) -> Result<(), LinkError> {
     let bearing = reference_bearing_type_names(modules);
-    if bearing.is_empty() {
+    let bearing_traits = reference_bearing_trait_names(modules, &bearing);
+    if bearing.is_empty() && bearing_traits.is_empty() {
         return Ok(());
     }
     for (module_name, module) in modules {
@@ -428,15 +429,66 @@ fn check_normal_reference_type_interfaces(modules: &[(String, Module)]) -> Resul
                 Item::TypeAlias { ty, .. } => types.push(ty),
                 Item::Const { .. } | Item::Comptime(_) => {}
             }
-            if let Some(ty) = types.into_iter().find_map(|ty| named_reference_type(ty, &bearing)) {
-                return lerr(format!(
-                    "normal module `{module_name}` cannot name reference-bearing opt type `{ty}`; \
-                     expose a conventional value type instead"
-                ));
+            for ty in types {
+                if let Some(name) = named_reference_type(ty, &bearing) {
+                    return lerr(format!(
+                        "normal module `{module_name}` cannot name reference-bearing opt type `{name}`; \
+                         expose a conventional value type instead"
+                    ));
+                }
+                if let Some(name) = named_reference_trait(ty, &bearing_traits) {
+                    return lerr(format!(
+                        "normal module `{module_name}` cannot name reference-bearing opt trait `{name}`; \
+                         expose a conventional value type instead"
+                    ));
+                }
             }
         }
     }
     Ok(())
+}
+
+fn reference_bearing_trait_names(
+    modules: &[(String, Module)],
+    bearing_types: &HashSet<String>,
+) -> HashSet<String> {
+    modules
+        .iter()
+        .flat_map(|(_, module)| &module.items)
+        .filter_map(|item| match item {
+            Item::Trait(trait_def) if trait_def.methods.iter().any(|method| {
+                method
+                    .params
+                    .iter()
+                    .filter_map(|param| param.ty.as_ref())
+                    .chain(method.ret.iter())
+                    .any(|ty| type_mentions_reference(ty) || type_mentions_named_reference(ty, bearing_types))
+            }) => Some(trait_def.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn named_reference_trait<'a>(ty: &'a Type, bearing: &HashSet<String>) -> Option<&'a str> {
+    match ty {
+        Type::Qualified(_, inner) => named_reference_trait(inner, bearing),
+        Type::Dyn(name, args) => bearing
+            .contains(name)
+            .then_some(name.as_str())
+            .or_else(|| args.iter().find_map(|arg| named_reference_trait(arg, bearing))),
+        Type::Named(_, args) | Type::Tuple(args) => args
+            .iter()
+            .find_map(|arg| named_reference_trait(arg, bearing)),
+        Type::RecordCompose { base, fields } => named_reference_trait(base, bearing).or_else(|| {
+            fields
+                .iter()
+                .find_map(|(_, field)| named_reference_trait(field, bearing))
+        }),
+        Type::Fn(params, result, _) => params
+            .iter()
+            .find_map(|param| named_reference_trait(param, bearing))
+            .or_else(|| named_reference_trait(result, bearing)),
+    }
 }
 
 /// The source of a bundled standard-library module, if `name` is one. This is
@@ -4793,6 +4845,30 @@ mod tests {
         .expect_err("normal source must not name a reference-bearing opt type");
         assert!(
             error.message.contains("reference-bearing opt type `api.Holder`"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn normal_importer_cannot_name_an_opt_trait_with_reference_methods() {
+        let api = crate::parser::parse_module(
+            "mode opt\n\ntrait Read:\n    fn read(self: Self, text: &'a String) -> &'a String\n",
+        )
+        .expect("opt trait parses");
+        let normal = crate::parser::parse_module(
+            "import api\n\nfn retain(reader: dyn api.Read) -> Int:\n    0\n\nfn main() -> Int:\n    0\n",
+        )
+        .expect("normal importer parses");
+
+        let error = link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect_err("normal source must not name a reference-bearing opt trait");
+        assert!(
+            error.message.contains("reference-bearing opt trait `api.Read`"),
             "{}",
             error.message
         );
