@@ -386,6 +386,26 @@
     }
 
     #[test]
+    fn shared_reference_handles_copy_but_cannot_be_consumed_or_erased() {
+        check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let first = &text\n    let second = first\n    console.print(first)\n    console.print(second)\n",
+        )
+        .expect("shared handles remain copyable");
+
+        let moved = check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    let taken = move view\n    console.print(taken)\n",
+        )
+        .expect_err("a shared handle may not be consumed with move");
+        assert!(moved.contains("shared reference") && moved.contains("move"), "{moved}");
+
+        let erased = check_str(
+            "mode opt\n\nfn consume(own text: String) -> Nil:\n    Nil\n\nfn main():\n    var text = \"hello\"\n    let view = &text\n    consume(view)\n",
+        )
+        .expect_err("a conventional own parameter may not erase a shared relation");
+        assert!(erased.contains("shared reference") && erased.contains("own"), "{erased}");
+    }
+
+    #[test]
     fn explicit_borrow_argument_retains_the_returned_reference_owner() {
         let err = check_str(
             "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = first(&text)\n    text = \"changed\"\n    console.print(view)\n",

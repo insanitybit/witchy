@@ -3373,6 +3373,29 @@ impl LoanCtx<'_> {
         for (index, arg) in args.iter().enumerate() {
             let mut sources = self.borrow_sources(arg, callables, live);
             self.collect_alias_sources(arg, live, &mut sources);
+            if let Some(convention) = signature.conventions.get(index)
+                && convention.binds_mutable()
+                && let Some(source) = sources.first()
+                && signature
+                    .access
+                    .as_ref()
+                    .and_then(|access| access.params().get(index))
+                    .is_none_or(|parameter| self.catalog.slots(parameter.ty()).is_empty())
+            {
+                let convention = if *convention == Convention::Var { "`var`" } else { "`own`" };
+                return Err(terr(format!(
+                    "argument {} passed to `{}` carries a {} reference to `{}` but the {convention} \
+                     parameter has no matching reference relation; copy the referent with `.owned()` \
+                     before the call or declare the matching reference parameter",
+                    index + 1,
+                    short_name(callee),
+                    match source.kind {
+                        BorrowKind::Shared => "shared",
+                        BorrowKind::Exclusive => "exclusive",
+                    },
+                    source.owner,
+                )));
+            }
             if let Some(access) = signature.access.as_ref()
                 && let Some(parameter) = access.params().get(index)
                 && let Some(required) = direct_reference_kind(parameter.ty())
@@ -3630,6 +3653,22 @@ impl LoanCtx<'_> {
             }
             // `move owner`
             if let Expr::Unary { op: UnOp::Move, expr } = e {
+                let mut sources = self.borrow_sources(expr, callables, open);
+                self.collect_alias_sources(expr, open, &mut sources);
+                if let Some(source) = sources
+                    .iter()
+                    .find(|source| source.kind == BorrowKind::Shared)
+                {
+                    result = Err(terr(format!(
+                        "in `{}`: shared reference from `{}` to `{}` cannot be consumed with `move`; \
+                         shared references are copyable handles, so pass it directly or materialize \
+                         the referent with `.owned()`",
+                        short_name(self.fn_name),
+                        short_name(&source.origin),
+                        source.owner,
+                    )));
+                    return;
+                }
                 if let Some((root, _)) = expr_place(expr) {
                     if let Some(loan) = open.iter().find(|loan| loan.owner == root) {
                         result = Err(self.conflict(loan, "moved (`move`)"));
