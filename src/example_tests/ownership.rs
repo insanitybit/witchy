@@ -69,6 +69,15 @@ fn rfc0122_direct_float_reference_uses_the_typed_scalar_carrier() {
     assert_eq!(compiled, want, "compiled Float reference preserves its typed scalar value");
 }
 
+#[test]
+fn rfc0122_function_value_float_reference_uses_the_typed_scalar_carrier() {
+    let src = "mode opt\n\nfn set(value: &'a mut Float) -> Nil:\n    *value = 3.5\n\nfn main(console: Console):\n    var value = 1.0\n    let writer = set\n    writer(&mut value)\n    console.print(\"${value}\")\n";
+    let want = ["3.5"];
+    assert_eq!(link_run(src), want, "interpreter transports a Float reference through a function value");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled function value transports the Float reference carrier");
+}
+
 /// Projected references are values for reads as well as writes: the descriptor
 /// selects the aggregate slot after an opaque closure returns the handle.
 #[test]
