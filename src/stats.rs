@@ -70,6 +70,19 @@ pub struct Stats {
     pub extract_retains: i64,
     /// RC-backed leaves released by extraction's structural repair.
     pub extract_drops: i64,
+    /// Checked program points carrying one or more active loan facts.
+    pub loan_active_points: usize,
+    /// Total active loan facts across those program points.
+    pub loan_active_events: usize,
+    /// Borrow relations opened and closed by the checker.
+    pub loan_opens: usize,
+    pub loan_closes: usize,
+    /// Checked return transfers and fixed-shell mutation facts.
+    pub loan_return_transfers: usize,
+    pub loan_shell_mutations: usize,
+    /// Control-flow and origin-subset relations published by the checker.
+    pub loan_control_flow_edges: usize,
+    pub loan_subset_edges: usize,
 }
 
 /// Compile `src` (resolved against the bundled std) and run it under the active
@@ -77,6 +90,9 @@ pub struct Stats {
 /// need nothing beyond `Console` (the stats corpus is pure compute).
 pub fn compute(src: &str) -> Result<Stats, String> {
     let checked = crate::resolve_std_only_checked(src).map_err(|error| error.to_string())?;
+    let loan_telemetry = witchy_types::loans::facts(checked.module())
+        .map_err(|error| error.message)?
+        .telemetry();
     let bytes = match codegen::compile_checked_module_binary(&checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
@@ -112,6 +128,14 @@ pub fn compute(src: &str) -> Result<Stats, String> {
         extract_copied_bytes: vm.extract_copied_bytes().unwrap_or(0),
         extract_retains: vm.extract_retains().unwrap_or(0),
         extract_drops: vm.extract_drops().unwrap_or(0),
+        loan_active_points: loan_telemetry.active_points,
+        loan_active_events: loan_telemetry.active_events,
+        loan_opens: loan_telemetry.opens,
+        loan_closes: loan_telemetry.closes,
+        loan_return_transfers: loan_telemetry.return_transfers,
+        loan_shell_mutations: loan_telemetry.shell_mutations,
+        loan_control_flow_edges: loan_telemetry.control_flow_edges,
+        loan_subset_edges: loan_telemetry.subset_edges,
     })
 }
 
@@ -134,6 +158,29 @@ mod tests {
         assert_eq!(stats.destination_candidates_forwarded, 0);
         assert_eq!(stats.packed_alloc_calls, 0);
         assert_eq!(stats.packed_alloc_bytes, 0);
+        assert_eq!(stats.loan_active_points, 0);
+        assert_eq!(stats.loan_active_events, 0);
+        assert_eq!(stats.loan_opens, 0);
+        assert_eq!(stats.loan_closes, 0);
+        assert_eq!(stats.loan_return_transfers, 0);
+        assert_eq!(stats.loan_shell_mutations, 0);
+        assert_eq!(stats.loan_subset_edges, 0);
+    }
+
+    #[test]
+    fn reference_stats_include_checked_loan_fact_totals() {
+        let stats = compute(
+            "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    var text = \"value\"\n    let view = first(&text)\n    console.print(view)\n",
+        )
+        .expect("run checked reference fixture");
+
+        assert_eq!(stats.output, ["value"]);
+        assert!(stats.loan_active_points > 0, "{stats:?}");
+        assert!(stats.loan_active_events > 0, "{stats:?}");
+        assert!(stats.loan_opens > 0, "{stats:?}");
+        assert!(stats.loan_closes > 0, "{stats:?}");
+        assert!(stats.loan_control_flow_edges > 0, "{stats:?}");
+        assert_eq!(stats.loan_subset_edges, 0, "no subset solver is active yet");
     }
 
     // An accumulation loop: in-place push keeps it O(n); forced copy re-owns at

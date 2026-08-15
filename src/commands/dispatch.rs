@@ -177,6 +177,14 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 println!("extract_copied_bytes {}", s.extract_copied_bytes);
                 println!("extract_retains {}", s.extract_retains);
                 println!("extract_drops {}", s.extract_drops);
+                println!("loan_active_points {}", s.loan_active_points);
+                println!("loan_active_events {}", s.loan_active_events);
+                println!("loan_opens {}", s.loan_opens);
+                println!("loan_closes {}", s.loan_closes);
+                println!("loan_return_transfers {}", s.loan_return_transfers);
+                println!("loan_shell_mutations {}", s.loan_shell_mutations);
+                println!("loan_control_flow_edges {}", s.loan_control_flow_edges);
+                println!("loan_subset_edges {}", s.loan_subset_edges);
             }
             Err(e) => {
                 eprintln!("witchy stats: {e}");
