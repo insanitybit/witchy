@@ -4,7 +4,7 @@ This is the integration authority for RFC-0122. “PROVEN” requires current
 `master` plus the named evidence. A green queue item is not acceptance. Every
 other row remains open.
 
-Audit target: `9c8081c80b208ff9e83562c5677fd18b22d3998a` on `master`
+Audit target: `c70abc5ce7ae924f191e86694150bc770851fdd7` on `master`
 (2026-08-15). The linked RFC is accepted; this ledger determines when it is
 implemented.
 
@@ -28,7 +28,7 @@ implemented.
 | 16 no opt-graph erasure | contract | partial | signature preservation; casts/traits/closures/adapters/tails matrix remains |
 | 17 CFG precision | checker | partial | existing CFG facts; conditional returns, lending iterators, exact diagnostics remain |
 | 18 aggregate affine roots | checker/runtime | partial | shared aggregate roots; affine move/copy/destructure/iteration remains |
-| 19 interpreter/Wasm parity | runtime/wasm/evidence | partial | direct scalar and aggregate projected reads/writes agree on both backends through direct calls, function values, and closures (`rfc0122_*` ownership fixtures); forced-copy/direct-place, traps, cleanup, and full type matrix remain |
+| 19 interpreter/Wasm parity | runtime/wasm/evidence | partial | direct `Int`, `Bool`, `Float`, and `String` roots, plus aggregate projected reads/writes, agree on both backends through direct calls, function values, and closures (`rfc0122_*` ownership fixtures). The `String` fixture is `rfc0122_direct_string_reference_uses_the_typed_scalar_carrier`; `Float` direct and function-value fixtures cover the typed scalar carrier. Forced-copy/direct-place, traps, cleanup, and the full type matrix remain. |
 | 20 async and escape boundaries | checker/boundary | partial | shared escape cases; exclusive boundary matrix remains |
 | 21 migration command | evidence/migration | open | rewrite report, ambiguity tests, legacy-free census |
 | 22 performance telemetry | evidence | open | pinned corpus metric schema and before/after artifacts |
