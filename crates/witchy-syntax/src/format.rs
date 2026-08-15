@@ -2695,6 +2695,14 @@ fn rewrite_reference_function(
     for (_, _, arguments) in &mut function.bounds {
         for argument in arguments { rewrite_reference_type(argument, local_nominals); }
     }
+    // Local ascriptions are declarations too.  Leaving a retired direct
+    // relation here would make `witchy migrate references` report success but
+    // leave accepted legacy syntax in an otherwise migrated opt function.
+    for statement in &mut function.body.stmts {
+        if let Stmt::Let { ty: Some(ty), .. } = statement {
+            rewrite_reference_type(ty, local_nominals);
+        }
+    }
 }
 
 fn rewrite_reference_type(

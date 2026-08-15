@@ -885,6 +885,15 @@
         assert_eq!(reformat_references(&out).as_deref(), Some(out.as_str()));
     }
 
+    #[test]
+    fn rfc0122_reference_migration_rewrites_typed_local_declarations() {
+        let src = "mode opt\n\nfn first(text: String('a)) -> String('a):\n    let held: String('a) = text\n    held\n";
+        let out = reformat_references(src).expect("local direct relation migrates");
+        assert!(out.contains("fn first(text: &'a String) -> &'a String"), "{out}");
+        assert!(out.contains("let held: &'a String = text"), "{out}");
+        assert_eq!(reformat_references(&out).as_deref(), Some(out.as_str()));
+    }
+
     // ---- RFC-0081: existential trait types -------------------------------
 
     #[test]
