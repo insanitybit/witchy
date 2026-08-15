@@ -435,7 +435,15 @@ impl<'types> Codegen<'types> {
                         // the uniform executable reference wrapper even when
                         // legacy pre-inference saw only the referent's scalar
                         // kind. Correct the binding before emitting its local.
-                        if reference_place.is_some() {
+                        let executable_reference_result = self
+                            .call_access_signature(value)
+                            .is_some_and(|signature| {
+                                Self::is_executable_reference_type(signature.result().ty())
+                            });
+                        if reference_place.is_some()
+                            && (self.kind_of(value) == Kind::GcRef(PLACE_REFERENCE_ID)
+                                || executable_reference_result)
+                        {
                             self.locals.insert(name.clone(), Kind::GcRef(PLACE_REFERENCE_ID));
                         }
                         let v = self.lower_expr(value)?;

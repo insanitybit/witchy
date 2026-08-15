@@ -2317,7 +2317,7 @@ impl<'types> Codegen<'types> {
                     !signature
                         .params()
                         .get(*index)
-                        .is_some_and(|param| Self::is_explicit_reference_type(param.ty()))
+                        .is_some_and(|param| Self::is_executable_reference_type(param.ty()))
                 })
                 .collect(),
             unique_capacity_result: fact.unique_capacity_result(),
@@ -2326,6 +2326,10 @@ impl<'types> Codegen<'types> {
 
     fn is_explicit_reference_type(ty: &Type) -> bool {
         matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _))
+    }
+
+    fn is_executable_reference_type(ty: &Type) -> bool {
+        matches!(ty, Type::Qualified(TypeQual::BorrowMut(_), _))
     }
 
     fn ownership_envelope_for_named_signature(
@@ -2519,7 +2523,7 @@ impl<'types> Codegen<'types> {
         for (index, arg) in args.iter().enumerate() {
             let is_var = access.params().get(index).is_some_and(|param| {
                 param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
-                    && !Self::is_explicit_reference_type(param.ty())
+                    && !Self::is_executable_reference_type(param.ty())
             });
             let kind = if is_var {
                 param_kinds.get(index).copied().unwrap_or_else(|| self.kind_of(arg))
@@ -3269,7 +3273,7 @@ impl<'types> Codegen<'types> {
                         || matches!(resolved_type.as_ref().map(Type::unqualified), Some(Type::Fn(..)))
                         || resolved_type
                             .as_ref()
-                            .is_some_and(|ty| Self::is_explicit_reference_type(ty))
+                            .is_some_and(|ty| Self::is_executable_reference_type(ty))
                     {
                         resolved_type.clone()
                     } else {
@@ -3905,7 +3909,7 @@ impl<'types> Codegen<'types> {
                 access_signature.as_ref().is_some_and(|signature| {
                     signature.params().get(*index).is_some_and(|param| {
                         param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
-                            && !Self::is_explicit_reference_type(param.ty())
+                            && !Self::is_executable_reference_type(param.ty())
                     })
                 })
             })
@@ -4071,16 +4075,11 @@ impl<'types> Codegen<'types> {
         // `.kind()` is all the encoder reads: `Bool` => i32, `Int` => i64.
         let i32t = || WirTy::Bool;
         let i64t = || WirTy::Int;
-        let mut unit_gc_ids = self.unit_gc_ids(
+        let unit_gc_ids = self.unit_gc_ids(
             params.iter().filter_map(|param| param.ty.clone()),
             result.cloned(),
             &f.body,
         );
-        // The uniform reference carrier may occur in synthesized call-result
-        // and assignment scratch even when the source function only borrows at
-        // an inner expression. Reserve it in every WIR unit so those generated
-        // locals retain their typed GC representation.
-        unit_gc_ids.insert(PLACE_REFERENCE_ID);
         let mut params: Vec<WirLocal> = params
             .iter()
             .map(|p| WirLocal {
@@ -8306,7 +8305,7 @@ impl<'types> Codegen<'types> {
                     signature.params().get(*index).is_some_and(|access| {
                         access.kind()
                             == witchy_types::access::AccessKind::ExclusiveWriteback
-                            && !Self::is_explicit_reference_type(access.ty())
+                            && !Self::is_executable_reference_type(access.ty())
                     })
                 })
             })
@@ -8456,7 +8455,6 @@ impl<'types> Codegen<'types> {
                     None,
                     body,
                 );
-                unit_gc_ids.insert(PLACE_REFERENCE_ID);
                 for kind in param_kinds
                     .iter()
                     .copied()
