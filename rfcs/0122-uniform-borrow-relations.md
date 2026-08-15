@@ -1,10 +1,10 @@
 ---
 rfc: 0122
 title: "Opt-mode first-class references and explicit lifetimes"
-status: proposed
+status: accepted
 created: 2026-08-13
-updated: 2026-08-13
-tracking: "Opt-mode reference model; syntax replacement for RFC-0083 and semantic completion of shared and exclusive borrowing"
+updated: 2026-08-15
+tracking: "Accepted long-term opt-mode reference model. Implementation is tracked criterion-by-criterion in rfcs/0122-acceptance-ledger.md; executable compiled place-reference reads/writes through direct calls, function values, and closures landed through 9c8081c8."
 predecessors:
   - "[0026](0026-unique-qualifier.md) (`unique` and `local unique` ownership contracts)"
   - "[0083](0083-opt-mode-lifetimes.md) (`let('a) T`, `View(T, 'a)`, and shared owner loans)"
@@ -14,6 +14,10 @@ predecessors:
 ---
 
 # RFC-0122: Opt-mode first-class references and explicit lifetimes
+
+> **Status: accepted.** This is the settled language direction, not a claim
+> that every acceptance criterion is implemented. The live criterion and
+> evidence status is in [the RFC-0122 acceptance ledger](0122-acceptance-ledger.md).
 
 ## Summary
 
