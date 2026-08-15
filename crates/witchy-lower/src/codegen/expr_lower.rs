@@ -354,7 +354,7 @@ impl<'types> Codegen<'types> {
                             ],
                         });
                     }
-                    if !matches!(self.kind_of(expr), Kind::I32 | Kind::I64) { return None; }
+                    if !matches!(self.kind_of(expr), Kind::I32 | Kind::I64 | Kind::F64) { return None; }
                     if let Some(cell) = self.reference_cells.get(owner) {
                         return Some(W::GetLocal(cell.clone()));
                     }
