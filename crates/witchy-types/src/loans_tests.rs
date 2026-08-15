@@ -122,6 +122,40 @@
     }
 
     #[test]
+    fn normal_mode_rejects_every_direct_reference_surface_at_the_mode_boundary() {
+        let cases = [
+            (
+                "exclusive signature",
+                "fn edit(value: &'a mut String) -> &'a mut String:\n    value\n",
+            ),
+            (
+                "reference-bearing field",
+                "type Holder:\n    value: &'a String\n",
+            ),
+            (
+                "lifetime-bearing nominal declaration",
+                "type Holder('a):\n    value: String\n",
+            ),
+            (
+                "borrow expression",
+                "fn main():\n    let text = \"value\"\n    let view = &text\n",
+            ),
+            (
+                "dereference expression",
+                "fn main():\n    let text = \"value\"\n    let view = *text\n",
+            ),
+        ];
+        for (label, source) in cases {
+            let err = check_str(source).expect_err(label);
+            assert!(err.contains("mode opt"), "{label}: {err}");
+            assert!(
+                !err.contains("loan") && !err.contains("lifetime must") && !err.contains("unbound"),
+                "{label} must stop at the mode boundary: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn exclusive_reference_signature_retains_its_affine_contract() {
         check_str(
             "mode opt\n\nfn edit(text: &'a mut String) -> &'a mut String:\n    text\n",

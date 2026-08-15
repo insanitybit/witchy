@@ -906,6 +906,18 @@ fn validate_callable_nominal_lifetimes(
 /// compile-time-only and remain restricted to fixed single-variant shells.
 fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError> {
     let opt = module.modes.iter().any(|mode| mode == "opt");
+    if !opt
+        && module.linked_entry.is_none()
+        && module
+            .items
+            .iter()
+            .any(normal_mode_item_mentions_reference_surface)
+    {
+        return terr(
+            "explicit references and lifetime parameters are available only in `mode opt` files; \
+             normal Witchy uses owned values and does not require lifetime annotations",
+        );
+    }
     let lifetime_nominals = module
         .items
         .iter()
@@ -1018,6 +1030,64 @@ fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError>
         }
     }
     Ok(())
+}
+
+fn normal_mode_item_mentions_reference_surface(item: &Item) -> bool {
+    let callable_mentions_reference = |params: &[ast::Param], result: Option<&ast::Type>| {
+        params
+            .iter()
+            .filter_map(|parameter| parameter.ty.as_ref())
+            .any(type_mentions_reference_surface)
+            || result.is_some_and(type_mentions_reference_surface)
+    };
+    match item {
+        Item::Type(definition) => {
+            definition
+                .params
+                .iter()
+                .any(|parameter| ast::is_lifetime_param(parameter))
+                || definition
+                    .variants
+                    .iter()
+                    .flat_map(|variant| &variant.fields)
+                    .any(type_mentions_reference_surface)
+        }
+        Item::Function(function) => {
+            callable_mentions_reference(&function.params, function.ret.as_ref())
+        }
+        Item::Trait(definition) => definition
+            .methods
+            .iter()
+            .any(|method| callable_mentions_reference(&method.params, method.ret.as_ref())),
+        Item::Impl(definition) => definition
+            .methods
+            .iter()
+            .any(|method| callable_mentions_reference(&method.params, method.ret.as_ref())),
+        Item::TypeAlias { ty, .. } => type_mentions_reference_surface(ty),
+        Item::Const { .. } | Item::Comptime(_) => false,
+    }
+}
+
+fn type_mentions_reference_surface(ty: &ast::Type) -> bool {
+    match ty {
+        ast::Type::Qualified(ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_), _) => true,
+        ast::Type::Qualified(_, inner) => type_mentions_reference_surface(inner),
+        ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
+            arguments.iter().any(|argument| {
+                lifetime_argument_name(argument).is_some() || type_mentions_reference_surface(argument)
+            })
+        }
+        ast::Type::RecordCompose { base, fields } => {
+            type_mentions_reference_surface(base)
+                || fields
+                    .iter()
+                    .any(|(_, field)| type_mentions_reference_surface(field))
+        }
+        ast::Type::Fn(parameters, result, _) => {
+            parameters.iter().any(type_mentions_reference_surface)
+                || type_mentions_reference_surface(result)
+        }
+    }
 }
 
 fn validate_type(
