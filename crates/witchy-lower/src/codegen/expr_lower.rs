@@ -60,6 +60,11 @@ impl<'types> Codegen<'types> {
                     // cell. Their reference must write that cell, not rebuild a
                     // stale scalar local through the legacy static bridge.
                     !self.reference_cells.contains_key(Self::codegen_place_root(place))
+                        // An executable carrier is the source of truth for an
+                        // escaping reference.  Static-place reconstruction is
+                        // only the compatibility bridge for the old scalar
+                        // path; retaining it here loses aggregate projections.
+                        && self.kind_of(&Expr::Var(reference.clone())) != Kind::GcRef(PLACE_REFERENCE_ID)
                 }) {
                     let replacement_kind = self.kind_of(replacement);
                     let replacement_valtype = self.val_type_of(replacement);
@@ -101,19 +106,63 @@ impl<'types> Codegen<'types> {
                     return Some(W::Seq(writes));
                 }
                 if self.kind_of(&Expr::Var(reference.clone())) == Kind::GcRef(PLACE_REFERENCE_ID) {
-                    return Some(W::Seq(vec![
-                        N::StructSet {
-                            struct_id: REFERENCE_I64_CELL_ID,
+                    let projection = || W::StructGet {
+                        struct_id: PLACE_REFERENCE_ID,
+                        field: 1,
+                        base: Box::new(W::GetLocal(reference.clone())),
+                    };
+                    let scalar_cell = || W::RefCast {
+                        struct_id: REFERENCE_I64_CELL_ID,
+                        value: Box::new(W::StructGet {
+                            struct_id: PLACE_REFERENCE_ID,
                             field: 0,
-                            base: W::RefCast {
-                                struct_id: REFERENCE_I64_CELL_ID,
-                                value: Box::new(W::StructGet {
-                                    struct_id: PLACE_REFERENCE_ID,
-                                    field: 0,
-                                    base: Box::new(W::GetLocal(reference.clone())),
-                                }),
+                            base: Box::new(W::GetLocal(reference.clone())),
+                        }),
+                    };
+                    let aggregate_root = || W::StructGet {
+                        struct_id: REFERENCE_I32_CELL_ID,
+                        field: 0,
+                        base: Box::new(W::RefCast {
+                            struct_id: REFERENCE_I32_CELL_ID,
+                            value: Box::new(W::StructGet {
+                                struct_id: PLACE_REFERENCE_ID,
+                                field: 0,
+                                base: Box::new(W::GetLocal(reference.clone())),
+                            }),
+                        }),
+                    };
+                    return Some(W::Seq(vec![
+                        N::If {
+                            cond: W::Binary {
+                                op: witchy_wir::wir::BinOp::Eq,
+                                kind: witchy_wir::wir::Kind::I32,
+                                lhs: Box::new(projection()),
+                                rhs: Box::new(W::ConstI32(0)),
                             },
-                            value,
+                            then_: vec![N::StructSet {
+                                struct_id: REFERENCE_I64_CELL_ID,
+                                field: 0,
+                                base: scalar_cell(),
+                                value: value.clone(),
+                            }],
+                            // Aggregate descriptors are their linear-memory
+                            // slot offset, allowing an opaque callable to
+                            // select any projected field at runtime.
+                            els: vec![N::Store {
+                                ptr: W::Binary {
+                                    op: witchy_wir::wir::BinOp::Add,
+                                    kind: witchy_wir::wir::Kind::I32,
+                                    lhs: Box::new(aggregate_root()),
+                                    rhs: Box::new(projection()),
+                                },
+                                value: W::ToSlot(
+                                    Box::new(value),
+                                    Self::wir_kind(self.kind_of(replacement)),
+                                ),
+                                kind: witchy_wir::wir::Kind::I64,
+                                offset: 0,
+                            }],
+                            result: None,
                         },
                         N::Push(W::ConstI32(0)),
                     ]));
@@ -234,9 +283,28 @@ impl<'types> Codegen<'types> {
             Expr::Unary { op, expr } => match op {
                 UnOp::Move | UnOp::Await | UnOp::Borrow => return self.lower_expr(expr),
                 UnOp::BorrowMut => {
-                    if let Expr::Field { base, .. } = expr.as_ref()
-                        && self.kind_of(base) == Kind::GcRef(PLACE_REFERENCE_ID)
-                    {
+                    if let Expr::Field { base, field } = expr.as_ref() {
+                        let base_type = self.record_type_of(base)?;
+                        let fields = self.record_fields.get(&base_type)?;
+                        let index = fields.iter().position(|(name, _)| name == field)?;
+                        let descriptor = W::ConstI32((4 + 8 * index) as i32);
+                        if self.kind_of(base) != Kind::GcRef(PLACE_REFERENCE_ID) {
+                            // A direct aggregate field has a linear-memory
+                            // owner pointer. Box it as the carrier root so the
+                            // same runtime write path handles direct, returned,
+                            // and reborrowed projected references.
+                            if self.kind_of(base) != Kind::I32 { return None; }
+                            return Some(W::StructNew {
+                                struct_id: PLACE_REFERENCE_ID,
+                                args: vec![
+                                    W::StructNew {
+                                        struct_id: REFERENCE_I32_CELL_ID,
+                                        args: vec![self.lower_expr(base)?],
+                                    },
+                                    descriptor,
+                                ],
+                            });
+                        }
                         return Some(W::StructNew {
                             struct_id: PLACE_REFERENCE_ID,
                             args: vec![
@@ -245,13 +313,18 @@ impl<'types> Codegen<'types> {
                                     field: 0,
                                     base: Box::new(self.lower_expr(base)?),
                                 },
-                                // Descriptor one is the first aggregate-field
-                                // projection. Descriptor dispatch is added with
-                                // the aggregate carrier slice; known writes use
-                                // the checked static place bridge above today.
-                                W::ConstI32(1),
+                                // The physical universal-slot offset travels
+                                // in the carrier, so reborrows retain their
+                                // selected field without a static place bridge.
+                                descriptor,
                             ],
                         });
+                    }
+                    // Reborrowing an already executable handle preserves its
+                    // root and descriptor. It is a new checked loan, not a
+                    // copied scalar value or a fresh owner cell.
+                    if self.kind_of(expr) == Kind::GcRef(PLACE_REFERENCE_ID) {
+                        return self.lower_expr(expr);
                     }
                     let Expr::Var(owner) = expr.as_ref() else { return None };
                     if self.kind_of(expr) == Kind::I32 {
