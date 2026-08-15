@@ -39,6 +39,18 @@ fn rfc0122_indirect_exclusive_scalar_reference_uses_a_runtime_carrier() {
     assert_eq!(compiled, want, "compiled call_indirect transports the executable reference cell");
 }
 
+/// A closure has no statically recoverable function target. Its returned field
+/// reference therefore proves the runtime descriptor, rather than the static
+/// place bridge, selects the aggregate write location.
+#[test]
+fn rfc0122_closure_returned_projected_reference_dispatches_at_runtime() {
+    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let project = fn(pair: &'a mut Pair) -> &'a mut Int:\n        &mut pair.right\n    let slot = project(&mut pair)\n    *slot = 9\n    console.print(\"${pair.left}:${pair.right}\")\n";
+    let want = ["1:9"];
+    assert_eq!(link_run(src), want, "interpreter closure returns the projected place");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled closure dispatches the returned place reference");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.

@@ -146,8 +146,10 @@ impl<'types> Codegen<'types> {
                                 value: value.clone(),
                             }],
                             // Aggregate descriptors are their linear-memory
-                            // slot offset, allowing an opaque callable to
-                            // select any projected field at runtime.
+                            // slot offset.  Unlike source-level field indices,
+                            // that stays meaningful after a closure erases the
+                            // producing expression and lets the carrier select
+                            // any record field at runtime.
                             els: vec![N::Store {
                                 ptr: W::Binary {
                                     op: witchy_wir::wir::BinOp::Add,
@@ -313,9 +315,11 @@ impl<'types> Codegen<'types> {
                                     field: 0,
                                     base: Box::new(self.lower_expr(base)?),
                                 },
-                                // The physical universal-slot offset travels
-                                // in the carrier, so reborrows retain their
-                                // selected field without a static place bridge.
+                                // Aggregate projections are the physical
+                                // universal-slot offset. The descriptor travels
+                                // as a value, so an opaque closure can write its
+                                // returned reference without recovering a
+                                // source-level function target.
                                 descriptor,
                             ],
                         });
@@ -782,9 +786,42 @@ impl<'types> Codegen<'types> {
             // A lambda lowers to a uniform GC wrapper plus its typed environment;
             // the lifted body is registered as a `WirFunc` + table entry.
             Expr::Lambda { params, body, .. } => {
-                let signature = (self.closure_param_kinds(e), self.apply_ret_kind(e));
                 let result_ty = self.closure_result_type(e);
                 let access = self.closure_access_signature(e);
+                // The checker access signature retains `&'a mut T` qualifiers
+                // on lambda parameters/results. The expression type can have
+                // been normalized to its referent before this lowering pass;
+                // using it would silently rebuild the old i64 slot ABI.
+                let signature = access
+                    .as_ref()
+                    .map(|signature| {
+                        (
+                            signature
+                                .params()
+                                .iter()
+                                .map(|param| self.kind_for_type(param.ty()))
+                                .collect(),
+                            self.kind_for_type(signature.result().ty()),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            params
+                                .iter()
+                                .map(|param| {
+                                    param
+                                        .ty
+                                        .as_ref()
+                                        .map(|ty| self.kind_for_type(ty))
+                                        .unwrap_or(Kind::I32)
+                                })
+                                .collect(),
+                            result_ty
+                                .as_ref()
+                                .map(|ty| self.kind_for_type(ty))
+                                .unwrap_or_else(|| self.apply_ret_kind(e)),
+                        )
+                    });
                 let ownership = access
                     .as_ref()
                     .map(Self::ownership_envelope_for_signature)

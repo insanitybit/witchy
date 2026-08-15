@@ -399,12 +399,31 @@ impl<'types> Codegen<'types> {
                         && self.closure_elide_called.contains(name)
                     {
                         if let Expr::Lambda { params, body: lbody, .. } = value {
-                            let signature = (
-                                self.closure_param_kinds(value),
-                                self.apply_ret_kind(value),
-                            );
                             let result_ty = self.closure_result_type(value);
                             let access = self.closure_access_signature(value);
+                            // Threaded closures use the same typed ABI as
+                            // boxed closures. In particular, `&mut` values are
+                            // executable place-reference carriers, never the
+                            // scalar referent slot that expression typing may
+                            // otherwise expose after lowering.
+                            let signature = access
+                                .as_ref()
+                                .map(|signature| {
+                                    (
+                                        signature
+                                            .params()
+                                            .iter()
+                                            .map(|param| self.kind_for_type(param.ty()))
+                                            .collect(),
+                                        self.kind_for_type(signature.result().ty()),
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    (
+                                        self.closure_param_kinds(value),
+                                        self.apply_ret_kind(value),
+                                    )
+                                });
                             let ownership = access
                                 .as_ref()
                                 .map(Self::ownership_envelope_for_signature)
