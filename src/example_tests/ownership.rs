@@ -318,6 +318,49 @@ fn main(console: Console):
         );
     }
 
+    /// An aliased normal caller selects the copy-correct conventional entry for
+    /// an opt `var unique` export: the callee's write-back updates the caller's
+    /// variable while the pre-existing value alias keeps its original contents.
+    /// Neither source module contains a reference type or borrow expression.
+    #[test]
+    fn rfc0122_normal_repair_preserves_alias_and_var_writeback_on_both_backends() {
+        let api = r#"
+mode opt
+
+import list
+
+pub fn append(var values: unique List(Int)) -> Nil:
+    values.push(3)
+"#;
+        let app = r#"
+import api
+
+fn main(console: Console):
+    var values = [1, 2]
+    let before = values
+    api.append(values)
+    console.print("${values}:${before}")
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app")
+            .expect("link normal repair caller");
+        typeck::check(&linked).expect("normal repair caller type checks");
+        let expected = ["[1, 2, 3]:[1, 2]"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter performs copy-correct repair and write-back",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled backend performs the same repair and write-back",
+        );
+    }
+
     /// RFC-0088 baseline: update-and-extract returns the exact old leaf while
     /// committing the repaired collection. Shared snapshots remain unchanged;
     /// empty/missing operations return None. The structural helper performs the
