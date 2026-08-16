@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn reference_stats_include_checked_loan_fact_totals() {
         let stats = compute(
-            "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    var text = \"value\"\n    let view = first(&text)\n    console.print(view)\n",
+            "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    var text = \"value\"\n    let view = first(&text)\n    console.print(*view)\n",
         )
         .expect("run checked reference fixture");
 
