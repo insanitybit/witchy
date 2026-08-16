@@ -4,24 +4,28 @@ use super::*;
 /// place, rather than a copy or the function's temporary return slot.
 #[test]
 fn conditional_exclusive_reference_return_preserves_each_runtime_place_on_both_backends() {
-    let src = "mode opt\n\n\
-        type Pair:\n\
-            left: Int\n\
-            right: Int\n\n\
-        fn select(pair: &'a mut Pair, first: Bool) -> &'a mut Int:\n\
-            if first:\n\
-                &mut pair.left\n\
-            else:\n\
-                &mut pair.right\n\n\
-        fn main(console: Console):\n\
-            var first = Pair(1, 2)\n\
-            let left = select(&mut first, true)\n\
-            *left = 9\n\
-            console.print(\"${*left}\")\n\
-            var second = Pair(3, 4)\n\
-            let right = select(&mut second, false)\n\
-            *right = 8\n\
-            console.print(\"${*right}\")\n";
+    let src = r#"mode opt
+
+type Pair:
+    left: Int
+    right: Int
+
+fn select(pair: &'a mut Pair, first: Bool) -> &'a mut Int:
+    if first:
+        &mut pair.left
+    else:
+        &mut pair.right
+
+fn main(console: Console):
+    var first = Pair(1, 2)
+    let left = select(&mut first, true)
+    *left = 9
+    console.print("${*left}")
+    var second = Pair(3, 4)
+    let right = select(&mut second, false)
+    *right = 8
+    console.print("${*right}")
+"#;
     let want = ["9", "8"];
 
     assert_eq!(link_run(src), want, "interpreter preserves the selected place");
