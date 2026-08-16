@@ -99,13 +99,21 @@ fn view_lifetime(ty: &Type) -> Option<&str> {
 fn direct_reference_kind(ty: &Type) -> Option<BorrowKind> {
     match ty {
         // `Borrow` still also represents the RFC-0083 `let('a)` surface while
-        // the migration is live. Its conventional calls remain source-compatible
-        // until the parser records the legacy spelling separately. `BorrowMut`
-        // is new and unambiguous, so it can already require `&mut place`.
+        // the migration is live. Legacy calls remain source-compatible through
+        // `LegacyBorrow`; the direct `&'a T` spelling is unambiguous and must
+        // receive a reference handle, never an implicitly borrowed value.
+        Type::Qualified(TypeQual::Borrow(_), _) => Some(BorrowKind::Shared),
         Type::Qualified(TypeQual::BorrowMut(_), _) => Some(BorrowKind::Exclusive),
         Type::Qualified(_, inner) => direct_reference_kind(inner),
         _ => None,
     }
+}
+
+const EXPLICIT_REFERENCE_ORIGIN: &str = "explicit borrow";
+
+fn source_is_direct_reference(source: &BorrowSource) -> bool {
+    source.origin == EXPLICIT_REFERENCE_ORIGIN
+        || source.root_type.as_ref().and_then(direct_reference_kind).is_some()
 }
 
 fn is_opt_function(name: &str, modes: &[String]) -> bool {
@@ -2808,7 +2816,7 @@ impl LoanCtx<'_> {
                         root_type: root_type.clone(),
                         projection,
                         borrower_projection: LoanProjection::default(),
-                        origin: "explicit borrow".into(),
+                        origin: EXPLICIT_REFERENCE_ORIGIN.into(),
                         kind: if matches!(e, Expr::Unary { op: UnOp::BorrowMut, .. }) {
                             BorrowKind::Exclusive
                         } else {
@@ -2832,7 +2840,7 @@ impl LoanCtx<'_> {
                             root_type: None,
                             projection: LoanProjection::default(),
                             borrower_projection: LoanProjection::default(),
-                            origin: "explicit borrow".into(),
+                            origin: EXPLICIT_REFERENCE_ORIGIN.into(),
                             kind: BorrowKind::Shared,
                             owner_type: Type::Named("Unknown".into(), Vec::new()),
                             temporary: true,
@@ -3538,7 +3546,8 @@ impl LoanCtx<'_> {
             }
             let Some(access) = signature.access.as_ref() else { continue };
             let Some(parameter) = access.params().get(index) else { continue };
-            if !type_has_generic_leaf(parameter.ty())
+            if (!type_has_generic_leaf(parameter.ty())
+                && !sources.iter().any(source_is_direct_reference))
                 || authenticated_non_escaping_generic_read(callee, index, access)
                 || authenticated_generic_materializer(callee, index, access, &sources)
             {
