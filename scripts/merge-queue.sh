@@ -858,7 +858,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local queue_infra_only="${5:-0}"
     local cargo_target_dir="${6:-target}"
     local census_proof_sha="${7:-}"
-    local ungated="${8-glamour grimoire}"
+    local ungated="${8-glamour grimoire}" skip_sweeps="${9:-0}"
     local selected_gate_cmd="$gate_cmd"
     if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
         selected_gate_cmd="./scripts/check.sh --queue-infra"
@@ -882,7 +882,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -1865,6 +1865,27 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # missed regression costs a project we do not gate on, while an unnecessary
     # run costs every queued branch behind this one. `ungated` lists the
     # families to SKIP, so each grep ADDS a family when the diff misses it.
+    # Corpus sweeps from the same diff (see check.sh's WITCHY_GATE_SKIP_SWEEPS).
+    # The sweeps walk every example, std module and documented ```witchy block
+    # on both backends — ~900 compile+run cycles, the largest remaining block
+    # of work in the suite. They are keyed on their INPUTS, never on whether
+    # examples/ changed: a compiler change over an untouched corpus is the case
+    # they exist to catch, so `examples/ is unchanged` is NOT a licence to skip.
+    #
+    # A sweep can only differ if the batch touches something it reads. Anything
+    # outside this list — tests/, scripts/, .github/, .claude/ — cannot move the
+    # result, and re-deriving a known answer costs a full corpus pass.
+    #
+    # Fail SAFE toward CORRECTNESS here, unlike the ungated-project list above:
+    # an errored or empty diff RUNS the sweeps. They guard the prime directive,
+    # so an unnecessary run costs time while a wrongly skipped one costs the
+    # parity guarantee. Any doubt about a path belongs on this list.
+    local skip_sweeps=0
+    if [ -n "$changed" ] \
+        && ! echo "$changed" | grep -cE '^(crates/|src/|std/|examples/|book/|spec/|README\.md|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' >/dev/null; then
+        skip_sweeps=1
+    fi
+
     local ungated=""
     echo "$changed" | grep -qE '^(web/|projects/glamour|projects/coven-web|book/|dist/)' \
         || ungated="$ungated glamour"
@@ -1974,10 +1995,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 2
     fi
 
-    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]); log: $log"
+    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps); log: $log"
     local gate_started; gate_started="$(date +%s)"
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
-        "$cargo_target_dir" "$census_proof_sha" "$ungated"
+        "$cargo_target_dir" "$census_proof_sha" "$ungated" "$skip_sweeps"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 

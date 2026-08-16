@@ -214,6 +214,36 @@ ungated_filter_glamour='binary(glamour) or test(/^commands::web::/) or test(/^ex
 # grimoire/coven: the package-manager and registry example matrix.
 ungated_filter_grimoire='test(/^example_tests::pm_coven::/)'
 
+# CORPUS SWEEPS -------------------------------------------------------------
+# The corpus sweeps walk every example, every std module and every ```witchy
+# block in the docs, compiling and running each on both backends — roughly 900
+# program compile+run cycles, the largest single block of work left in the
+# suite. They are the differential corpus that guards the prime directive, so
+# they are NOT keyed on whether examples/ changed: a compiler change with an
+# untouched corpus is exactly the case they exist to catch.
+#
+# They are keyed on their INPUTS instead. A sweep can only produce a different
+# answer if the diff touches something it reads: the compiler (crates/, src/,
+# std/, build.rs, Cargo metadata, the toolchain), the corpus itself
+# (examples/), or the prose corpora (book/, spec/, README.md). A candidate
+# that touches none of those — a tests/ change, a scripts/ change, a CI or
+# agent-config change — cannot move the result, so running it re-derives a
+# known answer at full price. Measured over 200 commits: 22% of the ones that
+# run a full gate today are in that set.
+#
+# merge-queue.sh classifies from the batch diff and fails SAFE to running
+# them. Keep this filterset and that path list in step; when in doubt, add the
+# path there rather than narrowing this expression.
+sweeps_filter='test(/^example_tests::example_sweeps::/) or test(/^example_tests::region::examples_agree_under_inplace_and_forced_copy$/)'
+gate_skip_sweeps="${WITCHY_GATE_SKIP_SWEEPS:-0}"
+case "$gate_skip_sweeps" in
+    0 | 1) ;;
+    *) echo "check.sh: WITCHY_GATE_SKIP_SWEEPS must be 0 or 1" >&2; exit 2 ;;
+esac
+[ "$full" -eq 1 ] && gate_skip_sweeps=0
+sweeps_excl=""
+[ "$gate_skip_sweeps" -eq 1 ] && sweeps_excl="not ($sweeps_filter)"
+
 gate_ungated="${WITCHY_GATE_UNGATED-glamour grimoire}"
 [ "$full" -eq 1 ] && gate_ungated=""
 ungated_excl=""
@@ -272,6 +302,9 @@ if cargo nextest --version >/dev/null 2>&1; then
     fi
     if [ -n "$ungated_excl" ]; then
         excl="${excl:+$excl and }$ungated_excl"
+    fi
+    if [ -n "$sweeps_excl" ]; then
+        excl="${excl:+$excl and }$sweeps_excl"
     fi
     # In the SERIALIZED gate, stop at the first failure. The profile's
     # `fail-fast = false` is right for a developer, who wants every failure from
