@@ -2699,7 +2699,15 @@ impl LoanCtx<'_> {
             // established last-use, conflict, aggregate, and root-lifetime logic
             // applies without a parallel borrow checker.
             Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, expr } => {
-                if let Some((root, PlaceProjection::Fixed(projection))) = expr_place(expr) {
+                if let Some((root, place_projection)) = expr_place(expr) {
+                    // A dynamic index still has a stable owner. The runtime
+                    // carrier captures its evaluated offset; the checker
+                    // conservatively loans the whole owner because a later
+                    // dynamic index cannot prove a disjoint projection.
+                    let projection = match place_projection {
+                        PlaceProjection::Fixed(projection) => projection,
+                        PlaceProjection::Dynamic => LoanProjection::default(),
+                    };
                     let root_type = self.checked_root_type(expr);
                     self.push_source(BorrowSource {
                         owner: root.to_string(),
