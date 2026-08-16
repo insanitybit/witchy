@@ -60,6 +60,34 @@
     }
 
     #[test]
+    fn preserves_the_owner_binding_inside_an_explicit_reference() {
+        let mut module = crate::parser::parse_module(
+            "mode opt\n\nfn f():\n    let text = \"value\"\n",
+        )
+        .expect("parse opt reference");
+        let Item::Function(function) = &mut module.items[0] else {
+            panic!("expected function")
+        };
+        // Borrow expressions are introduced by resolution after parsing; test
+        // the exact post-resolution form the optimizer receives.
+        function.body.stmts.push(Stmt::Expr(Expr::Unary {
+            op: crate::ast::UnOp::Borrow,
+            expr: Box::new(Expr::Var("text".into())),
+        }));
+        optimize(&mut module);
+        let Item::Function(function) = &module.items[0] else {
+            panic!("expected function")
+        };
+        let Stmt::Expr(actual) = function.body.stmts.last().expect("reference expression") else {
+            panic!("expected expression")
+        };
+        assert_eq!(
+            actual.clone(),
+            Expr::Unary { op: crate::ast::UnOp::Borrow, expr: Box::new(Expr::Var("text".into())) },
+        );
+    }
+
+    #[test]
     fn folds_integer_arithmetic_with_wrapping() {
         assert_eq!(fold_expr("2 + 3 * 4"), Expr::Int(14));
         assert_eq!(fold_expr("(1 + 2) + 3"), Expr::Int(6));

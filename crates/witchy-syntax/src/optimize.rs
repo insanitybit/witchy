@@ -27,7 +27,9 @@
 //! Soundness rests on scope discipline: every binder (`let`/`var`/`for`/lambda)
 //! removes the names it introduces before recursing, and `match`/`while let`
 //! arms (whose patterns bind names this pass does not enumerate) are entered
-//! conservatively with no propagation.
+//! conservatively with no propagation. An explicit reference also preserves its
+//! operand binding: substituting the literal would erase the stable owner that
+//! reference checking and place lowering must retain.
 
 use crate::ast::{BinOp, Block, Expr, Item, Module, Stmt, UnOp};
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
@@ -141,6 +143,10 @@ fn opt_expr(e: &mut Expr, consts: &mut Consts) {
             opt_expr(func, consts);
             args.iter_mut().for_each(|a| opt_expr(a, consts));
         }
+        // A reference observes a stable place, not merely its current value.
+        // Keep the bound name intact so `let text = "x"; first(&text)` retains
+        // `text` as the owner instead of becoming `first(&"x")`.
+        Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. } => {}
         Expr::Unary { expr, .. } => opt_expr(expr, consts),
         Expr::Field { base, .. } => opt_expr(base, consts),
         Expr::Lambda { params, body, .. } => {
