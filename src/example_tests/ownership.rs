@@ -782,3 +782,15 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter dict place write-back");
         assert_eq!(wasm_run(src), want, "compiled dict place write-back");
     }
+
+    /// A first-class reference carries its evaluated projection, not the source
+    /// spelling of a fixed index. The value must therefore keep selecting the
+    /// same slot after a direct call returns.
+    #[test]
+    fn rfc0122_dynamic_indexed_exclusive_reference_preserves_its_runtime_place_on_both_backends() {
+        let src = "mode opt\n\nimport list\n\nfn at(values: &'a mut List(Int), index: Int) -> &'a mut Int:\n    &mut values[index]\n\nfn main(console: Console):\n    var values = [1, 2, 3]\n    let index = 1\n    let slot = at(&mut values, index)\n    *slot = 9\n    console.print(\"${values}\")\n    console.print(\"${*slot}\")\n";
+        let want = ["[1, 9, 3]", "9"];
+        assert_eq!(link_run(src), want, "interpreter preserves the dynamic indexed reference place");
+        let (compiled, _) = wasm_run_reowns(src);
+        assert_eq!(compiled, want, "compiled backend preserves the dynamic indexed reference place");
+    }
