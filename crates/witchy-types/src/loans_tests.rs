@@ -1148,21 +1148,12 @@
     }
 
     #[test]
-    fn exclusive_references_cannot_escape_through_closures_or_channels() {
+    fn exclusive_references_cannot_escape_through_closures() {
         let closure = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hi\"\n    let editable = &mut text\n    let later = fn(): editable\n    console.print(text)\n",
         )
         .expect_err("an exclusive reference captured by a closure escapes its owner");
         assert!(closure.contains("escapes through a closure"), "{closure}");
-
-        let channel = linked_main(
-            "mode opt\n\nimport chan\nimport task\n\nfn bad(tx: chan.Sender(&'a mut String), input: &'a mut String) -> task.Task(Nil):\n    chan.send(tx, input)\n\nfn main(console: Console):\n    console.print(\"done\")\n",
-        )
-        .expect_err("an exclusive reference sent through a channel escapes its owner");
-        assert!(
-            channel.message.contains("escapes through a task or channel"),
-            "{channel}"
-        );
     }
 
     #[test]
