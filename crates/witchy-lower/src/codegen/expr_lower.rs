@@ -2911,7 +2911,8 @@ impl<'types> Codegen<'types> {
                         .ast_type_of_expr(e)
                         .map(|ty| self.kind_for_type(&ty))
                         .unwrap_or_else(|| self.kind_of(e));
-                    let emitted_name = self.generic_call_target(e, name).to_string();
+                    let proven_name = self.generic_call_target(e, name).to_string();
+                    let emitted_name = self.boundary_entry_target(e, &proven_name);
                     return self.lower_var_call(
                         name,
                         &emitted_name,
@@ -2927,7 +2928,8 @@ impl<'types> Codegen<'types> {
                     && !self.locals.contains_key(name)
                     && !self.local_fn_ret_kind.contains_key(name);
                 if is_plain_user_fn && !has_var {
-                    let emitted_name = self.generic_call_target(e, name).to_string();
+                    let proven_name = self.generic_call_target(e, name).to_string();
+                    let emitted_name = self.boundary_entry_target(e, &proven_name);
                     return self.try_lower_user_call(
                         name,
                         &emitted_name,

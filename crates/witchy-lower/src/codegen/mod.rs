@@ -1156,6 +1156,10 @@ struct Codegen<'types> {
     /// `__witchy_boundary_reown_copies` counts the same under every `WITCHY_OPT`.
     /// Populated in `register_module_items`; empty if the access graph is absent.
     boundary_entry_selection: analysis::BoundaryEntrySelection,
+    /// Concrete WIR targets selected by checked normal-mode repair call sites.
+    /// Generated entries exist only for this set: unrelated recursive functions
+    /// must retain their original tail-loop shape.
+    boundary_repair_targets: HashSet<String>,
     /// Exact access rows for the tiny compiler-owned forwarding calls created
     /// after type annotation. Source calls must be present in `access_facts`;
     /// only an address explicitly registered here may use a declaration row.
@@ -1660,6 +1664,7 @@ impl<'types> Codegen<'types> {
             checked_module,
             access_facts,
             boundary_entry_selection: analysis::BoundaryEntrySelection::default(),
+            boundary_repair_targets: HashSet::new(),
             synthesized_call_access: HashMap::new(),
             active_loan_events: Vec::new(),
             cur_fn_own_param: None,
@@ -9091,6 +9096,27 @@ impl<'types> Codegen<'types> {
             Self::increment_counter("__witchy_ownership_token_repairs"),
             N::Push(lowered),
         ])
+    }
+
+    /// The physical entry selected for one conventional source call.  The
+    /// checked adapter table is keyed by this exact AST node, so a normal repair
+    /// cannot be reconstructed from spelling after generic specialization or
+    /// erased into an opt caller.  The generated entry retains the source
+    /// callable's complete WIR ABI and tails into its proven body.
+    pub(super) fn boundary_entry_target(&mut self, call: &Expr, proven: &str) -> String {
+        if self
+            .boundary_entry_selection
+            .adapter_for(call)
+            .is_some_and(|adapter| adapter.entry() == analysis::BoundaryEntry::Repair)
+        {
+            self.boundary_repair_targets.insert(proven.to_string());
+            return Self::boundary_repair_adapter_name(proven);
+        }
+        proven.to_string()
+    }
+
+    pub(super) fn boundary_repair_adapter_name(proven: &str) -> String {
+        format!("{proven}$repair")
     }
 
     fn counter_batch_local(kind: &str, level: usize) -> String {

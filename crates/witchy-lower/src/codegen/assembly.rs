@@ -2088,6 +2088,70 @@ fn register_module_items(
     Ok(())
 }
 
+/// Build the generated repair entry for every lowered conventional source
+/// function.  The wrapper's parameter and result vectors are cloned from the
+/// proven entry verbatim, including `var` write-backs and ownership outputs.
+/// It changes only ownership-token inputs to zero, which makes the established
+/// copy-on-write path create fresh storage before the opt body mutates it.
+///
+/// A repair entry is therefore a physical entry strategy, not a second source
+/// function or an alternate callable identity.  Direct normal calls select it
+/// from the checked `BoundaryEntrySelection`; opt calls continue to target the
+/// proven entry and never receive an implicit repair.
+fn build_boundary_repair_adapters(
+    cg: &Codegen<'_>,
+    user_order: &[String],
+) -> Vec<witchy_wir::wir::WirFunc> {
+    use witchy_wir::wir::{WirExpr as E, WirFunc, WirLocal, WirNode as N};
+
+    user_order
+        .iter()
+        .filter(|proven_name| cg.boundary_repair_targets.contains(*proven_name))
+        .filter_map(|proven_name| {
+            let proven = cg.wir_funcs.get(proven_name)?;
+            let name = Codegen::boundary_repair_adapter_name(proven_name);
+            let result_locals: Vec<WirLocal> = proven
+                .ret
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| WirLocal {
+                    name: format!("__witchy_repair_result_{index}"),
+                    ty: ty.clone(),
+                })
+                .collect();
+            let args = proven
+                .params
+                .iter()
+                .map(|param| {
+                    if param.name.ends_with("__cap") {
+                        E::ConstI32(0)
+                    } else {
+                        E::GetLocal(param.name.clone())
+                    }
+                })
+                .collect();
+            let mut body = vec![N::CallStoreMulti {
+                func: proven_name.clone(),
+                args,
+                dests: result_locals.iter().map(|local| local.name.clone()).collect(),
+            }];
+            body.extend(
+                result_locals
+                    .iter()
+                    .map(|local| N::Push(E::GetLocal(local.name.clone()))),
+            );
+            Some(WirFunc {
+                name,
+                params: proven.params.clone(),
+                ret: proven.ret.clone(),
+                locals: result_locals,
+                body,
+                raw_body: None,
+            })
+        })
+        .collect()
+}
+
 /// Materialize the closed witness plan as typed Wasm table functions.
 ///
 /// Each wrapper receives the erased existential envelope, casts only through
@@ -3052,6 +3116,7 @@ fn assemble_wir_module_with_structs_mode(
             "reachable functions do not fully lower to WIR: {missing:?}"
         ));
     }
+    let boundary_repair_adapters = build_boundary_repair_adapters(&cg, &user_order);
     let glamour_state_rcopy_helper = if let Some(family) = &glamour_exports {
         let scalar_only = family.state_constructor.is_some()
             && family.state_fields.iter().all(|field| {
@@ -3426,6 +3491,13 @@ fn assemble_wir_module_with_structs_mode(
             // Lifted lambda bodies, in table-index order (so `$__lamw{i}` lands at
             // table slot i, matching the code index baked into each closure object).
             for f in &cg.lambda_wir_funcs {
+                pruned_funcs.push(f.clone());
+            }
+            // Repair entries retain the exact source callable envelope and
+            // delegate to the proven body.  They must be emitted before user
+            // functions so direct normal call targets are resolved in every
+            // backend encoding mode.
+            for f in &boundary_repair_adapters {
                 pruned_funcs.push(f.clone());
             }
             for name in &user_order {
