@@ -822,10 +822,6 @@ struct SavedScope {
     /// back to an aggregate root.
     reference_places: HashMap<String, CodegenPlace>,
     /// Immutable local function values whose target remains statically known.
-    /// This is a forced-copy bridge for an `Apply` that returns a reference: it
-    /// preserves the caller place until the executable place-reference ABI can
-    /// carry an opaque target through arbitrary closure values.
-    reference_function_targets: HashMap<String, String>,
     /// Scalar owners promoted to an executable reference cell. Reads of the
     /// owner become `struct.get`; writes through any transported reference use
     /// the same cell. This is deliberately distinct from `reference_places`,
@@ -1084,8 +1080,6 @@ struct Codegen<'types> {
     /// this map is the initial forced-copy lowering that materializes its write
     /// back to an aggregate root.
     reference_places: HashMap<String, CodegenPlace>,
-    /// See [`SavedScope::reference_function_targets`].
-    reference_function_targets: HashMap<String, String>,
     reference_cells: HashMap<String, String>,
     /// (RFC-0028) Confined slice *views*: `let w = list.slice(src, lo, hi)` bindings
     /// the escape analysis proved read-only-by-`at`/`length` over an unmutated
@@ -1645,7 +1639,6 @@ impl<'types> Codegen<'types> {
             closure_elide_reassigned: HashSet::new(),
             elide_index_list: Vec::new(),
             reference_places: HashMap::new(),
-            reference_function_targets: HashMap::new(),
             reference_cells: HashMap::new(),
             view_candidates: HashSet::new(),
             view_active: HashSet::new(),
@@ -7349,18 +7342,6 @@ impl<'types> Codegen<'types> {
     pub(crate) fn static_reference_place(&self, expr: &Expr) -> Option<CodegenPlace> {
         match expr {
             Expr::Unary { op: UnOp::BorrowMut, expr } => self.static_reference_place(expr),
-            Expr::Call { name, args } => self
-                .reference_function_targets
-                .get(name)
-                .and_then(|target| self.returned_reference_place(target, args))
-                .or_else(|| self.returned_reference_place(name, args)),
-            Expr::Apply { func, args } => {
-                let Expr::Var(binding) = func.as_ref() else {
-                    return None;
-                };
-                let target = self.reference_function_targets.get(binding)?;
-                self.returned_reference_place(target, args)
-            }
             Expr::Var(reference) if self.reference_places.contains_key(reference) => {
                 self.reference_places.get(reference).cloned()
             }
@@ -7373,47 +7354,6 @@ impl<'types> Codegen<'types> {
             }),
             _ => None,
         }
-    }
-
-    /// Recover the place behind a direct call that returns an explicit exclusive
-    /// reference by projecting from one of its `&mut` parameters. This is the
-    /// forced-copy lowering counterpart of the interpreter's first-class place
-    /// reference: the callee still returns the payload, while the caller retains
-    /// the exact caller-side place for later writes through the returned handle.
-    ///
-    /// Keep this deliberately narrow. A branch, closure, trait dispatch, or
-    /// computed index needs the full `PlaceReference` value ABI, not a guessed
-    /// source-level projection.
-    fn returned_reference_place(&self, name: &str, args: &[Expr]) -> Option<CodegenPlace> {
-        let function = self.checked_module.items.iter().find_map(|item| match item {
-            Item::Function(function) if function.name == name => Some(function),
-            _ => None,
-        })?;
-        let returned = match function.body.stmts.as_slice() {
-            [Stmt::Expr(expr)] | [Stmt::Return(Some(expr))] => expr,
-            _ => return None,
-        };
-        let (param, fields) = Self::returned_reference_projection(returned)?;
-        let position = function.params.iter().position(|candidate| candidate.name == param)?;
-        let place = self.static_reference_place(args.get(position)?)?;
-        Some(Self::project_codegen_place_fields(place, &fields))
-    }
-
-    fn returned_reference_projection(expr: &Expr) -> Option<(&str, Vec<String>)> {
-        let Expr::Unary { op: UnOp::BorrowMut, expr } = expr else {
-            return None;
-        };
-        let mut fields = Vec::new();
-        let mut current = expr.as_ref();
-        while let Expr::Field { base, field } = current {
-            fields.push(field.clone());
-            current = base;
-        }
-        let Expr::Var(param) = current else {
-            return None;
-        };
-        fields.reverse();
-        Some((param, fields))
     }
 
     fn project_codegen_place_fields(mut place: CodegenPlace, fields: &[String]) -> CodegenPlace {
@@ -8928,7 +8868,6 @@ impl<'types> Codegen<'types> {
             closure_elide_reassigned: std::mem::take(&mut self.closure_elide_reassigned),
             elide_index_list: std::mem::take(&mut self.elide_index_list),
             reference_places: std::mem::take(&mut self.reference_places),
-            reference_function_targets: std::mem::take(&mut self.reference_function_targets),
             reference_cells: std::mem::take(&mut self.reference_cells),
         }
     }
@@ -8986,7 +8925,6 @@ impl<'types> Codegen<'types> {
         self.closure_elide_reassigned = s.closure_elide_reassigned;
         self.elide_index_list = s.elide_index_list;
         self.reference_places = s.reference_places;
-        self.reference_function_targets = s.reference_function_targets;
         self.reference_cells = s.reference_cells;
     }
 
