@@ -1033,6 +1033,7 @@ Logical callable access metadata. Every position and projection names a source t
 - `AccessField(String)`
 - `AccessTuple(Int)`
 - `AccessIndex(Int)`
+- `AccessAnyIndex`
 - `AccessRange(Int, Int, Bool)`
 
 #### `sealed type RuntimeBorrowOwner`
