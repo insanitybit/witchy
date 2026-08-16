@@ -1850,20 +1850,23 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
 
     # Glamour-skip from the same diff (see check.sh's WITCHY_GATE_SKIP_GLAMOUR).
     # glamour's own tests (`witchy::glamour`, `commands::web::tests`) compile a
-    # full glamour program per test through the multi-core Wasm compiler — real
-    # cost that only earns its keep when a change could affect glamour's
-    # behavior. Skip them only when the batch touches NEITHER the shared
-    # parity surface (same set as fuzz_mode above: a compiler/stdlib/build
-    # change can break glamour without touching a glamour-named path) NOR
-    # anything glamour owns directly (its JS runtime, self-hosted app, or the
-    # book it renders through `glamour_docs_bundle_renders_the_real_book`).
+    # full glamour program per test through the multi-core Wasm compiler: 30% of
+    # the whole suite's CPU for 95 of its ~2750 tests, about 90s of every gate.
+    # glamour and coven-web are explicitly NOT merge-gated projects — breaking
+    # them is acceptable while nobody is working on them, so the queue runs
+    # their tests only when the batch touches a path one of them OWNS. A
+    # compiler or stdlib change that breaks glamour without touching a
+    # glamour-named path is a deliberately accepted outcome, caught by the
+    # `--glamour` shard whoever next picks that work up runs.
     # coven's own tests already live entirely in the `e2e` binary, which the
     # default gate excludes regardless — no separate classification needed.
-    # Fail SAFE: errored/empty diff -> run them (0).
-    local skip_glamour=0
+    # Fail SAFE toward SPEED here: an errored/empty diff still skips, because a
+    # missed glamour regression costs a project we do not gate on, while an
+    # unnecessary run costs every queued branch behind this one.
+    local skip_glamour=1
     if [ -n "$changed" ] \
-        && ! echo "$changed" | grep -cE '^(crates/|std/|src/|examples/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain|web/|projects/glamour|projects/coven-web|book/|dist/)' >/dev/null; then
-        skip_glamour=1
+        && echo "$changed" | grep -cE '^(web/|projects/glamour|projects/coven-web|book/|dist/)' >/dev/null; then
+        skip_glamour=0
     fi
 
     # Queue fixtures manipulate process groups, detached daemons, file locks,
