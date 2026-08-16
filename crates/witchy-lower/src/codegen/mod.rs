@@ -9141,7 +9141,11 @@ impl<'types> Codegen<'types> {
         lowered: witchy_wir::wir::WirExpr,
     ) -> witchy_wir::wir::WirExpr {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
-        if self.boundary_entry_selection.entry_for(call) != analysis::BoundaryEntry::Repair {
+        if self
+            .boundary_entry_selection
+            .adapter_for(call)
+            .is_none_or(|adapter| adapter.entry() != analysis::BoundaryEntry::Repair)
+        {
             return lowered;
         }
         W::Seq(vec![

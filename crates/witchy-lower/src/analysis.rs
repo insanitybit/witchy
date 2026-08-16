@@ -4647,22 +4647,45 @@ pub enum BoundaryEntry {
     Repair,
 }
 
+/// The compiler-owned ABI selection for one conventional call.  The access
+/// identity is cloned from the checked call table, so later lowering cannot
+/// accidentally choose an entry by surface spelling or lose the effects that
+/// its repair implementation must preserve.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundaryAdapter {
+    entry: BoundaryEntry,
+    access_identity: witchy_types::access::AccessIdentityKey,
+}
+
+impl BoundaryAdapter {
+    pub fn entry(&self) -> BoundaryEntry {
+        self.entry
+    }
+
+    pub fn access_identity(&self) -> &witchy_types::access::AccessIdentityKey {
+        &self.access_identity
+    }
+}
+
 /// Checked, address-keyed conventional-call entry selection for one exact AST.
-/// A pointer not present in `repair_sites` is deliberately `Proven`: the
-/// no-copy walker records every checked unique-access miss, while conventional
-/// signatures with no such requirement have no adapter work to perform.
+/// Every entry retains the canonical checked callable identity. A pointer not
+/// present in `repair_sites` is deliberately `Proven`: the no-copy walker
+/// records every checked unique-access miss, while conventional signatures
+/// with no such requirement have no adapter work to perform.
 #[derive(Clone, Debug, Default)]
 pub struct BoundaryEntrySelection {
-    repair_sites: foldhash::HashSet<usize>,
+    adapters: HashMap<usize, BoundaryAdapter>,
 }
 
 impl BoundaryEntrySelection {
+    pub fn adapter_for(&self, call: &Expr) -> Option<&BoundaryAdapter> {
+        self.adapters.get(&(call as *const Expr as usize))
+    }
+
     pub fn entry_for(&self, call: &Expr) -> BoundaryEntry {
-        if self.repair_sites.contains(&(call as *const Expr as usize)) {
-            BoundaryEntry::Repair
-        } else {
-            BoundaryEntry::Proven
-        }
+        self.adapter_for(call)
+            .map(BoundaryAdapter::entry)
+            .unwrap_or(BoundaryEntry::Proven)
     }
 }
 
@@ -4719,8 +4742,28 @@ pub fn boundary_entry_selection(
     module: &Module,
     access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
 ) -> BoundaryEntrySelection {
+    let repair_sites = module_boundary_repair_ptrs(module, access);
+    let Some(access) = access else {
+        return BoundaryEntrySelection::default();
+    };
     BoundaryEntrySelection {
-        repair_sites: module_boundary_repair_ptrs(module, access),
+        adapters: access
+            .call_contracts()
+            .map(|(site, signature)| {
+                let entry = if repair_sites.contains(&site) {
+                    BoundaryEntry::Repair
+                } else {
+                    BoundaryEntry::Proven
+                };
+                (
+                    site,
+                    BoundaryAdapter {
+                        entry,
+                        access_identity: signature.identity_key(),
+                    },
+                )
+            })
+            .collect(),
     }
 }
 
@@ -4920,7 +4963,7 @@ mod no_copy_tests {
 
     #[test]
     fn checked_boundary_entry_selection_distinguishes_proven_and_repair_calls() {
-        fn entry(source: &str) -> BoundaryEntry {
+        fn adapter(source: &str) -> BoundaryAdapter {
             let parsed = parser::parse_module(source).expect("parse");
             let lowered = witchy_types::traits::lower(parsed);
             let typed = witchy_types::typeck::annotate_checked(lowered).expect("type check");
@@ -4945,24 +4988,31 @@ mod no_copy_tests {
                     _ => None,
                 })
                 .expect("terminal direct call");
-            selection.entry_for(call)
+            selection.adapter_for(call).cloned().expect("checked call adapter")
         }
 
+        let repaired = adapter(
+            "fn take(own xs: unique List(Int)) -> Nil:\n    return\n\n\
+             fn caller() -> Nil:\n    var xs = [1]\n    let alias = xs\n    take(xs)\n",
+        );
         assert_eq!(
-            entry(
-                "fn take(own xs: unique List(Int)) -> Nil:\n    return\n\n\
-                 fn caller() -> Nil:\n    var xs = [1]\n    let alias = xs\n    take(xs)\n",
-            ),
+            repaired.entry(),
             BoundaryEntry::Repair,
             "an aliased unique value selects the normal repair adapter"
         );
+        let proven = adapter(
+            "fn take(own xs: unique List(Int)) -> Nil:\n    return\n\n\
+             fn caller() -> Nil:\n    take([1])\n",
+        );
         assert_eq!(
-            entry(
-                "fn take(own xs: unique List(Int)) -> Nil:\n    return\n\n\
-                 fn caller() -> Nil:\n    take([1])\n",
-            ),
+            proven.entry(),
             BoundaryEntry::Proven,
             "a fresh value enters the same opt body through its proven access path"
+        );
+        assert_eq!(
+            repaired.access_identity(),
+            proven.access_identity(),
+            "proven and repair entries retain one checked callable ABI identity"
         );
     }
 

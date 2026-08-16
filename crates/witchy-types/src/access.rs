@@ -2465,6 +2465,14 @@ impl CheckedAccessFacts<'_> {
         self.calls.get(&(expression as *const Expr as usize))
     }
 
+    /// Every direct, indirect, closure, or witness call contract recorded for
+    /// this exact checked module.  Backend-owned adapter selection consumes
+    /// this finalized table instead of rebuilding callable effects from the
+    /// spelling of a call expression.
+    pub fn call_contracts(&self) -> impl Iterator<Item = (usize, &AccessSignature)> {
+        self.calls.iter().map(|(site, signature)| (*site, signature))
+    }
+
     /// The assignable root and fixed/dynamic projection path authenticated for
     /// this exact checked expression.
     pub fn place_at(&self, module: &Module, expression: &Expr) -> Option<&CheckedPlace> {
