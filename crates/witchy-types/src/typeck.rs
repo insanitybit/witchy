@@ -762,11 +762,12 @@ fn reject_borrowed_nominal_containers(
             // `List(Holder('a))` is a container boundary.
             let is_borrowed_shell = lifetime_nominals.contains(name)
                 || arguments.iter().any(|argument| lifetime_argument_name(argument).is_some());
-            // RFC-0112's first borrowed-container slice admits exactly a list
-            // whose immediate element is a lifetime-parameterized nominal
-            // shell.  Its roots are carried by loan facts and lowered as hidden
-            // companions; nested containers, structural records, dyn, and Dict
-            // remain outside that representation.
+            // RFC-0122 admits a list whose immediate element is either an
+            // executable direct reference or a lifetime-parameterized nominal
+            // shell. Direct references use the place-carrier list layout;
+            // nominal shells retain their checked hidden companions. Nested
+            // containers, structural records, dyn, and Dict remain outside
+            // that representation.
             let is_borrowed_nominal_list = name == "List"
                 && arguments.len() == 1
                 && matches!(
@@ -775,8 +776,20 @@ fn reject_borrowed_nominal_containers(
                         if lifetime_nominals.contains(element)
                             || element_arguments.iter().any(|argument| lifetime_argument_name(argument).is_some())
                 );
+            let is_direct_reference_list = name == "List"
+                && arguments.len() == 1
+                && matches!(
+                    arguments.first(),
+                    Some(ast::Type::Qualified(
+                        ast::TypeQual::Borrow(_)
+                            | ast::TypeQual::BorrowMut(_)
+                            | ast::TypeQual::LegacyBorrow(_),
+                        _
+                    ))
+                );
             if !is_borrowed_shell
                 && !is_borrowed_nominal_list
+                && !is_direct_reference_list
                 && arguments
                     .iter()
                     .any(type_contains_nominal_lifetime_relation)
