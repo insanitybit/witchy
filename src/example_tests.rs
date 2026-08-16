@@ -235,6 +235,7 @@
     mod comptime;
     mod quote;
     mod ownership;
+    mod rfc0122_control_flow;
     mod json;
     mod capabilities;
     mod region;
