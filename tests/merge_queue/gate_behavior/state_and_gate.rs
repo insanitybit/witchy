@@ -328,10 +328,10 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     let cargo_args = fs::read_to_string(&cargo_args_file).expect("read fake cargo arguments");
     assert!(
-        cargo_args
-            .lines()
-            .any(|line| line.starts_with("nextest run -j 8 --workspace")),
-        "serialized gate did not use the proven eight-job default: {cargo_args}",
+        cargo_args.lines().any(|line| {
+            line.starts_with("nextest run --max-fail=1:immediate -j 8 --workspace")
+        }),
+        "serialized gate did not use fail-fast execution with the proven eight-job default: {cargo_args}",
     );
     assert!(
         cargo_args.lines().any(|line| {
