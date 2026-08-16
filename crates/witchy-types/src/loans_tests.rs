@@ -1148,8 +1148,7 @@
         for (module, call) in [("json", "json.stringify"), ("reflect", "reflect.debug")] {
             let err = linked_main(&format!(
                 "mode opt\n\nimport {module}\n\n\
-                 fn view(text: &'a String) -> &'a String:\n    text\n\n\
-                 fn main(console: Console):\n    let text = \"value\"\n    let borrowed = view(&text)\n    let encoded = {call}(borrowed)\n    console.print(encoded)\n"
+                 fn main(console: Console):\n    let text = \"value\"\n    let borrowed = &text\n    let encoded = {call}(borrowed)\n    console.print(encoded)\n"
             ))
             .expect_err("serialization and reflection require owned data");
             assert!(
