@@ -761,28 +761,49 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         return Ok(());
     }
     // RFC-0122: migrate legacy opt-mode reference annotations through the
-    // parser/formatter rather than textual replacement. Direct local calls
-    // whose typed parameter proves an owner borrow are rewritten too; every
-    // other call is reported without changing the file.
+    // parser/formatter rather than textual replacement. `--check` performs a
+    // non-mutating migration census for CI and fails if a rewrite or ambiguity
+    // remains. Direct local calls whose typed parameter proves an owner borrow
+    // are rewritten too; every other call is reported without guessing.
     if std::env::args().nth(1).as_deref() == Some("migrate") {
-        let args: Vec<String> = std::env::args().skip(2).collect();
-        let Some((kind, paths)) = args.split_first() else {
-            eprintln!("usage: witchy migrate references <file.witchy>...");
+        let mut args = std::env::args().skip(2);
+        let Some(kind) = args.next() else {
+            eprintln!("usage: witchy migrate references [--check] <file.witchy>...");
             std::process::exit(1);
         };
+        let mut check = false;
+        let mut paths = Vec::new();
+        for arg in args {
+            if arg == "--check" {
+                check = true;
+            } else {
+                paths.push(arg);
+            }
+        }
         if kind != "references" || paths.is_empty() {
-            eprintln!("usage: witchy migrate references <file.witchy>...");
+            eprintln!("usage: witchy migrate references [--check] <file.witchy>...");
             std::process::exit(1);
         }
         let mut failed = false;
-        for path in paths {
+        for path in &paths {
             match std::fs::read_to_string(path) {
                 Ok(source) => match format::migrate_references(&source) {
                     Some(migration) if migration.ambiguities.is_empty() => {
                         let rewritten = migration.source;
-                        if let Err(error) = std::fs::write(path, rewritten) {
-                            eprintln!("witchy migrate references: `{path}`: {error}");
+                        if check && rewritten != source {
+                            eprintln!("witchy migrate references: `{path}`: legacy reference syntax remains");
                             failed = true;
+                        } else if check {
+                            println!("witchy migrate references: `{path}`: clean");
+                        } else if rewritten != source {
+                            if let Err(error) = std::fs::write(path, rewritten) {
+                                eprintln!("witchy migrate references: `{path}`: {error}");
+                                failed = true;
+                            } else {
+                                println!("witchy migrate references: `{path}`: rewritten");
+                            }
+                        } else {
+                            println!("witchy migrate references: `{path}`: already current");
                         }
                     }
                     Some(migration) => {
