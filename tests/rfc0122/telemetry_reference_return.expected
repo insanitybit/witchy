@@ -1,0 +1,13 @@
+# RFC-0122 telemetry corpus v1
+#
+# The paired rows are deterministic `witchy stats` artifacts, not benchmark
+# timings. `optimized` is the normal opt set; `forced_copy` removes InPlace.
+# Both must preserve the observable output and the checked loan schema. The
+# exact counter values are pinned by `tests/rfc0122.rs` after the fixture has
+# passed interpreter/Wasm parity.
+
+schema=loan_active_points,loan_active_events,loan_opens,loan_closes,loan_return_transfers,loan_shell_mutations,loan_control_flow_edges,loan_subset_edges,boundary_reown_copies,ownership_token_repairs,direct_storage_var_accesses
+optimized.output=9 8
+forced_copy.output=9 8
+optimized.metrics=1,1,1,1,2,0,807,0,0,0,0
+forced_copy.metrics=1,1,1,1,2,0,807,0,0,0,0

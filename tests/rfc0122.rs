@@ -1,0 +1,76 @@
+//! RFC-0122 checked-reference evidence.
+//!
+//! The corpus deliberately records deterministic compiler/runtime counters,
+//! never wall-clock timings. It is the acceptance artifact for the reference
+//! implementation's optimized and forced-copy paths.
+
+use witchy::stats::{self, Stats};
+use witchy_syntax::opt::{self, Opt, OptSet};
+
+const REFERENCE_RETURN: &str = include_str!("rfc0122/telemetry_reference_return.witchy");
+const EXPECTED: &str = include_str!("rfc0122/telemetry_reference_return.expected");
+
+const LOAN_SCHEMA: &[&str] = &[
+    "loan_active_points",
+    "loan_active_events",
+    "loan_opens",
+    "loan_closes",
+    "loan_return_transfers",
+    "loan_shell_mutations",
+    "loan_control_flow_edges",
+    "loan_subset_edges",
+    "boundary_reown_copies",
+    "ownership_token_repairs",
+    "direct_storage_var_accesses",
+];
+
+fn run(optimizations: OptSet) -> Stats {
+    opt::set_for_tests(Some(optimizations));
+    let result = stats::compute(REFERENCE_RETURN).expect("compile and run telemetry corpus fixture");
+    opt::set_for_tests(None);
+    result
+}
+
+fn metric_row(stats: &Stats) -> Vec<i64> {
+    vec![
+        stats.loan_active_points as i64,
+        stats.loan_active_events as i64,
+        stats.loan_opens as i64,
+        stats.loan_closes as i64,
+        stats.loan_return_transfers as i64,
+        stats.loan_shell_mutations as i64,
+        stats.loan_control_flow_edges as i64,
+        stats.loan_subset_edges as i64,
+        stats.boundary_reown_copies,
+        stats.ownership_token_repairs,
+        stats.direct_storage_var_accesses,
+    ]
+}
+
+#[test]
+fn reference_return_telemetry_corpus_pins_schema_and_copy_parity() {
+    assert!(EXPECTED.contains(&format!("schema={}", LOAN_SCHEMA.join(","))));
+    assert!(EXPECTED.contains("optimized.output=9 8"));
+    assert!(EXPECTED.contains("forced_copy.output=9 8"));
+
+    let optimized = run(OptSet::default_set());
+    let forced_copy = run(OptSet::default_set().without(Opt::InPlace));
+
+    assert_eq!(optimized.output, ["9 8"]);
+    assert_eq!(forced_copy.output, optimized.output, "forced-copy lowering must preserve results");
+
+    let optimized_row = metric_row(&optimized);
+    let forced_copy_row = metric_row(&forced_copy);
+    assert_eq!(
+        optimized_row,
+        [1, 1, 1, 1, 2, 0, 807, 0, 0, 0, 0],
+        "the pinned optimized telemetry artifact changed"
+    );
+    assert_eq!(
+        forced_copy_row,
+        optimized_row,
+        "forced-copy lowering must retain the same source loan facts"
+    );
+    assert!(EXPECTED.contains("optimized.metrics=1,1,1,1,2,0,807,0,0,0,0"));
+    assert!(EXPECTED.contains("forced_copy.metrics=1,1,1,1,2,0,807,0,0,0,0"));
+}

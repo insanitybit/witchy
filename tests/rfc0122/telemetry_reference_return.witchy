@@ -1,0 +1,14 @@
+mode opt
+
+type Pair:
+    left: Int
+    right: Int
+
+fn select(pair: &'a mut Pair, first: Bool) -> &'a mut Int:
+    if first: &mut pair.left else: &mut pair.right
+
+fn main(console: Console):
+    var pair = Pair(3, 8)
+    let slot = select(&mut pair, true)
+    *slot = 9
+    console.print("${pair.left} ${pair.right}")
