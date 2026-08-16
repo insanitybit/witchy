@@ -367,8 +367,8 @@ mod tests {
         )
         .expect_err("borrowed nominal declarations require mode opt");
         assert!(
-            outside_opt.contains("type `Parser` declares lifetime parameters")
-                && outside_opt.contains("only available in a `mode opt` module"),
+            outside_opt.contains("explicit references and lifetime parameters")
+                && outside_opt.contains("only in `mode opt` files"),
             "{outside_opt}"
         );
 
@@ -2938,8 +2938,8 @@ fn main():
         )
         .expect_err("a borrowed result blocks dyn use in v1");
         assert!(
-            err.contains("trait `Peeker` is not existential-safe as `dyn Peeker`")
-                && err.contains("method `peek` returns a result borrowed from the hidden receiver"),
+            err.contains("explicit references and lifetime parameters")
+                && err.contains("only in `mode opt` files"),
             "{err}"
         );
     }
@@ -2994,10 +2994,8 @@ fn main():
         )
         .expect_err("borrowed existentials are excluded from v1");
         assert!(
-            err.contains(
-                "borrowed existential values (`View(dyn Render, 'a)` / `let('a) dyn Render`) \
-                 are excluded from RFC-0081 v1"
-            ),
+            err.contains("explicit references and lifetime parameters")
+                && err.contains("only in `mode opt` files"),
             "{err}"
         );
     }

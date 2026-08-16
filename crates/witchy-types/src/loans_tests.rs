@@ -137,6 +137,14 @@
                 "type Holder('a):\n    value: String\n",
             ),
             (
+                "reference-bearing type alias",
+                "type StringView = &'a String\n",
+            ),
+            (
+                "reference-bearing trait method",
+                "trait Inspect:\n    fn value(let self) -> &'a String\n",
+            ),
+            (
                 "borrow expression",
                 "fn main():\n    let text = \"value\"\n    let view = &text\n",
             ),
