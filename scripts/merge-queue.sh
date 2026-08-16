@@ -858,7 +858,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local queue_infra_only="${5:-0}"
     local cargo_target_dir="${6:-target}"
     local census_proof_sha="${7:-}"
-    local skip_glamour="${8:-0}"
+    local ungated="${8-glamour grimoire}"
     local selected_gate_cmd="$gate_cmd"
     if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
         selected_gate_cmd="./scripts/check.sh --queue-infra"
@@ -882,7 +882,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_SKIP_GLAMOUR=$skip_glamour" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -1848,26 +1848,29 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         gate_scope="docs"
     fi
 
-    # Glamour-skip from the same diff (see check.sh's WITCHY_GATE_SKIP_GLAMOUR).
-    # glamour's own tests (`witchy::glamour`, `commands::web::tests`) compile a
-    # full glamour program per test through the multi-core Wasm compiler: 30% of
-    # the whole suite's CPU for 95 of its ~2750 tests, about 90s of every gate.
-    # glamour and coven-web are explicitly NOT merge-gated projects — breaking
-    # them is acceptable while nobody is working on them, so the queue runs
-    # their tests only when the batch touches a path one of them OWNS. A
-    # compiler or stdlib change that breaks glamour without touching a
-    # glamour-named path is a deliberately accepted outcome, caught by the
-    # `--glamour` shard whoever next picks that work up runs.
-    # coven's own tests already live entirely in the `e2e` binary, which the
+    # Ungated projects from the same diff (see check.sh's WITCHY_GATE_UNGATED).
+    # glamour, coven-web, grimoire and coven are applications built ON witchy,
+    # not the language the gate protects. Their tests are expensive — together
+    # 163 of ~2750 tests for ~45% of the suite's CPU, roughly two minutes of
+    # every gate — and they were charging every unrelated branch for projects
+    # the gate does not guard. Run a family's tests only when the batch touches
+    # a path that family OWNS. A compiler or stdlib change that breaks one of
+    # them without touching its paths is a deliberately accepted outcome, caught
+    # by the `--glamour`/`--grimoire` shard whoever next picks that work up runs.
+    #
+    # coven's publish flows already live entirely in the `e2e` binary, which the
     # default gate excludes regardless — no separate classification needed.
-    # Fail SAFE toward SPEED here: an errored/empty diff still skips, because a
-    # missed glamour regression costs a project we do not gate on, while an
-    # unnecessary run costs every queued branch behind this one.
-    local skip_glamour=1
-    if [ -n "$changed" ] \
-        && echo "$changed" | grep -cE '^(web/|projects/glamour|projects/coven-web|book/|dist/)' >/dev/null; then
-        skip_glamour=0
-    fi
+    #
+    # Fail SAFE toward SPEED: an errored/empty diff still skips both, because a
+    # missed regression costs a project we do not gate on, while an unnecessary
+    # run costs every queued branch behind this one. `ungated` lists the
+    # families to SKIP, so each grep ADDS a family when the diff misses it.
+    local ungated=""
+    echo "$changed" | grep -qE '^(web/|projects/glamour|projects/coven-web|book/|dist/)' \
+        || ungated="$ungated glamour"
+    echo "$changed" | grep -qE '^projects/(grimoire|coven)' \
+        || ungated="$ungated grimoire"
+    ungated="${ungated# }"
 
     # Queue fixtures manipulate process groups, detached daemons, file locks,
     # and nested Git repositories. Run that binary in check.sh's isolated,
@@ -1971,10 +1974,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 2
     fi
 
-    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; skip-glamour=$skip_glamour); log: $log"
+    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]); log: $log"
     local gate_started; gate_started="$(date +%s)"
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
-        "$cargo_target_dir" "$census_proof_sha" "$skip_glamour"
+        "$cargo_target_dir" "$census_proof_sha" "$ungated"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 

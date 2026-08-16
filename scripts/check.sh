@@ -23,9 +23,11 @@
 #   ./scripts/check.sh --examples  just the example differential matrix (example_tests::*)
 #   ./scripts/check.sh --wasm      just the wasm playground build
 #   ./scripts/check.sh --queue-infra  merge-queue fixtures, isolated and serial
-#   ./scripts/check.sh --glamour   glamour + coven-web tests, which the merge
-#                                  gate does NOT run by default (see the
-#                                  WITCHY_GATE_SKIP_GLAMOUR block below)
+#   ./scripts/check.sh --glamour   glamour + coven-web tests
+#   ./scripts/check.sh --grimoire  grimoire + coven tests
+# The last two are UNGATED projects: the merge gate does not run them by
+# default, so run the shard yourself while working on one (see the UNGATED
+# PROJECTS block below).
 #
 # rustfmt is deliberately NOT part of the gate: the Rust in this repo is
 # hand-formatted, so `cargo fmt` would fight the intended style.
@@ -106,9 +108,9 @@ for arg in "$@"; do
     case "$arg" in
         --full) full=1 ;;
         --fast) fast=1 ;;
-        --e2e | --examples | --wasm | --queue-infra | --glamour) shard="${arg#--}" ;;
+        --e2e | --examples | --wasm | --queue-infra | --glamour | --grimoire) shard="${arg#--}" ;;
         -h | --help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, --e2e, --examples, --wasm, --queue-infra, --glamour, or --help)" >&2; exit 2 ;;
+        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, --e2e, --examples, --wasm, --queue-infra, --glamour, --grimoire, or --help)" >&2; exit 2 ;;
     esac
 done
 if [ -n "$shard" ] && { [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; }; then
@@ -182,35 +184,47 @@ case "$gate_scope" in
 esac
 if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 
-# Glamour-skip (WITCHY_GATE_SKIP_GLAMOUR, default 1) — the merge-queue
-# coordinator overrides it from the batch diff (see merge-queue.sh). glamour's
-# own tests (`witchy::glamour`, `commands::web::tests`) compile a full glamour
-# program per test and drive the multi-core Wasm compiler: 30% of the whole
-# suite's CPU for 95 of its ~2750 tests, about 90s of every gate.
+# UNGATED PROJECTS ----------------------------------------------------------
+# glamour, coven-web, grimoire and coven are applications built ON witchy, not
+# the language the merge gate exists to protect. Their tests were charging
+# every unrelated branch for projects the gate does not guard: together 163 of
+# ~2750 tests for ~45% of the whole suite's CPU, roughly two minutes of every
+# gate. Breaking one of them while nobody is working on it is an accepted
+# outcome, so the DEFAULT here is to skip them all.
 #
-# glamour and coven-web are NOT merge-gated projects. Breaking them is
-# acceptable while nobody is working on them, so the DEFAULT is to skip — the
-# gate exists to protect the language, and these tests were charging every
-# unrelated branch for two projects it does not guard. Run them deliberately:
-# `--glamour` for the focused shard while working on those projects, or
-# `--full`, which owes a complete answer and so runs everything. coven's own
-# tests already live entirely in the `e2e` binary, which the default
-# (non-`--full`) gate excludes below regardless of this flag.
-gate_skip_glamour="${WITCHY_GATE_SKIP_GLAMOUR:-1}"
-case "$gate_skip_glamour" in
-    0 | 1) ;;
-    *) echo "check.sh: WITCHY_GATE_SKIP_GLAMOUR must be 0 or 1" >&2; exit 2 ;;
-esac
-if [ "$full" -eq 1 ]; then gate_skip_glamour=0; fi
-# The whole glamour/coven-web surface, wherever its tests physically live:
-# glamour's own binary, every `witchy web` subcommand test (`::tests::` and
-# `::dev::tests::` both), the glamour example matrix, and the three web CLI
-# flows in cli_subcommands. Anchored `web_`/`static_web_` deliberately does NOT
-# catch `example_tests::*::webauthn_*`, which is stdlib crypto, not this UI.
-# Keep this expression and the `--glamour` shard's below in step.
-glamour_filter='binary(glamour) or test(/^commands::web::/) or test(/^example_tests::glamour::/) or (binary(cli_subcommands) and test(/^(web_|static_web_)/))'
-glamour_excl=""
-[ "$gate_skip_glamour" -eq 1 ] && glamour_excl="not ($glamour_filter)"
+# WITCHY_GATE_UNGATED is the space-separated list of families to SKIP. The
+# merge-queue coordinator overrides it with exactly the families the batch does
+# not touch (see merge-queue.sh), so a branch that edits a project still gets
+# that project's tests. `--full` clears the list and runs everything, and each
+# family has a focused shard (`--glamour`, `--grimoire`) for working on it.
+#
+# Note `${VAR-default}`, not `${VAR:-default}`: an explicitly EMPTY value means
+# "gate everything", which is distinct from the variable being unset.
+#
+# Each filterset must select the family's whole surface wherever its tests
+# physically live, and must stay in step with the owning paths in
+# merge-queue.sh. coven's publish flows already live entirely in the `e2e`
+# binary, which the default (non-`--full`) gate excludes regardless.
+#
+# glamour: its own binary, every `witchy web` subcommand test (`::tests::` and
+# `::dev::tests::` alike), the glamour example matrix, and the three web CLI
+# flows in cli_subcommands. The anchored `web_`/`static_web_` deliberately does
+# NOT catch `example_tests::*::webauthn_*`, which is stdlib crypto, not this UI.
+ungated_filter_glamour='binary(glamour) or test(/^commands::web::/) or test(/^example_tests::glamour::/) or (binary(cli_subcommands) and test(/^(web_|static_web_)/))'
+# grimoire/coven: the package-manager and registry example matrix.
+ungated_filter_grimoire='test(/^example_tests::pm_coven::/)'
+
+gate_ungated="${WITCHY_GATE_UNGATED-glamour grimoire}"
+[ "$full" -eq 1 ] && gate_ungated=""
+ungated_excl=""
+for family in $gate_ungated; do
+    case "$family" in
+        glamour)  family_filter="$ungated_filter_glamour" ;;
+        grimoire) family_filter="$ungated_filter_grimoire" ;;
+        *) echo "check.sh: unknown WITCHY_GATE_UNGATED family '$family' (want glamour|grimoire)" >&2; exit 2 ;;
+    esac
+    ungated_excl="${ungated_excl:+$ungated_excl and }not ($family_filter)"
+done
 
 # Queue fixtures spawn detached coordinators, process groups, lock holders, and
 # nested throwaway Git repositories. Running them beside 2,000 product tests
@@ -256,8 +270,8 @@ if cargo nextest --version >/dev/null 2>&1; then
     if [ -n "$fuzz_excl" ]; then
         excl="${excl:+$excl and }$fuzz_excl"
     fi
-    if [ -n "$glamour_excl" ]; then
-        excl="${excl:+$excl and }$glamour_excl"
+    if [ -n "$ungated_excl" ]; then
+        excl="${excl:+$excl and }$ungated_excl"
     fi
     if [ -n "$gate_test_jobs" ] && [ -n "$excl" ]; then
         test_cmd=(cargo nextest run -j "$gate_test_jobs" --workspace -E "$excl")
@@ -431,7 +445,13 @@ if [ -n "$shard" ]; then
             # working on glamour or coven-web — the queue will not catch a
             # regression there for you.
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --glamour requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace -E "$glamour_filter"
+            cargo nextest run --workspace -E "$ungated_filter_glamour"
+            ;;
+        grimoire)
+            # Likewise for grimoire/coven. Run this while working on the package
+            # manager or the registry; the queue will not catch it for you.
+            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --grimoire requires cargo-nextest" >&2; exit 2; }
+            cargo nextest run --workspace -E "$ungated_filter_grimoire"
             ;;
     esac
     printf '\n\033[1;32mshard %s green\033[0m in %ds\n' "$shard" "$(( $(date +%s) - shard_t0 ))"
