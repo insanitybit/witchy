@@ -3427,4 +3427,12 @@ fn main():
             "{err}"
         );
     }
+
+    #[test]
+    fn rfc0122_exclusive_parent_is_available_after_a_child_reborrow_last_use() {
+        check_str(
+            "mode opt\n\ntype Pair:\n    left: String\n    right: String\n\nfn main():\n    var pair = Pair(\"left\", \"right\")\n    let parent = &mut pair\n    let left = &mut parent.left\n    *left = \"updated\"\n    *parent.right = \"other\"\n",
+        )
+        .expect("a child exclusive reborrow ends at its final use, restoring the parent place");
+    }
 }
