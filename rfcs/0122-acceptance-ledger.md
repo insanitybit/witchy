@@ -4,7 +4,7 @@ This is the integration authority for RFC-0122. “PROVEN” requires current
 `master` plus the named evidence. A green queue item is not acceptance. Every
 other row remains open.
 
-Audit target: `35f710dfb838d1dfa18dd18543221e00758e1601` on `master`
+Audit target: `b113ea49527d2e1c51fe92145868d1c373331f8b` on `master`
 (2026-08-16). The linked RFC is accepted; this ledger determines when it is
 implemented.
 
@@ -31,7 +31,7 @@ implemented.
 | 19 interpreter/Wasm parity | runtime/wasm/evidence | partial | direct `Int`, `Bool`, `Float`, and `String` roots, plus aggregate projected reads/writes, agree on both backends through direct calls, function values, and closures (`rfc0122_*` ownership fixtures). The `String` fixture is `rfc0122_direct_string_reference_uses_the_typed_scalar_carrier`; `Float` direct and function-value fixtures cover the typed scalar carrier. Forced-copy/direct-place, traps, cleanup, and the full type matrix remain. |
 | 20 async and escape boundaries | checker/boundary | partial | shared escape cases plus direct exclusive-reference rejection at `Dynamic` with an `.owned()` remedy (`a88bed34`); serialization, reflection, host lease, closure, and complete exclusive boundary matrix remain |
 | 21 migration command | evidence/migration | partial | `witchy migrate references` rewrites proven direct local typed owner calls and reports ambiguous sites without writing them (`84d9a0da`); resolved imported/overload call rewriting, a repository rewrite report, and a legacy-free census remain |
-| 22 performance telemetry | evidence | open | pinned corpus metric schema and before/after artifacts |
+| 22 performance telemetry | evidence | partial | merged `b113ea49` pins the loan metric schema plus optimized/forced-copy output and fact rows in `reference_return_telemetry_corpus_pins_schema_and_copy_parity`; retain before/after artifacts for the remaining reference matrix |
 
 ## Track contracts
 
