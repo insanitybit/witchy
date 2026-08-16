@@ -4700,6 +4700,7 @@ pub fn module_boundary_repairs(module: &Module) -> Vec<BoundaryRepair> {
         .map(|misses| {
             misses
                 .into_iter()
+                .filter(|miss| !function_is_opt(module, &miss.function))
                 .map(|miss| BoundaryRepair {
                     function: miss.function,
                     line: miss.line,
@@ -4727,11 +4728,27 @@ pub fn module_boundary_repair_ptrs(
     use foldhash::HashSetExt as _;
     let mut ptrs = foldhash::HashSet::new();
     for miss in module_no_copy_misses_with_access(module, access) {
-        if miss.call_ptr != 0 {
+        if miss.call_ptr != 0 && !function_is_opt(module, &miss.function) {
             ptrs.insert(miss.call_ptr);
         }
     }
     ptrs
+}
+
+/// Linked modules retain one `@opt:<module>` mode marker per source module;
+/// an unlinked opt file retains the plain `opt` marker.  A missing no-copy
+/// proof in either form is an opt contract failure, never a normal-mode repair
+/// entry.
+fn function_is_opt(module: &Module, function: &str) -> bool {
+    function
+        .rsplit_once('.')
+        .map(|(owner, _)| {
+            module
+                .modes
+                .iter()
+                .any(|mode| mode == &format!("@opt:{owner}"))
+        })
+        .unwrap_or_else(|| module.modes.iter().any(|mode| mode == "opt"))
 }
 
 /// Derive the one conventional-call entry selection consumed by lowering.  The
@@ -5013,6 +5030,16 @@ mod no_copy_tests {
             repaired.access_identity(),
             proven.access_identity(),
             "proven and repair entries retain one checked callable ABI identity"
+        );
+
+        let opt = adapter(
+            "mode opt\n\nfn take(own xs: unique List(Int)) -> Nil:\n    return\n\n\
+             fn caller() -> Nil:\n    var xs = [1]\n    let alias = xs\n    take(xs)\n",
+        );
+        assert_eq!(
+            opt.entry(),
+            BoundaryEntry::Proven,
+            "an opt caller never selects the normal repair entry"
         );
     }
 
