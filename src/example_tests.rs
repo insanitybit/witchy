@@ -275,6 +275,7 @@
     mod quote;
     mod ownership;
     mod rfc0122_control_flow;
+    mod rfc0122_references;
     mod json;
     mod capabilities;
     mod region;

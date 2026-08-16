@@ -294,8 +294,11 @@ impl<'types> Codegen<'types> {
                 return lowered;
             }
             Expr::Unary { op, expr } => match op {
-                UnOp::Move | UnOp::Await | UnOp::Borrow => return self.lower_expr(expr),
-                UnOp::BorrowMut => {
+                UnOp::Move | UnOp::Await => return self.lower_expr(expr),
+                // Shared and exclusive explicit references use the same place
+                // carrier. Their capability difference is a checker fact; the
+                // runtime must preserve the selected owner/projection for both.
+                UnOp::Borrow | UnOp::BorrowMut => {
                     if let Expr::Call { name, args }
                         = expr.as_ref()
                         && name == witchy_syntax::intrinsics::LIST_AT
