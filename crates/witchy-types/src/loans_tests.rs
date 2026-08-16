@@ -471,6 +471,14 @@
     }
 
     #[test]
+    fn direct_shared_reference_call_preserves_the_referent_owner() {
+        check_str(
+            "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    let text = \"value\"\n    let observed = first(&text)\n    console.print(\"${*observed}\")\n",
+        )
+        .expect("a returned shared reference remains tied to its direct owner");
+    }
+
+    #[test]
     fn explicit_borrow_expression_requires_mode_opt() {
         let err = check_str(
             "fn main(console: Console):\n    let text = \"hello\"\n    let view = &text\n    console.print(view)\n",

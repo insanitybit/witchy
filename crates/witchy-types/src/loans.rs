@@ -3000,15 +3000,26 @@ impl LoanCtx<'_> {
         for relation in &sig.relations {
             for owner in relation.owners() {
                 let Some(arg) = args.get(owner.position()) else { continue };
+                // A first-class reference argument denotes its referent place.
+                // Recover that place before alias propagation so `f(&owner)`
+                // remains rooted in `owner` when `f` returns the same relation.
+                // Treating the handle itself as a non-place would manufacture a
+                // temporary owner for every direct shared-reference call.
+                let (owner_arg, argument_place) = match arg {
+                    Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, expr } => {
+                        (expr.as_ref(), expr_place(expr))
+                    }
+                    _ => (arg, expr_place(arg)),
+                };
                 let mut sources = Vec::new();
                 self.collect_alias_sources(arg, live, &mut sources);
                 if sources.is_empty() {
                     if let Some((root, PlaceProjection::Fixed(argument_projection))) =
-                        expr_place(arg)
+                        argument_place
                     {
                         sources.push(BorrowSource {
                             owner: root.to_string(),
-                            root_type: self.checked_root_type(arg).or_else(|| {
+                            root_type: self.checked_root_type(owner_arg).or_else(|| {
                                 argument_projection.steps.is_empty().then(|| {
                                     sig.owner_params
                                         .iter()
