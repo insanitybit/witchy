@@ -1130,6 +1130,18 @@
     }
 
     #[test]
+    fn exclusive_reference_cannot_cross_async_suspension() {
+        let err = linked_main(
+            "mode opt\n\nimport task\n\nasync fn bad(input: &'a mut String) -> task.Task(Nil):\n    let _ = task.done(0).await\n    *input = \"changed\"\n\nfn main(console: Console):\n    console.print(\"done\")\n",
+        )
+        .expect_err("an exclusive reference cannot stay live across await");
+        assert!(
+            err.message.contains("borrowed value `input` remains live across `await`"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn local_send_lookalike_does_not_create_an_escape_boundary() {
         check_str(&opt(
             "    var s = \"hi\"\n    let w = borrow(s)\n    let _ = send(s, w)\n    console.print(w)\n",
