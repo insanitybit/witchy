@@ -529,6 +529,27 @@ fn exact_verifier_accepts_alpha_renamed_borrow_relations() {
 }
 
 #[test]
+fn legacy_and_explicit_shared_references_have_one_access_relation() {
+    let explicit = signature(
+        vec![qualified(TypeQual::Borrow("a".to_string()), named("String"))],
+        qualified(TypeQual::Borrow("a".to_string()), named("String")),
+        vec![Convention::Borrow],
+    );
+    let legacy = signature(
+        vec![qualified(TypeQual::LegacyBorrow("owner".to_string()), named("String"))],
+        qualified(TypeQual::LegacyBorrow("owner".to_string()), named("String")),
+        vec![Convention::Borrow],
+    );
+
+    explicit
+        .verify_exact(&legacy)
+        .expect("legacy views adapt to the explicit shared relation");
+    legacy
+        .verify_exact(&explicit)
+        .expect("the compatibility relation remains symmetric");
+}
+
+#[test]
 fn exclusive_relation_keeps_its_capability_and_may_supply_a_shared_result() {
     let exclusive = qualified(TypeQual::BorrowMut("slot".to_string()), named("String"));
     let shared = qualified(TypeQual::Borrow("slot".to_string()), named("String"));
