@@ -837,12 +837,12 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             match format::migrate_references_with_signatures(source, &imported_signatures) {
                     Some(migration) if migration.ambiguities.is_empty() => {
                         let rewritten = migration.source;
-                        if check && rewritten != source {
+                        if check && rewritten != *source {
                             eprintln!("witchy migrate references: `{path}`: legacy reference syntax remains");
                             failed = true;
                         } else if check {
                             println!("witchy migrate references: `{path}`: clean");
-                        } else if rewritten != source {
+                        } else if rewritten != *source {
                             if let Err(error) = std::fs::write(path, rewritten) {
                                 eprintln!("witchy migrate references: `{path}`: {error}");
                                 failed = true;
