@@ -198,30 +198,69 @@
             })
         }
 
+        fn sum_case(lo: i64, hi: i64, inclusive: bool) -> (String, Vec<String>) {
+            let op = if inclusive { "..=" } else { ".." };
+            let src = format!(
+                "fn main(console: Console):\n    var s = 0\n    for i in {lo}{op}{hi}:\n        s = s + i\n    console.print(\"${{s}}\")\n"
+            );
+            let reference: i64 = if inclusive { (lo..=hi).sum() } else { (lo..hi).sum() };
+            (src, vec![reference.to_string()])
+        }
+
+        fn odds_case(lo: i64, hi: i64) -> (String, Vec<String>) {
+            let src = format!(
+                "fn main(console: Console):\n    var s = 0\n    for i in {lo}..{hi}:\n        if i % 2 != 0:\n            continue\n        s = s + i\n    console.print(\"${{s}}\")\n"
+            );
+            let reference: i64 = (lo..hi).filter(|x| x % 2 == 0).sum();
+            (src, vec![reference.to_string()])
+        }
+
+        // Every case pays a full typecheck + codegen + Wasmtime spawn, so cases
+        // are expensive rather than free: at 96 apiece these two functions cost
+        // 111s of the suite's CPU and intermittently overran the per-test
+        // timeout under load, turning a whole gate red for no defect.
+        //
+        // The behavior worth guarding here lives entirely at the boundaries, and
+        // uniform sampling reached the most important one — the empty range —
+        // in only about 15% of runs. Pin the boundaries as an explicit table and
+        // keep a smaller random sweep for the interior: cheaper AND stricter
+        // than resampling the interior 96 times.
+        const BOUNDARIES: [(i64, i64); 6] = [
+            (0, 0),       // empty exclusive at the origin
+            (7, 3),       // reversed bounds: empty in both forms
+            (0, 1),       // single element
+            (-3, 3),      // crossing zero
+            (-300, -297), // wholly negative
+            (297, 300),   // the top of the generator's own range
+        ];
+
+        #[test]
+        fn range_for_boundaries_match_reference_on_both_backends() {
+            for (lo, hi) in BOUNDARIES {
+                for inclusive in [false, true] {
+                    let (src, want) = sum_case(lo, hi, inclusive);
+                    assert_eq!(interp(&src), want, "interpreter disagrees on:\n{src}");
+                    assert_eq!(run_on_wasm_cached(&src), want, "compiled disagrees on:\n{src}");
+                }
+                let (src, want) = odds_case(lo, hi);
+                assert_eq!(interp(&src), want, "interpreter disagrees on:\n{src}");
+                assert_eq!(run_on_wasm_cached(&src), want, "compiled disagrees on:\n{src}");
+            }
+        }
+
         proptest! {
-            #![proptest_config(ProptestConfig::with_cases(96))]
+            #![proptest_config(ProptestConfig::with_cases(16))]
 
             #[test]
             fn sum_matches_reference(lo in -300i64..300, len in 0i64..600, inclusive in any::<bool>()) {
-                let hi = lo + len;
-                let op = if inclusive { "..=" } else { ".." };
-                let src = format!(
-                    "fn main(console: Console):\n    var s = 0\n    for i in {lo}{op}{hi}:\n        s = s + i\n    console.print(\"${{s}}\")\n"
-                );
-                let reference: i64 = if inclusive { (lo..=hi).sum() } else { (lo..hi).sum() };
-                let want = vec![reference.to_string()];
+                let (src, want) = sum_case(lo, lo + len, inclusive);
                 prop_assert_eq!(interp(&src), want.clone());
                 prop_assert_eq!(run_on_wasm_cached(&src), want);
             }
 
             #[test]
             fn continue_skipping_odds_matches_reference(lo in -100i64..100, len in 0i64..300) {
-                let hi = lo + len;
-                let src = format!(
-                    "fn main(console: Console):\n    var s = 0\n    for i in {lo}..{hi}:\n        if i % 2 != 0:\n            continue\n        s = s + i\n    console.print(\"${{s}}\")\n"
-                );
-                let reference: i64 = (lo..hi).filter(|x| x % 2 == 0).sum();
-                let want = vec![reference.to_string()];
+                let (src, want) = odds_case(lo, lo + len);
                 prop_assert_eq!(interp(&src), want.clone());
                 prop_assert_eq!(run_on_wasm_cached(&src), want);
             }
