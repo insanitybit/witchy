@@ -273,14 +273,43 @@ if cargo nextest --version >/dev/null 2>&1; then
     if [ -n "$ungated_excl" ]; then
         excl="${excl:+$excl and }$ungated_excl"
     fi
-    if [ -n "$gate_test_jobs" ] && [ -n "$excl" ]; then
-        test_cmd=(cargo nextest run -j "$gate_test_jobs" --workspace -E "$excl")
-    elif [ -n "$gate_test_jobs" ]; then
-        test_cmd=(cargo nextest run -j "$gate_test_jobs" --workspace)
-    elif [ -n "$excl" ]; then
-        test_cmd=(cargo nextest run --workspace -E "$excl")
+    # In the SERIALIZED gate, stop at the first failure. The profile's
+    # `fail-fast = false` is right for a developer, who wants every failure from
+    # one local run — but the merge gate is not debugging, it is adjudicating,
+    # and a candidate with one failing test is already rejected.
+    #
+    # The decisive fact is that the coordinator's culprit eviction consumes
+    # exactly ONE failing target (the `reason` field of a red/batch_red journal
+    # entry) and evicts exactly one branch. Every test run after the first
+    # failure therefore produces information the queue never reads.
+    #
+    # Measured over 60 red gates: the first failure lands 22% of the way through
+    # the suite (median), and 3.0h of the 4.5h those gates spent executing came
+    # after it — 67% waste, a median of 179s per red gate. Raising the threshold
+    # does not pay: a third of red gates have exactly one distinct failing test,
+    # so `--max-fail=2` already forfeits them, and eviction would ignore the
+    # extra targets anyway.
+    #
+    # `:immediate` does not wait out tests already in flight — a slow test that
+    # started before the failure would otherwise hold the run open.
+    #
+    # Outside the gate this is `all`, which is exactly the profile's
+    # `fail-fast = false`. Spelling the non-gate case as a real value rather
+    # than an empty array is deliberate: macOS ships bash 3.2, where expanding
+    # an empty array under `set -u` is an unbound-variable error.
+    if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
+        max_fail=--max-fail=1:immediate
     else
-        test_cmd=(cargo nextest run --workspace)
+        max_fail=--max-fail=all
+    fi
+    if [ -n "$gate_test_jobs" ] && [ -n "$excl" ]; then
+        test_cmd=(cargo nextest run "$max_fail" -j "$gate_test_jobs" --workspace -E "$excl")
+    elif [ -n "$gate_test_jobs" ]; then
+        test_cmd=(cargo nextest run "$max_fail" -j "$gate_test_jobs" --workspace)
+    elif [ -n "$excl" ]; then
+        test_cmd=(cargo nextest run "$max_fail" --workspace -E "$excl")
+    else
+        test_cmd=(cargo nextest run "$max_fail" --workspace)
     fi
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Width two removes the serialized 31-fixture floor while
