@@ -603,7 +603,7 @@ impl LayoutInterner {
         active_nominals: &mut BTreeSet<String>,
     ) -> Result<LayoutId, LayoutError> {
         match ty {
-            Type::Qualified(TypeQual::Borrow(_), _) => {
+            Type::Qualified(TypeQual::LegacyBorrow(_), _) => {
                 Err(reference_error(path, ReferenceKind::BorrowedView))
             }
             Type::Qualified(_, inner) => {

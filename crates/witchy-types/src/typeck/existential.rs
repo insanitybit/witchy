@@ -277,7 +277,7 @@ impl<'a> ExistentialCheck<'a> {
             // (v1 exclusion) A dyn directly wrapped in a borrow. `frozen` /
             // `unique` wrapping stays legal (the Qualified arm below).
             ast::Type::Qualified(
-                ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_),
+                ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
                 inner,
             )
                 if matches!(inner.unqualified(), ast::Type::Dyn(..)) =>
@@ -471,7 +471,7 @@ fn method_safety_violations(
     if matches!(
         method.ret,
         Some(ast::Type::Qualified(
-            ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_),
+            ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
             _,
         ))
     ) {

@@ -64,6 +64,7 @@ impl From<&TypeQual> for AccessQualifier {
             TypeQual::Unique => Self::Unique,
             TypeQual::LocalUnique => Self::LocalUnique,
             TypeQual::Borrow(lifetime) => Self::Borrow(lifetime.clone()),
+            TypeQual::LegacyBorrow(lifetime) => Self::Borrow(lifetime.clone()),
             TypeQual::BorrowMut(lifetime) => Self::BorrowMut(lifetime.clone()),
         }
     }
@@ -455,6 +456,7 @@ impl BorrowRelationCatalog {
     ) -> Vec<BorrowSlot> {
         match ty {
             Type::Qualified(TypeQual::Borrow(lifetime), inner)
+            | Type::Qualified(TypeQual::LegacyBorrow(lifetime), inner)
             | Type::Qualified(TypeQual::BorrowMut(lifetime), inner) => {
                 let nested = self.slots_with(inner, lifetimes, types, active_nominals);
                 if !nested.is_empty() {
@@ -661,6 +663,7 @@ fn coarse_borrow_slots(
     ) {
         match ty {
             Type::Qualified(TypeQual::Borrow(lifetime), inner)
+            | Type::Qualified(TypeQual::LegacyBorrow(lifetime), inner)
             | Type::Qualified(TypeQual::BorrowMut(lifetime), inner) => {
                 let lifetime = substitutions
                     .get(lifetime)
@@ -1636,7 +1639,7 @@ pub fn ownership_state_class(
     ty: &Type,
 ) -> Result<Option<OwnershipStateClass>, AccessSignatureError> {
     match ty {
-        Type::Qualified(TypeQual::Borrow(lifetime), _) => {
+        Type::Qualified(TypeQual::Borrow(lifetime) | TypeQual::LegacyBorrow(lifetime), _) => {
             Ok(Some(OwnershipStateClass::BorrowedOwnerRoot {
                 lifetime: lifetime.clone(),
             }))
@@ -1924,7 +1927,11 @@ fn type_has_qualifier(ty: &Type, predicate: impl Copy + Fn(&TypeQual) -> bool) -
 fn type_has_ownership_qualifier(ty: &Type) -> bool {
     match ty {
         Type::Qualified(
-            TypeQual::Unique | TypeQual::LocalUnique | TypeQual::Borrow(_) | TypeQual::BorrowMut(_),
+            TypeQual::Unique
+            | TypeQual::LocalUnique
+            | TypeQual::Borrow(_)
+            | TypeQual::LegacyBorrow(_)
+            | TypeQual::BorrowMut(_),
             _,
         ) => true,
         Type::Qualified(TypeQual::Frozen, inner) => type_has_ownership_qualifier(inner),
@@ -1976,8 +1983,8 @@ fn compare_type(
 ) -> Result<(), AccessMismatchKind> {
     match (required, candidate) {
         (
-            Type::Qualified(TypeQual::Borrow(left), left_inner),
-            Type::Qualified(TypeQual::Borrow(right), right_inner),
+            Type::Qualified(TypeQual::Borrow(left) | TypeQual::LegacyBorrow(left), left_inner),
+            Type::Qualified(TypeQual::Borrow(right) | TypeQual::LegacyBorrow(right), right_inner),
         ) => {
             if !lifetimes.relate(left, right) {
                 return Err(AccessMismatchKind::BorrowRelation);

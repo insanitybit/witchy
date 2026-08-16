@@ -84,7 +84,10 @@ struct ReturnOwnerPosition {
 /// The borrow qualifier's lifetime name on a parameter/return type, if any.
 fn view_lifetime(ty: &Type) -> Option<&str> {
     match ty {
-        Type::Qualified(TypeQual::Borrow(life) | TypeQual::BorrowMut(life), _) => Some(life),
+        Type::Qualified(
+            TypeQual::Borrow(life) | TypeQual::LegacyBorrow(life) | TypeQual::BorrowMut(life),
+            _,
+        ) => Some(life),
         _ => None,
     }
 }
@@ -1358,7 +1361,7 @@ fn borrow_sig_from_access(
 
 fn type_mentions_view(ty: &Type) -> bool {
     match ty {
-        Type::Qualified(TypeQual::Borrow(_), _) => true,
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _) => true,
         Type::Qualified(_, inner) => type_mentions_view(inner),
         Type::Named(_, args) | Type::Tuple(args) => args.iter().any(type_mentions_view),
         Type::Dyn(_, args) => args.iter().any(type_mentions_view),

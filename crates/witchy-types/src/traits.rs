@@ -985,7 +985,7 @@ fn display_type(t: &Type) -> String {
     match t {
         // (RFC-0083) A borrowed view renders as `View(T, 'a)` in diagnostics, the
         // same canonical spelling the formatter uses — not the bare `as_str`.
-        Type::Qualified(TypeQual::Borrow(life), inner) => {
+        Type::Qualified(TypeQual::Borrow(life) | TypeQual::LegacyBorrow(life), inner) => {
             format!("View({}, '{life})", display_type(inner))
         }
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), display_type(inner)),
@@ -3132,7 +3132,7 @@ fn specialization_type_key(
                     TypeQual::Frozen => key.push_str("qf<"),
                     TypeQual::Unique => key.push_str("qu<"),
                     TypeQual::LocalUnique => key.push_str("ql<"),
-                    TypeQual::Borrow(lifetime) => {
+                    TypeQual::Borrow(lifetime) | TypeQual::LegacyBorrow(lifetime) => {
                         let id = lifetime_id(lifetimes, lifetime);
                         key.push_str(&format!("qb{id}<"));
                     }

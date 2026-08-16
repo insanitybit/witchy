@@ -684,7 +684,7 @@ fn f():
         let [view] = views.compiler_type_syntax.as_slice() else {
             panic!("expected one borrowed type payload");
         };
-        assert!(matches!(view.ty, Type::Qualified(TypeQual::Borrow(_), _)));
+        assert!(matches!(view.ty, Type::Qualified(TypeQual::LegacyBorrow(_), _)));
     }
 
     #[test]
@@ -1387,14 +1387,15 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
     #[test]
     fn borrowed_param_and_result_views_parse() {
         // (RFC-0083) `let('a) T` is a borrowed parameter; `View(T, 'a)` a borrowed
-        // result. Both desugar to the same `Qualified(Borrow('a), T)` node.
+        // result. Both retain legacy source provenance while representing the
+        // same shared borrow relation as the explicit reference surface.
         let m = parse_module(
             "mode opt\n\nfn first(text: let('a) String) -> View(String, 'a):\n    text\n",
         )
         .expect("borrowed view signature parses");
         let Item::Function(f) = &m.items[0] else { panic!("expected a function") };
         let want = Some(Type::Qualified(
-            TypeQual::Borrow("a".into()),
+            TypeQual::LegacyBorrow("a".into()),
             Box::new(Type::Named("String".into(), vec![])),
         ));
         assert_eq!(f.params[0].ty, want, "`let('a) String` param is a borrowed view");
@@ -1577,7 +1578,7 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
         assert_eq!(
             f.params[1].ty,
             Some(Type::Qualified(
-                TypeQual::Borrow("a".into()),
+                TypeQual::LegacyBorrow("a".into()),
                 Box::new(Type::Dyn("Render".into(), vec![]))
             ))
         );

@@ -659,7 +659,7 @@ pub struct Summaries {
 
 fn view_lifetime(ty: Option<&Type>) -> Option<&str> {
     match ty {
-        Some(Type::Qualified(TypeQual::Borrow(lifetime), _)) => Some(lifetime),
+        Some(Type::Qualified(TypeQual::Borrow(lifetime) | TypeQual::LegacyBorrow(lifetime), _)) => Some(lifetime),
         _ => None,
     }
 }

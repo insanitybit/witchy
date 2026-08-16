@@ -315,7 +315,7 @@ struct EtaSig {
 
 fn type_mentions_reference(ty: &Type) -> bool {
     match ty {
-        Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
         Type::Qualified(_, inner) => type_mentions_reference(inner),
         Type::Named(_, args) | Type::Tuple(args) | Type::Dyn(_, args) => {
             args.iter().any(type_mentions_reference)
@@ -1045,7 +1045,7 @@ pub enum LinkMode {
 
 fn returns_borrowed_view(ty: Option<&Type>) -> bool {
     ty.is_some_and(|ty| {
-        matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _))
+        matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _))
     })
 }
 
@@ -1056,7 +1056,7 @@ fn returns_view_callable(ty: Option<&Type>) -> bool {
             Type::Fn(_, result, _)
                 if matches!(
                     result.as_ref(),
-                    Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _)
+                    Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _)
                 )
         )
     })

@@ -1325,7 +1325,7 @@ impl Parser {
             let life = self.lifetime_name()?;
             self.expect(&Tok::RParen)?;
             let inner = self.ty()?;
-            return Ok(Type::Qualified(TypeQual::Borrow(life), Box::new(inner)));
+            return Ok(Type::Qualified(TypeQual::LegacyBorrow(life), Box::new(inner)));
         }
         // (RFC-0081) An existential trait type: `dyn Render`,
         // `dyn render.Render`, `dyn Convert(Int)`. Contextual — `dyn` is an
@@ -1440,7 +1440,7 @@ impl Parser {
             self.expect(&Tok::Comma)?;
             let life = self.lifetime_name()?;
             self.expect(&Tok::RParen)?;
-            return Ok(Type::Qualified(TypeQual::Borrow(life), Box::new(inner)));
+            return Ok(Type::Qualified(TypeQual::LegacyBorrow(life), Box::new(inner)));
         }
         if self.at(&Tok::Lt) {
             // `List<Int>` is the Rust/TS spelling; witchy writes type arguments in

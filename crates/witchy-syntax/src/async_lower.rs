@@ -77,7 +77,7 @@ impl BorrowedShellCatalog {
 
     fn type_is_borrowed(&self, ty: &Type) -> bool {
         match ty {
-            Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
+            Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
             Type::Qualified(_, inner) => self.type_is_borrowed(inner),
             Type::Named(name, arguments) => {
                 if is_lifetime_param(name) {

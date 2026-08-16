@@ -110,7 +110,7 @@ fn type_expr(t: &Type) -> Expr {
         // even though the runtime value still has the viewed inner shape. Keeping
         // it structured lets generators distinguish `View(T, 'left)` from
         // `View(T, 'right)` without treating either lifetime as a runtime type.
-        Type::Qualified(TypeQual::Borrow(lifetime), inner) => Expr::Ctor {
+        Type::Qualified(TypeQual::Borrow(lifetime) | TypeQual::LegacyBorrow(lifetime), inner) => Expr::Ctor {
             name: "meta.TReference".into(),
             args: vec![Expr::Str("shared".into()), type_expr(inner), s(lifetime)],
         },

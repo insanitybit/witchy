@@ -1985,7 +1985,9 @@ pub fn type_str(t: &Type) -> String {
         // (RFC-0083) A borrowed view canonicalizes to `View(T, 'a)`, which
         // re-parses to the same node in every type position (idempotent). Both
         // input (`let('a) T`) and result surfaces render this one way.
-        Type::Qualified(TypeQual::Borrow(life), inner) => format!("&'{life} {}", type_str(inner)),
+        Type::Qualified(TypeQual::Borrow(life) | TypeQual::LegacyBorrow(life), inner) => {
+            format!("&'{life} {}", type_str(inner))
+        }
         Type::Qualified(TypeQual::BorrowMut(life), inner) => {
             format!("&'{life} mut {}", type_str(inner))
         }
@@ -2672,7 +2674,9 @@ enum ReferenceParameterKind {
 
 fn reference_parameter_kind(ty: &Type) -> Option<ReferenceParameterKind> {
     match ty {
-        Type::Qualified(TypeQual::Borrow(_), _) => Some(ReferenceParameterKind::Shared),
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _) => {
+            Some(ReferenceParameterKind::Shared)
+        }
         Type::Qualified(TypeQual::BorrowMut(_), _) => Some(ReferenceParameterKind::Exclusive),
         _ => None,
     }
@@ -2872,7 +2876,7 @@ fn rewrite_reference_function(
             // preserve a second borrow operation.
             if matches!(
                 (parameter.convention, &*ty),
-                (Convention::Borrow, Type::Qualified(TypeQual::Borrow(_), _))
+                (Convention::Borrow, Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _))
                     | (Convention::Var, Type::Qualified(TypeQual::BorrowMut(_), _))
             )
             {

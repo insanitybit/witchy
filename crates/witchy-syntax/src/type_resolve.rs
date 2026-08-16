@@ -540,7 +540,7 @@ impl World {
 
 fn type_mentions_reference(ty: &Type) -> bool {
     match ty {
-        Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
         Type::Qualified(_, inner) => type_mentions_reference(inner),
         Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
             arguments.iter().any(type_mentions_reference)

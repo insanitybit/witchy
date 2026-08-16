@@ -1761,7 +1761,7 @@ impl<'types> Codegen<'types> {
     }
 
     fn kind_for_type(&self, t: &Type) -> Kind {
-        if matches!(t, Type::Qualified(TypeQual::BorrowMut(_), _)) {
+        if matches!(t, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _)) {
             return Kind::GcRef(PLACE_REFERENCE_ID);
         }
         let t = t.unqualified();
@@ -2337,7 +2337,7 @@ impl<'types> Codegen<'types> {
     }
 
     fn is_executable_reference_type(ty: &Type) -> bool {
-        matches!(ty, Type::Qualified(TypeQual::BorrowMut(_), _))
+        matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _))
     }
 
     fn ownership_envelope_for_named_signature(

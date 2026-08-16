@@ -529,7 +529,9 @@ fn lifetime_argument_name(t: &ast::Type) -> Option<&str> {
 fn collect_parameter_lifetime_binders(t: &ast::Type, lifetimes: &mut HashSet<String>) {
     match t {
         ast::Type::Qualified(
-            ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+            ast::TypeQual::Borrow(lifetime)
+            | ast::TypeQual::LegacyBorrow(lifetime)
+            | ast::TypeQual::BorrowMut(lifetime),
             inner,
         ) => {
             lifetimes.insert(lifetime.clone());
@@ -561,7 +563,9 @@ fn validate_nominal_lifetime_uses(
 ) -> Result<(), TypeError> {
     match t {
         ast::Type::Qualified(
-            ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+            ast::TypeQual::Borrow(lifetime)
+            | ast::TypeQual::LegacyBorrow(lifetime)
+            | ast::TypeQual::BorrowMut(lifetime),
             inner,
         ) => {
             if borrowed_qualifiers_must_be_bound && !lifetimes.contains(lifetime) {
@@ -648,7 +652,9 @@ fn validate_nominal_lifetime_uses(
 fn collect_declared_lifetime_uses(t: &ast::Type, used: &mut HashSet<String>) {
     match t {
         ast::Type::Qualified(
-            ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+            ast::TypeQual::Borrow(lifetime)
+            | ast::TypeQual::LegacyBorrow(lifetime)
+            | ast::TypeQual::BorrowMut(lifetime),
             inner,
         ) => {
             used.insert(lifetime.clone());
@@ -678,7 +684,10 @@ fn collect_declared_lifetime_uses(t: &ast::Type, used: &mut HashSet<String>) {
 
 fn type_contains_nominal_lifetime_relation(t: &ast::Type) -> bool {
     match t {
-        ast::Type::Qualified(ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_), _) => true,
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
+            _,
+        ) => true,
         ast::Type::Qualified(_, inner) => type_contains_nominal_lifetime_relation(inner),
         ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
             arguments.iter().any(|argument| {
@@ -703,7 +712,10 @@ fn borrowed_nominal_relation_name<'a>(
     lifetime_nominals: &HashSet<String>,
 ) -> Option<&'a str> {
     match t {
-        ast::Type::Qualified(ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_), _) => {
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
+            _,
+        ) => {
             Some("View")
         }
         ast::Type::Qualified(_, inner) => {
@@ -1070,7 +1082,10 @@ fn normal_mode_item_mentions_reference_surface(item: &Item) -> bool {
 
 fn type_mentions_reference_surface(ty: &ast::Type) -> bool {
     match ty {
-        ast::Type::Qualified(ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_), _) => true,
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
+            _,
+        ) => true,
         ast::Type::Qualified(_, inner) => type_mentions_reference_surface(inner),
         ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
             arguments.iter().any(|argument| {
@@ -1337,7 +1352,9 @@ fn reject_borrowed_capability_views(
 ) -> Result<(), TypeError> {
     match ty {
         ast::Type::Qualified(
-            ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+            ast::TypeQual::Borrow(lifetime)
+            | ast::TypeQual::LegacyBorrow(lifetime)
+            | ast::TypeQual::BorrowMut(lifetime),
             inner,
         ) => {
             if let Some(capability) = storage.first_stored_capability(inner) {
@@ -1394,7 +1411,7 @@ fn reject_owned_qualifiers_inside_references(t: &ast::Type) -> Result<(), TypeEr
     fn visit(t: &ast::Type) -> Result<(), TypeError> {
         match t {
             ast::Type::Qualified(reference, inner)
-                if matches!(reference, ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_)) => {
+                if matches!(reference, ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_)) => {
                 if let ast::Type::Qualified(qualifier, _) = inner.as_ref() {
                     let invalid = matches!(
                         qualifier,
@@ -3073,7 +3090,9 @@ fn check_build_signature(module: &Module) -> Result<(), TypeError> {
 fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
     let returned_lifetime = func.ret.as_ref().and_then(|ty| match ty {
         ast::Type::Qualified(
-            ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+            ast::TypeQual::Borrow(lifetime)
+            | ast::TypeQual::LegacyBorrow(lifetime)
+            | ast::TypeQual::BorrowMut(lifetime),
             _,
         ) => Some(lifetime.as_str()),
         _ => None,
@@ -3085,7 +3104,9 @@ fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
         .filter(|p| {
             let input_lifetime = p.ty.as_ref().and_then(|ty| match ty {
                 ast::Type::Qualified(
-                    ast::TypeQual::Borrow(lifetime) | ast::TypeQual::BorrowMut(lifetime),
+                    ast::TypeQual::Borrow(lifetime)
+                    | ast::TypeQual::LegacyBorrow(lifetime)
+                    | ast::TypeQual::BorrowMut(lifetime),
                     _,
                 ) => {
                     Some(lifetime.as_str())

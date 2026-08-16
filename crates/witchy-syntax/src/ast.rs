@@ -564,17 +564,20 @@ pub enum TypeQual {
     Unique,
     /// `local unique` — unique within this activation only; may not escape.
     LocalUnique,
-    /// (RFC-0083) A read-only borrowed VIEW carrying a lifetime name. Both surfaces
-    /// (`let('a) T` on a parameter, `View(T, 'a)` on a result) parse to
-    /// `Qualified(Borrow("a"), T)`. Like the other qualifiers it is a compile-time
-    /// contract with no runtime representation — codegen sees through it via the
-    /// existing `Qualified` recursion, so a view lowers exactly as its owned inner
-    /// type. Compiled lowering separately retains the related owner until the
-    /// view's checked last use. The lifetime name relates a borrowed RESULT to
-    /// the input it views:
-    /// matching names within one signature is the output-to-input relation the
-    /// checker enforces.
+    /// (RFC-0122) An explicit shared reference, written `&'a T`.
+    ///
+    /// The lifetime name relates a result to the owner input it views. The
+    /// runtime transports an owner root plus projection carrier; the checker
+    /// controls the read-only capability. Legacy RFC-0083 spellings retain
+    /// their compatibility ABI through [`LegacyBorrow`](Self::LegacyBorrow).
     Borrow(String),
+    /// A legacy RFC-0083 borrowed view, written `let('a) T` or `View(T, 'a)`.
+    ///
+    /// This is intentionally source provenance rather than a distinct language
+    /// relation. During the RFC-0122 migration it preserves the legacy erased
+    /// ABI while [`Borrow`](Self::Borrow) is the executable `&'a T` carrier.
+    /// Type checking treats both as the same shared borrow relation.
+    LegacyBorrow(String),
     /// (RFC-0122) An explicit exclusive reference, written `&'a mut T`.
     ///
     /// Unlike [`Borrow`](Self::Borrow), this is affine and grants mutation of the
@@ -594,6 +597,7 @@ impl TypeQual {
             TypeQual::Unique => "unique",
             TypeQual::LocalUnique => "local unique",
             TypeQual::Borrow(_) => "view",
+            TypeQual::LegacyBorrow(_) => "view",
             TypeQual::BorrowMut(_) => "mut view",
         }
     }
@@ -602,6 +606,7 @@ impl TypeQual {
     pub fn borrow_lifetime(&self) -> Option<&str> {
         match self {
             TypeQual::Borrow(life) => Some(life),
+            TypeQual::LegacyBorrow(life) => Some(life),
             TypeQual::BorrowMut(life) => Some(life),
             _ => None,
         }
