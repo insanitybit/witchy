@@ -402,6 +402,20 @@
     }
 
     #[test]
+    fn mutable_reborrow_suspends_and_then_restores_its_parent_handle() {
+        let err = check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"before\"\n    let parent = &mut text\n    let child = &mut *parent\n    *parent = \"blocked\"\n    console.print(*child)\n",
+        )
+        .expect_err("the parent remains suspended while a mutable reborrow is live");
+        assert!(err.contains("moved exclusive reference `parent`"), "{err}");
+
+        check_str(
+            "mode opt\n\nfn main(console: Console):\n    var text = \"before\"\n    let parent = &mut text\n    let child = &mut *parent\n    console.print(*child)\n    *parent = \"after\"\n    console.print(*parent)\n",
+        )
+        .expect("the parent resumes after the mutable reborrow's final use");
+    }
+
+    #[test]
     fn explicit_shared_borrow_blocks_owner_mutation_until_its_final_use() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    text = \"changed\"\n    console.print(view)\n",

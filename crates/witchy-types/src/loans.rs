@@ -1988,10 +1988,35 @@ impl LoanCtx<'_> {
         // spelling must not become an alias that reopens the same exclusive
         // loan later in the block.
         let mut moved_exclusive: HashSet<String> = HashSet::new();
+        // A mutable reborrow suspends, rather than consumes, its parent handle.
+        // The child remains the only live exclusive loan until its final use;
+        // then the parent becomes usable again without manufacturing a second
+        // owner relation.
+        let mut suspended_exclusive: HashMap<String, (String, Loan)> = HashMap::new();
         let mut callables = inherited_callables.clone();
         for (idx, stmt) in block.stmts.iter().enumerate() {
             // Drop local loans whose view is never mentioned again from here on.
             local.retain(|loan| self.view_used_from(loan, &block.stmts[idx..]));
+            let resumed: Vec<String> = suspended_exclusive
+                .iter()
+                .filter_map(|(parent, (child, _))| {
+                    (!local.iter().any(|loan| {
+                        loan.view == *child && loan.kind == BorrowKind::Exclusive
+                    }))
+                    .then(|| parent.clone())
+                })
+                .collect();
+            for parent in resumed {
+                let Some((_, loan)) = suspended_exclusive.remove(&parent) else { continue };
+                moved_exclusive.remove(&parent);
+                let event = LoanEvent::from(loan.clone());
+                push_unique_event(
+                    self.facts.opens_after.entry(stmt_key(stmt)).or_default(),
+                    event.clone(),
+                );
+                self.schedule_close(block, idx, &event);
+                local.push(loan);
+            }
 
             // Everything live at this statement: inherited (whole-block) + local.
             let live: Vec<Loan> = inherited.iter().chain(local.iter()).cloned().collect();
@@ -2072,6 +2097,49 @@ impl LoanCtx<'_> {
             // `if`/`match`/block whose branches return views) opens a loan per
             // distinct owner it borrows.
             if let Stmt::Let { name, ty, value, mutable } = stmt {
+                if let Expr::Unary {
+                    op: UnOp::BorrowMut,
+                    expr,
+                } = value
+                    && let Expr::Unary {
+                        op: UnOp::Deref,
+                        expr: source,
+                    } = expr.as_ref()
+                    && let Expr::Var(source) = source.as_ref()
+                {
+                    let reborrowed: Vec<Loan> = local
+                        .iter()
+                        .filter(|loan| {
+                            loan.view == *source && loan.kind == BorrowKind::Exclusive
+                        })
+                        .cloned()
+                        .collect();
+                    if !reborrowed.is_empty() {
+                        for old in &reborrowed {
+                            let old_event = LoanEvent::from(old.clone());
+                            self.remove_scheduled_close(&old_event);
+                            push_unique_event(
+                                self.facts.closes_after.entry(stmt_key(stmt)).or_default(),
+                                old_event,
+                            );
+                            let mut next = old.clone();
+                            next.view = name.clone();
+                            let next_event = LoanEvent::from(next.clone());
+                            push_unique_event(
+                                self.facts.opens_after.entry(stmt_key(stmt)).or_default(),
+                                next_event.clone(),
+                            );
+                            self.schedule_close(block, idx, &next_event);
+                            local.push(next);
+                        }
+                        local.retain(|loan| {
+                            !(loan.view == *source && loan.kind == BorrowKind::Exclusive)
+                        });
+                        moved_exclusive.insert(source.clone());
+                        suspended_exclusive.insert(source.clone(), (name.clone(), reborrowed[0].clone()));
+                        continue;
+                    }
+                }
                 if let Expr::Var(source) = value {
                     let transferred: Vec<Loan> = local
                         .iter()
@@ -2101,6 +2169,11 @@ impl LoanCtx<'_> {
                             !(loan.view == *source && loan.kind == BorrowKind::Exclusive)
                         });
                         moved_exclusive.insert(source.clone());
+                        for (child, _) in suspended_exclusive.values_mut() {
+                            if child == source {
+                                *child = name.clone();
+                            }
+                        }
                         self.reject_callable_erasure(name, value, ty.as_ref(), None, &callables)?;
                         if let Some(sig) = self.callable_value_sig(value, ty.as_ref(), &callables) {
                             callables.insert(name.clone(), sig);
