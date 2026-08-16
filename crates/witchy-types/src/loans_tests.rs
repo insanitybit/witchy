@@ -1144,6 +1144,23 @@
     }
 
     #[test]
+    fn explicit_reference_cannot_cross_json_or_reflection_boundaries() {
+        for (module, call) in [("json", "json.stringify"), ("reflect", "reflect.debug")] {
+            let err = linked_main(&format!(
+                "mode opt\n\nimport {module}\n\n\
+                 fn view(text: &'a String) -> &'a String:\n    text\n\n\
+                 fn main(console: Console):\n    let text = \"value\"\n    let borrowed = view(&text)\n    let encoded = {call}(borrowed)\n    console.print(encoded)\n"
+            ))
+            .expect_err("serialization and reflection require owned data");
+            assert!(
+                err.message.contains("parameter type erases that relation")
+                    && err.message.contains("materialize an owned value"),
+                "{module} must reject a reference escape with the materialization remedy: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn exclusive_reference_cannot_cross_async_suspension() {
         let main = witchy_syntax::parser::parse_module(
             "mode opt\n\nimport task\n\nasync fn bad(input: &'a mut String) -> task.Task(Nil):\n    let _ = task.done(0).await\n    *input = \"changed\"\n\nfn main(console: Console):\n    console.print(\"done\")\n",
