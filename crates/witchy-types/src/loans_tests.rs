@@ -1131,12 +1131,18 @@
 
     #[test]
     fn exclusive_reference_cannot_cross_async_suspension() {
-        let err = linked_main(
+        let main = witchy_syntax::parser::parse_module(
             "mode opt\n\nimport task\n\nasync fn bad(input: &'a mut String) -> task.Task(Nil):\n    let _ = task.done(0).await\n    *input = \"changed\"\n\nfn main(console: Console):\n    console.print(\"done\")\n",
         )
-        .expect_err("an exclusive reference cannot stay live across await");
+        .expect("parse async exclusive reference fixture");
+        let err = witchy_syntax::linker::link(
+            vec![("main".into(), main)],
+            "main",
+            no_comptime,
+        )
+        .expect_err("an exclusive reference cannot cross an async function boundary");
         assert!(
-            err.message.contains("borrowed value `input` remains live across `await`"),
+            err.to_string().contains("async fn `bad` may not expose a borrowed view"),
             "{err}"
         );
     }
