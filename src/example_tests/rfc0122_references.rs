@@ -8,7 +8,7 @@ fn first(text: &'a String) -> &'a String:
     text
 
 fn main(console: Console):
-    var text = "value"
+    let text = "value"
     let observed = first(&text)
     console.print("${*observed}")
 "#;
