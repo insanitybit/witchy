@@ -2173,18 +2173,45 @@ fn canon_module(m: &mut Module) {
 
 fn canon_item(it: &mut Item) {
     match it {
-        Item::Function(f) => canon_block(&mut f.body),
-        Item::Type(_) | Item::TypeAlias { .. } => {}
+        Item::Function(f) => {
+            canon_function_types(f);
+            canon_block(&mut f.body);
+        }
+        Item::Type(definition) => {
+            for variant in &mut definition.variants {
+                for field in &mut variant.fields {
+                    canon_type(field);
+                }
+            }
+        }
+        Item::TypeAlias { ty, .. } => canon_type(ty),
         Item::Const { value, .. } => canon_expr(value),
         Item::Trait(t) => {
             for m in &mut t.methods {
+                for parameter in &mut m.params {
+                    if let Some(ty) = &mut parameter.ty {
+                        canon_type(ty);
+                    }
+                }
+                if let Some(ty) = &mut m.ret {
+                    canon_type(ty);
+                }
                 if let Some(b) = &mut m.default {
                     canon_block(b);
                 }
             }
         }
         Item::Impl(im) => {
+            for ty in im.trait_args.iter_mut().chain(im.target_args.iter_mut()) {
+                canon_type(ty);
+            }
+            for (_, _, arguments) in &mut im.bounds {
+                for argument in arguments {
+                    canon_type(argument);
+                }
+            }
             for f in &mut im.methods {
+                canon_function_types(f);
                 canon_block(&mut f.body);
             }
         }
@@ -2192,8 +2219,64 @@ fn canon_item(it: &mut Item) {
     }
 }
 
+/// Formatter output canonicalizes retired `let('a)` / `View(T, 'a)` syntax to
+/// `&'a T`. The parser retains legacy provenance for ABI compatibility, so the
+/// round-trip guard compares the one semantic reference relation rather than
+/// that source-only distinction.
+fn canon_type(ty: &mut Type) {
+    match ty {
+        Type::Named(_, arguments) | Type::Dyn(_, arguments) => {
+            for argument in arguments {
+                canon_type(argument);
+            }
+        }
+        Type::Tuple(items) => for item in items {
+            canon_type(item);
+        },
+        Type::RecordCompose { base, fields } => {
+            canon_type(base);
+            for (_, field) in fields {
+                canon_type(field);
+            }
+        }
+        Type::Fn(parameters, result, _) => {
+            for parameter in parameters {
+                canon_type(parameter);
+            }
+            canon_type(result);
+        }
+        Type::Qualified(qualifier, inner) => {
+            if let TypeQual::LegacyBorrow(lifetime) = qualifier {
+                *qualifier = TypeQual::Borrow(lifetime.clone());
+            }
+            canon_type(inner);
+        }
+    }
+}
+
+fn canon_function_types(function: &mut Function) {
+    for parameter in &mut function.params {
+        if let Some(ty) = &mut parameter.ty {
+            canon_type(ty);
+        }
+    }
+    if let Some(ty) = &mut function.ret {
+        canon_type(ty);
+    }
+    for (_, _, arguments) in &mut function.bounds {
+        for argument in arguments {
+            canon_type(argument);
+        }
+    }
+}
+
 fn canon_block(b: &mut Block) {
     b.lines.clear();
+    if let Some(region) = &mut b.region
+        && let Some(ty) = &mut region.ty
+    {
+        canon_type(ty);
+    }
     for s in &mut b.stmts {
         canon_stmt(s);
     }
@@ -2201,9 +2284,11 @@ fn canon_block(b: &mut Block) {
 
 fn canon_stmt(s: &mut Stmt) {
     match s {
-        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
+        Stmt::Let { ty, value, .. } => {
+            if let Some(ty) = ty { canon_type(ty); }
             canon_expr(value)
         }
+        Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => canon_expr(value),
         Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => canon_expr(e),
         _ => {}
     }
