@@ -904,6 +904,20 @@
     }
 
     #[test]
+    fn rfc0122_reference_migration_rewrites_resolved_imported_calls() {
+        let src = "mode opt\n\nimport api\n\nfn caller(text: String) -> String:\n    api.first(text)\n";
+        let mut signatures = std::collections::HashMap::new();
+        signatures.insert(
+            "api.first".into(),
+            vec![Some(ReferenceParameterKind::Shared)],
+        );
+        let migration = migrate_references_with_signatures(src, &signatures)
+            .expect("opt module with resolved import migrates");
+        assert!(migration.ambiguities.is_empty(), "{:?}", migration.ambiguities);
+        assert!(migration.source.contains("api.first(&text)"), "{}", migration.source);
+    }
+
+    #[test]
     fn rfc0122_reference_migration_reports_unresolved_call_ownership() {
         let src = "mode opt\n\nfn first(text: String('a)) -> String('a):\n    text\n\nfn caller() -> String:\n    first(\"value\")\n";
         let migration = migrate_references(src).expect("opt legacy module migrates");

@@ -784,10 +784,57 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             eprintln!("usage: witchy migrate references [--check] <file.witchy>...");
             std::process::exit(1);
         }
+        let mut sources = Vec::new();
+        let mut signatures = std::collections::HashMap::new();
         let mut failed = false;
         for path in &paths {
             match std::fs::read_to_string(path) {
-                Ok(source) => match format::migrate_references(&source) {
+                Ok(source) => {
+                    let Some(module_name) = std::path::Path::new(path)
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                    else {
+                        eprintln!("witchy migrate references: `{path}`: module path has no UTF-8 file stem");
+                        failed = true;
+                        continue;
+                    };
+                    if let Ok(module) = witchy_syntax::parser::parse_module(&source) {
+                        for (name, signature) in format::reference_parameter_signatures(&module) {
+                            signatures.insert(format!("{module_name}.{name}"), signature);
+                        }
+                    }
+                    sources.push((path, source));
+                }
+                Err(error) => {
+                    eprintln!("witchy migrate references: cannot read `{path}`: {error}");
+                    failed = true;
+                }
+            }
+        }
+        for (path, source) in &sources {
+            let imported_signatures = witchy_syntax::parser::parse_module(source)
+                .ok()
+                .map(|module| {
+                    let mut visible = std::collections::HashMap::new();
+                    for imported in &module.imports {
+                        let prefix = format!("{imported}.");
+                        for (name, signature) in &signatures {
+                            if name.starts_with(&prefix) {
+                                visible.insert(name.clone(), signature.clone());
+                            }
+                        }
+                    }
+                    for (imported, names) in &module.from_imports {
+                        for name in names {
+                            if let Some(signature) = signatures.get(&format!("{imported}.{name}")) {
+                                visible.insert(name.clone(), signature.clone());
+                            }
+                        }
+                    }
+                    visible
+                })
+                .unwrap_or_default();
+            match format::migrate_references_with_signatures(source, &imported_signatures) {
                     Some(migration) if migration.ambiguities.is_empty() => {
                         let rewritten = migration.source;
                         if check && rewritten != source {
@@ -816,11 +863,6 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                         eprintln!("witchy migrate references: `{path}`: expected a parseable `mode opt` module");
                         failed = true;
                     }
-                },
-                Err(error) => {
-                    eprintln!("witchy migrate references: cannot read `{path}`: {error}");
-                    failed = true;
-                }
             }
         }
         if failed { std::process::exit(1); }

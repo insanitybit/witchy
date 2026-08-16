@@ -2700,12 +2700,23 @@ pub struct ReferenceMigration {
 /// argument needs the resolver's expected-parameter type and is reported for
 /// the command-level semantic phase instead of being guessed from spelling.
 pub fn migrate_references(src: &str) -> Option<ReferenceMigration> {
+    migrate_references_with_signatures(src, &std::collections::HashMap::new())
+}
+
+/// Like [`migrate_references`], but with already-resolved conventional call
+/// signatures supplied by the caller. An absent entry remains an ambiguity
+/// rather than turning a call into a guessed borrow.
+pub fn migrate_references_with_signatures(
+    src: &str,
+    external_signatures: &std::collections::HashMap<String, Vec<Option<ReferenceParameterKind>>>,
+) -> Option<ReferenceMigration> {
     let mut target = crate::parser::parse_module(src).ok()?;
     if !target.modes.iter().any(|mode| mode == "opt") {
         return None;
     }
     rewrite_reference_module(&mut target);
-    let signatures = reference_parameter_signatures(&target);
+    let mut signatures = external_signatures.clone();
+    signatures.extend(reference_parameter_signatures(&target));
     let mut ambiguities = Vec::new();
     for item in &mut target.items {
         if let Item::Function(function) = item {
@@ -2752,7 +2763,7 @@ pub fn reformat_references(src: &str) -> Option<String> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReferenceParameterKind {
+pub enum ReferenceParameterKind {
     Shared,
     Exclusive,
 }
@@ -2767,7 +2778,7 @@ fn reference_parameter_kind(ty: &Type) -> Option<ReferenceParameterKind> {
     }
 }
 
-fn reference_parameter_signatures(
+pub fn reference_parameter_signatures(
     module: &Module,
 ) -> std::collections::HashMap<String, Vec<Option<ReferenceParameterKind>>> {
     module
