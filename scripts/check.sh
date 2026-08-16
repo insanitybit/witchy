@@ -274,13 +274,13 @@ if cargo nextest --version >/dev/null 2>&1; then
         excl="${excl:+$excl and }$ungated_excl"
     fi
     if [ -n "$gate_test_jobs" ] && [ -n "$excl" ]; then
-        test_cmd=(cargo nextest run -j "$gate_test_jobs" --workspace -E "$excl")
+        test_cmd=(cargo nextest run -j "$gate_test_jobs" --workspace -E "$excl" --fail-fast)
     elif [ -n "$gate_test_jobs" ]; then
-        test_cmd=(cargo nextest run -j "$gate_test_jobs" --workspace)
+        test_cmd=(cargo nextest run -j "$gate_test_jobs" --workspace --fail-fast)
     elif [ -n "$excl" ]; then
-        test_cmd=(cargo nextest run --workspace -E "$excl")
+        test_cmd=(cargo nextest run --workspace -E "$excl" --fail-fast)
     else
-        test_cmd=(cargo nextest run --workspace)
+        test_cmd=(cargo nextest run --workspace --fail-fast)
     fi
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Width two removes the serialized 31-fixture floor while
