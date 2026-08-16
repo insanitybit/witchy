@@ -1744,6 +1744,8 @@ fn projection_steps_equal(left: &LoanProjectionStep, right: &LoanProjectionStep)
             (LoanProjectionStep::Index(left), LoanProjectionStep::Tuple(right)) => {
                 *left == *right as i64
             }
+            (LoanProjectionStep::AnyIndex, LoanProjectionStep::Index(_))
+            | (LoanProjectionStep::Index(_), LoanProjectionStep::AnyIndex) => true,
             _ => false,
         }
 }
@@ -1766,7 +1768,7 @@ fn fixed_interval(step: &LoanProjectionStep) -> Option<(i128, i128)> {
             }
             Some((lo, hi.max(lo)))
         }
-        LoanProjectionStep::Field(_) => None,
+        LoanProjectionStep::Field(_) | LoanProjectionStep::AnyIndex => None,
     }
 }
 
@@ -1845,6 +1847,7 @@ fn projection_display(projection: &LoanProjection) -> String {
                 display.push_str(&index.to_string());
                 display.push(']');
             }
+            LoanProjectionStep::AnyIndex => display.push_str("[*]"),
             LoanProjectionStep::Range { lo, hi, inclusive } => {
                 display.push('[');
                 display.push_str(&lo.to_string());

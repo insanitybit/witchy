@@ -80,6 +80,10 @@ pub enum LoanProjectionStep {
     Field(String),
     Tuple(usize),
     Index(i64),
+    /// One element of a homogeneous list. This is a signature-level path, not
+    /// a runtime offset: an actual `values[index]` resolves it to that element
+    /// without projecting through the owner that supplied the view.
+    AnyIndex,
     Range { lo: i64, hi: i64, inclusive: bool },
 }
 
@@ -492,6 +496,14 @@ impl BorrowRelationCatalog {
                                 .prefixed(LoanProjectionStep::Tuple(index));
                             slot
                         })
+                })
+                .collect(),
+            Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => self
+                .slots_with(&arguments[0], lifetimes, types, active_nominals)
+                .into_iter()
+                .map(|mut slot| {
+                    slot.projection = slot.projection.prefixed(LoanProjectionStep::AnyIndex);
+                    slot
                 })
                 .collect(),
             Type::Named(name, arguments) => {
@@ -1564,6 +1576,7 @@ fn encode_access_identity(signature: &AccessSignature) -> Vec<u8> {
                         self.tag(2);
                         self.i64(*index);
                     }
+                    LoanProjectionStep::AnyIndex => self.tag(4),
                     LoanProjectionStep::Range { lo, hi, inclusive } => {
                         self.tag(3);
                         self.i64(*lo);

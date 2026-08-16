@@ -103,6 +103,7 @@ pub enum RuntimeLoanProjectionStep {
     Field(String),
     Tuple(usize),
     Index(i64),
+    AnyIndex,
     Range { lo: i64, hi: i64, inclusive: bool },
 }
 
@@ -424,6 +425,7 @@ fn runtime_projection(projection: &LoanProjection) -> RuntimeLoanProjection {
                 }
                 LoanProjectionStep::Tuple(index) => RuntimeLoanProjectionStep::Tuple(*index),
                 LoanProjectionStep::Index(index) => RuntimeLoanProjectionStep::Index(*index),
+                LoanProjectionStep::AnyIndex => RuntimeLoanProjectionStep::AnyIndex,
                 LoanProjectionStep::Range { lo, hi, inclusive } => {
                     RuntimeLoanProjectionStep::Range {
                         lo: *lo,

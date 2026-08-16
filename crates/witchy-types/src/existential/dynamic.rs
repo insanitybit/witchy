@@ -1043,6 +1043,7 @@ fn runtime_loan_projection_step_expr(
         Step::Field(field) => ("dynamic.AccessField", vec![Expr::Str(field.clone())]),
         Step::Tuple(at) => ("dynamic.AccessTuple", vec![index(*at)]),
         Step::Index(at) => ("dynamic.AccessIndex", vec![Expr::Int(*at)]),
+        Step::AnyIndex => ("dynamic.AccessAnyIndex", Vec::new()),
         Step::Range { lo, hi, inclusive } => (
             "dynamic.AccessRange",
             vec![Expr::Int(*lo), Expr::Int(*hi), Expr::Bool(*inclusive)],

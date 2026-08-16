@@ -136,6 +136,24 @@ fn nominal_borrow_relations_preserve_exact_input_and_output_projections() {
 }
 
 #[test]
+fn list_borrow_relations_preserve_an_element_slot_without_indexing_the_owner() {
+    let signature = signature(
+        vec![qualified(TypeQual::Borrow("scope".into()), named("String"))],
+        list(qualified(TypeQual::Borrow("scope".into()), named("String"))),
+        vec![Convention::Let],
+    );
+
+    let [relation] = signature.borrow_relations() else {
+        panic!("one homogeneous list-element relation")
+    };
+    assert_eq!(
+        relation.output_projection(),
+        &LoanProjection { steps: vec![LoanProjectionStep::AnyIndex] }
+    );
+    assert_eq!(relation.owners()[0].input_projection(), &LoanProjection::default());
+}
+
+#[test]
 fn implicit_nominal_type_parameters_preserve_nested_borrow_slots() {
     let signature = catalog_signature(
         "mode opt\n\n\

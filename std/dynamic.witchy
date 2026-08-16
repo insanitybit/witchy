@@ -55,6 +55,7 @@ sealed type RuntimeLoanProjectionStep:
     AccessField(String)
     AccessTuple(Int)
     AccessIndex(Int)
+    AccessAnyIndex
     AccessRange(Int, Int, Bool)
 
 sealed type RuntimeBorrowOwner:
