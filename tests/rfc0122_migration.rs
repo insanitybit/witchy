@@ -6,13 +6,16 @@ use witchy_syntax::format::migrate_references;
 
 const LEGACY_SHARED_CALL: &str = r#"mode opt
 
+import borrow
+
 fn first(text: String('a)) -> String('a):
     text
 
+fn caller(text: String) -> String:
+    first(text).owned()
+
 fn main(console: Console):
-    var text = "value"
-    let view = first(text)
-    console.print(view)
+    console.print(caller("value"))
 "#;
 
 fn compiled_output(checked: &witchy_types::pipeline::CheckedModule) -> Vec<String> {

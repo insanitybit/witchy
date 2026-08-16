@@ -2047,7 +2047,7 @@ impl<'types> Codegen<'types> {
         // PlaceReference scratch carrier. Keep the local declaration contract
         // tied to those executable forms instead of relying on erased result
         // types to mention the carrier.
-        if matches!(expr, Expr::Unary { op: UnOp::BorrowMut | UnOp::Deref, .. }) {
+        if matches!(expr, Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref, .. }) {
             ids.insert(PLACE_REFERENCE_ID);
         }
         if let Some(ty) = self.ast_type_of_expr(expr) {

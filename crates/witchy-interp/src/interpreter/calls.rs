@@ -24,7 +24,49 @@ fn parameter_binds_mutable(param: &Param) -> bool {
     param.convention.binds_mutable() || is_exclusive_reference(param)
 }
 
+/// `borrow.Owned` is a compiler-generated, monomorphized bridge rather than a
+/// user-overridable method.  Its `Owned__T__owned` leaf is emitted only for the
+/// bundled standard-library blanket implementation (source identifiers cannot
+/// contain `__`). Monomorphization retains the template's source line, so the
+/// reserved callable identity is the stable authentication boundary. An
+/// arbitrary `owned` method continues to run its ordinary source body.
+fn is_generated_owned_materializer(function: &Function) -> bool {
+    let Some((module, identity)) = function.name.rsplit_once('.') else {
+        return false;
+    };
+    let Some(generic) = identity.strip_prefix("Owned__") else {
+        return false;
+    };
+    module == "borrow"
+        && (generic
+            .strip_suffix("__owned")
+            .is_some_and(|parameter| !parameter.is_empty())
+            || generic
+                .split_once("__owned__")
+                .is_some_and(|(parameter, specialization)| {
+                    !parameter.is_empty() && !specialization.is_empty()
+                }))
+}
+
 impl Interpreter {
+    fn materialize_generated_owned_result(
+        &self,
+        function: &Function,
+        value: Value,
+    ) -> Result<Value, Flow> {
+        if !is_generated_owned_materializer(function) {
+            return Ok(value);
+        }
+        // The checker authenticated this callable and proved the loan; runtime
+        // follows the selected owner/projection to create the owned snapshot.
+        match value {
+            Value::Reference { cell, projections, .. } => {
+                self.read_projected_value(&cell.borrow(), &projections)
+            }
+            value => Ok(value),
+        }
+    }
+
     pub(super) fn run_callable(
         &mut self,
         mut callable: TailCallable,
@@ -398,7 +440,7 @@ impl Interpreter {
         let (mut values, explicit_places) = self.eval_call_args(args, &function.params[1..], env)?;
         values.insert(0, *payload);
         let outcome = self.run_callable(TailCallable::Function(function), values)?;
-        let result = outcome.value;
+        let result = self.materialize_generated_owned_result(&outcome.function, outcome.value)?;
         let mut writebacks = Vec::new();
         if let Some(place) = receiver_place {
             let updated_payload = outcome
@@ -538,7 +580,7 @@ impl Interpreter {
         // The callee's own `?` early-return stops at this callable boundary; it
         // becomes the call's value rather than propagating into the caller.
         let outcome = self.run_callable(TailCallable::Function(func), argvals)?;
-        let result = outcome.value;
+        let result = self.materialize_generated_owned_result(&outcome.function, outcome.value)?;
         let fenv = outcome.env;
         let writebacks = writeback_indices
             .into_iter()
