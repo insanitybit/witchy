@@ -4,8 +4,8 @@ This is the integration authority for RFC-0122. “PROVEN” requires current
 `master` plus the named evidence. A green queue item is not acceptance. Every
 other row remains open.
 
-Audit target: `bc03f42d45cd3ddad79d249326d90f30ac07b8d2` on `master`
-(2026-08-15). The linked RFC is accepted; this ledger determines when it is
+Audit target: `35f710dfb838d1dfa18dd18543221e00758e1601` on `master`
+(2026-08-16). The linked RFC is accepted; this ledger determines when it is
 implemented.
 
 | Criterion | Track | State | Required evidence |
@@ -23,7 +23,7 @@ implemented.
 | 11 shared loans | checker | partial | merged shared loan tests; add copy, escape, `var`, consume, drop matrix |
 | 12 exclusive loans | checker/runtime/wasm | partial | `rfc0122_local_exclusive_reference_write_agrees_on_both_backends`, `rfc0122_mutable_exclusive_parameter_writes_back_on_both_backends`, returned-reborrow, function-value, and closure projected-place fixtures prove executable writes and `var` write-back; affine moves, parent suspension, structured exits, and no-copy proof remain |
 | 13 mutable-to-shared conversion | checker/runtime | partial | merged `bcea90b4` relinquishes the old `&mut` handle; checker covers short shared reborrow; runtime parity and shortening matrix remain |
-| 14 owned qualifiers | checker | open | frozen/unique/local-unique combination diagnostics |
+| 14 owned qualifiers | checker | partial | `loans_tests::exclusive_reference_signature_retains_its_affine_contract` covers accepted `own unique &'a mut T`, rejects both frozen/unique orders and frozen reference targets, and rejects escaping `local unique &'a mut T`; expand to the remaining nested aggregate/function-value qualifier matrix |
 | 15 convention/reference orthogonality | contract/checker | partial | callable identity test; handle write-back/own behavior remains |
 | 16 no opt-graph erasure | contract | partial | signature preservation; casts/traits/closures/adapters/tails matrix remains |
 | 17 CFG precision | checker | partial | existing CFG facts; conditional returns, lending iterators, exact diagnostics remain |
