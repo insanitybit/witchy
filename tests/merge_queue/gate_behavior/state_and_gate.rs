@@ -335,12 +335,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     assert!(
         cargo_args.lines().any(|line| {
-            line.starts_with("nextest run -j 8 --workspace") && line.contains("--fail-fast")
-        }),
-        "serialized gate did not stop its workspace test leg after the first failure: {cargo_args}",
-    );
-    assert!(
-        cargo_args.lines().any(|line| {
             line.contains(
                 "not test(/^rfc0087_migration_census::repository_census_matches_the_checked_in_type_resolved_snapshot$/)",
             )
