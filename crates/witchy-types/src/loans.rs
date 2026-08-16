@@ -1750,6 +1750,19 @@ fn projection_steps_equal(left: &LoanProjectionStep, right: &LoanProjectionStep)
         }
 }
 
+/// Signature slots may name the homogeneous element position as `[*]`, while
+/// expression provenance necessarily carries the selected concrete index.
+/// Keep that comparison in the same matcher used by prefix/overlap checks so
+/// a `List(&'a T)` return relation authenticates each returned element.
+fn projections_equal(left: &LoanProjection, right: &LoanProjection) -> bool {
+    left.steps.len() == right.steps.len()
+        && left
+            .steps
+            .iter()
+            .zip(&right.steps)
+            .all(|(left, right)| projection_steps_equal(left, right))
+}
+
 fn fixed_interval(step: &LoanProjectionStep) -> Option<(i128, i128)> {
     match step {
         LoanProjectionStep::Index(value) => {
@@ -2715,7 +2728,9 @@ impl LoanCtx<'_> {
             let output_relations: Vec<&ReturnBorrowRelation> = self
                 .return_relations
                 .iter()
-                .filter(|relation| relation.output_projection == source.borrower_projection)
+                .filter(|relation| {
+                    projections_equal(&relation.output_projection, &source.borrower_projection)
+                })
                 .collect();
             let relation_matches = output_relations.iter().any(|relation| {
                 relation.owners.iter().any(|owner| {
