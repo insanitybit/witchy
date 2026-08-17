@@ -109,6 +109,35 @@ fn main(console: Console):
     );
 }
 
+#[test]
+fn unique_exclusive_reference_nominal_field_move_and_write_work_on_all_backends() {
+    let src = r#"mode opt
+
+type Holder('a):
+    value: unique &'a mut String
+
+fn wrap(own value: unique &'a mut String) -> Holder('a):
+    Holder(value)
+
+fn main(console: Console):
+    var text = "before"
+    let returned = wrap(&mut text)
+    let moved = returned
+    let Holder(value) = moved
+    *value = "after"
+    console.print(text)
+"#;
+    let want = ["after"];
+    assert_eq!(link_run(src), want, "interpreter preserves a unique nominal reference field");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves a unique nominal reference field");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves a unique nominal reference field");
+}
+
 /// Keep nested nominal/list transport on the same carrier path across both
 /// backends.
 #[test]
