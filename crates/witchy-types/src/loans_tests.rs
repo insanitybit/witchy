@@ -223,6 +223,25 @@
     }
 
     #[test]
+    fn exclusive_handle_qualifiers_survive_aggregate_and_callable_positions() {
+        check_str(
+            "mode opt\n\nfn pack(text: unique &'a mut String) -> (unique &'a mut String, Int):\n    (text, 1)\n\nfn unpack(pair: (unique &'a mut String, Int)) -> unique &'a mut String:\n    pair.0\n",
+        )
+        .expect("a unique exclusive handle retains its qualifier below tuple construction and projection");
+
+        check_str(
+            "mode opt\n\nfn pass(own text: unique &'a mut String) -> unique &'a mut String:\n    text\n\nfn relay(f: fn(own unique &'a mut String) -> unique &'a mut String, own text: unique &'a mut String) -> unique &'a mut String:\n    f(text)\n",
+        )
+        .expect("a function value retains the consumed unique exclusive-handle contract");
+
+        let err = check_str(
+            "mode opt\n\nfn bad(f: fn(frozen unique &'a mut String) -> Nil) -> Nil:\n    Nil\n",
+        )
+        .expect_err("a function-value parameter cannot hide contradictory exclusive-handle qualifiers");
+        assert!(err.contains("frozen") && err.contains("unique") && err.contains("exclusive reference"), "{err}");
+    }
+
+    #[test]
     fn mutable_exclusive_reference_retains_writeback_access() {
         check_str(
             "mode opt\n\nfn replace(var text: &'a mut String) -> Nil:\n    *text = \"changed\"\n",
