@@ -1982,7 +1982,15 @@ impl<'types> Codegen<'types> {
                         // element can have different identity spellings. Arrays
                         // are representation-typed, so a matching exact GC kind
                         // is sufficient and remains type-safe at the Wasm layer.
-                        let element_kind = self.kind_for_type(&element);
+                        // The surface type table may erase an explicit borrow
+                        // qualifier on a list literal's element.  The lowered
+                        // expression still carries the authoritative physical
+                        // kind (`Borrow`/`BorrowMut` produces `GcRef`), so use
+                        // that kind when recovering the carrier layout.
+                        let element_kind = items
+                            .first()
+                            .map(|item| self.kind_of(item))
+                            .unwrap_or_else(|| self.kind_for_type(&element));
                         self.gc_reference_list_layouts().into_iter().find_map(
                             |(type_id, candidate_kind)| {
                                 if candidate_kind != element_kind {
@@ -3374,7 +3382,7 @@ impl<'types> Codegen<'types> {
     fn infer_locals(&mut self, block: &Block) {
         for stmt in &block.stmts {
             match stmt {
-                Stmt::Let { name, value, .. } => {
+                Stmt::Let { name, value, ty, .. } => {
                     // Infer the value's nested bindings FIRST (e.g. a `match`'s
                     // Some/Ok payload vars), so this binding's own kind/type —
                     // computed from `value` below — sees them. Otherwise
@@ -3391,10 +3399,21 @@ impl<'types> Codegen<'types> {
                         || matches!(value, Expr::Call { name, .. }
                             if self.fn_conventions.get(name).is_some_and(|cs|
                                 cs.contains(&Convention::Var)));
-                    let resolved_type = self
-                        .type_table
-                        .type_of(value)
-                        .and_then(witchy_types::typeck::ty_to_ast);
+                    // A typed declaration can preserve the executable carrier
+                    // contract even when the RHS was annotated before the
+                    // surface type table erased its borrow qualifier.  Keep
+                    // that declaration type for reference-valued locals; the
+                    // established inference remains authoritative for scalar
+                    // declarations and specialized list lowerings.
+                    let declared_reference_type = ty
+                        .as_ref()
+                        .filter(|declared| self.kind_for_type(declared).is_ref())
+                        .cloned();
+                    let resolved_type = declared_reference_type.or_else(|| {
+                        self.type_table
+                            .type_of(value)
+                            .and_then(witchy_types::typeck::ty_to_ast)
+                    });
                     let inferred_type = if needs_resolved_type
                         || matches!(resolved_type.as_ref().map(Type::unqualified), Some(Type::Fn(..)))
                         || resolved_type

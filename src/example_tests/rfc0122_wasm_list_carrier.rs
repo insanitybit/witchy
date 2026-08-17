@@ -156,3 +156,26 @@ fn main(console: Console):
         "compiled Wasm preserves nested exclusive nominal/list carriers through move, projection, and writes",
     );
 }
+
+#[test]
+fn exclusive_reference_list_extract_then_project_disjoint_owners_on_wasm() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let returned: List(&'a mut String) = [&mut first, &mut second]
+    let moved = returned
+    let selected = moved[0]
+    *selected = "updated-first"
+    *moved[1] = "updated-second"
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["updated-first", "updated-second"],
+        "compiled Wasm preserves an unrelated exclusive list projection after extracting one element",
+    );
+}
