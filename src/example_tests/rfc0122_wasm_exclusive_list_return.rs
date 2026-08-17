@@ -71,3 +71,29 @@ fn main(console: Console):
         "compiled Wasm preserves an exclusive reference-list return through a function value",
     );
 }
+
+#[test]
+fn wasm_first_exclusive_reference_list_function_value_return_preserves_forced_copy() {
+    let src = r#"mode opt
+
+fn make(text: &'a mut String) -> List(&'a mut String):
+    [text]
+
+fn main(console: Console):
+    var text = "before"
+    let factory = make
+    let returned = factory(&mut text)
+    let selected = returned[0]
+    *selected = "after"
+    console.print(text)
+"#;
+    let want = link_run(src);
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+
+    assert_eq!(optimized, want, "optimized Wasm preserves the function-value list carrier");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves the function-value list carrier");
+}
