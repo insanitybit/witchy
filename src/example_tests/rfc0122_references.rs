@@ -88,6 +88,23 @@ fn main(console: Console):
 }
 
 #[test]
+fn function_value_mutable_to_shared_reborrow_preserves_the_owner_on_wasm() {
+    let src = r#"mode opt
+
+fn share(text: &'a mut String) -> &'a String:
+    text
+
+fn main(console: Console):
+    var text = "value"
+    let adapt = share
+    let editable = &mut text
+    let observed = adapt(editable)
+    console.print(*observed)
+"#;
+    assert_eq!(wasm_run_reowns(src).0, ["value"], "compiled function value preserves a mutable-to-shared reborrow carrier");
+}
+
+#[test]
 fn shared_reference_tuple_preserves_each_owner_root_on_both_backends() {
     let src = r#"mode opt
 
