@@ -318,6 +318,47 @@ fn main(console: Console):
         );
     }
 
+    /// A conventional result from an opt export is logically owned in normal
+    /// source. It may share an internal owner only until either side mutates;
+    /// normal code must observe two independent values without a loan.
+    #[test]
+    fn rfc0122_normal_opt_result_detaches_before_owner_mutation_on_both_backends() {
+        let api = r#"
+mode opt
+
+pub fn snapshot(let values: List(Int)) -> List(Int):
+    values
+"#;
+        let app = r#"
+import api
+import list
+
+fn main(console: Console):
+    var values = [1]
+    let snapshot = api.snapshot(values)
+    values.push(2)
+    console.print("${snapshot}:${values}")
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app")
+            .expect("link normal caller with an owned opt result");
+        typeck::check(&linked).expect("normal result has no reference contract");
+        let expected = ["[1]:[1, 2]"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter detaches the ordinary result before owner mutation",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled code detaches the ordinary result before owner mutation",
+        );
+    }
+
     /// An aliased normal caller selects the copy-correct conventional entry for
     /// an opt `var unique` export: the callee's write-back updates the caller's
     /// variable while the pre-existing value alias keeps its original contents.
