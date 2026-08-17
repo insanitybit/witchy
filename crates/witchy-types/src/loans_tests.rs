@@ -429,6 +429,15 @@
     }
 
     #[test]
+    fn exclusive_reference_list_push_rejects_an_overlapping_owner() {
+        let err = linked_main(
+            "mode opt\n\nimport list\n\nfn main():\n    var text = \"before\"\n    var values: List(&'a mut String) = [&mut text]\n    list.push(values, &mut text)\n",
+        )
+        .expect_err("list.push may not append a second exclusive handle to the same owner");
+        assert!(err.message.contains("overlapping") || err.message.contains("exclusive reference"), "{}", err.message);
+    }
+
+    #[test]
     fn exclusive_reference_loop_elements_are_affine() {
         let err = check_str(
             "mode opt\n\nfn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):\n    [left, right]\n\nfn main(console: Console):\n    var first = \"first\"\n    var second = \"second\"\n    let values = all(&mut first, &mut second)\n    for value in values:\n        let alias = value\n        *value = \"updated\"\n",
