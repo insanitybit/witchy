@@ -90,3 +90,35 @@ fn main(console: Console):
         "compiled Wasm preserves an exclusive nominal aggregate through move, destructure, and writes",
     );
 }
+
+/// Keep nested nominal/list transport on the compiled-Wasm carrier path while
+/// the interpreter representation is still being converged.
+#[test]
+fn shared_reference_nested_nominal_list_return_copy_and_projection_work_on_wasm() {
+    let src = r#"mode opt
+
+import list
+
+type Pair('a, 'b):
+    left: &'a String
+    right: &'b String
+
+fn pairs(left: &'a String, right: &'b String) -> List(Pair('a, 'b)):
+    [Pair(left, right)]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let returned = pairs(&first, &second)
+    let copied = returned
+    let pair = copied[0]
+    console.print(*(pair.left))
+    console.print(*(pair.right))
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["first", "second"],
+        "compiled Wasm preserves nested nominal/list reference carriers through return, copy, and projection",
+    );
+}

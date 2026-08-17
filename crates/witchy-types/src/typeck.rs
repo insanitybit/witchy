@@ -4624,9 +4624,28 @@ impl Checker {
         }
     }
 
-    fn is_explicit_reference_nominal(&self, ty: &Ty) -> bool {
+    fn contains_unsupported_borrowed_nominal(&self, ty: &Ty) -> bool {
         match self.resolve(ty) {
-            Ty::Named(name, _) => self.explicit_reference_nominal_types.contains(&name),
+            Ty::List(element) => self.contains_unsupported_borrowed_nominal(&element),
+            Ty::Tuple(items) => items
+                .iter()
+                .any(|item| self.contains_unsupported_borrowed_nominal(item)),
+            Ty::Named(name, arguments) => {
+                let explicit = self.explicit_reference_nominal_types.contains(&name);
+                let direct_legacy = !explicit
+                    && (self.borrowed_nominal_types.contains(&name)
+                        || arguments.iter().any(|argument| {
+                            matches!(self.resolve(argument), Ty::Named(lifetime, args)
+                                if args.is_empty() && lifetime.starts_with('\''))
+                        }));
+                direct_legacy
+                    || arguments
+                        .iter()
+                        .any(|argument| self.contains_unsupported_borrowed_nominal(argument))
+            }
+            Ty::Dyn(_, arguments) => arguments
+                .iter()
+                .any(|argument| self.contains_unsupported_borrowed_nominal(argument)),
             _ => false,
         }
     }
@@ -4732,7 +4751,7 @@ impl Checker {
         ty: &Ty,
         operation: &str,
     ) -> Result<(), TypeError> {
-        if self.is_explicit_reference_nominal(ty) {
+        if !self.contains_unsupported_borrowed_nominal(ty) {
             return Ok(());
         }
         let Some(name) = self.borrowed_nominal_name(ty) else { return Ok(()) };
