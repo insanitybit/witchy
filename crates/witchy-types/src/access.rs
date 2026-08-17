@@ -629,6 +629,34 @@ impl BorrowRelationCatalog {
             })
     }
 
+    /// Recover a nominal field's declared AST type, including reference
+    /// qualifiers that the ordinary checker `Ty` intentionally erases. Loan
+    /// checking uses this for callable fields because a first-class function
+    /// value must retain the field's complete borrow contract when projected.
+    pub(crate) fn field_type(&self, base: &Type, field: &str) -> Option<Type> {
+        let base = match base {
+            Type::Qualified(_, inner) => return self.field_type(inner, field),
+            other => other,
+        };
+        let Type::Named(name, arguments) = base else { return None };
+        let definition = self.definitions.get(name)?;
+        let substitutions = effective_nominal_type_def_params(definition)
+            .iter()
+            .zip(arguments)
+            .map(|(parameter, argument)| (parameter.clone(), argument.clone()))
+            .collect::<HashMap<_, _>>();
+        definition
+            .variants
+            .iter()
+            .find_map(|variant| {
+                let index = variant.field_names.iter().position(|candidate| candidate == field)?;
+                variant
+                    .fields
+                    .get(index)
+                    .map(|ty| substitute_borrow_slot_type(ty, &substitutions))
+            })
+    }
+
     pub(crate) fn constructor_step(
         &self,
         constructor: &str,

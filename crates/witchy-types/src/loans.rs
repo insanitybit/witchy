@@ -964,11 +964,6 @@ fn index_control_flow(block: &Block, function_body: bool, facts: &mut LoanFacts)
     index_block_control_flow(block, None, None, None, function_body, facts);
 }
 
-/// Validate loan semantics when the caller does not need lowering facts.
-pub(crate) fn check(module: &Module) -> Result<(), TypeError> {
-    facts(module).map(|_| ())
-}
-
 /// Validate every function and return the exact events consumed by lowering.
 pub fn facts(module: &Module) -> Result<LoanFacts, TypeError> {
     facts_impl(module, None)
@@ -3515,10 +3510,29 @@ impl LoanCtx<'_> {
         value: &Expr,
         callables: &HashMap<String, BorrowSig>,
     ) -> Vec<String> {
-        let Expr::Call { name, args } = value else { return Vec::new() };
-        let Some(signature) = self.sigs.get(name).or_else(|| callables.get(name)) else {
-            return Vec::new();
+        let (signature, args) = match value {
+            Expr::Call { name, args } => {
+                let Some(signature) = self.sigs.get(name).or_else(|| callables.get(name)) else {
+                    return Vec::new();
+                };
+                (signature, args)
+            }
+            Expr::Apply { func, args } => {
+                let Some((_, signature)) = self.callable_expr_sig(func, callables) else {
+                    return Vec::new();
+                };
+                return self.relinquished_exclusive_arguments_from_signature(&signature, args);
+            }
+            _ => return Vec::new(),
         };
+        self.relinquished_exclusive_arguments_from_signature(signature, args)
+    }
+
+    fn relinquished_exclusive_arguments_from_signature(
+        &self,
+        signature: &BorrowSig,
+        args: &[Expr],
+    ) -> Vec<String> {
         let mut result = Vec::new();
         for relation in signature
             .relations
@@ -3544,10 +3558,29 @@ impl LoanCtx<'_> {
         value: &Expr,
         callables: &HashMap<String, BorrowSig>,
     ) -> Vec<String> {
-        let Expr::Call { name, args } = value else { return Vec::new() };
-        let Some(signature) = self.sigs.get(name).or_else(|| callables.get(name)) else {
-            return Vec::new();
+        let (signature, args) = match value {
+            Expr::Call { name, args } => {
+                let Some(signature) = self.sigs.get(name).or_else(|| callables.get(name)) else {
+                    return Vec::new();
+                };
+                (signature, args)
+            }
+            Expr::Apply { func, args } => {
+                let Some((_, signature)) = self.callable_expr_sig(func, callables) else {
+                    return Vec::new();
+                };
+                return self.returned_exclusive_arguments_from_signature(&signature, args);
+            }
+            _ => return Vec::new(),
         };
+        self.returned_exclusive_arguments_from_signature(signature, args)
+    }
+
+    fn returned_exclusive_arguments_from_signature(
+        &self,
+        signature: &BorrowSig,
+        args: &[Expr],
+    ) -> Vec<String> {
         let mut result = Vec::new();
         for relation in signature
             .relations
@@ -3786,6 +3819,28 @@ impl LoanCtx<'_> {
                 borrow_sig_from_fn_type(ty, self.catalog)
                     .map(|sig| ("indirect function".into(), sig))
             }
+            Expr::Field { base, field } => {
+                let ty = self
+                    .type_table
+                    .and_then(|table| table.type_of(base))
+                    .and_then(ty_to_ast)
+                    .and_then(|base| self.catalog.field_type(&base, field))
+                    .or_else(|| {
+                        self.type_table
+                            .and_then(|table| table.type_of(expr))
+                            .and_then(ty_to_ast)
+                    });
+                let sig = ty
+                    .as_ref()
+                    .and_then(|ty| borrow_sig_from_fn_type(ty, self.catalog));
+                sig.map(|sig| ("projected function".into(), sig))
+            }
+            Expr::Index { .. } => self
+                .type_table
+                .and_then(|table| table.type_of(expr))
+                .and_then(ty_to_ast)
+                .and_then(|ty| borrow_sig_from_fn_type(&ty, self.catalog))
+                .map(|sig| ("projected function".into(), sig)),
             Expr::Lambda { params, body, ret } => ret
                 .as_ref()
                 .and_then(|ret| {

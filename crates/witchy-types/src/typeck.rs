@@ -9405,19 +9405,20 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
         Ok(lowered) => {
             check_unique_parameters(&lowered)
                 .map_err(UniquenessError::into_type_error)?;
-            run_check_with_trait_methods(
+            let type_table = run_check_with_trait_methods(
                 &lowered,
-                false,
+                true,
                 &trait_method_names,
                 &trait_supertraits,
                 compiler_syntax_allowed,
-            )?;
+            )?
+            .unwrap_or_default();
             check_unique_capacity_results(&lowered)?;
             // (RFC-0083) Static lifetime/loan check for borrowed views. Runs after
             // type checking (so a genuine type error is reported first) on the
             // lowered module (method calls are plain `Call`s and the borrow
             // signatures survive lowering as `Qualified(Borrow, _)`).
-            crate::loans::check(&lowered)?;
+            crate::loans::facts_with_types(&lowered, &type_table)?;
             crate::access::verify_module(&lowered).map_err(|error| TypeError {
                 message: error.to_string(),
             })?;

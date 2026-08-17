@@ -141,6 +141,35 @@ fn main(console: Console):
 }
 
 #[test]
+fn unique_exclusive_reference_callable_field_preserves_its_contract_on_all_backends() {
+    let src = r#"mode opt
+
+type Holder:
+    project: fn(own unique &'a mut String) -> unique &'a mut String
+
+fn pass(own value: unique &'a mut String) -> unique &'a mut String:
+    value
+
+fn main(console: Console):
+    var text = "before"
+    let holder = Holder(project: pass)
+    let project = holder.project
+    let observed = project(&mut text)
+    *observed = "after"
+    console.print(text)
+"#;
+    let want = ["after"];
+    assert_eq!(link_run(src), want, "interpreter preserves the unique callable field contract");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves the unique callable field contract");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves the unique callable field contract");
+}
+
+#[test]
 fn function_value_exclusive_reference_return_writes_the_owner_on_both_backends() {
     let src = r#"mode opt
 
