@@ -29,8 +29,11 @@ The migrator's executable coverage remains:
 - `rfc0122_reference_migration_rewrites_proven_local_parameter_calls`;
 - `rfc0122_reference_migration_rewrites_resolved_imported_calls`;
 - `rfc0122_reference_migration_requires_overloads_to_agree_before_borrowing`.
+- `migration_command_rewrites_then_checks_without_mutating_ambiguous_sources`.
 
 The first two prove only authenticated direct places are borrowed. The third
-proves conflicting overloads are reported rather than guessed. Together with
-this corpus census, no legacy source rewrite remains on this revision. Future
-legacy spellings must rerun this report before row 21 can be reconsidered.
+proves conflicting overloads are reported rather than guessed. The command
+fixture proves the executable `--check`/rewrite lifecycle and that unresolved
+ownership is reported without mutating the source. Together with this corpus
+census, no legacy source rewrite remains on this revision. Future legacy
+spellings must rerun this report before row 21 can be reconsidered.
