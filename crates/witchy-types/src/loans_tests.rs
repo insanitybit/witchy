@@ -1328,7 +1328,7 @@
     }
 
     #[test]
-    fn shared_reference_cannot_cross_generator_suspension() {
+    fn shared_reference_generator_rejects_borrowed_element() {
         let main = witchy_syntax::parser::parse_module(
             "mode opt\n\nimport iter\n\ngen fn bad(input: &'a String) -> Iter(String):\n    yield *input\n\nfn main(console: Console):\n    console.print(\"done\")\n",
         )
