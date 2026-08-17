@@ -110,7 +110,9 @@ fn main(console: Console):
     let observed = adapt(editable)
     console.print(*observed)
 "#;
-    assert_eq!(wasm_run_reowns(src).0, ["value"], "compiled function value preserves a mutable-to-shared reborrow carrier");
+    let want = ["value"];
+    assert_eq!(link_run(src), want, "interpreter preserves a function-value mutable-to-shared reborrow carrier");
+    assert_eq!(wasm_run_reowns(src).0, want, "compiled function value preserves a mutable-to-shared reborrow carrier");
 }
 
 #[test]
