@@ -2088,6 +2088,25 @@ impl<'types> Codegen<'types> {
         if let Some(ty) = self.ast_type_of_expr(expr) {
             self.collect_unit_gc_ids_type(&ty, ids);
         }
+        // An indirect call's result type can be recovered from the function
+        // value even when the rewritten `Apply` node has no address-keyed
+        // TypeTable entry. Its typed GC result still uses the shared call
+        // scratch local, so retain that carrier in the enclosing function ABI.
+        if let Expr::Apply { func, .. } = expr {
+            if let Some(access) = self.call_access_signature(expr)
+                && let Kind::GcRef(id) = self.kind_for_type(access.result().ty())
+            {
+                ids.insert(id);
+            } else if let Kind::GcRef(id) = self.apply_ret_kind(func) {
+                ids.insert(id);
+            } else if let Kind::GcRef(id) = self.kind_of(expr) {
+                // Rewritten function-value calls can lose both the call fact
+                // and the source type-table row. `kind_of` still sees the
+                // binding's inferred callable result kind, which is the same
+                // carrier selected by the lowering arm.
+                ids.insert(id);
+            }
+        }
         // A rewritten direct call can lose its address-keyed result type while
         // retaining a typed GC return ABI. Its scratch carrier is still needed
         // by the receiving local and any later projection.
@@ -2142,6 +2161,11 @@ impl<'types> Codegen<'types> {
         // lowering still emits its typed `match_gc_<id>` scratch local, so
         // retain every registered tuple carrier in the function-local ABI.
         ids.extend(self.gc_tuple_ids.values().copied());
+        // An indirect call can lose its address-keyed result type after
+        // callable-value rewriting, while lowering still uses the typed GC
+        // scratch for a registered reference-list result. Keep those carrier
+        // locals available at the same function-wide boundary as tuples.
+        ids.extend(self.gc_reference_list_ids.values().copied());
         ids
     }
 
@@ -2871,7 +2895,19 @@ impl<'types> Codegen<'types> {
         match value {
             Expr::Lambda { body, .. } => Some(self.block_kind(body)),
             Expr::Call { name, .. } => self.fn_ret_closure_kind.get(name).copied(),
-            Expr::Var(v) => self.local_fn_ret_kind.get(v).copied(),
+            Expr::Var(v) => self
+                .local_fn_ret_kind
+                .get(v)
+                .copied()
+                .or_else(|| self.fn_ret.get(v).copied())
+                .or_else(|| {
+                    self.top_level_function_type(v).and_then(|ty| {
+                        let Type::Fn(_, result, _) = ty.unqualified() else {
+                            return None;
+                        };
+                        Some(self.kind_for_type(result))
+                    })
+                }),
             _ => None,
         }
     }
@@ -2905,6 +2941,24 @@ impl<'types> Codegen<'types> {
                 .type_of(e)
                 .and_then(witchy_types::typeck::ty_to_ast),
         }
+    }
+
+    /// Recover the function type of a bare top-level callable after linking.
+    /// Function values are synthesized during lowering, so their `Var` node
+    /// need not retain an address-keyed type-table entry. The parameter table
+    /// has already been refined with access facts by assembly, making this the
+    /// same callable contract used to build the forwarding closure.
+    fn top_level_function_type(&self, name: &str) -> Option<Type> {
+        let params = self.fn_params.get(name)?;
+        let result = self.fn_ret_ty.get(name)?.clone();
+        Some(Type::Fn(
+            params
+                .iter()
+                .map(|param| param.ty.clone())
+                .collect::<Option<Vec<_>>>()?,
+            Box::new(result),
+            params.iter().map(|param| param.convention).collect(),
+        ))
     }
 
     fn block_record_type(&self, b: &Block) -> Option<String> {
@@ -3418,6 +3472,11 @@ impl<'types> Codegen<'types> {
                         self.type_table
                             .type_of(value)
                             .and_then(witchy_types::typeck::ty_to_ast)
+                    }).or_else(|| {
+                        let Expr::Var(name) = value else { return None };
+                        (!self.locals.contains_key(name))
+                            .then(|| self.top_level_function_type(name))
+                            .flatten()
                     });
                     let inferred_type = if needs_resolved_type
                         || matches!(resolved_type.as_ref().map(Type::unqualified), Some(Type::Fn(..)))

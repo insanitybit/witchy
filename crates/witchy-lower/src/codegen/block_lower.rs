@@ -112,6 +112,16 @@ impl<'types> Codegen<'types> {
             }
             match stmt {
                 Stmt::Let { name, value, .. } => {
+                    // A bare top-level function value is represented by an
+                    // exact closure wrapper, but its source type can retain an
+                    // erased return (`List(String)`) after checking. Refresh
+                    // the cached closure result from the finalized physical
+                    // function ABI before lowering later calls through it.
+                    if let Expr::Var(target) = value
+                        && let Some(result_kind) = self.fn_ret.get(target).copied()
+                    {
+                        self.local_fn_ret_kind.insert(name.clone(), result_kind);
+                    }
                     let reference_place = self.static_reference_place(value);
                     // (RFC-0035 step 3) If this binds a dup-eligible container read
                     // (`let x = list.at(xs, i)` where the element is a provably offset-0 rc
@@ -447,7 +457,13 @@ impl<'types> Codegen<'types> {
                             .is_some_and(|signature| {
                                 Self::is_executable_reference_type(signature.result().ty())
                             });
-                        let value_kind = self.kind_of(value);
+                        let value_kind = if let Expr::Apply { func, .. } = value {
+                            self.closure_result_type(func)
+                                .map(|ty| self.kind_for_type(&ty))
+                                .unwrap_or_else(|| self.kind_of(value))
+                        } else {
+                            self.kind_of(value)
+                        };
                         if value_kind.is_ref() {
                             self.locals.insert(name.clone(), value_kind);
                         } else if executable_reference_result {
