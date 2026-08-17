@@ -313,3 +313,32 @@ fn main(console: Console):
         "compiled Wasm preserves an affine tuple-in-list carrier through return, move, destructure, projection, and writes",
     );
 }
+
+/// Exercise replacement of an exclusive place inside a reference list. This
+/// remains Wasm-first while list slot write-back is still part of the changing
+/// carrier ABI; its interpreter debt is recorded in RFC-0122's ledger.
+#[test]
+fn wasm_first_exclusive_reference_list_slot_replacement_preserves_writeback() {
+    let src = r#"mode opt
+
+import list
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    var replacement = "replacement"
+    var refs: List(&'a mut String) = [&mut first, &mut second]
+    list.set_at(refs, 0, &mut replacement)
+    let selected = refs[0]
+    *selected = "updated-replacement"
+    console.print(first)
+    console.print(second)
+    console.print(replacement)
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["first", "second", "updated-replacement"],
+        "compiled Wasm preserves exclusive list slot replacement and write-back",
+    );
+}

@@ -45,6 +45,27 @@ fn terr(message: String) -> TypeError {
     TypeError { message }
 }
 
+/// Explicit reference carriers remain executable values when stored in a
+/// mutable aggregate. Legacy `View` shells still require an immutable binding
+/// or explicit materialization; only the first-class `&`/`&mut` relation opts
+/// into the place-carrier path.
+fn type_contains_explicit_reference_relation(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(_, inner) => type_contains_explicit_reference_relation(inner),
+        Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => arguments
+            .iter()
+            .any(type_contains_explicit_reference_relation),
+        Type::RecordCompose { base, fields } => {
+            type_contains_explicit_reference_relation(base)
+                || fields
+                    .iter()
+                    .any(|(_, field)| type_contains_explicit_reference_relation(field))
+        }
+        Type::Fn(_, _, _) => false,
+    }
+}
+
 /// The output-to-input borrow relation of one function, read off its signature.
 #[derive(Clone)]
 struct BorrowSig {
@@ -1448,6 +1469,35 @@ fn authenticated_non_escaping_generic_read(
     }
 }
 
+/// The compiler-owned list slot setter preserves explicit reference carriers
+/// in both the list receiver and replacement element. Its source-level generic
+/// `a` is a real carrier slot here, unlike an arbitrary user generic function
+/// that could erase a relation at a call boundary.
+fn authenticated_non_escaping_generic_write(
+    callee: &str,
+    index: usize,
+    access: &AccessSignature,
+    sources: &[BorrowSource],
+) -> bool {
+    if !is_std_fn(callee)
+        || !matches!(callee, "list.set_at" | "list.__set_at")
+        || !matches!(index, 0 | 2)
+        || access.params().len() != 3
+        || !access.borrow_relations().is_empty()
+        || !sources.iter().all(source_is_direct_reference)
+    {
+        return false;
+    }
+    let Type::Named(name, arguments) = access.params()[0].ty().unqualified() else {
+        return false;
+    };
+    let Some(element) = arguments.first() else { return false };
+    name == "List"
+        && arguments.len() == 1
+        && type_has_generic_leaf(element)
+        && access.params()[2].ty().unqualified() == element.unqualified()
+}
+
 /// The bundled `borrow.Owned` blanket implementation is the one authenticated
 /// generic materializer: it returns the same logical value as an owned result,
 /// without retaining any relation to the borrowed argument. Authenticate the
@@ -1997,7 +2047,8 @@ impl LoanCtx<'_> {
             .and_then(|table| table.type_of(value))
             .and_then(ty_to_ast)
         {
-            return matches!(ty, Type::Named(name, _) if self.catalog.borrowed_record(&name))
+            return type_contains_explicit_reference_relation(&ty)
+                || matches!(ty, Type::Named(name, _) if self.catalog.borrowed_record(&name))
                 || matches!(
                     value,
                     Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }
@@ -2010,6 +2061,12 @@ impl LoanCtx<'_> {
             Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. } => true,
             Expr::Ctor { name, .. } => self.catalog.borrowed_constructor(name),
             Expr::Record { name, .. } => self.catalog.borrowed_record(name),
+            Expr::List(items) | Expr::Tuple(items) => {
+                !items.is_empty()
+                    && items
+                        .iter()
+                        .all(|item| self.is_direct_borrowed_shell_value(item, callables))
+            }
             Expr::Call { name, .. } => self
                 .sigs
                 .get(name)
@@ -2464,6 +2521,7 @@ impl LoanCtx<'_> {
                 if *mutable
                     && !sources.is_empty()
                     && !self.is_direct_borrowed_shell_value(value, &callables)
+                    && !sources.iter().all(source_is_direct_reference)
                 {
                     return Err(self.mutable_view_storage(name));
                 }
@@ -3728,6 +3786,9 @@ impl LoanCtx<'_> {
         for (index, arg) in args.iter().enumerate() {
             let mut sources = self.borrow_sources(arg, callables, live);
             self.collect_alias_sources(arg, live, &mut sources);
+            let preserves_explicit_list_relation = signature.access.as_ref().is_some_and(|access| {
+                authenticated_non_escaping_generic_write(callee, index, access, &sources)
+            });
             if let Some(convention) = signature.conventions.get(index)
                 && convention.binds_mutable()
                 && let Some(source) = sources.first()
@@ -3736,6 +3797,7 @@ impl LoanCtx<'_> {
                     .as_ref()
                     .and_then(|access| access.params().get(index))
                     .is_none_or(|parameter| self.catalog.slots(parameter.ty()).is_empty())
+                && !preserves_explicit_list_relation
             {
                 let convention = if *convention == Convention::Var { "`var`" } else { "`own`" };
                 return Err(terr(format!(
@@ -3784,6 +3846,7 @@ impl LoanCtx<'_> {
             if (!type_has_generic_leaf(parameter.ty())
                 && !sources.iter().any(source_is_direct_reference))
                 || authenticated_non_escaping_generic_read(callee, index, access)
+                || preserves_explicit_list_relation
                 || authenticated_generic_materializer(callee, index, access, &sources)
             {
                 continue;
