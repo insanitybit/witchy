@@ -1,7 +1,7 @@
 ---
 rfc: 0123
 title: "Newline-terminated expressions and `;` as discard"
-status: proposed
+status: accepted
 created: 2026-08-17
 predecessors:
   - "[0043](0043-declared-mutation-writeback.md) (`let _ =` as the explicit discard; non-`var` non-`Nil` throwaway is an error)"
@@ -21,10 +21,11 @@ tracking: "unimplemented; staged in three cuts"
 
 The layout pass already knows where a statement starts. It does not emit a
 separator there. This RFC makes it emit a virtual `Tok::StmtSep` at each
-same-indent line boundary inside a statement or arm-list block, *unless*
-the next line's first token cannot start a statement (`.`, `?`, `as`, and
-the infix-only glyphs). Dual glyphs (`*`, `&`, `-`) get the separator
-from indent alone.
+same-indent line boundary inside a statement or arm-list block. In a
+statement block the separator is withheld when the next line's first
+token cannot start a statement (`.`, `?`, `as`, and the infix-only
+glyphs). In an arm-list block only `|` is withheld. Dual glyphs
+(`*`, `&`, `-`) get the separator from indent alone.
 
 An author-written `;` is a different token, `Tok::Semi`. Both stop
 `expr()`. Only `Semi` builds `Stmt::Discard`. That mark *replaces*
@@ -94,8 +95,8 @@ Phase 2 of `apply_layout()` already identifies the line that starts a new
 statement: inside a virtual block, a line whose indent equals the body
 indent and whose `bdepth_start` equals the block's depth. It already
 emits `LBrace` on the first such line. Before each subsequent one it
-emits a virtual `Tok::StmtSep`, **unless** that line's first token is in
-the deny-list below.
+emits a virtual `Tok::StmtSep`, unless the block-kind rule below
+withholds it.
 
 `vtok` is `Token::point(...)` with no virtual marker (`lexer.rs:1182`).
 A layout-emitted token and a typed `;` would be indistinguishable if they
@@ -107,15 +108,21 @@ writes `Tok::Semi`. Neither is in `infix_bp`, so both stop `expr()`.
 the RFC-0043 must-bind error still fires. `xs.length();` is
 `xs.length() Semi`, a discard.
 
+`Tok`'s `Display` is exhaustive (`lexer.rs:185-195`). `StmtSep` renders
+as `end of statement`, never as `;`. `expect()` failures print tokens;
+a `;` here would tell the author to fix a semicolon they never wrote.
+That string lands in the goldens regenerated in Staging step 2.
+
 `bdepth_start` is the depth gate. Phase 1 already tracks `LParen |
 LBracket | LBrace | QuoteHoleStart | DotLBrace | DotLBracket`
 (`lexer.rs:1230-1236`). `DotLBrace` is `.{ x: 1, y: 2 }`; `DotLBracket`
 is the anonymous-union type. A multi-line `.{ … }` does not get a
 `StmtSep` in the middle: those lines start at a deeper `bdepth_start`.
 
-#### Deny-list: tokens that cannot start a statement
+#### Deny-list: statement blocks only
 
-If the next line's first token is one of these, suppress `StmtSep`:
+In a **statement block**, if the next line's first token is one of these,
+suppress `StmtSep`:
 
 `.` `?` `as` `+` `/` `%` `==` `!=` `<` `>` `<=` `>=` `&&` `||` `??`
 `|` `^` `<<` `>>` `..` `..=`
@@ -132,7 +139,20 @@ direction.
 
 The 26 same-indent leading-dot chains in `std/`, `projects/`, and
 `examples/` (coven.witchy:240-255, coven_proto.witchy:68, oauth.witchy,
-two glamour examples, serve_hello) keep working. No `fmt` re-indent.
+two glamour examples, serve_hello) are all in `fn` bodies. They keep
+working. No `fmt` re-indent.
+
+In an **arm-list block** the deny-list is only `|`. Arm-list lines are
+patterns, not expression continuations. A pattern can begin with `.`
+(anon-union tag), `-`, a literal, `_`, an ident, `[`, or `(`. Of the
+statement-block list, only `|` can start a wrapped or-pattern.
+`..` / `..=` are infix inside a pattern; a leading `..rest` sits inside
+`[]` and `bdepth_start` already gates it. Same-indent `.Err` therefore
+gets a `StmtSep`. Same-indent `.method` after an inline arm body also
+gets one: that is now an arm boundary, not a chain. Zero corpus sites
+write that form (no same-indent leading-dot after a `->` line; no
+leading `.Tag` lines under `std/` `projects/` `examples/` `book/`). The
+four embedded `.Tag` fixtures are the acceptance evidence.
 
 #### Which blocks get a separator
 
@@ -147,10 +167,12 @@ indented body) is a `fn` header and gets them. A default method's `fn`
 body inside a `trait` is included even though the `trait` body itself
 is not.
 
-Arm-list blocks are opened by `match`. They get `StmtSep` between arms.
-`match_expr` already eats an optional `Comma` at `parser.rs:3983`; it
-eats `Comma` or `StmtSep`. Then `.Err` at arm indent is the next arm,
-and the `postfix()` uppercase-dot branch (`1847-1860`) comes out.
+Arm-list blocks are opened by `match`. They get `StmtSep` between arms
+except when the next line starts with `|`. `match_expr` already eats an
+optional `Comma` at `parser.rs:3983`; it eats `Comma` or `StmtSep`. Then
+`.Err` at arm indent is the next arm, and the `postfix()` uppercase-dot
+branch (`1847-1860`) comes out. The layout pass does not peek past `.`
+at the next token's case.
 
 `StmtSep` is *not* emitted inside `type` / `trait` / `impl` bodies.
 Those are lists of fields or methods, not statements or arms.
@@ -203,12 +225,12 @@ match x:
     .Err(e) -> e
 ```
 
-Arm-list `StmtSep` between the two lines. `match_expr` eats it. The
-inline body `.Ok(v) -> v` ends with `v`, not `->`, so phase 2 never
-opened a block around `v`. The arm-list separator is what makes
-`.Err` the next arm. That is why the separator must be emitted in
-arm-list blocks, and why "a bug in the emit rule" was the wrong
-diagnosis.
+Arm-list `StmtSep` between the two lines (`.` is not suppressed here).
+`match_expr` eats it. The inline body `.Ok(v) -> v` ends with `v`, not
+`->`, so phase 2 never opened a block around `v`. The arm-list
+separator is what makes `.Err` the next arm. Same-indent `.method`
+after that `v` is also an arm boundary and a parse error; continuing
+the body takes more indent. Zero live sites do that.
 
 #### Guards that stay
 
@@ -329,6 +351,10 @@ half-open.
   `fn ne(...) -> Bool:` / newline / `!eq(...)` and `_ ->` / newline /
   `-1` are not this error: `:` and `->` open a block, they do not end an
   expression.
+- A more-indented `*slot = 9` after `let slot = select(...)` has no
+  separator, so it parses as `select(...) * slot` and then a stray `=`.
+  The error names the `=` and says the indent joined the lines; de-indent
+  to the statement column. That is the headline case written wrong.
 - `;` after a non-expression form, including inline `0 -> e;`,
   `fn(x): e;`, and `if c: a;`: the sentence in §2.
 - `;` inside an argument list or other expression-interior position: a
@@ -340,9 +366,10 @@ half-open.
 
 Tree-sitter does not run `apply_layout()`. It already has an indent
 scanner. That scanner emits a statement-break at the same indent inside
-statement and arm-list blocks, suppressed when the next line starts with
-a deny-list token, matching `StmtSep`. Then `*slot = 9` on the next line
-is a statement without a hack that breaks `n * 2`, and
+statement and arm-list blocks, suppressed in statement blocks when the
+next line starts with a deny-list token and in arm-list blocks only
+when it starts with `|`. Then `*slot = 9` on the next line is a
+statement without a hack that breaks `n * 2`, and
 `coven_proto.witchy:68` still highlights as one expression.
 
 ## Alternatives
@@ -384,9 +411,10 @@ separator when the next token cannot start a statement.
 
 ## Drawbacks
 
-The deny-list is still a classification. It is small, closed, and grows
-only for postfix or infix-only glyphs. The dual glyphs that motivated
-the RFC are not on it.
+The statement-block deny-list is still a classification. It is small,
+closed, and grows only for postfix or infix-only glyphs. The dual
+glyphs that motivated the RFC are not on it. Arm lists suppress `|`
+only, so they do not have to peek past `.`.
 
 Layout must classify statement-block and arm-list headers. The
 classifier skips `pub` / `async` / `gen`. Getting `match` vs `->` wrong
@@ -414,11 +442,11 @@ prefix reuse that made the missing separator loud.
 
 ## Staging
 
-1. Lexer grows `Tok::StmtSep`. `apply_layout()` emits it in statement
-   blocks and arm-list blocks, suppressed when the next line starts with
-   a deny-list token. The header classifier skips `pub` / `async` /
-   `gen`. `infix_bp(StmtSep)` and `infix_bp(Semi)` are both `None` once
-   `Semi` exists; step 1 can treat `StmtSep` alone. The
+1. Lexer grows `Tok::StmtSep` with `Display` `end of statement`.
+   `apply_layout()` emits it in statement blocks (deny-list as written)
+   and arm-list blocks (suppress `|` only). The header classifier skips
+   `pub` / `async` / `gen`. `infix_bp(StmtSep)` and `infix_bp(Semi)` are
+   both `None` once `Semi` exists; step 1 can treat `StmtSep` alone. The
    `is_assignment()` and match-arm `-` newline branches leave `expr()`.
    `is_assignment()` itself stays. `match_expr` eats optional `Comma` or
    `StmtSep`. The `postfix()` uppercase-dot branch is deleted. Same-line
@@ -437,8 +465,8 @@ prefix reuse that made the missing separator loud.
    `loans_tests.rs`, `tests/typeck.rs`, `lsp_tests.rs`) and regenerates
    goldens. Step 2 lands red without that sweep. Do not hand-edit
    `spec/stdlib.md`.
-3. Tree-sitter's indent scanner emits the same statement-break, with the
-   same deny-list.
+3. Tree-sitter's indent scanner emits the same statement-break:
+   statement-block deny-list, arm-list `|` only.
 
 Step 1 can land without step 2. Step 2 without step 1 still helps
 last-line discard. The two tokens must not be collapsed.
@@ -458,10 +486,12 @@ parity-bearing row is the `;` block-value typing.
   (`coven_proto.witchy:64-68` and the other 25 same-indent leading-dot
   sites).
 - `dir` / newline / same-indent `as Dir[Read]` remains one expression.
-- An inline match of the form `.Ok(v) -> v` / newline / `.Err(e) -> e`
-  still parses as two arms. `match_expr` ate a `StmtSep`. The
-  `postfix()` uppercase-dot branch is gone. Lowercase same-indent
-  `.method` after an arm body still chains (deny-list).
+- `.Ok(v) -> v` / newline / same-indent `.Err(e) -> e` is two arms.
+  `match_expr` ate a `StmtSep`. The `postfix()` uppercase-dot branch is
+  gone. The four embedded `.Tag` fixtures still pass.
+- Same-indent lowercase `.method` after an inline arm body is an arm
+  boundary and a parse error. Continuing the body takes more indent.
+  Zero corpus sites change.
 - `e` / newline / same-indent `? "msg"` is the message form of `?`.
   The operand stays on `?`'s line. `e?` / newline / `"msg"` is bare
   `e?` plus a string statement, unchanged from `parser.rs:1802`.
