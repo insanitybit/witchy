@@ -4,6 +4,7 @@
 //! never wall-clock timings. It is the acceptance artifact for the reference
 //! implementation's optimized and forced-copy paths.
 
+use witchy::interpreter;
 use witchy::stats::{self, Stats};
 use witchy_syntax::opt::{self, Opt, OptSet};
 
@@ -61,12 +62,18 @@ fn reference_return_telemetry_corpus_pins_schema_and_copy_parity() {
     assert!(EXPECTED.contains(&format!("schema={}", LOAN_SCHEMA.join(","))));
     assert!(EXPECTED.contains("optimized.output=9 8"));
     assert!(EXPECTED.contains("forced_copy.output=9 8"));
+    assert!(EXPECTED.contains("interpreter.output=9 8"));
 
     let optimized = run(OptSet::default_set());
     let forced_copy = run(OptSet::default_set().without(Opt::InPlace));
+    let checked = witchy::resolve_std_only_checked(REFERENCE_RETURN)
+        .expect("resolve reference-return telemetry fixture");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret reference-return telemetry fixture");
 
     assert_eq!(optimized.output, ["9 8"]);
     assert_eq!(forced_copy.output, optimized.output, "forced-copy lowering must preserve results");
+    assert_eq!(interpreted, optimized.output, "interpreter telemetry fixture must preserve output");
 
     let optimized_row = metric_row(&optimized);
     let forced_copy_row = metric_row(&forced_copy);
@@ -89,12 +96,18 @@ fn aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity() {
     assert!(LIST_EXPECTED.contains(&format!("schema={}", LOAN_SCHEMA.join(","))));
     assert!(LIST_EXPECTED.contains("optimized.output=resumed resumed"));
     assert!(LIST_EXPECTED.contains("forced_copy.output=resumed resumed"));
+    assert!(LIST_EXPECTED.contains("interpreter.output=resumed resumed"));
 
     let optimized = run_list(OptSet::default_set());
     let forced_copy = run_list(OptSet::default_set().without(Opt::InPlace));
+    let checked = witchy::resolve_std_only_checked(REFERENCE_LIST)
+        .expect("resolve aggregate telemetry fixture");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret aggregate telemetry fixture");
 
     assert_eq!(optimized.output, ["resumed resumed"]);
     assert_eq!(forced_copy.output, optimized.output, "forced-copy lowering must preserve results");
+    assert_eq!(interpreted, optimized.output, "interpreter telemetry fixture must preserve output");
 
     let optimized_row = metric_row(&optimized);
     let forced_copy_row = metric_row(&forced_copy);
