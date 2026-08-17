@@ -590,6 +590,30 @@
     }
 
     #[test]
+    fn explicitly_discarding_a_shared_reference_tuple_closes_each_owner_loan() {
+        check_str(
+            "mode opt\n\nfn main():\n    var first = \"first\"\n    var second = \"second\"\n    let views = (&first, &second)\n    let _ = views\n    first = \"updated-first\"\n    second = \"updated-second\"\n",
+        )
+        .expect("discarding a shared-reference tuple closes every owner loan");
+    }
+
+    #[test]
+    fn explicitly_discarding_a_shared_reference_list_closes_each_owner_loan() {
+        check_str(
+            "mode opt\n\nfn main():\n    var first = \"first\"\n    var second = \"second\"\n    let views = [&first, &second]\n    let _ = views\n    first = \"updated-first\"\n    second = \"updated-second\"\n",
+        )
+        .expect("discarding a shared-reference list closes every owner loan");
+    }
+
+    #[test]
+    fn explicitly_discarding_an_exclusive_reference_tuple_releases_each_place() {
+        check_str(
+            "mode opt\n\nfn main():\n    var first = \"first\"\n    var second = \"second\"\n    let views = (&mut first, &mut second)\n    let _ = views\n    first = \"updated-first\"\n    second = \"updated-second\"\n",
+        )
+        .expect("discarding an exclusive-reference tuple releases every place");
+    }
+
+    #[test]
     fn explicitly_discarding_a_mutable_reborrow_resumes_its_parent() {
         check_str(
             "mode opt\n\nfn main():\n    var text = \"hello\"\n    let parent = &mut text\n    let child = &mut *parent\n    let _ = child\n    *parent = \"changed\"\n",
