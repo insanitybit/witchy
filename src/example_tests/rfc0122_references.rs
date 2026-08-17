@@ -57,6 +57,20 @@ fn main(console: Console):
 }
 
 #[test]
+fn closure_shared_reference_return_preserves_the_runtime_place_on_wasm() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var text = "value"
+    let project = fn(text: &'a String) -> &'a String:
+        text
+    let observed = project(&text)
+    console.print(*observed)
+"#;
+    assert_eq!(wasm_run_reowns(src).0, ["value"], "compiled closure preserves its returned reference carrier");
+}
+
+#[test]
 fn shared_reference_tuple_preserves_each_owner_root_on_both_backends() {
     let src = r#"mode opt
 
