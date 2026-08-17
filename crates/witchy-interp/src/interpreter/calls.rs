@@ -169,7 +169,11 @@ impl Interpreter {
             .params
             .iter()
             .enumerate()
-            .filter(|(_, param)| parameter_writes_back(param))
+            // Exclusive references retain the caller's place directly. They
+            // must not be treated as a legacy `var` copy/write-back result by
+            // closure calls, because a returned/projected carrier has no
+            // mutable caller place to reconstruct.
+            .filter(|(_, param)| parameter_writes_back(param) && !is_exclusive_reference(param))
             .map(|(index, param)| {
                 let value = outcome
                     .env
