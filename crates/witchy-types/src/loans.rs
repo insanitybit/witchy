@@ -1726,7 +1726,7 @@ fn expr_place(expr: &Expr) -> Option<(&str, PlaceProjection)> {
             Expr::Var(name) => Some((name, false)),
             Expr::Field { base, field } => {
                 let (root, dynamic) = walk(base, steps)?;
-                steps.push(LoanProjectionStep::Field(field.clone()));
+                steps.push(field_projection_step(field));
                 Some((root, dynamic))
             }
             Expr::Index { base, index } => {
@@ -1757,6 +1757,16 @@ fn expr_place(expr: &Expr) -> Option<(&str, PlaceProjection)> {
         PlaceProjection::Fixed(LoanProjection { steps })
     };
     Some((root, projection))
+}
+
+/// Numeric field syntax is the source spelling for tuple projection. Keep its
+/// loan identity aligned with tuple-pattern and aggregate-slot facts, which use
+/// `Tuple`, while ordinary record fields retain their named `Field` identity.
+fn field_projection_step(field: &str) -> LoanProjectionStep {
+    field
+        .parse::<usize>()
+        .map(|index| LoanProjectionStep::Tuple(index))
+        .unwrap_or_else(|_| LoanProjectionStep::Field(field.to_string()))
 }
 
 fn projection_steps_equal(left: &LoanProjectionStep, right: &LoanProjectionStep) -> bool {
@@ -3132,7 +3142,7 @@ impl LoanCtx<'_> {
             }
             Expr::Field { base, field } => self.collect_projected_result(
                 base,
-                LoanProjectionStep::Field(field.clone()),
+                field_projection_step(field),
                 callables,
                 live,
                 out,

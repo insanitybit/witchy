@@ -206,3 +206,32 @@ fn main(console: Console):
         "compiled Wasm preserves a tuple reference carrier through return, copy, and projection",
     );
 }
+
+/// Keep an affine tuple reference carrier on the compiled-Wasm path while the
+/// interpreter aggregate representation is still being converged.
+#[test]
+fn exclusive_reference_tuple_move_projection_and_write_work_on_wasm() {
+    let src = r#"mode opt
+
+fn pair(left: &'a mut String, right: &'b mut String) -> (&'a mut String, &'b mut String):
+    (left, right)
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let returned = pair(&mut first, &mut second)
+    let moved = returned
+    let left = moved.0
+    let right = moved.1
+    *left = "updated-first"
+    *right = "updated-second"
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["updated-first", "updated-second"],
+        "compiled Wasm preserves an affine tuple reference carrier through move, projection, and writes",
+    );
+}
