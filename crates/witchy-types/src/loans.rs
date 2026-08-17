@@ -2113,6 +2113,11 @@ impl LoanCtx<'_> {
         // then the parent becomes usable again without manufacturing a second
         // owner relation.
         let mut suspended_exclusive: HashMap<String, (String, Loan)> = HashMap::new();
+        // Nested loop/branch bodies receive enclosing loans as `inherited`.
+        // A mutable reborrow must temporarily hide that inherited parent from
+        // the nested body's live set too; otherwise the conflict pass rejects
+        // the reborrow before the suspension transfer below can run.
+        let mut suspended_inherited: HashSet<String> = HashSet::new();
         let mut callables = inherited_callables.clone();
         for (idx, stmt) in block.stmts.iter().enumerate() {
             // Drop local loans whose view is never mentioned again from here on.
@@ -2139,7 +2144,44 @@ impl LoanCtx<'_> {
             }
 
             // Everything live at this statement: inherited (whole-block) + local.
-            let live: Vec<Loan> = inherited.iter().chain(local.iter()).cloned().collect();
+            // Keep the parent in this source set so `&mut *parent` can recover
+            // its checked owner relation. The conflict view below removes that
+            // parent only for the reborrow binding itself, where suspension is
+            // being established.
+            let reborrow_parent = match stmt {
+                Stmt::Let {
+                    value:
+                        Expr::Unary {
+                            op: UnOp::BorrowMut,
+                            expr,
+                        },
+                    ..
+                } => match expr.as_ref() {
+                    Expr::Unary {
+                        op: UnOp::Deref,
+                        expr,
+                    } => match expr.as_ref() {
+                        Expr::Var(parent) => Some(parent.as_str()),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                _ => None,
+            };
+            let live: Vec<Loan> = inherited
+                .iter()
+                .filter(|loan| !suspended_inherited.contains(&loan.view))
+                .chain(local.iter())
+                .cloned()
+                .collect();
+            let conflict_live: Vec<Loan> = live
+                .iter()
+                .filter(|loan| {
+                    !(reborrow_parent == Some(loan.view.as_str())
+                        && loan.kind == BorrowKind::Exclusive)
+                })
+                .cloned()
+                .collect();
             self.facts.active.insert(
                 stmt_key(stmt),
                 live.iter().cloned().map(LoanEvent::from).collect(),
@@ -2162,8 +2204,8 @@ impl LoanCtx<'_> {
 
             // A conflicting operation on any live loan's owner (in this statement's
             // own expressions, not counting nested blocks) is rejected.
-            self.reject_conflicts(stmt, &live, &callables)?;
-            self.reject_callable_boundaries(stmt, &callables, &live)?;
+            self.reject_conflicts(stmt, &conflict_live, &callables)?;
+            self.reject_callable_boundaries(stmt, &callables, &conflict_live)?;
             self.record_direct_list_push(stmt, block, idx, &mut local, &callables, &live)?;
 
             // Recurse into nested expression blocks, carrying the loans live here so
@@ -2244,14 +2286,20 @@ impl LoanCtx<'_> {
                     } = expr.as_ref()
                     && let Expr::Var(source) = source.as_ref()
                 {
-                    let reborrowed: Vec<Loan> = local
-                        .iter()
-                        .filter(|loan| {
-                            loan.view == *source && loan.kind == BorrowKind::Exclusive
-                        })
-                        .cloned()
-                        .collect();
+                    let mut reborrowed = Vec::new();
+                    for loan in inherited.iter().chain(local.iter()).filter(|loan| {
+                        loan.view == *source && loan.kind == BorrowKind::Exclusive
+                    }) {
+                        if !reborrowed.contains(loan) {
+                            reborrowed.push(loan.clone());
+                        }
+                    }
                     if !reborrowed.is_empty() {
+                        if inherited.iter().any(|loan| {
+                            loan.view == *source && loan.kind == BorrowKind::Exclusive
+                        }) {
+                            suspended_inherited.insert(source.clone());
+                        }
                         for old in &reborrowed {
                             let old_event = LoanEvent::from(old.clone());
                             self.remove_scheduled_close(&old_event);
@@ -2545,7 +2593,7 @@ impl LoanCtx<'_> {
                         kind: owner.kind,
                         owner_type: owner.owner_type,
                     };
-                    let conflicts_with_live = inherited.iter().chain(local.iter()).any(|open| {
+                    let conflicts_with_live = conflict_live.iter().any(|open| {
                         open.owner == loan.owner
                             && projections_overlap_any(&open.projection, &loan.projection)
                             && (loan.kind == BorrowKind::Exclusive || open.kind == BorrowKind::Exclusive)

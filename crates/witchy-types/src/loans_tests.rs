@@ -598,6 +598,14 @@
     }
 
     #[test]
+    fn loop_reborrow_discard_restores_the_parent_at_the_back_edge() {
+        check_str(
+            "mode opt\n\nfn main():\n    var text = \"hello\"\n    let parent = &mut text\n    while false:\n        let child = &mut *parent\n        let _ = child\n    *parent = \"changed\"\n",
+        )
+        .expect("a discarded loop reborrow does not keep its parent suspended");
+    }
+
+    #[test]
     fn explicit_shared_reborrow_preserves_the_original_owner_relation() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let first = &text\n    let second = &*first\n    text = \"changed\"\n    console.print(second)\n",
