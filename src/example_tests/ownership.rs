@@ -46,6 +46,17 @@ fn rfc0122_function_value_returned_reference_preserves_its_projected_place() {
     assert_eq!(compiled, want, "compiled function values preserve returned reference places");
 }
 
+/// Trait dispatch must carry the authenticated reference contract through the
+/// witness call just like a direct or ordinary function-value call.
+#[test]
+fn rfc0122_trait_dispatch_preserves_a_projected_reference_place_on_both_backends() {
+    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\ntrait Project:\n    fn project(self: Self, pair: &'a mut Pair) -> &'a mut Int\n\ntype Selector:\n    Selector\n\nimpl Project for Selector:\n    fn project(self: Selector, pair: &'a mut Pair) -> &'a mut Int:\n        &mut pair.right\n\nfn apply(selector: a, pair: &'a mut Pair) -> &'a mut Int where a: Project:\n    selector.project(pair)\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let slot = apply(Selector, &mut pair)\n    *slot = 9\n    console.print(\"${pair.left}:${pair.right}\")\n";
+    let want = ["1:9"];
+    assert_eq!(link_run(src), want, "interpreter preserves a projected reference through trait dispatch");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled backend preserves a projected reference through trait dispatch");
+}
+
 /// An opt-mode reference is an executable value, not a source-local place
 /// annotation: an indirect call receives the same mutable carrier.
 #[test]

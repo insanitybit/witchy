@@ -139,7 +139,11 @@ fn source_is_direct_reference(source: &BorrowSource) -> bool {
 }
 
 fn is_opt_function(name: &str, modes: &[String]) -> bool {
-    if let Some((module, _)) = name.rsplit_once('.') {
+    // Trait lowering can append several identity segments to the generated
+    // function name (`main.Trait__main.Type__method`). The first segment is
+    // still the linked source module; using the last dot would mistake the
+    // generated trait/type path for a module and drop its opt marker.
+    if let Some((module, _)) = name.split_once('.') {
         return modes.iter().any(|mode| mode == &format!("@opt:{module}"));
     }
     modes.iter().any(|mode| mode == "opt")
