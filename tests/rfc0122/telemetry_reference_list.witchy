@@ -1,0 +1,16 @@
+mode opt
+
+import list
+
+fn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):
+    [left, right]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let values = all(&mut first, &mut second)
+    for value in values:
+        let child = &mut *value
+        *child = "child"
+        *value = "resumed"
+    console.print("${first} ${second}")

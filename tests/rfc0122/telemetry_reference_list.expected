@@ -1,0 +1,11 @@
+# RFC-0122 aggregate reference telemetry corpus v1
+#
+# The returned list carries exclusive place references through iteration and a
+# nested reborrow. Optimized and forced-copy lowerings must retain identical
+# source-loan facts and observable output.
+
+schema=loan_active_points,loan_active_events,loan_opens,loan_closes,loan_return_transfers,loan_shell_mutations,loan_control_flow_edges,loan_subset_edges,boundary_reown_copies,ownership_token_repairs,direct_storage_var_accesses
+optimized.output=resumed resumed
+forced_copy.output=resumed resumed
+optimized.metrics=4,13,5,7,2,0,809,0,0,0,0
+forced_copy.metrics=4,13,5,7,2,0,809,0,0,0,0

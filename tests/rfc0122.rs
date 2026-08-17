@@ -9,6 +9,8 @@ use witchy_syntax::opt::{self, Opt, OptSet};
 
 const REFERENCE_RETURN: &str = include_str!("rfc0122/telemetry_reference_return.witchy");
 const EXPECTED: &str = include_str!("rfc0122/telemetry_reference_return.expected");
+const REFERENCE_LIST: &str = include_str!("rfc0122/telemetry_reference_list.witchy");
+const LIST_EXPECTED: &str = include_str!("rfc0122/telemetry_reference_list.expected");
 
 const LOAN_SCHEMA: &[&str] = &[
     "loan_active_points",
@@ -27,6 +29,13 @@ const LOAN_SCHEMA: &[&str] = &[
 fn run(optimizations: OptSet) -> Stats {
     opt::set_for_tests(Some(optimizations));
     let result = stats::compute(REFERENCE_RETURN).expect("compile and run telemetry corpus fixture");
+    opt::set_for_tests(None);
+    result
+}
+
+fn run_list(optimizations: OptSet) -> Stats {
+    opt::set_for_tests(Some(optimizations));
+    let result = stats::compute(REFERENCE_LIST).expect("compile and run aggregate telemetry corpus fixture");
     opt::set_for_tests(None);
     result
 }
@@ -73,4 +82,35 @@ fn reference_return_telemetry_corpus_pins_schema_and_copy_parity() {
     );
     assert!(EXPECTED.contains("optimized.metrics=1,1,1,1,2,0,807,0,0,0,0"));
     assert!(EXPECTED.contains("forced_copy.metrics=1,1,1,1,2,0,807,0,0,0,0"));
+}
+
+#[test]
+fn aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity() {
+    assert!(LIST_EXPECTED.contains(&format!("schema={}", LOAN_SCHEMA.join(","))));
+    assert!(LIST_EXPECTED.contains("optimized.output=resumed resumed"));
+    assert!(LIST_EXPECTED.contains("forced_copy.output=resumed resumed"));
+
+    let optimized = run_list(OptSet::default_set());
+    let forced_copy = run_list(OptSet::default_set().without(Opt::InPlace));
+
+    assert_eq!(optimized.output, ["resumed resumed"]);
+    assert_eq!(forced_copy.output, optimized.output, "forced-copy lowering must preserve results");
+
+    let optimized_row = metric_row(&optimized);
+    let forced_copy_row = metric_row(&forced_copy);
+    assert_eq!(forced_copy_row, optimized_row, "forced-copy lowering must retain the same source loan facts");
+    assert!(
+        LIST_EXPECTED.contains(&format!(
+            "optimized.metrics={}",
+            optimized_row.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+        )),
+        "record the optimized metric row in the checked artifact: {optimized_row:?}",
+    );
+    assert!(
+        LIST_EXPECTED.contains(&format!(
+            "forced_copy.metrics={}",
+            forced_copy_row.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+        )),
+        "record the forced-copy metric row in the checked artifact: {forced_copy_row:?}",
+    );
 }
