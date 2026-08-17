@@ -15,8 +15,9 @@ one boundary whenever possible.
    normalization and symbol/linkage work.
 3. **Diagnostics** (`crates/witchy-types`): explicit error expectations and
    message-level intent.
-4. **Backend parity** (`crates/witchy-interp`, `crates/witchy-lower`,
-   `src/example_tests.rs`): behavior alignment and observable result parity.
+4. **Backend conformance** (`crates/witchy-lower`, optionally
+   `crates/witchy-interp`, `src/example_tests.rs`): behavior alignment and
+   observable result parity at the feature's declared stabilization point.
 5. **Docs/spec and tests** (`spec/*`, `book/*`, `rfcs/*`, `README.md`): update
    runnable examples and acceptance notes at the same time as behavior changes.
 
@@ -30,6 +31,28 @@ Boundary ownership is explicit in every task handoff:
 - `interp`: `crates/witchy-interp` behavior implementation.
 - `spec`: `spec/*` and runnable docs artifacts.
 - `tests`: `src/example_tests.rs`, `tests/*`, and any touched fixture.
+
+### Wasm-first iteration for unsettled opt-mode features
+
+Compiled Wasm is the delivery backend. During active design of a new opt-mode
+runtime representation or ABI, implement and validate the Wasm path first.
+Do not require a matching interpreter implementation for every intermediate
+carrier, lowering, or optimization experiment.
+
+Each Wasm-first slice must instead carry:
+
+- a language-level fixture with the intended observable result;
+- a focused compiled-Wasm check for that fixture; and
+- an explicit **interpreter parity debt** in the RFC acceptance ledger or task
+  handoff: fixture name, missing interpreter boundary, and the milestone when
+  it must converge.
+
+Interpreter work becomes required when the representation and surface contract
+are stable, before the RFC row is marked **PROVEN**, before the feature exits
+experimental opt mode, or when an interpreter-only consumer needs it. At that
+point the same fixture becomes a differential interpreter/Wasm check. Do not
+duplicate a changing backend design merely to keep parity green during
+iteration.
 
 ## 2) Required artifacts per task
 
@@ -184,12 +207,15 @@ Rejection is only terminal when it has:
   with `./scripts/agent-check.sh syntax` green and a targeted negative test.
 - Rewrite/link change in syntax+types with required `target --package witchy-types`
   check and a regression fixture in `src/example_tests.rs` when behavior is visible.
-- Parity-sensitive backend change with `./scripts/agent-check.sh parity` and a
-  matching example test update.
+- Stable parity-sensitive backend change with `./scripts/agent-check.sh parity`
+  and a matching example test update; an unsettled opt-mode Wasm-first slice
+  instead records interpreter parity debt as above.
 
 ### Rejected
 
-- Changing `crates/witchy-lower` without a corresponding interpreter slice.
+- Changing `crates/witchy-lower` without either a corresponding interpreter
+  slice or an explicit, time-bounded interpreter parity debt for an unsettled
+  opt-mode representation.
 - Editing multiple ownership boundaries without updating the handoff block.
 - Running only docs edits and skipping merge-queue submission while the branch is
   already green.
