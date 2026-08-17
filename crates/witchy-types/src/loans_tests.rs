@@ -1195,9 +1195,14 @@
 
     #[test]
     fn explicit_reference_cannot_cross_json_or_reflection_boundaries() {
-        for (module, call) in [("json", "json.stringify"), ("reflect", "reflect.debug")] {
+        for (module, call, reference, argument) in [
+            ("json", "json.stringify", "&'a String", "&text"),
+            ("reflect", "reflect.debug", "&'a String", "&text"),
+            ("json", "json.stringify", "&'a mut String", "&mut text"),
+            ("reflect", "reflect.debug", "&'a mut String", "&mut text"),
+        ] {
             let err = linked_main(&format!(
-                "mode opt\n\nimport {module}\n\nfn bad(input: &'a String) -> String:\n    {call}(input)\n\nfn main(console: Console):\n    var text = \"value\"\n    console.print(bad(&text))\n"
+                "mode opt\n\nimport {module}\n\nfn bad(input: {reference}) -> String:\n    {call}(input)\n\nfn main(console: Console):\n    var text = \"value\"\n    console.print(bad({argument}))\n"
             ))
             .expect_err("serialization and reflection require owned data");
             assert!(
