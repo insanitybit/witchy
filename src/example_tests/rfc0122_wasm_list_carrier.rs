@@ -122,3 +122,37 @@ fn main(console: Console):
         "compiled Wasm preserves nested nominal/list reference carriers through return, copy, and projection",
     );
 }
+
+/// Keep nested nominal/list exclusive transport on the compiled-Wasm carrier
+/// path while the interpreter representation is still being converged.
+#[test]
+fn exclusive_reference_nested_nominal_list_move_projection_and_write_work_on_wasm() {
+    let src = r#"mode opt
+
+import list
+
+type Pair('a, 'b):
+    left: &'a mut String
+    right: &'b mut String
+
+fn pairs(left: &'a mut String, right: &'b mut String) -> List(Pair('a, 'b)):
+    [Pair(left, right)]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let returned = pairs(&mut first, &mut second)
+    let moved = returned
+    let pair = moved[0]
+    *pair.left = "updated-first"
+    *pair.right = "updated-second"
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["updated-first", "updated-second"],
+        "compiled Wasm preserves nested exclusive nominal/list carriers through move, projection, and writes",
+    );
+}

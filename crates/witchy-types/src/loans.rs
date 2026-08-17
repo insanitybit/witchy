@@ -1647,6 +1647,14 @@ fn strip_projection_prefix(
     Some(LoanProjection { steps: projection.steps[prefix.steps.len()..].to_vec() })
 }
 
+fn projection_has_suffix(projection: &LoanProjection, suffix: &LoanProjection) -> bool {
+    projection.steps.len() >= suffix.steps.len()
+        && projection.steps[projection.steps.len() - suffix.steps.len()..]
+            .iter()
+            .zip(&suffix.steps)
+            .all(|(left, right)| projection_steps_equal(left, right))
+}
+
 /// Restrict one aggregate owner contribution to `requested`, which is relative
 /// to the borrower. Projecting inside an ordinary view composes the remainder
 /// onto the owner path; projecting a fixed aggregate selects and re-roots only
@@ -2193,6 +2201,74 @@ impl LoanCtx<'_> {
                         });
                         moved_exclusive.insert(source.clone());
                         suspended_exclusive.insert(source.clone(), (name.clone(), reborrowed[0].clone()));
+                        continue;
+                    }
+                }
+                // Extracting a fixed element/field from an affine aggregate
+                // transfers only the selected owner contributions to the new
+                // binding. Opening a second loan for the projection would
+                // incorrectly overlap the aggregate's existing exclusive
+                // contribution while leaving unrelated aggregate elements
+                // unavailable for later use.
+                if !matches!(value, Expr::Var(_)) {
+                    let mut projected_sources = Vec::new();
+                    self.collect_alias_sources(value, &live, &mut projected_sources);
+                    projected_sources.retain(|source| source.kind == BorrowKind::Exclusive);
+                    let mut transfers: Vec<(Loan, BorrowSource)> = Vec::new();
+                    for source in projected_sources {
+                        let Some(old) = local.iter().find(|loan| {
+                            loan.kind == BorrowKind::Exclusive
+                                && loan.owner == source.owner
+                                && loan.projection == source.projection
+                                && loan.origin == source.origin
+                                && projection_has_suffix(
+                                    &loan.borrower_projection,
+                                    &source.borrower_projection,
+                                )
+                                && !transfers.iter().any(|(known, _)| known == *loan)
+                        }) else {
+                            transfers.clear();
+                            break;
+                        };
+                        transfers.push((old.clone(), source));
+                    }
+                    if !transfers.is_empty() {
+                        for (old, _) in &transfers {
+                            let old_event = LoanEvent::from(old.clone());
+                            self.remove_scheduled_close(&old_event);
+                            push_unique_event(
+                                self.facts.closes_after.entry(stmt_key(stmt)).or_default(),
+                                old_event,
+                            );
+                        }
+                        local.retain(|loan| {
+                            !transfers.iter().any(|(old, _)| old == loan)
+                        });
+                        for (_, source) in transfers {
+                            let next = Loan {
+                                view: name.clone(),
+                                owner: source.owner,
+                                root_type: source.root_type,
+                                projection: source.projection,
+                                borrower_projection: source.borrower_projection,
+                                origin: source.origin,
+                                kind: source.kind,
+                                owner_type: source.owner_type,
+                            };
+                            let next_event = LoanEvent::from(next.clone());
+                            push_unique_event(
+                                self.facts.opens_after.entry(stmt_key(stmt)).or_default(),
+                                next_event.clone(),
+                            );
+                            self.schedule_close(block, idx, &next_event);
+                            local.push(next);
+                        }
+                        affine_aggregates.insert(name.clone());
+                        if let Some(source) = expr_root(value)
+                            && !local.iter().any(|loan| loan.view == source)
+                        {
+                            moved_exclusive.insert(source.to_string());
+                        }
                         continue;
                     }
                 }
