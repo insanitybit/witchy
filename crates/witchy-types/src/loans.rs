@@ -4063,17 +4063,15 @@ impl LoanCtx<'_> {
         // value after an erased reference contract) must never become writable
         // merely because the surface dereference was desugared.
         let mut write_error = None;
-        walk_stmt_exprs(stmt, &mut |expr| {
-            if write_error.is_some() {
-                return;
-            }
-            let Expr::Call { name, args } = expr else { return };
-            if name != intrinsics::REFERENCE_WRITE {
-                return;
-            }
+        // Nested control-flow blocks are checked separately with their own
+        // inherited/local loan set. Inspect only a statement-level write here;
+        // walking into a nested body would validate its local child against the
+        // enclosing block and lose a valid mutable reborrow.
+        if let Stmt::Expr(Expr::Call { name, args }) = stmt
+            && name == intrinsics::REFERENCE_WRITE
+        {
             let Some(reference) = args.first() else {
-                write_error = Some(terr("internal: malformed reference write".into()));
-                return;
+                return Err(terr("internal: malformed reference write".into()));
             };
             let mut sources = self.borrow_sources(reference, callables, open);
             self.collect_alias_sources(reference, open, &mut sources);
@@ -4090,7 +4088,7 @@ impl LoanCtx<'_> {
                     ));
                 }
             }
-        });
+        }
         if let Some(error) = write_error {
             return Err(error);
         }
