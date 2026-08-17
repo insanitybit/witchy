@@ -13,6 +13,7 @@ fn main(console: Console):
     console.print("${*observed}")
 "#;
     let want = ["value"];
+    assert_eq!(link_run(src), want, "interpreter preserves the shared returned place");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves the shared returned place");
 }
 
@@ -30,6 +31,7 @@ fn main(console: Console):
     console.print("${*observed}")
 "#;
     let want = ["value"];
+    assert_eq!(link_run(src), want, "interpreter preserves the shared reborrow");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves the shared reborrow");
 }
 
@@ -37,6 +39,7 @@ fn main(console: Console):
 fn shared_reference_return_preserves_the_runtime_place_on_both_backends() {
     let src = "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    let text = \"value\"\n    let observed = first(&text)\n    console.print(\"${*observed}\")\n";
     let want = ["value"];
+    assert_eq!(link_run(src), want, "interpreter preserves a directly borrowed shared place");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves a directly borrowed shared place");
 }
 
@@ -53,7 +56,9 @@ fn main(console: Console):
     let observed = project(&text)
     console.print(*observed)
 "#;
-    assert_eq!(wasm_run_reowns(src).0, ["value"], "compiled function value preserves its returned reference carrier");
+    let want = ["value"];
+    assert_eq!(link_run(src), want, "interpreter preserves its function-value reference carrier");
+    assert_eq!(wasm_run_reowns(src).0, want, "compiled function value preserves its returned reference carrier");
 }
 
 #[test]
@@ -67,7 +72,9 @@ fn main(console: Console):
     let observed = project(&text)
     console.print(*observed)
 "#;
-    assert_eq!(wasm_run_reowns(src).0, ["value"], "compiled closure preserves its returned reference carrier");
+    let want = ["value"];
+    assert_eq!(link_run(src), want, "interpreter preserves its closure reference carrier");
+    assert_eq!(wasm_run_reowns(src).0, want, "compiled closure preserves its returned reference carrier");
 }
 
 #[test]
@@ -84,7 +91,9 @@ fn main(console: Console):
     *observed = "updated"
     console.print(text)
 "#;
-    assert_eq!(wasm_run_reowns(src).0, ["updated"], "compiled function value writes through its returned exclusive reference carrier");
+    let want = ["updated"];
+    assert_eq!(link_run(src), want, "interpreter writes through its function-value exclusive reference carrier");
+    assert_eq!(wasm_run_reowns(src).0, want, "compiled function value writes through its returned exclusive reference carrier");
 }
 
 #[test]
@@ -123,6 +132,7 @@ fn main(console: Console):
     console.print(*tuple.1)
 "#;
     let want = ["first", "second", "first", "second"];
+    assert_eq!(link_run(src), want, "interpreter preserves tuple reference owners");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves tuple reference owners");
 }
 
@@ -143,6 +153,7 @@ fn main(console: Console):
     console.print(*values[1])
 "#;
     let want = ["first", "second"];
+    assert_eq!(link_run(src), want, "interpreter preserves list reference owners");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves list reference owners");
 }
 
@@ -164,6 +175,7 @@ fn main(console: Console):
     console.print(second)
 "#;
     let want = ["first", "updated"];
+    assert_eq!(link_run(src), want, "interpreter writes through the selected list reference");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend writes through the selected list reference");
 }
 
@@ -184,5 +196,6 @@ fn main(console: Console):
     console.print(second)
 "#;
     let want = ["first", "updated"];
+    assert_eq!(link_run(src), want, "interpreter writes through the destructured tuple reference");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend writes through the destructured tuple reference");
 }
