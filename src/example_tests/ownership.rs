@@ -403,6 +403,99 @@ fn main(console: Console):
         );
     }
 
+    /// A normal caller crosses into an opt `own unique` export through the
+    /// ordinary value signature. An alias binding already owns its copy before
+    /// the boundary, and a fresh literal selects the proven entry.
+    #[test]
+    fn rfc0122_normal_to_opt_unique_calls_preserve_value_semantics() {
+        let api = r#"
+mode opt
+
+import list
+
+pub fn consume(own values: unique List(Int)) -> Int:
+    list.push(values, 9)
+    list.length(values)
+"#;
+        let aliased = r#"
+import api
+import list
+
+fn consume_aliased() -> Int:
+    var values = [1, 2, 3]
+    let snapshot = values
+    let result = api.consume(values)
+    result + list.length(snapshot)
+
+fn main(console: Console):
+    console.print("${consume_aliased()}")
+"#;
+        let fresh = r#"
+import api
+
+fn consume_fresh() -> Int:
+    api.consume([1, 2, 3])
+
+fn main(console: Console):
+    console.print("${consume_fresh()}")
+"#;
+
+        fn linked(api: &str, app: &str) -> ast::Module {
+            crate::pipeline::link(
+                vec![
+                    ("api".into(), parser::parse_module(api).expect("parse opt API")),
+                    ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+                ],
+                "app",
+            )
+            .expect("normal caller sees only the conventional opt signature")
+        }
+
+        let aliased_linked = linked(api, aliased);
+        typeck::check(&aliased_linked).expect("normal aliased caller type-checks without references");
+        let caller_repairs: Vec<_> = witchy_lower::analysis::module_boundary_repairs(&aliased_linked)
+            .into_iter()
+            .filter(|repair| {
+                repair.function == "consume_aliased" && repair.callee.ends_with("consume")
+            })
+            .collect();
+        assert!(
+            caller_repairs.is_empty(),
+            "the normal alias binding already owns its copy before the opt boundary: {caller_repairs:?}",
+        );
+        let expected_aliased = ["7"];
+        assert_eq!(
+            interpreter::run_module(aliased_linked, ".", Vec::new()).expect("interpreter"),
+            expected_aliased,
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", aliased)], "app"),
+            expected_aliased,
+        );
+
+        let fresh_linked = linked(api, fresh);
+        typeck::check(&fresh_linked).expect("normal proven caller type-checks without references");
+        let fresh_repairs: Vec<_> = witchy_lower::analysis::module_boundary_repairs(&fresh_linked)
+            .into_iter()
+            .filter(|repair| {
+                repair.function == "consume_fresh" && repair.callee.ends_with("consume")
+            })
+            .collect();
+        assert!(
+            fresh_repairs.is_empty(),
+            "a fresh normal value selects the proven entry: {fresh_repairs:?}",
+        );
+        let expected_fresh = ["4"];
+        assert_eq!(
+            interpreter::run_module(fresh_linked, ".", Vec::new()).expect("interpreter"),
+            expected_fresh,
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", fresh)], "app"),
+            expected_fresh,
+        );
+    }
+
     /// RFC-0088 baseline: update-and-extract returns the exact old leaf while
     /// committing the repaired collection. Shared snapshots remain unchanged;
     /// empty/missing operations return None. The structural helper performs the
