@@ -2703,12 +2703,19 @@ pub fn migrate_references(src: &str) -> Option<ReferenceMigration> {
     migrate_references_with_signatures(src, &std::collections::HashMap::new())
 }
 
+/// Reference-parameter candidates for each resolved callable name. Keeping all
+/// overloads is essential: migration may add a borrow only when every
+/// same-arity candidate requires the same reference kind.
+pub type ReferenceParameterSignatures =
+    std::collections::HashMap<String, Vec<Vec<Option<ReferenceParameterKind>>>>;
+
 /// Like [`migrate_references`], but with already-resolved conventional call
-/// signatures supplied by the caller. An absent entry remains an ambiguity
-/// rather than turning a call into a guessed borrow.
+/// signatures supplied by the caller. An absent or disagreement between
+/// same-arity overloads remains an ambiguity rather than turning a call into a
+/// guessed borrow.
 pub fn migrate_references_with_signatures(
     src: &str,
-    external_signatures: &std::collections::HashMap<String, Vec<Option<ReferenceParameterKind>>>,
+    external_signatures: &ReferenceParameterSignatures,
 ) -> Option<ReferenceMigration> {
     let mut target = crate::parser::parse_module(src).ok()?;
     if !target.modes.iter().any(|mode| mode == "opt") {
@@ -2716,7 +2723,9 @@ pub fn migrate_references_with_signatures(
     }
     rewrite_reference_module(&mut target);
     let mut signatures = external_signatures.clone();
-    signatures.extend(reference_parameter_signatures(&target));
+    for (name, candidates) in reference_parameter_signatures(&target) {
+        signatures.entry(name).or_default().extend(candidates);
+    }
     let mut ambiguities = Vec::new();
     for item in &mut target.items {
         if let Item::Function(function) = item {
@@ -2780,28 +2789,25 @@ fn reference_parameter_kind(ty: &Type) -> Option<ReferenceParameterKind> {
 
 pub fn reference_parameter_signatures(
     module: &Module,
-) -> std::collections::HashMap<String, Vec<Option<ReferenceParameterKind>>> {
-    module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Function(function) => Some((
-                function.name.clone(),
-                function
-                    .params
-                    .iter()
-                    .map(|parameter| parameter.ty.as_ref().and_then(reference_parameter_kind))
-                    .collect(),
-            )),
-            _ => None,
-        })
-        .collect()
+) -> ReferenceParameterSignatures {
+    let mut signatures = ReferenceParameterSignatures::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        signatures.entry(function.name.clone()).or_default().push(
+            function
+                .params
+                .iter()
+                .map(|parameter| parameter.ty.as_ref().and_then(reference_parameter_kind))
+                .collect(),
+        );
+    }
+    signatures
 }
 
 fn rewrite_reference_calls_block(
     block: &mut Block,
     parameters: &std::collections::HashMap<String, Option<ReferenceParameterKind>>,
-    signatures: &std::collections::HashMap<String, Vec<Option<ReferenceParameterKind>>>,
+    signatures: &ReferenceParameterSignatures,
     ambiguities: &mut Vec<String>,
 ) {
     for statement in &mut block.stmts {
@@ -2818,7 +2824,7 @@ fn rewrite_reference_calls_block(
 fn rewrite_reference_calls_expr(
     expr: &mut Expr,
     parameters: &std::collections::HashMap<String, Option<ReferenceParameterKind>>,
-    signatures: &std::collections::HashMap<String, Vec<Option<ReferenceParameterKind>>>,
+    signatures: &ReferenceParameterSignatures,
     ambiguities: &mut Vec<String>,
 ) {
     match expr {
@@ -2826,11 +2832,23 @@ fn rewrite_reference_calls_expr(
             for argument in args.iter_mut() {
                 rewrite_reference_calls_expr(argument, parameters, signatures, ambiguities);
             }
-            if let Some(expected) = signatures.get(name) {
-                for (index, (argument, expected)) in args.iter_mut().zip(expected).enumerate() {
-                    let Some(kind) = expected else { continue };
+            if let Some(candidates) = signatures.get(name) {
+                let arity = args.len();
+                for (index, argument) in args.iter_mut().enumerate() {
+                    if matches!(argument, Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }) {
+                        continue;
+                    }
+                    let expected = reference_parameter_kind_for_call(candidates, arity, index);
+                    let Ok(Some(kind)) = expected else {
+                        if expected.is_err() {
+                            ambiguities.push(format!(
+                                "call `{name}` argument {} has overloads with incompatible reference requirements",
+                                index + 1,
+                            ));
+                        }
+                        continue;
+                    };
                     match argument {
-                        Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. } => {}
                         Expr::Var(variable) if parameters.get(variable).is_some_and(|kind| kind.is_none()) => {
                             *argument = Expr::Unary {
                                 op: match kind {
@@ -2913,6 +2931,20 @@ fn rewrite_reference_calls_expr(
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
         | Expr::TaggedLit { .. } | Expr::Var(_) => {}
     }
+}
+
+/// Returns the reference requirement only when every candidate of the call's
+/// arity agrees. `None` means this argument has no reference requirement;
+/// `Err` means the migration must leave it untouched for overload resolution.
+fn reference_parameter_kind_for_call(
+    candidates: &[Vec<Option<ReferenceParameterKind>>],
+    arity: usize,
+    index: usize,
+) -> Result<Option<ReferenceParameterKind>, ()> {
+    let mut matching = candidates.iter().filter(|candidate| candidate.len() == arity);
+    let Some(first) = matching.next() else { return Ok(None) };
+    let expected = first[index];
+    matching.all(|candidate| candidate[index] == expected).then_some(expected).ok_or(())
 }
 
 fn rewrite_reference_module(module: &mut Module) {

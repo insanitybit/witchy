@@ -909,12 +909,43 @@
         let mut signatures = std::collections::HashMap::new();
         signatures.insert(
             "api.first".into(),
-            vec![Some(ReferenceParameterKind::Shared)],
+            vec![vec![Some(ReferenceParameterKind::Shared)]],
         );
         let migration = migrate_references_with_signatures(src, &signatures)
             .expect("opt module with resolved import migrates");
         assert!(migration.ambiguities.is_empty(), "{:?}", migration.ambiguities);
         assert!(migration.source.contains("api.first(&text)"), "{}", migration.source);
+    }
+
+    #[test]
+    fn rfc0122_reference_migration_requires_overloads_to_agree_before_borrowing() {
+        let src = "mode opt\n\nimport api\n\nfn caller(text: String) -> String:\n    api.same(text)\n";
+        let mut agreeing = std::collections::HashMap::new();
+        agreeing.insert(
+            "api.same".into(),
+            vec![
+                vec![Some(ReferenceParameterKind::Shared)],
+                vec![Some(ReferenceParameterKind::Shared)],
+            ],
+        );
+        let migration = migrate_references_with_signatures(src, &agreeing)
+            .expect("agreeing overloads migrate");
+        assert!(migration.ambiguities.is_empty(), "{:?}", migration.ambiguities);
+        assert!(migration.source.contains("api.same(&text)"), "{}", migration.source);
+
+        let mut conflicting = std::collections::HashMap::new();
+        conflicting.insert(
+            "api.same".into(),
+            vec![
+                vec![Some(ReferenceParameterKind::Shared)],
+                vec![Some(ReferenceParameterKind::Exclusive)],
+            ],
+        );
+        let migration = migrate_references_with_signatures(src, &conflicting)
+            .expect("ambiguous overloads remain printable");
+        assert_eq!(migration.ambiguities.len(), 1, "{:?}", migration.ambiguities);
+        assert!(migration.ambiguities[0].contains("overloads with incompatible"));
+        assert!(migration.source.contains("api.same(text)"), "{}", migration.source);
     }
 
     #[test]

@@ -785,7 +785,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             std::process::exit(1);
         }
         let mut sources = Vec::new();
-        let mut signatures = std::collections::HashMap::new();
+        let mut signatures = format::ReferenceParameterSignatures::new();
         let mut failed = false;
         for path in &paths {
             match std::fs::read_to_string(path) {
@@ -799,8 +799,11 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                         continue;
                     };
                     if let Ok(module) = witchy_syntax::parser::parse_module(&source) {
-                        for (name, signature) in format::reference_parameter_signatures(&module) {
-                            signatures.insert(format!("{module_name}.{name}"), signature);
+                        for (name, candidates) in format::reference_parameter_signatures(&module) {
+                            signatures
+                                .entry(format!("{module_name}.{name}"))
+                                .or_default()
+                                .extend(candidates);
                         }
                     }
                     sources.push((path, source));
