@@ -1741,16 +1741,28 @@ fn expr_root(expr: &Expr) -> Option<&str> {
     }
 }
 
+/// Return the stable source identity used for a fixed aggregate callable
+/// projection. Dynamic indices deliberately have no callable identity: their
+/// checked type may be callable, but the element contract cannot be recovered
+/// from a single source slot without a runtime-disjointness proof.
 fn callable_projection_key(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Var(name) => Some(name.clone()),
         Expr::Field { base, field } => {
-            Some(format!("{}.{field}", callable_projection_key(base)?))
+            callable_projection_key(base).map(|base| format!("{base}.{field}"))
         }
         Expr::Index { base, index } => match index.as_ref() {
-            Expr::Int(index) => Some(format!("{}[{index}]", callable_projection_key(base)?)),
+            Expr::Int(index) => callable_projection_key(base).map(|base| format!("{base}[{index}]")),
             _ => None,
         },
+        Expr::Call { name, args }
+            if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::DICT_AT)
+                && args.len() == 2
+                && matches!(args[1], Expr::Int(_)) => {
+            let Expr::Int(index) = args[1] else { unreachable!() };
+            callable_projection_key(&args[0]).map(|base| format!("{base}[{index}]"))
+        }
+        Expr::As { expr, .. } => callable_projection_key(expr),
         _ => None,
     }
 }
@@ -3815,13 +3827,16 @@ impl LoanCtx<'_> {
                 .or_else(|| callables.get(name))
                 .cloned()
                 .map(|sig| (name.clone(), sig)),
-            Expr::Call { name, .. } => self
-                .sigs
-                .get(name)
-                .or_else(|| callables.get(name))
-                .and_then(|sig| sig.callable_return.as_deref())
-                .cloned()
-                .map(|sig| (name.clone(), sig)),
+            Expr::Call { name, .. } => callable_projection_key(expr)
+                .and_then(|key| callables.get(&key).cloned().map(|sig| (key, sig)))
+                .or_else(|| {
+                    self.sigs
+                        .get(name)
+                        .or_else(|| callables.get(name))
+                        .and_then(|sig| sig.callable_return.as_deref())
+                        .cloned()
+                        .map(|sig| (name.clone(), sig))
+                }),
             Expr::Apply { func, .. } => self
                 .callable_expr_sig(func, callables)
                 .and_then(|(name, sig)| {
