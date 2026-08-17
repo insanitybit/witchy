@@ -876,14 +876,38 @@ impl Codegen<'_> {
                 (cond, binds)
             }
             Pattern::Tuple(args) => {
-                let Type::Tuple(field_types) = expected?.unqualified() else {
-                    return None;
-                };
-                let shape = self.gc_tuple_shape(expected?)?;
-                if self.gc_tuple_ids.get(&shape).copied()? != struct_id {
-                    return None;
+                if let Some(expected) = expected
+                    && let Type::Tuple(field_types) = expected.unqualified()
+                    && let Some(shape) = self.gc_tuple_shape(expected)
+                    && self.gc_tuple_ids.get(&shape).copied() == Some(struct_id)
+                {
+                    self.lower_gc_field_patterns(value, args, field_types, struct_id, 0)?
+                } else {
+                    // Rewritten tuple expressions can lose their address-keyed
+                    // type-table entry. The carrier's closed struct ID still
+                    // determines every field kind, which is sufficient for an
+                    // irrefutable tuple destructure.
+                    let mut binds = Vec::with_capacity(args.len());
+                    for (index, pattern) in args.iter().enumerate() {
+                        let kind = self.gc_tuple_field_kind_for_id(struct_id, index)?;
+                        match pattern {
+                            Pattern::Wildcard => {}
+                            Pattern::Var(name) => {
+                                self.locals.insert(name.clone(), kind);
+                                binds.push(N::SetLocal {
+                                    local: name.clone(),
+                                    value: W::StructGet {
+                                        struct_id,
+                                        field: index as u32,
+                                        base: Box::new(value.clone()),
+                                    },
+                                });
+                            }
+                            _ => return None,
+                        }
+                    }
+                    (W::ConstI32(1), binds)
                 }
-                self.lower_gc_field_patterns(value, args, field_types, struct_id, 0)?
             }
             Pattern::Ctor { name, args } => {
                 let (layout, id) = self.gc_layout_for_ctor(name, expected)?;

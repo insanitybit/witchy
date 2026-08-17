@@ -1756,10 +1756,7 @@ impl<'types> Codegen<'types> {
                 if self.specialized_layout_of_expr(e).is_some() {
                     return self.lower_packed_record_ctor(e, items);
                 }
-                if let Some(ty) = self.ast_type_of_expr(e)
-                    && let Some(shape) = self.gc_tuple_shape(&ty)
-                    && let Some(struct_id) = self.gc_tuple_ids.get(&shape).copied()
-                {
+                if let Some(struct_id) = self.gc_tuple_literal_id(e, items) {
                     let mut lowered = Vec::with_capacity(items.len());
                     for item in items {
                         lowered.push(self.lower_expr(item)?);
@@ -2342,22 +2339,25 @@ impl<'types> Codegen<'types> {
                 {
                     return self.lower_specialized_field(base, field);
                 }
-                if let Ok(index) = field.parse::<usize>()
-                    && let Some(ty) = self.ast_type_of_expr(base)
-                    && let Some(shape) = self.gc_tuple_shape(&ty)
-                    && let Some(struct_id) = self.gc_tuple_ids.get(&shape).copied()
-                {
-                    let Type::Tuple(items) = ty.unqualified() else {
-                        return None;
-                    };
-                    if index >= items.len() {
-                        return None;
-                    }
+                if let Ok(index) = field.parse::<usize>() {
+                    let tuple_id = self
+                        .ast_type_of_expr(base)
+                        .as_ref()
+                        .and_then(|ty| self.gc_tuple_shape(ty))
+                        .and_then(|shape| self.gc_tuple_ids.get(&shape).copied())
+                        .or_else(|| match self.kind_of(base) {
+                            Kind::GcRef(id) => self.gc_tuple_ids.iter().find_map(|(shape, tuple_id)| {
+                                (*tuple_id == id && index < shape.0.len()).then_some(id)
+                            }),
+                            _ => None,
+                        });
+                    if let Some(struct_id) = tuple_id {
                     return Some(W::StructGet {
                         struct_id,
                         field: index as u32,
                         base: Box::new(self.lower_expr(base)?),
                     });
+                    }
                 }
                 // (RFC-0027 packed) `list.at(xs, i).field` on a packed record-list
                 // reads the inline slot directly — element `i`, field `j` lives at

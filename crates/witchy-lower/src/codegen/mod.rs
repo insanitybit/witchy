@@ -876,6 +876,10 @@ enum GcFieldShape {
     I32,
     I64,
     F64,
+    /// An explicit opt-mode reference is a first-class GC place carrier, not
+    /// a scalar payload slot. Keeping this distinct lets tuples preserve each
+    /// owner root through calls and copies.
+    PlaceReference,
     ExternRef,
     Function,
     ReferenceList(String),
@@ -2051,6 +2055,20 @@ impl<'types> Codegen<'types> {
         if let Some(ty) = self.ast_type_of_expr(expr) {
             self.collect_unit_gc_ids_type(&ty, ids);
         }
+        // Rewritten call nodes may no longer retain an address-keyed result
+        // type, but their direct callable ABI is still authoritative. Include
+        // its typed return carrier so a subsequent local binding/destructure
+        // has the required `match_gc_*` and scratch locals.
+        if let Expr::Call { name, .. } = expr
+            && let Some(Kind::GcRef(id)) = self.fn_ret.get(name)
+        {
+            ids.insert(*id);
+        }
+        if let Expr::Tuple(items) = expr
+            && let Some(id) = self.gc_tuple_literal_id(expr, items)
+        {
+            ids.insert(id);
+        }
         crate::escape::for_each_immediate_subexpr(expr, &mut |child| {
             self.collect_unit_gc_ids_expr(child, ids);
         });
@@ -2105,6 +2123,7 @@ impl<'types> Codegen<'types> {
                 matches!(
                     field,
                     GcFieldShape::ExternRef
+                        | GcFieldShape::PlaceReference
                         | GcFieldShape::Function
                         | GcFieldShape::ReferenceList(_)
                         | GcFieldShape::Nominal(_)
@@ -2114,7 +2133,75 @@ impl<'types> Codegen<'types> {
             .then_some(GcTupleShape(fields))
     }
 
+    /// Resolve a tuple literal's GC layout even when a prior AST rewrite has
+    /// invalidated the address-keyed type-table entry for the literal itself.
+    /// Its items retain their executable kinds, and a unique registered shape
+    /// is enough to select the same typed tuple ABI as the declaration.
+    fn gc_tuple_literal_id(&self, tuple: &Expr, items: &[Expr]) -> Option<u32> {
+        self.ast_type_of_expr(tuple)
+            .as_ref()
+            .and_then(|ty| self.gc_tuple_shape(ty))
+            .and_then(|shape| self.gc_tuple_ids.get(&shape).copied())
+            .or_else(|| {
+                let kinds: Vec<_> = items.iter().map(|item| self.kind_of(item)).collect();
+                let mut matches = self.gc_tuple_ids.iter().filter_map(|(shape, id)| {
+                    (shape.0.len() == kinds.len()
+                        && shape.0.iter().zip(&kinds).all(|(field, kind)| {
+                            match field {
+                                GcFieldShape::I32 => *kind == Kind::I32,
+                                GcFieldShape::I64 => *kind == Kind::I64,
+                                GcFieldShape::F64 => *kind == Kind::F64,
+                                GcFieldShape::PlaceReference => {
+                                    *kind == Kind::GcRef(PLACE_REFERENCE_ID)
+                                }
+                                GcFieldShape::ExternRef => *kind == Kind::ExternRef,
+                                GcFieldShape::Function => {
+                                    *kind == Kind::GcRef(CLOSURE_WRAPPER_ID)
+                                }
+                                GcFieldShape::ReferenceList(_)
+                                | GcFieldShape::Nominal(_)
+                                | GcFieldShape::Tuple(_) => false,
+                            }
+                        }))
+                    .then_some(*id)
+                });
+                let id = matches.next()?;
+                matches.next().is_none().then_some(id)
+            })
+    }
+
+    /// The physical field kind of a tuple carrier. This is the fallback when
+    /// a tuple projection was reconstructed after annotation and therefore no
+    /// longer has an address-keyed type-table entry of its own.
+    fn gc_tuple_field_kind(&self, base: &Expr, index: usize) -> Option<Kind> {
+        let Kind::GcRef(id) = self.kind_of(base) else {
+            return None;
+        };
+        self.gc_tuple_field_kind_for_id(id, index)
+    }
+
+    pub(crate) fn gc_tuple_field_kind_for_id(&self, id: u32, index: usize) -> Option<Kind> {
+        let field = self
+            .gc_tuple_ids
+            .iter()
+            .find_map(|(shape, tuple_id)| (*tuple_id == id).then(|| shape.0.get(index)))??;
+        match field {
+            GcFieldShape::I32 => Some(Kind::I32),
+            GcFieldShape::I64 => Some(Kind::I64),
+            GcFieldShape::F64 => Some(Kind::F64),
+            GcFieldShape::PlaceReference => Some(Kind::GcRef(PLACE_REFERENCE_ID)),
+            GcFieldShape::ExternRef => Some(Kind::ExternRef),
+            GcFieldShape::Function => Some(Kind::GcRef(CLOSURE_WRAPPER_ID)),
+            GcFieldShape::ReferenceList(key) => self.gc_reference_list_ids.get(key).copied().map(Kind::GcRef),
+            GcFieldShape::Nominal(key) => self.gc_aggregate_ids.get(key).copied().map(Kind::GcRef),
+            GcFieldShape::Tuple(shape) => self.gc_tuple_ids.get(shape).copied().map(Kind::GcRef),
+        }
+    }
+
     fn gc_field_shape(&self, ty: &Type) -> Option<GcFieldShape> {
+        if matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _)) {
+            return Some(GcFieldShape::PlaceReference);
+        }
         let ty = ty.unqualified();
         Some(match ty {
             Type::Fn(_, _, _) => GcFieldShape::Function,

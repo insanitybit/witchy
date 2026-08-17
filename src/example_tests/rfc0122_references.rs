@@ -43,3 +43,26 @@ fn shared_reference_return_preserves_the_runtime_place_on_both_backends() {
     let (compiled, _) = wasm_run_reowns(src);
     assert_eq!(compiled, want, "compiled backend preserves a directly borrowed shared place");
 }
+
+#[test]
+fn shared_reference_tuple_preserves_each_owner_root_on_both_backends() {
+    let src = r#"mode opt
+
+fn pair(left: &'a String, right: &'b String) -> (&'a String, &'b String):
+    (left, right)
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let tuple = pair(&first, &second)
+    let copied = tuple
+    let (left, right) = copied
+    console.print(*left)
+    console.print(*right)
+    console.print(*tuple.0)
+    console.print(*tuple.1)
+"#;
+    let want = ["first", "second", "first", "second"];
+    assert_eq!(link_run(src), want, "interpreter preserves tuple reference owners");
+    assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves tuple reference owners");
+}

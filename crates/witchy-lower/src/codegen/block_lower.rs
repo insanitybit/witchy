@@ -447,9 +447,10 @@ impl<'types> Codegen<'types> {
                             .is_some_and(|signature| {
                                 Self::is_executable_reference_type(signature.result().ty())
                             });
-                        if self.kind_of(value) == Kind::GcRef(PLACE_REFERENCE_ID)
-                            || executable_reference_result
-                        {
+                        let value_kind = self.kind_of(value);
+                        if value_kind.is_ref() {
+                            self.locals.insert(name.clone(), value_kind);
+                        } else if executable_reference_result {
                             self.locals.insert(name.clone(), Kind::GcRef(PLACE_REFERENCE_ID));
                         }
                         let v = self.lower_expr(value)?;

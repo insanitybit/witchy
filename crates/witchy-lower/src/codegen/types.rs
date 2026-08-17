@@ -14,6 +14,20 @@ use witchy_syntax::{cap_ops, intrinsics};
 impl Codegen<'_> {
     /// The WASM kind a compiled expression evaluates to.
     pub(crate) fn kind_of(&self, e: &Expr) -> Kind {
+        // Tuple literals may have been reconstructed after the address-keyed
+        // type table was produced. Recover their registered carrier from the
+        // item kinds before accepting an obsolete scalar fallback.
+        if let Expr::Tuple(items) = e
+            && let Some(id) = self.gc_tuple_literal_id(e, items)
+        {
+            return Kind::GcRef(id);
+        }
+        if let Expr::Field { base, field } = e
+            && let Ok(index) = field.parse::<usize>()
+            && let Some(kind) = self.gc_tuple_field_kind(base, index)
+        {
+            return kind;
+        }
         if let Some(t) = self.ast_type_of_expr(e) {
             if let k @ (Kind::ExternRef | Kind::GcRef(_)) = self.kind_for_type(&t) {
                 return k;
