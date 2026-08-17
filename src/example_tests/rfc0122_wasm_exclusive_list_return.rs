@@ -99,6 +99,29 @@ fn main(console: Console):
 }
 
 #[test]
+fn interpreter_exclusive_reference_list_function_value_return_writeback() {
+    let src = r#"mode opt
+
+fn make(text: &'a mut String) -> List(&'a mut String):
+    [text]
+
+fn main(console: Console):
+    var text = "before"
+    let factory = make
+    let returned = factory(&mut text)
+    let selected = returned[0]
+    *selected = "after"
+    console.print(text)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["after"],
+        "interpreter preserves an exclusive reference-list return through a function value",
+    );
+}
+
+#[test]
 fn wasm_first_exclusive_reference_list_function_value_return_preserves_forced_copy() {
     let src = r#"mode opt
 
