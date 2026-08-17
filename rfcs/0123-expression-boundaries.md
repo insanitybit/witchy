@@ -1,0 +1,276 @@
+---
+rfc: 0123
+title: "Newline-terminated expressions and `;` as discard"
+status: proposed
+created: 2026-08-17
+predecessors:
+  - "[0043](0043-declared-mutation-writeback.md) (`let _ =` as the explicit discard; non-`var` non-`Nil` throwaway is an error)"
+  - "[0122](0122-uniform-borrow-relations.md) (`&place`, `&mut place`, and `*place` reuse infix glyphs)"
+related:
+  - "[0064](0064-complete-mutation-classification.md) (statement-position write-back and the discard diagnostic)"
+tracking:
+---
+
+# RFC-0123: Newline-terminated expressions and `;` as discard
+
+> Provisional syntax. Code blocks are deliberately **not** tagged `witchy`,
+> so the doc-examples sweep does not compile pre-implementation snippets.
+
+## Summary
+
+Do not give witchy statement semicolons. End an unbracketed expression when a
+newline is followed by a token that can start a statement, and keep climbing
+only for tokens that can *only* continue an expression (`.`, `+`, `?`, and the
+other infix-only or postfix-only glyphs). After an expression, `;` means
+"evaluate this, discard it, it is not the block value" and *replaces*
+`let _ = e`. `let`, `var`, assignment, `for`, `return`, and the other
+non-value forms do not take a semicolon.
+
+## Motivation
+
+The compiler already special-cases a newline. RFC-0122 made `*` prefix
+dereference and left it as multiply. The lexer treats a newline as trivia, so
+the Pratt parser keeps climbing whenever the next token can be infix:
+
+```text
+let slot = select(&mut pair, true)
+*slot = 9
+```
+
+A naive parse reads that as `select(...) * slot = 9`. `expr()` in
+`crates/witchy-syntax/src/parser.rs` stops climbing when the next token is on a
+new line *and* `is_assignment()` says the line is a place write. Match arms
+have a sibling rule: a newline `-` is the next arm's negative pattern, not
+subtraction.
+
+`&` is the same shape and has no such rule. `&` is bitwise-and *and* RFC-0122
+borrow. This is a live misparse waiting for a two-line `&` to land in `mode
+opt`. Every dual glyph we add becomes another `if` in `expr()`.
+
+Requiring `;` after every statement would stop the climb. It would also tax
+every normal-mode file for an opt-mode token clash, layer a second statement
+system on the off-side rule, and force a one-cut rewrite of `std/`, the book,
+and every executed spec fence. The language already has statement structure:
+a `:` opens an indented block, and a block's value is its last expression.
+
+There is a second, real awkwardness that `;` *does* earn. A last-line
+expression is the block value. A mid-block non-`var`, non-`Nil` call is an
+error unless the author writes `let _ =`. So the only way to run something for
+its effect and still have the block be `Nil` is a dummy binding:
+
+```text
+fn setup(xs: var List(Int)) -> Nil:
+    xs.push(1)
+    let _ = xs.length()
+```
+
+`push` is a `var` mutator and returns `Nil`, so a last-line push is already
+fine. `length` is not. `let _ =` works. It is also a lie: nothing is being
+bound. The spec even says `let _ = e` and a bare expression statement mean the
+same thing, and `fmt` prints the bare form. We already have a discard. We
+spelled it like a binding.
+
+## Design
+
+### 1. A newline ends an unbracketed expression unless the next token can only continue it
+
+After a complete expression, if the next token is on a later source line and
+is not inside `()`, `[]`, or `${...}`, classify it:
+
+- **Continuing tokens** cannot start a statement. The parse keeps climbing.
+  That set is the infix-only and postfix-only glyphs: `.` `+` `/` `%` `==`
+  `!=` `<` `>` `<=` `>=` `&&` `||` `??` `|` `^` `<<` `>>` `?` `..` `..=`
+  and the compound assignments when they appear as operators. Field access,
+  method chains, and `e.await` keep working across lines:
+
+  ```text
+  let files = json.get(src, "files")
+      .and_then(fn(a: Json): json.as_array(a))
+  ```
+
+- **Any other token** ends the expression. Identifiers, keywords, literals,
+  `(`, `[`, and the dual glyphs (`*`, `&`, `-`) plus the other prefix operators
+  (`!`, `~`, `move`) start a new statement. The RFC-0122 case becomes ordinary:
+
+  ```text
+  let slot = select(&mut pair, true)
+  *slot = 9
+  ```
+
+  So does a match arm that begins with a negative literal, and a next-line
+  borrow. `let x = a` followed by `* b` is `let x = a` and then a dereference
+  of `b`. If the author meant multiply, the diagnostic says so and points at
+  `a * b` on one line or `(a * b)`.
+
+Parentheses and brackets still join lines. This is the Python rule with one
+deliberate extra: we continue across a newline when the next token *cannot*
+be a statement. Strict Python would break every leading-dot chain. We have
+those (see `projects/coven/src/coven_proto.witchy`).
+
+The continuing-token set is a table next to `infix_bp`. It is not a
+per-construct lookahead. Adding a new dual glyph means adding it to the prefix
+set so a newline stops the expression. Adding a new infix-only glyph means it
+continues. The `is_assignment()` and `in_match_arm` newline branches in
+`expr()` come out.
+
+Column: the rule fires when the next token is on a later line. A more-indented
+continuing token is still a continuation. A more-indented `*` is still a new
+statement, because `*` is dual. Authors who want a wrapped multiply write
+parens.
+
+### 2. `;` discards an expression
+
+An expression statement may end in `;`. That mark means: evaluate the
+expression, discard the result, and do not use it as the block value.
+
+```text
+fn setup(xs: var List(Int)) -> Nil:
+    xs.push(1)
+    xs.length();
+```
+
+Last-line `xs.length()` (no semicolon) is still the block value, an `Int`.
+Last-line `xs.length();` is a discard and the block is `Nil`. Mid-block, a
+non-`var`, non-`Nil` call without `;` is still the RFC-0043 error. Mid-block
+`e;` is the explicit discard that used to be `let _ = e`.
+
+`;` is legal only on an expression statement. It is a parse error after
+`let`, `var`, assignment, `for`, `while`, `return`, `break`, `continue`, and
+`yield`. Those forms are already not values. The error is "`;` discards an
+expression; this form is already not a value."
+
+A block whose last form is `e;`, `let`, `var`, assignment, or a looping
+statement has value `Nil`. Same as a block that today ends on `let _ = e`.
+
+### 3. `let _ = e` goes away
+
+One cut. `let _ = e` is the discard spelling this RFC replaces. Pattern
+bindings that use `_` in a real pattern stay (`let [first, ..rest] = xs`,
+`let Point(_, y) = p`). Only the single-wildcard discard form is deleted.
+
+The four live `.witchy` sites (one in `projects/coven`, three in
+`projects/glamour`) become `e;`. Spec, book, and RFC prose that teach
+`let _ =` as discard move with the implementation, not before.
+
+A leftover `let _ = e` is a parse or check error that points at `e;`.
+
+### 4. `fmt`
+
+- Rewrite `let _ = e` to `e;`.
+- Never put `;` on `let`, `var`, assignment, `for`, `while`, `return`,
+  `break`, `continue`, or `yield`.
+- Do not sprinkle `;` on mid-block `Nil` or `var` calls. Those are already
+  legal as bare expressions.
+- On a last-line expression: insert `;` only when the block's type is `Nil`
+  and the expression is not. That is the case `let _ =` was covering.
+
+### 5. Diagnostics
+
+Two new messages, and one rewrite of an old one.
+
+- Newline stopped an expression before a dual glyph: name the glyph, say it
+  also starts a statement, and offer the one-line form or parentheses.
+- `;` after a non-expression form: the sentence in §2.
+- Discard of a non-`var`, non-`Nil` call: point at `e;`, not `let _ = e`.
+
+### 6. Editor grammar
+
+The tree-sitter grammar in `editors/zed` / `tree-sitter-witchy` uses the same
+continuing-token table. Then `*slot = 9` on the next line is a statement
+without a scanner hack that breaks `n * 2`.
+
+## Alternatives
+
+**Require `;` on every statement.** Stops the climb. Charges the whole
+language, including files that never write `&` or `*place`, and fights the
+off-side rule. Rejected.
+
+**Strict Python (newline always ends an unbracketed expression).** Also
+stops the climb. Breaks leading-dot chains and wrapped `+` / `??` that we
+already write. The continuing-token exception is the whole reason to deviate.
+
+**Keep the lookahead and add a case for `&`.** Cheap this week. We will write
+the same `if` the next time a prefix operator reuses an infix glyph. Rejected
+as policy.
+
+**Give dereference and borrow new glyphs** (`x.*`, `ref x`). Removes the
+dual-token clash and leaves statement syntax alone. Worth doing on its own if
+`&` / `*` stay confusing in `mode opt`. It does not help last-line discard,
+and it does not remove the match-arm `-` case. Orthogonal; not a substitute.
+
+**Optional `;` and keep `let _ =`.** Two explicit discards. `fmt` then has to
+pick a winner every time, and authors will fight about it. The house rule is
+one-cut. `;` wins because it is the mark that also answers "this is not the
+block value."
+
+**Do nothing.** The `*` assignment lookahead stays, `&` stays wrong on a
+newline, and last-line discard stays a fake binding. Fine until the next
+dual glyph.
+
+## Drawbacks
+
+The continuing-token table is still a classification. It is one table, and it
+is the same kind of fact `infix_bp` already is. It is not free.
+
+`let x = a` / newline / `* b` silently becomes a dereference if `*b` typechecks.
+The diagnostic on the multiply form has to be good, because that is the one
+authors coming from wrapped arithmetic will hit.
+
+People will want `;` after `let`. The parse error has to be early and dull.
+
+Deleting `let _ =` is a one-cut the book and a handful of project files have
+to take with the compiler. The live corpus is four sites. The prose corpus is
+larger.
+
+## Prior art
+
+Python's implicit line joining is the newline half: a physical newline ends a
+logical line except inside brackets. We keep that, then continue across a
+newline when the next token cannot start a statement, so leading-dot chains
+survive.
+
+Rust's optional semicolon is the discard half: `e` as the last form of a
+block is the value; `e;` is `()`. Mid-block, Rust treats `e;` as a statement.
+We do the same and we do *not* take Rust's "semicolon after every `let`."
+
+Go's and JavaScript's automatic semicolon insertion are the thing this RFC
+is written to avoid. Those insert a terminator the author did not write, using
+rules nobody can keep in their head. This RFC *stops* an expression at a
+newline when the next token can start a statement. It never inserts `;`.
+
+RFC-0043 is the discard policy we are respelling. RFC-0122 is the prefix
+reuse that made the missing newline rule loud.
+
+## Staging
+
+1. Parser and checker grow the continuing-token table. The `is_assignment()`
+   and match-arm newline branches leave `expr()`. Diagnostics for a broken
+   wrapped multiply / borrow ship in the same cut. This step is breaking for
+   any unbracketed dual-glyph continuation; that form is rare on purpose.
+2. `;` on expression statements. `let _ = e` becomes a diagnostic that names
+   `e;`. `fmt` rewrites the four live sites and the book/spec examples.
+3. Tree-sitter / Zed pick up the same table so highlighting matches the
+   compiler.
+
+Step 1 can land without step 2. Step 2 without step 1 leaves the `*`
+lookahead in place and still helps last-line discard. The intended ship is
+both.
+
+## Acceptance
+
+- `let slot = select(&mut pair, true)` / newline / `*slot = 9` parses as two
+  statements on both backends, with no `is_assignment()` special case.
+- `let view = &text` / newline / `&other` is two statements, not bitwise-and.
+- `json.get(src, "files")` / newline / `.and_then(...)` remains one
+  expression.
+- `let x = a` / newline / `* b` with `*` meant as multiply is a diagnostic
+  that names the one-line and parenthesized forms.
+- `xs.length();` as the last form of a `-> Nil` function typechecks; the
+  same call without `;` is the block's `Int`.
+- `let x = 1;` is a parse error.
+- `let _ = e` is a diagnostic that points at `e;`. No new `let _ =` sites
+  remain under `std/`, `examples/`, `projects/`, `book/`, or `spec/`.
+- `witchy fmt` on a discarded last-line expression in a `Nil` function
+  inserts `;` and does not insert it on `let` or on a mid-block `var` call.
+- The tree-sitter parse of the RFC-0122 `*slot = 9` fixture has no `ERROR`
+  node, and `n * 2` still parses as multiply.
