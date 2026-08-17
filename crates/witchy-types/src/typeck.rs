@@ -7480,6 +7480,12 @@ impl Checker {
                         ty.clone(),
                         p.convention.binds_mutable() || parameter_binds_exclusive_reference(p),
                     );
+                    if p.ty.as_ref().is_some_and(type_is_explicit_reference) {
+                        self.explicit_reference_bindings
+                            .last_mut()
+                            .expect("reference bindings track type scopes")
+                            .insert(p.name.clone());
+                    }
                 }
                 // The closure is its OWN `?` boundary: a `?` in its body propagates
                 // to the closure's return type, not the enclosing function's. Use

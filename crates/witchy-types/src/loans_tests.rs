@@ -1257,6 +1257,17 @@
                 && err.message.contains("owned"),
             "{err}"
         );
+
+        let err = linked_main(
+            "mode opt\n\nfn main(console: Console):\n    let make = fn(input: &'a String) -> fn() -> String:\n        fn():\n            *input\n    let text = \"value\"\n    let action = make(&text)\n    console.print(action())\n",
+        )
+        .expect_err("an escaping nested closure cannot retain a shared reference parameter");
+        assert!(
+            err.message.contains("closure")
+                && err.message.contains("reference")
+                && err.message.contains("owned"),
+            "{err}"
+        );
     }
 
     #[test]
