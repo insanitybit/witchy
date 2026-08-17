@@ -622,7 +622,7 @@ fn collect_gc_type_plans(
                 return;
             }
             let (variant_names, variants) = if let Some(def) = defs.get(owner) {
-                if witchy_types::typeck::type_def_params(def).len() != args.len() {
+                if witchy_syntax::ast::effective_nominal_type_def_params(def).len() != args.len() {
                     return;
                 }
                 (
@@ -640,11 +640,13 @@ fn collect_gc_type_plans(
             } else {
                 return;
             };
-            if !variants
-                .iter()
-                .flatten()
-                .any(|field| storage.requires_reference_storage(field))
-            {
+            if !variants.iter().flatten().any(|field| {
+                // `ReferenceStorageClassifier` tracks host/reference-bearing
+                // storage, while RFC-0122 explicit `&` fields are a place
+                // carrier even when their referent is an ordinary scalar.
+                // Both must select a typed GC nominal layout.
+                type_has_planned_reference(cg, field, storage, nominals, reference_lists)
+            }) {
                 return;
             }
             let key = cg.gc_lookup_type_key(ty);

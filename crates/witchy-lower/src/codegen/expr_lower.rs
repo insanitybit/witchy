@@ -2468,9 +2468,22 @@ impl<'types> Codegen<'types> {
                     }
                 }
                 if let Some(base_ty) = self.record_type_of(base) {
-                    if let Some(struct_id) =
-                        self.ast_type_of_expr(base).and_then(|ty| self.gc_struct_id_for_type(&ty))
-                    {
+                    let struct_id = self
+                        .ast_type_of_expr(base)
+                        .and_then(|ty| self.gc_struct_id_for_type(&ty))
+                        .or_else(|| match self.kind_of(base) {
+                            // A local nominal carrier can retain its concrete
+                            // GC kind even when the erased type-table entry
+                            // dropped the lifetime argument needed to rebuild
+                            // the layout key.
+                            Kind::GcRef(id)
+                                if self.gc_aggregate_ids.values().any(|candidate| *candidate == id) =>
+                            {
+                                Some(id)
+                            }
+                            _ => None,
+                        });
+                    if let Some(struct_id) = struct_id {
                         let names = self.record_fields.get(&base_ty)?;
                         let idx = names.iter().position(|(n, _)| n == field)?;
                         return Some(W::StructGet {

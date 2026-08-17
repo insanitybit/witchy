@@ -3400,6 +3400,12 @@ impl<'types> Codegen<'types> {
                         || resolved_type
                             .as_ref()
                             .is_some_and(|ty| Self::is_executable_reference_type(ty))
+                        // Nominal explicit-reference aggregates erase their
+                        // field qualifier at the source-level `Ty`, but their
+                        // compiled carrier is still a typed GC reference.
+                        || resolved_type
+                            .as_ref()
+                            .is_some_and(|ty| self.kind_for_type(ty).is_ref())
                     {
                         resolved_type.clone()
                     } else {

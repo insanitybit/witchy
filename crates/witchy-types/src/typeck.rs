@@ -721,6 +721,33 @@ fn type_contains_nominal_lifetime_relation(t: &ast::Type) -> bool {
     }
 }
 
+/// Explicit `&`/`&mut` fields use the executable RFC-0122 place carrier.
+/// Legacy `View`/`let('a)` fields deliberately do not match: their runtime
+/// transport remains guarded until owner-root lowering is available.
+fn type_contains_explicit_reference_relation(t: &ast::Type) -> bool {
+    match t {
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_),
+            _,
+        ) => true,
+        ast::Type::Qualified(_, inner) => type_contains_explicit_reference_relation(inner),
+        ast::Type::Named(_, arguments)
+        | ast::Type::Tuple(arguments)
+        | ast::Type::Dyn(_, arguments) => arguments
+            .iter()
+            .any(type_contains_explicit_reference_relation),
+        ast::Type::RecordCompose { base, fields } => {
+            type_contains_explicit_reference_relation(base)
+                || fields
+                    .iter()
+                    .any(|(_, field)| type_contains_explicit_reference_relation(field))
+        }
+        // Nested function values have independently quantified relations and
+        // are handled by the callable carrier path, not this aggregate set.
+        ast::Type::Fn(_, _, _) => false,
+    }
+}
+
 fn borrowed_nominal_relation_name<'a>(
     t: &'a ast::Type,
     lifetime_nominals: &HashSet<String>,
@@ -3525,6 +3552,9 @@ struct Checker {
     /// nominal. The AST declaration is authoritative here because `Ty` erases a
     /// `View` qualifier after checking.
     borrowed_nominal_relation_fields: HashMap<String, HashSet<String>>,
+    /// Nominal aggregates whose fields use the executable RFC-0122 `&` or
+    /// `&mut` relation. Legacy `View` shells remain runtime-guarded.
+    explicit_reference_nominal_types: HashSet<String>,
     /// The assignment target currently authorized to infer a borrowed-shell
     /// record update. A standalone update expression remains an untracked copy
     /// and is rejected.
@@ -4594,6 +4624,13 @@ impl Checker {
         }
     }
 
+    fn is_explicit_reference_nominal(&self, ty: &Ty) -> bool {
+        match self.resolve(ty) {
+            Ty::Named(name, _) => self.explicit_reference_nominal_types.contains(&name),
+            _ => false,
+        }
+    }
+
     fn is_direct_borrowed_nominal_list(&self, ty: &Ty) -> bool {
         matches!(self.resolve(ty), Ty::List(element) if self.is_direct_borrowed_nominal(&element))
     }
@@ -4695,6 +4732,9 @@ impl Checker {
         ty: &Ty,
         operation: &str,
     ) -> Result<(), TypeError> {
+        if self.is_explicit_reference_nominal(ty) {
+            return Ok(());
+        }
         let Some(name) = self.borrowed_nominal_name(ty) else { return Ok(()) };
         terr(format!(
             "{operation} uses borrowed nominal type `{name}`, but RFC-0112 stage 1 preserves \
@@ -9909,6 +9949,26 @@ fn run_check_selected(
                     .collect();
                 Some((definition.name.clone(), fields))
             })
+            .collect(),
+        explicit_reference_nominal_types: module
+            .items
+            .iter()
+            .filter_map(|item| {
+                let Item::Type(definition) = item else { return None };
+                definition
+                    .params
+                    .iter()
+                    .any(|parameter| ast::is_lifetime_param(parameter))
+                    .then_some(definition)
+            })
+            .filter(|definition| {
+                definition
+                    .variants
+                    .iter()
+                    .flat_map(|variant| &variant.fields)
+                    .any(type_contains_explicit_reference_relation)
+            })
+            .map(|definition| definition.name.clone())
             .collect(),
         borrowed_shell_update_target: None,
         borrowed_shell_bindings: vec![HashSet::new()],

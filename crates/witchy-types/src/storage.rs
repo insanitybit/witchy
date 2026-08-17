@@ -369,7 +369,16 @@ impl<'a> ReferenceStorageClassifier<'a> {
 /// so a declaration such as `Task(a)` can receive a concrete GC layout without
 /// cloning or rewriting the source type declaration.
 pub fn instantiate_type_def_fields(def: &TypeDef, args: &[Type]) -> Vec<Vec<Type>> {
-    let bindings = bind(&crate::typeck::type_def_params(def), args, &HashMap::new());
+    // Runtime layouts are keyed by the complete nominal identity, including
+    // declared lifetime arguments.  Lifetime parameters were historically
+    // omitted from `type_def_params` because they do not affect scalar type
+    // inference; explicit-reference aggregates must nevertheless preserve the
+    // full argument-to-field mapping while planning their typed carrier.
+    let bindings = bind(
+        &witchy_syntax::ast::effective_nominal_type_def_params(def),
+        args,
+        &HashMap::new(),
+    );
     def.variants
         .iter()
         .map(|variant| {

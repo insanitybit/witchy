@@ -28,6 +28,16 @@ impl Codegen<'_> {
         {
             return kind;
         }
+        // Typeck erases an explicit field qualifier when recording the
+        // expression's referent type. Recover the executable place carrier
+        // from the declaration before the erased scalar fallback below.
+        if let Expr::Field { base, field } = e
+            && self
+                .field_type_of(base, field)
+                .is_some_and(|ty| Self::is_executable_reference_type(&ty))
+        {
+            return Kind::GcRef(super::PLACE_REFERENCE_ID);
+        }
         if let Some(t) = self.ast_type_of_expr(e) {
             if let k @ (Kind::ExternRef | Kind::GcRef(_)) = self.kind_for_type(&t) {
                 return k;
