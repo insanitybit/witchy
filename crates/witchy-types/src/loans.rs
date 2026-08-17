@@ -109,6 +109,7 @@ fn view_lifetime(ty: &Type) -> Option<&str> {
             TypeQual::Borrow(life) | TypeQual::LegacyBorrow(life) | TypeQual::BorrowMut(life),
             _,
         ) => Some(life),
+        Type::Qualified(_, inner) => view_lifetime(inner),
         _ => None,
     }
 }

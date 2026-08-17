@@ -118,6 +118,29 @@ fn main(console: Console):
 }
 
 #[test]
+fn closure_unique_exclusive_reference_return_writes_the_owner_on_all_backends() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var text = "value"
+    let project = fn(own text: unique &'a mut String) -> unique &'a mut String:
+        text
+    let observed = project(&mut text)
+    *observed = "updated"
+    console.print(text)
+"#;
+    let want = ["updated"];
+    assert_eq!(link_run(src), want, "interpreter preserves a unique closure exclusive-reference carrier");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves a unique closure exclusive-reference carrier");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves a unique closure exclusive-reference carrier");
+}
+
+#[test]
 fn function_value_exclusive_reference_return_writes_the_owner_on_both_backends() {
     let src = r#"mode opt
 
