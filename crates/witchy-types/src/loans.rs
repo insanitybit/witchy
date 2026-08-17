@@ -2168,6 +2168,12 @@ impl LoanCtx<'_> {
                 },
                 _ => None,
             };
+            let relinquished_exclusive = match stmt {
+                Stmt::Let { value, .. } => {
+                    self.relinquished_exclusive_arguments(value, &callables)
+                }
+                _ => Vec::new(),
+            };
             let live: Vec<Loan> = inherited
                 .iter()
                 .filter(|loan| !suspended_inherited.contains(&loan.view))
@@ -2179,6 +2185,8 @@ impl LoanCtx<'_> {
                 .filter(|loan| {
                     !(reborrow_parent == Some(loan.view.as_str())
                         && loan.kind == BorrowKind::Exclusive)
+                        && !(loan.kind == BorrowKind::Exclusive
+                            && relinquished_exclusive.iter().any(|name| name == &loan.view))
                 })
                 .cloned()
                 .collect();
@@ -2205,7 +2213,7 @@ impl LoanCtx<'_> {
             // A conflicting operation on any live loan's owner (in this statement's
             // own expressions, not counting nested blocks) is rejected.
             self.reject_conflicts(stmt, &conflict_live, &callables)?;
-            self.reject_callable_boundaries(stmt, &callables, &conflict_live)?;
+            self.reject_callable_boundaries(stmt, &callables, &live)?;
             self.record_direct_list_push(stmt, block, idx, &mut local, &callables, &live)?;
 
             // Recurse into nested expression blocks, carrying the loans live here so
