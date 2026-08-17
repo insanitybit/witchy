@@ -391,3 +391,52 @@ fn main(console: Console):
         "compiled Wasm preserves exclusive reference-list push from an empty typed carrier",
     );
 }
+
+/// Converge the list-push carrier on the interpreter once the Wasm ABI slice
+/// is executable. The ledger keeps this named parity fixture separate from
+/// the Wasm-first implementation evidence.
+#[test]
+fn interpreter_exclusive_reference_list_push_preserves_writeback() {
+    let src = r#"mode opt
+
+import list
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    var refs: List(&'a mut String) = [&mut first]
+    list.push(refs, &mut second)
+    let selected = refs[1]
+    *selected = "updated-second"
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["first", "updated-second"],
+        "interpreter preserves exclusive reference-list push and write-back",
+    );
+}
+
+#[test]
+fn interpreter_exclusive_reference_empty_list_push_preserves_writeback() {
+    let src = r#"mode opt
+
+import list
+
+fn main(console: Console):
+    var second = "second"
+    var refs: List(&'a mut String) = []
+    list.push(refs, &mut second)
+    let selected = refs[0]
+    *selected = "updated-second"
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["updated-second"],
+        "interpreter preserves exclusive reference-list push from an empty typed carrier",
+    );
+}
