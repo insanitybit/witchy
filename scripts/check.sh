@@ -244,6 +244,17 @@ esac
 sweeps_excl=""
 [ "$gate_skip_sweeps" -eq 1 ] && sweeps_excl="not ($sweeps_filter)"
 
+# Runnable-book (browser) is keyed on the files that validator already walks
+# (book/, examples/, web/, the two validator scripts). The coordinator sets
+# WITCHY_GATE_SKIP_BOOK=1 when the batch cannot change those inputs. --full
+# and standalone keep the pass. 0/unset runs it.
+gate_skip_book="${WITCHY_GATE_SKIP_BOOK:-0}"
+case "$gate_skip_book" in
+    0 | 1) ;;
+    *) echo "check.sh: WITCHY_GATE_SKIP_BOOK must be 0 or 1" >&2; exit 2 ;;
+esac
+[ "$full" -eq 1 ] && gate_skip_book=0
+
 gate_ungated="${WITCHY_GATE_UNGATED-glamour grimoire}"
 [ "$full" -eq 1 ] && gate_ungated=""
 ungated_excl=""
@@ -335,14 +346,47 @@ if cargo nextest --version >/dev/null 2>&1; then
     else
         max_fail=--max-fail=all
     fi
-    if [ -n "$gate_test_jobs" ] && [ -n "$excl" ]; then
-        test_cmd=(cargo nextest run "$max_fail" -j "$gate_test_jobs" --workspace -E "$excl")
-    elif [ -n "$gate_test_jobs" ]; then
-        test_cmd=(cargo nextest run "$max_fail" -j "$gate_test_jobs" --workspace)
-    elif [ -n "$excl" ]; then
-        test_cmd=(cargo nextest run "$max_fail" --workspace -E "$excl")
+    # Serialized-gate path filter from the coordinator (test-for-paths.sh
+    # crate/binary mapping). Unset, empty, WORKSPACE, --full, or a
+    # non-serialized run keeps unfiltered --workspace. A focused selection
+    # replaces --workspace with the mapped -p/--test args and ANDs any extra
+    # inclusion expression with the existing exclusions.
+    gate_nextest="${WITCHY_GATE_NEXTEST:-}"
+    gate_nextest_expr="${WITCHY_GATE_NEXTEST_EXPR:-}"
+    [ "$full" -eq 1 ] && { gate_nextest=""; gate_nextest_expr=""; }
+    if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
+        gate_nextest=""
+        gate_nextest_expr=""
+    fi
+    case "$gate_nextest" in
+        '' | WORKSPACE) gate_nextest="" ;;
+        -p\ * | --test\ *) ;;
+        *)
+            echo "check.sh: ignoring unusable WITCHY_GATE_NEXTEST='$gate_nextest' (want -p/-test selectors or WORKSPACE)" >&2
+            gate_nextest=""
+            gate_nextest_expr=""
+            ;;
+    esac
+    nextest_sel=()
+    if [ -n "$gate_nextest" ]; then
+        # shellcheck disable=SC2206 — selectors are `-p crate` / `--test name`.
+        nextest_sel=($gate_nextest)
+        if [ -n "$gate_nextest_expr" ]; then
+            excl="($gate_nextest_expr)${excl:+ and ($excl)}"
+        fi
+        printf 'check.sh: serialized nextest selection: %s%s\n' \
+            "$gate_nextest" "${gate_nextest_expr:+ -E $gate_nextest_expr}"
     else
-        test_cmd=(cargo nextest run "$max_fail" --workspace)
+        nextest_sel=(--workspace)
+    fi
+    if [ -n "$gate_test_jobs" ] && [ -n "$excl" ]; then
+        test_cmd=(cargo nextest run "$max_fail" -j "$gate_test_jobs" "${nextest_sel[@]}" -E "$excl")
+    elif [ -n "$gate_test_jobs" ]; then
+        test_cmd=(cargo nextest run "$max_fail" -j "$gate_test_jobs" "${nextest_sel[@]}")
+    elif [ -n "$excl" ]; then
+        test_cmd=(cargo nextest run "$max_fail" "${nextest_sel[@]}" -E "$excl")
+    else
+        test_cmd=(cargo nextest run "$max_fail" "${nextest_sel[@]}")
     fi
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Width two removes the serialized 31-fixture floor while
@@ -896,7 +940,11 @@ wasm_pid=""
 # duplicate workspace build at the front of the gate.
 [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
 
-run "runnable book (browser)"  validate_runnable_book
+if [ "$gate_skip_book" -eq 1 ]; then
+    printf 'check.sh: skipping runnable-book (WITCHY_GATE_SKIP_BOOK=1; --full/CI still run it)\n'
+else
+    run "runnable book (browser)"  validate_runnable_book
+fi
 run "Rust-class paired correctness" rust_class_check
 if [ "$full" -eq 1 ]; then
     # RFC-0023 memory-safety sweep: re-run the differential fuzzer with the checked

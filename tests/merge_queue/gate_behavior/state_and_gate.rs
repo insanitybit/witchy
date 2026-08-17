@@ -457,6 +457,40 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             .contains("WITCHY_QUEUE_INFRA_JOBS must be a positive integer")
     );
 
+    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+    let focused = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .arg("--fast")
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target-focused"))
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("WITCHY_GATE_NEXTEST", "-p witchy-types -p witchy")
+        .env(
+            "WITCHY_GATE_NEXTEST_EXPR",
+            "package(witchy-types) or test(/^example_tests::/)",
+        )
+        .env_remove("WITCHY_GATE_QUEUE_INFRA")
+        .env_remove("WITCHY_GATE_TEST_JOBS")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run fast gate with a focused nextest selection");
+    assert!(
+        focused.status.success(),
+        "focused fake fast gate failed: {}",
+        String::from_utf8_lossy(&focused.stderr),
+    );
+    let focused_args = fs::read_to_string(&cargo_args_file).expect("read focused cargo arguments");
+    assert!(
+        focused_args.lines().any(|line| {
+            line.contains("nextest run")
+                && line.contains("-p witchy-types")
+                && line.contains("package(witchy-types)")
+                && !line.contains("--workspace")
+        }),
+        "types-only serialized nextest still used unfiltered --workspace: {focused_args}",
+    );
+
     let clippy_pid_file = temp.path().join("red-clippy.pid");
     let failed = Command::new("bash")
         .arg(root.join("scripts/check.sh"))

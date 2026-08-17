@@ -167,7 +167,11 @@ Environment knobs: `MERGE_QUEUE_GATE_CMD` (default `./scripts/check.sh`),
 default, disables it), `MERGE_QUEUE_STALL_TIMEOUT` (600s of no log
 output **while the gate's process group is idle** — a group still burning CPU is
 compiling/testing, not hung, so silence alone never kills it; see the stall
-note below), `MERGE_QUEUE_BUSY_SILENCE_MAX` (3× the stall window: the ceiling on
+note below), `MERGE_QUEUE_WORKSPACE_TEST_BUDGET` (hard wall-clock on the
+workspace-test stage, default 600s, starting at the first `==> [N] tests`
+marker; streamed `PASS` lines and heartbeat pulses do **not** reset it — a
+starved-but-chatty nextest that would otherwise crawl for an hour is a
+timeout. `0` disables the budget), `MERGE_QUEUE_BUSY_SILENCE_MAX` (3× the stall window: the ceiling on
 silence even for a *busy* group, so a CPU-burning runaway is reclaimed here
 rather than relying on a whole-gate ceiling), `MERGE_QUEUE_BATCH_MAX` (5),
 `MERGE_QUEUE_DOCS_BATCH_MAX` (25, activated only when every path in every
@@ -262,6 +266,34 @@ the backstop. Anything else (`book/`, `spec/`, `README.md`, `scripts/`,
 diffs fail safe to `all`. Standalone `check.sh`, `--fast`, `--full`, and the
 shards ignore the scope.
 
+Docs-safe landings do **not** wait on `gate.lock`. A full product gate
+cannot change the meaning of an RFC/wiki/bugs-only candidate, so that
+candidate must not sit behind a 10-minute (or starved 70-minute) suite. Two
+docs landings still serialize on the atomic master update
+(`update-ref` / `merge --ff-only`).
+
+The invariant "every master commit was validated against the exact master it
+landed on" is deliberately relaxed for **docs-only** master movement. If a
+green code candidate finds that master moved, and `base..master` is entirely
+inside the docs-safe set above, the coordinator replays the green sha onto
+the new tip and fast-forwards without re-running the product gate. A code
+path in that movement, or a replay conflict, still requeues for a fresh
+rebase and gate.
+
+**Diff-scoped runnable-book.** The browser book validator walks `book/`,
+`examples/`, `web/`, and its two scripts. The coordinator sets
+`WITCHY_GATE_SKIP_BOOK=1` when the batch cannot change those inputs.
+`--full` and post-merge CI still run the pass.
+
+**Diff-scoped serialized nextest.** The pre-merge test stage does not always
+run the full workspace suite. The coordinator feeds the batch paths through
+`test-for-paths.sh --gate-nextest` (the same crate/binary mapping as the
+pre-submit router) and passes `WITCHY_GATE_NEXTEST` / `_EXPR` to check.sh. A
+types-only batch therefore runs `-p witchy-types` plus `example_tests`, not
+unfiltered `--workspace`. Unknown, mixed, or empty mappings fail safe to
+`--workspace`. `--full`, CI, and standalone `check.sh` keep the complete
+suite.
+
 ## The gate lifecycle, step by step (process_one)
 
 1. Select the first dependency-`ready` item in filename order. Waiting and
@@ -305,7 +337,8 @@ shards ignore the scope.
    mostly warms artifacts nextest needs anyway, so green-gate totals barely
    move. Preparation snapshots `gate-target`; both this generator build and
    the later gate use that same `CARGO_TARGET_DIR` even if state changes.
-4. Classify the prepared batch diff, then acquire `gate.lock`. Re-check every
+4. Classify the prepared batch diff, then acquire `gate.lock` **unless the
+   batch is docs-safe**. Re-check every
    immutable queue attempt and verify master is still `base`; if submission or
    master moved during preparation, release and rebuild without gating. When
    the main worktree has `master` checked out with tracked staged or unstaged
@@ -318,20 +351,26 @@ shards ignore the scope.
    global sccache process. Discovery pressure on the macOS gate host is bounded
    by the nextest list wrapper (see above); execution runs at nextest's normal
    concurrency. A monitor loop kills the group on
-   overall timeout, or on log-stall **only when the group is also idle** (CPU
-   near zero) — a silent-but-CPU-busy gate is compiling/enumerating, not hung —
-   and journals `timeout`. `check.sh` emits three two-minute stage heartbeats for
-   standalone runs and eight in the serialized gate to bridge nextest's
-   legitimate compile-to-first-result silence; the bounded pulses cannot mask a
-   deadlock indefinitely. The default idle window is ten minutes.
+   overall timeout, on the workspace-test wall-clock
+   (`MERGE_QUEUE_WORKSPACE_TEST_BUDGET`, default 600s from `==> [N] tests`,
+   ignoring PASS/heartbeat resets), or on log-stall **only when the group is
+   also idle** (CPU near zero) — a silent-but-CPU-busy gate is
+   compiling/enumerating, not hung — and journals `timeout`. `check.sh` emits
+   three two-minute stage heartbeats for standalone runs and eight in the
+   serialized gate to bridge nextest's legitimate compile-to-first-result
+   silence; the bounded pulses cannot mask a deadlock indefinitely, and they
+   cannot keep an over-budget test stage alive. The default idle window is ten
+   minutes.
 6. Outcomes:
    - **green, solo:** if master still == base → `git merge --ff-only <sha>`,
-     journal `merged`, sweep. If master moved → journal `requeued`, keep the
+     journal `merged`, sweep. If master moved by **docs-safe paths only** →
+     replay the green sha onto the new tip and fast-forward without
+     re-gating. If master moved by code → journal `requeued`, keep the
      queue file (fresh rebase next loop). If the ff itself fails (dirty main
      worktree / not on master) → journal `blocked` with the VALIDATED sha;
      a human/agent completes it manually (`git merge --ff-only <sha>`) and
-     runs `resolve <branch>` to close the record. Never re-gates — the sha
-     is already validated.
+     runs `resolve <branch>` to close the record. Never re-gates a dirty-tree
+     collision — the sha is already validated.
    - **green, batch:** same, but every member gets its own `merged` journal
      entry (with `batch: N`) and its queue file consumed. Branch refs are
      NOT force-moved (the merged sha contains other branches' commits;

@@ -66,6 +66,39 @@ fn selected(paths: &[&str]) -> Vec<String> {
         .collect()
 }
 
+fn gate_nextest(paths: &[&str]) -> String {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-for-paths.sh");
+    let output = Command::new("bash")
+        .arg(script)
+        .arg("--gate-nextest")
+        .args(paths)
+        .output()
+        .expect("run test-for-paths.sh --gate-nextest");
+    assert!(
+        output.status.success(),
+        "gate-nextest router failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("gate-nextest output is UTF-8")
+}
+
+#[test]
+fn gate_nextest_types_only_is_not_unfiltered_workspace() {
+    let output = gate_nextest(&["crates/witchy-types/src/lib.rs"]);
+    assert!(
+        output.contains("-p witchy-types"),
+        "types-only gate mapping dropped the crate filter: {output}",
+    );
+    assert!(
+        output.contains("example_tests"),
+        "types-only gate mapping dropped example_tests: {output}",
+    );
+    assert!(
+        !output.contains("--workspace") && !output.contains("WORKSPACE"),
+        "types-only gate mapping fell back to the full workspace: {output}",
+    );
+}
+
 #[test]
 fn rust_integration_tests_use_fast_without_redundant_binary_run() {
     let output = route(&["tests/differential_fuzz.rs"]);

@@ -45,6 +45,272 @@ fn zero_whole_gate_timeout_does_not_kill_a_progressing_gate() {
 }
 
 #[test]
+fn workspace_test_budget_kills_a_chatty_progressing_stage() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let gate = "\
+printf '==> [1] tests (workspace) (t+0s)\\n'
+i=0
+while :; do
+  i=$((i+1))
+  printf '        PASS [  0.010s] (%d/9999) witchy-types types::keeps_printing\\n' \"$i\"
+  printf '[1] tests (workspace) still running (heartbeat %d)\\n' \"$i\"
+  sleep 0.2
+done
+";
+
+    let started = Instant::now();
+    let output = fixture
+        .mq_command(&["run", "--once"], gate)
+        .env("MERGE_QUEUE_WORKSPACE_TEST_BUDGET", "1")
+        .env("MERGE_QUEUE_STALL_TIMEOUT", "600")
+        .env("MERGE_QUEUE_BUSY_SILENCE_MAX", "1800")
+        .output()
+        .expect("run gate past the workspace-test budget");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "workspace-test budget did not fire promptly: {elapsed:?}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .any(|event| event["event"] == "timeout" && event["branch"] == "a"),
+        "chatty over-budget stage was not journaled as timeout: {:?}",
+        fixture.journal(),
+    );
+    let reason = fixture
+        .journal()
+        .iter()
+        .find(|event| event["event"] == "timeout")
+        .and_then(|event| event["reason"].as_str())
+        .unwrap_or("")
+        .to_owned();
+    assert!(
+        reason.contains("MERGE_QUEUE_WORKSPACE_TEST_BUDGET"),
+        "timeout reason did not name the workspace-test budget: {reason}",
+    );
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .all(|event| event["event"] != "merged"),
+        "over-budget stage was still merged",
+    );
+
+    let invalid = fixture
+        .mq_command(&["status"], "true")
+        .env("MERGE_QUEUE_WORKSPACE_TEST_BUDGET", "forever")
+        .output()
+        .expect("reject invalid workspace-test budget");
+    assert!(!invalid.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid.stderr)
+            .contains("MERGE_QUEUE_WORKSPACE_TEST_BUDGET must be a non-negative integer")
+    );
+}
+
+#[test]
+fn zero_workspace_test_budget_does_not_kill_a_progressing_test_stage() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let output = fixture
+        .mq_command(
+            &["run", "--once"],
+            "printf '==> [1] tests (workspace) (t+0s)\\n'; sleep 2; printf '    [1] tests (workspace) took 2s\\n'",
+        )
+        .env("MERGE_QUEUE_WORKSPACE_TEST_BUDGET", "0")
+        .output()
+        .expect("run gate with the workspace-test budget disabled");
+
+    assert!(
+        output.status.success(),
+        "disabled workspace-test budget rejected a progressing stage: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .any(|event| event["event"] == "merged" && event["branch"] == "a"),
+        "green candidate was not journaled as merged",
+    );
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .all(|event| event["event"] != "timeout"),
+        "disabled workspace-test budget still produced a timeout",
+    );
+}
+
+#[test]
+fn docs_safe_landing_does_not_wait_on_the_full_gate_lock() {
+    let fixture = QueueFixture::stack(&["rfcs/note.md"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let mut holder = Command::new("sh")
+        .args(["-c", "sleep 30"])
+        .spawn()
+        .expect("start lock-holder fixture");
+    let holder_pid = holder.id();
+    let gate_lock = fixture.state.join("gate.lock");
+    fs::create_dir(&gate_lock).expect("create full-gate lock");
+    fs::write(gate_lock.join("pid"), format!("{holder_pid}\n")).expect("write live lock pid");
+    fs::write(gate_lock.join("what"), "full gate: other\n").expect("write lock description");
+
+    let wait_marker = fixture._temp.path().join("lock-waited");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'scope=%s skip_book=%s nextest=%s\\n' \
+         \"${{WITCHY_GATE_SCOPE:-}}\" \"${{WITCHY_GATE_SKIP_BOOK:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" >{}",
+        env_log.display(),
+    );
+    let output = fixture
+        .mq_command(&["run", "--once"], &gate)
+        .env("MERGE_QUEUE_TEST_LOCK_WAIT_MARKER", &wait_marker)
+        .output()
+        .expect("run docs-safe landing against a held full-gate lock");
+
+    assert!(
+        output.status.success(),
+        "docs-safe landing failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        fixture.root.join("rfcs/note.md").exists(),
+        "docs-safe candidate did not land",
+    );
+    assert!(
+        !wait_marker.exists(),
+        "docs-safe landing waited on gate.lock held by a full code gate",
+    );
+    assert!(
+        gate_lock.exists(),
+        "docs-safe landing stole or released the full-gate lock",
+    );
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .any(|event| event["event"] == "merged" && event["branch"] == "a"),
+        "docs-safe landing was not journaled as merged",
+    );
+    let env = fs::read_to_string(&env_log).unwrap_or_default();
+    assert!(
+        env.contains("scope=docs"),
+        "docs-safe batch was not classified WITCHY_GATE_SCOPE=docs: {env}",
+    );
+    let _ = holder.kill();
+    let _ = holder.wait();
+}
+
+#[test]
+fn docs_only_master_move_does_not_regate_a_green_code_candidate() {
+    let fixture = QueueFixture::stack(&["code.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let started = fixture._temp.path().join("gate-started");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'scope=%s skip_book=%s nextest=[%s]\\n' \
+         \"${{WITCHY_GATE_SCOPE:-}}\" \"${{WITCHY_GATE_SKIP_BOOK:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" >{env}\n\
+         printf started >{started}\n\
+         sleep 2\n\
+         exit 0\n",
+        env = env_log.display(),
+        started = started.display(),
+    );
+
+    let mut coordinator = fixture
+        .mq_command(&["run", "--once"], &gate)
+        .spawn()
+        .expect("start coordinator for docs-only master-move fixture");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !started.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(started.exists(), "code gate never started");
+
+    fs::create_dir_all(fixture.root.join("rfcs")).expect("create rfcs on master");
+    fs::write(fixture.root.join("rfcs/other.md"), "docs\n").expect("write docs-only master commit");
+    run_git(&fixture.root, &["add", "rfcs/other.md"]);
+    run_git(&fixture.root, &["commit", "-m", "docs only"]);
+
+    let status = coordinator.wait().expect("reap coordinator");
+    assert!(
+        status.success(),
+        "coordinator failed after a docs-only master move: {}",
+        fs::read_to_string(fixture.state.join("journal.jsonl")).unwrap_or_default(),
+    );
+    assert!(
+        fixture.root.join("code.txt").exists(),
+        "green code candidate did not land after a docs-only master move",
+    );
+    assert!(
+        fixture.root.join("rfcs/other.md").exists(),
+        "docs-only master commit was lost",
+    );
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .any(|event| event["event"] == "merged" && event["branch"] == "a"),
+        "green code candidate was not journaled as merged",
+    );
+    assert!(
+        fixture.journal().iter().all(|event| {
+            event["event"] != "requeued"
+                || event["reason"].as_str() != Some("master moved")
+        }),
+        "docs-only master move forced a full re-gate: {:?}",
+        fixture.journal(),
+    );
+    let env = fs::read_to_string(&env_log).unwrap_or_default();
+    assert!(
+        env.contains("skip_book=1"),
+        "code-only batch still invoked the book validator path: {env}",
+    );
+}
+
+#[test]
+fn types_only_batch_classifies_a_focused_nextest_selection() {
+    let fixture = QueueFixture::stack(&["crates/witchy-types/src/lib.rs"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'scope=%s skip_book=%s nextest=[%s] expr=[%s]\\n' \
+         \"${{WITCHY_GATE_SCOPE:-}}\" \"${{WITCHY_GATE_SKIP_BOOK:-}}\" \
+         \"${{WITCHY_GATE_NEXTEST:-}}\" \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
+        env_log.display(),
+    );
+    fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified gate env");
+    assert!(
+        env.contains("scope=all"),
+        "types-only batch was not a product gate: {env}",
+    );
+    assert!(
+        env.contains("skip_book=1"),
+        "types-only batch did not skip the book validator: {env}",
+    );
+    assert!(
+        env.contains("nextest=[-p witchy-types") && env.contains("expr=[package(witchy-types)"),
+        "types-only batch did not select the crate/example mapping: {env}",
+    );
+    assert!(
+        !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
+        "types-only batch launched an unfiltered --workspace nextest: {env}",
+    );
+}
+
+#[test]
 fn stale_gate_lock_reaps_its_recorded_process_group_before_regating() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");

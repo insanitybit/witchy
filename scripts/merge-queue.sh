@@ -13,9 +13,13 @@
 #     It takes branches FIFO, rebases each onto current master in a dedicated
 #     warm gate worktree (.claude/worktrees/merge-gate), runs the full gate
 #     there under the gate lock, and on green fast-forwards master. If master
-#     moved while a gate ran, the candidate is re-rebased and re-gated instead
-#     of merging a stale validation. A red/timed-out candidate is journaled and
-#     dropped; the queue CONTINUES to the next branch (resubmit after fixing).
+#     moved while a gate ran by a code change, the candidate is re-rebased and
+#     re-gated instead of merging a stale validation. A master tip that moved
+#     only by docs-safe paths does not invalidate an already-green code gate:
+#     the coordinator replays the green sha onto the new tip and fast-forwards.
+#     Docs-safe landings do not wait on gate.lock. A red/timed-out candidate is
+#     journaled and dropped; the queue CONTINUES to the next branch (resubmit
+#     after fixing).
 #   * Anything else heavyweight (an ad-hoc full suite) should share the same
 #     lock:  scripts/merge-queue.sh with-lock -- ./scripts/check.sh --fast
 #
@@ -31,8 +35,12 @@
 # progress for MERGE_QUEUE_BUSY_SILENCE_MAX, the process group is killed. An
 # optional MERGE_QUEUE_GATE_TIMEOUT adds an emergency whole-gate ceiling; it is
 # disabled by default because a progressing cold gate is not a semantic red.
-# Timed-out candidates are journaled, the lock is released, and the queue moves
-# on. Logs are always preserved under state/merge-queue/logs/.
+# Separately, MERGE_QUEUE_WORKSPACE_TEST_BUDGET (default 600s) is a hard
+# wall-clock on the workspace-test stage starting at `==> [N] tests`. PASS
+# lines and heartbeat pulses do not reset it: a starved-but-chatty nextest
+# that would otherwise crawl for an hour is a timeout, not a green. 0 disables
+# the budget. Timed-out candidates are journaled, the lock is released, and
+# the queue moves on. Logs are always preserved under state/merge-queue/logs/.
 # The bounded nextest list wrapper also records genuine discovery-wave progress
 # in a coordinator-owned sidecar; synthetic human heartbeats do not count as
 # liveness.
@@ -125,6 +133,7 @@ gate_cmd_is_default=1
 coordinator_script="${MERGE_QUEUE_COORDINATOR_SCRIPT:-$root/scripts/merge-queue.sh}"
 gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-0}"
 stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-600}"
+workspace_test_budget="${MERGE_QUEUE_WORKSPACE_TEST_BUDGET:-600}"
 monitor_interval="${MERGE_QUEUE_MONITOR_INTERVAL:-10}"
 retry_interval="${MERGE_QUEUE_RETRY_INTERVAL:-5}"
 poll_interval="${MERGE_QUEUE_POLL_INTERVAL:-15}"
@@ -223,6 +232,12 @@ esac
 case "$gate_timeout" in
     '' | *[!0-9]*)
         note "MERGE_QUEUE_GATE_TIMEOUT must be a non-negative integer (0 disables it)"
+        exit 2
+        ;;
+esac
+case "$workspace_test_budget" in
+    '' | *[!0-9]*)
+        note "MERGE_QUEUE_WORKSPACE_TEST_BUDGET must be a non-negative integer (0 disables it)"
         exit 2
         ;;
 esac
@@ -844,6 +859,36 @@ group_is_busy() { # group_is_busy <pgid>
     awk -v c="$total" 'BEGIN { exit !(c > 20) }'
 }
 
+# Docs-safe path set, matching check.sh's WITCHY_GATE_SCOPE=docs classifier.
+# Empty input is not docs-safe (fail closed). rfcs/performance-modes.md is
+# excluded because example_tests reads it.
+diff_is_docs_safe() { # diff_is_docs_safe <newline-separated-paths>
+    local paths="$1" unsafe
+    [ -n "$paths" ] || return 1
+    unsafe="$(printf '%s\n' "$paths" | grep -vE '^(rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' || true)"
+    [ -z "$unsafe" ] || return 1
+    if printf '%s\n' "$paths" | grep -cx 'rfcs/performance-modes\.md' >/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+# Replay a green candidate onto a master tip that moved only by docs-safe
+# paths. Prints the new HEAD sha. Returns 1 if the move is not docs-only or
+# the replay conflicts — caller requeues and re-gates in that case.
+try_replay_over_docs_only_master() { # try_replay_over_docs_only_master <old-base> <old-sha>
+    local old_base="$1" old_sha="$2" new_master moved
+    new_master="$(git -C "$root" rev-parse master)"
+    [ "$new_master" != "$old_base" ] || { printf '%s\n' "$old_sha"; return 0; }
+    moved="$(git -C "$root" diff --name-only --no-renames "$old_base..$new_master" 2>/dev/null || true)"
+    diff_is_docs_safe "$moved" || return 1
+    if ! git -C "$gate_wt" rebase --onto "$new_master" "$old_base" "$old_sha" >/dev/null 2>&1; then
+        git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
+        return 1
+    fi
+    git -C "$gate_wt" rev-parse HEAD
+}
+
 # Run the gate in its own process group with a stall monitor and optional
 # emergency whole-gate timeout.
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
@@ -859,6 +904,9 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local cargo_target_dir="${6:-target}"
     local census_proof_sha="${7:-}"
     local ungated="${8-glamour grimoire}" skip_sweeps="${9:-0}"
+    local skip_book="${10:-0}"
+    local nextest_args="${11:-}"
+    local nextest_expr="${12:-}"
     local selected_gate_cmd="$gate_cmd"
     if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
         selected_gate_cmd="./scripts/check.sh --queue-infra"
@@ -882,7 +930,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -905,6 +953,8 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local last_real_sig=""
     local last_progress_mtime=""
     local last_real_time="$start"
+    local test_stage_start=""
+    local test_stage_done=0
     while :; do
         if ! pid_is_alive "$gpid"; then
             if wait "$gpid"; then gate_result="green"; else gate_result="red"; fi
@@ -916,6 +966,31 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
         sleep "$monitor_interval"
         local t; t="$(date +%s)"
         local elapsed=$((t - start))
+        # Hard wall-clock on the workspace-test stage. Heartbeat pulses and
+        # streamed PASS lines reset the stall clock above (they are real
+        # output), but they must not keep a 70-minute starved crawl alive.
+        # The budget starts at the first `==> [N] tests` marker and stops
+        # applying once that stage records a "took" line or a later stage
+        # begins. 0 disables it so a known-slow cold first gate can opt out.
+        if [ "$test_stage_done" -eq 0 ]; then
+            if [ -z "$test_stage_start" ] \
+                && grep -E '==> \[[0-9]+\] tests' "$log" >/dev/null 2>&1; then
+                test_stage_start="$t"
+            fi
+            if [ -n "$test_stage_start" ]; then
+                if grep -E '\[([0-9]+)\] tests .* took [0-9]+s' "$log" >/dev/null 2>&1 \
+                    || { grep -E '==> \[[0-9]+\] ' "$log" 2>/dev/null \
+                        | grep -vE '==> \[[0-9]+\] tests' >/dev/null; }; then
+                    test_stage_done=1
+                elif [ "$workspace_test_budget" -gt 0 ]; then
+                    local test_elapsed=$((t - test_stage_start))
+                    if [ "$test_elapsed" -gt "$workspace_test_budget" ]; then
+                        why="workspace-test stage exceeded ${workspace_test_budget}s (MERGE_QUEUE_WORKSPACE_TEST_BUDGET)"
+                        break
+                    fi
+                fi
+            fi
+        fi
         # grep -c prints the count AND exits 1 when it is zero, so `|| echo 0`
         # would append a second value — use `|| true` and let the printed 0
         # stand (empty only if the log does not exist yet, which compares fine).
@@ -1239,7 +1314,7 @@ cmd_doctor() {
         echo "  what      : ${lk_what:-?}"
         if [ -n "$lk_gate_pgid" ]; then echo "  gate pgid : $lk_gate_pgid"; fi
         if [ -n "$lk_branch" ]; then echo "  branch    : $lk_branch"; fi
-        if [ -n "$lk_elapsed" ]; then echo "  elapsed   : ${lk_elapsed}s (whole-gate timeout $(gate_timeout_display))"; fi
+        if [ -n "$lk_elapsed" ]; then echo "  elapsed   : ${lk_elapsed}s (whole-gate timeout $(gate_timeout_display); test budget ${workspace_test_budget}s)"; fi
         if [ -n "$lk_log" ]; then
             echo "  log       : $lk_log"
             echo "  log age   : ${lk_log_age:-?}s since last output (stall kill at ${stall_timeout}s)"
@@ -1248,6 +1323,7 @@ cmd_doctor() {
     else
         echo "gate lock   : free"
     fi
+    echo "test budget : ${workspace_test_budget}s (MERGE_QUEUE_WORKSPACE_TEST_BUDGET; 0 disables)"
     echo "recent      :"
     if [ -f "$journal" ]; then
         tail -5 "$journal" | jq -r '"  \(.ts)  \(.event)\t\(.branch)\(if .reason then "  (" + .reason + ")" else "" end)"'
@@ -1843,8 +1919,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             | grep -cE '^(\.config/nextest\.toml|Cargo\.(toml|lock)|scripts/(check|merge-queue)\.sh|tests/misc\.rs|tests/misc/rfc0087_migration_census\.rs)$' >/dev/null; then
         census_proof_sha="$sha"
     fi
-    if [ -n "$changed" ] && [ -z "$unsafe_paths" ] \
-        && ! echo "$changed" | grep -cx 'rfcs/performance-modes\.md' >/dev/null; then
+    if [ -n "$changed" ] && diff_is_docs_safe "$changed"; then
         gate_scope="docs"
     fi
 
@@ -1885,6 +1960,37 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         && ! echo "$changed" | grep -cE '^(crates/|src/|std/|examples/|book/|spec/|README\.md|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' >/dev/null; then
         skip_sweeps=1
     fi
+
+    # Runnable-book (browser) walks book/ examples and the web shim. A batch
+    # that cannot change those inputs cannot change the validator's answer;
+    # --full and post-merge CI still run it. Fail-safe: empty/errored diff
+    # keeps the pass.
+    local skip_book=0
+    if [ -n "$changed" ] \
+        && ! echo "$changed" | grep -cE '^(book/|examples/|web/|scripts/validate_book_examples\.mjs|scripts/audit-browser-runnable\.mjs)' >/dev/null; then
+        skip_book=1
+    fi
+
+    # Serialized-gate nextest selection: reuse test-for-paths.sh's crate /
+    # binary mapping. Fail-safe to an unfiltered --workspace on any doubt
+    # (old mapper, empty output, unknown path). --full / standalone ignore
+    # this and keep the complete suite.
+    local nextest_args="" nextest_expr="" nextest_sel="" mapper
+    mapper="$gate_wt/scripts/test-for-paths.sh"
+    [ -f "$mapper" ] || mapper="$here/scripts/test-for-paths.sh"
+    if [ -n "$changed" ] && [ -f "$mapper" ]; then
+        nextest_sel="$(printf '%s\n' "$changed" | bash "$mapper" --gate-nextest 2>/dev/null || true)"
+    fi
+    case "$(printf '%s\n' "$nextest_sel" | sed -n '1p')" in
+        -p\ * | --test\ *)
+            nextest_args="$(printf '%s\n' "$nextest_sel" | sed -n '1p')"
+            nextest_expr="$(printf '%s\n' "$nextest_sel" | sed -n '2p')"
+            ;;
+        *)
+            nextest_args=""
+            nextest_expr=""
+            ;;
+    esac
 
     local ungated=""
     echo "$changed" | grep -qE '^(web/|projects/glamour|projects/coven-web|book/|dist/)' \
@@ -1931,8 +2037,17 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     if [ "${#batch_branches[@]}" -gt 1 ]; then
         lock_what="${batch_kind:-batch}: ${batch_branches[*]}"
     fi
-    acquire_lock "$lock_what" "$branch" "$log"
-    local lock_acquired; lock_acquired="$(date +%s)"
+    # Docs-safe landings cannot invalidate a concurrent code gate and do not
+    # contend with one. They skip gate.lock so an RFC/wiki/bugs landing does
+    # not sit behind a 10-minute (or starved 70-minute) product suite.
+    local lock_acquired
+    if [ "$gate_scope" = "docs" ]; then
+        note "docs-safe $branch: landing without the full-gate lock"
+        lock_acquired="$(date +%s)"
+    else
+        acquire_lock "$lock_what" "$branch" "$log"
+        lock_acquired="$(date +%s)"
+    fi
 
     # Queue submission remains concurrent with candidate preparation. Re-check
     # the immutable attempt selected above before spending a full gate on it.
@@ -1995,10 +2110,11 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 2
     fi
 
-    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps); log: $log"
+    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; nextest=[${nextest_args:-workspace}]); log: $log"
     local gate_started; gate_started="$(date +%s)"
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
-        "$cargo_target_dir" "$census_proof_sha" "$ungated" "$skip_sweeps"
+        "$cargo_target_dir" "$census_proof_sha" "$ungated" "$skip_sweeps" \
+        "$skip_book" "$nextest_args" "$nextest_expr"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 
@@ -2113,24 +2229,37 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     fi
 
     if [ "$(git -C "$root" rev-parse master)" != "$base" ]; then
-        note "master moved during the gate; requeueing $branch for a fresh rebase"
-        local requeued_finished; requeued_finished="$(date +%s)"
-        record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
-            "$lock_acquired" "$gate_started" "$gate_finished" "$requeued_finished" sha "$sha" log "$log" \
-            change_id "$change_id" attempt_id "$attempt_id" submitted_sha "$submitted_sha" \
-            reason "master moved" stages "$(stage_summary "$log")"
-        local ri; for ri in "${!batch_ids[@]}"; do
-            set_change_state "${batch_ids[$ri]}" queued "${batch_submitted_shas[$ri]}" \
-                "${batch_attempt_ids[$ri]}" || true
-        done
-        release_lock
-        return 1 # keep the queue file; the loop will re-process it
+        local replayed=""
+        if replayed="$(try_replay_over_docs_only_master "$base" "$sha")"; then
+            note "master moved by docs-safe paths only; replaying green $branch onto $(git -C "$root" rev-parse --short master) without re-gating"
+            sha="$replayed"
+            base="$(git -C "$root" rev-parse master)"
+        else
+            note "master moved during the gate; requeueing $branch for a fresh rebase"
+            local requeued_finished; requeued_finished="$(date +%s)"
+            record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
+                "$lock_acquired" "$gate_started" "$gate_finished" "$requeued_finished" sha "$sha" log "$log" \
+                change_id "$change_id" attempt_id "$attempt_id" submitted_sha "$submitted_sha" \
+                reason "master moved" stages "$(stage_summary "$log")"
+            local ri; for ri in "${!batch_ids[@]}"; do
+                set_change_state "${batch_ids[$ri]}" queued "${batch_submitted_shas[$ri]}" \
+                    "${batch_attempt_ids[$ri]}" || true
+            done
+            release_lock
+            return 1 # keep the queue file; the loop will re-process it
+        fi
     fi
 
     local current_branch
     current_branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
     if [ "$current_branch" = "master" ]; then
         if ! git -C "$root" merge --ff-only "$sha" >/dev/null 2>&1; then
+            local ff_replayed=""
+            if ff_replayed="$(try_replay_over_docs_only_master "$base" "$sha")" \
+                && sha="$ff_replayed" \
+                && git -C "$root" merge --ff-only "$sha" >/dev/null 2>&1; then
+                note "fast-forward succeeded after replaying over a docs-only master move"
+            else
             # Don't requeue: that would re-run the whole gate for a problem that is
             # in the MAIN worktree (dirty files colliding with the update). The
             # sha is already validated — surface it for a manual ff after cleanup.
@@ -2150,12 +2279,20 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             consume_queue_entry "$f" "$change_id" "$submitted_sha" "$attempt_id" || true
             release_lock
             return 0
+            fi
         fi
     else
         # The main worktree is allowed to be on an agent branch. Do not merge the
         # validated commit into that branch and then journal a false master merge;
         # move only refs/heads/master, guarded by the base SHA that was gated.
         if ! git -C "$root" update-ref refs/heads/master "$sha" "$base" >/dev/null 2>&1; then
+            local ref_replayed=""
+            if ref_replayed="$(try_replay_over_docs_only_master "$base" "$sha")"; then
+                sha="$ref_replayed"
+                base="$(git -C "$root" rev-parse master)"
+            fi
+            if [ -z "$ref_replayed" ] \
+                || ! git -C "$root" update-ref refs/heads/master "$sha" "$base" >/dev/null 2>&1; then
             note "fast-forward of refs/heads/master to $sha FAILED (master moved or ref lock failed)."
             local ref_requeued_finished; ref_requeued_finished="$(date +%s)"
             record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
@@ -2168,6 +2305,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             done
             release_lock
             return 1
+            fi
         fi
     fi
     local landed_finished; landed_finished="$(date +%s)"
@@ -2393,7 +2531,7 @@ cmd_run() {
             note "WARNING: persistent 'run' is session-bound (ppid $cppid); use './scripts/merge-queue.sh daemon' for a durable coordinator"
         fi
     fi
-    note "coordinator up (pid $$, gate: '$gate_cmd', timeouts: $(gate_timeout_display) total / ${stall_timeout}s stall); state: $qdir"
+    note "coordinator up (pid $$, gate: '$gate_cmd', timeouts: $(gate_timeout_display) total / ${stall_timeout}s stall / ${workspace_test_budget}s test); state: $qdir"
     if [ -n "${MERGE_QUEUE_DAEMON_READY_FD:-}" ]; then
         case "$MERGE_QUEUE_DAEMON_READY_FD" in
             *[!0-9]*) note "invalid daemon readiness descriptor"; return 1 ;;
