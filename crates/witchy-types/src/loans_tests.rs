@@ -401,6 +401,20 @@
     }
 
     #[test]
+    fn exclusive_reference_aggregates_move_once_and_destructure_without_copying() {
+        check_str(
+            "mode opt\n\nfn main(console: Console):\n    var first = \"first\"\n    var second = \"second\"\n    let pair = (&mut first, &mut second)\n    let moved = pair\n    let (left, right) = moved\n    *left = \"updated-first\"\n    *right = \"updated-second\"\n    console.print(first)\n    console.print(second)\n",
+        )
+        .expect("an exclusive-reference aggregate moves into one destructuring use");
+
+        let err = check_str(
+            "mode opt\n\nfn main(console: Console):\n    var first = \"first\"\n    var second = \"second\"\n    let pair = (&mut first, &mut second)\n    let (left, right) = pair\n    console.print(*left)\n    console.print(*pair.1)\n    console.print(*right)\n",
+        )
+        .expect_err("destructuring an exclusive-reference aggregate retires the aggregate handle");
+        assert!(err.contains("moved exclusive reference") || err.contains("used more than once"), "{err}");
+    }
+
+    #[test]
     fn returned_exclusive_reference_reborrows_an_exclusive_argument() {
         check_str(
             "mode opt\n\n\

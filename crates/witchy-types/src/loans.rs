@@ -695,6 +695,14 @@ fn statement_value(stmt: &Stmt) -> Option<&Expr> {
     }
 }
 
+fn expr_contains_exclusive_borrow(expr: &Expr) -> bool {
+    let mut found = false;
+    walk_expr(expr, &mut |candidate| {
+        found |= matches!(candidate, Expr::Unary { op: UnOp::BorrowMut, .. });
+    });
+    found
+}
+
 fn transparent_value(mut value: &Expr) -> &Expr {
     loop {
         match value {
@@ -2012,6 +2020,10 @@ impl LoanCtx<'_> {
         // spelling must not become an alias that reopens the same exclusive
         // loan later in the block.
         let mut moved_exclusive: HashSet<String> = HashSet::new();
+        // A tuple/list shell built from exclusive borrows is affine even though
+        // its individual handles are not represented by one `Loan` named after
+        // the shell. Track that shell so binding patterns cannot copy it.
+        let mut affine_aggregates: HashSet<String> = HashSet::new();
         // A mutable reborrow suspends, rather than consumes, its parent handle.
         // The child remains the only live exclusive loan until its final use;
         // then the parent becomes usable again without manufacturing a second
@@ -2121,6 +2133,14 @@ impl LoanCtx<'_> {
             // `if`/`match`/block whose branches return views) opens a loan per
             // distinct owner it borrows.
             if let Stmt::Let { name, ty, value, mutable } = stmt {
+                if expr_contains_exclusive_borrow(value) {
+                    affine_aggregates.insert(name.clone());
+                } else if let Expr::Var(source) = value
+                    && affine_aggregates.remove(source)
+                {
+                    moved_exclusive.insert(source.clone());
+                    affine_aggregates.insert(name.clone());
+                }
                 if let Expr::Unary {
                     op: UnOp::BorrowMut,
                     expr,
@@ -2398,6 +2418,11 @@ impl LoanCtx<'_> {
             } else if let Stmt::LetPattern { pattern, value } = stmt {
                 if self.has_dynamic_borrow_projection(value, &callables, &live) {
                     return Err(self.dynamic_projection());
+                }
+                if let Expr::Var(source) = value
+                    && affine_aggregates.contains(source)
+                {
+                    moved_exclusive.insert(source.clone());
                 }
                 let mut sources = self.borrow_sources(value, &callables, &live);
                 self.collect_alias_sources(value, &live, &mut sources);
