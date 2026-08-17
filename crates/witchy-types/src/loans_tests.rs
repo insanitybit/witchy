@@ -590,6 +590,14 @@
     }
 
     #[test]
+    fn explicitly_discarding_a_mutable_reborrow_resumes_its_parent() {
+        check_str(
+            "mode opt\n\nfn main():\n    var text = \"hello\"\n    let parent = &mut text\n    let child = &mut *parent\n    let _ = child\n    *parent = \"changed\"\n",
+        )
+        .expect("discarding a mutable reborrow resumes its suspended parent");
+    }
+
+    #[test]
     fn explicit_shared_reborrow_preserves_the_original_owner_relation() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let first = &text\n    let second = &*first\n    text = \"changed\"\n    console.print(second)\n",
