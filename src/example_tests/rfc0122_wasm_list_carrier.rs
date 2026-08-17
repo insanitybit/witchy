@@ -1,10 +1,10 @@
 use super::*;
 
-/// Keep the list carrier executable while its interpreter representation is
-/// still unsettled. This fixture deliberately covers the complete Wasm-first
-/// path: returned aggregate, local binding, reference copy, and projection.
+/// Keep the list carrier executable across both backends. This fixture covers
+/// the complete carrier path: returned aggregate, local binding, reference
+/// copy, and projection.
 #[test]
-fn shared_reference_list_return_copy_and_projection_work_on_wasm() {
+fn shared_reference_list_return_copy_and_projection_work_on_both_backends() {
     let src = r#"mode opt
 
 import list
@@ -23,17 +23,23 @@ fn main(console: Console):
     console.print(*right)
 "#;
 
+    let want = ["first", "second"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves the returned list reference carrier through copy and projection",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["first", "second"],
+        want,
         "compiled Wasm preserves the returned list reference carrier through copy and projection",
     );
 }
 
-/// Keep nominal aggregate transport on the same Wasm-first carrier path while
-/// the interpreter representation is still being converged.
+/// Keep nominal aggregate transport on the same carrier path across both
+/// backends.
 #[test]
-fn shared_reference_nominal_aggregate_return_copy_and_projection_work_on_wasm() {
+fn shared_reference_nominal_aggregate_return_copy_and_projection_work_on_both_backends() {
     let src = r#"mode opt
 
 type Pair('a):
@@ -52,17 +58,23 @@ fn main(console: Console):
     console.print(*(copied.right))
 "#;
 
+    let want = ["first", "second"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves a nominal aggregate reference carrier through copy and projection",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["first", "second"],
+        want,
         "compiled Wasm preserves a nominal aggregate reference carrier through copy and projection",
     );
 }
 
-/// Keep affine nominal aggregate transport on the compiled-Wasm carrier path
-/// while the interpreter representation is still being converged.
+/// Keep affine nominal aggregate transport on the same carrier path across
+/// both backends.
 #[test]
-fn exclusive_reference_nominal_aggregate_move_destructure_and_write_work_on_wasm() {
+fn exclusive_reference_nominal_aggregate_move_destructure_and_write_work_on_both_backends() {
     let src = r#"mode opt
 
 type Pair('a, 'b):
@@ -84,17 +96,23 @@ fn main(console: Console):
     console.print(second)
 "#;
 
+    let want = ["updated-first", "updated-second"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves an exclusive nominal aggregate through move, destructure, and writes",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["updated-first", "updated-second"],
+        want,
         "compiled Wasm preserves an exclusive nominal aggregate through move, destructure, and writes",
     );
 }
 
-/// Keep nested nominal/list transport on the compiled-Wasm carrier path while
-/// the interpreter representation is still being converged.
+/// Keep nested nominal/list transport on the same carrier path across both
+/// backends.
 #[test]
-fn shared_reference_nested_nominal_list_return_copy_and_projection_work_on_wasm() {
+fn shared_reference_nested_nominal_list_return_copy_and_projection_work_on_both_backends() {
     let src = r#"mode opt
 
 import list
@@ -116,17 +134,23 @@ fn main(console: Console):
     console.print(*(pair.right))
 "#;
 
+    let want = ["first", "second"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves nested nominal/list reference carriers through return, copy, and projection",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["first", "second"],
+        want,
         "compiled Wasm preserves nested nominal/list reference carriers through return, copy, and projection",
     );
 }
 
-/// Keep nested nominal/list exclusive transport on the compiled-Wasm carrier
-/// path while the interpreter representation is still being converged.
+/// Keep nested nominal/list exclusive transport on the same carrier path across
+/// both backends.
 #[test]
-fn exclusive_reference_nested_nominal_list_move_projection_and_write_work_on_wasm() {
+fn exclusive_reference_nested_nominal_list_move_projection_and_write_work_on_both_backends() {
     let src = r#"mode opt
 
 import list
@@ -150,15 +174,21 @@ fn main(console: Console):
     console.print(second)
 "#;
 
+    let want = ["updated-first", "updated-second"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves nested exclusive nominal/list carriers through move, projection, and writes",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["updated-first", "updated-second"],
+        want,
         "compiled Wasm preserves nested exclusive nominal/list carriers through move, projection, and writes",
     );
 }
 
 #[test]
-fn exclusive_reference_list_extract_then_project_disjoint_owners_on_wasm() {
+fn exclusive_reference_list_extract_then_project_disjoint_owners_on_both_backends() {
     let src = r#"mode opt
 
 fn main(console: Console):
@@ -173,17 +203,22 @@ fn main(console: Console):
     console.print(second)
 "#;
 
+    let want = ["updated-first", "updated-second"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves an unrelated exclusive list projection after extracting one element",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["updated-first", "updated-second"],
+        want,
         "compiled Wasm preserves an unrelated exclusive list projection after extracting one element",
     );
 }
 
-/// Keep a tuple reference carrier on the compiled-Wasm path while the
-/// interpreter aggregate representation is still being converged.
+/// Keep a tuple reference carrier on the same path across both backends.
 #[test]
-fn shared_reference_tuple_return_copy_and_projection_work_on_wasm() {
+fn shared_reference_tuple_return_copy_and_projection_work_on_both_backends() {
     let src = r#"mode opt
 
 fn pair(left: &'a String, right: &'b String) -> (&'a String, &'b String):
@@ -200,17 +235,23 @@ fn main(console: Console):
     console.print(*right)
 "#;
 
+    let want = ["first", "second"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves a tuple reference carrier through return, copy, and projection",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["first", "second"],
+        want,
         "compiled Wasm preserves a tuple reference carrier through return, copy, and projection",
     );
 }
 
-/// Keep an affine tuple reference carrier on the compiled-Wasm path while the
-/// interpreter aggregate representation is still being converged.
+/// Keep an affine tuple reference carrier on the same path across both
+/// backends.
 #[test]
-fn exclusive_reference_tuple_move_projection_and_write_work_on_wasm() {
+fn exclusive_reference_tuple_move_projection_and_write_work_on_both_backends() {
     let src = r#"mode opt
 
 fn pair(left: &'a mut String, right: &'b mut String) -> (&'a mut String, &'b mut String):
@@ -229,9 +270,15 @@ fn main(console: Console):
     console.print(second)
 "#;
 
+    let want = ["updated-first", "updated-second"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves an affine tuple reference carrier through move, projection, and writes",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["updated-first", "updated-second"],
+        want,
         "compiled Wasm preserves an affine tuple reference carrier through move, projection, and writes",
     );
 }

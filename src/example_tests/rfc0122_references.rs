@@ -61,7 +61,7 @@ fn shared_reference_return_preserves_the_runtime_place_on_both_backends() {
 }
 
 #[test]
-fn function_value_shared_reference_return_preserves_the_runtime_place_on_wasm() {
+fn function_value_shared_reference_return_preserves_the_runtime_place_on_both_backends() {
     let src = r#"mode opt
 
 fn first(text: &'a String) -> &'a String:
@@ -79,7 +79,7 @@ fn main(console: Console):
 }
 
 #[test]
-fn closure_shared_reference_return_preserves_the_runtime_place_on_wasm() {
+fn closure_shared_reference_return_preserves_the_runtime_place_on_both_backends() {
     let src = r#"mode opt
 
 fn main(console: Console):
@@ -95,7 +95,7 @@ fn main(console: Console):
 }
 
 #[test]
-fn function_value_exclusive_reference_return_writes_the_owner_on_wasm() {
+fn function_value_exclusive_reference_return_writes_the_owner_on_both_backends() {
     let src = r#"mode opt
 
 fn first(text: &'a mut String) -> &'a mut String:
@@ -114,7 +114,7 @@ fn main(console: Console):
 }
 
 #[test]
-fn unique_exclusive_reference_return_writes_the_owner_on_wasm() {
+fn unique_exclusive_reference_return_writes_the_owner_on_both_backends() {
     let src = r#"mode opt
 
 fn pass(own input: unique &'a mut String) -> unique &'a mut String:
@@ -127,15 +127,21 @@ fn main(console: Console):
     *returned = "after"
     console.print(text)
 "#;
+    let want = ["after"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves a consumed unique exclusive-reference carrier",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["after"],
+        want,
         "compiled code preserves a consumed unique exclusive-reference carrier",
     );
 }
 
 #[test]
-fn unique_exclusive_reference_function_value_return_writes_the_owner_on_wasm() {
+fn unique_exclusive_reference_function_value_return_writes_the_owner_on_both_backends() {
     let src = r#"mode opt
 
 fn pass(own input: unique &'a mut String) -> unique &'a mut String:
@@ -149,15 +155,21 @@ fn main(console: Console):
     *returned = "after"
     console.print(text)
 "#;
+    let want = ["after"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves a consumed unique reference through a function value",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["after"],
+        want,
         "compiled code preserves a consumed unique reference through a function value",
     );
 }
 
 #[test]
-fn explicit_exclusive_reference_return_writes_the_owner_on_wasm() {
+fn explicit_exclusive_reference_return_writes_the_owner_on_both_backends() {
     let src = r#"mode opt
 
 fn select(input: &'a mut String, first: Bool) -> &'a mut String:
@@ -171,15 +183,21 @@ fn main(console: Console):
     *editable = "after"
     console.print(text)
 "#;
+    let want = ["after"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter transfers an explicit exclusive-reference return",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["after"],
+        want,
         "compiled code transfers an explicit exclusive-reference return",
     );
 }
 
 #[test]
-fn function_value_mutable_to_shared_reborrow_preserves_the_owner_on_wasm() {
+fn function_value_mutable_to_shared_reborrow_preserves_the_owner_on_both_backends() {
     let src = r#"mode opt
 
 fn share(text: &'a mut String) -> &'a String:
@@ -281,7 +299,7 @@ fn main(console: Console):
 }
 
 #[test]
-fn exclusive_reference_list_move_then_projection_writes_the_selected_owner_on_wasm() {
+fn exclusive_reference_list_move_then_projection_writes_the_selected_owner_on_both_backends() {
     let src = r#"mode opt
 
 import list
@@ -298,15 +316,21 @@ fn main(console: Console):
     console.print(first)
     console.print(second)
 "#;
+    let want = ["first", "updated"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves a moved exclusive list carrier for projection",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["first", "updated"],
+        want,
         "compiled backend preserves a moved exclusive list carrier for projection",
     );
 }
 
 #[test]
-fn exclusive_reference_list_iteration_writes_each_owner_on_wasm() {
+fn exclusive_reference_list_iteration_writes_each_owner_on_both_backends() {
     let src = r#"mode opt
 
 import list
@@ -323,15 +347,21 @@ fn main(console: Console):
     console.print(first)
     console.print(second)
 "#;
+    let want = ["updated", "updated"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter preserves exclusive references through list iteration",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["updated", "updated"],
+        want,
         "compiled backend preserves exclusive references through list iteration",
     );
 }
 
 #[test]
-fn exclusive_reference_list_iteration_reborrows_and_resumes_each_element_on_wasm() {
+fn exclusive_reference_list_iteration_reborrows_and_resumes_each_element_on_both_backends() {
     let src = r#"mode opt
 
 import list
@@ -350,9 +380,15 @@ fn main(console: Console):
     console.print(first)
     console.print(second)
 "#;
+    let want = ["resumed", "resumed"];
+    assert_eq!(
+        link_run(src),
+        want,
+        "interpreter resumes each list-element reference after its reborrow ends",
+    );
     assert_eq!(
         wasm_run_reowns(src).0,
-        ["resumed", "resumed"],
+        want,
         "compiled backend resumes each list-element reference after its reborrow ends",
     );
 }
