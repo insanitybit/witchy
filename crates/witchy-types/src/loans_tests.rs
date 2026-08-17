@@ -1208,6 +1208,18 @@
     }
 
     #[test]
+    fn shared_reference_sent_through_a_channel_is_rejected() {
+        let err = linked_main(
+            "mode opt\n\nimport chan\nimport task\n\nfn bad(tx: chan.Sender(String), input: &'a String) -> task.Task(Nil):\n    chan.send(tx, input)\n\nfn main(console: Console):\n    console.print(\"done\")\n",
+        )
+        .expect_err("a shared reference cannot escape through a channel");
+        assert!(
+            err.message.contains("escapes through a task or channel"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn explicit_reference_cannot_cross_json_or_reflection_boundaries() {
         for (module, call, reference, argument) in [
             ("json", "json.stringify", "&'a String", "&text"),
