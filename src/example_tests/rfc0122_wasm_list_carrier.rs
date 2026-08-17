@@ -397,6 +397,35 @@ fn main(console: Console):
     );
 }
 
+#[test]
+fn exclusive_reference_list_slot_replacement_preserves_forced_copy() {
+    let src = r#"mode opt
+
+import list
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    var replacement = "replacement"
+    var refs: List(&'a mut String) = [&mut first, &mut second]
+    list.set_at(refs, 0, &mut replacement)
+    let selected = refs[0]
+    *selected = "updated-replacement"
+    console.print(first)
+    console.print(second)
+    console.print(replacement)
+"#;
+    let want = link_run(src);
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+
+    assert_eq!(optimized, want, "optimized Wasm preserves list slot replacement");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves list slot replacement");
+}
+
 /// Exercise construction of a mutable reference list through the ordinary
 /// list append path. This remains Wasm-first while the list carrier ABI is
 /// changing; its interpreter debt is recorded in RFC-0122's ledger.
