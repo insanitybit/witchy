@@ -453,7 +453,20 @@ impl<'types> Codegen<'types> {
                         } else if executable_reference_result {
                             self.locals.insert(name.clone(), Kind::GcRef(PLACE_REFERENCE_ID));
                         }
-                        let v = self.lower_expr(value)?;
+                        // An empty typed reference list has no element expression
+                        // from which `lower_expr` can recover its GC array layout.
+                        // The binding declaration is authoritative here: preserve
+                        // the same typed carrier used by later list operations
+                        // instead of lowering `[]` as the legacy i32 aggregate.
+                        let v = if let Expr::List(items) = value
+                            && items.is_empty()
+                            && let Some(ty) = self.local_types.get(name)
+                            && let Some((_, array_id, _)) = self.gc_reference_list_layout(ty)
+                        {
+                            W::ArrayNewFixed { array_id, items: vec![] }
+                        } else {
+                            self.lower_expr(value)?
+                        };
                         seq.push(N::SetLocal { local: name.clone(), value: v });
                         // A fresh non-empty list literal is already uniquely owned
                         // with exactly its current length as capacity. Other

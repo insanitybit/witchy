@@ -342,3 +342,52 @@ fn main(console: Console):
         "compiled Wasm preserves exclusive list slot replacement and write-back",
     );
 }
+
+/// Exercise construction of a mutable reference list through the ordinary
+/// list append path. This remains Wasm-first while the list carrier ABI is
+/// changing; its interpreter debt is recorded in RFC-0122's ledger.
+#[test]
+fn wasm_first_exclusive_reference_list_push_preserves_writeback() {
+    let src = r#"mode opt
+
+import list
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    var refs: List(&'a mut String) = [&mut first]
+    list.push(refs, &mut second)
+    let selected = refs[1]
+    *selected = "updated-second"
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["first", "updated-second"],
+        "compiled Wasm preserves exclusive reference-list push and write-back",
+    );
+}
+
+#[test]
+fn wasm_first_exclusive_reference_empty_list_push_preserves_writeback() {
+    let src = r#"mode opt
+
+import list
+
+fn main(console: Console):
+    var second = "second"
+    var refs: List(&'a mut String) = []
+    list.push(refs, &mut second)
+    let selected = refs[0]
+    *selected = "updated-second"
+    console.print(second)
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["updated-second"],
+        "compiled Wasm preserves exclusive reference-list push from an empty typed carrier",
+    );
+}

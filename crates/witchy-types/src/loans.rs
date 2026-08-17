@@ -1479,10 +1479,14 @@ fn authenticated_non_escaping_generic_write(
     access: &AccessSignature,
     sources: &[BorrowSource],
 ) -> bool {
+    let is_set_at = matches!(callee, "list.set_at" | "list.__set_at")
+        && matches!(index, 0 | 2)
+        && access.params().len() == 3;
+    let is_push = matches!(callee, "list.push" | "list.__push")
+        && matches!(index, 0 | 1)
+        && access.params().len() == 2;
     if !is_std_fn(callee)
-        || !matches!(callee, "list.set_at" | "list.__set_at")
-        || !matches!(index, 0 | 2)
-        || access.params().len() != 3
+        || (!is_set_at && !is_push)
         || !access.borrow_relations().is_empty()
         || !sources.iter().all(source_is_direct_reference)
     {
@@ -1492,10 +1496,11 @@ fn authenticated_non_escaping_generic_write(
         return false;
     };
     let Some(element) = arguments.first() else { return false };
+    let element_index = if is_set_at { 2 } else { 1 };
     name == "List"
         && arguments.len() == 1
         && type_has_generic_leaf(element)
-        && access.params()[2].ty().unqualified() == element.unqualified()
+        && access.params()[element_index].ty().unqualified() == element.unqualified()
 }
 
 /// The bundled `borrow.Owned` blanket implementation is the one authenticated
@@ -2159,6 +2164,7 @@ impl LoanCtx<'_> {
             // own expressions, not counting nested blocks) is rejected.
             self.reject_conflicts(stmt, &live, &callables)?;
             self.reject_callable_boundaries(stmt, &callables, &live)?;
+            self.record_direct_list_push(stmt, block, idx, &mut local, &callables, &live)?;
 
             // Recurse into nested expression blocks, carrying the loans live here so
             // a conflict inside them is caught against the enclosing loans too.
@@ -2715,6 +2721,94 @@ impl LoanCtx<'_> {
             self.collect_alias_sources(tail, &live, &mut result);
         }
         self.block_results.insert(block_key(block), result);
+        Ok(())
+    }
+
+    /// Publish an explicit reference appended through `list.push` as a
+    /// borrower-indexed list loan. Generic list calls are relation-erasing by
+    /// default; the authenticated direct-reference carrier path is the one
+    /// exception, and it must update the same affine state used by `refs[i]`.
+    fn record_direct_list_push(
+        &mut self,
+        stmt: &Stmt,
+        block: &Block,
+        idx: usize,
+        local: &mut Vec<Loan>,
+        callables: &HashMap<String, BorrowSig>,
+        live: &[Loan],
+    ) -> Result<(), TypeError> {
+        let (name, args, assigned_list) = match stmt {
+            Stmt::Expr(Expr::Call { name, args }) => (name, args, None),
+            Stmt::Assign { name, value: Expr::Call { name: call, args } } => {
+                (call, args, Some(name.as_str()))
+            }
+            _ => return Ok(()),
+        };
+        if !matches!(name.as_str(), witchy_syntax::intrinsics::LIST_PUSH | "list.push")
+            || args.len() != 2
+        {
+            return Ok(());
+        }
+        let list_name = assigned_list.or_else(|| match &args[0] {
+            Expr::Var(name) => Some(name.as_str()),
+            _ => None,
+        });
+        let Some(list_name) = list_name else { return Ok(()) };
+        let mut sources = self.borrow_sources(&args[1], callables, live);
+        self.collect_alias_sources(&args[1], live, &mut sources);
+        if sources.is_empty() || sources.iter().any(|source| !source_is_direct_reference(source)) {
+            return Ok(());
+        }
+
+        let next_index = local
+            .iter()
+            .filter(|loan| loan.view == list_name)
+            .filter_map(|loan| loan.borrower_projection.steps.last())
+            .filter_map(|step| match step {
+                LoanProjectionStep::Index(index) => Some(*index),
+                _ => None,
+            })
+            .max()
+            .map_or(0, |index| index + 1);
+        let index_projection = LoanProjection {
+            steps: vec![LoanProjectionStep::Index(next_index)],
+        };
+        for source in sources {
+            let loan = Loan {
+                view: list_name.to_owned(),
+                owner: source.owner,
+                root_type: source.root_type,
+                projection: source.projection,
+                borrower_projection: source.borrower_projection.extended(&index_projection),
+                origin: source.origin,
+                kind: source.kind,
+                owner_type: source.owner_type,
+            };
+            if local.iter().any(|open| {
+                open.kind == BorrowKind::Exclusive
+                    && loan.kind == BorrowKind::Exclusive
+                    && open.owner == loan.owner
+                    && projections_overlap_any(&open.projection, &loan.projection)
+            }) {
+                return Err(self.exclusive_overlap(&loan));
+            }
+            let event = LoanEvent::from(loan.clone());
+            push_unique_event(
+                self.facts.opens_after.entry(stmt_key(stmt)).or_default(),
+                event.clone(),
+            );
+            let close_idx = block.stmts[idx + 1..]
+                .iter()
+                .rposition(|statement| stmt_mentions(statement, list_name))
+                .map(|offset| idx + 1 + offset)
+                .unwrap_or(idx);
+            self.facts
+                .closes_after
+                .entry(stmt_key(&block.stmts[close_idx]))
+                .or_default()
+                .push(event);
+            local.push(loan);
+        }
         Ok(())
     }
 

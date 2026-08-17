@@ -22,10 +22,16 @@ Wasm-first result is executable progress, not completion.
 | acceptance row | fixture | missing interpreter boundary | convergence milestone |
 | --- | --- | --- | --- |
 | 12 exclusive loans | `wasm_first_exclusive_reference_list_slot_replacement_preserves_writeback` | interpreter exclusive list slot replacement and displaced-place ownership | freeze the direct-place/list write ABI, then add and pass the named interpreter differential fixture |
+| 12 exclusive loans | `wasm_first_exclusive_reference_list_push_preserves_writeback` | interpreter exclusive list append carrier and element ownership | freeze the direct-place/list write ABI, then add and pass the named interpreter differential fixture |
+| 12 exclusive loans | `wasm_first_exclusive_reference_empty_list_push_preserves_writeback` | interpreter empty typed reference-list initialization and append ownership | freeze the direct-place/list write ABI, then add and pass the named interpreter differential fixture |
 | 18 aggregate affine roots | `wasm_first_nested_exclusive_tuple_list_carrier_writes_after_destructure` | interpreter nested `List`-of-tuple exclusive place carrier | freeze the nested aggregate/list carrier ABI, then add and pass the named interpreter differential fixture |
 | 19 interpreter/Wasm parity | `wasm_first_nested_exclusive_tuple_list_carrier_writes_after_destructure` | the same interpreter nested `List`-of-tuple exclusive place carrier | freeze the `ReferenceKind` aggregate/list call/result ABI, then compare interpreter, optimized Wasm, and forced-copy Wasm |
 | 18 aggregate affine roots | `wasm_first_exclusive_reference_list_slot_replacement_preserves_writeback` | the same interpreter exclusive list slot replacement carrier | freeze the aggregate/list carrier ABI, then add and pass the named interpreter differential fixture |
+| 18 aggregate affine roots | `wasm_first_exclusive_reference_list_push_preserves_writeback` | the same interpreter exclusive list append carrier | freeze the aggregate/list carrier ABI, then add and pass the named interpreter differential fixture |
+| 18 aggregate affine roots | `wasm_first_exclusive_reference_empty_list_push_preserves_writeback` | the same interpreter empty reference-list carrier | freeze the aggregate/list carrier ABI, then add and pass the named interpreter differential fixture |
 | 19 interpreter/Wasm parity | `wasm_first_exclusive_reference_list_slot_replacement_preserves_writeback` | the same interpreter exclusive list slot replacement carrier | freeze the `ReferenceKind` list call/result ABI, then compare interpreter, optimized Wasm, and forced-copy Wasm |
+| 19 interpreter/Wasm parity | `wasm_first_exclusive_reference_list_push_preserves_writeback` | the same interpreter exclusive list append carrier | freeze the `ReferenceKind` list call/result ABI, then compare interpreter, optimized Wasm, and forced-copy Wasm |
+| 19 interpreter/Wasm parity | `wasm_first_exclusive_reference_empty_list_push_preserves_writeback` | the same interpreter empty reference-list append carrier | freeze the `ReferenceKind` list call/result ABI, then compare interpreter, optimized Wasm, and forced-copy Wasm |
 
 | Criterion | fixture | missing interpreter boundary | convergence milestone | current status |
 | --- | --- | --- | --- | --- |
