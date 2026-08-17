@@ -318,6 +318,50 @@ fn main(console: Console):
         );
     }
 
+    /// A normal caller may pass an opt export through a function value without
+    /// exposing its internal reference carrier. The `var` convention remains
+    /// part of the callable identity and writes back through the ordinary
+    /// value boundary on both backends.
+    #[test]
+    fn rfc0122_normal_function_value_preserves_var_writeback_on_both_backends() {
+        let api = r#"
+mode opt
+
+pub fn normalize(var text: String) -> Nil:
+    text = text.trim()
+"#;
+        let app = r#"
+import api
+
+fn apply(f: fn(var String) -> Nil, var text: String) -> Nil:
+    f(text)
+
+fn main(console: Console):
+    var text = "  hello  "
+    let action = api.normalize
+    apply(action, text)
+    console.print(text)
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app")
+            .expect("a normal caller may pass a conventional opt export as a function value");
+        typeck::check(&linked).expect("normal function value has no source reference contract");
+        let expected = ["hello"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter preserves indirect var write-back",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled backend preserves indirect var write-back",
+        );
+    }
+
     /// A conventional result from an opt export is logically owned in normal
     /// source. It may share an internal owner only until either side mutates;
     /// normal code must observe two independent values without a loan.
