@@ -903,9 +903,20 @@ diff_wasm_surface() {
         | grep -E '^(crates/witchy-runtime/|web/|book/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
 }
 
+# Census TSV / spec/stdlib.md freshness tests live in the witchy package
+# (tests/misc, example_sweeps). A crate-only nextest cannot observe that
+# drift; regenerate only when this gate would run those tests or when the
+# batch edits their inputs/outputs. Compiler crates rely on --full/CI.
 diff_snapshot_surface() {
     diff_without_example_tests "$1" \
-        | grep -E '^(crates/|src/|std/|rfcs/0087-migration-census\.tsv|spec/stdlib\.md|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+        | grep -E '^(src/|std/|examples/|projects/|benchmarks/|rfcs/0087-migration-census\.tsv|spec/stdlib\.md|tests/misc(\.rs|/)|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+}
+
+# witchy fmt --check walks std/, examples/, and projects/. The formatter
+# itself is witchy_syntax::format, invoked from the CLI under src/.
+diff_fmt_surface() {
+    diff_without_example_tests "$1" \
+        | grep -E '^(src/|std/|examples/|projects/|crates/witchy-syntax/)' || true
 }
 
 # Replay a green candidate onto a master tip that moved only by docs-safe
@@ -946,6 +957,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local skip_compile="${14:-0}"
     local skip_wasm="${15:-0}"
     local check_packages="${16:-}"
+    local skip_fmt="${17:-0}"
     local selected_gate_cmd="$gate_cmd"
     if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
         selected_gate_cmd="./scripts/check.sh --queue-infra"
@@ -969,7 +981,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -1465,11 +1477,12 @@ submission_is_represented() { # submission_is_represented <submitted-sha>
 #   * ONLY the two whitelisted files are ever regenerated or committed;
 #   * a generator BUILD or RUN failure never fails the candidate — regen is
 #     skipped and the gate adjudicates as before;
-#   * regen is skipped when the batch diff stays inside the docs-safe set
-#     (same set as the gate-scope classifier) and does not touch the census
-#     snapshot: a docs-only gate must stay seconds, not pay a build. For code
-#     diffs the `cargo build` here is not wasted work — nextest needs the same
-#     dev-profile `witchy` bin artifacts inside the gate. Keep Cargo's
+#   * regen is skipped when the batch cannot make this gate observe
+#     census/stdlib drift: docs-safe diffs, example_tests-only, and crate-only
+#     compiler diffs (focused nextest does not run the snapshot tests).
+#     `src/`, `std/`, corpus trees, and Cargo/toolchain still pay the
+#     generator `cargo build` — that gate runs the freshness tests, and
+#     nextest needs the same dev-profile `witchy` bin. Keep Cargo's
 #     incremental setting identical to run_gate as well; changing that flag in
 #     one shared target invalidates the preparation artifacts and forces the
 #     full gate to rebuild every workspace crate.
@@ -1485,8 +1498,9 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
         && ! printf '%s\n' "$pre_diff" | grep -cx 'rfcs/0087-migration-census\.tsv' >/dev/null; then
         return 0
     fi
-    # example_tests-only (and other diffs off the snapshot surface) cannot
-    # stale the census TSV or spec/stdlib.md. Skip the generator cargo build.
+    # example_tests-only and crate-only compiler diffs cannot make this
+    # gate observe census/stdlib drift (focused nextest). Skip the
+    # generator cargo build; --full/CI still refresh and check.
     if [ -z "$(diff_snapshot_surface "$pre_diff")" ]; then
         note "rebaseline: skipped generator build (batch cannot stale census/stdlib snapshots)"
         return 0
@@ -2030,6 +2044,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     if [ -n "$changed" ] && [ -z "$(diff_wasm_surface "$changed")" ]; then
         skip_wasm=1
     fi
+    local skip_fmt=0
+    if [ -n "$changed" ] && [ -z "$(diff_fmt_surface "$changed")" ]; then
+        skip_fmt=1
+    fi
 
     # Serialized-gate nextest selection: reuse test-for-paths.sh's crate /
     # binary mapping. Fail-safe to an unfiltered --workspace on any doubt
@@ -2171,12 +2189,13 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 2
     fi
 
-    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; nextest=[${nextest_args:-workspace}]); log: $log"
+    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; skip-fmt=$skip_fmt; nextest=[${nextest_args:-workspace}]); log: $log"
     local gate_started; gate_started="$(date +%s)"
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
         "$cargo_target_dir" "$census_proof_sha" "$ungated" "$skip_sweeps" \
         "$skip_book" "$nextest_args" "$nextest_expr" \
-        "$skip_rust_class" "$skip_compile" "$skip_wasm" "$check_packages"
+        "$skip_rust_class" "$skip_compile" "$skip_wasm" "$check_packages" \
+        "$skip_fmt"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 

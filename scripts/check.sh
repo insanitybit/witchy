@@ -260,6 +260,7 @@ esac
 gate_skip_rust_class="${WITCHY_GATE_SKIP_RUST_CLASS:-0}"
 gate_skip_compile="${WITCHY_GATE_SKIP_COMPILE:-0}"
 gate_skip_wasm="${WITCHY_GATE_SKIP_WASM:-0}"
+gate_skip_fmt="${WITCHY_GATE_SKIP_FMT:-0}"
 case "$gate_skip_rust_class" in
     0 | 1) ;;
     *) echo "check.sh: WITCHY_GATE_SKIP_RUST_CLASS must be 0 or 1" >&2; exit 2 ;;
@@ -272,7 +273,11 @@ case "$gate_skip_wasm" in
     0 | 1) ;;
     *) echo "check.sh: WITCHY_GATE_SKIP_WASM must be 0 or 1" >&2; exit 2 ;;
 esac
-[ "$full" -eq 1 ] && { gate_skip_rust_class=0; gate_skip_compile=0; gate_skip_wasm=0; }
+case "$gate_skip_fmt" in
+    0 | 1) ;;
+    *) echo "check.sh: WITCHY_GATE_SKIP_FMT must be 0 or 1" >&2; exit 2 ;;
+esac
+[ "$full" -eq 1 ] && { gate_skip_rust_class=0; gate_skip_compile=0; gate_skip_wasm=0; gate_skip_fmt=0; }
 # Nested check.sh (queue-infra fixtures, an agent's local shard) must not
 # inherit skip flags from a parent serialized gate. Only the coordinator's
 # marked run (WITCHY_GATE_SCOPE set) applies them.
@@ -281,6 +286,7 @@ if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
     gate_skip_rust_class=0
     gate_skip_compile=0
     gate_skip_wasm=0
+    gate_skip_fmt=0
 fi
 
 # Package-scoped check/clippy when the serialized nextest mapping named
@@ -498,6 +504,11 @@ witchy_fmt_check() {
         files+=("$f")
     done < <(find projects -type f -path '*/src/*.witchy' -print 2>/dev/null | sort)
     [ "${#files[@]}" -eq 0 ] && return 0
+    # Crate-only nextest does not build the CLI. A syntax/src/std batch that
+    # still runs fmt may need to link it here; types/lower/interp skip fmt.
+    if [ ! -x "$target_dir/debug/witchy" ]; then
+        cargo build --bin witchy
+    fi
     "$target_dir/debug/witchy" fmt --check "${files[@]}"
 }
 
@@ -976,7 +987,11 @@ else
 fi
 
 run_watched "tests (workspace)"        "${test_cmd[@]}"
-run "witchy fmt (std+examples)" witchy_fmt_check
+if [ "$gate_skip_fmt" -eq 1 ]; then
+    printf 'check.sh: skipping witchy fmt (WITCHY_GATE_SKIP_FMT=1; --full/CI still run it)\n'
+else
+    run "witchy fmt (std+examples)" witchy_fmt_check
+fi
 run "prose style (no em dashes)"  prose_em_dash_check
 
 if [ "$gate_skip_compile" -eq 0 ]; then

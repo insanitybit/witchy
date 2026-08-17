@@ -319,6 +319,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env_remove("WITCHY_GATE_SKIP_RUST_CLASS")
         .env_remove("WITCHY_GATE_SKIP_COMPILE")
         .env_remove("WITCHY_GATE_SKIP_WASM")
+        .env_remove("WITCHY_GATE_SKIP_FMT")
         .env("WITCHY_GATE_SCOPE", "all")
         .env("WITCHY_GATE_CENSUS_PROOF_SHA", proof_sha)
         .env("FAKE_GIT_HEAD", proof_sha)
@@ -515,6 +516,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
         .env("WITCHY_GATE_SKIP_COMPILE", "1")
         .env("WITCHY_GATE_SKIP_WASM", "1")
+        .env("WITCHY_GATE_SKIP_FMT", "1")
         .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env_remove("WITCHY_GATE_TEST_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
@@ -531,8 +533,9 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         example_stdout.contains("skipping rust-class")
             && example_stdout.contains("skipping runnable-book")
             && example_stdout.contains("skipping cargo check/clippy")
-            && example_stdout.contains("skipping wasm playground"),
-        "example_tests-only check.sh did not skip rust-class/book/compile/wasm: {example_stdout}",
+            && example_stdout.contains("skipping wasm playground")
+            && example_stdout.contains("skipping witchy fmt"),
+        "example_tests-only check.sh did not skip rust-class/book/compile/wasm/fmt: {example_stdout}",
     );
     assert!(
         !example_stdout.contains("Rust-class paired correctness")
@@ -549,6 +552,43 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
                 && !line.contains("--workspace")
         }),
         "example_tests-only serialized nextest still used unfiltered --workspace: {example_args}",
+    );
+
+    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+    // Crate-only types: no witchy CLI in the target dir. Skip fmt must not
+    // try to invoke or build it.
+    let types_target = temp.path().join("target-types-only");
+    fs::create_dir_all(&types_target).expect("create types-only target");
+    let types_only = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", &types_target)
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("WITCHY_GATE_NEXTEST", "-p witchy-types")
+        .env("WITCHY_GATE_NEXTEST_EXPR", "package(witchy-types)")
+        .env("WITCHY_GATE_CHECK_PACKAGES", "-p witchy-types")
+        .env("WITCHY_GATE_SKIP_BOOK", "1")
+        .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
+        .env("WITCHY_GATE_SKIP_COMPILE", "0")
+        .env("WITCHY_GATE_SKIP_WASM", "1")
+        .env("WITCHY_GATE_SKIP_FMT", "1")
+        .env_remove("WITCHY_GATE_QUEUE_INFRA")
+        .env_remove("WITCHY_GATE_TEST_JOBS")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run serialized gate for a types-only batch");
+    let types_out = String::from_utf8_lossy(&types_only.stdout);
+    assert!(
+        types_only.status.success(),
+        "types-only fake gate failed: {}\n{types_out}",
+        String::from_utf8_lossy(&types_only.stderr),
+    );
+    assert!(
+        types_out.contains("skipping witchy fmt")
+            && types_out.contains("serialized check/clippy packages: -p witchy-types")
+            && !types_out.contains("witchy fmt (std+examples)"),
+        "types-only check.sh did not skip fmt: {types_out}",
     );
 
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
@@ -572,6 +612,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
         .env("WITCHY_GATE_SKIP_COMPILE", "0")
         .env("WITCHY_GATE_SKIP_WASM", "1")
+        .env("WITCHY_GATE_SKIP_FMT", "1")
         .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env_remove("WITCHY_GATE_TEST_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
@@ -587,8 +628,9 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         interp_out.contains("skipping rust-class")
             && interp_out.contains("skipping wasm playground")
+            && interp_out.contains("skipping witchy fmt")
             && interp_out.contains("serialized check/clippy packages: -p witchy-interp -p witchy-caps"),
-        "interp+example_tests did not skip rust-class/wasm or scope check: {interp_out}",
+        "interp+example_tests did not skip rust-class/wasm/fmt or scope check: {interp_out}",
     );
     let interp_args = fs::read_to_string(&cargo_args_file).expect("read interp cargo args");
     assert!(
@@ -732,6 +774,7 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
         .env_remove("WITCHY_GATE_SKIP_RUST_CLASS")
         .env_remove("WITCHY_GATE_SKIP_COMPILE")
         .env_remove("WITCHY_GATE_SKIP_WASM")
+        .env_remove("WITCHY_GATE_SKIP_FMT")
         .env_remove("WITCHY_FAILFAST_POLL")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
@@ -785,6 +828,7 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
         .env_remove("WITCHY_GATE_SKIP_RUST_CLASS")
         .env_remove("WITCHY_GATE_SKIP_COMPILE")
         .env_remove("WITCHY_GATE_SKIP_WASM")
+        .env_remove("WITCHY_GATE_SKIP_FMT")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .env("WITCHY_FAILFAST_POLL", "1")
         .env("FAKE_CARGO_FAIL_CLIPPY", "1")

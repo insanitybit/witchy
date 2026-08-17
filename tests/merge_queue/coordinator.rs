@@ -285,26 +285,32 @@ fn types_only_batch_classifies_a_focused_nextest_selection() {
     fixture.mq_ok(&["submit", "a"], "true");
     let env_log = fixture._temp.path().join("gate-env");
     let gate = format!(
-        "printf 'scope=%s skip_book=%s skip_rust=%s skip_wasm=%s skip_compile=%s nextest=[%s] expr=[%s]\\n' \
+        "printf 'scope=%s skip_book=%s skip_rust=%s skip_wasm=%s skip_compile=%s skip_fmt=%s nextest=[%s] expr=[%s]\\n' \
          \"${{WITCHY_GATE_SCOPE:-}}\" \"${{WITCHY_GATE_SKIP_BOOK:-}}\" \
          \"${{WITCHY_GATE_SKIP_RUST_CLASS:-}}\" \"${{WITCHY_GATE_SKIP_WASM:-}}\" \
-         \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" \
-         \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
+         \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" \"${{WITCHY_GATE_SKIP_FMT:-}}\" \
+         \"${{WITCHY_GATE_NEXTEST:-}}\" \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
         env_log.display(),
     );
-    fixture.mq_ok(&["run", "--once"], &gate);
+    let output = fixture.mq_ok(&["run", "--once"], &gate);
     let env = fs::read_to_string(&env_log).expect("read classified gate env");
     assert!(
         env.contains("scope=all"),
         "types-only batch was not a product gate: {env}",
     );
     assert!(
-        env.contains("skip_book=1") && env.contains("skip_rust=1") && env.contains("skip_wasm=1"),
-        "types-only batch did not skip book/rust-class/wasm: {env}",
+        env.contains("skip_book=1") && env.contains("skip_rust=1") && env.contains("skip_wasm=1")
+            && env.contains("skip_fmt=1"),
+        "types-only batch did not skip book/rust-class/wasm/fmt: {env}",
     );
     assert!(
         env.contains("skip_compile=0"),
         "types-only batch skipped compile legs it can change: {env}",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("skipped generator build (batch cannot stale census/stdlib snapshots)"),
+        "types-only prepare still ran the generator cargo build: {stderr}",
     );
     assert!(
         env.contains("nextest=[-p witchy-types") && env.contains("expr=[package(witchy-types)"),
@@ -354,11 +360,11 @@ fn example_tests_only_batch_classifies_focused_nextest_and_skips_heavy_legs() {
     fixture.mq_ok(&["submit", "a"], "true");
     let env_log = fixture._temp.path().join("gate-env");
     let gate = format!(
-        "printf 'scope=%s skip_book=%s skip_rust=%s skip_compile=%s skip_wasm=%s nextest=[%s] expr=[%s]\\n' \
+        "printf 'scope=%s skip_book=%s skip_rust=%s skip_compile=%s skip_wasm=%s skip_fmt=%s nextest=[%s] expr=[%s]\\n' \
          \"${{WITCHY_GATE_SCOPE:-}}\" \"${{WITCHY_GATE_SKIP_BOOK:-}}\" \
          \"${{WITCHY_GATE_SKIP_RUST_CLASS:-}}\" \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" \
-         \"${{WITCHY_GATE_SKIP_WASM:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" \
-         \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
+         \"${{WITCHY_GATE_SKIP_WASM:-}}\" \"${{WITCHY_GATE_SKIP_FMT:-}}\" \
+         \"${{WITCHY_GATE_NEXTEST:-}}\" \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
         env_log.display(),
     );
     let output = fixture.mq_ok(&["run", "--once"], &gate);
@@ -371,8 +377,9 @@ fn example_tests_only_batch_classifies_focused_nextest_and_skips_heavy_legs() {
         env.contains("skip_book=1")
             && env.contains("skip_rust=1")
             && env.contains("skip_compile=1")
-            && env.contains("skip_wasm=1"),
-        "example_tests-only batch did not skip book/rust-class/compile/wasm: {env}",
+            && env.contains("skip_wasm=1")
+            && env.contains("skip_fmt=1"),
+        "example_tests-only batch did not skip book/rust-class/compile/wasm/fmt: {env}",
     );
     assert!(
         env.contains("nextest=[-p witchy")
@@ -446,9 +453,10 @@ fn classify_crate_skips(path: &str) -> (String, String) {
     fixture.mq_ok(&["submit", "a"], "true");
     let env_log = fixture._temp.path().join("gate-env");
     let gate = format!(
-        "printf 'skip_rust=%s skip_compile=%s skip_wasm=%s nextest=[%s]\\n' \
+        "printf 'skip_rust=%s skip_compile=%s skip_wasm=%s skip_fmt=%s nextest=[%s]\\n' \
          \"${{WITCHY_GATE_SKIP_RUST_CLASS:-}}\" \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" \
-         \"${{WITCHY_GATE_SKIP_WASM:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" >{}",
+         \"${{WITCHY_GATE_SKIP_WASM:-}}\" \"${{WITCHY_GATE_SKIP_FMT:-}}\" \
+         \"${{WITCHY_GATE_NEXTEST:-}}\" >{}",
         env_log.display(),
     );
     fixture.mq_ok(&["run", "--once"], &gate);
@@ -466,11 +474,17 @@ fn lower_and_syntax_batches_skip_rust_class_and_wasm() {
         "crates/witchy-wir/src/lib.rs",
     ] {
         let (env, label) = classify_crate_skips(path);
+        let want_fmt = if path.contains("witchy-syntax") {
+            "skip_fmt=0"
+        } else {
+            "skip_fmt=1"
+        };
         assert!(
             env.contains("skip_rust=1")
                 && env.contains("skip_wasm=1")
-                && env.contains("skip_compile=0"),
-            "{label} should skip rust-class/wasm and keep compile: {env}",
+                && env.contains("skip_compile=0")
+                && env.contains(want_fmt),
+            "{label} should skip rust-class/wasm, keep compile, and classify fmt ({want_fmt}): {env}",
         );
         assert!(
             !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),

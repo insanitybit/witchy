@@ -299,20 +299,27 @@ Unknown, mixed, or empty mappings fail safe to
 `--workspace`. `--full`, CI, and standalone `check.sh` keep the complete
 suite.
 
-**Diff-scoped rust-class, compile legs, wasm, and snapshot regen.**
+**Diff-scoped rust-class, compile legs, wasm, fmt, and snapshot regen.**
 `src/example_tests/**` is compiled by the focused nextest selection. It
 cannot change rust-class results, `cargo check` / clippy answers, the wasm
-playground artifact, or the census / `spec/stdlib.md` snapshots. The
-coordinator sets `WITCHY_GATE_SKIP_RUST_CLASS`, `WITCHY_GATE_SKIP_COMPILE`,
-and `WITCHY_GATE_SKIP_WASM` when the remaining diff is off those surfaces,
-and `rebaseline_generated_snapshots` skips the generator `cargo build` for
-the same reason. rust-class and wasm are keyed on the crates that can
-change them (`witchy-lower` / `wir` / `runtime` / `types` / `syntax`, plus
-`std/` / `src/` / Cargo metadata / `bench/rust-class` / `web/` / `book/`).
+playground artifact, `witchy fmt` over std/examples/projects, or the census
+/ `spec/stdlib.md` snapshots. The coordinator sets
+`WITCHY_GATE_SKIP_RUST_CLASS`, `WITCHY_GATE_SKIP_COMPILE`,
+`WITCHY_GATE_SKIP_WASM`, and `WITCHY_GATE_SKIP_FMT` when the remaining diff
+is off those surfaces, and `rebaseline_generated_snapshots` skips the
+generator `cargo build` for the same reason. rust-class and wasm are keyed
+on the crates that can change them (`std/` / `src/` / Cargo metadata /
+`bench/rust-class` / `web/` / `book/`; wasm also `witchy-runtime`).
 Crate-only batches (lower, syntax, types, interp, wir, …) skip rust-class:
 those programs already run under `example_tests`, and `--full` / CI keep the
 leg. Wasm is kept only for `witchy-runtime`, `web/`, `book/`, `src/`, `std/`,
-and Cargo/toolchain. When nextest is package-
+and Cargo/toolchain. Snapshot regen runs only when this gate would execute
+the census / stdlib-docs tests or the batch edits those inputs (`src/`,
+`std/`, `examples/`, `projects/`, `benchmarks/`, the snapshot files, Cargo
+metadata). Crate-only nextest cannot observe that drift. Fmt runs for
+`src/`, `std/`, `examples/`, `projects/`, and `crates/witchy-syntax/`
+(the formatter lives there); other crate-only batches skip it so prepare
+need not link the CLI. When nextest is package-
 scoped, check/clippy use those mapped `-p` crates (`WITCHY_GATE_CHECK_PACKAGES`)
 instead of `--workspace --all-targets`. `--full` / CI still run everything.
 
