@@ -41,6 +41,22 @@ fn shared_reference_return_preserves_the_runtime_place_on_both_backends() {
 }
 
 #[test]
+fn function_value_shared_reference_return_preserves_the_runtime_place_on_wasm() {
+    let src = r#"mode opt
+
+fn first(text: &'a String) -> &'a String:
+    text
+
+fn main(console: Console):
+    var text = "value"
+    let project = first
+    let observed = project(&text)
+    console.print(*observed)
+"#;
+    assert_eq!(wasm_run_reowns(src).0, ["value"], "compiled function value preserves its returned reference carrier");
+}
+
+#[test]
 fn shared_reference_tuple_preserves_each_owner_root_on_both_backends() {
     let src = r#"mode opt
 
