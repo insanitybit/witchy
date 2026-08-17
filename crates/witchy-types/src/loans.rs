@@ -1741,6 +1741,20 @@ fn expr_root(expr: &Expr) -> Option<&str> {
     }
 }
 
+fn callable_projection_key(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Var(name) => Some(name.clone()),
+        Expr::Field { base, field } => {
+            Some(format!("{}.{field}", callable_projection_key(base)?))
+        }
+        Expr::Index { base, index } => match index.as_ref() {
+            Expr::Int(index) => Some(format!("{}[{index}]", callable_projection_key(base)?)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn expr_root_node(expr: &Expr) -> Option<&Expr> {
     match expr {
         Expr::Var(_) => Some(expr),
@@ -2629,6 +2643,7 @@ impl LoanCtx<'_> {
                 } else {
                     callables.remove(name);
                 }
+                self.remember_callable_projections(name, value, &mut callables);
             } else if let Stmt::LetPattern { pattern, value } = stmt {
                 if self.has_dynamic_borrow_projection(value, &callables, &live) {
                     return Err(self.dynamic_projection());
@@ -3820,27 +3835,34 @@ impl LoanCtx<'_> {
                     .map(|sig| ("indirect function".into(), sig))
             }
             Expr::Field { base, field } => {
-                let ty = self
-                    .type_table
-                    .and_then(|table| table.type_of(base))
-                    .and_then(ty_to_ast)
-                    .and_then(|base| self.catalog.field_type(&base, field))
+                callable_projection_key(expr)
+                    .and_then(|key| callables.get(&key).cloned().map(|sig| (key, sig)))
                     .or_else(|| {
-                        self.type_table
-                            .and_then(|table| table.type_of(expr))
+                        let ty = self
+                            .type_table
+                            .and_then(|table| table.type_of(base))
                             .and_then(ty_to_ast)
-                    });
-                let sig = ty
-                    .as_ref()
-                    .and_then(|ty| borrow_sig_from_fn_type(ty, self.catalog));
-                sig.map(|sig| ("projected function".into(), sig))
+                            .and_then(|base| self.catalog.field_type(&base, field))
+                            .or_else(|| {
+                                self.type_table
+                                    .and_then(|table| table.type_of(expr))
+                                    .and_then(ty_to_ast)
+                            });
+                        let sig = ty
+                            .as_ref()
+                            .and_then(|ty| borrow_sig_from_fn_type(ty, self.catalog));
+                        sig.map(|sig| ("projected function".into(), sig))
+                    })
             }
-            Expr::Index { .. } => self
-                .type_table
-                .and_then(|table| table.type_of(expr))
-                .and_then(ty_to_ast)
-                .and_then(|ty| borrow_sig_from_fn_type(&ty, self.catalog))
-                .map(|sig| ("projected function".into(), sig)),
+            Expr::Index { .. } => callable_projection_key(expr)
+                .and_then(|key| callables.get(&key).cloned().map(|sig| (key, sig)))
+                .or_else(|| {
+                    self.type_table
+                        .and_then(|table| table.type_of(expr))
+                        .and_then(ty_to_ast)
+                        .and_then(|ty| borrow_sig_from_fn_type(&ty, self.catalog))
+                        .map(|sig| ("projected function".into(), sig))
+                }),
             Expr::Lambda { params, body, ret } => ret
                 .as_ref()
                 .and_then(|ret| {
@@ -3859,6 +3881,39 @@ impl LoanCtx<'_> {
                 .or_else(|| forwarding_lambda_sig(params, body, self.sigs))
                 .map(|sig| ("closure".into(), sig)),
             _ => None,
+        }
+    }
+
+    fn remember_callable_projections(
+        &self,
+        binding: &str,
+        value: &Expr,
+        callables: &mut HashMap<String, BorrowSig>,
+    ) {
+        match value {
+            Expr::Tuple(items) | Expr::List(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    let key = match value {
+                        Expr::Tuple(_) => format!("{binding}.{index}"),
+                        Expr::List(_) => format!("{binding}[{index}]"),
+                        _ => unreachable!(),
+                    };
+                    if let Some((_, sig)) = self.callable_expr_sig(item, callables) {
+                        callables.insert(key.clone(), sig);
+                    }
+                    self.remember_callable_projections(&key, item, callables);
+                }
+            }
+            Expr::Record { fields, .. } => {
+                for (field, item) in fields {
+                    let key = format!("{binding}.{field}");
+                    if let Some((_, sig)) = self.callable_expr_sig(item, callables) {
+                        callables.insert(key.clone(), sig);
+                    }
+                    self.remember_callable_projections(&key, item, callables);
+                }
+            }
+            _ => {}
         }
     }
 

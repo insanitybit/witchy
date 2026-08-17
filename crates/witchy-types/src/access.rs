@@ -3870,9 +3870,26 @@ impl<'a> AccessVerifier<'a> {
             }
             Expr::Field { base, field } => {
                 let base_flow = self.eval_expr(base, environment, return_expected)?;
-                match self.resolved_expression_type(base) {
-                    Some(base_type) => self.field_flow(&base_type, &base_flow, field)?,
-                    None => AccessFlow::None,
+                if let Ok(index) = field.parse::<usize>() {
+                    if let AccessFlow::Product(fields) = &base_flow {
+                        fields.get(index).cloned().unwrap_or(AccessFlow::None)
+                    } else if let Some(Type::Tuple(fields)) =
+                        self.resolved_expression_type(base).map(|ty| ty.unqualified().clone())
+                    {
+                        fields
+                            .get(index)
+                            .map(|field| self.flow_from_type(field))
+                            .transpose()
+                            .map_err(Self::signature_error)?
+                            .unwrap_or(AccessFlow::None)
+                    } else {
+                        AccessFlow::None
+                    }
+                } else {
+                    match self.resolved_expression_type(base) {
+                        Some(base_type) => self.field_flow(&base_type, &base_flow, field)?,
+                        None => AccessFlow::None,
+                    }
                 }
             }
             Expr::Lambda { params, body, ret } => {
