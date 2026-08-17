@@ -526,6 +526,14 @@
     }
 
     #[test]
+    fn mutable_shared_reference_binding_releases_the_replaced_owner_loan() {
+        check_str(
+            "mode opt\n\nfn main(console: Console):\n    var first = \"first\"\n    var second = \"second\"\n    var view = &first\n    view = &second\n    first = \"updated-first\"\n    console.print(*view)\n",
+        )
+        .expect("replacing a mutable shared-reference binding closes the old owner loan");
+    }
+
+    #[test]
     fn explicit_borrow_argument_retains_the_returned_reference_owner() {
         let err = check_str(
             "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = first(&text)\n    text = \"changed\"\n    console.print(view)\n",

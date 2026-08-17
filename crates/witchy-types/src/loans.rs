@@ -1980,13 +1980,16 @@ impl LoanCtx<'_> {
             .and_then(ty_to_ast)
         {
             return matches!(ty, Type::Named(name, _) if self.catalog.borrowed_record(&name))
-                || matches!(value, Expr::Unary { op: UnOp::Borrow, .. });
+                || matches!(
+                    value,
+                    Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }
+                );
         }
         match value {
-            // An explicit shared reference is a first-class value. `List(&'a T)`
+            // An explicit reference is a first-class value. `List(&'a T)`
             // retains the element's owner contribution just like the legacy
             // borrowed shell, rather than erasing it at aggregate storage.
-            Expr::Unary { op: UnOp::Borrow, .. } => true,
+            Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. } => true,
             Expr::Ctor { name, .. } => self.catalog.borrowed_constructor(name),
             Expr::Record { name, .. } => self.catalog.borrowed_record(name),
             Expr::Call { name, .. } => self
@@ -2494,7 +2497,56 @@ impl LoanCtx<'_> {
                     let mut sources = self.borrow_sources(value, &callables, &live);
                     self.collect_alias_sources(value, &live, &mut sources);
                     if !sources.is_empty() {
-                        return Err(self.mutable_view_storage(name));
+                        if sources.iter().any(|source| !source_is_direct_reference(source)) {
+                            return Err(self.mutable_view_storage(name));
+                        }
+                        let replaced: Vec<Loan> = local
+                            .iter()
+                            .filter(|loan| loan.view == *name)
+                            .cloned()
+                            .collect();
+                        for old in replaced {
+                            let event = LoanEvent::from(old.clone());
+                            self.remove_scheduled_close(&event);
+                            push_unique_event(
+                                self.facts.closes_after.entry(stmt_key(stmt)).or_default(),
+                                event,
+                            );
+                        }
+                        local.retain(|loan| loan.view != *name);
+                        for source in sources {
+                            if source.temporary {
+                                return Err(self.temporary_owner(&source.origin));
+                            }
+                            let loan = Loan {
+                                view: name.clone(),
+                                owner: source.owner,
+                                root_type: source.root_type,
+                                projection: source.projection,
+                                borrower_projection: source.borrower_projection,
+                                origin: source.origin,
+                                kind: source.kind,
+                                owner_type: source.owner_type,
+                            };
+                            let conflicts_with_live = live.iter().any(|open| {
+                                open.view != *name
+                                    && open.owner == loan.owner
+                                    && projections_overlap_any(&open.projection, &loan.projection)
+                                    && (loan.kind == BorrowKind::Exclusive
+                                        || open.kind == BorrowKind::Exclusive)
+                            });
+                            if conflicts_with_live {
+                                return Err(self.exclusive_overlap(&loan));
+                            }
+                            let event = LoanEvent::from(loan.clone());
+                            self.facts
+                                .opens_after
+                                .entry(stmt_key(stmt))
+                                .or_default()
+                                .push(event.clone());
+                            self.schedule_close(block, idx, &event);
+                            local.push(loan);
+                        }
                     }
                 }
                 self.reject_callable_erasure(
