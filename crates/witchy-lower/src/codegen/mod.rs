@@ -7196,7 +7196,17 @@ impl<'types> Codegen<'types> {
         args: &[Expr],
         access: &witchy_types::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
-        let ownership = self.ownership_envelope_for_named_signature(name, access);
+        // A generic call target is a physical specialization whose ABI retains
+        // the checked callable's compatibility state channels. The logical name
+        // may also have a callable layout entry, but applying that exact-layout
+        // refinement here can erase the specialization's unique/own result slots
+        // and leave `CallStoreMulti` with too few destinations.
+        let physical_name = emitted_name.strip_suffix("$repair").unwrap_or(emitted_name);
+        let ownership = if physical_name != name {
+            Self::ownership_envelope_for_signature(access)
+        } else {
+            self.ownership_envelope_for_named_signature(name, access)
+        };
         let param_kinds: Vec<Kind> = self
             .fn_params
             .get(name)
@@ -7739,7 +7749,12 @@ impl<'types> Codegen<'types> {
         access: &witchy_types::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
-        let ownership = self.ownership_envelope_for_named_signature(name, access);
+        let physical_name = emitted_name.strip_suffix("$repair").unwrap_or(emitted_name);
+        let ownership = if physical_name != name {
+            Self::ownership_envelope_for_signature(access)
+        } else {
+            self.ownership_envelope_for_named_signature(name, access)
+        };
         let param_kinds: Vec<Kind> = self
             .fn_params
             .get(name)

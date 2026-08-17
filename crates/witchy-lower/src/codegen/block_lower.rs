@@ -983,6 +983,15 @@ impl<'types> Codegen<'types> {
                         let callee = callee.to_string();
                         let emitted_callee = self.generic_call_target(value, &callee).to_string();
                         let Expr::Call { args, .. } = value else { return None };
+                        let access = self.call_access_signature(value)?.clone();
+                        let physical_name = emitted_callee
+                            .strip_suffix("$repair")
+                            .unwrap_or(&emitted_callee);
+                        let ownership = if physical_name != callee {
+                            Self::ownership_envelope_for_signature(&access)
+                        } else {
+                            self.ownership_envelope_for_named_signature(&callee, &access)
+                        };
                         let param_kinds: Vec<Kind> = self
                             .fn_params
                             .get(&callee)
@@ -1001,13 +1010,57 @@ impl<'types> Codegen<'types> {
                                 None => w,
                             });
                         }
-                        // The trailing synthetic arg: our current ownership token.
-                        args_w.push(W::GetLocal(format!("{name}__cap")));
+                        // The synthetic state arguments follow the declared
+                        // arguments in ABI order: `own` capacity first, then
+                        // `var` capacities. A generic physical specialization
+                        // keeps every checked state channel even when the
+                        // logical callable has a refined concrete layout.
+                        if let Some(index) = ownership.own_capacity_param {
+                            let capacity = args
+                                .get(index)
+                                .filter(|arg| matches!(arg, Expr::Var(value) if value == name))
+                                .map(|_| W::GetLocal(format!("{name}__cap")))
+                                .unwrap_or(W::ConstI32(0));
+                            args_w.push(capacity);
+                        }
+                        for index in &ownership.var_capacity_params {
+                            args_w.push(match args.get(*index) {
+                                Some(Expr::Var(value)) if self.inplace_push.contains(value) => {
+                                    W::GetLocal(format!("{value}__cap"))
+                                }
+                                _ => W::ConstI32(0),
+                            });
+                        }
+                        let mut dests = vec![name.clone()];
+                        if ownership.unique_capacity_result {
+                            dests.push(UNIQUE_RESULT_CAP_TMP.to_string());
+                        }
+                        for index in &ownership.var_capacity_params {
+                            dests.push(match args.get(*index) {
+                                Some(Expr::Var(value)) if self.inplace_push.contains(value) => {
+                                    format!("{value}__cap")
+                                }
+                                _ => var_scratch("cap", *index, Kind::I32),
+                            });
+                        }
+                        if ownership.own_capacity_param.is_some() {
+                            dests.push(if ownership.unique_capacity_result {
+                                "__witchy_owncap".to_string()
+                            } else {
+                                format!("{name}__cap")
+                            });
+                        }
                         seq.push(N::CallStoreMulti {
                             func: emitted_callee,
                             args: args_w,
-                            dests: vec![name.clone(), format!("{name}__cap")],
+                            dests,
                         });
+                        if ownership.unique_capacity_result {
+                            seq.push(N::SetLocal {
+                                local: format!("{name}__cap"),
+                                value: W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string()),
+                            });
+                        }
                         tail_is_value = false;
                     } else if self.collect_wir
                         && self.inplace_push.contains(name)

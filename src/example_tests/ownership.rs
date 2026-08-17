@@ -609,6 +609,44 @@ fn main(console: Console):
         );
     }
 
+    #[test]
+    fn rfc0122_normal_to_opt_generic_unique_call_preserves_value_semantics_on_both_backends() {
+        let api = r#"
+mode opt
+
+pub fn identity(own value: unique a) -> unique a:
+    value
+"#;
+        let app = r#"
+import api
+import list
+
+fn main(console: Console):
+    var values = [1]
+    let snapshot = values
+    values = api.identity(values)
+    values.push(2)
+    console.print("${values}:${snapshot}")
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse generic opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse generic normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app").expect("link generic normal caller");
+        typeck::check(&linked).expect("generic normal caller type-checks without references");
+        let expected = ["[1, 2]:[1]"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter preserves generic normal-to-opt value semantics",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled backend preserves generic normal-to-opt value semantics",
+        );
+    }
+
     /// RFC-0088 baseline: update-and-extract returns the exact old leaf while
     /// committing the repaired collection. Shared snapshots remain unchanged;
     /// empty/missing operations return None. The structural helper performs the
