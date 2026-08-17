@@ -201,9 +201,13 @@ for p in "${paths[@]}"; do
             add "cargo nextest run --test misc -E 'test(/^wasm_abi_catalog::/)'" ;;
         web/witchy-runtime/witchy-runtime.mjs)
             add "cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'" ;;
-        tests/merge_queue.rs | tests/merge_queue/*.rs | tests/test_for_paths.rs)
+        tests/merge_queue.rs | tests/merge_queue/*.rs)
             any_rust=1
-            gate_workspace=1
+            add_gate_test merge_queue
+            add "./scripts/check.sh --queue-infra" ;;
+        tests/test_for_paths.rs)
+            any_rust=1
+            add_gate_test test_for_paths
             add "./scripts/check.sh --queue-infra" ;;
         tests/worktree/*.rs)
             any_rust=1
@@ -231,12 +235,15 @@ for p in "${paths[@]}"; do
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/test-nextest-list-wrapper.sh"
             add "./scripts/check.sh --queue-infra" ;;
-        .config/nextest.toml | \
+        .config/nextest.toml)
+            gate_workspace=1
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "./scripts/check.sh --queue-infra" ;;
         scripts/check.sh | \
         scripts/gate-report.sh | \
         scripts/merge-queue.sh | \
         scripts/state-paths.sh)
-            gate_workspace=1
+            add_gate_test merge_queue
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/worktree-status.sh)
@@ -257,6 +264,8 @@ for p in "${paths[@]}"; do
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/check-spec-freshness.sh" ;;
         scripts/test-for-paths.sh)
+            add_gate_test test_for_paths
+            add_gate_test merge_queue
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "cargo nextest run --test test_for_paths"
             add "./scripts/check.sh --queue-infra" ;;

@@ -123,6 +123,19 @@ fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
 }
 
 #[test]
+fn gate_nextest_queue_scripts_are_not_workspace() {
+    let output = gate_nextest(&["scripts/check.sh", "scripts/test-for-paths.sh"]);
+    assert!(
+        output.contains("--test merge_queue") || output.contains("--test test_for_paths"),
+        "queue-script mapping dropped the focused tests: {output}",
+    );
+    assert!(
+        !output.contains("WORKSPACE") && !output.contains("--workspace"),
+        "queue-script mapping fell back to the full workspace: {output}",
+    );
+}
+
+#[test]
 fn gate_nextest_types_only_is_not_unfiltered_workspace() {
     let output = gate_nextest(&["crates/witchy-types/src/lib.rs"]);
     assert!(

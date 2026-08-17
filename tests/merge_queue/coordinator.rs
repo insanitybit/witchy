@@ -285,9 +285,11 @@ fn types_only_batch_classifies_a_focused_nextest_selection() {
     fixture.mq_ok(&["submit", "a"], "true");
     let env_log = fixture._temp.path().join("gate-env");
     let gate = format!(
-        "printf 'scope=%s skip_book=%s nextest=[%s] expr=[%s]\\n' \
+        "printf 'scope=%s skip_book=%s skip_rust=%s skip_wasm=%s skip_compile=%s nextest=[%s] expr=[%s]\\n' \
          \"${{WITCHY_GATE_SCOPE:-}}\" \"${{WITCHY_GATE_SKIP_BOOK:-}}\" \
-         \"${{WITCHY_GATE_NEXTEST:-}}\" \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
+         \"${{WITCHY_GATE_SKIP_RUST_CLASS:-}}\" \"${{WITCHY_GATE_SKIP_WASM:-}}\" \
+         \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" \
+         \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
         env_log.display(),
     );
     fixture.mq_ok(&["run", "--once"], &gate);
@@ -297,8 +299,12 @@ fn types_only_batch_classifies_a_focused_nextest_selection() {
         "types-only batch was not a product gate: {env}",
     );
     assert!(
-        env.contains("skip_book=1"),
-        "types-only batch did not skip the book validator: {env}",
+        env.contains("skip_book=1") && env.contains("skip_rust=1") && env.contains("skip_wasm=1"),
+        "types-only batch did not skip book/rust-class/wasm: {env}",
+    );
+    assert!(
+        env.contains("skip_compile=0"),
+        "types-only batch skipped compile legs it can change: {env}",
     );
     assert!(
         env.contains("nextest=[-p witchy-types") && env.contains("expr=[package(witchy-types)"),
@@ -307,6 +313,34 @@ fn types_only_batch_classifies_a_focused_nextest_selection() {
     assert!(
         !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
         "types-only batch launched an unfiltered --workspace nextest: {env}",
+    );
+}
+
+#[test]
+fn queue_script_batch_is_queue_infra_only_not_workspace_nextest() {
+    let fixture = QueueFixture::stack(&["scripts/check.sh"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'infra=%s infra_only=%s nextest=[%s] skip_compile=%s\\n' \
+         \"${{WITCHY_GATE_QUEUE_INFRA:-}}\" \"${{WITCHY_GATE_QUEUE_INFRA_ONLY:-}}\" \
+         \"${{WITCHY_GATE_NEXTEST:-}}\" \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" >{}",
+        env_log.display(),
+    );
+    let output = fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified gate env");
+    assert!(
+        env.contains("infra=1") && env.contains("infra_only=1"),
+        "check.sh-only batch was not queue-infra-only: {env}",
+    );
+    assert!(
+        !env.contains("nextest=[--workspace"),
+        "check.sh-only batch still selected unfiltered --workspace nextest: {env}",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("queue-infra-only=1"),
+        "gating note did not mark queue-infra-only: {stderr}",
     );
 }
 

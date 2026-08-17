@@ -211,11 +211,12 @@ coordinators, process groups, lock holders, and nested Git repositories. It is
 excluded from the concurrent workspace test stage and runs first as an isolated,
 one-thread shard when the batch changes the queue substrate. The coordinator
 sets `WITCHY_GATE_QUEUE_INFRA=1` for changes to the queue/check scripts, their
-nextest configuration, or their focused tests. Operators can run the same shard
-directly with `./scripts/check.sh --queue-infra`, or force it into an exact-master
-baseline with `WITCHY_GATE_QUEUE_INFRA=1 ./scripts/check.sh`. Product and semantic
-validation is unchanged; only the machine-sensitive queue fixtures move out of
-contention with it.
+nextest configuration, or their focused tests. A batch whose every path is
+queue-core (`merge-queue.sh`, `check.sh`, `test-for-paths.sh`, the queue
+fixtures, and riding documentation) is `queue_infra_only`: it runs that shard
+and does **not** launch unfiltered `--workspace` nextest. Operators can run the
+same shard directly with `./scripts/check.sh --queue-infra`, or force it into an
+exact-master baseline with `WITCHY_GATE_QUEUE_INFRA=1 ./scripts/check.sh`.
 
 **Gate fail-fast (check.sh).** The merge-gate profile runs the tests as the
 only foreground stage with three background legs — `cargo check --workspace
@@ -306,7 +307,7 @@ and `rebaseline_generated_snapshots` skips the generator `cargo build` for
 the same reason. rust-class and wasm are keyed on the crates that can
 change them (`witchy-lower` / `wir` / `runtime` / `types` / `syntax`, plus
 `std/` / `src/` / Cargo metadata / `bench/rust-class` / `web/` / `book/`).
-An interpreter-only batch therefore skips both. When nextest is package-
+An interpreter-only or types-only batch therefore skips both. When nextest is package-
 scoped, check/clippy use those mapped `-p` crates (`WITCHY_GATE_CHECK_PACKAGES`)
 instead of `--workspace --all-targets`. `--full` / CI still run everything.
 

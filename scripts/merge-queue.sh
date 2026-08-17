@@ -889,14 +889,14 @@ diff_product_compile_surface() { # prints matching lines
 # capability crates cannot change those answers.
 diff_rust_class_surface() {
     diff_without_example_tests "$1" \
-        | grep -E '^(bench/rust-class/|crates/witchy-(lower|wir|runtime|types|syntax)/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+        | grep -E '^(bench/rust-class/|crates/witchy-(lower|wir|runtime|syntax)/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
 }
 
 # Wasm playground is the browser runtime + compiler crates that emit it.
-# interp/caps-only batches cannot change that artifact.
+# interp/caps/types-only batches cannot change that artifact.
 diff_wasm_surface() {
     diff_without_example_tests "$1" \
-        | grep -E '^(crates/witchy-(lower|wir|runtime|types|syntax)/|web/|book/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+        | grep -E '^(crates/witchy-(lower|wir|runtime|syntax)/|web/|book/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
 }
 
 diff_snapshot_surface() {
@@ -965,7 +965,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -2065,25 +2065,24 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local queue_infra=0
     if [ -n "$changed" ] \
         && printf '%s\n' "$changed" \
-            | grep -cE '^(\.config/nextest\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|worktree-status|worktree-warm)\.sh|tests/(merge_queue|test_for_paths)\.rs)$' >/dev/null; then
+            | grep -cE '^(\.config/nextest\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|worktree-status|worktree-warm)\.sh|tests/(merge_queue|test_for_paths)\.rs|tests/merge_queue/)' >/dev/null; then
         queue_infra=1
     fi
 
-    # Queue-core changes are validated by their process-isolated fixture shard,
-    # not by re-running an unrelated product tree already green on master. Keep
-    # this allowlist intentionally narrower than queue_infra above: check.sh,
-    # nextest configuration, reporting, and worktree tooling can affect general
-    # product-gate behavior and therefore retain the complete gate. Documentation
-    # may ride with a queue-core fix because it is not executable input.
+    # Queue-core and check.sh / path-router changes are validated by the
+    # process-isolated fixture shard, not by re-running an unrelated product
+    # tree already green on master. Documentation may ride along. Nextest
+    # config and worktree tooling can still affect general product-gate
+    # behavior and therefore retain the complete gate.
     local queue_infra_only=0
     local non_queue_core=""
     if [ "$queue_infra" -eq 1 ] && [ -n "$changed" ]; then
         non_queue_core="$(printf '%s\n' "$changed" \
-            | grep -vE '^(scripts/(merge-queue|state-paths)\.sh|scripts/MERGE-QUEUE\.md|tests/merge_queue\.rs|rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' \
+            | grep -vE '^(scripts/(merge-queue|state-paths|check|test-for-paths|gate-report)\.sh|scripts/MERGE-QUEUE\.md|tests/merge_queue\.rs|tests/merge_queue/|tests/test_for_paths\.rs|rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' \
             || true)"
         if [ -z "$non_queue_core" ] \
             && printf '%s\n' "$changed" \
-                | grep -cE '^(scripts/(merge-queue|state-paths)\.sh|tests/merge_queue\.rs)$' >/dev/null; then
+                | grep -cE '^(scripts/(merge-queue|state-paths|check|test-for-paths|gate-report)\.sh|tests/merge_queue\.rs|tests/merge_queue/|tests/test_for_paths\.rs)$' >/dev/null; then
             queue_infra_only=1
         fi
     fi
