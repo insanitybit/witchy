@@ -75,6 +75,20 @@ fn type_is_exclusive_reference(ty: &ast::Type) -> bool {
     }
 }
 
+fn type_is_explicit_reference(ty: &ast::Type) -> bool {
+    match ty {
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
+            _,
+        ) => true,
+        ast::Type::Qualified(
+            ast::TypeQual::Frozen | ast::TypeQual::Unique | ast::TypeQual::LocalUnique,
+            inner,
+        ) => type_is_explicit_reference(inner),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
     Int,
@@ -3520,6 +3534,9 @@ struct Checker {
     /// as an ordinary parameter has no compiler-owned root companions at this
     /// boundary, so it must retain the RFC-0112 stage-1 runtime guard.
     borrowed_shell_bindings: Vec<HashSet<String>>,
+    /// Direct references erase to their payload in [`Ty`], so retain their
+    /// source relation for closure-capture checks.
+    explicit_reference_bindings: Vec<HashSet<String>>,
     /// Bindings declared with `frozen`. Qualifiers erase from [`Ty`], but
     /// exclusive borrowing must still respect the source storage contract.
     frozen_bindings: Vec<HashSet<String>>,
@@ -4839,11 +4856,13 @@ impl Checker {
     fn push(&mut self) {
         self.scopes.push(HashMap::new());
         self.borrowed_shell_bindings.push(HashSet::new());
+        self.explicit_reference_bindings.push(HashSet::new());
         self.frozen_bindings.push(HashSet::new());
     }
     fn pop(&mut self) {
         self.scopes.pop();
         self.borrowed_shell_bindings.pop();
+        self.explicit_reference_bindings.pop();
         self.frozen_bindings.pop();
     }
     /// The (name, type) bindings introduced in the innermost scope frame — used to
@@ -7429,6 +7448,16 @@ impl Checker {
                 }
                 for capture in scan.captures() {
                     let Some(captured_ty) = self.lookup(&capture) else { continue };
+                    if self
+                        .explicit_reference_bindings
+                        .iter()
+                        .rev()
+                        .any(|bindings| bindings.contains(&capture))
+                    {
+                        return terr(format!(
+                            "closure capture `{capture}` carries an explicit reference, but a closure may escape its loan scope — materialize an owned value before capturing it"
+                        ));
+                    }
                     if let Some(borrowed) = self.borrowed_nominal_name(&captured_ty) {
                         return terr(format!(
                             "closure capture `{capture}` carries borrowed nominal type \
@@ -8986,6 +9015,7 @@ impl Checker {
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
         self.borrowed_shell_bindings = vec![HashSet::new()];
+        self.explicit_reference_bindings = vec![HashSet::new()];
         self.frozen_bindings = vec![HashSet::new()];
         self.consumed.clear();
         self.current_ret = Some(ret.clone());
@@ -9048,6 +9078,12 @@ impl Checker {
                 ty.clone(),
                 param.convention.binds_mutable() || parameter_binds_exclusive_reference(param),
             );
+            if param.ty.as_ref().is_some_and(type_is_explicit_reference) {
+                self.explicit_reference_bindings
+                    .last_mut()
+                    .expect("reference bindings track type scopes")
+                    .insert(param.name.clone());
+            }
             if param.ty.as_ref().is_some_and(is_frozen_type) {
                 self.authorize_frozen_binding(param.name.clone());
             }
@@ -9815,6 +9851,7 @@ fn run_check_selected(
             .collect(),
         borrowed_shell_update_target: None,
         borrowed_shell_bindings: vec![HashSet::new()],
+        explicit_reference_bindings: vec![HashSet::new()],
         frozen_bindings: vec![HashSet::new()],
         sealed_types: HashSet::new(),
         construction_sealed_types: HashSet::new(),
