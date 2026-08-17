@@ -314,6 +314,34 @@ fn main(console: Console):
     );
 }
 
+#[test]
+fn interpreter_nested_exclusive_tuple_list_carrier_writes_after_destructure() {
+    let src = r#"mode opt
+
+import list
+
+fn pair(first: &'a mut String, second: &'b mut String) -> List((&'a mut String, &'b mut String)):
+    [(first, second)]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let returned = pair(&mut first, &mut second)
+    let moved = returned
+    let (left, right) = moved[0]
+    *left = "updated-first"
+    *right = "updated-second"
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["updated-first", "updated-second"],
+        "interpreter preserves an affine tuple-in-list carrier through return, move, destructure, projection, and writes",
+    );
+}
+
 /// Exercise replacement of an exclusive place inside a reference list. This
 /// remains Wasm-first while list slot write-back is still part of the changing
 /// carrier ABI; its interpreter debt is recorded in RFC-0122's ledger.
