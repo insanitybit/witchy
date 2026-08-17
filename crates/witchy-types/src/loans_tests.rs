@@ -944,6 +944,24 @@
     }
 
     #[test]
+    fn reference_function_types_preserve_parameter_convention_identity() {
+        check_str(
+            "mode opt\n\nfn edit(var input: &'a mut String) -> Nil:\n    *input = \"changed\"\n\nfn apply(f: fn(var &'a mut String) -> Nil, var input: &'a mut String) -> Nil:\n    f(input)\n\nfn main(console: Console):\n    var text = \"value\"\n    apply(edit, &mut text)\n    console.print(text)\n",
+        )
+        .expect("a function value retains the var convention on an exclusive reference");
+
+        let error = check_str(
+            "mode opt\n\nfn edit(var input: &'a mut String) -> Nil:\n    *input = \"changed\"\n\nfn apply(f: fn(let &'a mut String) -> Nil, input: &'a mut String) -> Nil:\n    f(input)\n\nfn main():\n    var text = \"value\"\n    apply(edit, &mut text)\n",
+        )
+        .expect_err("a callable must not erase var on an exclusive reference");
+        assert!(
+            error.contains("expected `fn(let String) -> ()`")
+                && error.contains("found `fn(var String) -> ()`"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn nominal_record_fields_keep_their_contract_across_order_projection_and_update() {
         check_str(
             "mode opt\n\n\

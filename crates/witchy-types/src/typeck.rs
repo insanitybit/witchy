@@ -6751,6 +6751,24 @@ impl Checker {
                 match conv {
                     Convention::Var => {
                         let parameter = self.var_parameter_context(name, i);
+                        // `var &'a mut T` writes through its exclusive place;
+                        // it does not require a mutable *reference-handle*
+                        // binding. The preceding exclusive-reference check has
+                        // already recorded the referent place for aliasing.
+                        if explicit_exclusive
+                            && let Expr::Unary { op: UnOp::BorrowMut, expr } = arg
+                            && let Some(place) = crate::access::checked_place(expr)
+                        {
+                            if self.is_mutable(place.root()) == Some(true) {
+                                continue;
+                            }
+                            return terr(format!(
+                                "argument {} to {parameter} has immutable root `{}`; root `{}` must be a mutable `var` for exclusive write access",
+                                i + 1,
+                                place.root(),
+                                place.root()
+                            ));
+                        }
                         if matches!(arg, Expr::Unary { op: UnOp::Move, .. }) {
                             return terr(format!(
                                 "argument {} to {parameter} uses `move`; write-back requires a live mutable place in the caller",
@@ -6857,6 +6875,24 @@ impl Checker {
             match convention {
                 Convention::Var => {
                     let parameter = self.var_parameter_context(name, index);
+                    // See the named-call path above: a direct exclusive borrow
+                    // is the writable place for `var &'a mut T`; requiring a
+                    // mutable reference-handle local would make the signature
+                    // impossible to call.
+                    if reference_params.get(index).copied().unwrap_or(false)
+                        && let Expr::Unary { op: UnOp::BorrowMut, expr } = arg
+                        && let Some(place) = crate::access::checked_place(expr)
+                    {
+                        if self.is_mutable(place.root()) == Some(true) {
+                            continue;
+                        }
+                        return terr(format!(
+                            "argument {} to {parameter} has immutable root `{}`; root `{}` must be a mutable `var` for exclusive write access",
+                            index + 1,
+                            place.root(),
+                            place.root()
+                        ));
+                    }
                     if matches!(arg, Expr::Unary { op: UnOp::Move, .. }) {
                         return terr(format!(
                             "argument {} to {parameter} uses `move`; write-back requires a live mutable place in the caller",
