@@ -29,7 +29,7 @@ implemented.
 
 | Criterion | Track | State | Required evidence |
 | --- | --- | --- | --- |
-| 1 normal-mode reference exclusion | boundary | partial | syntax is mode-gated; add parser/type/link diagnostic matrix for every reference-bearing position |
+| 1 normal-mode reference exclusion | boundary | partial | `normal_mode_rejects_every_explicit_reference_surface_before_loan_analysis` covers reference parameter/result/local/container types, borrow and mutable-borrow expressions, and nominal lifetime declarations with the normal-mode diagnostic before loan analysis; parser/link diagnostic coverage remains |
 | 2 conventional normal calls | boundary | partial | `rfc0122_normal_callers_use_conventional_opt_access_on_both_backends` proves reference-free `let`/`var`/`own` calls, while `BoundaryEntrySelection` derives proven/repair from the checked access graph and lowering consumes that selection; generated adapter ABI and normal-to-opt repair parity remain |
 | 3 normal interface filtering | boundary | partial | normal importers now reject direct and alias-hidden reference functions, reference-bearing nominal types, and traits with reference methods (`be579d67`, `bc39f465`, `c8052518`); reflection, generated adapters, and the complete fixture matrix remain |
 | 4 one opt source identity | contract/boundary | partial | `analysis::no_copy_tests::checked_boundary_entry_selection_distinguishes_proven_and_repair_calls` proves proven and repair selections retain one checked callable identity; generated-entry identity evidence remains |

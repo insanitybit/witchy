@@ -422,6 +422,48 @@ mod tests {
     }
 
     #[test]
+    fn normal_mode_rejects_every_explicit_reference_surface_before_loan_analysis() {
+        let cases = [
+            (
+                "reference parameter",
+                "fn read(value: &'a String) -> Int:\n    value.length()\n",
+            ),
+            (
+                "reference result",
+                "fn first(value: String) -> &'a String:\n    &value\n",
+            ),
+            (
+                "local reference annotation",
+                "fn main():\n    let value = \"text\"\n    let view: &'a String = &value\n    view\n",
+            ),
+            (
+                "borrow expression",
+                "fn main():\n    let value = \"text\"\n    let view = &value\n    view\n",
+            ),
+            (
+                "mutable borrow expression",
+                "fn main():\n    var value = \"text\"\n    let view = &mut value\n    *view = \"next\"\n",
+            ),
+            (
+                "reference-bearing container",
+                "fn read(values: List(&'a String)) -> Int:\n    0\n",
+            ),
+            (
+                "nominal lifetime declaration",
+                "type Parser('a):\n    input: &'a String\n",
+            ),
+        ];
+
+        for (surface, source) in cases {
+            let error = check_str(source).expect_err(surface);
+            assert!(
+                error.contains("explicit references") && error.contains("mode opt"),
+                "{surface} leaked past the normal-mode boundary: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn borrowed_nominal_type_arguments_are_kind_checked_and_bound() {
         let ordinary_slot = check_str(
             "mode opt\n\nfn bad(let owner: let('a) Int, values: List('a)) -> Int:\n    0\n",
