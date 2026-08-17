@@ -544,6 +544,63 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "example_tests-only serialized nextest still used unfiltered --workspace: {example_args}",
     );
 
+    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+    let interp_target = temp.path().join("target-interp-check");
+    fs::create_dir_all(interp_target.join("debug")).expect("create interp fake target");
+    fs::write(interp_target.join("debug/witchy"), "#!/bin/sh\nexit 0\n").expect("write interp witchy");
+    fs::set_permissions(interp_target.join("debug/witchy"), fs::Permissions::from_mode(0o755))
+        .expect("chmod interp witchy");
+    let interp = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", &interp_target)
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("WITCHY_GATE_NEXTEST", "-p witchy-interp -p witchy-caps -p witchy")
+        .env(
+            "WITCHY_GATE_NEXTEST_EXPR",
+            "package(witchy-interp) or package(witchy-caps) or test(/^example_tests::/)",
+        )
+        .env("WITCHY_GATE_CHECK_PACKAGES", "-p witchy-interp -p witchy-caps")
+        .env("WITCHY_GATE_SKIP_BOOK", "1")
+        .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
+        .env("WITCHY_GATE_SKIP_COMPILE", "0")
+        .env("WITCHY_GATE_SKIP_WASM", "1")
+        .env_remove("WITCHY_GATE_QUEUE_INFRA")
+        .env_remove("WITCHY_GATE_TEST_JOBS")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run serialized gate for interp+example_tests");
+    let interp_out = String::from_utf8_lossy(&interp.stdout);
+    assert!(
+        interp.status.success(),
+        "interp+example_tests fake gate failed: {}\n{interp_out}",
+        String::from_utf8_lossy(&interp.stderr),
+    );
+    assert!(
+        interp_out.contains("skipping rust-class")
+            && interp_out.contains("skipping wasm playground")
+            && interp_out.contains("serialized check/clippy packages: -p witchy-interp -p witchy-caps"),
+        "interp+example_tests did not skip rust-class/wasm or scope check: {interp_out}",
+    );
+    let interp_args = fs::read_to_string(&cargo_args_file).expect("read interp cargo args");
+    assert!(
+        interp_args.lines().any(|line| {
+            line.starts_with("check ") && line.contains("-p witchy-interp") && !line.contains("--workspace")
+        }),
+        "interp+example_tests check still used --workspace: {interp_args}",
+    );
+    assert!(
+        interp_args.lines().any(|line| {
+            line.starts_with("clippy ") && line.contains("-p witchy-interp") && !line.contains("--workspace")
+        }),
+        "interp+example_tests clippy still used --workspace: {interp_args}",
+    );
+    assert!(
+        !interp_args.lines().any(|line| line.contains("wasm32-unknown-unknown")),
+        "interp+example_tests still launched the wasm playground: {interp_args}",
+    );
+
     let clippy_pid_file = temp.path().join("red-clippy.pid");
     let failed = Command::new("bash")
         .arg(root.join("scripts/check.sh"))

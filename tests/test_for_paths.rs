@@ -101,6 +101,7 @@ fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
         "crates/witchy-interp/src/lib.rs",
         "src/example_tests/rfc0122_wasm_list_carrier.rs",
     ]);
+    let lines: Vec<_> = output.lines().collect();
     assert!(
         output.contains("-p witchy-interp"),
         "crate+example_tests mapping dropped the crate: {output}",
@@ -112,6 +113,12 @@ fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
     assert!(
         !output.contains("WORKSPACE") && !output.contains("--workspace"),
         "crate+example_tests mapping fell back to the full workspace: {output}",
+    );
+    assert!(
+        lines.len() >= 3
+            && lines[2].contains("-p witchy-interp")
+            && !lines[2].contains("-p witchy "),
+        "check/clippy package line should be mapped crates only: {output}",
     );
 }
 

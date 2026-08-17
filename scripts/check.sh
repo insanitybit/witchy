@@ -283,6 +283,20 @@ if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
     gate_skip_wasm=0
 fi
 
+# Package-scoped check/clippy when the serialized nextest mapping named
+# crates. Unset / non-serialized / --full keep --workspace --all-targets.
+compile_sel=(--workspace)
+gate_check_packages="${WITCHY_GATE_CHECK_PACKAGES:-}"
+if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$full" -eq 0 ]; then
+    case "$gate_check_packages" in
+        -p\ *)
+            # shellcheck disable=SC2206
+            compile_sel=($gate_check_packages)
+            printf 'check.sh: serialized check/clippy packages: %s\n' "$gate_check_packages"
+            ;;
+    esac
+fi
+
 gate_ungated="${WITCHY_GATE_UNGATED-glamour grimoire}"
 [ "$full" -eq 1 ] && gate_ungated=""
 ungated_excl=""
@@ -718,7 +732,7 @@ seed_cow_target() { # seed_cow_target <dir>
 launch_clippy_leg() {
     clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
     clippy_started=$(date +%s)
-    ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
+    ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy "${compile_sel[@]}" --all-targets -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
     clippy_pid=$!
 }
 
@@ -734,7 +748,7 @@ check_dir="${target_dir}-check"
 launch_check_leg() {
     check_log="$(mktemp "${TMPDIR:-/tmp}/witchy-check-XXXXXX")"
     check_started=$(date +%s)
-    ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check --workspace --all-targets ) >"$check_log" 2>&1 &
+    ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" --all-targets ) >"$check_log" 2>&1 &
     check_pid=$!
 }
 

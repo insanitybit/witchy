@@ -303,8 +303,12 @@ playground artifact, or the census / `spec/stdlib.md` snapshots. The
 coordinator sets `WITCHY_GATE_SKIP_RUST_CLASS`, `WITCHY_GATE_SKIP_COMPILE`,
 and `WITCHY_GATE_SKIP_WASM` when the remaining diff is off those surfaces,
 and `rebaseline_generated_snapshots` skips the generator `cargo build` for
-the same reason. A compiler, stdlib, or wasm-surface path keeps the legs
-it can move. `--full` / CI still run everything.
+the same reason. rust-class and wasm are keyed on the crates that can
+change them (`witchy-lower` / `wir` / `runtime` / `types` / `syntax`, plus
+`std/` / `src/` / Cargo metadata / `bench/rust-class` / `web/` / `book/`).
+An interpreter-only batch therefore skips both. When nextest is package-
+scoped, check/clippy use those mapped `-p` crates (`WITCHY_GATE_CHECK_PACKAGES`)
+instead of `--workspace --all-targets`. `--full` / CI still run everything.
 
 ## The gate lifecycle, step by step (process_one)
 

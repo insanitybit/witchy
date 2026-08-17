@@ -367,21 +367,25 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
     fixture.mq_ok(&["submit", "a"], "true");
     let env_log = fixture._temp.path().join("gate-env");
     let gate = format!(
-        "printf 'skip_rust=%s skip_compile=%s skip_wasm=%s nextest=[%s] expr=[%s]\\n' \
+        "printf 'skip_rust=%s skip_compile=%s skip_wasm=%s nextest=[%s] expr=[%s] check=[%s]\\n' \
          \"${{WITCHY_GATE_SKIP_RUST_CLASS:-}}\" \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" \
          \"${{WITCHY_GATE_SKIP_WASM:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" \
-         \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
+         \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" \"${{WITCHY_GATE_CHECK_PACKAGES:-}}\" >{}",
         env_log.display(),
     );
     fixture.mq_ok(&["run", "--once"], &gate);
     let env = fs::read_to_string(&env_log).expect("read classified gate env");
     assert!(
-        env.contains("skip_rust=0") && env.contains("skip_compile=0") && env.contains("skip_wasm=0"),
-        "compiler crate batch skipped compile/rust-class/wasm: {env}",
+        env.contains("skip_rust=1") && env.contains("skip_compile=0") && env.contains("skip_wasm=1"),
+        "interp+example_tests should skip rust-class/wasm and keep compile: {env}",
     );
     assert!(
         env.contains("-p witchy-interp") && env.contains("example_tests"),
         "crate+example_tests did not union the mapped crate with example_tests: {env}",
+    );
+    assert!(
+        env.contains("check=[-p witchy-interp") && !env.contains("check=[-p witchy]"),
+        "check/clippy packages should be mapped crates, not the witchy umbrella: {env}",
     );
     assert!(
         !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),

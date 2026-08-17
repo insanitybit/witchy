@@ -885,9 +885,18 @@ diff_product_compile_surface() { # prints matching lines
         | grep -E '^(crates/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
 }
 
+# rust-class compares compiled Witchy to independent Rust. Interpreter /
+# capability crates cannot change those answers.
+diff_rust_class_surface() {
+    diff_without_example_tests "$1" \
+        | grep -E '^(bench/rust-class/|crates/witchy-(lower|wir|runtime|types|syntax)/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+}
+
+# Wasm playground is the browser runtime + compiler crates that emit it.
+# interp/caps-only batches cannot change that artifact.
 diff_wasm_surface() {
     diff_without_example_tests "$1" \
-        | grep -E '^(crates/|src/|std/|web/|book/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+        | grep -E '^(crates/witchy-(lower|wir|runtime|types|syntax)/|web/|book/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
 }
 
 diff_snapshot_surface() {
@@ -932,6 +941,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local skip_rust_class="${13:-0}"
     local skip_compile="${14:-0}"
     local skip_wasm="${15:-0}"
+    local check_packages="${16:-}"
     local selected_gate_cmd="$gate_cmd"
     if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
         selected_gate_cmd="./scripts/check.sh --queue-infra"
@@ -955,7 +965,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -2003,15 +2013,15 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     fi
 
     # RFC-0111 rust-class, workspace check/clippy, and the wasm playground
-    # only move when the product compile surface moves. example_tests is
-    # compiled by the focused nextest selection; it is not an input to these
-    # legs. Fail-safe: empty/errored diff keeps them.
+    # only move when their own surfaces move. example_tests is compiled by
+    # the focused nextest selection. Interpreter-only diffs skip rust-class
+    # and wasm. Fail-safe: empty/errored diff keeps them.
     local skip_rust_class=0 skip_compile=0 skip_wasm=0
     if [ -n "$changed" ] && [ -z "$(diff_product_compile_surface "$changed")" ]; then
         skip_compile=1
-        if ! echo "$changed" | grep -cE '^bench/rust-class/' >/dev/null; then
-            skip_rust_class=1
-        fi
+    fi
+    if [ -n "$changed" ] && [ -z "$(diff_rust_class_surface "$changed")" ]; then
+        skip_rust_class=1
     fi
     if [ -n "$changed" ] && [ -z "$(diff_wasm_surface "$changed")" ]; then
         skip_wasm=1
@@ -2021,7 +2031,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # binary mapping. Fail-safe to an unfiltered --workspace on any doubt
     # (old mapper, empty output, unknown path). --full / standalone ignore
     # this and keep the complete suite.
-    local nextest_args="" nextest_expr="" nextest_sel="" mapper
+    local nextest_args="" nextest_expr="" nextest_sel="" check_packages="" mapper
     mapper="$gate_wt/scripts/test-for-paths.sh"
     [ -f "$mapper" ] || mapper="$here/scripts/test-for-paths.sh"
     if [ -n "$changed" ] && [ -f "$mapper" ]; then
@@ -2031,10 +2041,12 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         -p\ * | --test\ *)
             nextest_args="$(printf '%s\n' "$nextest_sel" | sed -n '1p')"
             nextest_expr="$(printf '%s\n' "$nextest_sel" | sed -n '2p')"
+            check_packages="$(printf '%s\n' "$nextest_sel" | sed -n '3p')"
             ;;
         *)
             nextest_args=""
             nextest_expr=""
+            check_packages=""
             ;;
     esac
 
@@ -2161,7 +2173,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
         "$cargo_target_dir" "$census_proof_sha" "$ungated" "$skip_sweeps" \
         "$skip_book" "$nextest_args" "$nextest_expr" \
-        "$skip_rust_class" "$skip_compile" "$skip_wasm"
+        "$skip_rust_class" "$skip_compile" "$skip_wasm" "$check_packages"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 

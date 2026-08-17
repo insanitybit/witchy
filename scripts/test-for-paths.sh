@@ -102,6 +102,16 @@ emit_gate_nextest() {
     [ -n "$args" ] || { printf 'WORKSPACE\n'; return 0; }
     printf '%s\n' "$args"
     [ -n "$expr" ] && printf '%s\n' "$expr"
+    # Third line: check/clippy package set (mapped crates only — not the
+    # extra -p witchy added so example_tests can run). Empty when there
+    # are no mapped crates.
+    if [ "${#gate_pkgs[@]}" -gt 0 ]; then
+        local cargs="" q
+        for q in "${gate_pkgs[@]}"; do
+            cargs="${cargs:+$cargs }-p $q"
+        done
+        printf '%s\n' "$cargs"
+    fi
 }
 
 any_rust=0
