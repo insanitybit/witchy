@@ -273,6 +273,15 @@ case "$gate_skip_wasm" in
     *) echo "check.sh: WITCHY_GATE_SKIP_WASM must be 0 or 1" >&2; exit 2 ;;
 esac
 [ "$full" -eq 1 ] && { gate_skip_rust_class=0; gate_skip_compile=0; gate_skip_wasm=0; }
+# Nested check.sh (queue-infra fixtures, an agent's local shard) must not
+# inherit skip flags from a parent serialized gate. Only the coordinator's
+# marked run (WITCHY_GATE_SCOPE set) applies them.
+if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
+    gate_skip_book=0
+    gate_skip_rust_class=0
+    gate_skip_compile=0
+    gate_skip_wasm=0
+fi
 
 gate_ungated="${WITCHY_GATE_UNGATED-glamour grimoire}"
 [ "$full" -eq 1 ] && gate_ungated=""
