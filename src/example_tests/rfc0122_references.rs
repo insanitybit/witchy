@@ -413,3 +413,33 @@ fn main(console: Console):
     assert_eq!(link_run(src), want, "interpreter writes through the destructured tuple reference");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend writes through the destructured tuple reference");
 }
+
+#[test]
+fn exclusive_reference_list_carrier_survives_forced_copy_wasm() {
+    let src = r#"mode opt
+
+import list
+
+fn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):
+    [left, right]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let values = all(&mut first, &mut second)
+    for value in values:
+        let child = &mut *value
+        *child = "child"
+        *value = "resumed"
+    console.print(first)
+    console.print(second)
+"#;
+    let want = link_run(src);
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm agrees with the interpreter");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves the place carrier");
+}
