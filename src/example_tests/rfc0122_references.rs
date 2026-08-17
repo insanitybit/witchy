@@ -114,6 +114,31 @@ fn main(console: Console):
 }
 
 #[test]
+fn generic_exclusive_reference_function_value_return_writes_the_owner_on_all_backends() {
+    let src = r#"mode opt
+
+fn identity(value: &'a mut a) -> &'a mut a:
+    value
+
+fn main(console: Console):
+    var text = "before"
+    let project = identity
+    let returned = project(&mut text)
+    *returned = "after"
+    console.print(text)
+"#;
+    let want = ["after"];
+    assert_eq!(link_run(src), want, "interpreter preserves a generic exclusive reference carrier");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves a generic exclusive reference carrier");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves a generic exclusive reference carrier");
+}
+
+#[test]
 fn unique_exclusive_reference_return_writes_the_owner_on_both_backends() {
     let src = r#"mode opt
 
