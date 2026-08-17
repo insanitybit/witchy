@@ -135,6 +135,28 @@ fn main(console: Console):
 }
 
 #[test]
+fn explicit_exclusive_reference_return_writes_the_owner_on_wasm() {
+    let src = r#"mode opt
+
+fn select(input: &'a mut String, first: Bool) -> &'a mut String:
+    if first:
+        return input
+    input
+
+fn main(console: Console):
+    var text = "before"
+    let editable = select(&mut text, true)
+    *editable = "after"
+    console.print(text)
+"#;
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["after"],
+        "compiled code transfers an explicit exclusive-reference return",
+    );
+}
+
+#[test]
 fn function_value_mutable_to_shared_reborrow_preserves_the_owner_on_wasm() {
     let src = r#"mode opt
 
