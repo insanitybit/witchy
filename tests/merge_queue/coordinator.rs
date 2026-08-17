@@ -308,7 +308,11 @@ fn types_only_batch_classifies_a_focused_nextest_selection() {
     );
     assert!(
         env.contains("nextest=[-p witchy-types") && env.contains("expr=[package(witchy-types)"),
-        "types-only batch did not select the crate/example mapping: {env}",
+        "types-only batch did not select the crate package: {env}",
+    );
+    assert!(
+        !env.contains("example_tests"),
+        "types-only batch still auto-attached the example_tests matrix: {env}",
     );
     assert!(
         !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),

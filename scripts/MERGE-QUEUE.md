@@ -293,8 +293,9 @@ pre-submit router) and passes `WITCHY_GATE_NEXTEST` / `_EXPR` to check.sh. A
 types-only batch therefore runs `-p witchy-types` plus `example_tests`, not
 unfiltered `--workspace`. `src/example_tests/**` is the `example_tests`
 area. Touched files in that tree select those modules only (not the whole
-matrix); a crate-only compiler diff still takes the full `example_tests`
-filter. Unknown, mixed, or empty mappings fail safe to
+matrix). A crate-only compiler diff runs that crate's tests, not the
+full `example_tests` matrix; `--full` / CI remain the backstop.
+Unknown, mixed, or empty mappings fail safe to
 `--workspace`. `--full`, CI, and standalone `check.sh` keep the complete
 suite.
 

@@ -151,12 +151,29 @@ fn gate_nextest_types_only_is_not_unfiltered_workspace() {
         "types-only gate mapping dropped the crate filter: {output}",
     );
     assert!(
-        output.contains("example_tests"),
-        "types-only gate mapping dropped example_tests: {output}",
+        !output.contains("example_tests"),
+        "types-only crate mapping still auto-attached the example_tests matrix: {output}",
     );
     assert!(
         !output.contains("--workspace") && !output.contains("WORKSPACE"),
         "types-only gate mapping fell back to the full workspace: {output}",
+    );
+}
+
+#[test]
+fn gate_nextest_crate_only_interp_does_not_attach_example_tests_matrix() {
+    let output = gate_nextest(&["crates/witchy-interp/src/lib.rs"]);
+    assert!(
+        output.contains("-p witchy-interp"),
+        "interp-only mapping dropped the crate: {output}",
+    );
+    assert!(
+        !output.contains("example_tests"),
+        "interp-only crate mapping still auto-attached the example_tests matrix: {output}",
+    );
+    assert!(
+        !output.contains("WORKSPACE"),
+        "interp-only mapping fell back to WORKSPACE: {output}",
     );
 }
 

@@ -142,7 +142,6 @@ for p in "${paths[@]}"; do
         crates/witchy-types/*)
             any_rust=1
             add_pkg witchy-types
-            gate_need_examples=1
             add "cargo nextest run -p witchy-types"
             add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/witchy-lower/* | crates/witchy-wir/* | crates/witchy-runtime/*)
@@ -150,21 +149,18 @@ for p in "${paths[@]}"; do
             add_pkg witchy-lower
             add_pkg witchy-wir
             add_pkg witchy-runtime
-            gate_need_examples=1
             add "cargo nextest run -p witchy-lower -p witchy-wir -p witchy-runtime"
             add "cargo nextest run -E 'test(/^example_tests::/)'"     # the parity matrix
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-syntax/*)
             any_rust=1
             add_pkg witchy-syntax
-            gate_need_examples=1
             add "cargo nextest run -p witchy-syntax"
             add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/witchy-interp/* | crates/witchy-caps/*)
             any_rust=1
             add_pkg witchy-interp
             add_pkg witchy-caps
-            gate_need_examples=1
             add "cargo nextest run -p witchy-interp -p witchy-caps"
             add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
         src/main.rs | src/cli.rs | src/source.rs)
