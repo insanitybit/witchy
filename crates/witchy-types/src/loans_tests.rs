@@ -589,54 +589,12 @@
     }
 
     #[test]
-    fn normal_callers_enforce_every_owner_conflict_from_an_opt_result() {
+    fn normal_callers_reject_reference_bearing_opt_results_at_the_interface() {
         let error = linked_normal(
             "    var xs = [1]\n    let w = api.view(xs)\n    console.print(\"${list.length(w)}\")\n",
         )
         .expect_err("normal callers cannot name legacy reference-bearing opt exports");
         assert!(error.to_string().contains("reference-bearing opt API `api.view`"), "{error}");
-        return;
-
-        let cases = [
-            (
-                "reassign",
-                "    var xs = [1]\n    let w = api.view(xs)\n    xs = [2]\n    console.print(\"${list.length(w)}\")\n",
-                "reassigned",
-            ),
-            (
-                "move",
-                "    let xs = [1]\n    let w = api.view(xs)\n    let moved = move xs\n    console.print(\"${list.length(w) + list.length(moved)}\")\n",
-                "moved (`move`)",
-            ),
-            (
-                "own argument",
-                "    let xs = [1]\n    let w = api.view(xs)\n    let n = consume(xs)\n    console.print(\"${list.length(w) + n}\")\n",
-                "`own` parameter",
-            ),
-            (
-                "var argument",
-                "    var xs = [1]\n    let w = api.view(xs)\n    clear(xs)\n    console.print(\"${list.length(w)}\")\n",
-                "`var` parameter",
-            ),
-            (
-                "indirect call and mutation",
-                "    var xs = [1]\n    let make_view = api.view\n    let w = make_view(xs)\n    list.push(xs, 2)\n    console.print(\"${list.length(w)}\")\n",
-                "reassigned",
-            ),
-        ];
-
-        for (case, body, conflict) in cases {
-            let error = linked_normal(body)
-                .expect_err(&format!("normal caller must reject {case} while its opt view is live"));
-            let message = error.to_string();
-            assert!(message.contains(conflict), "{case}: {message}");
-            assert!(message.contains("view"), "{case}: {message}");
-        }
-
-        linked_normal(
-            "    var xs = [1]\n    let make_view = api.view\n    let w = make_view(xs)\n    console.print(\"${list.length(w)}\")\n    list.push(xs, 2)\n    console.print(\"${list.length(xs)}\")\n",
-        )
-        .expect("an imported indirect view ends its owner loan at the view's last use");
     }
 
     // --- non-lexical last use + .owned() (acceptance 3) ---------------------
