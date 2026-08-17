@@ -3396,10 +3396,17 @@ impl<'types> Codegen<'types> {
                     } else {
                         None
                     };
-                    let k = inferred_type
-                        .as_ref()
-                        .map(|ty| self.kind_for_type(ty))
-                        .unwrap_or_else(|| self.kind_of(value));
+                    // A reborrow's checked surface result can be erased to its
+                    // referent by the legacy type table.  Its executable value
+                    // is nevertheless a PlaceReference carrier.
+                    let k = if matches!(value, Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }) {
+                        Kind::GcRef(PLACE_REFERENCE_ID)
+                    } else {
+                        inferred_type
+                            .as_ref()
+                            .map(|ty| self.kind_for_type(ty))
+                            .unwrap_or_else(|| self.kind_of(value))
+                    };
                     self.locals.insert(name.clone(), k);
                     let vt = inferred_type
                         .as_ref()

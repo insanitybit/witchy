@@ -20,6 +20,14 @@ pub(crate) fn collect_loan_roots(
                 out.push(root);
             }
         }
+        // Loop-element loans are seeded from the iterator at the nested
+        // block entry rather than opened by a statement in that body.  Their
+        // owner roots must still have Wasm locals for retain/release lowering.
+        for event in facts.active_at(stmt) {
+            if let Some(root) = Codegen::loan_root(event)? {
+                out.push(root);
+            }
+        }
         let value = match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }

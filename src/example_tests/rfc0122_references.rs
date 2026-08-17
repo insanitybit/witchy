@@ -224,6 +224,33 @@ fn main(console: Console):
 }
 
 #[test]
+fn exclusive_reference_list_iteration_reborrows_and_resumes_each_element_on_wasm() {
+    let src = r#"mode opt
+
+import list
+
+fn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):
+    [left, right]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let values = all(&mut first, &mut second)
+    for value in values:
+        let child = &mut *value
+        *child = "child"
+        *value = "resumed"
+    console.print(first)
+    console.print(second)
+"#;
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["resumed", "resumed"],
+        "compiled backend resumes each list-element reference after its reborrow ends",
+    );
+}
+
+#[test]
 fn exclusive_reference_tuple_destructure_writes_the_selected_owner_on_both_backends() {
     let src = r#"mode opt
 

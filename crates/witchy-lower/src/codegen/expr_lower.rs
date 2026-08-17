@@ -540,6 +540,9 @@ impl<'types> Codegen<'types> {
                     // Reborrowing an already executable handle preserves its
                     // root and descriptor. It is a new checked loan, not a
                     // copied scalar value or a fresh owner cell.
+                    if let Expr::Unary { op: UnOp::Deref, expr: reference } = expr.as_ref() {
+                        return self.lower_expr(reference);
+                    }
                     if self.kind_of(expr) == Kind::GcRef(PLACE_REFERENCE_ID) {
                         return self.lower_expr(expr);
                     }
