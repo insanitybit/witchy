@@ -497,6 +497,22 @@
     }
 
     #[test]
+    fn explicitly_discarding_a_shared_reference_closes_its_owner_loan() {
+        check_str(
+            "mode opt\n\nfn main():\n    var text = \"hello\"\n    let view = &text\n    let _ = view\n    text = \"changed\"\n",
+        )
+        .expect("an explicit discard ends a shared reference loan");
+    }
+
+    #[test]
+    fn explicitly_discarding_an_exclusive_reference_releases_its_place() {
+        check_str(
+            "mode opt\n\nfn main():\n    var text = \"hello\"\n    let view = &mut text\n    let _ = view\n    text = \"changed\"\n",
+        )
+        .expect("an explicit discard releases an exclusive reference place");
+    }
+
+    #[test]
     fn explicit_shared_reborrow_preserves_the_original_owner_relation() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let first = &text\n    let second = &*first\n    text = \"changed\"\n    console.print(second)\n",
