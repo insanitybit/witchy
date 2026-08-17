@@ -491,6 +491,59 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "types-only serialized nextest still used unfiltered --workspace: {focused_args}",
     );
 
+    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+    let witchy_bin = temp.path().join("target-example-tests/debug/witchy");
+    fs::create_dir_all(witchy_bin.parent().unwrap()).expect("create fake witchy dir");
+    fs::write(&witchy_bin, "#!/bin/sh\nexit 0\n").expect("write fake witchy");
+    fs::set_permissions(&witchy_bin, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake witchy");
+    let example_tests = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target-example-tests"))
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("WITCHY_GATE_NEXTEST", "-p witchy")
+        .env("WITCHY_GATE_NEXTEST_EXPR", "test(/^example_tests::/)")
+        .env("WITCHY_GATE_SKIP_BOOK", "1")
+        .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
+        .env("WITCHY_GATE_SKIP_COMPILE", "1")
+        .env("WITCHY_GATE_SKIP_WASM", "1")
+        .env_remove("WITCHY_GATE_QUEUE_INFRA")
+        .env_remove("WITCHY_GATE_TEST_JOBS")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run serialized gate for an example_tests-only batch");
+    let example_stdout = String::from_utf8_lossy(&example_tests.stdout);
+    let example_stderr = String::from_utf8_lossy(&example_tests.stderr);
+    assert!(
+        example_tests.status.success(),
+        "example_tests-only fake gate failed: {example_stderr}\n{example_stdout}",
+    );
+    assert!(
+        example_stdout.contains("skipping rust-class")
+            && example_stdout.contains("skipping runnable-book")
+            && example_stdout.contains("skipping cargo check/clippy")
+            && example_stdout.contains("skipping wasm playground"),
+        "example_tests-only check.sh did not skip rust-class/book/compile/wasm: {example_stdout}",
+    );
+    assert!(
+        !example_stdout.contains("Rust-class paired correctness")
+            && !example_stdout.contains("runnable book (browser)")
+            && !example_stdout.contains("bench/rust-class/run.sh"),
+        "example_tests-only check.sh still launched rust-class or the book validator: {example_stdout}",
+    );
+    let example_args = fs::read_to_string(&cargo_args_file).expect("read example_tests cargo args");
+    assert!(
+        example_args.lines().any(|line| {
+            line.contains("nextest run")
+                && line.contains("-p witchy")
+                && line.contains("example_tests")
+                && !line.contains("--workspace")
+        }),
+        "example_tests-only serialized nextest still used unfiltered --workspace: {example_args}",
+    );
+
     let clippy_pid_file = temp.path().join("red-clippy.pid");
     let failed = Command::new("bash")
         .arg(root.join("scripts/check.sh"))

@@ -255,6 +255,25 @@ case "$gate_skip_book" in
 esac
 [ "$full" -eq 1 ] && gate_skip_book=0
 
+# Serialized-gate skips for legs the batch cannot change. Coordinator sets
+# these; --full and standalone keep the legs. 0/unset runs them.
+gate_skip_rust_class="${WITCHY_GATE_SKIP_RUST_CLASS:-0}"
+gate_skip_compile="${WITCHY_GATE_SKIP_COMPILE:-0}"
+gate_skip_wasm="${WITCHY_GATE_SKIP_WASM:-0}"
+case "$gate_skip_rust_class" in
+    0 | 1) ;;
+    *) echo "check.sh: WITCHY_GATE_SKIP_RUST_CLASS must be 0 or 1" >&2; exit 2 ;;
+esac
+case "$gate_skip_compile" in
+    0 | 1) ;;
+    *) echo "check.sh: WITCHY_GATE_SKIP_COMPILE must be 0 or 1" >&2; exit 2 ;;
+esac
+case "$gate_skip_wasm" in
+    0 | 1) ;;
+    *) echo "check.sh: WITCHY_GATE_SKIP_WASM must be 0 or 1" >&2; exit 2 ;;
+esac
+[ "$full" -eq 1 ] && { gate_skip_rust_class=0; gate_skip_compile=0; gate_skip_wasm=0; }
+
 gate_ungated="${WITCHY_GATE_UNGATED-glamour grimoire}"
 [ "$full" -eq 1 ] && gate_ungated=""
 ungated_excl=""
@@ -915,24 +934,38 @@ fi
 # while the tests run and aborts them the moment a leg records a failure, so
 # a red check/clippy/wasm surfaces in minutes instead of after the full test
 # stage. The all-green path is unchanged (overlap, not serialization).
-launch_check_leg
-launch_clippy_leg
+# Serialized gates skip legs the batch cannot change (see WITCHY_GATE_SKIP_*).
+if [ "$gate_skip_compile" -eq 1 ]; then
+    printf 'check.sh: skipping cargo check/clippy (WITCHY_GATE_SKIP_COMPILE=1)\n'
+else
+    launch_check_leg
+    launch_clippy_leg
+fi
 
-wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
-wasm_started=$(date +%s)
-( background_leg "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
-wasm_pid=$!
+if [ "$gate_skip_wasm" -eq 1 ]; then
+    printf 'check.sh: skipping wasm playground build (WITCHY_GATE_SKIP_WASM=1)\n'
+    wasm_pid=""
+else
+    wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
+    wasm_started=$(date +%s)
+    ( background_leg "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
+    wasm_pid=$!
+fi
 
 run_watched "tests (workspace)"        "${test_cmd[@]}"
 run "witchy fmt (std+examples)" witchy_fmt_check
 run "prose style (no em dashes)"  prose_em_dash_check
 
-collect_bg "compile check (cargo check)" "$check_pid" "$check_log" "$check_started"
-check_pid=""
-collect_bg "clippy (bug lints)"   "$clippy_pid" "$clippy_log" "$clippy_started"
-clippy_pid=""
-collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log" "$wasm_started"
-wasm_pid=""
+if [ "$gate_skip_compile" -eq 0 ]; then
+    collect_bg "compile check (cargo check)" "$check_pid" "$check_log" "$check_started"
+    check_pid=""
+    collect_bg "clippy (bug lints)"   "$clippy_pid" "$clippy_log" "$clippy_started"
+    clippy_pid=""
+fi
+if [ "$gate_skip_wasm" -eq 0 ]; then
+    collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log" "$wasm_started"
+    wasm_pid=""
+fi
 
 # Product nextest compiles every integration binary before applying its
 # filterset, including merge_queue. Reuse that artifact only after every
@@ -945,7 +978,11 @@ if [ "$gate_skip_book" -eq 1 ]; then
 else
     run "runnable book (browser)"  validate_runnable_book
 fi
-run "Rust-class paired correctness" rust_class_check
+if [ "$gate_skip_rust_class" -eq 1 ]; then
+    printf 'check.sh: skipping rust-class (WITCHY_GATE_SKIP_RUST_CLASS=1; --full/CI still run it)\n'
+else
+    run "Rust-class paired correctness" rust_class_check
+fi
 if [ "$full" -eq 1 ]; then
     # RFC-0023 memory-safety sweep: re-run the differential fuzzer with the checked
     # heap on, so a codegen heap bug (wrong offset, missing ensure, mis-layout) in

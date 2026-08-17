@@ -873,6 +873,28 @@ diff_is_docs_safe() { # diff_is_docs_safe <newline-separated-paths>
     return 0
 }
 
+# example_tests is compiled by the focused nextest selection. It cannot stale
+# generated snapshots, rust-class results, or the workspace check/clippy/wasm
+# legs' answers, so classifiers drop it before matching those surfaces.
+diff_without_example_tests() { # diff_without_example_tests <newline-separated-paths>
+    printf '%s\n' "$1" | grep -vE '^src/example_tests(\.rs|/)' || true
+}
+
+diff_product_compile_surface() { # prints matching lines
+    diff_without_example_tests "$1" \
+        | grep -E '^(crates/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+}
+
+diff_wasm_surface() {
+    diff_without_example_tests "$1" \
+        | grep -E '^(crates/|src/|std/|web/|book/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+}
+
+diff_snapshot_surface() {
+    diff_without_example_tests "$1" \
+        | grep -E '^(crates/|src/|std/|rfcs/0087-migration-census\.tsv|spec/stdlib\.md|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+}
+
 # Replay a green candidate onto a master tip that moved only by docs-safe
 # paths. Prints the new HEAD sha. Returns 1 if the move is not docs-only or
 # the replay conflicts — caller requeues and re-gates in that case.
@@ -907,6 +929,9 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local skip_book="${10:-0}"
     local nextest_args="${11:-}"
     local nextest_expr="${12:-}"
+    local skip_rust_class="${13:-0}"
+    local skip_compile="${14:-0}"
+    local skip_wasm="${15:-0}"
     local selected_gate_cmd="$gate_cmd"
     if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
         selected_gate_cmd="./scripts/check.sh --queue-infra"
@@ -930,7 +955,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -1444,6 +1469,12 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     unsafe="$(printf '%s\n' "$pre_diff" | grep -vE '^(rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' || true)"
     if [ -z "$unsafe" ] \
         && ! printf '%s\n' "$pre_diff" | grep -cx 'rfcs/0087-migration-census\.tsv' >/dev/null; then
+        return 0
+    fi
+    # example_tests-only (and other diffs off the snapshot surface) cannot
+    # stale the census TSV or spec/stdlib.md. Skip the generator cargo build.
+    if [ -z "$(diff_snapshot_surface "$pre_diff")" ]; then
+        note "rebaseline: skipped generator build (batch cannot stale census/stdlib snapshots)"
         return 0
     fi
     # Never regenerate over TRACKED modifications (impossible after a clean
@@ -1971,6 +2002,21 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         skip_book=1
     fi
 
+    # RFC-0111 rust-class, workspace check/clippy, and the wasm playground
+    # only move when the product compile surface moves. example_tests is
+    # compiled by the focused nextest selection; it is not an input to these
+    # legs. Fail-safe: empty/errored diff keeps them.
+    local skip_rust_class=0 skip_compile=0 skip_wasm=0
+    if [ -n "$changed" ] && [ -z "$(diff_product_compile_surface "$changed")" ]; then
+        skip_compile=1
+        if ! echo "$changed" | grep -cE '^bench/rust-class/' >/dev/null; then
+            skip_rust_class=1
+        fi
+    fi
+    if [ -n "$changed" ] && [ -z "$(diff_wasm_surface "$changed")" ]; then
+        skip_wasm=1
+    fi
+
     # Serialized-gate nextest selection: reuse test-for-paths.sh's crate /
     # binary mapping. Fail-safe to an unfiltered --workspace on any doubt
     # (old mapper, empty output, unknown path). --full / standalone ignore
@@ -2110,11 +2156,12 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 2
     fi
 
-    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; nextest=[${nextest_args:-workspace}]); log: $log"
+    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; nextest=[${nextest_args:-workspace}]); log: $log"
     local gate_started; gate_started="$(date +%s)"
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
         "$cargo_target_dir" "$census_proof_sha" "$ungated" "$skip_sweeps" \
-        "$skip_book" "$nextest_args" "$nextest_expr"
+        "$skip_book" "$nextest_args" "$nextest_expr" \
+        "$skip_rust_class" "$skip_compile" "$skip_wasm"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 

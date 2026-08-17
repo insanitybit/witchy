@@ -290,9 +290,21 @@ run the full workspace suite. The coordinator feeds the batch paths through
 `test-for-paths.sh --gate-nextest` (the same crate/binary mapping as the
 pre-submit router) and passes `WITCHY_GATE_NEXTEST` / `_EXPR` to check.sh. A
 types-only batch therefore runs `-p witchy-types` plus `example_tests`, not
-unfiltered `--workspace`. Unknown, mixed, or empty mappings fail safe to
+unfiltered `--workspace`. `src/example_tests/**` is the `example_tests`
+area, and a mapped crate plus that tree unions instead of fail-safing to
+the full suite. Unknown, mixed, or empty mappings fail safe to
 `--workspace`. `--full`, CI, and standalone `check.sh` keep the complete
 suite.
+
+**Diff-scoped rust-class, compile legs, wasm, and snapshot regen.**
+`src/example_tests/**` is compiled by the focused nextest selection. It
+cannot change rust-class results, `cargo check` / clippy answers, the wasm
+playground artifact, or the census / `spec/stdlib.md` snapshots. The
+coordinator sets `WITCHY_GATE_SKIP_RUST_CLASS`, `WITCHY_GATE_SKIP_COMPILE`,
+and `WITCHY_GATE_SKIP_WASM` when the remaining diff is off those surfaces,
+and `rebaseline_generated_snapshots` skips the generator `cargo build` for
+the same reason. A compiler, stdlib, or wasm-surface path keeps the legs
+it can move. `--full` / CI still run everything.
 
 ## The gate lifecycle, step by step (process_one)
 

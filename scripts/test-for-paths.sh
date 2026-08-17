@@ -146,6 +146,10 @@ for p in "${paths[@]}"; do
             add "cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'"
             add "cargo nextest run --test cli_subcommands"
             add "cargo nextest run -p witchy-syntax" ;;
+        src/example_tests.rs | src/example_tests/*)
+            any_rust=1
+            gate_need_examples=1
+            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/* | src/*)
             any_rust=1
             gate_workspace=1 ;;

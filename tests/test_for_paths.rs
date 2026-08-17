@@ -83,6 +83,39 @@ fn gate_nextest(paths: &[&str]) -> String {
 }
 
 #[test]
+fn gate_nextest_example_tests_only_is_not_workspace() {
+    let output = gate_nextest(&["src/example_tests/rfc0122_wasm_list_carrier.rs"]);
+    assert!(
+        output.contains("example_tests"),
+        "example_tests-only mapping dropped the area filter: {output}",
+    );
+    assert!(
+        !output.contains("WORKSPACE") && !output.contains("--workspace"),
+        "example_tests-only mapping fell back to the full workspace: {output}",
+    );
+}
+
+#[test]
+fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
+    let output = gate_nextest(&[
+        "crates/witchy-interp/src/lib.rs",
+        "src/example_tests/rfc0122_wasm_list_carrier.rs",
+    ]);
+    assert!(
+        output.contains("-p witchy-interp"),
+        "crate+example_tests mapping dropped the crate: {output}",
+    );
+    assert!(
+        output.contains("example_tests"),
+        "crate+example_tests mapping dropped example_tests: {output}",
+    );
+    assert!(
+        !output.contains("WORKSPACE") && !output.contains("--workspace"),
+        "crate+example_tests mapping fell back to the full workspace: {output}",
+    );
+}
+
+#[test]
 fn gate_nextest_types_only_is_not_unfiltered_workspace() {
     let output = gate_nextest(&["crates/witchy-types/src/lib.rs"]);
     assert!(

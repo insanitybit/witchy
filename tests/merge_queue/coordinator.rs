@@ -311,6 +311,85 @@ fn types_only_batch_classifies_a_focused_nextest_selection() {
 }
 
 #[test]
+fn example_tests_only_batch_classifies_focused_nextest_and_skips_heavy_legs() {
+    let fixture = QueueFixture::stack(&["src/example_tests/rfc0122_wasm_list_carrier.rs"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'scope=%s skip_book=%s skip_rust=%s skip_compile=%s skip_wasm=%s nextest=[%s] expr=[%s]\\n' \
+         \"${{WITCHY_GATE_SCOPE:-}}\" \"${{WITCHY_GATE_SKIP_BOOK:-}}\" \
+         \"${{WITCHY_GATE_SKIP_RUST_CLASS:-}}\" \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" \
+         \"${{WITCHY_GATE_SKIP_WASM:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" \
+         \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
+        env_log.display(),
+    );
+    let output = fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified gate env");
+    assert!(
+        env.contains("scope=all"),
+        "example_tests-only batch was not a product gate: {env}",
+    );
+    assert!(
+        env.contains("skip_book=1")
+            && env.contains("skip_rust=1")
+            && env.contains("skip_compile=1")
+            && env.contains("skip_wasm=1"),
+        "example_tests-only batch did not skip book/rust-class/compile/wasm: {env}",
+    );
+    assert!(
+        env.contains("nextest=[-p witchy") && env.contains("expr=[test(/^example_tests::/)"),
+        "example_tests-only batch did not select the example_tests area: {env}",
+    );
+    assert!(
+        !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
+        "example_tests-only batch launched an unfiltered --workspace nextest: {env}",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("skipped generator build (batch cannot stale census/stdlib snapshots)"),
+        "example_tests-only prepare still ran the generator cargo build: {stderr}",
+    );
+}
+
+#[test]
+fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
+    let fixture = QueueFixture::stack(&["crates/witchy-interp/src/lib.rs"]);
+    run_git(&fixture.root, &["switch", "a"]);
+    fs::create_dir_all(fixture.root.join("src/example_tests")).expect("create example_tests dir");
+    fs::write(
+        fixture.root.join("src/example_tests/rfc0122_wasm_list_carrier.rs"),
+        "examples\n",
+    )
+    .expect("write example_tests file");
+    run_git(&fixture.root, &["add", "src/example_tests/rfc0122_wasm_list_carrier.rs"]);
+    run_git(&fixture.root, &["commit", "-m", "add example_tests"]);
+    run_git(&fixture.root, &["switch", "master"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'skip_rust=%s skip_compile=%s skip_wasm=%s nextest=[%s] expr=[%s]\\n' \
+         \"${{WITCHY_GATE_SKIP_RUST_CLASS:-}}\" \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" \
+         \"${{WITCHY_GATE_SKIP_WASM:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" \
+         \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
+        env_log.display(),
+    );
+    fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified gate env");
+    assert!(
+        env.contains("skip_rust=0") && env.contains("skip_compile=0") && env.contains("skip_wasm=0"),
+        "compiler crate batch skipped compile/rust-class/wasm: {env}",
+    );
+    assert!(
+        env.contains("-p witchy-interp") && env.contains("example_tests"),
+        "crate+example_tests did not union the mapped crate with example_tests: {env}",
+    );
+    assert!(
+        !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
+        "crate+example_tests launched an unfiltered --workspace nextest: {env}",
+    );
+}
+
+#[test]
 fn stale_gate_lock_reaps_its_recorded_process_group_before_regating() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");
