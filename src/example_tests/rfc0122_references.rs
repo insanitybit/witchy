@@ -468,6 +468,33 @@ fn main(console: Console):
 }
 
 #[test]
+fn exclusive_reference_loop_reborrow_writes_and_restores_parent_on_all_backends() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var text = "before"
+    let parent = &mut text
+    var count = 0
+    while count < 1:
+        let child = &mut *parent
+        *child = "inside"
+        let _ = child
+        count = count + 1
+    *parent = "after"
+    console.print(text)
+"#;
+    let want = ["after"];
+    assert_eq!(link_run(src), want, "interpreter resumes the parent after a loop reborrow");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm resumes the parent after a loop reborrow");
+    assert_eq!(forced_copy, want, "forced-copy Wasm resumes the parent after a loop reborrow");
+}
+
+#[test]
 fn exclusive_reference_tuple_destructure_writes_the_selected_owner_on_both_backends() {
     let src = r#"mode opt
 
