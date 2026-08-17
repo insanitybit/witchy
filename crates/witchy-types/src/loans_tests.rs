@@ -415,6 +415,20 @@
     }
 
     #[test]
+    fn exclusive_reference_list_moves_once_before_projection() {
+        check_str(
+            "mode opt\n\nfn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):\n    [left, right]\n\nfn main(console: Console):\n    var first = \"first\"\n    var second = \"second\"\n    let values = all(&mut first, &mut second)\n    let moved = values\n    *moved[1] = \"updated\"\n    console.print(first)\n    console.print(second)\n",
+        )
+        .expect("an exclusive-reference list moves into its projected use");
+
+        let err = check_str(
+            "mode opt\n\nfn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):\n    [left, right]\n\nfn main(console: Console):\n    var first = \"first\"\n    var second = \"second\"\n    let values = all(&mut first, &mut second)\n    let moved = values\n    *moved[1] = \"updated\"\n    *values[0] = \"reused\"\n",
+        )
+        .expect_err("moving an exclusive-reference list retires its prior handle");
+        assert!(err.contains("moved exclusive reference `values`") || err.contains("used more than once"), "{err}");
+    }
+
+    #[test]
     fn exclusive_reference_loop_elements_are_affine() {
         let err = check_str(
             "mode opt\n\nfn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):\n    [left, right]\n\nfn main(console: Console):\n    var first = \"first\"\n    var second = \"second\"\n    let values = all(&mut first, &mut second)\n    for value in values:\n        let alias = value\n        *value = \"updated\"\n",
