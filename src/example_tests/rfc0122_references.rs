@@ -71,6 +71,23 @@ fn main(console: Console):
 }
 
 #[test]
+fn function_value_exclusive_reference_return_writes_the_owner_on_wasm() {
+    let src = r#"mode opt
+
+fn first(text: &'a mut String) -> &'a mut String:
+    text
+
+fn main(console: Console):
+    var text = "value"
+    let project = first
+    let observed = project(&mut text)
+    *observed = "updated"
+    console.print(text)
+"#;
+    assert_eq!(wasm_run_reowns(src).0, ["updated"], "compiled function value writes through its returned exclusive reference carrier");
+}
+
+#[test]
 fn shared_reference_tuple_preserves_each_owner_root_on_both_backends() {
     let src = r#"mode opt
 
