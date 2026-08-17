@@ -284,6 +284,29 @@ fn main(console: Console):
 }
 
 #[test]
+fn generic_mutable_to_shared_reborrow_preserves_the_owner_on_all_backends() {
+    let src = r#"mode opt
+
+fn share(value: &'a mut a) -> &'a a:
+    value
+
+fn main(console: Console):
+    var text = "value"
+    let observed = share(&mut text)
+    console.print(*observed)
+"#;
+    let want = ["value"];
+    assert_eq!(link_run(src), want, "interpreter shortens a generic exclusive reference to shared access");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves a generic shared reborrow");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves a generic shared reborrow");
+}
+
+#[test]
 fn shared_reference_tuple_preserves_each_owner_root_on_both_backends() {
     let src = r#"mode opt
 
