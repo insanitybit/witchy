@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ast, interpreter, parser, typeck};
+use crate::{ast, interpreter, parser, pipeline, typeck};
 
 #[test]
 fn rfc0122_local_exclusive_reference_write_agrees_on_both_backends() {
@@ -402,6 +402,75 @@ fn main(console: Console):
             "compiled backend performs the same repair and write-back",
         );
     }
+
+/// The generated normal-mode repair entry is an ABI adapter, not a second
+/// callable. Its WIR signature must remain identical to the proven opt entry,
+/// and its only call target must be that same declared function identity.
+#[test]
+fn rfc0122_generated_repair_entry_preserves_one_callable_identity() {
+    let api = r#"
+mode opt
+
+import list
+
+pub fn append(var values: unique List(Int)) -> Nil:
+    values.push(3)
+"#;
+    let app = r#"
+import api
+
+fn main(console: Console):
+    var values = [1, 2]
+    let before = values
+    api.append(values)
+    console.print("${values}:${before}")
+"#;
+    let checked = pipeline::link_checked(
+        vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ],
+        "app",
+    )
+    .expect("link checked normal-to-opt adapter fixture");
+    let wir = codegen::assemble_checked_optimized_wir_module(&checked)
+        .expect_lowered("assemble generated repair adapter fixture");
+    let repair = wir
+        .funcs
+        .iter()
+        .find(|function| function.name.ends_with("$repair"))
+        .expect("normal caller must materialize a repair entry");
+    let proven_name = repair
+        .name
+        .strip_suffix("$repair")
+        .expect("repair entry has the declared callable as its prefix");
+    let proven = wir
+        .funcs
+        .iter()
+        .find(|function| function.name == proven_name)
+        .expect("repair entry target remains in the WIR module");
+    assert_eq!(repair.params.len(), proven.params.len(), "repair preserves parameter ABI");
+    assert!(
+        repair
+            .params
+            .iter()
+            .zip(&proven.params)
+            .all(|(repair, proven)| repair.name == proven.name && repair.ty == proven.ty),
+        "repair preserves every parameter name and type"
+    );
+    assert_eq!(repair.ret, proven.ret, "repair preserves result ABI");
+    let delegated = repair.body.iter().find_map(|node| match node {
+        witchy_wir::wir::WirNode::CallStoreMulti { func, args, dests } => {
+            Some((func.as_str(), args.len(), dests.len()))
+        }
+        _ => None,
+    });
+    assert_eq!(
+        delegated,
+        Some((proven_name, proven.params.len(), proven.ret.len())),
+        "repair delegates through the one proven callable identity"
+    );
+}
 
     /// A normal caller crosses into an opt `own unique` export through the
     /// ordinary value signature. An alias binding already owns its copy before
