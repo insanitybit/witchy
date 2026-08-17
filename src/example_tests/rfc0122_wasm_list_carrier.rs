@@ -179,3 +179,30 @@ fn main(console: Console):
         "compiled Wasm preserves an unrelated exclusive list projection after extracting one element",
     );
 }
+
+/// Keep a tuple reference carrier on the compiled-Wasm path while the
+/// interpreter aggregate representation is still being converged.
+#[test]
+fn shared_reference_tuple_return_copy_and_projection_work_on_wasm() {
+    let src = r#"mode opt
+
+fn pair(left: &'a String, right: &'b String) -> (&'a String, &'b String):
+    (left, right)
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let returned = pair(&first, &second)
+    let copied = returned
+    let left = copied.0
+    let right = copied.1
+    console.print(*left)
+    console.print(*right)
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["first", "second"],
+        "compiled Wasm preserves a tuple reference carrier through return, copy, and projection",
+    );
+}
