@@ -169,6 +169,32 @@ fn main(console: Console):
 }
 
 #[test]
+fn unique_exclusive_reference_list_function_value_return_writes_the_owner_on_all_backends() {
+    let src = r#"mode opt
+
+fn make(own input: unique &'a mut String) -> List(unique &'a mut String):
+    [input]
+
+fn main(console: Console):
+    var text = "before"
+    let project = make
+    let returned = project(&mut text)
+    let selected = returned[0]
+    *selected = "after"
+    console.print(text)
+"#;
+    let want = ["after"];
+    assert_eq!(link_run(src), want, "interpreter preserves a unique reference through a list function value");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves a unique reference through a list function value");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves a unique reference through a list function value");
+}
+
+#[test]
 fn explicit_exclusive_reference_return_writes_the_owner_on_both_backends() {
     let src = r#"mode opt
 

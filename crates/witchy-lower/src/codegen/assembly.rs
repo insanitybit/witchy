@@ -512,13 +512,7 @@ fn type_has_planned_reference(
     nominals: &BTreeMap<String, GcNominalPlan>,
     reference_lists: &BTreeMap<String, Type>,
 ) -> bool {
-    if matches!(
-        ty,
-        Type::Qualified(
-            witchy_syntax::ast::TypeQual::Borrow(_) | witchy_syntax::ast::TypeQual::BorrowMut(_),
-            _
-        )
-    ) {
+    if Codegen::is_executable_reference_type(ty) {
         return true;
     }
     match ty.unqualified() {
