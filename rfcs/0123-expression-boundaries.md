@@ -42,7 +42,11 @@ A naive parse reads that as `select(...) * slot = 9`. `expr()` in
 `crates/witchy-syntax/src/parser.rs` stops climbing when the next token is on a
 new line *and* `is_assignment()` says the line is a place write. Match arms
 have a sibling rule: a newline `-` is the next arm's negative pattern, not
-subtraction.
+subtraction. `on_same_line_as_prev()` has five call sites (the `?` message
+operand, same-line `[` / `(`, inline-arm `.Tag`, and `.Tag(` payloads). Add
+those two `expr()` branches and the newline rule is a pile of guards. This
+RFC folds the two `expr()` cases and the same-line call/index/`(` guards into
+one table. The `.Tag` test is the one leftover that earns its own rule.
 
 `&` is the same shape and has no such rule. `&` is bitwise-and *and* RFC-0122
 borrow. `let view = &text` on one line and `&other` on the next is a live
@@ -107,6 +111,22 @@ is not inside `()`, `[]`, or `${...}`, classify it:
   of `b`. If the author meant multiply, the diagnostic says so and points at
   `a * b` on one line or `(a * b)`.
 
+  `+` continues and `-` stops, so a wrapped sum splits:
+
+  ```text
+  let total = a
+      + b
+      - c
+  ```
+
+  That is `let total = a + b` and a second statement `-c`. A non-tail
+  `-c` where `c: Int` typechecks and evaporates:
+  `typeck.rs:6123-6137` only runs `reject_borrowed_nominal_runtime_ty` on
+  non-tail expression statements, and the RFC-0043 must-bind rule is
+  call-scoped. That is worse than `* b`, which usually fails as a deref.
+  The diagnostic in §5 covers this shape. The author who meant a sum
+  writes `(a + b - c)` or keeps the operators on one line.
+
 Parentheses and brackets still join lines. This is the Python rule with one
 deliberate extra: we continue across a newline when the next token *cannot*
 be a statement. Strict Python would break every leading-dot chain. We have
@@ -118,27 +138,34 @@ those (see `projects/coven/src/coven_proto.witchy`).
 wraps an or-pattern across lines has to keep that consumption order, or a
 leading `|` would continue as bitwise-or.
 
-`?` continues. `e?` is postfix. `e? "msg"` is postfix plus an operand; if
-the string sits on the next line, the continuing `?` still owns it.
+`?` continues. It is postfix, not an `infix_bp` entry; the table is consulted
+from both `expr()` and `postfix()`. The message form is `e? "msg"` with the
+operand on `?`'s line. `postfix()` already gates that on
+`on_same_line_as_prev()` (`parser.rs:1802`) and calls same-line consumption a
+conservative extension. A `Str` on a later line is "any other token" and ends
+the expression, so `e?` / newline / `"msg"` is bare `e?` plus a string
+statement. That stays. The continuing form is `e` / newline / `? "msg"`.
 
-`(` and `[` *end* the expression. `f` / newline / `(a, b)` becomes a binding
-plus a tuple statement, and `xs` / newline / `[i]` becomes a binding plus a
-list. That is the same silent reinterpretation as the multiply case. Call
-forms wrap the arguments: `f(\n    a, b\n)`.
+`(` and `[` *end* the expression. That is pre-existing and unchanged:
+`parser.rs:1818` and `1829` already require `[` / `(` on the same line as the
+receiver, so `f` / newline / `(a, b)` is already a binding plus a tuple.
+Call forms wrap the arguments: `f(\n    a, b\n)`.
 
-The continuing-token set is a table next to `infix_bp`. Adding a new dual
+The continuing-token set sits next to `infix_bp` and is read from `expr()`
+and `postfix()`. `.` and `?` live only in the postfix half. Adding a new dual
 glyph means adding it to the prefix set so a newline stops the expression.
-Adding a new infix-only glyph means it continues. Compound assignment (`+=`
-and friends) is not in this table. `infix_bp` has no arm for it; `x += 1` on
-a new line already stops at the identifier `x`.
+Adding a new infix-only or postfix-only glyph means it continues. Compound
+assignment (`+=` and friends) is not in this table. `infix_bp` has no arm for
+it; `x += 1` on a new line already stops at the identifier `x`.
 
 The off-side layout pass is unaffected. Indent still opens and closes
 blocks. Column is not part of the decision: a more-indented continuing token
 is still a continuation, and a more-indented `*` is still a new statement,
 because `*` is dual. Authors who want a wrapped multiply write parens.
 
-Two of the three newline branches in `expr()` come out: `is_assignment()`
-and the match-arm `-` check. The third stays.
+The two `expr()` newline branches (`is_assignment()` and the match-arm `-`
+check) come out. So do the same-line `[` / `(` guards in `postfix()`, because
+those tokens already end the expression. The `.Tag` test stays.
 
 #### Residual: inline-arm `.Tag`
 
@@ -198,16 +225,22 @@ bindings that use `_` in a real pattern stay (`let [first, ..rest] = xs`,
 
 The four live `.witchy` sites (one in `projects/coven`, three in
 `projects/glamour`) become `e;`. Spec, book, and RFC prose that teach
-`let _ =` as discard move with the implementation, not before.
-
-A leftover `let _ = e` is a parse or check error that points at `e;`.
+`let _ =` as discard move with the implementation, not before. The same
+spelling also lives in witchy source embedded in Rust test strings, where
+`witchy fmt` cannot reach: `analysis.rs`, `async_lower.rs`,
+`src/example_tests/*`, `diagnostic_golden_tests.rs`, `loans_tests.rs`,
+`tests/typeck.rs`, `lsp_tests.rs`. Staging step 2 sweeps those fixtures and
+regenerates goldens. A leftover `let _ = e` in a `.witchy` file is a parse
+or check error that points at `e;`.
 
 ### 4. `fmt`
 
 `fmt` stays a syntactic pass. It does not consult the type checker, and it
 has to run on a file that does not typecheck.
 
-- Rewrite `let _ = e` to `e;`. That migrates the four live sites.
+- Rewrite `let _ = e` to `e;` in `.witchy` files. That migrates the four
+  live sites. Embedded fixtures are a compiler-source edit, not a `fmt`
+  job.
 - Preserve the author's `;`. Do not insert one to make a last-line
   expression match a `Nil` return.
 - Never put `;` on `let`, `var`, assignment, `for`, `while`, `return`,
@@ -219,8 +252,11 @@ has to run on a file that does not typecheck.
 
 Two new messages, and one rewrite of an old one.
 
-- Newline stopped an expression before a dual glyph: name the glyph, say it
-  also starts a statement, and offer the one-line form or parentheses.
+- A newline ended a complete expression and the next statement is a bare
+  prefix-operator expression (`-`, `*`, `!`, `~`) that is neither bound nor
+  assigned: name the glyph, say it also starts a statement, and offer the
+  one-line form or parentheses. This is the wrapped-sum case
+  (`let total = a` / `+ b` / `- c`) as well as the multiply-as-deref case.
 - `;` after a non-expression form: the sentence in §2.
 - `;` inside an argument list or other expression-interior position: a
   parse error, not a discard.
@@ -268,15 +304,17 @@ The continuing-token table is still a classification. It is one table, and it
 is the same kind of fact `infix_bp` already is. It is not free.
 
 `let x = a` / newline / `* b` silently becomes a dereference if `*b` typechecks.
-The diagnostic on the multiply form has to be good, because that is the one
-authors coming from wrapped arithmetic will hit. The same class: `let x = f`
-/ newline / `(a, b)` becomes a binding plus a tuple.
+Worse: `let total = a` / `+ b` / `- c` typechecks and drops `-c`. The §5
+diagnostic has to fire on that shape, because authors coming from wrapped
+arithmetic will hit it.
 
 People will want `;` after `let`. The parse error has to be early and dull.
 
-Deleting `let _ =` is a one-cut the book and a handful of project files have
-to take with the compiler. The live corpus is four sites. The teaching corpus
-is eight sites under `book/`, `spec/`, and historical RFCs.
+Deleting `let _ =` is a one-cut the book, a handful of project files, and the
+embedded Rust fixtures have to take with the compiler. The live `.witchy`
+corpus is four sites. The teaching corpus is eight sites under `book/`,
+`spec/`, and historical RFCs. The fixture corpus is larger and `fmt` cannot
+rewrite it.
 
 The `.Tag` residual is still per-construct lookahead. Anyone who reads §1 as
 "no more newline special cases" will be wrong, and a later cleanup that
@@ -303,14 +341,22 @@ reuse that made the missing newline rule loud.
 
 ## Staging
 
-1. Parser and checker grow the continuing-token table. The `is_assignment()`
-   and match-arm `-` newline branches leave `expr()`. The inline-arm `.Tag`
-   branch in `postfix()` stays. Diagnostics for a broken wrapped multiply /
-   borrow ship in the same cut. This step is breaking for any unbracketed
-   dual-glyph continuation; that form is rare on purpose.
+1. Parser and checker grow the continuing-token table, consulted from both
+   `expr()` and `postfix()`. The `is_assignment()` and match-arm `-` newline
+   branches leave `expr()`. The same-line `[` / `(` guards fold into the
+   table. The inline-arm `.Tag` branch in `postfix()` stays. The `?` message
+   operand stays same-line. Diagnostics for a broken wrapped multiply, a
+   wrapped sum, or a next-line borrow ship in the same cut. This step is
+   breaking for any unbracketed dual-glyph continuation; that form is rare
+   on purpose.
 2. Lexer grows `Tok::Semi`. Parser accepts `;` only as the terminator of an
    expression statement. `let _ = e` becomes a diagnostic that names `e;`.
-   `fmt` rewrites the four live sites and the book/spec examples.
+   `fmt` rewrites the four live `.witchy` sites and the book/spec examples.
+   A fixture sweep rewrites witchy source embedded in Rust tests
+   (`analysis.rs`, `async_lower.rs`, `src/example_tests/*`,
+   `diagnostic_golden_tests.rs`, `loans_tests.rs`, `tests/typeck.rs`,
+   `lsp_tests.rs`) and regenerates goldens. Step 2 lands red without that
+   sweep.
 3. Tree-sitter / Zed pick up the same table so highlighting matches the
    compiler.
 
@@ -328,17 +374,24 @@ both.
 - An inline match of the form `.Ok(v) -> v` / newline / `.Err(e) -> e` still
   parses as two arms. Lowercase `.method` after an arm body still chains.
   The `postfix()` uppercase-dot branch remains.
-- `e?` / newline / `"msg"` is still the message form of `?`, on both
-  backends.
+- `e` / newline / `? "msg"` is the message form of `?` on both backends.
+  The operand stays on `?`'s line. `e?` / newline / `"msg"` is bare `e?`
+  plus a string statement, unchanged from `on_same_line_as_prev()` at
+  `parser.rs:1802`.
 - `let x = a` / newline / `* b` with `*` meant as multiply is a diagnostic
   that names the one-line and parenthesized forms.
+- `let total = a` / newline / `+ b` / newline / `- c` is a diagnostic, not
+  a silent `a + b` that drops `-c`. Parenthesized `(a + b - c)` remains one
+  expression on both backends.
 - `xs.length();` as the last form of a `-> Nil` function typechecks on both
   backends; the same call without `;` is the block's `Int`.
 - `let x = 1;` is a parse error. `f(a; b)` is a parse error. `";"` in a
   string and `;` in a comment are unchanged.
 - `let _ = e` is a diagnostic that points at `e;`. No `let _ =` *discard*
-  sites remain under `std/`, `examples/`, `projects/`, `book/`, or `spec/`.
-  `let Point(_, y) = p` is unaffected.
+  sites remain under `std/`, `examples/`, `projects/`, `book/`, `spec/`, or
+  witchy source embedded in the Rust fixtures listed in Staging step 2.
+  `let Point(_, y) = p` is unaffected. Rust `let _ =` in native test
+  harnesses is unaffected.
 - `witchy fmt` rewrites `let _ = e` to `e;` and does not insert `;` on
   `let`, on a mid-block `var` call, or to satisfy a `Nil` return.
 - The tree-sitter parse of the RFC-0122 `*slot = 9` fixture has no `ERROR`
