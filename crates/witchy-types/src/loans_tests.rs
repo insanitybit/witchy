@@ -1319,6 +1319,20 @@
     }
 
     #[test]
+    fn local_shared_reference_cannot_escape_through_a_closure() {
+        let err = linked_main(
+            "mode opt\n\nfn main(console: Console):\n    let text = \"value\"\n    let observed = &text\n    let action = fn() -> String:\n        *observed\n    console.print(action())\n",
+        )
+        .expect_err("an escaping closure cannot retain a local shared reference");
+        assert!(
+            err.message.contains("closure")
+                && err.message.contains("reference")
+                && err.message.contains("owned"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn exclusive_references_cannot_escape_through_closures() {
         let closure = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hi\"\n    let editable = &mut text\n    let later = fn(): editable\n    console.print(text)\n",
