@@ -326,7 +326,7 @@ fn main(console: Console):
         let api = r#"
 mode opt
 
-pub fn snapshot(let values: List(Int)) -> List(Int):
+pub fn snapshot(own values: List(Int)) -> List(Int):
     values
 "#;
         let app = r#"
@@ -335,9 +335,10 @@ import list
 
 fn main(console: Console):
     var values = [1]
-    let snapshot = api.snapshot(values)
-    values.push(2)
-    console.print("${snapshot}:${values}")
+    var original = values
+    let snapshot = api.snapshot(move values)
+    original.push(2)
+    console.print("${snapshot}:${original}")
 "#;
         let modules = vec![
             ("api".into(), parser::parse_module(api).expect("parse opt API")),
