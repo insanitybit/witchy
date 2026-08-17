@@ -7,10 +7,11 @@ description = "Witchy language support: syntax highlighting and type diagnostics
 repository = "https://github.com/insanitybit/witchy"
 
 [grammars.witchy]
-# Tree-sitter grammar repo. Update `rev` after committing grammar changes,
-# then reinstall the dev extension so Zed rebuilds the parser.
-repository = "https://github.com/insanitybit/tree-sitter-witchy"
-rev = "e06a1dc96ab9e4d4638ccb653c835fb6d5622d23"
+# Local grammar: the GitHub repo is not published. `file://` is the Zed
+# local-dev form; update `rev` after committing grammar changes, then
+# reinstall the dev extension so Zed rebuilds the parser.
+repository = "file:///Users/cobrien/workspace/tree-sitter-witchy"
+rev = "30734726303c5e27592ff984e83f3920fcdcf293"
 
 [language_servers.witchy]
 name = "Witchy LSP"

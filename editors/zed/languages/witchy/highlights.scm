@@ -41,7 +41,10 @@
   "own" "move"
   "as" "retain" "without" "region"
   "comptime" "derive"
+  "mode" "mut"
 ] @keyword
+
+(lifetime) @type
 
 ; `break`/`continue` are whole-rule tokens, so capture the statement nodes.
 [
