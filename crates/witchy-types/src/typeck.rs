@@ -10103,7 +10103,11 @@ fn run_check_selected(
                 // param `a`). Explicit params are required when a constructor omits
                 // one (e.g. `Done(a)` for `Step(m, a)`): inference would drop the
                 // omitted `m` from that constructor's result type, mis-aligning it.
-                let param_names = type_def_params(t);
+                // Keep lifetime parameters in constructor result identities as
+                // well as ordinary type parameters.  They are erased from
+                // field value types, but a nominal value such as `Pair('a)`
+                // must still unify with its constructor pattern and call ABI.
+                let param_names = ast::effective_nominal_type_def_params(t);
                 let mut vars: HashMap<String, Ty> = HashMap::new();
                 let mut typaram_ids: HashSet<u32> = HashSet::new();
                 let mut params_in_order: Vec<u32> = Vec::new();

@@ -58,3 +58,35 @@ fn main(console: Console):
         "compiled Wasm preserves a nominal aggregate reference carrier through copy and projection",
     );
 }
+
+/// Keep affine nominal aggregate transport on the compiled-Wasm carrier path
+/// while the interpreter representation is still being converged.
+#[test]
+fn exclusive_reference_nominal_aggregate_move_destructure_and_write_work_on_wasm() {
+    let src = r#"mode opt
+
+type Pair('a, 'b):
+    left: &'a mut String
+    right: &'b mut String
+
+fn pair(left: &'a mut String, right: &'b mut String) -> Pair('a, 'b):
+    Pair(left, right)
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let returned = pair(&mut first, &mut second)
+    let moved = returned
+    let Pair(left, right) = moved
+    *left = "updated-first"
+    *right = "updated-second"
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["updated-first", "updated-second"],
+        "compiled Wasm preserves an exclusive nominal aggregate through move, destructure, and writes",
+    );
+}
