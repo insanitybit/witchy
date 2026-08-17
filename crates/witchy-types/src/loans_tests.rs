@@ -466,6 +466,20 @@
     }
 
     #[test]
+    fn conditional_exclusive_return_preserves_each_selected_owner_place() {
+        check_str(
+            "mode opt\n\nfn select(left: &'a mut String, right: &'a mut String, choose_left: Bool) -> &'a mut String:\n    if choose_left:\n        left\n    else:\n        right\n\nfn main():\n    var first = \"first\"\n    var second = \"second\"\n    let selected = select(&mut first, &mut second, false)\n    *selected = \"updated\"\n",
+        )
+        .expect("a conditional exclusive result preserves the selected place relation");
+
+        let err = check_str(
+            "mode opt\n\nfn select(left: &'a mut String, right: &'b mut String, choose_left: Bool) -> &'a mut String:\n    if choose_left:\n        left\n    else:\n        right\n",
+        )
+        .expect_err("a branch may not return a different lifetime under the declared result");
+        assert!(err.contains("declares") || err.contains("relation"), "{err}");
+    }
+
+    #[test]
     fn mutable_reborrow_suspends_and_then_restores_its_parent_handle() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"before\"\n    let parent = &mut text\n    let child = &mut *parent\n    *parent = \"blocked\"\n    console.print(*child)\n",
