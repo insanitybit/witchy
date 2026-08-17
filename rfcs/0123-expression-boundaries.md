@@ -19,57 +19,54 @@ tracking: "unimplemented; staged in three cuts"
 
 ## Summary
 
-Do not give witchy statement semicolons. End an unbracketed expression when a
-newline is followed by a token that can start a statement, and keep climbing
-only for tokens that can *only* continue an expression (`.`, `+`, `?`, and the
-other infix-only or postfix-only glyphs). After an expression, `;` means
-"evaluate this, discard it, it is not the block value" and *replaces*
+The layout pass already knows where a statement starts. It does not emit a
+separator there. This RFC makes it emit a virtual `Tok::Semi` at each
+same-indent line boundary inside a statement block, so the Pratt parser
+stops climbing. An author-written `;` is the same token and means
+"evaluate this, discard it, it is not the block value." It *replaces*
 `let _ = e`. `let`, `var`, assignment, `for`, `return`, and the other
 non-value forms do not take a semicolon.
 
+There is no continuing-token table.
+
 ## Motivation
 
-The compiler already special-cases a newline. RFC-0122 made `*` prefix
-dereference and left it as multiply. The lexer treats a newline as trivia, so
-the Pratt parser keeps climbing whenever the next token can be infix:
+`apply_layout()` (`lexer.rs:1199`) already groups tokens by line, records
+`bdepth_start` (bracket depth at the first token), and manufactures virtual
+`LBrace`/`RBrace` from `:`/`->` headers. Newlines are not trivia. The
+defect is narrower: **inside a block, two statements at the same indent
+have no separator**, so the Pratt parser cannot tell them apart.
+
+RFC-0122 made `*` prefix dereference and left it as multiply. Without a
+separator,
 
 ```text
 let slot = select(&mut pair, true)
 *slot = 9
 ```
 
-A naive parse reads that as `select(...) * slot = 9`. `expr()` in
-`crates/witchy-syntax/src/parser.rs` stops climbing when the next token is on a
-new line *and* `is_assignment()` says the line is a place write. Match arms
-have a sibling rule: a newline `-` is the next arm's negative pattern, not
-subtraction. `on_same_line_as_prev()` has five call sites (the `?` message
-operand, same-line `[` / `(`, inline-arm `.Tag`, and `.Tag(` payloads). Add
-those two `expr()` branches and the newline rule is a pile of guards. This
-RFC replaces the two `expr()` cases with one table. The same-line `[` / `(`
-guards stay: they have no bracket-depth gate, and folding them into a
-table that does not fire inside `()` would rejoin `a\n[0]` inside the
-parens this RFC tells authors to write. The `.Tag` test is the leftover
-that earns its own rule.
+is `select(...) * slot = 9`. `expr()` stops climbing when the next token
+is on a new line *and* `is_assignment()` says the line is a place write.
+Match arms have a sibling rule for newline `-`. `&` is the same shape and
+has no such rule. `let view = &text` on one line and `&other` on the next
+is a live misparse in `mode opt`. Every dual glyph we add becomes another
+`if` in `expr()`.
 
-`&` is the same shape and has no such rule. `&` is bitwise-and *and* RFC-0122
-borrow. `let view = &text` on one line and `&other` on the next is a live
-misparse waiting to land in `mode opt`. Every dual glyph we add becomes
-another `if` in `expr()`.
+A continuing-token table in `expr()` would reconstruct a boundary layout
+already computed as indent plus `bdepth_start`. It would have to grow
+every time a glyph is both prefix and infix. That is the shape "one
+general mechanism" exists to keep out of the compiler.
 
-If the newline rule lands, the pressure for new `x.*` / `ref x` glyphs drops
-to zero. Those spellings exist to dodge this clash. A table that stops `*`
-and `&` at a newline makes the current glyphs safe.
+Requiring `;` after every statement would also stop the climb. It would
+tax every normal-mode file, layer a second statement system on the
+off-side rule, and force a one-cut rewrite of `std/`, the book, and every
+executed spec fence.
 
-Requiring `;` after every statement would stop the climb. It would also tax
-every normal-mode file for an opt-mode token clash, layer a second statement
-system on the off-side rule, and force a one-cut rewrite of `std/`, the book,
-and every executed spec fence. The language already has statement structure:
-a `:` opens an indented block, and a block's value is its last expression.
-
-There is a second, real awkwardness that `;` *does* earn. A last-line
-expression is the block value. A mid-block non-`var`, non-`Nil` call is an
-error unless the author writes `let _ =`. So the only way to run something for
-its effect and still have the block be `Nil` is a dummy binding:
+There is a second, real awkwardness that an author-written `;` *does*
+earn. A last-line expression is the block value. A mid-block non-`var`,
+non-`Nil` call is an error unless the author writes `let _ =`. So the
+only way to run something for its effect and still have the block be
+`Nil` is a dummy binding:
 
 ```text
 fn setup(xs: var List(Int)) -> Nil:
@@ -77,108 +74,78 @@ fn setup(xs: var List(Int)) -> Nil:
     let _ = xs.length()
 ```
 
-`push` is a `var` mutator and returns `Nil`, so a last-line push is already
-fine. `length` is not. `let _ =` works. It is also a lie: nothing is being
-bound. The spec even says `let _ = e` and a bare expression statement mean the
-same thing, and `fmt` prints the bare form. We already have a discard. We
-spelled it like a binding.
+`push` is a `var` mutator and returns `Nil`, so a last-line push is
+already fine. `length` is not. `let _ =` works. It is also a lie: nothing
+is being bound. The spec says `let _ = e` and a bare expression statement
+mean the same thing, and `fmt` prints the bare form. We already have a
+discard. We spelled it like a binding.
 
 ## Design
 
-### 1. A newline ends an unbracketed expression unless the next token can only continue it
+### 1. Layout emits a virtual `Semi` at same-indent statement boundaries
 
-After a complete expression, if the next token is on a later source line and
-is not inside `()`, `[]`, or `${...}`, classify it:
+Phase 2 of `apply_layout()` already identifies the line that starts a new
+statement: inside a virtual block, a line whose indent equals the body
+indent and whose `bdepth_start` equals the block's depth. It already
+emits `LBrace` on the first such line. It emits a virtual `Tok::Semi`
+before each subsequent one.
 
-- **Continuing tokens** cannot start a statement. The parse keeps climbing.
-  That set is the infix-only and postfix-only glyphs: `.` `+` `/` `%` `==`
-  `!=` `<` `>` `<=` `>=` `&&` `||` `??` `|` `^` `<<` `>>` `?` `..` `..=`.
-  Field access, method chains, and `e.await` keep working across lines:
+`expr()` stops because `infix_bp(Semi)` is `None`. No classification of
+`*` vs `+` vs `.`. No `is_assignment()` newline branch. No match-arm `-`
+branch.
 
-  ```text
-  let files = json.get(src, "files")
-      .and_then(fn(a: Json): json.as_array(a))
-  ```
+`bdepth_start` is the gate, not a hand-written list of `()`, `[]`,
+`${...}`. Phase 1 already tracks `LParen | LBracket | LBrace |
+QuoteHoleStart | DotLBrace | DotLBracket` (`lexer.rs:1230-1236`).
+`DotLBrace` is the anonymous-struct literal `.{ x: 1, y: 2 }`;
+`DotLBracket` is the anonymous-union type. A multi-line `.{ … }` does
+not get a virtual `Semi` in the middle, because those lines start at a
+deeper `bdepth_start`.
 
-- **Any other token** ends the expression. Identifiers, keywords, literals,
-  `(`, `[`, and the dual glyphs (`*`, `&`, `-`) plus the other prefix operators
-  (`!`, `~`, `move`) start a new statement. The RFC-0122 case becomes ordinary:
+#### Statement blocks only
 
-  ```text
-  let slot = select(&mut pair, true)
-  *slot = 9
-  ```
+Virtual `Semi` is emitted only inside **statement blocks**: bodies opened
+by `fn` / `if` / `else` / `for` / `while` / `comptime` / `region` and by
+`->` (match-arm bodies). It is *not* emitted inside `type` / `trait` /
+`impl` / `match` / `actor` bodies. Those are lists of fields, methods, or
+arms. A separator there would sit between `.Ok` and `.Err`, or between
+`a: Int` and `b: Int`. Layout classifies the header line that opened the
+block. That is a header-kind gate, not a per-glyph table in `expr()`.
 
-  So does a match arm that begins with a negative literal, and a next-line
-  borrow. `let x = a` followed by `* b` is `let x = a` and then a dereference
-  of `b`. If the author meant multiply, the diagnostic says so and points at
-  `a * b` on one line or `(a * b)`.
+`match x:` opens an arm-list block (no `Semi` between arms). Each `->`
+opens an arm-body statement block (`Semi` between statements in a
+multi-line arm).
 
-  `+` continues and `-` stops, so a wrapped sum splits:
+#### What falls out
 
-  ```text
-  let total = a
-      + b
-      - c
-  ```
+```text
+let slot = select(&mut pair, true)
+*slot = 9
+```
 
-  That is `let total = a + b` and a second statement `-c`. A non-tail
-  `-c` where `c: Int` typechecks and evaporates:
-  `typeck.rs:6123-6137` only runs `reject_borrowed_nominal_runtime_ty` on
-  non-tail expression statements, and the RFC-0043 must-bind rule is
-  call-scoped. That is worse than `* b`, which usually fails as a deref.
-  The parser rejects this shape as a hard error (§5). The author who meant
-  a sum writes `(a + b - c)` or keeps the operators on one line.
+Same indent, statement block: virtual `Semi`, two statements.
 
-Parentheses and brackets still join lines. This is the Python rule with one
-deliberate extra: we continue across a newline when the next token *cannot*
-be a statement. Strict Python would break every leading-dot chain. We have
-those (see `projects/coven/src/coven_proto.witchy`).
+```text
+let files = json.get(src, "files")
+    .and_then(fn(a: Json): json.as_array(a))
+```
 
-`|` is bitwise-or in `infix_bp`. In pattern position `match_expr` consumes
-`Bar` as an or-pattern separator before expressions run, so a line-leading
-`|` inside a match is not this table's problem today. A later formatter that
-wraps an or-pattern across lines has to keep that consumption order, or a
-leading `|` would continue as bitwise-or.
+Continuation is more indented: no `Semi`, one expression. All 33
+leading-dot sites in the corpus already indent. `dir` / more-indented
+`as Dir[Read]` keeps working (`parser.rs:1814` consumes `as`
+unconditionally). A same-indent `as` is a new statement and a parse
+error. Continuations must be more indented. `fmt` enforces that.
 
-`?` continues. It is postfix, not an `infix_bp` entry; the table is consulted
-from both `expr()` and `postfix()`. The message form is `e? "msg"` with the
-operand on `?`'s line. `postfix()` already gates that on
-`on_same_line_as_prev()` (`parser.rs:1802`) and calls same-line consumption a
-conservative extension. A `Str` on a later line is "any other token" and ends
-the expression, so `e?` / newline / `"msg"` is bare `e?` plus a string
-statement. That stays. The continuing form is `e` / newline / `? "msg"`.
+```text
+let total = a
+    + b
+    - c
+```
 
-`(` and `[` *end* the expression. That is pre-existing and unchanged:
-`parser.rs:1818` and `1829` already require `[` / `(` on the same line as the
-receiver, so `f` / newline / `(a, b)` is already a binding plus a tuple.
-Call forms wrap the arguments: `f(\n    a, b\n)`.
-
-The continuing-token set sits next to `infix_bp` and is read from `expr()`
-and `postfix()`. `.` and `?` live only in the postfix half. Adding a new dual
-glyph means adding it to the prefix set so a newline stops the expression.
-Adding a new infix-only or postfix-only glyph means it continues. Compound
-assignment (`+=` and friends) is not in this table. `infix_bp` has no arm for
-it; `x += 1` on a new line already stops at the identifier `x`.
-
-The off-side layout pass is unaffected. Indent still opens and closes
-blocks. Column is not part of the decision: a more-indented continuing token
-is still a continuation, and a more-indented `*` is still a new statement,
-because `*` is dual. Authors who want a wrapped multiply write parens.
-
-The two `expr()` newline branches (`is_assignment()` and the match-arm `-`
-check) come out. The same-line `[` / `(` guards in `postfix()` stay. They
-are pre-existing, they have no bracket-depth gate, and they must keep
-stopping `a\n[0]` and `bar\n(1, 2)` *inside* parentheses. The table does
-not fire inside `()`, `[]`, or `${...}`, so folding the guards into it
-would change those forms from a parse error into an index or a call. The
-`.Tag` test stays.
-
-#### Residual: inline-arm `.Tag`
-
-`postfix()` at `parser.rs:1847-1860` (RFC-0078): inside an inline match arm,
-a next-line `.Tag` (dot, then an uppercase ident) is the *next anonymous-union
-pattern*, not a method chain. Lowercase `.method` keeps continuing.
+Both operator lines are more indented: one expression, `a + b - c`.
+The `+`/`-` asymmetry of a glyph table does not arise. Same-indent
+`- c` after a finished statement is a new statement; the parser
+rejects it (see §5).
 
 ```text
 match x:
@@ -186,24 +153,39 @@ match x:
     .Err(e) -> e
 ```
 
-`.` cannot sit unconditionally in the continuing set *and* retire this
-branch. Uppercase-vs-lowercase after `.` is per-construct lookahead, the
-shape this RFC said it was deleting. It is not. The table retires the dual
-glyphs and the match-arm `-`. The `.Tag` test stays, with an acceptance row
-so a later cleanup cannot drop it by accident.
+Arm-list block, no `Semi` between arms. A next-line `.method()` that is
+more indented than the arm body continues. A next-line `.Err` at arm
+indent is the next arm. The `postfix()` uppercase-dot branch
+(`parser.rs:1847-1860`) is expected to come out. If a case remains, that
+is a bug in the emit rule, not a leftover special case this RFC keeps.
 
-A follow-on can make next-line union variants take a leading `|`, or force
-those arms into a block. That is a different RFC. This one does not pretend
-the table ate it.
+#### Guards that stay
 
-### 2. `;` discards an expression
+These are not continuation rules. They stay.
 
-`;` is a new lexer token (`Tok::Semi`). Today it is a lex error. Strings and
-comments keep their current `;` as text. A `;` in expression-interior
-position (`f(a; b)`) is a parse error, not a discard.
+- `is_assignment()` itself. Statement dispatch at `parser.rs:1643` and
+  inline-arm-body dispatch at `3969` keep it. Only its newline use in
+  `expr()` goes.
+- Same-line `[` / `(` in `postfix()` (`1818`, `1829`) and `.Tag(`
+  payloads (`3641`). No bracket-depth gate. Folding them into a
+  depth-gated rule would rejoin `a\n[0]` inside parentheses.
+- `?` message operand on the same line (`1802`).
+- `name_application()` (`3690`): a `(` that begins a new line is never
+  call arguments. An interpolated string expands to a leading `(`, so
+  `else: x` followed by `"${…}"` would otherwise become `x(...)`. That
+  is the form people write. Six newline-sensitive sites, not five:
+  the five `on_same_line_as_prev()` calls plus this raw line compare.
 
-An expression statement may end in `;`. That mark means: evaluate the
-expression, discard the result, and do not use it as the block value.
+### 2. Author `;` discards an expression
+
+`;` is `Tok::Semi`. Layout synthesizes it; the author may also write it.
+Today it is a lex error. Strings and comments keep `;` as text. A `;`
+in expression-interior position (`f(a; b)`) is a parse error, not a
+discard.
+
+An expression statement that ends in `;` (written or, in tail position,
+only if the author wrote it) means: evaluate, discard, do not use as
+the block value.
 
 ```text
 fn setup(xs: var List(Int)) -> Nil:
@@ -211,204 +193,238 @@ fn setup(xs: var List(Int)) -> Nil:
     xs.length();
 ```
 
-Last-line `xs.length()` (no semicolon) is still the block value, an `Int`.
-Last-line `xs.length();` is a discard and the block is `Nil`. Mid-block, a
-non-`var`, non-`Nil` call without `;` is still the RFC-0043 error. Mid-block
-`e;` is the explicit discard that used to be `let _ = e`.
+Last-line `xs.length()` is the block value, an `Int`. Last-line
+`xs.length();` is a discard and the block is `Nil`. Mid-block, a
+non-`var`, non-`Nil` call without `;` is still the RFC-0043 error.
+Mid-block `e;` is the explicit discard that used to be `let _ = e`.
+
+Represent this as **`Stmt::Discard(Expr)`**, a new variant, not a field
+on `Stmt::Expr`. `Stmt::Expr(Expr)` has hundreds of construction sites
+(`parser_tests.rs` alone has 36). A field breaks all of them. A new
+variant is additive: exhaustive matches break loudly at the sites that
+must decide.
 
 `;` is legal only on an expression statement. It is a parse error after
-`let`, `var`, assignment, `for`, `while`, `return`, `break`, `continue`, and
-`yield`. Those forms are already not values. The error is "`;` discards an
-expression; this form is already not a value."
+`let`, `var`, assignment, `for`, `while`, `return`, `break`, `continue`,
+and `yield`. Those forms are already not values. The error is "`;`
+discards an expression; this form is already not a value."
 
-A block whose last form is `e;`, `let`, `var`, assignment, or a looping
-statement has value `Nil`. Same as a block that today ends on `let _ = e`.
+It is also illegal in expression-position bodies. An inline match arm
+parses via `self.expr(0)` unless it starts with `return` / `break` /
+`continue` / an assignment (`parser.rs:3966-3979`). So `0 -> log(x);`
+is a parse error, as are `fn(x): e;` and `if c: a; else: b`. `;`
+terminates a statement. Authors will try all three.
+
+A block whose last form is `Stmt::Discard`, `let`, `var`, assignment, or
+a looping statement has value `Nil`.
+
+The RFC-0043 discard rule lives in
+`crates/witchy-types/src/traits.rs:3314-3320` (`discarded_result_msg`),
+in the mono/write-back rewrite, not in `typeck.rs`. That rewrite edits
+the single AST both backends consume (`lower` / `lower_for_wasm`) and
+the checker consumes (`lower_checked`). `;` inherits that if it is
+`Stmt::Discard` on that AST. Parity holds by construction. Staging
+step 2 edits the message to name `e;`.
 
 ### 3. `let _ = e` goes away
 
-One cut. `let _ = e` is the discard spelling this RFC replaces. Pattern
-bindings that use `_` in a real pattern stay (`let [first, ..rest] = xs`,
-`let Point(_, y) = p`). Only the single-wildcard discard form is deleted.
+One cut. Reject `Stmt::LetPattern` whose `pattern` is exactly
+`Pattern::Wildcard` (`ast.rs:968`). Nested wildcards are
+`Pattern::Ctor` / `Pattern::Tuple` and stay: `let [first, ..rest] = xs`,
+`let Point(_, y) = p`, `let (_, y) = pair`.
 
 The four live `.witchy` sites (one in `projects/coven`, three in
-`projects/glamour`) become `e;`. Spec, book, and RFC prose that teach
-`let _ =` as discard move with the implementation, not before. The same
-spelling also lives in witchy source embedded in Rust test strings, where
-`witchy fmt` cannot reach: `analysis.rs`, `async_lower.rs`,
+`projects/glamour`) become `e;`. They sit under `projects/**/src/*.witchy`,
+which is already a `witchy fmt` gate path, so the gate enforces the
+migration. Spec, book, and RFC prose that teach `let _ =` as discard
+move with the implementation. `book/examples.json` is regenerated with
+the book fences. `spec/stdlib.md` has zero `let _ =` in `std/`
+doc-comments; do not hand-edit it.
+
+The same spelling also lives in witchy source embedded in Rust test
+strings, where `fmt` cannot reach: `analysis.rs`, `async_lower.rs`,
 `src/example_tests/*`, `diagnostic_golden_tests.rs`, `loans_tests.rs`,
-`tests/typeck.rs`, `lsp_tests.rs`. Staging step 2 sweeps those fixtures and
-regenerates goldens. A leftover `let _ = e` in a `.witchy` file is a parse
-or check error that points at `e;`.
+`tests/typeck.rs`, `lsp_tests.rs`. Staging step 2 sweeps those fixtures
+and regenerates goldens. A leftover `let _ = e` in a `.witchy` file is
+a parse or check error that points at `e;`.
 
 ### 4. `fmt`
 
-`fmt` stays a syntactic pass. It does not consult the type checker, and it
-has to run on a file that does not typecheck.
+`fmt` stays a syntactic pass. It does not consult the type checker, and
+it has to run on a file that does not typecheck.
 
 - Rewrite `let _ = e` to `e;` in `.witchy` files. That migrates the four
   live sites. Embedded fixtures are a compiler-source edit, not a `fmt`
   job.
+- Indent a wrapped continuation past the statement that owns it.
 - Preserve the author's `;`. Do not insert one to make a last-line
-  expression match a `Nil` return.
+  expression match a `Nil` return. Layout's virtual `Semi` is not
+  printed.
 - Never put `;` on `let`, `var`, assignment, `for`, `while`, `return`,
   `break`, `continue`, or `yield`.
-- Do not sprinkle `;` on mid-block `Nil` or `var` calls. Those are already
-  legal as bare expressions.
+- Do not sprinkle `;` on mid-block `Nil` or `var` calls. Those are
+  already legal as bare expressions.
 
 ### 5. Diagnostics
 
-Two new messages, and one rewrite of an old one.
+The parser emits hard errors. A warning would leave the silent-`-c` hole
+half-open.
 
-- The parser emits a hard error when a newline ended a complete expression
-  and the next statement is a bare prefix-operator expression (`-`, `*`,
-  `!`, `~`) that is neither bound nor assigned. Name the glyph, say it also
-  starts a statement, and offer the one-line form or parentheses. This is
-  the wrapped-sum case (`let total = a` / `+ b` / `- c`) as well as the
-  multiply-as-deref case. A warning would leave the silent-`-c` hole
-  half-open. The trigger is "the previous line ended a complete
-  expression," so `fn ne(...) -> Bool:` / newline / `!eq(...)` and
-  `_ ->` / newline / `-1` are not this error: `:` and `->` do not end an
+- A virtual or written `Semi` ended a complete expression and the next
+  statement is a bare prefix-operator expression (`-`, `*`, `!`, `~`)
+  that is neither bound nor assigned: name the glyph, say a same-indent
+  line starts a new statement, and offer to indent the continuation or
+  parenthesize. This is same-indent `- c` after `let total = a + b`.
+  `fn ne(...) -> Bool:` / newline / `!eq(...)` and `_ ->` / newline /
+  `-1` are not this error: `:` and `->` open a block, they do not end an
   expression.
-- `;` after a non-expression form: the sentence in §2.
+- `;` after a non-expression form, including inline `0 -> e;`,
+  `fn(x): e;`, and `if c: a;`: the sentence in §2.
 - `;` inside an argument list or other expression-interior position: a
   parse error, not a discard.
-- Discard of a non-`var`, non-`Nil` call: point at `e;`, not `let _ = e`.
+- Discard of a non-`var`, non-`Nil` call: `traits.rs:3314-3320` points
+  at `e;`, not `let _ = e`.
 
 ### 6. Editor grammar
 
-The tree-sitter grammar in `editors/zed` / `tree-sitter-witchy` uses the same
-continuing-token table. Then `*slot = 9` on the next line is a statement
-without a scanner hack that breaks `n * 2`.
+Tree-sitter does not run `apply_layout()`. It already has an indent
+scanner. That scanner emits a statement-break at the same indent, inside
+statement blocks, matching the virtual `Semi` rule. It does not grow a
+glyph table. Then `*slot = 9` on the next line is a statement without a
+hack that breaks `n * 2`.
 
 ## Alternatives
 
+**A continuing-token table in `expr()`.** Reconstructs indent plus
+`bdepth_start` by classifying glyphs. Must grow for each new dual
+token. Invented the `+`/`-` split that virtual `Semi` does not have.
+Rejected. The table was the previous draft of this RFC.
+
 **Require `;` on every statement.** Stops the climb. Charges the whole
-language, including files that never write `&` or `*place`, and fights the
-off-side rule. Rejected.
+language and fights the off-side rule. Rejected.
 
-**Strict Python (newline always ends an unbracketed expression).** Also
-stops the climb. Breaks leading-dot chains and wrapped `+` / `??` that we
-already write. The continuing-token exception is the whole reason to deviate.
+**Strict Python (newline always ends an unbracketed expression).** Breaks
+leading-dot chains unless they live in parens. The indent rule keeps
+those chains without a glyph exception.
 
-**Keep the lookahead and add a case for `&`.** Cheap this week. We will write
-the same `if` the next time a prefix operator reuses an infix glyph. Rejected
-as policy.
+**Keep the lookahead and add a case for `&`.** Cheap this week. The next
+dual glyph gets the same `if`. Rejected as policy.
 
-**Give dereference and borrow new glyphs** (`x.*`, `ref x`). Removes the
-dual-token clash and leaves statement syntax alone. Worth doing if `&` / `*`
-stay confusing in `mode opt` after this ships. It does not help last-line
-discard, and it does not remove the match-arm `-` or `.Tag` cases. If §1
-lands, the *safety* argument for those glyphs is gone. Keep the alternative
-open as taste, not as a load-bearing fix.
+**Give dereference and borrow new glyphs** (`x.*`, `ref x`). Taste, if
+`&` / `*` stay confusing in `mode opt`. Not load-bearing once a
+same-indent line is a new statement.
 
-**Optional `;` and keep `let _ =`.** Two explicit discards. `fmt` then has to
-pick a winner every time, and authors will fight about it. The house rule is
-one-cut. `;` wins because it is the mark that also answers "this is not the
-block value."
+**Optional `;` and keep `let _ =`.** Two explicit discards. One-cut:
+`;` wins.
 
 **Do nothing.** The `*` assignment lookahead stays, `&` stays wrong on a
-newline, and last-line discard stays a fake binding. Fine until the next
-dual glyph.
+newline, and last-line discard stays a fake binding.
+
+**Go/JS automatic semicolon insertion.** Those guess from token
+adjacency at end-of-line. This inserts from indentation, in the pass
+that already synthesizes `{` and `}` from it. "A same-indent line starts
+a new statement" is the rule witchy already teaches.
 
 ## Drawbacks
 
-The continuing-token table is still a classification. It is one table, and it
-is the same kind of fact `infix_bp` already is. It is not free.
+A wrapped continuation must be more indented than the statement it
+belongs to. The corpus already does this for leading-dot chains. A
+same-indent continuation becomes a hard break. `fmt` has to indent
+those lines.
 
-`let x = a` / newline / `* b` silently becomes a dereference if `*b` typechecks.
-Worse: `let total = a` / `+ b` / `- c` typechecks and drops `-c`. The
-parser has to reject that shape, because authors coming from wrapped
-arithmetic will hit it.
+Layout must classify statement-block headers vs type/trait/impl/match
+headers. That is one gate in `apply_layout()`, next to the brace
+emission it already does. Getting `match` vs `->` wrong reintroduces
+`Semi` between arms or drops it inside a multi-line arm body.
 
-People will want `;` after `let`. The parse error has to be early and dull.
+People will want `;` after `let`, and after `0 -> e`. The parse error
+has to be early and dull.
 
-Deleting `let _ =` is a one-cut the book, a handful of project files, and the
-embedded Rust fixtures have to take with the compiler. The live `.witchy`
-corpus is four sites. The teaching corpus is eight sites under `book/`,
-`spec/`, and historical RFCs. The fixture corpus is larger and `fmt` cannot
-rewrite it.
-
-The `.Tag` residual is still per-construct lookahead. Anyone who reads §1 as
-"no more newline special cases" will be wrong, and a later cleanup that
-deletes `postfix()`'s uppercase-dot branch will break inline union matches.
+Deleting `let _ =` is a one-cut the book, four project files, embedded
+Rust fixtures, and `book/examples.json` have to take with the compiler.
 
 ## Prior art
 
-Python's implicit line joining is the newline half: a physical newline ends a
-logical line except inside brackets. We keep that, then continue across a
-newline when the next token cannot start a statement, so leading-dot chains
-survive.
+Python's implicit line joining is the indent half: a more-indented line
+continues, a same-indent line does not, brackets join regardless.
+Witchy's layout pass is already that machine.
 
-Rust's optional semicolon is the discard half: `e` as the last form of a
-block is the value; `e;` is `()`. Mid-block, Rust treats `e;` as a statement.
-We do the same and we do *not* take Rust's "semicolon after every `let`."
+Rust's optional semicolon is the discard half: `e` as the last form of
+a block is the value; `e;` is `()`. This RFC takes that and does *not*
+take "semicolon after every `let`."
 
-Go's and JavaScript's automatic semicolon insertion are the thing this RFC
-is written to avoid. Those insert a terminator the author did not write, using
-rules nobody can keep in their head. This RFC *stops* an expression at a
-newline when the next token can start a statement. It never inserts `;`.
-
-RFC-0043 is the discard policy we are respelling. RFC-0122 is the prefix
-reuse that made the missing newline rule loud.
+RFC-0043 is the discard policy we are respelling. RFC-0122 is the
+prefix reuse that made the missing separator loud.
 
 ## Staging
 
-1. Parser and checker grow the continuing-token table, consulted from both
-   `expr()` and `postfix()`. The `is_assignment()` and match-arm `-` newline
-   branches leave `expr()`. The same-line `[` / `(` guards stay; they do
-   not fold into the table. The inline-arm `.Tag` branch in `postfix()`
-   stays. The `?` message operand stays same-line. The parser rejects a
-   broken wrapped multiply, a wrapped sum, or a next-line borrow in the
-   same cut. This step is breaking for any unbracketed dual-glyph
-   continuation; that form is rare on purpose.
-2. Lexer grows `Tok::Semi`. Parser accepts `;` only as the terminator of an
-   expression statement. `let _ = e` becomes a diagnostic that names `e;`.
-   `fmt` rewrites the four live `.witchy` sites and the book/spec examples.
-   A fixture sweep rewrites witchy source embedded in Rust tests
-   (`analysis.rs`, `async_lower.rs`, `src/example_tests/*`,
-   `diagnostic_golden_tests.rs`, `loans_tests.rs`, `tests/typeck.rs`,
-   `lsp_tests.rs`) and regenerates goldens. Step 2 lands red without that
-   sweep.
-3. Tree-sitter / Zed pick up the same table so highlighting matches the
-   compiler.
+1. `apply_layout()` emits virtual `Tok::Semi` in statement blocks.
+   `infix_bp(Semi)` is `None`. The `is_assignment()` and match-arm `-`
+   newline branches leave `expr()`. `is_assignment()` itself stays.
+   Same-line `[` / `(`, `.Tag(`, `?` operand, and `name_application()`
+   `(` stay. The `postfix()` uppercase-dot branch is deleted if the
+   emit rule makes it unreachable; if a case remains, that is a bug in
+   the emit rule. The parser rejects a same-indent bare prefix
+   statement. This step is breaking for same-indent continuations; that
+   form is rare on purpose.
+2. Lexer accepts a written `;` as `Tok::Semi`. Parser builds
+   `Stmt::Discard(Expr)` for an expression statement that ends in a
+   written `;`. `LetPattern` whose pattern is exactly `Wildcard` is an
+   error naming `e;`. `discarded_result_msg` in `traits.rs` names `e;`.
+   `fmt` rewrites the four live `.witchy` sites (the `fmt` gate on
+   `projects/**/src/*.witchy` keeps them rewritten) and the book/spec
+   examples, then regenerates `book/examples.json`. A fixture sweep
+   rewrites witchy source embedded in Rust tests (`analysis.rs`,
+   `async_lower.rs`, `src/example_tests/*`, `diagnostic_golden_tests.rs`,
+   `loans_tests.rs`, `tests/typeck.rs`, `lsp_tests.rs`) and regenerates
+   goldens. Step 2 lands red without that sweep. Do not hand-edit
+   `spec/stdlib.md`.
+3. Tree-sitter's indent scanner emits the same statement-break at
+   same-indent lines inside statement blocks.
 
-Step 1 can land without step 2. Step 2 without step 1 leaves the `*`
-lookahead in place and still helps last-line discard. The intended ship is
-both.
+Step 1 can land without step 2. Step 2 without step 1 still helps
+last-line discard, but written `;` and virtual `Semi` should be one
+token. The intended ship is both.
 
 ## Acceptance
 
-- `let slot = select(&mut pair, true)` / newline / `*slot = 9` parses as two
-  statements on both backends, with no `is_assignment()` special case.
-- `let view = &text` / newline / `&other` is two statements, not bitwise-and.
-- `json.get(src, "files")` / newline / `.and_then(...)` remains one
-  expression.
-- An inline match of the form `.Ok(v) -> v` / newline / `.Err(e) -> e` still
-  parses as two arms. Lowercase `.method` after an arm body still chains.
-  The `postfix()` uppercase-dot branch remains.
-- `e` / newline / `? "msg"` is the message form of `?` on both backends.
-  The operand stays on `?`'s line. `e?` / newline / `"msg"` is bare `e?`
-  plus a string statement, unchanged from `on_same_line_as_prev()` at
-  `parser.rs:1802`.
-- `let x = a` / newline / `* b` with `*` meant as multiply is a parse
-  error that names the one-line and parenthesized forms.
-- `let total = a` / newline / `+ b` / newline / `- c` is a parse error, not
-  a silent `a + b` that drops `-c`. Parenthesized `(a + b - c)` remains one
-  expression on both backends.
+Parse shapes and parse errors are backend-independent. The one
+parity-bearing row is the `;` block-value typing.
+
+- `let slot = select(&mut pair, true)` / newline / `*slot = 9` at the
+  same indent parses as two statements, with no `is_assignment()`
+  newline special case.
+- `let view = &text` / newline / `&other` at the same indent is two
+  statements.
+- `json.get(src, "files")` / newline / indented `.and_then(...)`
+  remains one expression.
+- `dir` / newline / indented `as Dir[Read]` remains one expression.
+- An inline match of the form `.Ok(v) -> v` / newline / `.Err(e) -> e`
+  still parses as two arms. Lowercase indented `.method` after an arm
+  body still chains. The `postfix()` uppercase-dot branch is gone.
+- `e` / newline / indented `? "msg"` is the message form of `?`. The
+  operand stays on `?`'s line. `e?` / newline / `"msg"` is bare `e?`
+  plus a string statement, unchanged from `parser.rs:1802`.
+- `else: x` / newline / `"${y}"` at the body indent is `x` and then a
+  string, not `x(...)`. `name_application()` at `parser.rs:3690` stays.
+- `let total = a` / newline / indented `+ b` / newline / indented `- c`
+  is one expression `a + b - c`. Same-indent `- c` after `let total = a + b`
+  is a parse error, not a silent drop.
 - `fn ne(self: T, other: T) -> Bool:` / newline / `!eq(self, other)` is
-  not an error, and neither is `_ ->` / newline / `-1`. The trigger
-  requires the previous line to have ended a complete expression. `:` and
-  `->` do not. The ten `ne` impls in `std/cmp.witchy` stay legal.
-- `xs.length();` as the last form of a `-> Nil` function typechecks on both
-  backends; the same call without `;` is the block's `Int`.
-- `let x = 1;` is a parse error. `f(a; b)` is a parse error. `";"` in a
-  string and `;` in a comment are unchanged.
-- `let _ = e` is a diagnostic that points at `e;`. No `let _ =` *discard*
-  sites remain under `std/`, `examples/`, `projects/`, `book/`, `spec/`, or
-  witchy source embedded in the Rust fixtures listed in Staging step 2.
-  `let Point(_, y) = p` is unaffected. Rust `let _ =` in native test
-  harnesses is unaffected.
+  not an error, and neither is `_ ->` / newline / `-1`. The ten `ne`
+  impls in `std/cmp.witchy` stay legal.
+- `xs.length();` as the last form of a `-> Nil` function typechecks on
+  both backends; the same call without `;` is the block's `Int`.
+- `let x = 1;` is a parse error. `f(a; b)` is a parse error. `0 -> e;`,
+  `fn(x): e;`, and `if c: a;` are parse errors. `";"` in a string and
+  `;` in a comment are unchanged.
+- `let _ = e` is an error that points at `e;`. The rejected node is
+  `Stmt::LetPattern` whose pattern is exactly `Pattern::Wildcard`.
+  `let (_, y) = pair` and `let Point(_, y) = p` stay. No discard
+  `let _ =` remains under `std/`, `examples/`, `projects/`, `book/`,
+  `spec/`, `book/examples.json`, or the Rust fixtures in Staging step 2.
+  Rust `let _ =` in native harnesses is unaffected.
 - `witchy fmt` rewrites `let _ = e` to `e;` and does not insert `;` on
   `let`, on a mid-block `var` call, or to satisfy a `Nil` return.
-- The tree-sitter parse of the RFC-0122 `*slot = 9` fixture has no `ERROR`
-  node, and `n * 2` still parses as multiply.
+- The tree-sitter parse of the RFC-0122 `*slot = 9` fixture has no
+  `ERROR` node, and `n * 2` still parses as multiply.
