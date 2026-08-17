@@ -690,6 +690,38 @@
         assert!(error.to_string().contains("reference-bearing opt API `api.view`"), "{error}");
     }
 
+    #[test]
+    fn normal_callers_reject_explicit_reference_exports_and_alias_hidden_types() {
+        let check_import = |api_source: &str, main_source: &str| {
+            let api = witchy_syntax::parser::parse_module(api_source).expect("parse opt API");
+            let main = witchy_syntax::parser::parse_module(main_source).expect("parse normal caller");
+            let linked = witchy_syntax::linker::link(
+                vec![("main".into(), main), ("api".into(), api)],
+                "main",
+                no_comptime,
+            )
+            .map_err(|error| crate::typeck::TypeError { message: error.to_string() });
+            match linked {
+                Err(error) => error.to_string(),
+                Ok(linked) => crate::typeck::check(&linked)
+                    .expect_err("normal interface must reject references")
+                    .to_string(),
+            }
+        };
+
+        let direct = check_import(
+            "mode opt\n\npub fn view(text: &'a String) -> &'a String:\n    text\n",
+            "import api\n\nfn main():\n    var text = \"hello\"\n    let view = api.view(&text)\n",
+        );
+        assert!(direct.contains("reference-bearing opt API `api.view`"), "{direct}");
+
+        let alias_hidden = check_import(
+            "mode opt\n\ntype Holder('a):\n    value: &'a String\n\npub fn make(text: &'a String) -> Holder('a):\n    Holder(text)\n",
+            "import api\n\nfn main():\n    var text = \"hello\"\n    let holder = api.make(&text)\n",
+        );
+        assert!(alias_hidden.contains("reference-bearing opt API `api.make`"), "{alias_hidden}");
+    }
+
     // --- non-lexical last use + .owned() (acceptance 3) ---------------------
 
     #[test]
