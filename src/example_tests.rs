@@ -277,6 +277,7 @@
     mod rfc0122_control_flow;
     mod rfc0122_references;
     mod rfc0122_wasm_list_carrier;
+    mod rfc0122_wasm_exclusive_list_return;
     mod json;
     mod capabilities;
     mod region;
