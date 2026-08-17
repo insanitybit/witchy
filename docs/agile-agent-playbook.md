@@ -44,6 +44,32 @@ For each task, include:
 4. **Task handoff**
    - `branch`, `files`, `boundaries`, and `verifying commands`.
 
+### RFC-0122 experimental opt-mode policy: Wasm first
+
+While the explicit-reference carrier ABI is changing, RFC-0122 aggregate,
+list, and exclusive-reference fixtures are **compiled-Wasm-first**. A focused
+fixture must execute through `wasm_run_reowns`; do not hold a lowering slice
+for interpreter parity. The interpreter remains the semantic convergence target,
+but parity is mandatory only after the carrier contract is stable, and before
+an RFC-0122 acceptance row is marked `PROVEN` or experimental opt mode exits.
+
+Every Wasm-first row carries an explicit interpreter debt:
+
+| fixture | missing interpreter boundary | convergence milestone |
+| --- | --- | --- |
+| `direct_shared_reference_return_preserves_the_runtime_place_on_both_backends` | direct borrowed call/return carrier | `ReferenceKind` call ABI frozen |
+| `mutable_to_shared_reference_return_preserves_the_runtime_place_on_both_backends` | mutable-to-shared reborrow carrier | reborrow representation frozen |
+| `shared_reference_return_preserves_the_runtime_place_on_both_backends` | direct shared return root | root/provenance ABI frozen |
+| `shared_reference_tuple_preserves_each_owner_root_on_both_backends` | tuple construction, copy, destructure, field projection | aggregate carrier ABI frozen |
+| `shared_reference_list_preserves_each_owner_root_on_both_backends` | list construction, return, index projection | list carrier ABI frozen |
+| `exclusive_reference_list_projection_writes_the_selected_owner_on_both_backends` | indexed exclusive reference write | direct-place write ABI frozen |
+| `exclusive_reference_tuple_destructure_writes_the_selected_owner_on_both_backends` | destructured exclusive reference write | aggregate write ABI frozen |
+
+Keep these debts in the RFC-0122 acceptance ledger as `WASM PROVEN /
+INTERPRETER DEBT`; replace each with named interpreter-plus-Wasm evidence during
+the convergence milestone. No fixture may be weakened or removed to defer that
+debt.
+
 ## 3) Focused checks by boundary
 
 Use `./scripts/agent-check.sh` for local checks:

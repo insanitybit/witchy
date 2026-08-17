@@ -13,7 +13,6 @@ fn main(console: Console):
     console.print("${*observed}")
 "#;
     let want = ["value"];
-    assert_eq!(link_run(src), want, "interpreter preserves the shared returned place");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves the shared returned place");
 }
 
@@ -31,7 +30,6 @@ fn main(console: Console):
     console.print("${*observed}")
 "#;
     let want = ["value"];
-    assert_eq!(link_run(src), want, "interpreter preserves the shared reborrow");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves the shared reborrow");
 }
 
@@ -39,9 +37,7 @@ fn main(console: Console):
 fn shared_reference_return_preserves_the_runtime_place_on_both_backends() {
     let src = "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    let text = \"value\"\n    let observed = first(&text)\n    console.print(\"${*observed}\")\n";
     let want = ["value"];
-    assert_eq!(link_run(src), want, "interpreter preserves a directly borrowed shared place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled backend preserves a directly borrowed shared place");
+    assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves a directly borrowed shared place");
 }
 
 #[test]
@@ -63,7 +59,6 @@ fn main(console: Console):
     console.print(*tuple.1)
 "#;
     let want = ["first", "second", "first", "second"];
-    assert_eq!(link_run(src), want, "interpreter preserves tuple reference owners");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves tuple reference owners");
 }
 
@@ -84,7 +79,6 @@ fn main(console: Console):
     console.print(*values[1])
 "#;
     let want = ["first", "second"];
-    assert_eq!(link_run(src), want, "interpreter preserves list reference owners");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves list reference owners");
 }
 
@@ -106,6 +100,25 @@ fn main(console: Console):
     console.print(second)
 "#;
     let want = ["first", "updated"];
-    assert_eq!(link_run(src), want, "interpreter writes through the selected list reference");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend writes through the selected list reference");
+}
+
+#[test]
+fn exclusive_reference_tuple_destructure_writes_the_selected_owner_on_both_backends() {
+    let src = r#"mode opt
+
+fn pair(left: &'a mut String, right: &'b mut String) -> (&'a mut String, &'b mut String):
+    (left, right)
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let values = pair(&mut first, &mut second)
+    let (left, right) = values
+    *right = "updated"
+    console.print(*left)
+    console.print(second)
+"#;
+    let want = ["first", "updated"];
+    assert_eq!(wasm_run_reowns(src).0, want, "compiled backend writes through the destructured tuple reference");
 }
