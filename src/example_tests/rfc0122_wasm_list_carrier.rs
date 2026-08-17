@@ -371,6 +371,32 @@ fn main(console: Console):
     );
 }
 
+#[test]
+fn interpreter_exclusive_reference_list_slot_replacement_preserves_writeback() {
+    let src = r#"mode opt
+
+import list
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    var replacement = "replacement"
+    var refs: List(&'a mut String) = [&mut first, &mut second]
+    list.set_at(refs, 0, &mut replacement)
+    let selected = refs[0]
+    *selected = "updated-replacement"
+    console.print(first)
+    console.print(second)
+    console.print(replacement)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["first", "second", "updated-replacement"],
+        "interpreter preserves exclusive list slot replacement and write-back",
+    );
+}
+
 /// Exercise construction of a mutable reference list through the ordinary
 /// list append path. This remains Wasm-first while the list carrier ABI is
 /// changing; its interpreter debt is recorded in RFC-0122's ledger.
