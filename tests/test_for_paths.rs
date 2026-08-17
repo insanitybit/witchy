@@ -86,8 +86,12 @@ fn gate_nextest(paths: &[&str]) -> String {
 fn gate_nextest_example_tests_only_is_not_workspace() {
     let output = gate_nextest(&["src/example_tests/rfc0122_wasm_list_carrier.rs"]);
     assert!(
-        output.contains("example_tests"),
-        "example_tests-only mapping dropped the area filter: {output}",
+        output.contains("example_tests::rfc0122_wasm_list_carrier"),
+        "example_tests-only mapping did not partition to the touched module: {output}",
+    );
+    assert!(
+        !output.contains("test(/^example_tests::/)") || output.contains("rfc0122_wasm_list_carrier"),
+        "example_tests-only mapping kept the whole matrix: {output}",
     );
     assert!(
         !output.contains("WORKSPACE") && !output.contains("--workspace"),
@@ -107,8 +111,12 @@ fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
         "crate+example_tests mapping dropped the crate: {output}",
     );
     assert!(
-        output.contains("example_tests"),
-        "crate+example_tests mapping dropped example_tests: {output}",
+        output.contains("example_tests::rfc0122_wasm_list_carrier"),
+        "crate+example_tests mapping did not partition to the touched module: {output}",
+    );
+    assert!(
+        !output.contains("test(/^example_tests::/)"),
+        "crate+file mapping still selected the whole example_tests matrix: {output}",
     );
     assert!(
         !output.contains("WORKSPACE") && !output.contains("--workspace"),

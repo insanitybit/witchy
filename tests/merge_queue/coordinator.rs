@@ -371,8 +371,10 @@ fn example_tests_only_batch_classifies_focused_nextest_and_skips_heavy_legs() {
         "example_tests-only batch did not skip book/rust-class/compile/wasm: {env}",
     );
     assert!(
-        env.contains("nextest=[-p witchy") && env.contains("expr=[test(/^example_tests::/)"),
-        "example_tests-only batch did not select the example_tests area: {env}",
+        env.contains("nextest=[-p witchy")
+            && env.contains("rfc0122_wasm_list_carrier")
+            && !env.contains("expr=[test(/^example_tests::/)"),
+        "example_tests-only batch did not partition to the touched module: {env}",
     );
     assert!(
         !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
@@ -382,6 +384,10 @@ fn example_tests_only_batch_classifies_focused_nextest_and_skips_heavy_legs() {
     assert!(
         stderr.contains("skipped generator build (batch cannot stale census/stdlib snapshots)"),
         "example_tests-only prepare still ran the generator cargo build: {stderr}",
+    );
+    assert!(
+        stderr.contains("skip-sweeps=1"),
+        "example_tests-only batch still enabled corpus sweeps: {stderr}",
     );
 }
 
@@ -414,8 +420,12 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
         "interp+example_tests should skip rust-class/wasm and keep compile: {env}",
     );
     assert!(
-        env.contains("-p witchy-interp") && env.contains("example_tests"),
-        "crate+example_tests did not union the mapped crate with example_tests: {env}",
+        env.contains("-p witchy-interp") && env.contains("rfc0122_wasm_list_carrier"),
+        "crate+example_tests did not union the mapped crate with the touched module: {env}",
+    );
+    assert!(
+        !env.contains("expr=[package(witchy-interp) or package(witchy-caps) or test(/^example_tests::/)"),
+        "crate+file mapping still selected the whole example_tests matrix: {env}",
     );
     assert!(
         env.contains("check=[-p witchy-interp") && !env.contains("check=[-p witchy]"),

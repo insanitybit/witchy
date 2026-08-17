@@ -2002,7 +2002,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # parity guarantee. Any doubt about a path belongs on this list.
     local skip_sweeps=0
     if [ -n "$changed" ] \
-        && ! echo "$changed" | grep -cE '^(crates/|src/|std/|examples/|book/|spec/|README\.md|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' >/dev/null; then
+        && [ -z "$(diff_without_example_tests "$changed" | grep -E '^(crates/|src/|std/|examples/|book/|spec/|README\.md|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true)" ]; then
         skip_sweeps=1
     fi
 

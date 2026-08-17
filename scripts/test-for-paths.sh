@@ -56,6 +56,7 @@ gate_tests=()
 gate_need_examples=0
 gate_need_stdlib_docs=0
 gate_workspace=0
+gate_example_mods=()
 add_pkg() {
     local p="$1" x
     for x in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do [ "$x" = "$p" ] && return; done
@@ -66,14 +67,20 @@ add_gate_test() {
     for x in ${gate_tests[0]+"${gate_tests[@]}"}; do [ "$x" = "$t" ] && return; done
     gate_tests+=("$t")
 }
+add_example_mod() {
+    local m="$1" x
+    for x in ${gate_example_mods[0]+"${gate_example_mods[@]}"}; do [ "$x" = "$m" ] && return; done
+    gate_example_mods+=("$m")
+}
 emit_gate_nextest() {
-    local p t args="" expr=""
+    local p t args="" expr="" m
     if [ "$gate_workspace" -eq 1 ]; then
         printf 'WORKSPACE\n'
         return 0
     fi
     if [ "${#gate_pkgs[@]}" -eq 0 ] && [ "${#gate_tests[@]}" -eq 0 ] \
-        && [ "$gate_need_examples" -eq 0 ] && [ "$gate_need_stdlib_docs" -eq 0 ]; then
+        && [ "$gate_need_examples" -eq 0 ] && [ "$gate_need_stdlib_docs" -eq 0 ] \
+        && [ "${#gate_example_mods[@]}" -eq 0 ]; then
         printf 'WORKSPACE\n'
         return 0
     fi
@@ -94,10 +101,21 @@ emit_gate_nextest() {
         args="${args:+$args }-p $p"
         expr="${expr:+$expr or }package($p)"
     done
-    if [ "$gate_need_examples" -eq 1 ] || [ "$gate_need_stdlib_docs" -eq 1 ]; then
+    # Touched example_tests files win over the crate-wide matrix: run those
+    # modules (plus mapped crate tests), not every example_tests::* case.
+    # Crate-only diffs still take the full matrix via gate_need_examples.
+    if [ "${#gate_example_mods[@]}" -gt 0 ]; then
         args="${args:+$args }-p witchy"
-        [ "$gate_need_examples" -eq 1 ] && expr="${expr:+$expr or }test(/^example_tests::/)"
-        [ "$gate_need_stdlib_docs" -eq 1 ] && expr="${expr:+$expr or }test(stdlib_docs_are_current)"
+        for m in "${gate_example_mods[@]}"; do
+            expr="${expr:+$expr or }test(/^example_tests::${m}::/)"
+        done
+    elif [ "$gate_need_examples" -eq 1 ]; then
+        args="${args:+$args }-p witchy"
+        expr="${expr:+$expr or }test(/^example_tests::/)"
+    fi
+    if [ "$gate_need_stdlib_docs" -eq 1 ]; then
+        args="${args:+$args }-p witchy"
+        expr="${expr:+$expr or }test(stdlib_docs_are_current)"
     fi
     [ -n "$args" ] || { printf 'WORKSPACE\n'; return 0; }
     printf '%s\n' "$args"
@@ -156,9 +174,14 @@ for p in "${paths[@]}"; do
             add "cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'"
             add "cargo nextest run --test cli_subcommands"
             add "cargo nextest run -p witchy-syntax" ;;
-        src/example_tests.rs | src/example_tests/*)
+        src/example_tests.rs)
             any_rust=1
             gate_need_examples=1
+            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+        src/example_tests/*)
+            any_rust=1
+            _et="${p##*/}"
+            add_example_mod "${_et%.rs}"
             add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/* | src/*)
             any_rust=1
