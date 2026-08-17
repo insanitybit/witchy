@@ -50,6 +50,32 @@ fn main(console: Console):
 }
 
 #[test]
+fn exclusive_reference_list_return_preserves_forced_copy() {
+    let src = r#"mode opt
+
+fn make(text: &'a mut String) -> List(&'a mut String):
+    [text]
+
+fn main(console: Console):
+    var text = "before"
+    let returned = make(&mut text)
+    let moved = returned
+    let selected = moved[0]
+    *selected = "after"
+    console.print(text)
+"#;
+    let want = link_run(src);
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+
+    assert_eq!(optimized, want, "optimized Wasm preserves direct list return");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves direct list return");
+}
+
+#[test]
 fn wasm_first_exclusive_reference_list_function_value_return_writeback() {
     let src = r#"mode opt
 

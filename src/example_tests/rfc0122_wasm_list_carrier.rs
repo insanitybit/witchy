@@ -342,6 +342,37 @@ fn main(console: Console):
     );
 }
 
+#[test]
+fn exclusive_reference_nested_tuple_list_carrier_preserves_forced_copy() {
+    let src = r#"mode opt
+
+import list
+
+fn pair(first: &'a mut String, second: &'b mut String) -> List((&'a mut String, &'b mut String)):
+    [(first, second)]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let returned = pair(&mut first, &mut second)
+    let moved = returned
+    let (left, right) = moved[0]
+    *left = "updated-first"
+    *right = "updated-second"
+    console.print(first)
+    console.print(second)
+"#;
+    let want = link_run(src);
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+
+    assert_eq!(optimized, want, "optimized Wasm preserves nested tuple-list transport");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves nested tuple-list transport");
+}
+
 /// Exercise replacement of an exclusive place inside a reference list. This
 /// remains Wasm-first while list slot write-back is still part of the changing
 /// carrier ABI; its interpreter debt is recorded in RFC-0122's ledger.
@@ -424,6 +455,58 @@ fn main(console: Console):
 
     assert_eq!(optimized, want, "optimized Wasm preserves list slot replacement");
     assert_eq!(forced_copy, want, "forced-copy Wasm preserves list slot replacement");
+}
+
+#[test]
+fn exclusive_reference_list_push_preserves_forced_copy() {
+    let src = r#"mode opt
+
+import list
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    var refs: List(&'a mut String) = [&mut first]
+    list.push(refs, &mut second)
+    let selected = refs[1]
+    *selected = "updated-second"
+    console.print(first)
+    console.print(second)
+"#;
+    let want = link_run(src);
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+
+    assert_eq!(optimized, want, "optimized Wasm preserves list push");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves list push");
+}
+
+#[test]
+fn exclusive_reference_empty_list_push_preserves_forced_copy() {
+    let src = r#"mode opt
+
+import list
+
+fn main(console: Console):
+    var second = "second"
+    var refs: List(&'a mut String) = []
+    list.push(refs, &mut second)
+    let selected = refs[0]
+    *selected = "updated-second"
+    console.print(second)
+"#;
+    let want = link_run(src);
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+
+    assert_eq!(optimized, want, "optimized Wasm preserves empty-list push");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves empty-list push");
 }
 
 /// Exercise construction of a mutable reference list through the ordinary
