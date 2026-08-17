@@ -1328,6 +1328,39 @@
     }
 
     #[test]
+    fn shared_reference_cannot_cross_generator_suspension() {
+        let main = witchy_syntax::parser::parse_module(
+            "mode opt\n\nimport iter\n\ngen fn bad(input: &'a String) -> Iter(String):\n    yield *input\n\nfn main(console: Console):\n    console.print(\"done\")\n",
+        )
+        .expect("parse generator shared-reference fixture");
+        let err = witchy_syntax::linker::link(
+            vec![("main".into(), main)],
+            "main",
+            no_comptime,
+        )
+        .expect_err("a shared reference cannot cross a generator function boundary");
+        assert!(
+            err.to_string().contains("gen fn `bad` may not expose a borrowed view"),
+            "{err}"
+        );
+
+        let main = witchy_syntax::parser::parse_module(
+            "mode opt\n\nimport iter\n\ngen fn bad(input: &'a String) -> Iter(&'a String):\n    yield input\n\nfn main(console: Console):\n    console.print(\"done\")\n",
+        )
+        .expect("parse borrowed generator-element fixture");
+        let err = witchy_syntax::linker::link(
+            vec![("main".into(), main)],
+            "main",
+            no_comptime,
+        )
+        .expect_err("a generator cannot yield a shared reference");
+        assert!(
+            err.to_string().contains("gen fn `bad` may not expose a borrowed view"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn shared_reference_cannot_escape_through_a_closure() {
         let err = linked_main(
             "mode opt\n\nfn bad(input: &'a String) -> fn() -> String:\n    fn():\n        *input\n\nfn main(console: Console):\n    let text = \"value\"\n    let action = bad(&text)\n    console.print(action())\n",
