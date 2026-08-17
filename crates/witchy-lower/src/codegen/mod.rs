@@ -1763,7 +1763,7 @@ impl<'types> Codegen<'types> {
     }
 
     fn kind_for_type(&self, t: &Type) -> Kind {
-        if matches!(t, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _)) {
+        if Self::is_executable_reference_type(t) {
             return Kind::GcRef(PLACE_REFERENCE_ID);
         }
         let t = t.unqualified();
@@ -2437,16 +2437,25 @@ impl<'types> Codegen<'types> {
                         .is_some_and(|param| Self::is_executable_reference_type(param.ty()))
                 })
                 .collect(),
-            unique_capacity_result: fact.unique_capacity_result(),
+            // An explicit `unique &'a mut T` returns its affine state in the
+            // place-reference carrier itself. It must not also receive the
+            // legacy i32 collection-capacity result, or callers consume a
+            // different ABI from the declared GC reference result.
+            unique_capacity_result: fact.unique_capacity_result()
+                && !Self::is_executable_reference_type(signature.result().ty()),
         }
     }
 
     fn is_explicit_reference_type(ty: &Type) -> bool {
-        matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _))
+        match ty {
+            Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
+            Type::Qualified(_, inner) => Self::is_explicit_reference_type(inner),
+            _ => false,
+        }
     }
 
     fn is_executable_reference_type(ty: &Type) -> bool {
-        matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _))
+        Self::is_explicit_reference_type(ty)
     }
 
     fn ownership_envelope_for_named_signature(
