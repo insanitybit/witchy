@@ -1031,7 +1031,7 @@ fn facts_impl(
                     .map(|sig| (param.name.clone(), sig))
             })
             .collect();
-        ctx.check_block_with(&f.body, &[], &callable_params, true)?;
+        ctx.check_block_with(&f.body, &[], &callable_params, true, &[])?;
         index_control_flow(&f.body, true, &mut facts);
 
         let mut lambdas = Vec::new();
@@ -1166,7 +1166,7 @@ fn check_lambda_body(
             .and_then(|ty| borrow_sig_from_fn_type(ty, catalog))
             .map(Box::new),
     };
-    ctx.check_block_with(body, &[], &callable_params, true)?;
+    ctx.check_block_with(body, &[], &callable_params, true, &[])?;
     index_control_flow(body, true, facts);
     Ok(())
 }
@@ -2014,8 +2014,9 @@ impl LoanCtx<'_> {
         inherited: &[Loan],
         inherited_callables: &HashMap<String, BorrowSig>,
         function_body: bool,
+        seeded: &[Loan],
     ) -> Result<(), TypeError> {
-        let mut local: Vec<Loan> = Vec::new();
+        let mut local: Vec<Loan> = seeded.to_vec();
         // Exclusive references are affine. Once a local handle moves, its old
         // spelling must not become an alias that reopens the same exclusive
         // loan later in the block.
@@ -3964,13 +3965,13 @@ impl LoanCtx<'_> {
                         owner_type: source.owner_type,
                     });
                 }
-                return self.check_block_with(body, &inherited, callables, false);
+                return self.check_block_with(body, open, callables, false, &inherited);
             }
         }
         let mut nested: Vec<&Block> = Vec::new();
         collect_nested_blocks_in_stmt(stmt, &mut nested);
         for b in nested {
-            self.check_block_with(b, open, callables, false)?;
+            self.check_block_with(b, open, callables, false, &[])?;
         }
         Ok(())
     }

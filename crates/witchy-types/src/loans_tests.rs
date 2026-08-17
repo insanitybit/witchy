@@ -415,6 +415,15 @@
     }
 
     #[test]
+    fn exclusive_reference_loop_elements_are_affine() {
+        let err = check_str(
+            "mode opt\n\nfn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):\n    [left, right]\n\nfn main(console: Console):\n    var first = \"first\"\n    var second = \"second\"\n    let values = all(&mut first, &mut second)\n    for value in values:\n        let alias = value\n        *value = \"updated\"\n",
+        )
+        .expect_err("moving a loop element retires its exclusive handle");
+        assert!(err.contains("moved exclusive reference `value`"), "{err}");
+    }
+
+    #[test]
     fn returned_exclusive_reference_reborrows_an_exclusive_argument() {
         check_str(
             "mode opt\n\n\
