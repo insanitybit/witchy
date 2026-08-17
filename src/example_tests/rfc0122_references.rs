@@ -116,6 +116,23 @@ fn main(console: Console):
 }
 
 #[test]
+fn closure_mutable_to_shared_reborrow_preserves_the_owner_on_both_backends() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var text = "value"
+    let share = fn(value: &'a mut String) -> &'a String:
+        value
+    let editable = &mut text
+    let observed = share(editable)
+    console.print(*observed)
+"#;
+    let want = ["value"];
+    assert_eq!(link_run(src), want, "interpreter shortens an exclusive closure argument to shared access");
+    assert_eq!(wasm_run_reowns(src).0, want, "compiled code shortens an exclusive closure argument to shared access");
+}
+
+#[test]
 fn shared_reference_tuple_preserves_each_owner_root_on_both_backends() {
     let src = r#"mode opt
 
