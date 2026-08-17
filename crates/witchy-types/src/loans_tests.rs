@@ -242,6 +242,20 @@
     }
 
     #[test]
+    fn unique_exclusive_reference_qualifiers_survive_list_transport() {
+        check_str(
+            "mode opt\n\nfn pack(own left: unique &'a mut String, own right: unique &'a mut String) -> List(unique &'a mut String):\n    [left, right]\n\nfn select(values: List(unique &'a mut String)) -> unique &'a mut String:\n    values[0]\n",
+        )
+        .expect("a unique exclusive handle retains its qualifier through a reference list");
+
+        let err = check_str(
+            "mode opt\n\nfn pack(own text: unique &'a mut String) -> List(unique &'a mut String):\n    [text]\n\nfn bad():\n    var text = \"before\"\n    let values = pack(&mut text)\n    let moved = values\n    *moved[0] = \"changed\"\n    *values[0] = \"reused\"\n",
+        )
+        .expect_err("moving a unique exclusive-reference list retires its prior handle");
+        assert!(err.contains("moved exclusive reference `values`") || err.contains("used more than once"), "{err}");
+    }
+
+    #[test]
     fn mutable_exclusive_reference_retains_writeback_access() {
         check_str(
             "mode opt\n\nfn replace(var text: &'a mut String) -> Nil:\n    *text = \"changed\"\n",
