@@ -4865,6 +4865,12 @@ impl Checker {
         self.explicit_reference_bindings.pop();
         self.frozen_bindings.pop();
     }
+    fn is_explicit_reference_binding(&self, name: &str) -> bool {
+        self.explicit_reference_bindings
+            .iter()
+            .rev()
+            .any(|bindings| bindings.contains(name))
+    }
     /// The (name, type) bindings introduced in the innermost scope frame — used to
     /// compare what each or-pattern alternative binds (RFC-0052 binding-consistency).
     fn scope_bindings(&self) -> Vec<(String, Ty)> {
@@ -6023,6 +6029,19 @@ impl Checker {
                     }
                     if borrowed_shell_binding {
                         self.authorize_borrowed_shell_binding(name.clone());
+                    }
+                    // Reference qualifiers erase to their payload in `Ty`, but
+                    // a local formed by borrowing (or copying another explicit
+                    // reference) still carries a loan into a closure capture.
+                    // Keep that provenance alongside the ordinary local type.
+                    if decl.as_ref().is_some_and(type_is_explicit_reference)
+                        || matches!(value, Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. })
+                        || matches!(value, Expr::Var(source) if self.is_explicit_reference_binding(source))
+                    {
+                        self.explicit_reference_bindings
+                            .last_mut()
+                            .expect("reference bindings track type scopes")
+                            .insert(name.clone());
                     }
                     ty = Ty::Unit;
                 }

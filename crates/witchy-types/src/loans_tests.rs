@@ -1333,12 +1333,44 @@
     }
 
     #[test]
+    fn copied_local_shared_reference_cannot_escape_through_a_closure() {
+        let err = linked_main(
+            "mode opt\n\nfn main(console: Console):\n    let text = \"value\"\n    let observed = &text\n    let copied = observed\n    let action = fn() -> String:\n        *copied\n    console.print(action())\n",
+        )
+        .expect_err("a copied reference cannot escape through a closure");
+        assert!(
+            err.message.contains("closure")
+                && err.message.contains("reference")
+                && err.message.contains("owned"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn returned_shared_reference_cannot_escape_through_a_closure() {
+        let err = linked_main(
+            "mode opt\n\nfn forward(input: &'a String) -> &'a String:\n    input\n\nfn main(console: Console):\n    let text = \"value\"\n    let observed = forward(&text)\n    let action = fn() -> String:\n        *observed\n    console.print(action())\n",
+        )
+        .expect_err("a returned reference cannot escape through a closure");
+        assert!(
+            err.message.contains("closure")
+                && err.message.contains("borrowed view")
+                && err.message.contains("owned"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn exclusive_references_cannot_escape_through_closures() {
         let closure = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hi\"\n    let editable = &mut text\n    let later = fn(): editable\n    console.print(text)\n",
         )
         .expect_err("an exclusive reference captured by a closure escapes its owner");
-        assert!(closure.contains("escapes through a closure"), "{closure}");
+        assert!(
+            closure.contains("closure capture `editable` carries an explicit reference")
+                && closure.contains("materialize an owned value"),
+            "{closure}"
+        );
     }
 
     #[test]
