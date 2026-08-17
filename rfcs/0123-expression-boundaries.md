@@ -45,8 +45,11 @@ have a sibling rule: a newline `-` is the next arm's negative pattern, not
 subtraction. `on_same_line_as_prev()` has five call sites (the `?` message
 operand, same-line `[` / `(`, inline-arm `.Tag`, and `.Tag(` payloads). Add
 those two `expr()` branches and the newline rule is a pile of guards. This
-RFC folds the two `expr()` cases and the same-line call/index/`(` guards into
-one table. The `.Tag` test is the one leftover that earns its own rule.
+RFC replaces the two `expr()` cases with one table. The same-line `[` / `(`
+guards stay: they have no bracket-depth gate, and folding them into a
+table that does not fire inside `()` would rejoin `a\n[0]` inside the
+parens this RFC tells authors to write. The `.Tag` test is the leftover
+that earns its own rule.
 
 `&` is the same shape and has no such rule. `&` is bitwise-and *and* RFC-0122
 borrow. `let view = &text` on one line and `&other` on the next is a live
@@ -124,8 +127,8 @@ is not inside `()`, `[]`, or `${...}`, classify it:
   `typeck.rs:6123-6137` only runs `reject_borrowed_nominal_runtime_ty` on
   non-tail expression statements, and the RFC-0043 must-bind rule is
   call-scoped. That is worse than `* b`, which usually fails as a deref.
-  The diagnostic in §5 covers this shape. The author who meant a sum
-  writes `(a + b - c)` or keeps the operators on one line.
+  The parser rejects this shape as a hard error (§5). The author who meant
+  a sum writes `(a + b - c)` or keeps the operators on one line.
 
 Parentheses and brackets still join lines. This is the Python rule with one
 deliberate extra: we continue across a newline when the next token *cannot*
@@ -164,8 +167,12 @@ is still a continuation, and a more-indented `*` is still a new statement,
 because `*` is dual. Authors who want a wrapped multiply write parens.
 
 The two `expr()` newline branches (`is_assignment()` and the match-arm `-`
-check) come out. So do the same-line `[` / `(` guards in `postfix()`, because
-those tokens already end the expression. The `.Tag` test stays.
+check) come out. The same-line `[` / `(` guards in `postfix()` stay. They
+are pre-existing, they have no bracket-depth gate, and they must keep
+stopping `a\n[0]` and `bar\n(1, 2)` *inside* parentheses. The table does
+not fire inside `()`, `[]`, or `${...}`, so folding the guards into it
+would change those forms from a parse error into an index or a call. The
+`.Tag` test stays.
 
 #### Residual: inline-arm `.Tag`
 
@@ -252,11 +259,16 @@ has to run on a file that does not typecheck.
 
 Two new messages, and one rewrite of an old one.
 
-- A newline ended a complete expression and the next statement is a bare
-  prefix-operator expression (`-`, `*`, `!`, `~`) that is neither bound nor
-  assigned: name the glyph, say it also starts a statement, and offer the
-  one-line form or parentheses. This is the wrapped-sum case
-  (`let total = a` / `+ b` / `- c`) as well as the multiply-as-deref case.
+- The parser emits a hard error when a newline ended a complete expression
+  and the next statement is a bare prefix-operator expression (`-`, `*`,
+  `!`, `~`) that is neither bound nor assigned. Name the glyph, say it also
+  starts a statement, and offer the one-line form or parentheses. This is
+  the wrapped-sum case (`let total = a` / `+ b` / `- c`) as well as the
+  multiply-as-deref case. A warning would leave the silent-`-c` hole
+  half-open. The trigger is "the previous line ended a complete
+  expression," so `fn ne(...) -> Bool:` / newline / `!eq(...)` and
+  `_ ->` / newline / `-1` are not this error: `:` and `->` do not end an
+  expression.
 - `;` after a non-expression form: the sentence in §2.
 - `;` inside an argument list or other expression-interior position: a
   parse error, not a discard.
@@ -304,8 +316,8 @@ The continuing-token table is still a classification. It is one table, and it
 is the same kind of fact `infix_bp` already is. It is not free.
 
 `let x = a` / newline / `* b` silently becomes a dereference if `*b` typechecks.
-Worse: `let total = a` / `+ b` / `- c` typechecks and drops `-c`. The §5
-diagnostic has to fire on that shape, because authors coming from wrapped
+Worse: `let total = a` / `+ b` / `- c` typechecks and drops `-c`. The
+parser has to reject that shape, because authors coming from wrapped
 arithmetic will hit it.
 
 People will want `;` after `let`. The parse error has to be early and dull.
@@ -343,12 +355,12 @@ reuse that made the missing newline rule loud.
 
 1. Parser and checker grow the continuing-token table, consulted from both
    `expr()` and `postfix()`. The `is_assignment()` and match-arm `-` newline
-   branches leave `expr()`. The same-line `[` / `(` guards fold into the
-   table. The inline-arm `.Tag` branch in `postfix()` stays. The `?` message
-   operand stays same-line. Diagnostics for a broken wrapped multiply, a
-   wrapped sum, or a next-line borrow ship in the same cut. This step is
-   breaking for any unbracketed dual-glyph continuation; that form is rare
-   on purpose.
+   branches leave `expr()`. The same-line `[` / `(` guards stay; they do
+   not fold into the table. The inline-arm `.Tag` branch in `postfix()`
+   stays. The `?` message operand stays same-line. The parser rejects a
+   broken wrapped multiply, a wrapped sum, or a next-line borrow in the
+   same cut. This step is breaking for any unbracketed dual-glyph
+   continuation; that form is rare on purpose.
 2. Lexer grows `Tok::Semi`. Parser accepts `;` only as the terminator of an
    expression statement. `let _ = e` becomes a diagnostic that names `e;`.
    `fmt` rewrites the four live `.witchy` sites and the book/spec examples.
@@ -378,11 +390,15 @@ both.
   The operand stays on `?`'s line. `e?` / newline / `"msg"` is bare `e?`
   plus a string statement, unchanged from `on_same_line_as_prev()` at
   `parser.rs:1802`.
-- `let x = a` / newline / `* b` with `*` meant as multiply is a diagnostic
-  that names the one-line and parenthesized forms.
-- `let total = a` / newline / `+ b` / newline / `- c` is a diagnostic, not
+- `let x = a` / newline / `* b` with `*` meant as multiply is a parse
+  error that names the one-line and parenthesized forms.
+- `let total = a` / newline / `+ b` / newline / `- c` is a parse error, not
   a silent `a + b` that drops `-c`. Parenthesized `(a + b - c)` remains one
   expression on both backends.
+- `fn ne(self: T, other: T) -> Bool:` / newline / `!eq(self, other)` is
+  not an error, and neither is `_ ->` / newline / `-1`. The trigger
+  requires the previous line to have ended a complete expression. `:` and
+  `->` do not. The ten `ne` impls in `std/cmp.witchy` stay legal.
 - `xs.length();` as the last form of a `-> Nil` function typechecks on both
   backends; the same call without `;` is the block's `Int`.
 - `let x = 1;` is a parse error. `f(a; b)` is a parse error. `";"` in a
