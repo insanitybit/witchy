@@ -685,6 +685,19 @@ fn f():
             panic!("expected one borrowed type payload");
         };
         assert!(matches!(view.ty, Type::Qualified(TypeQual::LegacyBorrow(_), _)));
+
+        let references = parse_module(
+            "mode opt\n\nfn f():\n    quote type:\n        &'a mut String\n",
+        )
+        .expect("explicit reference type quote should parse");
+        let [reference] = references.compiler_type_syntax.as_slice() else {
+            panic!("expected one explicit reference type payload");
+        };
+        assert!(matches!(
+            reference.ty,
+            Type::Qualified(TypeQual::BorrowMut(ref lifetime), _)
+                if lifetime == "a"
+        ));
     }
 
     #[test]
