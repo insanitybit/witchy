@@ -237,6 +237,9 @@ impl Codegen<'_> {
     /// `fill__Int`). Used by both `at`'s type and its load, so an Int element of a
     /// call-result list is recovered as i64 rather than truncated to i32.
     pub(crate) fn list_elem_kind(&self, list: &Expr) -> Kind {
+        if let Some((_, _, kind)) = self.gc_reference_list_layout_of_expr(list) {
+            return kind;
+        }
         let vt = self.elem_val_type_of(list);
         if vt != ValType::Other {
             return valtype_kind(vt);

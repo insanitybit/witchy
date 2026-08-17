@@ -1209,11 +1209,7 @@ impl Codegen<'_> {
                 // path; scalar/reference/GC lists fall through to the slot read.
                 if let Some(address) = self.lower_packed_list_element_read(&args[0], &args[1]) {
                     address
-                } else if self
-                    .ast_type_of_expr(&args[0])
-                    .as_ref()
-                    .and_then(|ty| self.gc_reference_list_layout(ty))
-                    .is_some()
+                } else if self.gc_reference_list_layout_of_expr(&args[0]).is_some()
                 {
                     self.lower_gc_function_list_at(&args[0], &args[1])?
                 } else {

@@ -1996,6 +1996,31 @@ impl<'types> Codegen<'types> {
             })
     }
 
+    /// Recover a reference-list carrier from its source type when available, or
+    /// from the physical GC array kind carried by a local/call result after the
+    /// type table has lost that refinement.
+    pub(crate) fn gc_reference_list_layout_of_expr(
+        &self,
+        expr: &Expr,
+    ) -> Option<(u32, u32, Kind)> {
+        self.ast_type_of_expr(expr)
+            .as_ref()
+            .and_then(|ty| self.gc_reference_list_layout(ty))
+            .or_else(|| {
+                let Kind::GcRef(type_id) = self.kind_of(expr) else {
+                    return None;
+                };
+                self.gc_reference_list_layouts()
+                    .into_iter()
+                    .find_map(|(candidate, kind)| {
+                        (candidate == type_id).then(|| {
+                            let array_id = type_id.checked_sub(self.gc_structs.len() as u32)?;
+                            Some((type_id, array_id, kind))
+                        })?
+                    })
+            })
+    }
+
     fn gc_reference_list_layouts(&self) -> Vec<(u32, Kind)> {
         let mut layouts = self
             .gc_reference_list_ids
@@ -2055,10 +2080,9 @@ impl<'types> Codegen<'types> {
         if let Some(ty) = self.ast_type_of_expr(expr) {
             self.collect_unit_gc_ids_type(&ty, ids);
         }
-        // Rewritten call nodes may no longer retain an address-keyed result
-        // type, but their direct callable ABI is still authoritative. Include
-        // its typed return carrier so a subsequent local binding/destructure
-        // has the required `match_gc_*` and scratch locals.
+        // A rewritten direct call can lose its address-keyed result type while
+        // retaining a typed GC return ABI. Its scratch carrier is still needed
+        // by the receiving local and any later projection.
         if let Expr::Call { name, .. } = expr
             && let Some(Kind::GcRef(id)) = self.fn_ret.get(name)
         {
@@ -6349,8 +6373,7 @@ impl<'types> Codegen<'types> {
         target: &Expr,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirNode as N};
-        let list_ty = self.ast_type_of_expr(list)?;
-        let (type_id, array_id, _) = self.gc_reference_list_layout(&list_ty)?;
+        let (type_id, array_id, _) = self.gc_reference_list_layout_of_expr(list)?;
         let level = self.assign_level;
         if level >= APPLY_POOL {
             return None;
@@ -7568,9 +7591,7 @@ impl<'types> Codegen<'types> {
             } => {
                 let base_expr = Self::codegen_place_read(base);
                 if let Some((_, _, element_kind)) = self
-                    .ast_type_of_expr(&base_expr)
-                    .as_ref()
-                    .and_then(|ty| self.gc_reference_list_layout(ty))
+                    .gc_reference_list_layout_of_expr(&base_expr)
                 {
                     if element_kind != expected {
                         return None;
