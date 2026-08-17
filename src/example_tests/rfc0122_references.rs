@@ -87,3 +87,25 @@ fn main(console: Console):
     assert_eq!(link_run(src), want, "interpreter preserves list reference owners");
     assert_eq!(wasm_run_reowns(src).0, want, "compiled backend preserves list reference owners");
 }
+
+#[test]
+fn exclusive_reference_list_projection_writes_the_selected_owner_on_both_backends() {
+    let src = r#"mode opt
+
+import list
+
+fn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):
+    [left, right]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let values = all(&mut first, &mut second)
+    *values[1] = "updated"
+    console.print(first)
+    console.print(second)
+"#;
+    let want = ["first", "updated"];
+    assert_eq!(link_run(src), want, "interpreter writes through the selected list reference");
+    assert_eq!(wasm_run_reowns(src).0, want, "compiled backend writes through the selected list reference");
+}

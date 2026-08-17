@@ -146,8 +146,29 @@ impl<'types> Codegen<'types> {
             Expr::Call { name, args }
                 if name == witchy_syntax::intrinsics::REFERENCE_WRITE =>
             {
-                let [Expr::Var(reference), replacement] = args.as_slice() else {
+                let [reference, replacement] = args.as_slice() else {
                     return None;
+                };
+                // A projected reference (for example `*values[i] = value`)
+                // is itself a first-class carrier, not a named local. Evaluate
+                // it once into the ordinary reference-result scratch, then use
+                // the same write path as a named reference.
+                let Expr::Var(reference) = reference else {
+                    let carrier = call_result_gc_tmp(PLACE_REFERENCE_ID);
+                    self.locals
+                        .insert(carrier.clone(), Kind::GcRef(PLACE_REFERENCE_ID));
+                    let reference_value = self.lower_expr(reference)?;
+                    let write = Expr::Call {
+                        name: witchy_syntax::intrinsics::REFERENCE_WRITE.to_string(),
+                        args: vec![Expr::Var(carrier.clone()), replacement.clone()],
+                    };
+                    return Some(W::Seq(vec![
+                        N::SetLocal {
+                            local: carrier,
+                            value: reference_value,
+                        },
+                        N::Push(self.lower_expr(&write)?),
+                    ]));
                 };
                 let value = self.lower_expr(replacement)?;
                 if let Some(place) = self.reference_places.get(reference).cloned().filter(|place| {

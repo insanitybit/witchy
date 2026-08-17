@@ -236,27 +236,20 @@ impl Interpreter {
         for (index, arg) in args.iter().enumerate() {
             let param = params.get(index);
             if param.is_some_and(parameter_writes_back) {
-                if param.is_some_and(is_exclusive_reference)
-                    && !matches!(arg, Expr::Unary { op: UnOp::BorrowMut, .. })
-                {
+                if param.is_some_and(is_exclusive_reference) {
                     let value = self.eval(arg, env)?;
                     if !matches!(value, Value::Reference { mutable: true, .. }) {
                         return err("an `&mut` parameter requires an exclusive reference or `&mut place`");
                     }
                     // A first-class reference already identifies the caller's
-                    // storage.  Do not turn it back into a copy/write-back pair.
+                    // storage. This includes a direct `&mut place`: do not
+                    // turn it back into a copy/write-back pair, or a function
+                    // that stores the parameter in a tuple/list loses the
+                    // selected owner.
                     values.push(value);
                     places.push(None);
                 } else {
-                    let place_expr = if param.is_some_and(is_exclusive_reference) {
-                        match arg {
-                            Expr::Unary { op: UnOp::BorrowMut, expr } => &**expr,
-                            _ => unreachable!("the direct reference arm returned above"),
-                        }
-                    } else {
-                        arg
-                    };
-                    let place = self.capture_place(place_expr, env)?;
+                    let place = self.capture_place(arg, env)?;
                     let value = self.read_place_value(&place, env)?;
                     values.push(value);
                     places.push(Some(place));
