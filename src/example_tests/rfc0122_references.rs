@@ -199,6 +199,31 @@ fn main(console: Console):
 }
 
 #[test]
+fn exclusive_reference_list_move_then_projection_writes_the_selected_owner_on_wasm() {
+    let src = r#"mode opt
+
+import list
+
+fn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):
+    [left, right]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let values = all(&mut first, &mut second)
+    let moved = values
+    *moved[1] = "updated"
+    console.print(first)
+    console.print(second)
+"#;
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["first", "updated"],
+        "compiled backend preserves a moved exclusive list carrier for projection",
+    );
+}
+
+#[test]
 fn exclusive_reference_list_iteration_writes_each_owner_on_wasm() {
     let src = r#"mode opt
 
