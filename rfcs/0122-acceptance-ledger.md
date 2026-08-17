@@ -17,6 +17,13 @@ Once that milestone is reached, the named fixture must pass on both backends
 before its row can become `PROVEN` or experimental opt mode can exit. A
 Wasm-first result is executable progress, not completion.
 
+### Active interpreter parity debts
+
+| acceptance row | fixture | missing interpreter boundary | convergence milestone |
+| --- | --- | --- | --- |
+| 18 aggregate affine roots | `wasm_first_nested_exclusive_tuple_list_carrier_writes_after_destructure` | interpreter nested `List`-of-tuple exclusive place carrier | freeze the nested aggregate/list carrier ABI, then add and pass the named interpreter differential fixture |
+| 19 interpreter/Wasm parity | `wasm_first_nested_exclusive_tuple_list_carrier_writes_after_destructure` | the same interpreter nested `List`-of-tuple exclusive place carrier | freeze the `ReferenceKind` aggregate/list call/result ABI, then compare interpreter, optimized Wasm, and forced-copy Wasm |
+
 | Criterion | fixture | missing interpreter boundary | convergence milestone | current status |
 | --- | --- | --- | --- | --- |
 | 12 exclusive loans | `rfc0122_local_exclusive_reference_write_agrees_on_both_backends`, `rfc0122_mutable_exclusive_parameter_writes_back_on_both_backends`, `exclusive_reference_nominal_aggregate_move_destructure_and_write_work_on_both_backends`, `exclusive_reference_nested_nominal_list_move_projection_and_write_work_on_both_backends`, `exclusive_reference_list_extract_then_project_disjoint_owners_on_both_backends`, `exclusive_reference_tuple_move_projection_and_write_work_on_both_backends` | writable direct-place/reference-call carrier | direct-place write ABI frozen; aggregate/list carrier ABI frozen | direct and aggregate/list/tuple carriers converge on interpreter and compiled Wasm; returned reborrow and parent suspension now have named checker/runtime evidence, while the full affine CFG and no-copy matrix remain |

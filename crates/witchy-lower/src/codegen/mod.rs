@@ -2137,6 +2137,11 @@ impl<'types> Codegen<'types> {
             self.collect_unit_gc_ids_type(&result, &mut ids);
         }
         self.collect_unit_gc_ids_block(body, &mut ids);
+        // A tuple carrier can be recovered from a list projection after the
+        // source type table has erased the projection's element shell. The
+        // lowering still emits its typed `match_gc_<id>` scratch local, so
+        // retain every registered tuple carrier in the function-local ABI.
+        ids.extend(self.gc_tuple_ids.values().copied());
         ids
     }
 

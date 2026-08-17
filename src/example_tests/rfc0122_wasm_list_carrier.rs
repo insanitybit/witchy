@@ -282,3 +282,34 @@ fn main(console: Console):
         "compiled Wasm preserves an affine tuple reference carrier through move, projection, and writes",
     );
 }
+
+/// This is deliberately compiled-Wasm-first while the nested aggregate
+/// carrier ABI is still changing. The interpreter debt is recorded in the
+/// RFC-0122 acceptance ledger rather than making this lowering slice wait.
+#[test]
+fn wasm_first_nested_exclusive_tuple_list_carrier_writes_after_destructure() {
+    let src = r#"mode opt
+
+import list
+
+fn pair(first: &'a mut String, second: &'b mut String) -> List((&'a mut String, &'b mut String)):
+    [(first, second)]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let returned = pair(&mut first, &mut second)
+    let moved = returned
+    let (left, right) = moved[0]
+    *left = "updated-first"
+    *right = "updated-second"
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["updated-first", "updated-second"],
+        "compiled Wasm preserves an affine tuple-in-list carrier through return, move, destructure, projection, and writes",
+    );
+}
