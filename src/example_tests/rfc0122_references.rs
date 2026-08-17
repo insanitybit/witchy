@@ -135,6 +135,28 @@ fn main(console: Console):
 }
 
 #[test]
+fn unique_exclusive_reference_function_value_return_writes_the_owner_on_wasm() {
+    let src = r#"mode opt
+
+fn pass(own input: unique &'a mut String) -> unique &'a mut String:
+    input
+
+fn main(console: Console):
+    var text = "before"
+    let project = pass
+    let editable = &mut text
+    let returned = project(editable)
+    *returned = "after"
+    console.print(text)
+"#;
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["after"],
+        "compiled code preserves a consumed unique reference through a function value",
+    );
+}
+
+#[test]
 fn explicit_exclusive_reference_return_writes_the_owner_on_wasm() {
     let src = r#"mode opt
 
