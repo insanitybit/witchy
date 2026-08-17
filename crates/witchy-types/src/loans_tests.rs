@@ -429,6 +429,23 @@
     }
 
     #[test]
+    fn exclusive_reference_list_function_values_preserve_affine_owner_transport() {
+        check_str(
+            "mode opt\n\nfn make(text: &'a mut String) -> List(&'a mut String):\n    [text]\n\nfn main(console: Console):\n    var text = \"before\"\n    let factory = make\n    let values = factory(&mut text)\n    let moved = values\n    *moved[0] = \"after\"\n    console.print(text)\n",
+        )
+        .expect("a function value preserves the exclusive list owner relation");
+
+        let err = check_str(
+            "mode opt\n\nfn make(text: &'a mut String) -> List(&'a mut String):\n    [text]\n\nfn main():\n    var text = \"before\"\n    let factory = make\n    let values = factory(&mut text)\n    let moved = values\n    *moved[0] = \"after\"\n    *values[0] = \"reused\"\n",
+        )
+        .expect_err("moving a function-value list result retires the prior list handle");
+        assert!(
+            err.contains("moved exclusive reference `values`") || err.contains("used more than once"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn exclusive_reference_list_push_rejects_an_overlapping_owner() {
         let err = linked_main(
             "mode opt\n\nimport list\n\nfn main():\n    var text = \"before\"\n    var values: List(&'a mut String) = [&mut text]\n    list.push(values, &mut text)\n",
