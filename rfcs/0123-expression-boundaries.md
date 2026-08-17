@@ -20,14 +20,16 @@ tracking: "unimplemented; staged in three cuts"
 ## Summary
 
 The layout pass already knows where a statement starts. It does not emit a
-separator there. This RFC makes it emit a virtual `Tok::Semi` at each
-same-indent line boundary inside a statement block, so the Pratt parser
-stops climbing. An author-written `;` is the same token and means
-"evaluate this, discard it, it is not the block value." It *replaces*
+separator there. This RFC makes it emit a virtual `Tok::StmtSep` at each
+same-indent line boundary inside a statement or arm-list block, *unless*
+the next line's first token cannot start a statement (`.`, `?`, `as`, and
+the infix-only glyphs). Dual glyphs (`*`, `&`, `-`) get the separator
+from indent alone.
+
+An author-written `;` is a different token, `Tok::Semi`. Both stop
+`expr()`. Only `Semi` builds `Stmt::Discard`. That mark *replaces*
 `let _ = e`. `let`, `var`, assignment, `for`, `return`, and the other
 non-value forms do not take a semicolon.
-
-There is no continuing-token table.
 
 ## Motivation
 
@@ -52,10 +54,14 @@ has no such rule. `let view = &text` on one line and `&other` on the next
 is a live misparse in `mode opt`. Every dual glyph we add becomes another
 `if` in `expr()`.
 
-A continuing-token table in `expr()` would reconstruct a boundary layout
-already computed as indent plus `bdepth_start`. It would have to grow
-every time a glyph is both prefix and infix. That is the shape "one
-general mechanism" exists to keep out of the compiler.
+A glyph table in `expr()` would reconstruct a boundary layout already
+computed as indent plus `bdepth_start`. Pure indent, with a separator at
+every same-indent line, would break the 26 same-indent method chains in
+the corpus, including this RFC's own showcase
+(`projects/coven/src/coven_proto.witchy:68`, `.and_then` at indent 8
+after a receiver at indent 8). The synthesis is: indent decides the dual
+glyphs; a closed deny-list of tokens that *cannot* start a statement
+suppresses the separator so those 26 sites stay.
 
 Requiring `;` after every statement would also stop the climb. It would
 tax every normal-mode file, layer a second statement system on the
@@ -82,39 +88,76 @@ discard. We spelled it like a binding.
 
 ## Design
 
-### 1. Layout emits a virtual `Semi` at same-indent statement boundaries
+### 1. Layout emits `StmtSep` at same-indent statement boundaries
 
 Phase 2 of `apply_layout()` already identifies the line that starts a new
 statement: inside a virtual block, a line whose indent equals the body
 indent and whose `bdepth_start` equals the block's depth. It already
-emits `LBrace` on the first such line. It emits a virtual `Tok::Semi`
-before each subsequent one.
+emits `LBrace` on the first such line. Before each subsequent one it
+emits a virtual `Tok::StmtSep`, **unless** that line's first token is in
+the deny-list below.
 
-`expr()` stops because `infix_bp(Semi)` is `None`. No classification of
-`*` vs `+` vs `.`. No `is_assignment()` newline branch. No match-arm `-`
-branch.
+`vtok` is `Token::point(...)` with no virtual marker (`lexer.rs:1182`).
+A layout-emitted token and a typed `;` would be indistinguishable if they
+shared a kind. They must not. Layout emits `Tok::StmtSep`. The author
+writes `Tok::Semi`. Neither is in `infix_bp`, so both stop `expr()`.
+`stmt()` accepts either as a terminator. Only `Tok::Semi` produces
+`Stmt::Discard`. Then `xs.length()` / newline / `xs.push(1)` is
+`xs.length() StmtSep xs.push(1)`, a mid-block expression statement, and
+the RFC-0043 must-bind error still fires. `xs.length();` is
+`xs.length() Semi`, a discard.
 
-`bdepth_start` is the gate, not a hand-written list of `()`, `[]`,
-`${...}`. Phase 1 already tracks `LParen | LBracket | LBrace |
-QuoteHoleStart | DotLBrace | DotLBracket` (`lexer.rs:1230-1236`).
-`DotLBrace` is the anonymous-struct literal `.{ x: 1, y: 2 }`;
-`DotLBracket` is the anonymous-union type. A multi-line `.{ … }` does
-not get a virtual `Semi` in the middle, because those lines start at a
-deeper `bdepth_start`.
+`bdepth_start` is the depth gate. Phase 1 already tracks `LParen |
+LBracket | LBrace | QuoteHoleStart | DotLBrace | DotLBracket`
+(`lexer.rs:1230-1236`). `DotLBrace` is `.{ x: 1, y: 2 }`; `DotLBracket`
+is the anonymous-union type. A multi-line `.{ … }` does not get a
+`StmtSep` in the middle: those lines start at a deeper `bdepth_start`.
 
-#### Statement blocks only
+#### Deny-list: tokens that cannot start a statement
 
-Virtual `Semi` is emitted only inside **statement blocks**: bodies opened
-by `fn` / `if` / `else` / `for` / `while` / `comptime` / `region` and by
-`->` (match-arm bodies). It is *not* emitted inside `type` / `trait` /
-`impl` / `match` / `actor` bodies. Those are lists of fields, methods, or
-arms. A separator there would sit between `.Ok` and `.Err`, or between
-`a: Int` and `b: Int`. Layout classifies the header line that opened the
-block. That is a header-kind gate, not a per-glyph table in `expr()`.
+If the next line's first token is one of these, suppress `StmtSep`:
 
-`match x:` opens an arm-list block (no `Semi` between arms). Each `->`
-opens an arm-body statement block (`Semi` between statements in a
-multi-line arm).
+`.` `?` `as` `+` `/` `%` `==` `!=` `<` `>` `<=` `>=` `&&` `||` `??`
+`|` `^` `<<` `>>` `..` `..=`
+
+That is a closed list of postfix-only and infix-only tokens. It lives in
+`apply_layout()`, next to the line structure it already owns. It is not
+an `if` in `expr()`.
+
+The dual glyphs `*` `&` `-` are **not** on the list. Same-indent `*slot = 9`
+and `&other` get a `StmtSep`. That is the RFC-0122 win, and it does not
+depend on classifying those glyphs as prefix. The list only grows when
+a *new postfix or infix-only* glyph appears, which is the benign
+direction.
+
+The 26 same-indent leading-dot chains in `std/`, `projects/`, and
+`examples/` (coven.witchy:240-255, coven_proto.witchy:68, oauth.witchy,
+two glamour examples, serve_hello) keep working. No `fmt` re-indent.
+
+#### Which blocks get a separator
+
+`StmtSep` is emitted inside **statement blocks** and **arm-list blocks**.
+
+Statement blocks are bodies opened by `fn` / `if` / `else` / `for` /
+`while` / `comptime` / `region` and by `->` (match-arm bodies). The
+header classifier skips `pub` / `async` / `gen` to find the head
+keyword, so `pub fn`, `async fn`, `gen fn`, and `pub async fn` still
+get separators. A block-bodied lambda (`list.map(xs, fn(c):` plus an
+indented body) is a `fn` header and gets them. A default method's `fn`
+body inside a `trait` is included even though the `trait` body itself
+is not.
+
+Arm-list blocks are opened by `match`. They get `StmtSep` between arms.
+`match_expr` already eats an optional `Comma` at `parser.rs:3983`; it
+eats `Comma` or `StmtSep`. Then `.Err` at arm indent is the next arm,
+and the `postfix()` uppercase-dot branch (`1847-1860`) comes out.
+
+`StmtSep` is *not* emitted inside `type` / `trait` / `impl` bodies.
+Those are lists of fields or methods, not statements or arms.
+
+There is no `actor` form. The lexer has no `Tok::Actor`.
+
+`let x = match y:` opens an arm list, correctly.
 
 #### What falls out
 
@@ -123,18 +166,24 @@ let slot = select(&mut pair, true)
 *slot = 9
 ```
 
-Same indent, statement block: virtual `Semi`, two statements.
+Same indent, `*` is not on the deny-list: `StmtSep`, two statements.
 
 ```text
-let files = json.get(src, "files")
+let files = json.get(doc, "source")
+    .and_then(fn(src: Json): json.get(src, "files"))
     .and_then(fn(a: Json): json.as_array(a))
 ```
 
-Continuation is more indented: no `Semi`, one expression. All 33
-leading-dot sites in the corpus already indent. `dir` / more-indented
-`as Dir[Read]` keeps working (`parser.rs:1814` consumes `as`
-unconditionally). A same-indent `as` is a new statement and a parse
-error. Continuations must be more indented. `fmt` enforces that.
+This is the real shape at `coven_proto.witchy:64-68` (same indent).
+`.` is on the deny-list: no `StmtSep`, one expression. A more-indented
+`.and_then` also continues, because it is not a same-indent boundary.
+
+```text
+dir
+    as Dir[Read]
+```
+
+and same-indent `as` both continue: `as` is on the deny-list.
 
 ```text
 let total = a
@@ -142,10 +191,11 @@ let total = a
     - c
 ```
 
-Both operator lines are more indented: one expression, `a + b - c`.
-The `+`/`-` asymmetry of a glyph table does not arise. Same-indent
-`- c` after a finished statement is a new statement; the parser
-rejects it (see §5).
+`+` is on the deny-list, so `+ b` continues. `-` is dual and is *not*
+on the list. Same-indent `- c` after `a + b` gets a `StmtSep` and is a
+new statement; the parser rejects it (see §5). Indented `- c` is not a
+same-indent boundary, so it continues as subtract and the sum is
+`a + b - c`.
 
 ```text
 match x:
@@ -153,11 +203,12 @@ match x:
     .Err(e) -> e
 ```
 
-Arm-list block, no `Semi` between arms. A next-line `.method()` that is
-more indented than the arm body continues. A next-line `.Err` at arm
-indent is the next arm. The `postfix()` uppercase-dot branch
-(`parser.rs:1847-1860`) is expected to come out. If a case remains, that
-is a bug in the emit rule, not a leftover special case this RFC keeps.
+Arm-list `StmtSep` between the two lines. `match_expr` eats it. The
+inline body `.Ok(v) -> v` ends with `v`, not `->`, so phase 2 never
+opened a block around `v`. The arm-list separator is what makes
+`.Err` the next arm. That is why the separator must be emitted in
+arm-list blocks, and why "a bug in the emit rule" was the wrong
+diagnosis.
 
 #### Guards that stay
 
@@ -178,14 +229,13 @@ These are not continuation rules. They stay.
 
 ### 2. Author `;` discards an expression
 
-`;` is `Tok::Semi`. Layout synthesizes it; the author may also write it.
-Today it is a lex error. Strings and comments keep `;` as text. A `;`
-in expression-interior position (`f(a; b)`) is a parse error, not a
+The author writes `Tok::Semi`. Layout never emits it. Today `;` is a
+lex error. Strings and comments keep `;` as text. A `;` in
+expression-interior position (`f(a; b)`) is a parse error, not a
 discard.
 
-An expression statement that ends in `;` (written or, in tail position,
-only if the author wrote it) means: evaluate, discard, do not use as
-the block value.
+An expression statement that ends in a written `;` means: evaluate,
+discard, do not use as the block value.
 
 ```text
 fn setup(xs: var List(Int)) -> Nil:
@@ -195,7 +245,8 @@ fn setup(xs: var List(Int)) -> Nil:
 
 Last-line `xs.length()` is the block value, an `Int`. Last-line
 `xs.length();` is a discard and the block is `Nil`. Mid-block, a
-non-`var`, non-`Nil` call without `;` is still the RFC-0043 error.
+non-`var`, non-`Nil` call without a written `;` is still the RFC-0043
+error, because the layout separator is `StmtSep`, not `Semi`.
 Mid-block `e;` is the explicit discard that used to be `let _ = e`.
 
 Represent this as **`Stmt::Discard(Expr)`**, a new variant, not a field
@@ -256,10 +307,10 @@ it has to run on a file that does not typecheck.
 - Rewrite `let _ = e` to `e;` in `.witchy` files. That migrates the four
   live sites. Embedded fixtures are a compiler-source edit, not a `fmt`
   job.
-- Indent a wrapped continuation past the statement that owns it.
+- Do not re-indent the 26 same-indent method chains. The deny-list is
+  what keeps them legal.
 - Preserve the author's `;`. Do not insert one to make a last-line
-  expression match a `Nil` return. Layout's virtual `Semi` is not
-  printed.
+  expression match a `Nil` return. Layout's `StmtSep` is not printed.
 - Never put `;` on `let`, `var`, assignment, `for`, `while`, `return`,
   `break`, `continue`, or `yield`.
 - Do not sprinkle `;` on mid-block `Nil` or `var` calls. Those are
@@ -270,11 +321,11 @@ it has to run on a file that does not typecheck.
 The parser emits hard errors. A warning would leave the silent-`-c` hole
 half-open.
 
-- A virtual or written `Semi` ended a complete expression and the next
-  statement is a bare prefix-operator expression (`-`, `*`, `!`, `~`)
-  that is neither bound nor assigned: name the glyph, say a same-indent
-  line starts a new statement, and offer to indent the continuation or
-  parenthesize. This is same-indent `- c` after `let total = a + b`.
+- A `StmtSep` ended a complete expression and the next statement is a
+  bare prefix-operator expression (`-`, `*`, `!`, `~`) that is neither
+  bound nor assigned: name the glyph, say a same-indent line starts a
+  new statement, and offer to indent the continuation or parenthesize.
+  This is same-indent `- c` after `let total = a + b`.
   `fn ne(...) -> Bool:` / newline / `!eq(...)` and `_ ->` / newline /
   `-1` are not this error: `:` and `->` open a block, they do not end an
   expression.
@@ -288,54 +339,59 @@ half-open.
 ### 6. Editor grammar
 
 Tree-sitter does not run `apply_layout()`. It already has an indent
-scanner. That scanner emits a statement-break at the same indent, inside
-statement blocks, matching the virtual `Semi` rule. It does not grow a
-glyph table. Then `*slot = 9` on the next line is a statement without a
-hack that breaks `n * 2`.
+scanner. That scanner emits a statement-break at the same indent inside
+statement and arm-list blocks, suppressed when the next line starts with
+a deny-list token, matching `StmtSep`. Then `*slot = 9` on the next line
+is a statement without a hack that breaks `n * 2`, and
+`coven_proto.witchy:68` still highlights as one expression.
 
 ## Alternatives
 
-**A continuing-token table in `expr()`.** Reconstructs indent plus
-`bdepth_start` by classifying glyphs. Must grow for each new dual
-token. Invented the `+`/`-` split that virtual `Semi` does not have.
-Rejected. The table was the previous draft of this RFC.
+**Pure indent, separator on every same-indent line.** Token-agnostic.
+Breaks 26 same-indent method chains in six gated files, including
+`coven_proto.witchy:68`. Requires a `fmt` re-indent this RFC does not
+want to own. Rejected after measuring the corpus.
+
+**A continuing-token table in `expr()`.** Handles the 26 sites (column
+is not part of the decision). Must grow for each new *dual* glyph, which
+is the expensive direction. Reconstructs indent plus `bdepth_start` in
+the wrong pass. Rejected.
 
 **Require `;` on every statement.** Stops the climb. Charges the whole
 language and fights the off-side rule. Rejected.
-
-**Strict Python (newline always ends an unbracketed expression).** Breaks
-leading-dot chains unless they live in parens. The indent rule keeps
-those chains without a glyph exception.
 
 **Keep the lookahead and add a case for `&`.** Cheap this week. The next
 dual glyph gets the same `if`. Rejected as policy.
 
 **Give dereference and borrow new glyphs** (`x.*`, `ref x`). Taste, if
 `&` / `*` stay confusing in `mode opt`. Not load-bearing once a
-same-indent line is a new statement.
+same-indent dual glyph is a new statement.
 
 **Optional `;` and keep `let _ =`.** Two explicit discards. One-cut:
 `;` wins.
+
+**One token for layout and the author.** `vtok` has no virtual marker.
+`xs.length()` / `xs.push(1)` would lex as an explicit discard and the
+RFC-0043 error would never fire mid-block. Rejected: two kinds.
 
 **Do nothing.** The `*` assignment lookahead stays, `&` stays wrong on a
 newline, and last-line discard stays a fake binding.
 
 **Go/JS automatic semicolon insertion.** Those guess from token
 adjacency at end-of-line. This inserts from indentation, in the pass
-that already synthesizes `{` and `}` from it. "A same-indent line starts
-a new statement" is the rule witchy already teaches.
+that already synthesizes `{` and `}` from it, and then *withholds* the
+separator when the next token cannot start a statement.
 
 ## Drawbacks
 
-A wrapped continuation must be more indented than the statement it
-belongs to. The corpus already does this for leading-dot chains. A
-same-indent continuation becomes a hard break. `fmt` has to indent
-those lines.
+The deny-list is still a classification. It is small, closed, and grows
+only for postfix or infix-only glyphs. The dual glyphs that motivated
+the RFC are not on it.
 
-Layout must classify statement-block headers vs type/trait/impl/match
-headers. That is one gate in `apply_layout()`, next to the brace
-emission it already does. Getting `match` vs `->` wrong reintroduces
-`Semi` between arms or drops it inside a multi-line arm body.
+Layout must classify statement-block and arm-list headers. The
+classifier skips `pub` / `async` / `gen`. Getting `match` vs `->` wrong
+either drops `StmtSep` between arms (and the `.Tag` branch has to stay)
+or injects it inside a type body.
 
 People will want `;` after `let`, and after `0 -> e`. The parse error
 has to be early and dull.
@@ -346,8 +402,8 @@ Rust fixtures, and `book/examples.json` have to take with the compiler.
 ## Prior art
 
 Python's implicit line joining is the indent half: a more-indented line
-continues, a same-indent line does not, brackets join regardless.
-Witchy's layout pass is already that machine.
+continues, brackets join regardless. Same-indent `.method` is the extra
+witchy already writes; the deny-list is how that extra is named.
 
 Rust's optional semicolon is the discard half: `e` as the last form of
 a block is the value; `e;` is `()`. This RFC takes that and does *not*
@@ -358,20 +414,22 @@ prefix reuse that made the missing separator loud.
 
 ## Staging
 
-1. `apply_layout()` emits virtual `Tok::Semi` in statement blocks.
-   `infix_bp(Semi)` is `None`. The `is_assignment()` and match-arm `-`
-   newline branches leave `expr()`. `is_assignment()` itself stays.
-   Same-line `[` / `(`, `.Tag(`, `?` operand, and `name_application()`
-   `(` stay. The `postfix()` uppercase-dot branch is deleted if the
-   emit rule makes it unreachable; if a case remains, that is a bug in
-   the emit rule. The parser rejects a same-indent bare prefix
-   statement. This step is breaking for same-indent continuations; that
-   form is rare on purpose.
+1. Lexer grows `Tok::StmtSep`. `apply_layout()` emits it in statement
+   blocks and arm-list blocks, suppressed when the next line starts with
+   a deny-list token. The header classifier skips `pub` / `async` /
+   `gen`. `infix_bp(StmtSep)` and `infix_bp(Semi)` are both `None` once
+   `Semi` exists; step 1 can treat `StmtSep` alone. The
+   `is_assignment()` and match-arm `-` newline branches leave `expr()`.
+   `is_assignment()` itself stays. `match_expr` eats optional `Comma` or
+   `StmtSep`. The `postfix()` uppercase-dot branch is deleted. Same-line
+   `[` / `(`, `.Tag(`, `?` operand, and `name_application()` `(` stay.
+   The parser rejects a same-indent bare prefix statement. The 26
+   same-indent leading-dot sites remain one expression.
 2. Lexer accepts a written `;` as `Tok::Semi`. Parser builds
-   `Stmt::Discard(Expr)` for an expression statement that ends in a
-   written `;`. `LetPattern` whose pattern is exactly `Wildcard` is an
-   error naming `e;`. `discarded_result_msg` in `traits.rs` names `e;`.
-   `fmt` rewrites the four live `.witchy` sites (the `fmt` gate on
+   `Stmt::Discard(Expr)` only for a written `;`. `LetPattern` whose
+   pattern is exactly `Wildcard` is an error naming `e;`.
+   `discarded_result_msg` in `traits.rs` names `e;`. `fmt` rewrites the
+   four live `.witchy` sites (the `fmt` gate on
    `projects/**/src/*.witchy` keeps them rewritten) and the book/spec
    examples, then regenerates `book/examples.json`. A fixture sweep
    rewrites witchy source embedded in Rust tests (`analysis.rs`,
@@ -379,12 +437,11 @@ prefix reuse that made the missing separator loud.
    `loans_tests.rs`, `tests/typeck.rs`, `lsp_tests.rs`) and regenerates
    goldens. Step 2 lands red without that sweep. Do not hand-edit
    `spec/stdlib.md`.
-3. Tree-sitter's indent scanner emits the same statement-break at
-   same-indent lines inside statement blocks.
+3. Tree-sitter's indent scanner emits the same statement-break, with the
+   same deny-list.
 
 Step 1 can land without step 2. Step 2 without step 1 still helps
-last-line discard, but written `;` and virtual `Semi` should be one
-token. The intended ship is both.
+last-line discard. The two tokens must not be collapsed.
 
 ## Acceptance
 
@@ -396,20 +453,25 @@ parity-bearing row is the `;` block-value typing.
   newline special case.
 - `let view = &text` / newline / `&other` at the same indent is two
   statements.
-- `json.get(src, "files")` / newline / indented `.and_then(...)`
-  remains one expression.
-- `dir` / newline / indented `as Dir[Read]` remains one expression.
+- `json.get(doc, "source")` / newline / same-indent
+  `.and_then(fn(a: Json): json.as_array(a))` remains one expression
+  (`coven_proto.witchy:64-68` and the other 25 same-indent leading-dot
+  sites).
+- `dir` / newline / same-indent `as Dir[Read]` remains one expression.
 - An inline match of the form `.Ok(v) -> v` / newline / `.Err(e) -> e`
-  still parses as two arms. Lowercase indented `.method` after an arm
-  body still chains. The `postfix()` uppercase-dot branch is gone.
-- `e` / newline / indented `? "msg"` is the message form of `?`. The
-  operand stays on `?`'s line. `e?` / newline / `"msg"` is bare `e?`
-  plus a string statement, unchanged from `parser.rs:1802`.
+  still parses as two arms. `match_expr` ate a `StmtSep`. The
+  `postfix()` uppercase-dot branch is gone. Lowercase same-indent
+  `.method` after an arm body still chains (deny-list).
+- `e` / newline / same-indent `? "msg"` is the message form of `?`.
+  The operand stays on `?`'s line. `e?` / newline / `"msg"` is bare
+  `e?` plus a string statement, unchanged from `parser.rs:1802`.
 - `else: x` / newline / `"${y}"` at the body indent is `x` and then a
   string, not `x(...)`. `name_application()` at `parser.rs:3690` stays.
 - `let total = a` / newline / indented `+ b` / newline / indented `- c`
-  is one expression `a + b - c`. Same-indent `- c` after `let total = a + b`
-  is a parse error, not a silent drop.
+  is one expression `a + b - c`. Same-indent `- c` after
+  `let total = a + b` is a parse error, not a silent drop.
+- Mid-block `xs.length()` / newline / `xs.push(1)` is still a discarded
+  `length` under RFC-0043: the separator is `StmtSep`, not `Semi`.
 - `fn ne(self: T, other: T) -> Bool:` / newline / `!eq(self, other)` is
   not an error, and neither is `_ ->` / newline / `-1`. The ten `ne`
   impls in `std/cmp.witchy` stay legal.
@@ -425,6 +487,8 @@ parity-bearing row is the `;` block-value typing.
   `spec/`, `book/examples.json`, or the Rust fixtures in Staging step 2.
   Rust `let _ =` in native harnesses is unaffected.
 - `witchy fmt` rewrites `let _ = e` to `e;` and does not insert `;` on
-  `let`, on a mid-block `var` call, or to satisfy a `Nil` return.
+  `let`, on a mid-block `var` call, or to satisfy a `Nil` return, and
+  does not re-indent the 26 same-indent leading-dot sites.
 - The tree-sitter parse of the RFC-0122 `*slot = 9` fixture has no
-  `ERROR` node, and `n * 2` still parses as multiply.
+  `ERROR` node, `n * 2` still parses as multiply, and
+  `coven_proto.witchy:68` is one expression.
