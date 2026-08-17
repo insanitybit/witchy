@@ -182,6 +182,31 @@ fn main(console: Console):
 }
 
 #[test]
+fn exclusive_reference_list_iteration_writes_each_owner_on_wasm() {
+    let src = r#"mode opt
+
+import list
+
+fn all(left: &'a mut String, right: &'a mut String) -> List(&'a mut String):
+    [left, right]
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let values = all(&mut first, &mut second)
+    for value in values:
+        *value = "updated"
+    console.print(first)
+    console.print(second)
+"#;
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["updated", "updated"],
+        "compiled backend preserves exclusive references through list iteration",
+    );
+}
+
+#[test]
 fn exclusive_reference_tuple_destructure_writes_the_selected_owner_on_both_backends() {
     let src = r#"mode opt
 

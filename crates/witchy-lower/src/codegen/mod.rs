@@ -3652,11 +3652,16 @@ impl<'types> Codegen<'types> {
                 // The two scratch locals (list pointer, index) are i32; the loop
                 // var takes the element's kind (Int->i64, Float->f64, else i32).
                 let iter_kind = self.kind_of(iter);
+                // Local inference runs before the GC array id is necessarily
+                // interned.  The source element kind is enough to reserve a
+                // reference-typed iterator local; waiting for the physical
+                // layout makes `for reference in List(&T)` declare its list
+                // local as i32 and then reject the later GC-array assignment.
                 let reference_list = self
                     .ast_type_of_expr(iter)
                     .as_ref()
-                    .and_then(|ty| self.gc_reference_list_layout(ty))
-                    .is_some();
+                    .is_some_and(|ty| self.type_is_reference_list_candidate(ty))
+                    || matches!(iter_kind, Kind::ExternRef | Kind::GcRef(_));
                 self.locals.insert(
                     format!("__forlist_{var}"),
                     if reference_list {

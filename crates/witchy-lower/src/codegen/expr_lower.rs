@@ -1560,10 +1560,20 @@ impl<'types> Codegen<'types> {
                     self.local_records.insert(var.clone(), elem);
                 }
                 let elem_kind = self.iter_elem_kind(iter);
-                let gc_reference_list = self
-                    .ast_type_of_expr(iter)
-                    .as_ref()
-                    .and_then(|ty| self.gc_reference_list_layout(ty));
+                // The surface type table intentionally erases opt-mode
+                // reference qualifiers at this boundary.  Recover the GC
+                // carrier from the expression kind too, so a returned
+                // `List(&mut T)` iterates its actual reference array rather
+                // than treating that array as a linear-memory list pointer.
+                let gc_reference_list = self.gc_reference_list_layout_of_expr(iter);
+                if let Some((_, _, reference_kind)) = gc_reference_list {
+                    // The generic source type of a returned carrier can be
+                    // recorded as `List(String)`.  Correct the loop locals at
+                    // the representation boundary before lowering the body:
+                    // both the list and its element are GC references in Wasm.
+                    self.locals.insert(list_l.clone(), self.kind_of(iter));
+                    self.locals.insert(var.clone(), reference_kind);
+                }
                 let specialized_list = self
                     .specialized_layout_of_expr(iter)
                     .and_then(|id| self.specialized_layouts.get(id))

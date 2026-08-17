@@ -2068,6 +2068,14 @@ impl LoanCtx<'_> {
                 )));
             }
 
+            // `for` establishes its element binding inside the body.  Check it
+            // through the dedicated path below so the outer scan does not visit
+            // `*value` before list provenance has been rebound to `value`.
+            if matches!(stmt, Stmt::Expr(Expr::For { .. })) {
+                self.check_nested_blocks(stmt, &live, &callables)?;
+                continue;
+            }
+
             // A conflicting operation on any live loan's owner (in this statement's
             // own expressions, not counting nested blocks) is rejected.
             self.reject_conflicts(stmt, &live, &callables)?;
@@ -3934,6 +3942,31 @@ impl LoanCtx<'_> {
         open: &[Loan],
         callables: &HashMap<String, BorrowSig>,
     ) -> Result<(), TypeError> {
+        // Iterating a borrowed list exposes one of its element handles on each
+        // trip through the body.  The list binding carries every owner relation
+        // (with an index/wildcard borrower projection); rebind those same facts
+        // to the loop variable so a dereference in the body remains an actual
+        // reference operation rather than an untyped ordinary value.
+        if let Stmt::Expr(Expr::For { var, iter, body }) = stmt {
+            let mut sources = self.borrow_sources(iter, callables, open);
+            self.collect_alias_sources(iter, open, &mut sources);
+            if !sources.is_empty() {
+                let mut inherited = open.to_vec();
+                for source in sources {
+                    inherited.push(Loan {
+                        view: var.clone(),
+                        owner: source.owner,
+                        root_type: source.root_type,
+                        projection: source.projection,
+                        borrower_projection: LoanProjection::default(),
+                        origin: source.origin,
+                        kind: source.kind,
+                        owner_type: source.owner_type,
+                    });
+                }
+                return self.check_block_with(body, &inherited, callables, false);
+            }
+        }
         let mut nested: Vec<&Block> = Vec::new();
         collect_nested_blocks_in_stmt(stmt, &mut nested);
         for b in nested {
