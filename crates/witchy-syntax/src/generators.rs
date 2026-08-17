@@ -129,6 +129,10 @@ pub(crate) fn validate_source(
                     .map_err(|message| crate::source_check::SourceValidationError::new(
                         item_index, message,
                     ))?;
+                validate_generator_reference_boundary(function)
+                    .map_err(|message| crate::source_check::SourceValidationError::new(
+                        item_index, message,
+                    ))?;
                 validate_generator_block(&function.body, &function.name, false)
                     .map_err(|message| crate::source_check::SourceValidationError::new(
                         item_index, message,
@@ -138,6 +142,10 @@ pub(crate) fn validate_source(
                 for method in &definition.methods {
                     if method.is_gen {
                         validate_generator_return(method)
+                            .map_err(|message| crate::source_check::SourceValidationError::new(
+                                item_index, message,
+                            ))?;
+                        validate_generator_reference_boundary(method)
                             .map_err(|message| crate::source_check::SourceValidationError::new(
                                 item_index, message,
                             ))?;
@@ -162,6 +170,45 @@ fn validate_generator_return(function: &Function) -> Result<(), String> {
         "generator `{}` must declare exactly one element type as `-> Iter(a)`",
         function.name
     ))
+}
+
+/// A generator frame can outlive the call that created it, so source references
+/// may not enter through parameters or the yielded element type.
+fn validate_generator_reference_boundary(function: &Function) -> Result<(), String> {
+    let parameter_reference = function
+        .params
+        .iter()
+        .filter_map(|parameter| parameter.ty.as_ref())
+        .any(type_carries_reference);
+    let result_reference = iter_elem(&function.ret)
+        .as_ref()
+        .is_some_and(type_carries_reference);
+    if parameter_reference || result_reference {
+        return Err(format!(
+            "gen fn `{}` may not expose a borrowed view or explicit reference as a parameter or yielded element because its generator frame can outlive the caller's loan — pass or yield an owned value",
+            function.name,
+        ));
+    }
+    Ok(())
+}
+
+fn type_carries_reference(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(
+            TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_),
+            _,
+        ) => true,
+        Type::Qualified(_, inner) => type_carries_reference(inner),
+        Type::Named(_, args) | Type::Dyn(_, args) => args.iter().any(type_carries_reference),
+        Type::Tuple(items) => items.iter().any(type_carries_reference),
+        Type::RecordCompose { base, fields } => {
+            type_carries_reference(base)
+                || fields.iter().any(|(_, field)| type_carries_reference(field))
+        }
+        Type::Fn(params, result, _) => {
+            params.iter().any(type_carries_reference) || type_carries_reference(result)
+        }
+    }
 }
 
 fn validate_generator_block(block: &Block, name: &str, in_region: bool) -> Result<(), String> {
