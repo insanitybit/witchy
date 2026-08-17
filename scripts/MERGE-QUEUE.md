@@ -307,7 +307,10 @@ and `rebaseline_generated_snapshots` skips the generator `cargo build` for
 the same reason. rust-class and wasm are keyed on the crates that can
 change them (`witchy-lower` / `wir` / `runtime` / `types` / `syntax`, plus
 `std/` / `src/` / Cargo metadata / `bench/rust-class` / `web/` / `book/`).
-An interpreter-only or types-only batch therefore skips both. When nextest is package-
+Crate-only batches (lower, syntax, types, interp, wir, …) skip rust-class:
+those programs already run under `example_tests`, and `--full` / CI keep the
+leg. Wasm is kept only for `witchy-runtime`, `web/`, `book/`, `src/`, `std/`,
+and Cargo/toolchain. When nextest is package-
 scoped, check/clippy use those mapped `-p` crates (`WITCHY_GATE_CHECK_PACKAGES`)
 instead of `--workspace --all-targets`. `--full` / CI still run everything.
 

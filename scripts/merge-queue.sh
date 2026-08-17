@@ -885,18 +885,22 @@ diff_product_compile_surface() { # prints matching lines
         | grep -E '^(crates/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
 }
 
-# rust-class compares compiled Witchy to independent Rust. Interpreter /
-# capability crates cannot change those answers.
+# rust-class --check rebuilds the witchy binary and reruns eight programs
+# already covered by example_tests when a compiler crate changes. Keep the
+# pre-merge leg for the harness, std, and the CLI; crate diffs rely on
+# their focused nextest + package check/clippy, with --full/CI as backstop.
 diff_rust_class_surface() {
     diff_without_example_tests "$1" \
-        | grep -E '^(bench/rust-class/|crates/witchy-(lower|wir|runtime|syntax)/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+        | grep -E '^(bench/rust-class/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
 }
 
-# Wasm playground is the browser runtime + compiler crates that emit it.
-# interp/caps/types-only batches cannot change that artifact.
+# Wasm playground is `cargo build --lib --target wasm32` of the browser
+# shim. Native compiler crates (lower/syntax/types/interp) are checked by
+# package-scoped clippy; only the runtime crate and web/book inputs move
+# that artifact's compile.
 diff_wasm_surface() {
     diff_without_example_tests "$1" \
-        | grep -E '^(crates/witchy-(lower|wir|runtime|syntax)/|web/|book/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
+        | grep -E '^(crates/witchy-runtime/|web/|book/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
 }
 
 diff_snapshot_surface() {

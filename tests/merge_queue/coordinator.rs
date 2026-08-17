@@ -427,6 +427,57 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
     );
 }
 
+fn classify_crate_skips(path: &str) -> (String, String) {
+    let fixture = QueueFixture::stack(&[path]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'skip_rust=%s skip_compile=%s skip_wasm=%s nextest=[%s]\\n' \
+         \"${{WITCHY_GATE_SKIP_RUST_CLASS:-}}\" \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" \
+         \"${{WITCHY_GATE_SKIP_WASM:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" >{}",
+        env_log.display(),
+    );
+    fixture.mq_ok(&["run", "--once"], &gate);
+    (
+        fs::read_to_string(&env_log).expect("read classified gate env"),
+        path.to_owned(),
+    )
+}
+
+#[test]
+fn lower_and_syntax_batches_skip_rust_class_and_wasm() {
+    for path in [
+        "crates/witchy-lower/src/lib.rs",
+        "crates/witchy-syntax/src/lib.rs",
+        "crates/witchy-wir/src/lib.rs",
+    ] {
+        let (env, label) = classify_crate_skips(path);
+        assert!(
+            env.contains("skip_rust=1")
+                && env.contains("skip_wasm=1")
+                && env.contains("skip_compile=0"),
+            "{label} should skip rust-class/wasm and keep compile: {env}",
+        );
+        assert!(
+            !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
+            "{label} launched unfiltered --workspace nextest: {env}",
+        );
+    }
+}
+
+#[test]
+fn runtime_batch_skips_rust_class_but_keeps_wasm() {
+    let (env, _) = classify_crate_skips("crates/witchy-runtime/src/lib.rs");
+    assert!(
+        env.contains("skip_rust=1") && env.contains("skip_wasm=0") && env.contains("skip_compile=0"),
+        "runtime-only should skip rust-class, keep wasm/compile: {env}",
+    );
+    assert!(
+        !env.contains("nextest=[--workspace"),
+        "runtime-only launched unfiltered --workspace nextest: {env}",
+    );
+}
+
 #[test]
 fn stale_gate_lock_reaps_its_recorded_process_group_before_regating() {
     let fixture = QueueFixture::stack(&["a.txt"]);
