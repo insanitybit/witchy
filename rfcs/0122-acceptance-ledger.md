@@ -4,6 +4,25 @@ This is the integration authority for RFC-0122. “PROVEN” requires current
 `master` plus the named evidence. A green queue item is not acceptance. Every
 other row remains open.
 
+## Wasm-first carrier policy
+
+While the `ReferenceKind` place-carrier ABI is changing, aggregate, list, and
+exclusive-reference fixtures are compiled-Wasm-first. A focused lowering or
+runtime slice must run through `wasm_run_reowns`; it does not wait for an
+interpreter implementation that would freeze the carrier prematurely. The
+authoritative row carries an explicit interpreter debt with its fixture, the
+missing interpreter boundary, and the ABI convergence milestone.
+
+Once that milestone is reached, the named fixture must pass on both backends
+before its row can become `PROVEN` or experimental opt mode can exit. A
+Wasm-first result is executable progress, not completion.
+
+| Criterion | fixture | missing interpreter boundary | convergence milestone | current status |
+| --- | --- | --- | --- | --- |
+| 12 exclusive loans | `rfc0122_local_exclusive_reference_write_agrees_on_both_backends`, `rfc0122_mutable_exclusive_parameter_writes_back_on_both_backends` | writable direct-place/reference-call carrier | direct-place write ABI frozen | converged; remaining affine evidence is separate |
+| 18 aggregate affine roots | `shared_reference_tuple_preserves_each_owner_root_on_both_backends`, `shared_reference_list_preserves_each_owner_root_on_both_backends`, `exclusive_reference_list_projection_writes_the_selected_owner_on_both_backends` | aggregate/list construction, copy, projection, and write carriers | aggregate/list carrier ABI frozen | converged; remaining affine move/copy evidence is separate |
+| 19 interpreter/Wasm parity | `rfc0122_direct_string_reference_uses_the_typed_scalar_carrier`, `rfc0122_function_value_float_reference_uses_the_typed_scalar_carrier`, `rfc0122_references` | typed scalar and callable return carrier | `ReferenceKind` call/result ABI frozen | converged for named carriers; forced-copy, traps, cleanup, and full type matrix remain |
+
 Audit target: `b113ea49527d2e1c51fe92145868d1c373331f8b` on `master`
 (2026-08-16). The linked RFC is accepted; this ledger determines when it is
 implemented.
