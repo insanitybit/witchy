@@ -568,6 +568,20 @@
     }
 
     #[test]
+    fn shared_reference_branch_discard_closes_each_arm() {
+        check_str(
+            "mode opt\n\nfn run(flag: Bool):\n    var text = \"hello\"\n    let view = &text\n    if flag:\n        let _ = view\n    else:\n        let _ = view\n    text = \"changed\"\n\nfn main():\n    run(true)\n",
+        )
+        .expect("discarding a shared reference on every branch closes the owner loan at the join");
+
+        let err = check_str(
+            "mode opt\n\nfn run(flag: Bool):\n    var text = \"hello\"\n    let view = &text\n    let selected = if flag:\n        view\n    else:\n        &text\n    text = \"changed\"\n    let _ = selected\n\nfn main():\n    run(true)\n",
+        )
+        .expect_err("a branch that retains a shared reference keeps the owner loan live");
+        assert!(err.contains("reassigned") || err.contains("live"), "{err}");
+    }
+
+    #[test]
     fn explicitly_discarding_an_exclusive_reference_releases_its_place() {
         check_str(
             "mode opt\n\nfn main():\n    var text = \"hello\"\n    let view = &mut text\n    let _ = view\n    text = \"changed\"\n",
