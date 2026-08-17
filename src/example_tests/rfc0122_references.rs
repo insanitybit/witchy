@@ -36,6 +36,23 @@ fn main(console: Console):
 }
 
 #[test]
+fn var_exclusive_reference_parameter_writes_the_owner_on_both_backends() {
+    let src = r#"mode opt
+
+fn replace(var text: &'a mut String) -> Nil:
+    *text = "updated"
+
+fn main(console: Console):
+    var text = "value"
+    replace(&mut text)
+    console.print(text)
+"#;
+    let want = ["updated"];
+    assert_eq!(link_run(src), want, "interpreter writes through a var exclusive-reference parameter");
+    assert_eq!(wasm_run_reowns(src).0, want, "compiled backend writes through a var exclusive-reference parameter");
+}
+
+#[test]
 fn shared_reference_return_preserves_the_runtime_place_on_both_backends() {
     let src = "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    let text = \"value\"\n    let observed = first(&text)\n    console.print(\"${*observed}\")\n";
     let want = ["value"];
