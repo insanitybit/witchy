@@ -458,6 +458,14 @@
     }
 
     #[test]
+    fn explicit_return_preserves_an_exclusive_reference_relation() {
+        check_str(
+            "mode opt\n\nfn select(input: &'a mut String, first: Bool) -> &'a mut String:\n    if first:\n        return input\n    input\n\nfn main(console: Console):\n    var text = \"before\"\n    let editable = select(&mut text, true)\n    *editable = \"after\"\n    console.print(text)\n",
+        )
+        .expect("an explicit return may transfer an exclusive reference relation");
+    }
+
+    #[test]
     fn mutable_reborrow_suspends_and_then_restores_its_parent_handle() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"before\"\n    let parent = &mut text\n    let child = &mut *parent\n    *parent = \"blocked\"\n    console.print(*child)\n",
