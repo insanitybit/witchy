@@ -99,6 +99,35 @@ fn main(console: Console):
     );
 }
 
+#[test]
+fn interpreter_exclusive_reference_list_conditional_function_value_writes_selected_owner() {
+    let src = r#"mode opt
+
+import list
+
+fn choose(values: &'a mut List(Int), left: Bool) -> &'a mut Int:
+    let selected = if left:
+        &mut values[0]
+    else:
+        &mut values[1]
+    selected
+
+fn main(console: Console):
+    var values = [1, 2]
+    let project = choose
+    let selected = project(&mut values, false)
+    *selected = 9
+    console.print("${values}")
+    console.print("${*selected}")
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["[1, 9]", "9"],
+        "interpreter preserves a conditional list place through a function value",
+    );
+}
+
 /// Keep nominal aggregate transport on the same carrier path across both
 /// backends.
 #[test]
