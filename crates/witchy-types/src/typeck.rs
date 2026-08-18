@@ -819,12 +819,24 @@ fn reject_borrowed_nominal_containers(
                 );
             let is_borrowed_nominal_option = name == "Option"
                 && arguments.len() == 1
-                && matches!(
-                    arguments.first(),
-                    Some(ast::Type::Named(element, element_arguments))
-                        if lifetime_nominals.contains(element)
-                            || element_arguments.iter().any(|argument| lifetime_argument_name(argument).is_some())
-                );
+                && arguments.first().is_some_and(|payload| {
+                    let ast::Type::Named(container, elements) = payload else { return false };
+                    if container == "List" {
+                        elements.first().is_some_and(|element| {
+                            matches!(
+                                element,
+                                ast::Type::Named(element, element_arguments)
+                                    if lifetime_nominals.contains(element)
+                                        || element_arguments.iter().any(|argument| lifetime_argument_name(argument).is_some())
+                            )
+                        })
+                    } else {
+                        lifetime_nominals.contains(container)
+                            || elements
+                                .iter()
+                                .any(|argument| lifetime_argument_name(argument).is_some())
+                    }
+                });
             let is_borrowed_nominal_result = name == "Result"
                 && arguments.len() == 2
                 && arguments.first().is_some_and(|payload| {

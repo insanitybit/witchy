@@ -302,6 +302,74 @@ fn main(console: Console):
 }
 
 #[test]
+fn wasm_first_exclusive_reference_option_nominal_list_match_projects_and_writes() {
+    let src = r#"mode opt
+
+type Pair('a, 'b):
+    left: &'a mut String
+    right: &'b mut String
+
+fn choose(left: &'a mut String, right: &'b mut String) -> Option(List(Pair('a, 'b))):
+    Some([Pair(left, right)])
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(&mut first, &mut second)
+    match selected:
+        Some(values) ->
+            let pair = values[0]
+            let Pair(left, right) = pair
+            *left = "left updated"
+            *right = "right updated"
+        None -> console.print("unexpected")
+    console.print(first)
+    console.print(second)
+"#;
+    let want = ["left updated", "right updated"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves an Option nominal list carrier");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves an Option nominal list carrier");
+}
+
+#[test]
+fn interpreter_exclusive_reference_option_nominal_list_match_projects_and_writes() {
+    let src = r#"mode opt
+
+type Pair('a, 'b):
+    left: &'a mut String
+    right: &'b mut String
+
+fn choose(left: &'a mut String, right: &'b mut String) -> Option(List(Pair('a, 'b))):
+    Some([Pair(left, right)])
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(&mut first, &mut second)
+    match selected:
+        Some(values) ->
+            let pair = values[0]
+            let Pair(left, right) = pair
+            *left = "left updated"
+            *right = "right updated"
+        None -> console.print("unexpected")
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["left updated", "right updated"],
+        "interpreter preserves an Option nominal list carrier",
+    );
+}
+
+#[test]
 fn unique_exclusive_reference_nominal_field_move_and_write_work_on_all_backends() {
     let src = r#"mode opt
 
