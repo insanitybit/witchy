@@ -36,6 +36,37 @@ fn main(console: Console):
     );
 }
 
+/// Keep list element projection on the compiled-Wasm carrier path while the
+/// aggregate branch/result ABI is still settling. The selected list element
+/// must remain the same executable place after a conditional tail.
+#[test]
+fn wasm_first_exclusive_reference_list_conditional_projection_writes_selected_owner() {
+    let src = r#"mode opt
+
+import list
+
+fn choose(values: &'a mut List(Int), left: Bool) -> &'a mut Int:
+    let selected = if left:
+        &mut values[0]
+    else:
+        &mut values[1]
+    selected
+
+fn main(console: Console):
+    var values = [1, 2]
+    let selected = choose(&mut values, false)
+    *selected = 9
+    console.print("${values}")
+    console.print("${*selected}")
+"#;
+
+    assert_eq!(
+        wasm_run_reowns(src).0,
+        ["[1, 9]", "9"],
+        "compiled Wasm preserves a selected list element place through a conditional tail",
+    );
+}
+
 /// Keep nominal aggregate transport on the same carrier path across both
 /// backends.
 #[test]
