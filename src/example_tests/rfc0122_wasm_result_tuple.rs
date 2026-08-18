@@ -206,6 +206,80 @@ fn main(console: Console):
 }
 
 #[test]
+fn wasm_first_unique_exclusive_reference_result_nominal_list_preserves_qualifiers() {
+    let src = r#"mode opt
+
+type Pair('a, 'b):
+    left: unique &'a mut String
+    right: unique &'b mut String
+
+fn choose(
+    left: unique &'a mut String,
+    right: unique &'b mut String,
+) -> Result(List(Pair('a, 'b)), String):
+    Ok([Pair(left, right)])
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(&mut first, &mut second)
+    match selected:
+        Ok(values) ->
+            let pair = values[0]
+            let Pair(left, right) = pair
+            *left = "left updated"
+            *right = "right updated"
+        Err(_) -> console.print("unexpected")
+    console.print(first)
+    console.print(second)
+"#;
+    let want = ["left updated", "right updated"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves unique qualifiers in a Result nominal list");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves unique qualifiers in a Result nominal list");
+}
+
+#[test]
+fn interpreter_unique_exclusive_reference_result_nominal_list_preserves_qualifiers() {
+    let src = r#"mode opt
+
+type Pair('a, 'b):
+    left: unique &'a mut String
+    right: unique &'b mut String
+
+fn choose(
+    left: unique &'a mut String,
+    right: unique &'b mut String,
+) -> Result(List(Pair('a, 'b)), String):
+    Ok([Pair(left, right)])
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(&mut first, &mut second)
+    match selected:
+        Ok(values) ->
+            let pair = values[0]
+            let Pair(left, right) = pair
+            *left = "left updated"
+            *right = "right updated"
+        Err(_) -> console.print("unexpected")
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["left updated", "right updated"],
+        "interpreter preserves unique qualifiers in a Result nominal list",
+    );
+}
+
+#[test]
 fn wasm_first_exclusive_reference_result_nominal_list_err_branch_preserves_owners() {
     let src = r#"mode opt
 
