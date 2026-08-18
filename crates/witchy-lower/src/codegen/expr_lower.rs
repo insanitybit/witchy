@@ -1823,12 +1823,13 @@ impl<'types> Codegen<'types> {
                 {
                     if name == "Some" && args.len() == 1 {
                         let value = self.lower_expr(&args[0])?;
-                        return Some(W::RefCastNullable {
-                            struct_id: match option_kind {
-                                Kind::GcRef(id) => id,
-                                _ => return None,
+                        return Some(match option_kind {
+                            Kind::GcRef(id) => W::RefCastNullable {
+                                struct_id: id,
+                                value: Box::new(value),
                             },
-                            value: Box::new(value),
+                            Kind::ExternRef => value,
+                            _ => return None,
                         });
                     }
                     if name == "None" && args.is_empty() {
