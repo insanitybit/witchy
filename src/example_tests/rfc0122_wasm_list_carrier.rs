@@ -36,6 +36,31 @@ fn main(console: Console):
     );
 }
 
+#[test]
+fn generic_mutable_to_shared_reborrow_allows_owner_mutation_after_final_use_on_all_backends() {
+    let src = r#"mode opt
+
+fn share(value: &'a mut a) -> &'a a:
+    value
+
+fn main(console: Console):
+    var text = "before"
+    let observed = share(&mut text)
+    console.print(*observed)
+    text = "after"
+    console.print(text)
+"#;
+    let want = ["before", "after"];
+    assert_eq!(link_run(src), want, "interpreter resumes the generic owner after shared final use");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm resumes the generic owner after shared final use");
+    assert_eq!(forced_copy, want, "forced-copy Wasm resumes the generic owner after shared final use");
+}
+
 /// Keep list element projection on the compiled-Wasm carrier path while the
 /// aggregate branch/result ABI is still settling. The selected list element
 /// must remain the same executable place after a conditional tail.

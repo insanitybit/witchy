@@ -1726,6 +1726,29 @@ impl<'types> Codegen<'types> {
                             local: name.clone(),
                             value: Self::wir_convert(v, vk, target),
                         });
+                        // A scalar owner that has already produced a place
+                        // reference is read through its shared cell. Keep that
+                        // cell synchronized with ordinary owner rebinds so a
+                        // shared reborrow does not leave the owner observing a
+                        // stale snapshot after its final use.
+                        if let Some(cell) = self.reference_cells.get(name) {
+                            seq.push(N::StructSet {
+                                struct_id: REFERENCE_I64_CELL_ID,
+                                field: 0,
+                                base: W::RefCast {
+                                    struct_id: REFERENCE_I64_CELL_ID,
+                                    value: Box::new(W::StructGet {
+                                        struct_id: PLACE_REFERENCE_ID,
+                                        field: 0,
+                                        base: Box::new(W::GetLocal(cell.clone())),
+                                    }),
+                                },
+                                value: W::ToSlot(
+                                    Box::new(W::GetLocal(name.clone())),
+                                    Self::wir_kind(self.kind_of(&Expr::Var(name.clone()))),
+                                ),
+                            });
+                        }
                         // A plain rebind replaces the allocation represented by
                         // this shadow token. Carrying the old capacity into the
                         // new value would make the next in-place write trust
