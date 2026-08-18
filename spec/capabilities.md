@@ -51,6 +51,7 @@ audit witchy code by reading signatures, not by tracing call graphs.
 | `File`, `File[Read]`, `File[Write]` | authority to **one file** (the leaf) | `f.read() -> String`, `f.write(data)` (a `Dir` mints one with `read_file`/`write_file`) |
 | `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
 | `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, `only`, `deny`, … |
+| `Fetch` | origin-scoped HTTP(S) | `fetch.only(origin)`; `http.get` / `http.try_get`; native code with `Net[Connect, Tcp]` derives one via `net.fetch(origin)` |
 | `SecretStore` | named secrets provisioned by the host (`--secret`/`--secret-file`/`--signing-key`) | `require(store, name) -> Secret`, `get(store, name) -> Option(Secret)` |
 | `Secret` | opaque host-held secret material obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key` (Ed25519 signing keys); `server.serve_tls`/`serve_tls_n` consume a TLS private key by opaque reference; `crypto.reveal` (needs the `Reveal` right - a `Secret[Seal]` is a check-time error, and signing keys and sealed grants aren't revealable at run time either) |
 

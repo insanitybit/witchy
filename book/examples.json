@@ -2843,7 +2843,7 @@
       "Console[Read,Write]"
     ],
     "output": [
-      "[witchy]"
+      "3"
     ],
     "runnable": true
   },

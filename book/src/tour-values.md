@@ -137,9 +137,9 @@ These details affect parsing and inference:
   (here, space-separated and unbracketed) instead of that structural
   default. For a type of your own, implement the
   `Show` trait to give it a custom rendering (see [Generics](tour-generics.md)).
-- `list`, `dict`, `string`, `math`, `option`, and `result` form **the
-  prelude**: their functions are available in every program with no `import`
-  line. That's why none of the examples above import anything.
+- `list`, `string`, `dict`, `math`, `option`, `result`, `policy`, and `show`
+  form **the prelude**: their functions are available in every program with no
+  `import` line. That's why none of the examples above import anything.
 - A binding can carry its type: `let xs: List(Int) = []` pins an otherwise
   ambiguous literal, and `let d: DateTime = ...` turns a wrong assumption
   into an error at that line instead of a confusing one later. Locals are

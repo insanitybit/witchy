@@ -103,8 +103,8 @@ type a custom rendering.
 Builtins: `Int`, `Float`, `Bool`, `String`, `Duration`, `Nil` (the unit type),
 `List(a)`, `Dict(k, v)`, tuples `(a, b, ...)`, function types
 `fn(Int, String) -> Bool`, and the capability types (`Console`, `Clock`, `Env`,
-`Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore`, `Secret` - see
-[capabilities.md](capabilities.md)).
+`Rand`, `Dir[...]`, `File[...]`, `Net[...]`, `Fetch`, `Exec`, `SecretStore`,
+`Secret` - see [capabilities.md](capabilities.md)).
 
 **Algebraic data types.** One `type` declaration covers enums, tagged unions,
 and records:
@@ -181,8 +181,10 @@ aliases, mutation, nested scopes, dynamic wrappers, and loans for that exact
 type. All other packed lists retain the RC header. Generated modules expose exact
 emitted/elided header counters for differential tests.
 
-`Option(a)` (`Some(x)` / `None`) and `Result(a, e)` (`Ok(x)` / `Err(e)`) come
-from `import option` / `import result`.
+`Option(a)` (`Some(x)` / `None`) and `Result(a, e)` (`Ok(x)` / `Err(e)`) are
+prelude names: the types and constructors need no import. `import option` /
+`import result` only brings in the qualified helpers (`option.map`,
+`result.map_ok`).
 
 **Type aliases.** `type X = …` names a shape without creating a new type -
 `type Id = Int` makes `Id` and `Int` fully interchangeable, and the alias may
@@ -1635,11 +1637,12 @@ type-checks but isn't run by the doc harness, since it needs `Dir` - run it
 with `witchy sandbox --dir <root> prog.witchy a b c`.)
 
 `main` may ask for any of the host capabilities - `Console`, `Clock`, `Env`,
-`Console[...]`, `Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore` - and the launch grant
-backs each: `--dir <root>` a `Dir`, `--file <path>` a `File` (the i-th `File`
-parameter ← the i-th `--file`), `--net <host:port>` a `Net` allowlist entry,
-`--secret`/`--signing-key` a `SecretStore`; grant-document `[env]` and `[exec]`
-entries carry the corresponding name allowlists. A `File[Read]` lets a single-file
+`Rand`, `Console[...]`, `Dir[...]`, `File[...]`, `Net[...]`, `Fetch`, `Exec`,
+`SecretStore` - and the launch grant backs each: `--dir <root>` a `Dir`,
+`--file <path>` a `File` (the i-th `File` parameter ← the i-th `--file`),
+`--net <host:port>` a `Net` allowlist entry, `--fetch <scheme://host:port>` a
+`Fetch` origin, `--secret`/`--signing-key` a `SecretStore`; grant-document
+`[env]`, `[exec]`, and `[fetch]` entries carry the corresponding allowlists. A `File[Read]` lets a single-file
 program ask for exactly one file instead of a whole `Dir`. A **grant document**
 (`--grants app.grants.toml`) enumerates the whole grant as reviewable TOML and is
 cross-checked against the computed footprint - see

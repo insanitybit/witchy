@@ -371,18 +371,18 @@ Spell the hand-off `move` at the call site; afterwards,
 touching the original is a compile error, not a dangling reference:
 
 ```witchy
-fn into_label(own name: String) -> String:
-    "[${name}]"
+fn drain(own xs: List(Int)) -> Int:
+    xs.length()
 
 fn main(console: Console):
-    let name = "witchy"
-    console.print(into_label(move name))
+    let xs = [1, 2, 3]
+    console.print("${drain(move xs)}")
 
-// console.print(name)   // <- compile error: `name` was moved
+// console.print("${xs.length()}")   // <- compile error: `xs` was moved
 ```
 
 ```text
-[witchy]
+3
 ```
 
 `move` is the caller's half of the transfer, and it stands on its own: it ends the

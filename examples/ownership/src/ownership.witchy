@@ -1,7 +1,6 @@
-// `own` transfers ownership. `into_label` consumes its
-// argument, so after `into_label(name)` the caller may not use `name` again — the
-// type checker rejects use-after-move. (A `var` could be reassigned to
-// re-initialize it.) See examples/conventions/src/conventions.witchy for the full set.
+// `own` marks a consuming parameter. Heap values (List, Dict, records) are
+// unusable after the call; a later use is a check-time error. A `var` can be
+// reassigned to re-initialize it. See examples/conventions for the full set.
 pub fn into_label(own name: String) -> String:
     "[" + name + "]"
 
