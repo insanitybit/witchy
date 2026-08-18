@@ -5,6 +5,11 @@ features decide what that storage looks like and when temporary bytes can be
 reclaimed. These features are opt-in contracts or fail-closed compiler proofs;
 they never weaken value semantics.
 
+`region:` and `packed` are source syntax, not deployment switches. Use them
+when the lifetime or physical layout is part of the design, then measure the
+resulting workload. The compiler may apply related machinery automatically
+when it can prove the same facts without syntax.
+
 ## Regions: reclaim a burst of temporaries
 
 `region:` groups allocations under one lifetime. At the end of the block,

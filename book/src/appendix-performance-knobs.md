@@ -1,9 +1,15 @@
-# Performance: optimization knobs
+# Performance: compiler switches for diagnosis
 
-`WITCHY_OPT` selects semantics-preserving backend passes for one compilation.
+This chapter is for compiler work, regression isolation, and evidence review.
+It is not the application-facing performance model. Start with [Syntax and
+Ownership Contracts](appendix-performance-ownership.md): `let`, `var`, `own`,
+`move`, `unique`, `frozen`, `region:`, `packed`, and `mode opt` express the
+facts that unlock optimization. `WITCHY_OPT` only selects which already-proven
+backend passes are enabled for one compilation.
+
 It does not change the language result, accepted normal-mode program, or trap
-behavior. `mode opt` is a source-level proof mode; `WITCHY_OPT` is a backend
-configuration. They can be used independently.
+behavior. Use it to answer “did this pass fire?” rather than “what syntax
+should my program use?”
 
 ## Selecting a pass set
 

@@ -5,10 +5,30 @@ optimized and reference paths agree, and a matched measurement that shows the
 cost changed for the workload under study. A counter is evidence of a compiler
 event, not proof of a user-visible speedup by itself.
 
+## Measure the syntax choice first
+
+Begin with two source programs that differ in one truthful contract. The
+environment stays the same; the source is the experiment:
+
+| Source comparison | Expected question | Useful evidence |
+|---|---|---|
+| default input vs `let` input | Did the read-only helper avoid an input owner? | `heap_bytes`, retains, output parity |
+| default call vs `own` plus `move` | Did the existing collection buffer cross the call? | `reowns`, `heap_bytes`, output parity |
+| ordinary mutable local vs `unique` update | Did mutation or extraction stay in place? | `reowns`, `extract_copied_bytes`, output parity |
+| ordinary record vs `packed` record | Did the list receive an inline fixed layout? | `packed_alloc_calls`, `packed_alloc_bytes` |
+| unscoped temporaries vs `region:` | Did the temporary burst rewind at scope exit? | `region_rewind_calls`, `region_copy_bytes` |
+| normal value flow vs `mode opt` reference flow | Did the proven loan avoid materialization without escaping? | accepted program, carrier parity, materialization counters |
+
+Do not start by searching for a flag. If the source contract is missing, an
+environment setting cannot make an unsafe transformation valid. If the source
+contract is present but the shape still does not optimize, then use the
+diagnostic switches below to identify the backend pass or fallback.
+
 ## Compare one change at a time
 
-Use the same source, input, backend, memory budget, and environment. Start with
-the release registry, then remove one pass:
+Use the same source, input, backend, memory budget, and environment when
+isolating a backend pass. Start with the release registry, then remove one
+pass:
 
 ```sh
 WITCHY_OPT=release witchy stats bench.witchy > /tmp/release.stats

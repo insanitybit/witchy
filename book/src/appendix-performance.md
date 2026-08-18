@@ -1,20 +1,27 @@
 # Appendix: Performance overview
 
-Witchy has value semantics: a callee cannot mutate storage that the caller can
-still observe. That promise is the foundation for the compiled tier's
-optimizations. When the compiler proves that a value has one effective owner,
-it can update that value in place without changing the program's result.
+Witchy performance is primarily expressed in the program's syntax, not in an
+environment variable. The syntax tells the compiler what the program promises:
+whether a call only reads, consumes, writes back, owns unique storage, chooses a
+flat layout, or enters the explicit reference model. The compiler turns those
+facts into reuse, fewer copies, smaller representations, and shorter-lived
+allocations while preserving value semantics.
 
-This appendix is a guide to the contracts, passes, layouts, and measurements
-behind that behavior. It is deliberately split by question:
+This appendix is organized around that source-level question:
 
-| If you want to know... | Read... |
-|---|---|
-| What `let`, `var`, `own`, `unique`, `frozen`, and `mode opt` promise | [Ownership contracts](appendix-performance-ownership.md) |
-| What each `WITCHY_OPT` switch does and what makes it fire | [Optimization knobs](appendix-performance-knobs.md) |
-| How regions, packed values, lists, and reclamation affect memory | [Layouts and allocation lifetime](appendix-performance-layout.md) |
-| How to compare builds and interpret counters | [Measuring and diagnosing](appendix-performance-measurement.md) |
-| How explicit references fit into opt mode | [Opt-mode References and Lifetimes](opt-mode-references.md) |
+| Write this... | To unlock this... | Read... |
+|---|---|---|
+| `let`, `var`, `own`, `move` | Clear call ownership and write-back behavior | [Syntax and ownership contracts](appendix-performance-ownership.md) |
+| `unique`, `local unique`, `frozen` | In-place updates, extraction, and safe sharing | [Syntax and ownership contracts](appendix-performance-ownership.md) |
+| `region:` | Bulk reclamation for temporary work | [Layouts and allocation lifetime](appendix-performance-layout.md) |
+| `packed` | Inline, cache-dense data layout | [Layouts and allocation lifetime](appendix-performance-layout.md) |
+| `mode opt`, `&'a T`, `&'a mut T` | Explicit lifetimes, loans, and reference carriers | [Opt-mode References and Lifetimes](opt-mode-references.md) |
+| A measured source shape | Evidence for a real workload improvement | [Measuring and diagnosing](appendix-performance-measurement.md) |
+
+The [`WITCHY_OPT` switches](appendix-performance-knobs.md) are still useful,
+but mainly for compiler investigation: they isolate a backend pass after a
+source-level shape has been chosen. They are not the language's performance
+model and normally do not belong in application source or deployment config.
 
 ## Start with the default
 
@@ -30,11 +37,12 @@ ownership transfer        fn consume(own xs: List(Int)) -> Int
 caller write-back         fn normalize(var text: String) -> Nil
 ```
 
-The source convention and the backend switch are separate controls. `let`,
-`var`, `own`, and `move` describe value ownership and call behavior. `mode opt`
-requires stronger access proofs and permits explicit references. `WITCHY_OPT`
-selects semantics-preserving backend passes for one compilation. A normal file
-can use release optimizations without adopting explicit reference syntax.
+The source convention is the important control. `let`, `var`, `own`, and `move`
+describe value ownership and call behavior. `unique`, `frozen`, `region:`, and
+`packed` add stronger storage facts. `mode opt` permits explicit references and
+requires the associated access proofs. A normal file can receive the compiled
+tier's ordinary optimizations without adopting explicit reference syntax or
+setting a performance environment variable.
 
 ## A small ownership pipeline
 
@@ -61,7 +69,7 @@ fn main(console: Console):
 
 The optimized path may retain the collection's capacity across both calls. The
 copy-correct path produces the same `3`; the difference is visible in counters
-and generated code, not in language behavior. [Ownership contracts](appendix-performance-ownership.md)
+and generated code, not in language behavior. [Syntax and ownership contracts](appendix-performance-ownership.md)
 explains why this is sound and when an alias or escape forces a copy.
 
 ## The performance model in one table
@@ -74,7 +82,7 @@ explains why this is sound and when an alias or escape forces a copy.
 | `region:` | Reclaim many temporaries at one scope exit | Returning region-born data without copying it out |
 | `packed` | Store fixed-layout records inline | Generic, dynamic, trait, host, or worker boundaries without a fixed ABI |
 | Explicit opt-mode references | Avoid copies across a proven lifetime | A conflicting loan, escape, suspension, or relation-erasing boundary |
-| `WITCHY_OPT` pass | Remove a proven allocation, check, dispatch, or loop step | The pass's proof pattern does not match |
+| Backend pass | Remove a proven allocation, check, dispatch, or loop step | The source-level proof pattern does not match |
 
 The compiler should fail closed. If a proof is unavailable, it keeps the
 ordinary representation or emits a source-located opt-mode diagnostic. It does
@@ -82,10 +90,10 @@ not change value semantics to obtain a speedup.
 
 ## Choosing a chapter
 
-Start with [Ownership contracts](appendix-performance-ownership.md) if a
-`witchy check` message mentions copies, uniqueness, `var`, or a live loan. Read
-[Optimization knobs](appendix-performance-knobs.md) when you need to isolate a
-compiler pass. Read [Layouts and allocation lifetime](appendix-performance-layout.md)
-when the counters point to heap, packed, region, or reclamation work. Finish
-with [Measuring and diagnosing](appendix-performance-measurement.md) before
-turning a counter change into a performance claim.
+Start with [Syntax and ownership contracts](appendix-performance-ownership.md) when you
+are choosing function or binding syntax. Read [Layouts and allocation lifetime](appendix-performance-layout.md)
+when you are choosing `region:` or `packed`. Read [Opt-mode References and
+Lifetimes](opt-mode-references.md) when a reference itself must cross a
+boundary. Finish with [Measuring and diagnosing](appendix-performance-measurement.md)
+before turning a source change into a performance claim. Use [Compiler switches](appendix-performance-knobs.md)
+only when you need to prove which backend pass responded to that source shape.

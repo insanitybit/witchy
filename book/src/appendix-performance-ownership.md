@@ -1,8 +1,12 @@
-# Performance: ownership contracts
+# Performance: syntax and ownership contracts
 
 Ownership conventions are language contracts first and optimization inputs
 second. They preserve Witchy's value semantics at calls and give the compiler
 facts it can use without a tracing garbage collector.
+
+This is the main performance chapter. Choose the source contract here first;
+use the [compiler-switch chapter](appendix-performance-knobs.md) only after a
+real workload gives you a reason to isolate one backend pass.
 
 | Convention | Source meaning | Optimization opportunity |
 |---|---|---|
@@ -18,6 +22,28 @@ facts it can use without a tracing garbage collector.
 The default convention is intentionally useful. It means callers do not need
 to understand representation or lifetimes, and the compiler still performs
 proof-driven optimization inside the function.
+
+## Syntax is the optimization interface
+
+The useful question is not “which flag makes this faster?” It is “what is true
+about this value at this boundary?” The answer determines which transformation
+is sound:
+
+| Source fact | What the compiler may do |
+|---|---|
+| A `let` helper only reads during the call | Borrow the input without creating a new owner |
+| A `var` function returns a whole local to its caller slot | Avoid a scratch copy and use direct write-back |
+| An `own` parameter is consumed with `move` | Carry the existing buffer across the call |
+| A value is `unique` | Mutate or extract in place while the proof holds |
+| A value is `frozen` | Share reads without opening a mutable path |
+| A value is `local unique` | Reclaim or optimize temporary state without allowing it to escape |
+| A type is `packed` | Use a fixed inline layout where every boundary agrees |
+| A block is `region:` | Reclaim its temporary allocations together |
+
+The compiler can still optimize code that uses none of these forms. The forms
+matter when they expose a fact that ordinary value syntax cannot safely assume.
+They are contracts to write because they are true, not annotations to sprinkle
+until a benchmark moves.
 
 ## `let`: a read-only call boundary
 
