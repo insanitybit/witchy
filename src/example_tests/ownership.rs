@@ -466,6 +466,54 @@ fn main(console: Console):
         );
     }
 
+    /// A reference-free trait implementation remains callable across the
+    /// normal-to-opt boundary. The normal caller sees only the conventional
+    /// value signature while the opt module keeps one trait-backed identity.
+    #[test]
+    fn rfc0122_normal_to_opt_trait_boundary_preserves_value_semantics_on_both_backends() {
+        let api = r#"
+mode opt
+
+type Formatter:
+    prefix: String
+
+trait Render:
+    fn render(self: Self, own text: String) -> String
+
+impl Render for Formatter:
+    fn render(self: Formatter, own text: String) -> String:
+        self.prefix + text
+
+pub fn apply(formatter: Formatter, own text: String) -> String:
+    formatter.render(text)
+"#;
+        let app = r#"
+import api
+
+fn main(console: Console):
+    let formatter = api.Formatter("prefix:")
+    console.print(api.apply(formatter, "value"))
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app")
+            .expect("link normal-to-opt trait boundary");
+        typeck::check(&linked).expect("normal trait boundary has no reference contract");
+        let expected = ["prefix:value"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter preserves the conventional trait boundary",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled backend preserves the conventional trait boundary",
+        );
+    }
+
     /// A conventional result from an opt export is logically owned in normal
     /// source. It may share an internal owner only until either side mutates;
     /// normal code must observe two independent values without a loan.
