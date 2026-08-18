@@ -412,24 +412,24 @@ immutable local packed list whose complete module use proves that it never
 crosses, aliases, mutates, nests, or participates in a loan. The compiler retains
 allocation or the RC header whenever those proofs don't hold.
 
-## Borrowed views (`mode opt`)
+## Borrowed views and explicit references (`mode opt`)
 
 A `mode opt` module may return a read-only **view** of a value it was given,
-instead of copying it. The parameter names a lifetime with `let('a) T` and the
-result borrows it with `View(T, 'a)`; the value is the same one at runtime (a
-view has no representation of its own), so this changes only *when* a copy is
-made, never the observable result:
+instead of copying it. The reference type names the lifetime directly as
+`&'a T`; the value is the same one at runtime (a reference has no independent
+logical value), so this changes only *when* a copy is made, never the observable
+result:
 
 ```witchy
 mode opt
 
-fn first(let text: let('a) String) -> View(String, 'a):
+fn first(let text: &'a String) -> &'a String:
     text
 
 fn main(console: Console):
     var s = "borrowed, not copied"
-    let view = first(s)
-    console.print(view)
+    let view = first(&s)
+    console.print(*view)
     s = "now the view is done, so the owner is free again"
     console.print(s)
 ```
@@ -448,12 +448,12 @@ mode opt
 
 import borrow
 
-fn first(let text: let('a) String) -> View(String, 'a):
+fn first(let text: &'a String) -> &'a String:
     text
 
 fn main(console: Console):
     var s = "borrowed"
-    let kept = first(s).owned()
+    let kept = first(&s).owned()
     s = "the view is materialized, so the owner is free right away"
     console.print(kept)
     console.print(s)

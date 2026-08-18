@@ -10,6 +10,7 @@
 - [A Tour of the Language](tour.md)
   - [Values and Types](tour-values.md)
   - [Functions and Control Flow](tour-functions.md)
+  - [Opt-mode References and Lifetimes](opt-mode-references.md)
   - [Data: Records and Enums](tour-data.md)
     - [Structural Records and Width Conformance](structural-records.md)
   - [Uniform `var` Write-Back](mutating-methods.md)

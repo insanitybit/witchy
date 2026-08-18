@@ -408,7 +408,7 @@ ownership contract about a value:
 | `frozen T` | deeply immutable; it can't be bound as mutable or consumed through `own` |
 | `unique T` | the sole reference to the value |
 | `local unique T` | unique within the current call and unable to escape it |
-| `View(T, 'a)` | a read-only view tied to a `let('a) T` input; available in `mode opt` |
+| `&'a T` | a read-only reference valid for lifetime `'a`; available in `mode opt` |
 
 The qualifiers have no runtime representation and can't change a program's
 answer. They let `mode opt` turn a missed ownership proof into a compile error
@@ -420,3 +420,7 @@ These conventions are also witchy's **performance knobs** (what may alias
 determines what the compiler may mutate in place): see
 [Appendix: Performance - the Ownership Knobs](appendix-performance.md) for
 what each one means to the optimizer and when to reach for it.
+
+For first-class shared and exclusive references, explicit lifetimes, reborrows,
+aggregate carriers, and normal-to-opt adapters, see
+[Opt-mode References and Lifetimes](opt-mode-references.md).
