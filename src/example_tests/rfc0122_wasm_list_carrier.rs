@@ -1085,3 +1085,21 @@ fn main(console: Console):
         "forced-copy Wasm preserves a locally constructed nullable carrier"
     );
 }
+
+/// A reference-list registry entry must not reclassify an ordinary scalar
+/// `List(String)` that shares the qualifier-erased source key.
+#[test]
+fn scalar_list_remains_scalar_when_a_reference_list_has_the_same_element_type() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var first = "first"
+    let views = [&first]
+    let scalar_values = ["scalar"]
+    let view = views[0]
+    let scalar = scalar_values[0]
+    console.print(*view)
+    console.print(scalar)
+"#;
+    assert_eq!(wasm_run_reowns(src).0, ["first", "scalar"]);
+}

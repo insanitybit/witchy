@@ -1934,25 +1934,28 @@ impl<'types> Codegen<'types> {
             return None;
         }
         let element = args.first()?;
-        // The source-level type table can erase `&T`/`&mut T` inside an
-        // aggregate, while the closed list registry still records the
-        // authenticated carrier under the qualifier-stripped type key. Use
-        // that registered array kind before consulting the erased element
-        // type. This keeps `Option(List((...references...)))` nullable and
-        // typed through `None` as well as through `Some(values)`.
+        let element_kind = self.kind_for_type(element);
+        // A closed reference-bearing list can arrive through a callable
+        // signature after the source type table has erased its nested
+        // qualifier. Accept the registry entry only when its physical array
+        // element kind agrees with the element type recovered here. This is
+        // the collision guard: `List(String)` has scalar `I32` element kind,
+        // so it cannot inherit a `GcRef` carrier registered for `List(&String)`.
         if let Some(type_id) = self
             .gc_reference_list_ids
             .get(&self.gc_lookup_type_key(ty))
             .copied()
         {
-            let element_kind = self
+            let registered_kind = self
                 .gc_reference_list_layouts()
                 .into_iter()
                 .find_map(|(candidate, kind)| (candidate == type_id).then_some(kind))?;
+            if registered_kind != element_kind {
+                return None;
+            }
             let array_id = type_id.checked_sub(self.gc_structs.len() as u32)?;
-            return Some((type_id, array_id, element_kind));
+            return Some((type_id, array_id, registered_kind));
         }
-        let element_kind = self.kind_for_type(element);
         if !matches!(element_kind, Kind::ExternRef | Kind::GcRef(_)) {
             return None;
         }
@@ -1969,6 +1972,33 @@ impl<'types> Codegen<'types> {
         } else {
             return None;
         };
+        let array_id = type_id.checked_sub(self.gc_structs.len() as u32)?;
+        Some((type_id, array_id, element_kind))
+    }
+
+    /// Recover a reference-list carrier when type checking erased explicit
+    /// references nested inside an Option/Result payload. This is deliberately
+    /// separate from ordinary list expression classification: a scalar
+    /// `List(String)` must never inherit a qualifier-erased registry entry
+    /// merely because another list in the module borrows `String`.
+    pub(crate) fn gc_reference_list_layout_for_erased_type(
+        &self,
+        ty: &Type,
+    ) -> Option<(u32, u32, Kind)> {
+        let Type::Named(name, _) = ty.unqualified() else {
+            return None;
+        };
+        if name != "List" {
+            return None;
+        }
+        let type_id = self
+            .gc_reference_list_ids
+            .get(&self.gc_lookup_type_key(ty))
+            .copied()?;
+        let element_kind = self
+            .gc_reference_list_layouts()
+            .into_iter()
+            .find_map(|(candidate, kind)| (candidate == type_id).then_some(kind))?;
         let array_id = type_id.checked_sub(self.gc_structs.len() as u32)?;
         Some((type_id, array_id, element_kind))
     }
@@ -2023,6 +2053,11 @@ impl<'types> Codegen<'types> {
         &self,
         expr: &Expr,
     ) -> Option<(u32, u32, Kind)> {
+        if let Expr::List(items) = expr
+            && let Some(layout) = self.gc_reference_list_literal_layout(expr, items)
+        {
+            return Some(layout);
+        }
         self.ast_type_of_expr(expr)
             .as_ref()
             .and_then(|ty| self.gc_reference_list_layout(ty))
@@ -2410,7 +2445,7 @@ impl<'types> Codegen<'types> {
                     if owner != "Option" || owner_args.len() != 1 {
                         return Some(self.cur_fn_ret_kind);
                     }
-                    self.gc_reference_list_layout(&owner_args[0])
+                    self.gc_reference_list_layout_for_erased_type(&owner_args[0])
                         .map(|(type_id, _, _)| Kind::GcRef(type_id))
                         .or(Some(self.cur_fn_ret_kind))
                 }
@@ -3634,6 +3669,16 @@ impl<'types> Codegen<'types> {
                     // is nevertheless a PlaceReference carrier.
                     let k = if matches!(value, Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }) {
                         Kind::GcRef(PLACE_REFERENCE_ID)
+                    } else if let Some((type_id, _, _)) = match value {
+                        Expr::List(items) => self.gc_reference_list_literal_layout(value, items),
+                        _ => None,
+                    } {
+                        // The source type table erases `&T` inside a list
+                        // literal, but the literal's executable item kinds
+                        // identify the registered GC carrier. Preserve that
+                        // carrier on the local so a later projection cannot
+                        // fall back to the scalar list ABI.
+                        Kind::GcRef(type_id)
                     } else {
                         inferred_type
                             .as_ref()

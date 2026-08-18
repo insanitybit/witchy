@@ -38,18 +38,26 @@ impl Codegen<'_> {
         {
             return Kind::GcRef(super::PLACE_REFERENCE_ID);
         }
+        let nullable_ctor = matches!(
+            e,
+            Expr::Ctor { name, .. } if name == "Some" || name == "None"
+        );
         if let Some(t) = self.ast_type_of_expr(e) {
-            if let k @ (Kind::ExternRef | Kind::GcRef(_)) = self.kind_for_type(&t) {
+            if !nullable_ctor
+                && let k @ (Kind::ExternRef | Kind::GcRef(_)) = self.kind_for_type(&t)
+            {
                 return k;
             }
             // Type checking may erase a reference qualifier nested inside an
             // Option carrier. The closed reference-list registry retains the
             // physical array identity, so recover the nullable payload kind
             // from that authenticated layout before falling back to i32.
-            if let Type::Named(name, args) = t.unqualified()
+            if !nullable_ctor
+                && let Type::Named(name, args) = t.unqualified()
                 && name == "Option"
                 && let [inner] = args.as_slice()
-                && let Some((type_id, _, _)) = self.gc_reference_list_layout(inner)
+                && let Some((type_id, _, _)) =
+                    self.gc_reference_list_layout_for_erased_type(inner)
             {
                 return Kind::GcRef(type_id);
             }

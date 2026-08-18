@@ -615,16 +615,15 @@ fn type_has_planned_reference(
             )
         }),
         Type::Named(name, args) if name == "List" => {
-            reference_lists.contains_key(&cg.gc_lookup_type_key(ty))
-                || args.first().is_some_and(|element| {
-                    type_has_planned_reference(
-                        cg,
-                        element,
-                        storage,
-                        nominals,
-                        reference_lists,
-                    )
-                })
+            args.first().is_some_and(|element| {
+                type_has_planned_reference(
+                    cg,
+                    element,
+                    storage,
+                    nominals,
+                    reference_lists,
+                )
+            })
         }
         Type::Named(_, args) => {
             storage.first_reference(ty).is_some()
