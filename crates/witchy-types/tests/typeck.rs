@@ -449,6 +449,10 @@ mod tests {
                 "fn read(values: List(&'a String)) -> Int:\n    0\n",
             ),
             (
+                "legacy borrowed-view parameter",
+                "fn borrow(text: let('a) String) -> View(String, 'a):\n    text\n",
+            ),
+            (
                 "nominal lifetime declaration",
                 "type Parser('a):\n    input: &'a String\n",
             ),
