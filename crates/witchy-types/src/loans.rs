@@ -2131,8 +2131,15 @@ impl LoanCtx<'_> {
         let mut moved_exclusive: HashSet<String> = HashSet::new();
         // A tuple/list shell built from exclusive borrows is affine even though
         // its individual handles are not represented by one `Loan` named after
-        // the shell. Track that shell so binding patterns cannot copy it.
-        let mut affine_aggregates: HashSet<String> = HashSet::new();
+        // the shell. Track that shell so binding patterns cannot copy it. Loans
+        // seeded from a match arm or nested block are already live handles, so
+        // seed their affine state as well; otherwise destructuring `Ok(pair)`
+        // could reuse the inherited `pair` spelling after moving its fields.
+        let mut affine_aggregates: HashSet<String> = seeded
+            .iter()
+            .filter(|loan| loan.kind == BorrowKind::Exclusive)
+            .map(|loan| loan.view.clone())
+            .collect();
         // A mutable reborrow suspends, rather than consumes, its parent handle.
         // The child remains the only live exclusive loan until its final use;
         // then the parent becomes usable again without manufacturing a second

@@ -452,6 +452,52 @@
     }
 
     #[test]
+    fn exclusive_reference_result_tuple_preserves_affine_transport() {
+        check_str(
+            "mode opt\n\n\
+             fn make(own left: unique &'a mut String, own right: unique &'a mut String) \
+                 -> Result((unique &'a mut String, unique &'a mut String), String):\n\
+             \x20   Ok((left, right))\n\
+             fn main():\n\
+             \x20   var first = \"first\"\n\
+             \x20   var second = \"second\"\n\
+             \x20   let selected = make(&mut first, &mut second)\n\
+             \x20   match selected:\n\
+             \x20       Ok(pair) ->\n\
+             \x20           let (left, right) = pair\n\
+             \x20           *left = \"left updated\"\n\
+             \x20           *right = \"right updated\"\n\
+             \x20       Err(_) ->\n\
+             \x20           return\n",
+        )
+        .expect("a Result tuple moves its exclusive handles into the selected arm");
+
+        let err = check_str(
+            "mode opt\n\n\
+             fn make(own left: unique &'a mut String, own right: unique &'a mut String) \
+                 -> Result((unique &'a mut String, unique &'a mut String), String):\n\
+             \x20   Ok((left, right))\n\
+             fn main():\n\
+             \x20   var first = \"first\"\n\
+             \x20   var second = \"second\"\n\
+             \x20   let selected = make(&mut first, &mut second)\n\
+             \x20   match selected:\n\
+             \x20       Ok(pair) ->\n\
+             \x20           let (left, right) = pair\n\
+             \x20           *left = \"left updated\"\n\
+             \x20           *right = \"right updated\"\n\
+             \x20           let duplicate = pair\n\
+             \x20       Err(_) ->\n\
+             \x20           return\n",
+        )
+        .expect_err("destructuring a Result payload consumes its exclusive carrier");
+        assert!(
+            err.contains("moved exclusive reference `pair`") || err.contains("used more than once"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn exclusive_reference_aggregates_move_once_and_destructure_without_copying() {
         check_str(
             "mode opt\n\nfn main(console: Console):\n    var first = \"first\"\n    var second = \"second\"\n    let pair = (&mut first, &mut second)\n    let moved = pair\n    let (left, right) = moved\n    *left = \"updated-first\"\n    *right = \"updated-second\"\n    console.print(first)\n    console.print(second)\n",
