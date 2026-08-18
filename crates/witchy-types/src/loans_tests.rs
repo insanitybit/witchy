@@ -460,6 +460,23 @@
     }
 
     #[test]
+    fn exclusive_reference_callable_nested_tuple_list_preserves_affine_transport() {
+        check_str(
+            "mode opt\n\nfn make(own left: unique &'a mut String, own right: unique &'a mut String) -> List((unique &'a mut String, unique &'a mut String)):\n    [(left, right)]\n\nfn main(console: Console):\n    var first = \"first\"\n    var second = \"second\"\n    let factory = make\n    let values = factory(&mut first, &mut second)\n    let moved = values\n    let (left, right) = moved[0]\n    *left = \"left updated\"\n    *right = \"right updated\"\n    console.print(first)\n    console.print(second)\n",
+        )
+        .expect("a function value preserves nested tuple/list exclusive ownership");
+
+        let err = check_str(
+            "mode opt\n\nfn make(own left: unique &'a mut String, own right: unique &'a mut String) -> List((unique &'a mut String, unique &'a mut String)):\n    [(left, right)]\n\nfn main():\n    var first = \"first\"\n    var second = \"second\"\n    let factory = make\n    let values = factory(&mut first, &mut second)\n    let moved = values\n    let (left, right) = moved[0]\n    *left = \"left updated\"\n    *right = \"right updated\"\n    let duplicate = values\n",
+        )
+        .expect_err("moving a nested callable list result retires the prior list handle");
+        assert!(
+            err.contains("moved exclusive reference `values`") || err.contains("used more than once"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn exclusive_reference_list_push_rejects_an_overlapping_owner() {
         let err = linked_main(
             "mode opt\n\nimport list\n\nfn main():\n    var text = \"before\"\n    var values: List(&'a mut String) = [&mut text]\n    list.push(values, &mut text)\n",
