@@ -42,6 +42,24 @@ fn main(console: Console):
     console.print(caller(value))
 "#;
 
+const LEGACY_AGGREGATE_CARRIER: &str = r#"mode opt
+
+type Pair('a):
+    first: View(String, 'a)
+    second: View(String, 'a)
+
+fn make_pair(text: String('a)) -> Pair('a):
+    let held: String('a) = text
+    Pair(held, held)
+
+fn caller(text: String) -> String:
+    let pair = make_pair(text).owned()
+    pair.first
+
+fn main(console: Console):
+    console.print(caller("first"))
+"#;
+
 fn compiled_output(checked: &witchy_types::pipeline::CheckedModule) -> Vec<String> {
     let bytes = codegen::compile_checked_module_binary(checked)
         .expect_lowered("compile migrated RFC-0122 fixture");
@@ -152,6 +170,61 @@ fn migrated_fixtures_preserve_checked_loan_and_runtime_counters() {
         assert_eq!(stats.live_cells, 0, "migrated {label} fixture must not leak runtime roots");
         assert_eq!(stats.output, ["value"], "migrated {label} output drifted");
     }
+}
+
+#[test]
+fn migrated_rfc0083_rfc0112_fixtures_preserve_full_parity() {
+    for (label, legacy, expected_roots, expected_output) in [
+        ("shared call", LEGACY_SHARED_CALL, vec!["text"], ["value"]),
+        ("mutable parameter", LEGACY_MUTABLE_PARAMETER, vec!["value"], ["value"]),
+    ] {
+        let Some(migration) = migrate_references(legacy) else {
+            panic!("migrate historical {label} fixture");
+        };
+        assert!(migration.ambiguities.is_empty(), "{label}: {:#?}", migration.ambiguities);
+        let migrated_checked = witchy::resolve_std_only_checked(&migration.source)
+            .unwrap_or_else(|error| panic!("resolve migrated {label} fixture: {error}"));
+
+        let migrated_interpreted =
+            interpreter::run_checked_module(&migrated_checked, ".", Vec::new())
+                .unwrap_or_else(|error| panic!("interpret migrated {label} fixture: {error}"));
+        assert_eq!(migrated_interpreted, expected_output, "{label} interpreter output drifted");
+        assert_eq!(compiled_output(&migrated_checked), expected_output, "{label} Wasm output drifted");
+
+        let migrated_facts =
+            loans::facts(migrated_checked.module()).expect("publish migrated loan facts");
+        assert_eq!(
+            migrated_facts
+                .owner_roots()
+                .iter()
+                .map(|root| root.local.as_str())
+                .collect::<Vec<_>>(),
+            expected_roots,
+            "{label} migrated owner roots drifted"
+        );
+        let migrated_stats = witchy::stats::compute(&migration.source)
+            .unwrap_or_else(|error| panic!("measure migrated {label} fixture: {error}"));
+        assert!(
+            migrated_stats.loan_opens > 0 || migrated_stats.loan_return_transfers > 0,
+            "{label} migrated loan evidence missing"
+        );
+        assert_eq!(migrated_stats.loan_opens, migrated_facts.telemetry().opens);
+        assert_eq!(migrated_stats.loan_closes, migrated_facts.telemetry().closes);
+        assert_eq!(migrated_stats.output, expected_output, "{label} migrated counters lost output");
+        assert_eq!(migrated_stats.live_cells, 0, "{label} migrated roots leaked");
+    }
+}
+
+#[test]
+fn migrated_aggregate_declaration_preserves_nominal_lifetime() {
+    let migration = migrate_references(LEGACY_AGGREGATE_CARRIER)
+        .expect("migrate the historical aggregate declaration");
+    assert!(migration.ambiguities.is_empty(), "{:#?}", migration.ambiguities);
+    assert!(migration.source.contains("type Pair('a):"), "{}", migration.source);
+    assert!(migration.source.contains("first: &'a String"), "{}", migration.source);
+    assert!(migration.source.contains("second: &'a String"), "{}", migration.source);
+    assert!(migration.source.contains("fn make_pair(text: &'a String) -> Pair('a)"), "{}", migration.source);
+    assert!(!migration.source.contains("View(String, 'a)"), "{}", migration.source);
 }
 
 #[test]

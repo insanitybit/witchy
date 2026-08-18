@@ -18,7 +18,7 @@ use witchy_types::typeck;
 const STATS_MEMORY_PAGES: usize = 16384;
 
 /// Deterministic counters from one program run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stats {
     /// The program's printed output — so a stats run also pins behavior.
     pub output: Vec<String>,
