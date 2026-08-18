@@ -161,7 +161,7 @@ Current `master` now closes interpreter parity for the named direct, callable,
 Option, Result, tuple, nominal, and list carriers above. The executable focused
 matrix is green:
 
-- `cargo test --bin witchy 'example_tests::rfc0122_' -- --nocapture`: 100 passed
+- `cargo test --bin witchy rfc0122 -- --nocapture`: 126 passed, including the 100-case carrier subset
 - `cargo test -p witchy-types --lib loans::tests:: -- --nocapture`: 153 passed
 - `cargo test -p witchy-lower --lib analysis::no_copy_tests:: -- --nocapture`: 22 passed
 
