@@ -1,10 +1,10 @@
 ---
 rfc: 0122
 title: "Opt-mode first-class references and explicit lifetimes"
-status: accepted
+status: implemented
 created: 2026-08-13
-updated: 2026-08-15
-tracking: "Accepted long-term opt-mode reference model. Implementation is tracked criterion-by-criterion in rfcs/0122-acceptance-ledger.md; executable compiled place-reference reads/writes through direct calls, function values, and closures landed through 9c8081c8."
+updated: 2026-08-18
+tracking: "Implemented. The current-master acceptance audit in rfcs/0122-acceptance-ledger.md records executable evidence for all 22 criteria through 1aa2b5b8, including post-freeze interpreter, optimized Wasm, forced-copy Wasm, migration, precision-telemetry, and throughput fixtures."
 predecessors:
   - "[0026](0026-unique-qualifier.md) (`unique` and `local unique` ownership contracts)"
   - "[0083](0083-opt-mode-lifetimes.md) (`let('a) T`, `View(T, 'a)`, and shared owner loans)"
@@ -15,9 +15,8 @@ predecessors:
 
 # RFC-0122: Opt-mode first-class references and explicit lifetimes
 
-> **Status: accepted.** This is the settled language direction, not a claim
-> that every acceptance criterion is implemented. The live criterion and
-> evidence status is in [the RFC-0122 acceptance ledger](0122-acceptance-ledger.md).
+> **Status: implemented.** The settled language direction and its executable
+> acceptance evidence are recorded in [the RFC-0122 acceptance ledger](0122-acceptance-ledger.md).
 
 ## Summary
 

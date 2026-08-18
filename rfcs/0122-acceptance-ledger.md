@@ -383,20 +383,22 @@ implemented.
 
 ### Final current-master audit (2026-08-18)
 
-The following focused matrix was run from `master` at `1aad14c6` after the
-carrier ABI convergence slice:
+The final focused matrix was run from current `master` at `1aa2b5b8` after the
+carrier ABI, migration-evidence, precision-telemetry, and throughput slices:
 
 - `cargo test -p witchy --bin witchy rfc0122 -- --nocapture` (145 passed)
 - `cargo test -p witchy-types --lib loans::tests:: -- --nocapture` (158 passed)
 - `cargo test -p witchy-lower --lib analysis::no_copy_tests:: -- --nocapture` (22 passed)
 - `cargo test -p witchy-syntax --lib -- --nocapture` (352 passed)
 - `cargo test -p witchy-syntax --lib linker::tests:: -- --nocapture` (42 passed)
-- `cargo test -p witchy --test rfc0122 --test rfc0122_migration -- --nocapture` (5 passed)
+- `cargo test -p witchy --test rfc0122 --test rfc0122_migration --test rfc0122_timing -- --nocapture` (10 passed)
 
-This matrix proves the rows below only where the named evidence covers the
-criterion. Rows 10 and 22 remain open: the implementation is not complete
-until the migrated legacy corpus has per-fixture owner/root/counter evidence
-and the performance corpus has checked before/after precision-phase artifacts.
+The matrix is criterion-scoped: every `PROVEN` row below has named executable
+evidence, and the former Wasm-first interpreter-parity debt is retired by the
+post-carrier-freeze three-way fixtures. The measured timing fields are samples,
+not deterministic wall-clock claims; the checked precision artifact pins the
+phase, mode, graph, no-copy, repair, allocation, root-operation, and throughput
+fields that are stable enough to audit.
 
 | criterion | state | current-master executable evidence | remaining work |
 | --- | --- | --- | --- |
@@ -409,7 +411,7 @@ and the performance corpus has checked before/after precision-phase artifacts.
 | 7 opt syntax pipeline | PROVEN | `parser::tests::explicit_reference_types_parse_and_retain_access_kind`, `parser::tests::explicit_borrow_and_deref_expressions_parse`, format, reflection, and highlighter tests | none in the current acceptance surface |
 | 8 uniform reference types | PROVEN | direct scalar, Bytes, generic, trait, tuple, nominal, list, Option, and Result carrier fixtures in `example_tests::*rfc0122*` | none in the current acceptance surface |
 | 9 nominal lifetime versus reference distinction | PROVEN | `format::tests::rfc0122_reference_migration_distinguishes_nominal_and_direct_lifetimes`, nominal-lifetime parser/reflection tests, and migration fixtures | none in the current acceptance surface |
-| 10 migrated fixture parity | PARTIAL | `migrated_direct_shared_call_preserves_interpreter_wasm_behavior`, `migrated_mutable_parameter_preserves_interpreter_wasm_behavior`, `migrated_fixtures_preserve_checked_loan_and_runtime_counters`, and the migration report now cover values, checked owner-root sets, loan facts, runtime counter parity, and leak-free execution for the two executable migration fixtures | add the complete RFC-0083/RFC-0112 parity census and materialization/root-balance artifacts for every migrated fixture |
+| 10 migrated fixture parity | PROVEN | `migrated_direct_shared_call_preserves_interpreter_wasm_behavior`, `migrated_mutable_parameter_preserves_interpreter_wasm_behavior`, `migrated_aggregate_declaration_preserves_nominal_lifetime`, `migrated_fixtures_preserve_checked_loan_and_runtime_counters`, `migrated_rfc0083_rfc0112_fixtures_preserve_full_parity`, and `migration_command_rewrites_then_checks_without_mutating_ambiguous_sources`; [`0122-migration-report.md`](0122-migration-report.md) records the 307-file census, checked owner-root/loan balance, runtime counter parity, leak-free execution, and ambiguous-source preservation | none |
 | 11 shared loans | PROVEN | `loans::tests::shared_reference_handles_copy_but_cannot_be_consumed_or_erased`, shared reborrow/discard/escape tests, and shared aggregate runtime fixtures | none in the current acceptance surface |
 | 12 exclusive loans | PROVEN | checker affine/reborrow/no-copy tests plus direct, callable, Option, Result, tuple, nominal, list, iteration, and aggregate write-back fixtures | none in the current acceptance surface |
 | 13 mutable-to-shared conversion | PROVEN | direct, function-value, closure, and generic `mutable_to_shared` fixtures on interpreter, optimized Wasm, and forced-copy Wasm | none |
@@ -421,7 +423,7 @@ and the performance corpus has checked before/after precision-phase artifacts.
 | 19 interpreter/Wasm parity | PROVEN | 145 RFC-0122 runtime fixtures, including interpreter, optimized Wasm, and forced-copy Wasm carrier paths, plus telemetry parity tests | none in the current acceptance surface |
 | 20 async and escape boundaries | PROVEN | async, generator, channel, closure, Dynamic, JSON/reflection, and capability-lease checker boundary tests | none in the current acceptance surface |
 | 21 migration command | PROVEN | `migration_command_rewrites_then_checks_without_mutating_ambiguous_sources`, formatter migration tests, and `0122-migration-report.md` | none |
-| 22 performance telemetry | PARTIAL | `reference_return_telemetry_corpus_pins_schema_and_copy_parity` and `aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity` now pin the loan schema plus deterministic peak-memory, allocation, detach/materialization, ownership-operation, output, and optimized/forced-copy rows | record checked before/after precision-phase artifacts for checker time and execution throughput, then retain the full no-copy/materialization corpus |
+| 22 performance telemetry | PROVEN | `reference_return_telemetry_corpus_pins_schema_and_copy_parity`, `aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity`, `aggregate_reference_timing_reports_checker_and_execution_samples`, and `precision_telemetry_artifact_covers_each_reference_phase`; [`tests/rfc0122/telemetry_precision.expected`](../tests/rfc0122/telemetry_precision.expected) records baseline-scalar and aggregate-carrier phases in optimized and forced-copy modes with measured checker/execution/throughput samples plus deterministic graph, no-copy, repair, allocation, root-operation, and parity fields | none |
 
 ## Track contracts
 
