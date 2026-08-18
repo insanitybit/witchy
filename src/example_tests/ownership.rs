@@ -168,6 +168,15 @@ fn rfc0122_owned_exclusive_parameter_transfers_its_place_on_both_backends() {
     assert_eq!(compiled, want, "compiled backend transports the owned exclusive reference place");
 }
 
+#[test]
+fn rfc0122_owned_exclusive_parameter_releases_the_owner_after_mutation_on_both_backends() {
+    let src = "mode opt\n\nfn consume(own text: &'a mut String) -> Nil:\n    *text = \"changed\"\n    return\n\nfn main(console: Console):\n    var value = \"before\"\n    let editable = &mut value\n    consume(editable)\n    console.print(value)\n";
+    let want = ["changed"];
+    assert_eq!(link_run(src), want, "interpreter releases an owned exclusive handle at return");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled backend releases an owned exclusive handle at return");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.
