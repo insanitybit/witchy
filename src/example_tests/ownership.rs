@@ -427,6 +427,45 @@ fn main(console: Console):
         );
     }
 
+    /// A normal-mode closure has no reference contract to hide, so it may be
+    /// passed through the same opt callback boundary as a named function. The
+    /// runtime descriptor and its conventional `own` argument must agree.
+    #[test]
+    fn rfc0122_normal_closure_through_opt_callback_preserves_value_semantics_on_both_backends() {
+        let api = r#"
+mode opt
+
+pub fn apply(own action: fn(own String) -> String, own text: String) -> String:
+    action(text)
+"#;
+        let app = r#"
+import api
+
+fn main(console: Console):
+    let action = fn(own text: String) -> String:
+        text + "?"
+    console.print(api.apply(action, "hello"))
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app")
+            .expect("link normal closure through opt callback");
+        typeck::check(&linked).expect("normal closure has no reference contract");
+        let expected = ["hello?"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter preserves a normal closure callback",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled backend preserves a normal closure callback",
+        );
+    }
+
     /// A conventional result from an opt export is logically owned in normal
     /// source. It may share an internal owner only until either side mutates;
     /// normal code must observe two independent values without a loan.
