@@ -186,6 +186,14 @@
     }
 
     #[test]
+    fn owned_generic_exclusive_reference_releases_an_aggregate_owner() {
+        check_str(
+            "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn consume(own value: &'a mut a) -> Nil:\n    return\n\nfn main():\n    var pair = Pair(1, 2)\n    let handle = &mut pair\n    consume(handle)\n    pair = Pair(3, 4)\n",
+        )
+        .expect("an owned generic exclusive reference releases its aggregate owner at return");
+    }
+
+    #[test]
     fn reference_handle_qualifiers_remain_distinct_from_reference_targets() {
         check_str(
             "mode opt\n\nfn take(own text: unique &'a mut String) -> unique &'a mut String:\n    text\n",
