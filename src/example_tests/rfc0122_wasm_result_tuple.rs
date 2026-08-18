@@ -170,3 +170,35 @@ fn main(console: Console):
         "interpreter preserves a nullable Option list tuple carrier",
     );
 }
+
+#[test]
+fn interpreter_exclusive_reference_option_list_none_branch_preserves_owners() {
+    let src = r#"mode opt
+
+fn choose(
+    enabled: Bool,
+    left: &'a mut String,
+    right: &'a mut String,
+) -> Option(List((&'a mut String, &'a mut String))):
+    if enabled:
+        Some([(left, right)])
+    else:
+        None
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(false, &mut first, &mut second)
+    match selected:
+        Some(_) -> console.print("unexpected")
+        None -> console.print("none")
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["none", "first", "second"],
+        "interpreter preserves owners through a nullable None list carrier",
+    );
+}
