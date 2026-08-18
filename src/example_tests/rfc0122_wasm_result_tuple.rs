@@ -206,6 +206,80 @@ fn main(console: Console):
 }
 
 #[test]
+fn wasm_first_exclusive_reference_result_nominal_list_err_branch_preserves_owners() {
+    let src = r#"mode opt
+
+type Pair('a, 'b):
+    left: &'a mut String
+    right: &'b mut String
+
+fn choose(
+    enabled: Bool,
+    left: &'a mut String,
+    right: &'b mut String,
+) -> Result(List(Pair('a, 'b)), String):
+    if enabled:
+        Ok([Pair(left, right)])
+    else:
+        Err("not selected")
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(false, &mut first, &mut second)
+    match selected:
+        Ok(_) -> console.print("unexpected")
+        Err(message) -> console.print(message)
+    console.print(first)
+    console.print(second)
+"#;
+    let want = ["not selected", "first", "second"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves an Err nominal list carrier");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves an Err nominal list carrier");
+}
+
+#[test]
+fn interpreter_exclusive_reference_result_nominal_list_err_branch_preserves_owners() {
+    let src = r#"mode opt
+
+type Pair('a, 'b):
+    left: &'a mut String
+    right: &'b mut String
+
+fn choose(
+    enabled: Bool,
+    left: &'a mut String,
+    right: &'b mut String,
+) -> Result(List(Pair('a, 'b)), String):
+    if enabled:
+        Ok([Pair(left, right)])
+    else:
+        Err("not selected")
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(false, &mut first, &mut second)
+    match selected:
+        Ok(_) -> console.print("unexpected")
+        Err(message) -> console.print(message)
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["not selected", "first", "second"],
+        "interpreter preserves owners on an Err nominal list carrier",
+    );
+}
+
+#[test]
 fn wasm_first_exclusive_reference_option_list_match_projects_and_writes() {
     let src = r#"mode opt
 
