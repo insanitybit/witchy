@@ -355,9 +355,16 @@ pub(crate) const RUN_MEMORY_PAGES: usize = 16384;
 /// *that*; this is the native equivalent.
 pub(crate) fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
     use crate::runtime::{Capabilities, Runtime};
+    use std::cell::RefCell;
     // Run-to-completion: no scheduler, so use the non-preempting engine, which
     // omits the per-backedge epoch check and runs tight loops at full speed.
-    let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
+    // Reuse the engine across calls in this thread — the differential suite
+    // invokes this hundreds of times and Engine::new is Cranelift ISA setup.
+    thread_local! {
+        static RUNTIME: RefCell<Runtime> = RefCell::new(Runtime::batch().expect("runtime"));
+    }
+    RUNTIME.with(|rt| {
+    let mut rt = rt.borrow_mut();
     let mut vm = rt
         .spawn(
             bytes,
@@ -389,6 +396,7 @@ pub(crate) fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
     // which the differential harness (`parity_check`) compares byte-for-byte.
     vm.run().map_err(|e| e.root_cause().to_string())?;
     Ok(vm.output())
+    })
 }
 
 /// Run a compiled in-language test under exactly the authority a nullary test

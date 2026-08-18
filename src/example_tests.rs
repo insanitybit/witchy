@@ -50,15 +50,38 @@
 
     thread_local! {
         static WASM_RUNTIME: std::cell::RefCell<crate::runtime::Runtime> =
-            std::cell::RefCell::new(crate::runtime::Runtime::batch().expect("runtime"));
+            std::cell::RefCell::new(crate::runtime::Runtime::batch_quick().expect("runtime"));
     }
 
     /// One Wasmtime engine per test thread. `Runtime::new()` builds a Cranelift
     /// ISA and epoch-interruption config — tens to hundreds of ms — and the
-    /// differential helpers used to pay that on every case. Batch execution
-    /// (no preemption checks) is the production run-to-completion path.
+    /// differential helpers used to pay that on every case. Batch-quick
+    /// skips Speed-tier lowering: the programs are tiny and the suite
+    /// compiles hundreds of them.
     fn with_batch_runtime<R>(f: impl FnOnce(&mut crate::runtime::Runtime) -> R) -> R {
         WASM_RUNTIME.with(|rt| f(&mut rt.borrow_mut()))
+    }
+
+    /// Last fully linked+typechecked module on this thread. `link_run` then
+    /// `wasm_run*` on the same source (or two wasm runs under force-copy)
+    /// used to parse, link, and typecheck std twice.
+    fn prepared_module(src: &str) -> ast::Module {
+        thread_local! {
+            static LAST: std::cell::RefCell<Option<(String, ast::Module)>> =
+                std::cell::RefCell::new(None);
+        }
+        LAST.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if let Some((prev, module)) = slot.as_ref() {
+                if prev == src {
+                    return module.clone();
+                }
+            }
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            *slot = Some((src.to_string(), linked.clone()));
+            linked
+        })
     }
 
     /// Resolve `src`'s `import`s against the bundled std and link the whole set —
@@ -177,8 +200,7 @@
         // function's cases.
         fn run_on_wasm_cached(src: &str) -> Vec<String> {
             use crate::runtime::Capabilities;
-            let linked = super::resolve_std_src(src);
-            super::typeck::check(&linked).expect("typecheck");
+            let linked = super::prepared_module(src);
             let bytes = super::codegen::compile_module_binary(&linked)
                 .expect_lowered("the binary path lowers this program");
             super::with_batch_runtime(|rt| {
@@ -341,56 +363,80 @@
 
     fn wasm_run(src: &str) -> Vec<String> {
         witchy_interp::compiler_natives::install();
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
+        let linked = prepared_module(src);
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
-        crate::run_wasm_bytes(&bytes).expect("wasm run")
+        with_batch_runtime(|rt| {
+            use crate::runtime::Capabilities;
+            let mut actor = rt
+                .spawn(
+                    &bytes,
+                    Capabilities {
+                        print: true,
+                        print_int: true,
+                        quiet: true,
+                        clock: true,
+                        rand: true,
+                        env: true,
+                        dir_root: Some(std::path::PathBuf::from(".")),
+                        dir_read: true,
+                        dir_write: true,
+                        net_allow: Some(Vec::new()),
+                        net_connect: true,
+                        net_listen: true,
+                        ..Default::default()
+                    },
+                    crate::RUN_MEMORY_PAGES,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            actor.output()
+        })
     }
 
     /// `wasm_run` that also reads the exported `__witchy_reowns` counter —
     /// the timing-free proof of whether accumulation ran in place (O(1)
     /// re-owns) or fell to the copying path (O(n) re-owns).
     fn wasm_run_reowns(src: &str) -> (Vec<String>, i64) {
-        use crate::runtime::{Capabilities, Runtime};
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
+        use crate::runtime::Capabilities;
+        let linked = prepared_module(src);
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
-                crate::RUN_MEMORY_PAGES,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        let reowns = actor.reowns().unwrap_or(0);
-        (actor.output(), reowns)
+        with_batch_runtime(|rt| {
+            let mut actor = rt
+                .spawn(
+                    &bytes,
+                    Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
+                    crate::RUN_MEMORY_PAGES,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            let reowns = actor.reowns().unwrap_or(0);
+            (actor.output(), reowns)
+        })
     }
 
     /// `wasm_run` that also reads the `__heap` frontier and `__rc_reused_bytes` —
     /// the timing-free proof of whether the RC floor bounded the heap (flat frontier)
     /// by recycling freed blocks (reused > 0), rather than leaking O(iterations).
     fn wasm_run_heap(src: &str) -> (Vec<String>, i64, i64) {
-        use crate::runtime::{Capabilities, Runtime};
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
+        use crate::runtime::Capabilities;
+        let linked = prepared_module(src);
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
-                crate::RUN_MEMORY_PAGES,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        let heap = actor.heap_bytes().unwrap_or(0);
-        let reused = actor.rc_reused_bytes().unwrap_or(0);
-        (actor.output(), heap, reused)
+        with_batch_runtime(|rt| {
+            let mut actor = rt
+                .spawn(
+                    &bytes,
+                    Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
+                    crate::RUN_MEMORY_PAGES,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            let heap = actor.heap_bytes().unwrap_or(0);
+            let reused = actor.rc_reused_bytes().unwrap_or(0);
+            (actor.output(), heap, reused)
+        })
     }
 
     // ---- RFC-0052: one pattern grammar ------------------------------------
@@ -633,8 +679,7 @@
     /// what the program printed.
     fn run_on_wasm(src: &str) -> Vec<String> {
         use crate::runtime::Capabilities;
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
+        let linked = prepared_module(src);
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
         with_batch_runtime(|rt| {

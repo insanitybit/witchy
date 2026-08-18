@@ -1026,7 +1026,7 @@ impl Runtime {
     /// every loop backedge and call, so for run-to-completion single-program
     /// execution prefer [`Runtime::batch`], which omits that per-iteration cost.
     pub fn new() -> Result<Self> {
-        Self::with_preemption(true)
+        Self::with_preemption(true, wasmtime::OptLevel::Speed)
     }
 
     /// A runtime for run-to-completion execution — the `sandbox`/benchmark path
@@ -1036,15 +1036,22 @@ impl Runtime {
     /// capability sandbox (only granted host fns, capped linear memory) is still
     /// fully in force, so this is a speed choice, not a security relaxation.
     pub fn batch() -> Result<Self> {
-        Self::with_preemption(false)
+        Self::with_preemption(false, wasmtime::OptLevel::Speed)
     }
 
-    fn with_preemption(preempt: bool) -> Result<Self> {
+    /// Same sandbox and ABI as [`Self::batch`], but Cranelift skips Speed-tier
+    /// lowering. Many short-lived modules (the differential suite) spend more
+    /// time in Cranelift than in the program; generated-code quality does not
+    /// change observable results.
+    pub fn batch_quick() -> Result<Self> {
+        Self::with_preemption(false, wasmtime::OptLevel::None)
+    }
+
+    fn with_preemption(preempt: bool, opt_level: wasmtime::OptLevel) -> Result<Self> {
         let mut config = Config::new();
-        // Cranelift's Speed tier: the compile-time cost is amortized by the
-        // compilation cache below, so generated code quality is free on every
-        // run after the first.
-        config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+        // Production batch/new keep Speed. `batch_quick` uses None so a
+        // 10-line differential case is not paying an optimizing JIT.
+        config.cranelift_opt_level(opt_level);
         // (RFC-0005 step 7) Defense in depth: shrink the codegen/runtime surface to
         // exactly what witchy emits. Disable every WASM proposal we never lower to —
         // threads, SIMD, relaxed-SIMD, multiple memories, tail calls, memory64 — so a
