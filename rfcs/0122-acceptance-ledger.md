@@ -421,7 +421,7 @@ and the performance corpus has checked before/after precision-phase artifacts.
 | 19 interpreter/Wasm parity | PROVEN | 145 RFC-0122 runtime fixtures, including interpreter, optimized Wasm, and forced-copy Wasm carrier paths, plus telemetry parity tests | none in the current acceptance surface |
 | 20 async and escape boundaries | PROVEN | async, generator, channel, closure, Dynamic, JSON/reflection, and capability-lease checker boundary tests | none in the current acceptance surface |
 | 21 migration command | PROVEN | `migration_command_rewrites_then_checks_without_mutating_ambiguous_sources`, formatter migration tests, and `0122-migration-report.md` | none |
-| 22 performance telemetry | PARTIAL | `reference_return_telemetry_corpus_pins_schema_and_copy_parity` and `aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity` pin deterministic facts, output, and optimized/forced-copy counters | record checked before/after precision-phase artifacts for checker time, peak memory, allocations, no-copy proofs, materializations, and throughput |
+| 22 performance telemetry | PARTIAL | `reference_return_telemetry_corpus_pins_schema_and_copy_parity` and `aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity` now pin the loan schema plus deterministic peak-memory, allocation, detach/materialization, ownership-operation, output, and optimized/forced-copy rows | record checked before/after precision-phase artifacts for checker time and execution throughput, then retain the full no-copy/materialization corpus |
 
 ## Track contracts
 

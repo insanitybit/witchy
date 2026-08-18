@@ -27,6 +27,21 @@ const LOAN_SCHEMA: &[&str] = &[
     "direct_storage_var_accesses",
 ];
 
+const RUNTIME_SCHEMA: &[&str] = &[
+    "heap_bytes",
+    "reowns",
+    "indirect_ownership_calls",
+    "boundary_reown_copies",
+    "ownership_token_repairs",
+    "direct_storage_var_accesses",
+    "destination_candidates_forwarded",
+    "rc_alloc_calls",
+    "bump_alloc_calls",
+    "rc_reuse_calls",
+    "rc_free_calls",
+    "live_cells",
+];
+
 fn run(optimizations: OptSet) -> Stats {
     opt::set_for_tests(Some(optimizations));
     let result = stats::compute(REFERENCE_RETURN).expect("compile and run telemetry corpus fixture");
@@ -57,6 +72,23 @@ fn metric_row(stats: &Stats) -> Vec<i64> {
     ]
 }
 
+fn runtime_row(stats: &Stats) -> Vec<i64> {
+    vec![
+        stats.heap_bytes,
+        stats.reowns,
+        stats.indirect_ownership_calls,
+        stats.boundary_reown_copies,
+        stats.ownership_token_repairs,
+        stats.direct_storage_var_accesses,
+        stats.destination_candidates_forwarded,
+        stats.rc_alloc_calls,
+        stats.bump_alloc_calls,
+        stats.rc_reuse_calls,
+        stats.rc_free_calls,
+        stats.live_cells,
+    ]
+}
+
 #[test]
 fn reference_return_telemetry_corpus_pins_schema_and_copy_parity() {
     assert!(EXPECTED.contains(&format!("schema={}", LOAN_SCHEMA.join(","))));
@@ -77,6 +109,13 @@ fn reference_return_telemetry_corpus_pins_schema_and_copy_parity() {
 
     let optimized_row = metric_row(&optimized);
     let forced_copy_row = metric_row(&forced_copy);
+    let optimized_runtime = runtime_row(&optimized);
+    let forced_copy_runtime = runtime_row(&forced_copy);
+    assert!(EXPECTED.contains(&format!("runtime_schema={}", RUNTIME_SCHEMA.join(","))));
+    assert!(EXPECTED.contains("optimized.runtime=136,0,0,0,0,0,0,7,7,0,0,7"));
+    assert!(EXPECTED.contains("forced_copy.runtime=136,0,0,0,0,0,0,7,7,0,0,7"));
+    assert_eq!(optimized_runtime, [136, 0, 0, 0, 0, 0, 0, 7, 7, 0, 0, 7]);
+    assert_eq!(forced_copy_runtime, optimized_runtime);
     assert_eq!(
         optimized_row,
         [1, 1, 1, 1, 2, 0, 807, 0, 0, 0, 0],
@@ -111,6 +150,13 @@ fn aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity() {
 
     let optimized_row = metric_row(&optimized);
     let forced_copy_row = metric_row(&forced_copy);
+    let optimized_runtime = runtime_row(&optimized);
+    let forced_copy_runtime = runtime_row(&forced_copy);
+    assert!(LIST_EXPECTED.contains(&format!("runtime_schema={}", RUNTIME_SCHEMA.join(","))));
+    assert!(LIST_EXPECTED.contains("optimized.runtime=157,0,0,0,0,0,0,4,4,0,0,4"));
+    assert!(LIST_EXPECTED.contains("forced_copy.runtime=157,0,0,0,0,0,0,4,4,0,0,4"));
+    assert_eq!(optimized_runtime, [157, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 4]);
+    assert_eq!(forced_copy_runtime, optimized_runtime);
     assert_eq!(forced_copy_row, optimized_row, "forced-copy lowering must retain the same source loan facts");
     assert!(
         LIST_EXPECTED.contains(&format!(

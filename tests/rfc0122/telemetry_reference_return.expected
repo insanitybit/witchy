@@ -7,8 +7,11 @@
 # passed interpreter/Wasm parity.
 
 schema=loan_active_points,loan_active_events,loan_opens,loan_closes,loan_return_transfers,loan_shell_mutations,loan_control_flow_edges,loan_subset_edges,boundary_reown_copies,ownership_token_repairs,direct_storage_var_accesses
+runtime_schema=heap_bytes,reowns,indirect_ownership_calls,boundary_reown_copies,ownership_token_repairs,direct_storage_var_accesses,destination_candidates_forwarded,rc_alloc_calls,bump_alloc_calls,rc_reuse_calls,rc_free_calls,live_cells
 optimized.output=9 8
 forced_copy.output=9 8
 interpreter.output=9 8
 optimized.metrics=1,1,1,1,2,0,807,0,0,0,0
 forced_copy.metrics=1,1,1,1,2,0,807,0,0,0,0
+optimized.runtime=136,0,0,0,0,0,0,7,7,0,0,7
+forced_copy.runtime=136,0,0,0,0,0,0,7,7,0,0,7
