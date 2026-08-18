@@ -223,6 +223,7 @@ fn collect_explicit_return_calls_expr(expr: &WirExpr, out: &mut HashSet<TailCall
         | WirExpr::Load { ptr: inner, .. } | WirExpr::Load8U { ptr: inner, .. }
         | WirExpr::MemoryGrow(inner) | WirExpr::StructGet { base: inner, .. }
         | WirExpr::RefCast { value: inner, .. }
+        | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => collect_explicit_return_calls_expr(inner, out),
         WirExpr::Binary { lhs, rhs, .. } => {

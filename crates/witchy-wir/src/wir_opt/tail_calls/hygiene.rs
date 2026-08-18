@@ -123,6 +123,7 @@ fn adapt_explicit_returns_expr(expr: &mut WirExpr, kind: Kind) {
         | WirExpr::MemoryGrow(inner)
         | WirExpr::StructGet { base: inner, .. }
         | WirExpr::RefCast { value: inner, .. }
+        | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => adapt_explicit_returns_expr(inner, kind),
         WirExpr::Binary { lhs, rhs, .. } => {
@@ -259,6 +260,7 @@ pub(in crate::wir_opt) fn rename_expr_locals(
         | WirExpr::Load { ptr: inner, .. } | WirExpr::Load8U { ptr: inner, .. }
         | WirExpr::MemoryGrow(inner) | WirExpr::StructGet { base: inner, .. }
         | WirExpr::RefCast { value: inner, .. }
+        | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => rename_expr_locals(inner, renames),
         WirExpr::Binary { lhs, rhs, .. } => {

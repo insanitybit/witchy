@@ -1822,7 +1822,14 @@ impl<'types> Codegen<'types> {
                     self.option_reference_ctor_kind(e, name, args.len())
                 {
                     if name == "Some" && args.len() == 1 {
-                        return self.lower_expr(&args[0]);
+                        let value = self.lower_expr(&args[0])?;
+                        return Some(W::RefCastNullable {
+                            struct_id: match option_kind {
+                                Kind::GcRef(id) => id,
+                                _ => return None,
+                            },
+                            value: Box::new(value),
+                        });
                     }
                     if name == "None" && args.is_empty() {
                         return Some(W::RefNull(Self::wir_kind(option_kind)));

@@ -2331,6 +2331,36 @@ impl<'types> Codegen<'types> {
         matches!(kind, Kind::ExternRef | Kind::GcRef(_)).then_some((inner, kind))
     }
 
+    /// Recover an `Option` reference carrier when type checking erased the
+    /// references nested inside a list/tuple. The physical GC id is still
+    /// authenticated by the registered reference-list layout, so it is safe
+    /// to reuse it as the nullable payload kind.
+    fn option_reference_inner_for_kind<'a>(
+        &self,
+        t: &'a Type,
+        physical: Kind,
+    ) -> Option<(&'a Type, Kind)> {
+        if let Some(inner) = self.option_reference_inner(t) {
+            return Some(inner);
+        }
+        let Type::Named(name, args) = t.unqualified() else {
+            return None;
+        };
+        let [inner] = args.as_slice() else { return None };
+        let Kind::GcRef(type_id) = physical else {
+            return None;
+        };
+        if !matches!(inner.unqualified(), Type::Named(inner_name, _) if inner_name == "List") {
+            return None;
+        }
+        (name == "Option"
+            && self
+                .gc_reference_list_layouts()
+                .into_iter()
+                .any(|(candidate, _)| candidate == type_id))
+        .then_some((inner, physical))
+    }
+
     /// Recover an explicit-reference Option constructor after typeck has
     /// erased the qualifier from the constructor's nominal result. The
     /// function result remains authoritative while lowering a tail `if` such
@@ -2348,7 +2378,23 @@ impl<'types> Codegen<'types> {
         let Some(ty) = self.ast_type_of_expr(expr) else {
             return None;
         };
-        if let Some((_, kind)) = self.option_reference_inner(&ty) {
+        let physical = self
+            .cur_fn_ret_ty
+            .as_ref()
+            .and_then(|ret| self.option_reference_inner(ret).map(|(_, kind)| kind))
+            .or_else(|| match expr {
+                Expr::Ctor { name, args } if name == "Some" => args
+                    .first()
+                    .and_then(|arg| {
+                        self.gc_reference_list_layout_of_expr(arg)
+                            .map(|(type_id, _, _)| Kind::GcRef(type_id))
+                    })
+                    .or_else(|| args.first().map(|arg| self.kind_of(arg)))
+                    .or(Some(self.cur_fn_ret_kind)),
+                _ => Some(self.cur_fn_ret_kind),
+            })
+        .unwrap_or(self.cur_fn_ret_kind);
+        if let Some((_, kind)) = self.option_reference_inner_for_kind(&ty, physical) {
             return Some(kind);
         }
         let Type::Named(name, args) = ty.unqualified() else {
@@ -2371,7 +2417,10 @@ impl<'types> Codegen<'types> {
         }
         self.cur_fn_ret_ty
             .as_ref()
-            .and_then(|ty| self.option_reference_inner(ty).map(|(_, kind)| kind))
+            .and_then(|ty| {
+                self.option_reference_inner_for_kind(ty, self.cur_fn_ret_kind)
+                    .map(|(_, kind)| kind)
+            })
     }
 
     fn reference_try_shape(&self, expr: &Expr) -> Option<ReferenceTryShape> {

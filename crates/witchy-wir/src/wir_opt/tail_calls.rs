@@ -1459,6 +1459,7 @@ fn rewrite_explicit_returns_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
         | WirExpr::MemoryGrow(inner)
         | WirExpr::StructGet { base: inner, .. }
         | WirExpr::RefCast { value: inner, .. }
+        | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => rewrite_explicit_returns_expr(inner, ctx),
         WirExpr::Binary { lhs, rhs, .. } => {

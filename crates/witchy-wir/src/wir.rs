@@ -485,6 +485,14 @@ pub enum WirExpr {
         struct_id: u32,
         value: Box<WirExpr>,
     },
+    /// Cast a reference to a concrete nullable GC struct reference. This is
+    /// used at nullable carrier boundaries such as `Option(Some(value))`,
+    /// where construction produces `(ref $t)` but the source-level value is
+    /// represented as `(ref null $t)`.
+    RefCastNullable {
+        struct_id: u32,
+        value: Box<WirExpr>,
+    },
     /// (RFC-0005) `ref.null` of a reference kind (`externref` or a concrete GC
     /// struct ref). The null initializer for a not-yet-populated cap slot.
     RefNull(Kind),
@@ -1197,6 +1205,10 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
             print_expr(s, value, depth);
             emit(s, depth, &format!("ref.cast (ref {struct_id})"));
         }
+        WirExpr::RefCastNullable { struct_id, value } => {
+            print_expr(s, value, depth);
+            emit(s, depth, &format!("ref.cast (ref null {struct_id})"));
+        }
         WirExpr::RefNull(kind) => {
             let heap = match kind {
                 Kind::ExternRef => "extern".to_string(),
@@ -1337,6 +1349,7 @@ pub(crate) fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSig
             }
             WirExpr::StructGet { base, .. }
             | WirExpr::RefCast { value: base, .. }
+            | WirExpr::RefCastNullable { value: base, .. }
             | WirExpr::ArrayLen(base)
             | WirExpr::RefIsNull(base) => walk_expr(base, out),
             WirExpr::ConstI64(_)
@@ -1565,6 +1578,7 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
             }
             WirExpr::StructGet { base, .. }
             | WirExpr::RefCast { value: base, .. }
+            | WirExpr::RefCastNullable { value: base, .. }
             | WirExpr::ArrayLen(base)
             | WirExpr::RefIsNull(base) => expr_violates(base, hits),
             WirExpr::ConstI64(_)

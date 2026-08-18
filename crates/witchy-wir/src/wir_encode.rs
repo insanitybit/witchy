@@ -193,7 +193,9 @@ impl Preflight<'_> {
                     self.expr(arg, locals, labels)?;
                 }
             }
-            WirExpr::StructGet { base, .. } | WirExpr::RefCast { value: base, .. } => {
+            WirExpr::StructGet { base, .. }
+            | WirExpr::RefCast { value: base, .. }
+            | WirExpr::RefCastNullable { value: base, .. } => {
                 self.expr(base, locals, labels)?;
             }
             WirExpr::ArrayNew { value, len, .. } => {
@@ -1406,6 +1408,12 @@ impl EncodeCtx<'_> {
             WirExpr::RefCast { struct_id, value } => {
                 self.encode_expr(func, value);
                 func.instruction(&Instruction::RefCastNonNull(HeapType::Concrete(
+                    self.gc_base + struct_id,
+                )));
+            }
+            WirExpr::RefCastNullable { struct_id, value } => {
+                self.encode_expr(func, value);
+                func.instruction(&Instruction::RefCastNullable(HeapType::Concrete(
                     self.gc_base + struct_id,
                 )));
             }

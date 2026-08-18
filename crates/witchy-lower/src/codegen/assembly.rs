@@ -5680,6 +5680,7 @@ fn collect_called_funcs(
             }
             E::StructGet { base, .. }
             | E::RefCast { value: base, .. }
+            | E::RefCastNullable { value: base, .. }
             | E::RefIsNull(base)
             | E::ArrayLen(base) => expr(base, out, uses_table),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
@@ -5811,6 +5812,7 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
             }
             E::StructGet { base, .. }
             | E::RefCast { value: base, .. }
+            | E::RefCastNullable { value: base, .. }
             | E::RefIsNull(base)
             | E::ArrayLen(base) => expr(base, out),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
@@ -5991,6 +5993,7 @@ fn attach_diagnostic_site_expr(
             }
             E::StructGet { base, .. }
             | E::RefCast { value: base, .. }
+            | E::RefCastNullable { value: base, .. }
             | E::RefIsNull(base)
             | E::ArrayLen(base) => reaches_host |= expr(base, site),
             E::ConstI64(_)

@@ -774,6 +774,53 @@ impl Codegen<'_> {
         Some((cond, binds))
     }
 
+    fn lower_nullable_reference_pattern(
+        &mut self,
+        value: &witchy_wir::wir::WirExpr,
+        pat: &Pattern,
+        expected: Option<&Type>,
+        physical: Kind,
+    ) -> Option<(witchy_wir::wir::WirExpr, witchy_wir::wir::WirSeq)> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        let expected = expected?;
+        let Type::Named(name, args) = expected.unqualified() else {
+            return None;
+        };
+        if name != "Option" || args.len() != 1 {
+            return None;
+        }
+        let inner = &args[0];
+        let Kind::GcRef(struct_id) = physical else {
+            return None;
+        };
+        Some(match pat {
+            Pattern::Ctor { name, args } if name == "Some" && args.len() == 1 => {
+                let (sub_cond, sub_binds) =
+                    self.lower_gc_struct_pattern(value, &args[0], struct_id, Some(inner))?;
+                let non_null = W::Unary {
+                    op: witchy_wir::wir::UnOp::Not,
+                    kind: witchy_wir::wir::Kind::I32,
+                    arg: Box::new(W::RefIsNull(Box::new(value.clone()))),
+                };
+                let cond = if matches!(sub_cond, W::ConstI32(1)) {
+                    non_null
+                } else {
+                    W::Control(Box::new(N::If {
+                        cond: non_null,
+                        then_: vec![N::Push(sub_cond)],
+                        els: vec![N::Push(W::ConstI32(0))],
+                        result: Some(witchy_wir::wir::WirTy::Bool),
+                    }))
+                };
+                (cond, sub_binds)
+            }
+            Pattern::Ctor { name, args } if name == "None" && args.is_empty() => {
+                (W::RefIsNull(Box::new(value.clone())), vec![])
+            }
+            _ => return None,
+        })
+    }
+
     pub(crate) fn lower_gc_struct_pattern(
         &mut self,
         value: &witchy_wir::wir::WirExpr,
@@ -798,6 +845,21 @@ impl Codegen<'_> {
                         .is_some_and(|(_, kind)| kind == Kind::GcRef(struct_id)) =>
             {
                 self.lower_externref_pattern(value, pat, expected)?
+            }
+            Pattern::Ctor { name, .. }
+                if matches!(name.as_str(), "Some" | "None")
+                    && expected
+                        .and_then(|ty| {
+                            self.option_reference_inner_for_kind(ty, Kind::GcRef(struct_id))
+                        })
+                        .is_some() =>
+            {
+                self.lower_nullable_reference_pattern(
+                    value,
+                    pat,
+                    expected,
+                    Kind::GcRef(struct_id),
+                )?
             }
             Pattern::List { elems, rest } => {
                 let expected = expected?;

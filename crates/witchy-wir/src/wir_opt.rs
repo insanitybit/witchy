@@ -187,6 +187,7 @@ fn simplify_expr(expr: &mut WirExpr, changed: &mut bool) {
         }
         WirExpr::StructGet { base, .. }
         | WirExpr::RefCast { value: base, .. }
+        | WirExpr::RefCastNullable { value: base, .. }
         | WirExpr::ArrayLen(base)
         | WirExpr::RefIsNull(base) => simplify_expr(base, changed),
         WirExpr::ConstI64(_)
@@ -316,6 +317,7 @@ fn expr_size(expr: &WirExpr) -> usize {
         WirExpr::ArrayGet { array, index, .. } => expr_size(array) + expr_size(index),
         WirExpr::StructGet { base, .. }
         | WirExpr::RefCast { value: base, .. }
+        | WirExpr::RefCastNullable { value: base, .. }
         | WirExpr::ArrayLen(base)
         | WirExpr::RefIsNull(base) => expr_size(base),
         WirExpr::ConstI64(_)
