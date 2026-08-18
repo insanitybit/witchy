@@ -138,3 +138,35 @@ fn main(console: Console):
     assert_eq!(optimized, want, "optimized Wasm preserves a None Option list carrier");
     assert_eq!(forced_copy, want, "forced-copy Wasm preserves a None Option list carrier");
 }
+
+#[test]
+fn interpreter_exclusive_reference_option_list_match_projects_and_writes() {
+    let src = r#"mode opt
+
+fn choose(
+    left: &'a mut String,
+    right: &'a mut String,
+) -> Option(List((&'a mut String, &'a mut String))):
+    Some([(left, right)])
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(&mut first, &mut second)
+    match selected:
+        Some(values) ->
+            let pair = values[0]
+            let (left, right) = pair
+            *left = "left updated"
+            *right = "right updated"
+        None -> console.print("unexpected")
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["left updated", "right updated"],
+        "interpreter preserves a nullable Option list tuple carrier",
+    );
+}
