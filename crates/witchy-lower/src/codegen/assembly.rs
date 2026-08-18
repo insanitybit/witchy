@@ -405,11 +405,95 @@ fn collect_gc_tuple_type(
     }
 }
 
+/// Recover the concrete carrier type that type checking intentionally erases
+/// from an inferred explicit-reference aggregate.  The ordinary type table is
+/// still the authority for scalar leaves; this supplement only restores the
+/// executable `&` relation needed to register a typed GC tuple/list layout
+/// before lowering reaches the universal-slot fallback.
+fn explicit_reference_carrier_type(cg: &Codegen<'_>, expr: &Expr) -> Option<Type> {
+    let leaf_type = |value: &Expr| cg.ast_type_of_expr(value);
+    match expr {
+        Expr::Unary { op: op @ (UnOp::Borrow | UnOp::BorrowMut), expr } => {
+            let inner = leaf_type(expr)?;
+            let qualifier = match op {
+                UnOp::Borrow => TypeQual::Borrow("rfc0122_inferred".into()),
+                UnOp::BorrowMut => TypeQual::BorrowMut("rfc0122_inferred".into()),
+                _ => unreachable!("matched explicit reference operation"),
+            };
+            Some(Type::Qualified(qualifier, Box::new(inner)))
+        }
+        Expr::List(items) => {
+            let mut found = false;
+            let mut carrier_element = None;
+            let elements = items
+                .iter()
+                .map(|item| {
+                    if let Some(ty) = explicit_reference_carrier_type(cg, item) {
+                        found = true;
+                        carrier_element = Some(ty.clone());
+                        Some(ty)
+                    } else {
+                        leaf_type(item)
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?;
+            if !found {
+                return None;
+            }
+            let element = carrier_element.or_else(|| elements.into_iter().next())?;
+            Some(Type::Named("List".into(), vec![element]))
+        }
+        Expr::Tuple(items) => {
+            let mut found = false;
+            let fields = items
+                .iter()
+                .map(|item| {
+                    if let Some(ty) = explicit_reference_carrier_type(cg, item) {
+                        found = true;
+                        Some(ty)
+                    } else {
+                        leaf_type(item)
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?;
+            found.then_some(Type::Tuple(fields))
+        }
+        Expr::Ctor { name, args }
+            if matches!(name.as_str(), "Some" | "None" | "Ok" | "Err") =>
+        {
+            let owner_type = leaf_type(expr)?;
+            let Type::Named(owner, owner_args) = owner_type.unqualified() else {
+                return None;
+            };
+            let owner = owner.clone();
+            let mut owner_args = owner_args.to_vec();
+            let mut found = false;
+            for (index, arg) in args.iter().enumerate() {
+                let Some(arg_type) = explicit_reference_carrier_type(cg, arg) else {
+                    continue;
+                };
+                let Some(slot) = owner_args.get_mut(index) else { continue };
+                *slot = arg_type;
+                found = true;
+            }
+            found.then_some(Type::Named(owner, owner_args))
+        }
+        Expr::As { expr, .. } => explicit_reference_carrier_type(cg, expr),
+        Expr::Call { .. } | Expr::Apply { .. } => cg
+            .call_access_signature(expr)
+            .map(|signature| signature.result().ty().clone()),
+        _ => None,
+    }
+}
+
 fn collect_gc_tuple_expr(
     cg: &Codegen<'_>,
     expr: &Expr,
     layouts: &mut BTreeMap<GcTupleShape, Vec<Type>>,
 ) {
+    if let Some(ty) = explicit_reference_carrier_type(cg, expr) {
+        collect_gc_tuple_type(cg, &ty, layouts);
+    }
     if let Some(ty) = cg.ast_type_of_expr(expr) {
         collect_gc_tuple_type(cg, &ty, layouts);
     }
@@ -713,6 +797,16 @@ fn collect_gc_expr_plans(
     nominals: &mut BTreeMap<String, GcNominalPlan>,
     reference_lists: &mut BTreeMap<String, Type>,
 ) {
+    if let Some(ty) = explicit_reference_carrier_type(cg, expr) {
+        collect_gc_type_plans(
+            cg,
+            &ty,
+            defs,
+            storage,
+            nominals,
+            reference_lists,
+        );
+    }
     if let Some(ty) = cg.ast_type_of_expr(expr) {
         collect_gc_type_plans(
             cg,

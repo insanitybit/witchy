@@ -1934,17 +1934,29 @@ impl<'types> Codegen<'types> {
             return None;
         }
         let element = args.first()?;
-        let element_kind = self.kind_for_type(element);
-        if !matches!(element_kind, Kind::ExternRef | Kind::GcRef(_)) {
-            return None;
-        }
-        let type_id = if let Some(type_id) = self
+        // The source-level type table can erase `&T`/`&mut T` inside an
+        // aggregate, while the closed list registry still records the
+        // authenticated carrier under the qualifier-stripped type key. Use
+        // that registered array kind before consulting the erased element
+        // type. This keeps `Option(List((...references...)))` nullable and
+        // typed through `None` as well as through `Some(values)`.
+        if let Some(type_id) = self
             .gc_reference_list_ids
             .get(&self.gc_lookup_type_key(ty))
             .copied()
         {
-            type_id
-        } else if type_has_var(ty) {
+            let element_kind = self
+                .gc_reference_list_layouts()
+                .into_iter()
+                .find_map(|(candidate, kind)| (candidate == type_id).then_some(kind))?;
+            let array_id = type_id.checked_sub(self.gc_structs.len() as u32)?;
+            return Some((type_id, array_id, element_kind));
+        }
+        let element_kind = self.kind_for_type(element);
+        if !matches!(element_kind, Kind::ExternRef | Kind::GcRef(_)) {
+            return None;
+        }
+        let type_id = if type_has_var(ty) {
             let mut matches = self
                 .gc_reference_list_layouts()
                 .into_iter()
@@ -2391,6 +2403,17 @@ impl<'types> Codegen<'types> {
                     })
                     .or_else(|| args.first().map(|arg| self.kind_of(arg)))
                     .or(Some(self.cur_fn_ret_kind)),
+                Expr::Ctor { name, .. } if name == "None" => {
+                    let Type::Named(owner, owner_args) = ty.unqualified() else {
+                        return Some(self.cur_fn_ret_kind);
+                    };
+                    if owner != "Option" || owner_args.len() != 1 {
+                        return Some(self.cur_fn_ret_kind);
+                    }
+                    self.gc_reference_list_layout(&owner_args[0])
+                        .map(|(type_id, _, _)| Kind::GcRef(type_id))
+                        .or(Some(self.cur_fn_ret_kind))
+                }
                 _ => Some(self.cur_fn_ret_kind),
             })
         .unwrap_or(self.cur_fn_ret_kind);
