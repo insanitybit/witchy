@@ -165,17 +165,19 @@ Current `master` now closes interpreter parity for the named direct, callable,
 Option, Result, tuple, nominal, and list carriers above. The executable focused
 matrix is green:
 
-- `cargo test --bin witchy rfc0122 -- --nocapture`: 126 passed, including the 100-case carrier subset
+- `cargo test --bin witchy rfc0122 -- --nocapture`: 132 passed, including the direct function-result collision, aggregate/list, Result, boundary, and callable carrier fixtures
 - `cargo test -p witchy-types --lib loans::tests:: -- --nocapture`: 153 passed
 - `cargo test -p witchy-lower --lib analysis::no_copy_tests:: -- --nocapture`: 22 passed
+- `cargo test -p witchy --test rfc0122 --test rfc0122_migration -- --nocapture`: 4 passed across telemetry and migration evidence
 
 Those results retire the interpreter boundary debt for fixtures that have all
 three named halves: interpreter, optimized Wasm, and forced-copy Wasm. They do
 not mark an acceptance row `PROVEN`; the final type, boundary, escape, CFG,
-telemetry, and migration matrix remains required. The still-active Wasm-first
-debt rows are the local nullable Option/Result aggregate fixtures and the
-scalar/reference-list registry collision fixture; each retains its fixture,
-missing interpreter boundary, and carrier-freeze milestone in the table above.
+telemetry, and migration matrix remains required. The scalar/reference-list
+collision now has named direct function-result evidence on current master. All
+remaining rows retain their explicit post-freeze differential debt, fixture,
+and convergence milestone in the table above; no row is inferred from these
+green focused suites alone.
 
 ### Newly landed focused evidence
 
