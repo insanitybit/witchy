@@ -271,19 +271,73 @@ impl<'types> Codegen<'types> {
                             base: Box::new(W::GetLocal(reference.clone())),
                         }),
                     };
+                    let aggregate_cell = || W::RefCast {
+                        struct_id: REFERENCE_I32_CELL_ID,
+                        value: Box::new(W::StructGet {
+                            struct_id: PLACE_REFERENCE_ID,
+                            field: 0,
+                            base: Box::new(W::GetLocal(reference.clone())),
+                        }),
+                    };
                     let aggregate_root = || W::StructGet {
                         struct_id: REFERENCE_I32_CELL_ID,
                         field: 0,
-                        base: Box::new(W::RefCast {
-                            struct_id: REFERENCE_I32_CELL_ID,
-                            value: Box::new(W::StructGet {
-                                struct_id: PLACE_REFERENCE_ID,
-                                field: 0,
-                                base: Box::new(W::GetLocal(reference.clone())),
-                            }),
-                        }),
+                        base: Box::new(aggregate_cell()),
                     };
-                    return Some(W::Seq(vec![
+                    let aggregate_root_write = self.record_type_of(replacement).is_some();
+                    let (prefix, root_nodes, write_value) = if aggregate_root_write {
+                        let replacement_kind = self.kind_of(replacement);
+                        let replacement_local = var_scratch("result", 0, replacement_kind);
+                        let owner = self
+                            .active_loan_events
+                            .iter()
+                            .rev()
+                            .find(|loan| {
+                                loan.view == *reference
+                                    && loan.kind == witchy_types::access::BorrowKind::Exclusive
+                                    && loan.projection.steps.is_empty()
+                            })
+                            .map(|loan| loan.owner.clone());
+                        let mut root_nodes = vec![N::StructSet {
+                            struct_id: REFERENCE_I32_CELL_ID,
+                            field: 0,
+                            base: aggregate_cell(),
+                            value: W::GetLocal(replacement_local.clone()),
+                        }];
+                        if let Some(owner) = owner {
+                            root_nodes.push(N::SetLocal {
+                                local: owner,
+                                value: W::GetLocal(replacement_local.clone()),
+                            });
+                        }
+                        (
+                            vec![N::SetLocal {
+                                local: replacement_local.clone(),
+                                value,
+                            }],
+                            root_nodes,
+                            W::GetLocal(replacement_local),
+                        )
+                    } else {
+                        let root_nodes = vec![N::StructSet {
+                            struct_id: REFERENCE_I64_CELL_ID,
+                            field: 0,
+                            base: scalar_cell(),
+                            // Scalar roots use the same universal slot as
+                            // aggregate fields.  A Bool or pointer root
+                            // therefore remains an executable reference
+                            // instead of depending on the old Int-only
+                            // cell representation.
+                            value: W::ToSlot(
+                                Box::new(value.clone()),
+                                Self::wir_kind(self.kind_of(replacement)),
+                            ),
+                        }];
+                        (Vec::new(), root_nodes, value)
+                    };
+                    return Some(W::Seq({
+                        let mut nodes = prefix;
+                        nodes.push(
                         N::If {
                             cond: W::Binary {
                                 op: witchy_wir::wir::BinOp::Eq,
@@ -291,20 +345,7 @@ impl<'types> Codegen<'types> {
                                 lhs: Box::new(projection()),
                                 rhs: Box::new(W::ConstI32(0)),
                             },
-                            then_: vec![N::StructSet {
-                                struct_id: REFERENCE_I64_CELL_ID,
-                                field: 0,
-                                base: scalar_cell(),
-                                // Scalar roots use the same universal slot as
-                                // aggregate fields.  A Bool or pointer root
-                                // therefore remains an executable reference
-                                // instead of depending on the old Int-only
-                                // cell representation.
-                                value: W::ToSlot(
-                                    Box::new(value.clone()),
-                                    Self::wir_kind(self.kind_of(replacement)),
-                                ),
-                            }],
+                            then_: root_nodes,
                             // Aggregate descriptors are their linear-memory
                             // slot offset.  Unlike source-level field indices,
                             // that stays meaningful after a closure erases the
@@ -318,7 +359,7 @@ impl<'types> Codegen<'types> {
                                     rhs: Box::new(projection()),
                                 },
                                 value: W::ToSlot(
-                                    Box::new(value),
+                                    Box::new(write_value),
                                     Self::wir_kind(self.kind_of(replacement)),
                                 ),
                                 kind: witchy_wir::wir::Kind::I64,
@@ -326,8 +367,10 @@ impl<'types> Codegen<'types> {
                             }],
                             result: None,
                         },
-                        N::Push(W::ConstI32(0)),
-                    ]));
+                        );
+                        nodes.push(N::Push(W::ConstI32(0)));
+                        nodes
+                    }));
                 }
                 let owner = self
                     .active_loan_events

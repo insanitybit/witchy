@@ -205,6 +205,20 @@ fn rfc0122_generic_shared_aggregate_function_value_copy_destructure_and_owner_re
     assert_eq!(forced_copy, want, "forced-copy Wasm preserves generic aggregate function-value copy and destructure");
 }
 
+#[test]
+fn rfc0122_generic_exclusive_aggregate_function_value_write_and_owner_resume_on_all_backends() {
+    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn identity(value: &'a mut a) -> &'a mut a:\n    value\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let update = identity\n    let selected = update(&mut pair)\n    *selected = Pair(9, 10)\n    console.print(\"${pair}\")\n";
+    let want = ["Pair(9, 10)"];
+    assert_eq!(link_run(src), want, "interpreter writes through a generic aggregate function-value carrier");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm writes through a generic aggregate function-value carrier");
+    assert_eq!(forced_copy, want, "forced-copy Wasm writes through a generic aggregate function-value carrier");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.
