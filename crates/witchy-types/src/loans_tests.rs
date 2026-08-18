@@ -779,6 +779,20 @@
     }
 
     #[test]
+    fn explicitly_discarding_a_nullable_shared_list_closes_each_owner_loan() {
+        check_str(
+            "mode opt\n\nfn main():\n    var first = \"first\"\n    var second = \"second\"\n    let selected = if true:\n        Some([&first, &second])\n    else:\n        None\n    let _ = selected\n    first = \"updated-first\"\n    second = \"updated-second\"\n",
+        )
+        .expect("discarding a nullable shared list closes every owner loan");
+
+        let err = check_str(
+            "mode opt\n\nfn main():\n    var first = \"first\"\n    var second = \"second\"\n    let selected = if true:\n        Some([&first, &second])\n    else:\n        None\n    first = \"updated-first\"\n    let _ = selected\n    second = \"updated-second\"\n",
+        )
+        .expect_err("a live nullable shared list retains both owner loans");
+        assert!(err.contains("reassigned") || err.contains("borrowed"), "{err}");
+    }
+
+    #[test]
     fn explicitly_discarding_a_mutable_reborrow_resumes_its_parent() {
         check_str(
             "mode opt\n\nfn main():\n    var text = \"hello\"\n    let parent = &mut text\n    let child = &mut *parent\n    let _ = child\n    *parent = \"changed\"\n",
