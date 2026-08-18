@@ -459,6 +459,28 @@ impl LoanFacts {
         }
     }
 
+    /// Return the distinct checked owner roots carried by this module's loan
+    /// facts. This is an evidence-facing view of provenance: projections and
+    /// repeated open/close events do not create additional roots.
+    pub fn owner_roots(&self) -> Vec<LoanOwnerRoot> {
+        let mut roots = Vec::new();
+        for events in self
+            .active
+            .values()
+            .chain(self.opens_after.values())
+            .chain(self.closes_after.values())
+            .chain(self.return_transfers.values())
+        {
+            for event in events {
+                let root = event.owner_root();
+                if !roots.contains(&root) {
+                    roots.push(root);
+                }
+            }
+        }
+        roots
+    }
+
     pub fn point(&self, stmt: &Stmt) -> LoanPoint {
         LoanPoint { statement: stmt_key(stmt), phase: LoanPointPhase::Entry }
     }

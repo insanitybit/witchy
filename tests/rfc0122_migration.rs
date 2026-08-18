@@ -117,9 +117,12 @@ fn migrated_fixtures_preserve_checked_loan_and_runtime_counters() {
             .expect("migrated parity fixture must resolve and type-check");
         let facts = loans::facts(checked.module()).expect("publish migrated loan facts");
         let telemetry = facts.telemetry();
+        let expected_root = if label == "shared call" { "text" } else { "value" };
         let stats = witchy::stats::compute(&migration.source)
             .unwrap_or_else(|error| panic!("compute migrated {label} telemetry: {error}"));
 
+        assert_eq!(facts.owner_roots().len(), 1, "migrated {label} root set changed");
+        assert_eq!(facts.owner_roots()[0].local, expected_root, "migrated {label} root changed");
         assert!(
             telemetry.opens > 0 || telemetry.return_transfers > 0,
             "migrated {label} fixture must publish an owner relation"
