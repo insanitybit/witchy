@@ -1158,3 +1158,46 @@ fn main(console: Console):
         "interpreter keeps scalar and reference lists distinct",
     );
 }
+
+#[test]
+fn scalar_option_list_remains_scalar_when_a_reference_list_has_the_same_element_type() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var first = "first"
+    let views = [&first]
+    let scalar_values = Some(["scalar option"])
+    match scalar_values:
+        Some(values) -> console.print(values[0])
+        None -> console.print("missing")
+    console.print(*views[0])
+"#;
+    let want = ["scalar option", "first"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm keeps scalar Option lists distinct");
+    assert_eq!(forced_copy, want, "forced-copy Wasm keeps scalar Option lists distinct");
+}
+
+#[test]
+fn interpreter_scalar_option_list_remains_scalar_when_a_reference_list_has_the_same_element_type() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var first = "first"
+    let views = [&first]
+    let scalar_values = Some(["scalar option"])
+    match scalar_values:
+        Some(values) -> console.print(values[0])
+        None -> console.print("missing")
+    console.print(*views[0])
+"#;
+    assert_eq!(
+        link_run(src),
+        ["scalar option", "first"],
+        "interpreter keeps scalar Option lists distinct",
+    );
+}

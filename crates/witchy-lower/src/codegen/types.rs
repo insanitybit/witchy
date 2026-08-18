@@ -14,6 +14,15 @@ use witchy_syntax::{cap_ops, intrinsics};
 impl Codegen<'_> {
     /// The WASM kind a compiled expression evaluates to.
     pub(crate) fn kind_of(&self, e: &Expr) -> Kind {
+        // A local's inferred executable kind is authoritative.  In particular,
+        // an erased `Option(List(T))` type can share its lookup key with a
+        // reference-bearing `Option(List(&T))`; consulting `kind_for_type`
+        // first would turn an ordinary scalar local into the GC carrier.
+        if let Expr::Var(name) = e
+            && let Some(kind) = self.locals.get(name).copied()
+        {
+            return kind;
+        }
         // Tuple literals may have been reconstructed after the address-keyed
         // type table was produced. Recover their registered carrier from the
         // item kinds before accepting an obsolete scalar fallback.

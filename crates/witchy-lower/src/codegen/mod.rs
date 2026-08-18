@@ -2033,6 +2033,9 @@ impl<'types> Codegen<'types> {
                             .first()
                             .map(|item| self.kind_of(item))
                             .unwrap_or_else(|| self.kind_for_type(&element));
+                        if !matches!(element_kind, Kind::ExternRef | Kind::GcRef(_)) {
+                            return None;
+                        }
                         self.gc_reference_list_layouts().into_iter().find_map(
                             |(type_id, candidate_kind)| {
                                 if candidate_kind != element_kind {
