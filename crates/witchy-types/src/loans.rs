@@ -2016,7 +2016,7 @@ fn pattern_bindings(
                 );
             }
         }
-        Pattern::Ctor { name, args } if catalog.borrowed_constructor(name) => {
+        Pattern::Ctor { name, args } => {
             for (index, arg) in args.iter().enumerate() {
                 pattern_bindings(
                     arg,
@@ -2029,8 +2029,7 @@ fn pattern_bindings(
             }
         }
         Pattern::Wildcard | Pattern::Var(_) => {}
-        Pattern::Ctor { .. }
-        | Pattern::AnonCtor { .. }
+        Pattern::AnonCtor { .. }
         | Pattern::List { .. }
         | Pattern::Or(_)
         | Pattern::Int(_)
@@ -4453,6 +4452,46 @@ impl LoanCtx<'_> {
                     });
                 }
                 return self.check_block_with(body, open, callables, false, &inherited);
+            }
+        }
+        // A reference-bearing `Option`/`Result` match carries the selected
+        // owner source into its constructor pattern. The ordinary block walk
+        // sees the arm body, but without this rebinding `Ok(pair)`/`Some(item)`
+        // leaves `pair`/`item` as an untyped value and tuple/list projection
+        // loses the live place loan before the arm can dereference it.
+        if let Stmt::Expr(Expr::Match { scrutinee, arms }) = stmt {
+            let mut sources = self.borrow_sources(scrutinee, callables, open);
+            self.collect_alias_sources(scrutinee, open, &mut sources);
+            if !sources.is_empty() {
+                for arm in arms {
+                    let Expr::Block(body) = &arm.body else { continue };
+                    let mut bindings = Vec::new();
+                    pattern_bindings(
+                        &arm.pattern,
+                        self.catalog,
+                        &LoanProjection::default(),
+                        &mut bindings,
+                    );
+                    let mut inherited = open.to_vec();
+                    for (name, projection) in bindings {
+                        for source in sources.iter().cloned().filter_map(|source| {
+                            project_source(source, &projection)
+                        }) {
+                            inherited.push(Loan {
+                                view: name.clone(),
+                                owner: source.owner,
+                                root_type: source.root_type,
+                                projection: source.projection,
+                                borrower_projection: source.borrower_projection,
+                                origin: source.origin,
+                                kind: source.kind,
+                                owner_type: source.owner_type,
+                            });
+                        }
+                    }
+                    self.check_block_with(body, open, callables, false, &inherited)?;
+                }
+                return Ok(());
             }
         }
         let mut nested: Vec<&Block> = Vec::new();

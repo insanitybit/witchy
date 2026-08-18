@@ -506,6 +506,32 @@ impl BorrowRelationCatalog {
                     slot
                 })
                 .collect(),
+            Type::Named(name, arguments)
+                if name == "Option" && arguments.len() == 1 =>
+            {
+                self.slots_with(&arguments[0], lifetimes, types, active_nominals)
+                    .into_iter()
+                    .map(|mut slot| {
+                        slot.projection = slot
+                            .projection
+                            .prefixed(self.constructor_step("Some", 0));
+                        slot
+                    })
+                    .collect()
+            }
+            Type::Named(name, arguments)
+                if name == "Result" && arguments.len() == 2 =>
+            {
+                self.slots_with(&arguments[0], lifetimes, types, active_nominals)
+                    .into_iter()
+                    .map(|mut slot| {
+                        slot.projection = slot
+                            .projection
+                            .prefixed(self.constructor_step("Ok", 0));
+                        slot
+                    })
+                    .collect()
+            }
             Type::Named(name, arguments) => {
                 if arguments.is_empty()
                     && let Some(substituted) = types.get(name)
