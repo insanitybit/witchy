@@ -439,6 +439,104 @@
         );
     }
 
+    const BYTE_EXPORT_ECHO: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (global $heap (mut i32) (i32.const 64))
+          (func (export "__galloc") (param $size i32) (result i32)
+            (local $ptr i32)
+            global.get $heap
+            local.tee $ptr
+            local.get $size
+            i32.add
+            global.set $heap
+            local.get $ptr)
+          (func (export "__export_export_echo") (param $ptr i32) (param $len i32) (result i32)
+            local.get $ptr))
+    "#;
+
+    const BYTE_EXPORT_SPINNER: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (global $heap (mut i32) (i32.const 64))
+          (func (export "__galloc") (param $size i32) (result i32)
+            (local $ptr i32)
+            global.get $heap
+            local.tee $ptr
+            local.get $size
+            i32.add
+            global.set $heap
+            local.get $ptr)
+          (func (export "__export_export_spin") (param i32 i32) (result i32)
+            (loop $forever
+              br $forever)
+            i32.const 0))
+    "#;
+
+    #[test]
+    fn byte_export_round_trips_non_utf8_and_enforces_output_limit() {
+        let mut runtime = Runtime::new().unwrap();
+        let mut vm = runtime
+            .spawn(BYTE_EXPORT_ECHO, Capabilities::none(), 2)
+            .unwrap();
+        let input = [0, 0xff, 1, 0x80, 2];
+        assert_eq!(
+            vm.invoke_bytes("__export_export_echo", &input, input.len())
+                .unwrap(),
+            input
+        );
+
+        let mut limited = runtime
+            .spawn(BYTE_EXPORT_ECHO, Capabilities::none(), 2)
+            .unwrap();
+        let error = limited
+            .invoke_bytes("__export_export_echo", &input, input.len() - 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("over the 4-byte limit"), "{error}");
+    }
+
+    #[test]
+    fn byte_export_budget_interrupts_and_success_cancels_watchdog_promptly() {
+        let mut runtime = Runtime::new().unwrap();
+        let mut spinner = runtime
+            .spawn(BYTE_EXPORT_SPINNER, Capabilities::none(), 2)
+            .unwrap();
+        let error = runtime
+            .invoke_bytes_with_budget(
+                &mut spinner,
+                "__export_export_spin",
+                b"",
+                1,
+                Duration::from_millis(20),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<wasmtime::Trap>(), Some(wasmtime::Trap::Interrupt)),
+            "expected an interrupt trap, got: {error}"
+        );
+
+        let mut echo = runtime
+            .spawn(BYTE_EXPORT_ECHO, Capabilities::none(), 2)
+            .unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            runtime
+                .invoke_bytes_with_budget(
+                    &mut echo,
+                    "__export_export_echo",
+                    b"ok",
+                    2,
+                    Duration::from_secs(2),
+                )
+                .unwrap(),
+            b"ok"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "successful invocation waited for the watchdog budget"
+        );
+    }
+
     #[test]
     fn read_wstr_list_huge_count_fails_closed_not_aborts() {
         // SEC-033: a guest claiming i32::MAX elements in a tiny buffer must NOT pre-allocate

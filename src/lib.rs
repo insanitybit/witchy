@@ -342,6 +342,28 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod performance_mode_tests {
     #[test]
+    fn browser_compile_exports_a_pure_bytes_entrypoint() {
+        let wasm = super::compile_source(
+            "pub fn export_echo(input: Bytes) -> Bytes:\n    input\n",
+        )
+        .expect("Bytes export compiles");
+        let mut exports = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+            if let wasmparser::Payload::ExportSection(section) = payload.expect("parse wasm") {
+                for export in section {
+                    exports.push(export.expect("parse export").name.to_owned());
+                }
+            }
+        }
+        for expected in ["memory", "__galloc", "__export_export_echo"] {
+            assert!(
+                exports.iter().any(|name| name == expected),
+                "missing {expected} from {exports:?}"
+            );
+        }
+    }
+
+    #[test]
     fn browser_compile_enforces_fip_contracts() {
         let error = super::compile_source(
             r#"mode opt

@@ -806,6 +806,79 @@ impl Vm {
         Ok(())
     }
 
+    /// Invoke a pure `pub fn export_*(Bytes) -> Bytes` wrapper.
+    ///
+    /// The host copies one length-prefixed input frame into guest memory and
+    /// copies one bounded output frame back. The VM receives no authority
+    /// beyond the capabilities supplied at spawn.
+    pub fn invoke_bytes(
+        &mut self,
+        export: &str,
+        input: &[u8],
+        max_output_bytes: usize,
+    ) -> Result<Vec<u8>> {
+        if self.aborted {
+            bail!("an aborted Witchy VM cannot be invoked again");
+        }
+        let input_len = i32::try_from(input.len())
+            .map_err(|_| Error::msg("Witchy byte-export input exceeds i32::MAX bytes"))?;
+        let allocation_len = input_len
+            .checked_add(4)
+            .ok_or_else(|| Error::msg("Witchy byte-export input length overflow"))?;
+        let galloc = self
+            .instance
+            .get_typed_func::<i32, i32>(&mut self.store, "__galloc")?;
+        let call = self
+            .instance
+            .get_typed_func::<(i32, i32), i32>(&mut self.store, export)?;
+        let memory = self
+            .instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or_else(|| Error::msg("Witchy byte-export module has no `memory` export"))?;
+        let input_ptr = match galloc.call(&mut self.store, allocation_len) {
+            Ok(ptr) => ptr,
+            Err(error) => {
+                self.aborted = true;
+                return Err(self.contextualize_run_error(error));
+            }
+        };
+        if let Err(error) = memory.write(
+            &mut self.store,
+            input_ptr as usize,
+            &input_len.to_le_bytes(),
+        ) {
+            self.aborted = true;
+            return Err(Error::msg(format!("writing Witchy byte-export input length: {error}")));
+        }
+        if let Err(error) = memory.write(&mut self.store, input_ptr as usize + 4, input) {
+            self.aborted = true;
+            return Err(Error::msg(format!("writing Witchy byte-export input: {error}")));
+        }
+        let output_ptr = match call.call(&mut self.store, (input_ptr, input_len)) {
+            Ok(ptr) => ptr,
+            Err(error) => {
+                self.aborted = true;
+                return Err(self.contextualize_run_error(error));
+            }
+        };
+        let output = match read_wbytes_bounded(
+            memory.data(&self.store),
+            output_ptr,
+            max_output_bytes,
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                self.aborted = true;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.heap_sweep() {
+            self.aborted = true;
+            return Err(error);
+        }
+        Ok(output)
+    }
+
     /// Attach the source site published immediately before a host-backed
     /// operation. Guest-routed aborts already carry their complete diagnostic;
     /// capability host failures arrive as a bare core and are completed here.
@@ -1244,12 +1317,41 @@ impl Runtime {
     /// its next loop back-edge or call. This is how the scheduler reclaims a
     /// runaway or malicious VM that refuses to yield.
     pub fn run_with_budget(&self, vm: &mut Vm, budget: Duration) -> Result<()> {
+        self.with_epoch_budget(budget, || vm.run())
+    }
+
+    /// Invoke one pure Bytes export under the same memory and epoch bounds as a
+    /// normal preemptible VM.
+    pub fn invoke_bytes_with_budget(
+        &self,
+        vm: &mut Vm,
+        export: &str,
+        input: &[u8],
+        max_output_bytes: usize,
+        budget: Duration,
+    ) -> Result<Vec<u8>> {
+        self.with_epoch_budget(budget, || {
+            vm.invoke_bytes(export, input, max_output_bytes)
+        })
+    }
+
+    fn with_epoch_budget<T>(
+        &self,
+        budget: Duration,
+        execute: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        if !self.preempt {
+            bail!("budgeted execution requires a preemptible Witchy runtime");
+        }
         let engine = self.engine.clone();
+        let (cancel, cancelled) = std::sync::mpsc::sync_channel(0);
         let watchdog = std::thread::spawn(move || {
-            std::thread::sleep(budget);
-            engine.increment_epoch();
+            if cancelled.recv_timeout(budget).is_err() {
+                engine.increment_epoch();
+            }
         });
-        let result = vm.run();
+        let result = execute();
+        let _ = cancel.send(());
         watchdog.join().ok();
         result
     }
@@ -1559,6 +1661,24 @@ fn read_wbytes(data: &[u8], ptr: i32) -> Result<Vec<u8>> {
     let len_bytes = slice(data, ptr, 4)?;
     let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
     Ok(slice(data, ptr + 4, len)?.to_vec())
+}
+
+fn read_wbytes_bounded(data: &[u8], ptr: i32, max_bytes: usize) -> Result<Vec<u8>> {
+    let len_bytes = slice(data, ptr, 4)?;
+    let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
+    let len = usize::try_from(len)
+        .map_err(|_| Error::msg("Witchy byte-export returned a negative length"))?;
+    if len > max_bytes {
+        bail!(
+            "Witchy byte-export returned {len} bytes, over the {max_bytes}-byte limit"
+        );
+    }
+    let start = ptr
+        .checked_add(4)
+        .ok_or_else(|| Error::msg("Witchy byte-export pointer overflow"))?;
+    let len = i32::try_from(len)
+        .map_err(|_| Error::msg("Witchy byte-export length exceeds i32::MAX"))?;
+    Ok(slice(data, start, len)?.to_vec())
 }
 
 /// Read a guest `List(Bytes)` — same `[count][i64 ptr…]` layout as `List(String)`, but

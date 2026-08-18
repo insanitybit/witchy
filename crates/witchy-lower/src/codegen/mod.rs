@@ -10702,7 +10702,9 @@ fn nested_var_place_roots(
 /// whose name starts with this prefix and has the `(String) -> String` shape.
 pub(crate) const STRING_EXPORT_PREFIX: &str = "export_";
 
-/// Is `f` a JS-callable string export? — a `pub fn export_*(s: String) -> String`.
+/// Is `f` a host-callable buffer export? A public `export_*` function may
+/// round-trip either `String` or `Bytes`; input and output must use the same
+/// representation.
 /// Such a function gets a stable `(in_ptr, in_len) -> ptr` export wrapper
 /// (`__export_<name>`) plus the `__galloc` allocator, so a host (the browser
 /// pure-compute shim, the glamour DOM shell) can drive it across the WASM boundary
@@ -10717,19 +10719,32 @@ pub(crate) const STRING_EXPORT_PREFIX: &str = "export_";
 /// the wrapper only reads/writes guest memory (RFC-0007 §"Data marshaling",
 /// RFC-0008's run loop).
 pub(crate) fn is_string_export(f: &Function, grantable: &HashSet<&str>) -> bool {
-    let is_string = |t: &Option<Type>| matches!(t, Some(Type::Named(n, a)) if n == "String" && a.is_empty());
+    let buffer_kind = |t: &Option<Type>| match t {
+        Some(Type::Named(name, args))
+            if args.is_empty() && matches!(name.as_str(), "String" | "Bytes") =>
+        {
+            Some(name == "String")
+        }
+        _ => None,
+    };
     // After linking a function is named `{module}.{name}` (the entry module's
     // `main` is the one exception). Match the unqualified tail against the prefix.
     let unqualified = f.name.rsplit('.').next().unwrap_or(&f.name);
-    if !(f.public && unqualified.starts_with(STRING_EXPORT_PREFIX) && f.bounds.is_empty() && is_string(&f.ret)) {
+    let Some(result_kind) = buffer_kind(&f.ret) else {
+        return false;
+    };
+    if !(f.public && unqualified.starts_with(STRING_EXPORT_PREFIX) && f.bounds.is_empty()) {
         return false;
     }
     match f.params.as_slice() {
-        // `pub fn export_*(String) -> String`.
-        [p] => is_string(&p.ty),
-        // (RFC-0040) `pub fn export_*(cap: <bare grantable>, String) -> String` — a
+        // `pub fn export_*(String) -> String` or `pub fn export_*(Bytes) -> Bytes`.
+        [p] => buffer_kind(&p.ty) == Some(result_kind),
+        // (RFC-0040) `pub fn export_*(cap: <bare grantable>, Buffer) -> Buffer` — a
         // browser app root: the leading grantable cap is host-minted per call.
-        [cap, s] => is_string(&s.ty) && export_cap_name(cap).is_some_and(|n| grantable.contains(n)),
+        [cap, input] => {
+            buffer_kind(&input.ty) == Some(result_kind)
+                && export_cap_name(cap).is_some_and(|n| grantable.contains(n))
+        }
         _ => false,
     }
 }
