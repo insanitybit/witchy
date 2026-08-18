@@ -52,12 +52,10 @@ fn make_pair(text: String('a)) -> Pair('a):
     let held: String('a) = text
     Pair(held, held)
 
-fn caller(text: String) -> String:
-    let pair = make_pair(text).owned()
-    pair.first
-
 fn main(console: Console):
-    console.print(caller("first"))
+    let text: String = "first"
+    let pair = make_pair(text)
+    console.print(*pair.first)
 "#;
 
 const LEGACY_PARSER_SHELL: &str = r#"mode opt
@@ -221,6 +219,7 @@ fn migrated_rfc0083_rfc0112_fixtures_preserve_full_parity() {
         ("shared call", LEGACY_SHARED_CALL, vec!["text"], ["value"], 0, 0),
         ("mutable parameter", LEGACY_MUTABLE_PARAMETER, vec!["value"], ["value"], 0, 0),
         ("parser shell", LEGACY_PARSER_SHELL, vec!["input"], ["5"], 3, 3),
+        ("aggregate carrier", LEGACY_AGGREGATE_CARRIER, vec!["text"], ["first"], 0, 0),
     ] {
         let Some(migration) = migrate_references(legacy) else {
             panic!("migrate historical {label} fixture");
@@ -275,6 +274,13 @@ fn migrated_aggregate_declaration_preserves_nominal_lifetime() {
     assert!(migration.source.contains("second: &'a String"), "{}", migration.source);
     assert!(migration.source.contains("fn make_pair(text: &'a String) -> Pair('a)"), "{}", migration.source);
     assert!(!migration.source.contains("View(String, 'a)"), "{}", migration.source);
+    let checked = witchy::resolve_std_only_checked(&migration.source)
+        .expect("migrated aggregate fixture must resolve and type-check");
+    assert_eq!(
+        interpreter::run_checked_module(&checked, ".", Vec::new()).expect("interpret migrated aggregate"),
+        ["first"]
+    );
+    assert_eq!(compiled_output(&checked), ["first"], "migrated aggregate Wasm output drifted");
 }
 
 #[test]

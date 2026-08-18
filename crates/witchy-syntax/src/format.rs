@@ -2810,11 +2810,21 @@ fn rewrite_reference_calls_block(
     signatures: &ReferenceParameterSignatures,
     ambiguities: &mut Vec<String>,
 ) {
+    let mut bindings = parameters.clone();
     for statement in &mut block.stmts {
         match statement {
-            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. }
-            | Stmt::Return(Some(value)) | Stmt::Yield(value) | Stmt::Expr(value) => {
-                rewrite_reference_calls_expr(value, parameters, signatures, ambiguities);
+            Stmt::Let { name, ty, value, .. } => {
+                rewrite_reference_calls_expr(value, &bindings, signatures, ambiguities);
+                if let Some(ty) = ty {
+                    bindings.insert(name.clone(), reference_parameter_kind(ty));
+                }
+            }
+            Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => {
+                rewrite_reference_calls_expr(value, &bindings, signatures, ambiguities);
             }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
