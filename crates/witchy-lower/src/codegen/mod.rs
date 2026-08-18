@@ -2267,7 +2267,11 @@ impl<'types> Codegen<'types> {
     }
 
     fn gc_field_shape(&self, ty: &Type) -> Option<GcFieldShape> {
-        if matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _)) {
+        // Ownership qualifiers may wrap an explicit reference (`unique
+        // &'a mut T`). Keep the executable place carrier at the tuple field
+        // boundary instead of letting `unqualified()` erase it into the
+        // referent's universal slot kind.
+        if Self::is_executable_reference_type(ty) {
             return Some(GcFieldShape::PlaceReference);
         }
         let ty = ty.unqualified();

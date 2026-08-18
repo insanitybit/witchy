@@ -278,6 +278,7 @@
     mod rfc0122_references;
     mod rfc0122_wasm_list_carrier;
     mod rfc0122_wasm_exclusive_list_return;
+    mod rfc0122_wasm_result_list;
     mod json;
     mod capabilities;
     mod region;
