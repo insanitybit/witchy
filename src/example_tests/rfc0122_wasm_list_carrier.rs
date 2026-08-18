@@ -1101,5 +1101,12 @@ fn main(console: Console):
     console.print(*view)
     console.print(scalar)
 "#;
-    assert_eq!(wasm_run_reowns(src).0, ["first", "scalar"]);
+    let want = ["first", "scalar"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm keeps scalar and reference lists distinct");
+    assert_eq!(forced_copy, want, "forced-copy Wasm keeps scalar and reference lists distinct");
 }
