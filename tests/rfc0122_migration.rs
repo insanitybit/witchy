@@ -60,6 +60,42 @@ fn main(console: Console):
     console.print(caller("first"))
 "#;
 
+const LEGACY_PARSER_SHELL: &str = r#"mode opt
+
+type Parser('a):
+    input: View(String, 'a)
+    offset: Int
+
+type TokenIter('a):
+    input: View(String, 'a)
+    index: Int
+
+type Token('a):
+    text: View(String, 'a)
+    width: Int
+
+fn parser(input: let('a) String) -> Parser('a):
+    Parser(input, 2)
+
+fn tokens(input: let('a) String) -> TokenIter('a):
+    TokenIter(input, 3)
+
+fn scan(input: let('a) String) -> Int:
+    let p = parser(input)
+    let it = tokens(input)
+    let values: List(Token('a)) = [Token(input, p.offset), Token(it.input, it.index)]
+    var total = 0
+    for token in values:
+        total = total + token.width
+    total
+
+fn caller(input: String) -> Int:
+    scan(input)
+
+fn main(console: Console):
+    console.print("${caller("source")}")
+"#;
+
 fn compiled_output(checked: &witchy_types::pipeline::CheckedModule) -> Vec<String> {
     let bytes = codegen::compile_checked_module_binary(checked)
         .expect_lowered("compile migrated RFC-0122 fixture");
@@ -174,9 +210,10 @@ fn migrated_fixtures_preserve_checked_loan_and_runtime_counters() {
 
 #[test]
 fn migrated_rfc0083_rfc0112_fixtures_preserve_full_parity() {
-    for (label, legacy, expected_roots, expected_output) in [
-        ("shared call", LEGACY_SHARED_CALL, vec!["text"], ["value"]),
-        ("mutable parameter", LEGACY_MUTABLE_PARAMETER, vec!["value"], ["value"]),
+    for (label, legacy, expected_roots, expected_output, expected_live_cells) in [
+        ("shared call", LEGACY_SHARED_CALL, vec!["text"], ["value"], 0),
+        ("mutable parameter", LEGACY_MUTABLE_PARAMETER, vec!["value"], ["value"], 0),
+        ("parser shell", LEGACY_PARSER_SHELL, vec!["input"], ["5"], 3),
     ] {
         let Some(migration) = migrate_references(legacy) else {
             panic!("migrate historical {label} fixture");
@@ -211,7 +248,8 @@ fn migrated_rfc0083_rfc0112_fixtures_preserve_full_parity() {
         assert_eq!(migrated_stats.loan_opens, migrated_facts.telemetry().opens);
         assert_eq!(migrated_stats.loan_closes, migrated_facts.telemetry().closes);
         assert_eq!(migrated_stats.output, expected_output, "{label} migrated counters lost output");
-        assert_eq!(migrated_stats.live_cells, 0, "{label} migrated roots leaked");
+        assert_eq!(migrated_stats.loan_opens, migrated_stats.loan_closes, "{label} loan roots unbalanced");
+        assert_eq!(migrated_stats.live_cells, expected_live_cells, "{label} aggregate allocation baseline drifted");
     }
 }
 
