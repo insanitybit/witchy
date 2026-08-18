@@ -2333,8 +2333,8 @@ impl<'types> Codegen<'types> {
 
     /// Recover an `Option` reference carrier when type checking erased the
     /// references nested inside a list/tuple. The physical GC id is still
-    /// authenticated by the registered reference-list layout, so it is safe
-    /// to reuse it as the nullable payload kind.
+    /// authenticated by a registered reference-bearing aggregate layout, so
+    /// it is safe to reuse it as the nullable payload kind.
     fn option_reference_inner_for_kind<'a>(
         &self,
         t: &'a Type,
@@ -2350,15 +2350,15 @@ impl<'types> Codegen<'types> {
         let Kind::GcRef(type_id) = physical else {
             return None;
         };
-        if !matches!(inner.unqualified(), Type::Named(inner_name, _) if inner_name == "List") {
-            return None;
-        }
-        (name == "Option"
-            && self
+        let registered_reference_aggregate = match inner.unqualified() {
+            Type::Named(inner_name, _) if inner_name == "List" => self
                 .gc_reference_list_layouts()
                 .into_iter()
-                .any(|(candidate, _)| candidate == type_id))
-        .then_some((inner, physical))
+                .any(|(candidate, _)| candidate == type_id),
+            Type::Tuple(_) => self.gc_tuple_ids.values().any(|candidate| *candidate == type_id),
+            _ => false,
+        };
+        (name == "Option" && registered_reference_aggregate).then_some((inner, physical))
     }
 
     /// Recover an explicit-reference Option constructor after typeck has
