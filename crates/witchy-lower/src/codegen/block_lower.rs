@@ -1018,7 +1018,11 @@ impl<'types> Codegen<'types> {
                         if let Some(index) = ownership.own_capacity_param {
                             let capacity = args
                                 .get(index)
-                                .filter(|arg| matches!(arg, Expr::Var(value) if value == name))
+                                .filter(|arg| {
+                                    matches!(arg, Expr::Var(value) if value == name)
+                                        || matches!(arg, Expr::Unary { op: UnOp::Move, expr }
+                                            if matches!(expr.as_ref(), Expr::Var(value) if value == name))
+                                })
                                 .map(|_| W::GetLocal(format!("{name}__cap")))
                                 .unwrap_or(W::ConstI32(0));
                             args_w.push(capacity);
