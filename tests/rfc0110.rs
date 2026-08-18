@@ -680,7 +680,9 @@ fn visit_wir_expr<'a>(expression: &'a WirExpr, visit: &mut impl FnMut(&'a WirNod
                 visit_wir_expr(argument, visit);
             }
         }
-        WirExpr::StructGet { base, .. } | WirExpr::RefCast { value: base, .. } => {
+        WirExpr::StructGet { base, .. }
+        | WirExpr::RefCast { value: base, .. }
+        | WirExpr::RefCastNullable { value: base, .. } => {
             visit_wir_expr(base, visit);
         }
         WirExpr::ArrayNew { value, len, .. } => {
