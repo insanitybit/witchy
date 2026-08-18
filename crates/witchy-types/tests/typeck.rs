@@ -518,6 +518,14 @@ mod tests {
     }
 
     #[test]
+    fn explicit_reference_nominal_can_cross_nullable_option() {
+        check_str(
+            "mode opt\n\ntype Pair('a, 'b):\n    left: &'a mut String\n    right: &'b mut String\n\nfn choose(left: &'a mut String, right: &'b mut String) -> Option(Pair('a, 'b)):\n    Some(Pair(left, right))\n",
+        )
+        .expect("an explicit-reference nominal can cross an Option carrier");
+    }
+
+    #[test]
     fn borrowed_nominals_reject_owned_container_storage_before_descriptors() {
         let error = check_str(
             "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntype Bag('a):\n    holders: List(Holder('a))\n",
