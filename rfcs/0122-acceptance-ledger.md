@@ -1,8 +1,9 @@
 # RFC-0122 acceptance ledger
 
 This is the integration authority for RFC-0122. “PROVEN” requires current
-`master` plus the named evidence. A green queue item is not acceptance. Every
-other row remains open.
+`master` plus the named evidence. A green queue item is not acceptance. The
+historical snapshots below are retained for delivery history; the final
+current-master audit is authoritative for status.
 
 ## Wasm-first carrier policy
 
@@ -379,6 +380,48 @@ implemented.
 | 21 migration command | evidence/migration | proven | `migration_command_rewrites_then_checks_without_mutating_ambiguous_sources` drives the real `witchy migrate references` command through non-mutating `--check`, rewrite, clean re-check, and ambiguous-site rejection. The formatter fixtures prove local typed calls, resolved imported calls, agreeing overloads, conflicting overloads, and unresolved ownership (`rfc0122_reference_migration_rewrites_proven_local_parameter_calls`, `rfc0122_reference_migration_rewrites_resolved_imported_calls`, `rfc0122_reference_migration_requires_overloads_to_agree_before_borrowing`, `rfc0122_reference_migration_reports_unresolved_call_ownership`). [`0122-migration-report.md`](0122-migration-report.md) records the 307-file source census: no direct-relation spelling remains, and raw `View(` hits are comments, reflection text, or `AccessView`. |
 | 22 performance telemetry | evidence | partial | merged `b113ea49` pins the loan metric schema plus optimized/forced-copy output and fact rows in `reference_return_telemetry_corpus_pins_schema_and_copy_parity`; `aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity` pins the Wasm aggregate/list carrier row `[4,13,5,7,2,0,809,0,0,0,0]`; retain before/after artifacts for the remaining reference matrix |
  | 22 performance telemetry | evidence | proven | `reference_return_telemetry_corpus_pins_schema_and_copy_parity` and `aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity` pin the shared and aggregate/list loan schema, interpreter output, optimized Wasm output, forced-copy Wasm output, and identical deterministic metric rows (`[1,1,1,1,2,0,807,0,0,0,0]` and `[4,13,5,7,2,0,809,0,0,0,0]`) in checked artifacts. |
+
+### Final current-master audit (2026-08-18)
+
+The following focused matrix was run from `master` at `1aad14c6` after the
+carrier ABI convergence slice:
+
+- `cargo test -p witchy --bin witchy rfc0122 -- --nocapture` (145 passed)
+- `cargo test -p witchy-types --lib loans::tests:: -- --nocapture` (158 passed)
+- `cargo test -p witchy-lower --lib analysis::no_copy_tests:: -- --nocapture` (22 passed)
+- `cargo test -p witchy-syntax --lib -- --nocapture` (352 passed)
+- `cargo test -p witchy-syntax --lib linker::tests:: -- --nocapture` (42 passed)
+- `cargo test -p witchy --test rfc0122 --test rfc0122_migration -- --nocapture` (5 passed)
+
+This matrix proves the rows below only where the named evidence covers the
+criterion. Rows 10 and 22 remain open: the implementation is not complete
+until the migrated legacy corpus has per-fixture owner/root/counter evidence
+and the performance corpus has checked before/after precision-phase artifacts.
+
+| criterion | state | current-master executable evidence | remaining work |
+| --- | --- | --- | --- |
+| 1 normal-mode reference exclusion | PROVEN | `loans::tests::normal_mode_rejects_every_direct_reference_surface_at_the_mode_boundary`, syntax parser rejection tests, and linker normal-import tests | none in the current acceptance surface |
+| 2 conventional normal calls | PROVEN | `rfc0122_normal_callers_use_conventional_opt_access_on_both_backends`, the normal-to-opt adapter fixtures, and `analysis::no_copy_tests::*` | none in the current acceptance surface |
+| 3 normal interface filtering | PROVEN | `loans::tests::normal_callers_reject_explicit_reference_exports_and_alias_hidden_types`, nested nominal/callable-field checker tests, and `linker::tests::normal_from_import_rejects_a_nested_reference_bearing_export` | none in the current acceptance surface |
+| 4 one opt source identity | PROVEN | `analysis::no_copy_tests::checked_boundary_entry_selection_distinguishes_proven_and_repair_calls` and `rfc0122_generated_repair_entry_preserves_one_callable_identity` | none in the current acceptance surface |
+| 5 proven versus repair parity | PROVEN | `rfc0122_normal_repair_preserves_alias_and_var_writeback_on_both_backends` | none |
+| 6 owner-backed normal results | PROVEN | `rfc0122_normal_opt_result_detaches_before_owner_mutation_on_both_backends`, normal return/list/option result fixtures, and telemetry output checks | none in the current acceptance surface |
+| 7 opt syntax pipeline | PROVEN | `parser::tests::explicit_reference_types_parse_and_retain_access_kind`, `parser::tests::explicit_borrow_and_deref_expressions_parse`, format, reflection, and highlighter tests | none in the current acceptance surface |
+| 8 uniform reference types | PROVEN | direct scalar, Bytes, generic, trait, tuple, nominal, list, Option, and Result carrier fixtures in `example_tests::*rfc0122*` | none in the current acceptance surface |
+| 9 nominal lifetime versus reference distinction | PROVEN | `format::tests::rfc0122_reference_migration_distinguishes_nominal_and_direct_lifetimes`, nominal-lifetime parser/reflection tests, and migration fixtures | none in the current acceptance surface |
+| 10 migrated fixture parity | PARTIAL | `migrated_direct_shared_call_preserves_interpreter_wasm_behavior`, `migrated_mutable_parameter_preserves_interpreter_wasm_behavior`, and the migration report | add per-fixture owner sets, root balance, materialization counters, and the complete RFC-0083/RFC-0112 parity census |
+| 11 shared loans | PROVEN | `loans::tests::shared_reference_handles_copy_but_cannot_be_consumed_or_erased`, shared reborrow/discard/escape tests, and shared aggregate runtime fixtures | none in the current acceptance surface |
+| 12 exclusive loans | PROVEN | checker affine/reborrow/no-copy tests plus direct, callable, Option, Result, tuple, nominal, list, iteration, and aggregate write-back fixtures | none in the current acceptance surface |
+| 13 mutable-to-shared conversion | PROVEN | direct, function-value, closure, and generic `mutable_to_shared` fixtures on interpreter, optimized Wasm, and forced-copy Wasm | none |
+| 14 owned qualifiers | PROVEN | `loans::tests::exclusive_reference_signature_retains_its_affine_contract`, qualifier transport tests, and unique direct/Option/function/list/nominal runtime fixtures | none in the current acceptance surface |
+| 15 convention/reference orthogonality | PROVEN | `loans::tests::reference_function_types_preserve_parameter_convention_identity`, normal adapter fixtures, and owned exclusive parameter runtime fixtures | none in the current acceptance surface |
+| 16 no opt-graph erasure | PROVEN | no-copy boundary tests, callable/trait/closure/function-value carrier fixtures, and generated repair identity evidence | none in the current acceptance surface |
+| 17 CFG precision | PROVEN | branch, join, loop back-edge, reborrow, question-mark, conditional Option/Result, and lending iterator checker/runtime fixtures | none in the current acceptance surface |
+| 18 aggregate affine roots | PROVEN | tuple/list/nominal/Option/Result aggregate construction, copy/move, destructure, projection, iteration, and write-back fixtures across all three execution paths | none in the current acceptance surface |
+| 19 interpreter/Wasm parity | PROVEN | 145 RFC-0122 runtime fixtures, including interpreter, optimized Wasm, and forced-copy Wasm carrier paths, plus telemetry parity tests | none in the current acceptance surface |
+| 20 async and escape boundaries | PROVEN | async, generator, channel, closure, Dynamic, JSON/reflection, and capability-lease checker boundary tests | none in the current acceptance surface |
+| 21 migration command | PROVEN | `migration_command_rewrites_then_checks_without_mutating_ambiguous_sources`, formatter migration tests, and `0122-migration-report.md` | none |
+| 22 performance telemetry | PARTIAL | `reference_return_telemetry_corpus_pins_schema_and_copy_parity` and `aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity` pin deterministic facts, output, and optimized/forced-copy counters | record checked before/after precision-phase artifacts for checker time, peak memory, allocations, no-copy proofs, materializations, and throughput |
 
 ## Track contracts
 
