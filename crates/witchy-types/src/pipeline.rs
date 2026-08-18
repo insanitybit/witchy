@@ -4,7 +4,9 @@
 //! declaration-level checker before destructive source lowering. Complete body
 //! checking remains on the linked runtime module during the migration.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+use foldhash::{HashMap, HashMapExt as _};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};

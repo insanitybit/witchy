@@ -48,6 +48,19 @@
         parsed
     }
 
+    thread_local! {
+        static WASM_RUNTIME: std::cell::RefCell<crate::runtime::Runtime> =
+            std::cell::RefCell::new(crate::runtime::Runtime::batch().expect("runtime"));
+    }
+
+    /// One Wasmtime engine per test thread. `Runtime::new()` builds a Cranelift
+    /// ISA and epoch-interruption config — tens to hundreds of ms — and the
+    /// differential helpers used to pay that on every case. Batch execution
+    /// (no preemption checks) is the production run-to-completion path.
+    fn with_batch_runtime<R>(f: impl FnOnce(&mut crate::runtime::Runtime) -> R) -> R {
+        WASM_RUNTIME.with(|rt| f(&mut rt.borrow_mut()))
+    }
+
     /// Resolve `src`'s `import`s against the bundled std and link the whole set —
     /// the source-level analog of the CLI's `link_file` / the lib's
     /// `resolve_std_only`. The COMPILED backend needs every reached std function
@@ -55,18 +68,19 @@
     /// insufficient; the interpreter (`link_run`) tolerates it because it resolves
     /// std at run time, but `compile_module_binary` does not.
     fn resolve_std_src(src: &str) -> ast::Module {
-        use std::collections::{HashSet, VecDeque};
+        use std::collections::HashSet;
         let entry = parser::parse_module(src).expect("parse");
-        let mut modules: Vec<(String, ast::Module)> = vec![("main".to_string(), entry.clone())];
+        let mut modules: Vec<(String, ast::Module)> = vec![("main".to_string(), entry)];
         let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
-        let mut queue: VecDeque<ast::Module> = VecDeque::from([entry]);
-        while let Some(module) = queue.pop_front() {
-            for name in module.imports.clone() {
+        let mut next = 0;
+        while next < modules.len() {
+            let imports = modules[next].1.imports.clone();
+            next += 1;
+            for name in imports {
                 if !loaded.insert(name.clone()) {
                     continue;
                 }
                 let parsed = parse_std_import_cached(&name);
-                queue.push_back(parsed.clone());
                 modules.push((name, parsed));
             }
         }
@@ -78,18 +92,19 @@
     /// (e.g. RFC-0065 sealed-construction). Parsing still panics (the source must
     /// be syntactically valid); only the final link may legitimately fail.
     fn try_link_std(src: &str) -> Result<ast::Module, String> {
-        use std::collections::{HashSet, VecDeque};
+        use std::collections::HashSet;
         let entry = parser::parse_module(src).expect("parse");
-        let mut modules: Vec<(String, ast::Module)> = vec![("main".to_string(), entry.clone())];
+        let mut modules: Vec<(String, ast::Module)> = vec![("main".to_string(), entry)];
         let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
-        let mut queue: VecDeque<ast::Module> = VecDeque::from([entry]);
-        while let Some(module) = queue.pop_front() {
-            for name in module.imports.clone() {
+        let mut next = 0;
+        while next < modules.len() {
+            let imports = modules[next].1.imports.clone();
+            next += 1;
+            for name in imports {
                 if !loaded.insert(name.clone()) {
                     continue;
                 }
                 let parsed = parse_std_import_cached(&name);
-                queue.push_back(parsed.clone());
                 modules.push((name, parsed));
             }
         }
@@ -151,7 +166,6 @@
     mod range_for_properties {
         use super::interp;
         use proptest::prelude::*;
-        use std::cell::RefCell;
 
         // `run_on_wasm` builds a fresh `Runtime` (a real Wasmtime `Engine::new()` —
         // Cranelift ISA setup, not free) per call. Each proptest case here calls it
@@ -161,19 +175,13 @@
         // must), but proptest runs cases sequentially on one thread, so the `Engine`
         // itself can be built once per thread and reused across all of a test
         // function's cases.
-        thread_local! {
-            static RUNTIME: RefCell<crate::runtime::Runtime> =
-                RefCell::new(crate::runtime::Runtime::new().expect("runtime"));
-        }
-
         fn run_on_wasm_cached(src: &str) -> Vec<String> {
             use crate::runtime::Capabilities;
             let linked = super::resolve_std_src(src);
             super::typeck::check(&linked).expect("typecheck");
             let bytes = super::codegen::compile_module_binary(&linked)
                 .expect_lowered("the binary path lowers this program");
-            RUNTIME.with(|rt| {
-                let mut rt = rt.borrow_mut();
+            super::with_batch_runtime(|rt| {
                 let mut actor = rt
                     .spawn(
                         &bytes,
@@ -624,52 +632,54 @@
     /// on the wasmtime runtime with the output capabilities granted, and return
     /// what the program printed.
     fn run_on_wasm(src: &str) -> Vec<String> {
-        use crate::runtime::{Capabilities, Runtime};
+        use crate::runtime::Capabilities;
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::new().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                // Mirror the interpreter's automatic grants (output + the
-                // read-only ambient Clock/Env), like `run_wasm_bytes`.
-                Capabilities {
-                    print: true,
-                    print_int: true,
-                    clock: true,
-                    env: true,
-                    dir_root: Some(std::path::PathBuf::from(".")),
-                    dir_read: true,
-                    dir_write: true,
-                    net_allow: Some(Vec::new()),
-                    net_connect: true,
-                    net_listen: true,
-                    ..Default::default()
-                },
-                4,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        actor.output()
+        with_batch_runtime(|rt| {
+            let mut actor = rt
+                .spawn(
+                    &bytes,
+                    // Mirror the interpreter's automatic grants (output + the
+                    // read-only ambient Clock/Env), like `run_wasm_bytes`.
+                    Capabilities {
+                        print: true,
+                        print_int: true,
+                        clock: true,
+                        env: true,
+                        dir_root: Some(std::path::PathBuf::from(".")),
+                        dir_read: true,
+                        dir_write: true,
+                        net_allow: Some(Vec::new()),
+                        net_connect: true,
+                        net_listen: true,
+                        ..Default::default()
+                    },
+                    4,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            actor.output()
+        })
     }
 
     /// Run a WIR-assembled binary with ONLY `print` granted — nothing else. If
     /// the module imported any other authority, instantiate would fail. Proves
     /// the pruned WIR-helper path emits capability-minimal modules.
     fn run_bytes_print_only(bytes: &[u8]) -> Vec<String> {
-        use crate::runtime::{Capabilities, Runtime};
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                bytes,
-                Capabilities { print: true, quiet: true, ..Default::default() },
-                crate::RUN_MEMORY_PAGES,
-            )
-            .expect("spawn under a print-only grant");
-        actor.run().expect("run");
-        actor.output()
+        use crate::runtime::Capabilities;
+        with_batch_runtime(|rt| {
+            let mut actor = rt
+                .spawn(
+                    bytes,
+                    Capabilities { print: true, quiet: true, ..Default::default() },
+                    crate::RUN_MEMORY_PAGES,
+                )
+                .expect("spawn under a print-only grant");
+            actor.run().expect("run");
+            actor.output()
+        })
     }
 
 
@@ -677,25 +687,26 @@
     /// `__witchy_reowns` counter — the timing-free proof of in-place (O(1)) vs
     /// copying (O(n)) accumulation.
     fn binary_run_reowns(bytes: &[u8]) -> (Vec<String>, i64) {
-        use crate::runtime::{Capabilities, Runtime};
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                bytes,
-                Capabilities { print: true, quiet: true, ..Default::default() },
-                crate::RUN_MEMORY_PAGES,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        let reowns = actor.reowns().unwrap_or(0);
-        (actor.output(), reowns)
+        use crate::runtime::Capabilities;
+        with_batch_runtime(|rt| {
+            let mut actor = rt
+                .spawn(
+                    bytes,
+                    Capabilities { print: true, quiet: true, ..Default::default() },
+                    crate::RUN_MEMORY_PAGES,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            let reowns = actor.reowns().unwrap_or(0);
+            (actor.output(), reowns)
+        })
     }
 
     /// Link a multi-module program, compile the flat module to WASM, run it on
     /// the runtime with output capabilities, and return what it printed.
     fn run_linked_on_wasm(sources: &[(&str, &str)], entry: &str) -> Vec<String> {
         witchy_interp::compiler_natives::install();
-        use crate::runtime::{Capabilities, Runtime};
+        use crate::runtime::Capabilities;
         let mods: Vec<(String, ast::Module)> = sources
             .iter()
             .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
@@ -704,30 +715,31 @@
         assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::new().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                // Mirror the interpreter's automatic grants (output + the
-                // read-only ambient Clock/Env), like `run_wasm_bytes`.
-                Capabilities {
-                    print: true,
-                    print_int: true,
-                    clock: true,
-                    env: true,
-                    dir_root: Some(std::path::PathBuf::from(".")),
-                    dir_read: true,
-                    dir_write: true,
-                    net_allow: Some(Vec::new()),
-                    net_connect: true,
-                    net_listen: true,
-                    ..Default::default()
-                },
-                4,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        actor.output()
+        with_batch_runtime(|rt| {
+            let mut actor = rt
+                .spawn(
+                    &bytes,
+                    // Mirror the interpreter's automatic grants (output + the
+                    // read-only ambient Clock/Env), like `run_wasm_bytes`.
+                    Capabilities {
+                        print: true,
+                        print_int: true,
+                        clock: true,
+                        env: true,
+                        dir_root: Some(std::path::PathBuf::from(".")),
+                        dir_read: true,
+                        dir_write: true,
+                        net_allow: Some(Vec::new()),
+                        net_connect: true,
+                        net_listen: true,
+                        ..Default::default()
+                    },
+                    4,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            actor.output()
+        })
     }
 
     /// Link and run a multi-module program while retaining the ownership
@@ -741,7 +753,7 @@
         sources: &[(&str, &str)],
         entry: &str,
     ) -> (Vec<String>, i64, i64, i64) {
-        use crate::runtime::{Capabilities, Runtime};
+        use crate::runtime::Capabilities;
         let mods: Vec<(String, ast::Module)> = sources
             .iter()
             .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
@@ -750,21 +762,22 @@
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::new().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
-                4,
+        with_batch_runtime(|rt| {
+            let mut actor = rt
+                .spawn(
+                    &bytes,
+                    Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
+                    4,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            (
+                actor.output(),
+                actor.reowns().unwrap_or(0),
+                actor.boundary_reown_copies().unwrap_or(0),
+                actor.ownership_token_repairs().unwrap_or(0),
             )
-            .expect("spawn");
-        actor.run().expect("run");
-        (
-            actor.output(),
-            actor.reowns().unwrap_or(0),
-            actor.boundary_reown_copies().unwrap_or(0),
-            actor.ownership_token_repairs().unwrap_or(0),
-        )
+        })
     }
 
 
@@ -781,7 +794,7 @@
     /// Like `run_linked_on_wasm` but with an explicit `Net` allowlist grant, for
     /// programs that `restrict`/`connect` to specific addresses.
     fn run_linked_on_wasm_net(sources: &[(&str, &str)], entry: &str, net_allow: &[&str]) -> Vec<String> {
-        use crate::runtime::{Capabilities, Runtime};
+        use crate::runtime::Capabilities;
         let mods: Vec<(String, ast::Module)> = sources
             .iter()
             .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
@@ -790,28 +803,29 @@
         assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::new().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    print_int: true,
-                    clock: true,
-                    env: true,
-                    dir_root: Some(std::path::PathBuf::from(".")),
-                    dir_read: true,
-                    dir_write: true,
-                    net_allow: Some(net_allow.iter().map(|s| (*s).to_string()).collect()),
-                    net_connect: true,
-                    net_listen: true,
-                    ..Default::default()
-                },
-                4,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        actor.output()
+        with_batch_runtime(|rt| {
+            let mut actor = rt
+                .spawn(
+                    &bytes,
+                    Capabilities {
+                        print: true,
+                        print_int: true,
+                        clock: true,
+                        env: true,
+                        dir_root: Some(std::path::PathBuf::from(".")),
+                        dir_read: true,
+                        dir_write: true,
+                        net_allow: Some(net_allow.iter().map(|s| (*s).to_string()).collect()),
+                        net_connect: true,
+                        net_listen: true,
+                        ..Default::default()
+                    },
+                    4,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            actor.output()
+        })
     }
 
 

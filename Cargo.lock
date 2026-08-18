@@ -3047,6 +3047,7 @@ dependencies = [
 name = "witchy-wir"
 version = "0.1.0"
 dependencies = [
+ "foldhash 0.2.0",
  "wasm-encoder 0.251.0",
  "wasmparser 0.251.0",
  "wasmtime",

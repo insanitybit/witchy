@@ -7,7 +7,7 @@
 //! `module.imports`), then defined functions (index = `imports.len()` + position
 //! in `module.funcs`). Locals are params-then-body in declaration order.
 
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
