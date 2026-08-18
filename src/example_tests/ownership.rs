@@ -612,6 +612,50 @@ fn main(console: Console):
         assert_eq!(token_repairs, 0, "fresh owned result needs no token repair");
     }
 
+    /// An opt export may return a conventional nullable aggregate. The normal
+    /// caller destructures and mutates the owned payload without observing the
+    /// opt carrier or any reference contract.
+    #[test]
+    fn rfc0122_normal_to_opt_option_result_preserves_owned_payload_on_both_backends() {
+        let api = r#"
+mode opt
+
+pub fn snapshot(own values: List(Int)) -> Option(List(Int)):
+    Some(values)
+"#;
+        let app = r#"
+import api
+import list
+
+fn main(console: Console):
+    let selected = api.snapshot([1])
+    match selected:
+        Some(values) ->
+            var mutable = move values
+            list.push(mutable, 2)
+            console.print("${mutable}")
+        None -> console.print("missing")
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app")
+            .expect("link normal caller with an opt Option result");
+        typeck::check(&linked).expect("normal Option result has no reference contract");
+        let expected = ["[1, 2]"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter preserves the owned Option payload",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled backend preserves the owned Option payload",
+        );
+    }
+
     /// An aliased normal caller selects the copy-correct conventional entry for
     /// an opt `var unique` export: the callee's write-back updates the caller's
     /// variable while the pre-existing value alias keeps its original contents.
