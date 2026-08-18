@@ -18,6 +18,32 @@ fn main(console: Console):
 }
 
 #[test]
+fn direct_shared_bytes_reference_uses_the_same_place_carrier_on_all_backends() {
+    let src = r#"mode opt
+
+import bytes
+
+fn first(data: &'a Bytes) -> &'a Bytes:
+    data
+
+fn main(console: Console):
+    let data = bytes.from_string("hi")
+    let view = first(&data)
+    console.print("${bytes.length(*view)}")
+    console.print(bytes.to_string(*view))
+"#;
+    let want = ["2", "hi"];
+    assert_eq!(link_run(src), want, "interpreter preserves the shared Bytes place");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves the shared Bytes place");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves the shared Bytes place");
+}
+
+#[test]
 fn mutable_to_shared_reference_return_preserves_the_runtime_place_on_both_backends() {
     let src = r#"mode opt
 
