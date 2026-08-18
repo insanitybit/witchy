@@ -1086,6 +1086,34 @@ fn main(console: Console):
     );
 }
 
+#[test]
+fn interpreter_local_nullable_exclusive_tuple_list_constructs_and_writes() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = if true:
+        Some([(&mut first, &mut second)])
+    else:
+        None
+    let moved = selected
+    match moved:
+        Some(values) ->
+            let (left, right) = values[0]
+            *left = "left updated"
+            *right = "right updated"
+        None -> console.print("unexpected")
+    console.print(first)
+    console.print(second)
+"#;
+    assert_eq!(
+        link_run(src),
+        ["left updated", "right updated"],
+        "interpreter preserves a locally constructed nullable carrier",
+    );
+}
+
 /// A reference-list registry entry must not reclassify an ordinary scalar
 /// `List(String)` that shares the qualifier-erased source key.
 #[test]

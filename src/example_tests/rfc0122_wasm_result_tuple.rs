@@ -43,6 +43,34 @@ fn main(console: Console):
 }
 
 #[test]
+fn interpreter_local_result_exclusive_tuple_list_constructs_and_writes() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = if true:
+        Ok([(&mut first, &mut second)])
+    else:
+        Err("unexpected")
+    let moved = selected
+    match moved:
+        Ok(values) ->
+            let (left, right) = values[0]
+            *left = "left updated"
+            *right = "right updated"
+        Err(message) -> console.print(message)
+    console.print(first)
+    console.print(second)
+"#;
+    assert_eq!(
+        link_run(src),
+        ["left updated", "right updated"],
+        "interpreter preserves a locally constructed tagged Result carrier",
+    );
+}
+
+#[test]
 fn wasm_first_exclusive_reference_result_tuple_match_writes_both_owners() {
     let src = r#"mode opt
 
