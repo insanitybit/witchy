@@ -313,11 +313,23 @@ impl Codegen<'_> {
             Pattern::Int(k) => (eq_i64(*k), vec![]),
             Pattern::Bool(b) => (eq_i64(if *b { 1 } else { 0 }), vec![]),
             Pattern::Var(name) => {
-                let k = self
-                    .locals
-                    .get(name)
-                    .copied()
-                    .or_else(|| expected.map(|ty| self.kind_for_type(ty)))
+                // Pattern inference may have left a stale universal-slot width
+                // from an erased Result shell. A concrete scalar field type is
+                // authoritative for the binding; a reference-shaped expected
+                // type remains conservative and keeps the already inferred
+                // executable carrier (notably `List(String)` sharing a lookup
+                // key with `List(&String)`).
+                let expected_kind = expected.map(|ty| match ty.unqualified() {
+                    Type::Named(name, _)
+                        if name == "List" && !self.type_is_reference_list_candidate(ty) => {
+                        Kind::I32
+                    }
+                    _ => self.kind_for_type(ty),
+                });
+                let k = expected_kind
+                    .filter(|kind| !kind.is_ref())
+                    .or_else(|| self.locals.get(name).copied())
+                    .or(expected_kind)
                     .unwrap_or(Kind::I32);
                 self.locals.insert(name.clone(), k);
                 (
