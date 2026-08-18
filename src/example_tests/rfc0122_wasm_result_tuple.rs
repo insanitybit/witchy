@@ -1,5 +1,47 @@
 use super::*;
 
+/// Keep local tagged aggregate construction on the compiled-Wasm-first path:
+/// the result is built in an `if`, moved, matched, destructured, projected,
+/// and written through without a helper-function ABI.
+#[test]
+fn wasm_first_local_result_exclusive_tuple_list_constructs_and_writes() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = if true:
+        Ok([(&mut first, &mut second)])
+    else:
+        Err("unexpected")
+    let moved = selected
+    match moved:
+        Ok(values) ->
+            let (left, right) = values[0]
+            *left = "left updated"
+            *right = "right updated"
+        Err(message) -> console.print(message)
+    console.print(first)
+    console.print(second)
+"#;
+    let want = ["left updated", "right updated"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(
+        optimized,
+        want,
+        "optimized Wasm preserves a locally constructed tagged Result carrier"
+    );
+    assert_eq!(
+        forced_copy,
+        want,
+        "forced-copy Wasm preserves a locally constructed tagged Result carrier"
+    );
+}
+
 #[test]
 fn wasm_first_exclusive_reference_result_tuple_match_writes_both_owners() {
     let src = r#"mode opt
