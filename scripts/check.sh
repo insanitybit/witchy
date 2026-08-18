@@ -56,17 +56,10 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     if [ -z "${CARGO_PROFILE_TEST_STRIP+x}" ]; then
         export CARGO_PROFILE_TEST_STRIP=symbols
     fi
-    # Re-enable incremental compilation in the gate. The coordinator sets
-    # CARGO_INCREMENTAL=0 (merge-queue.sh run_gate) — but that existed ONLY
-    # because sccache rejects incremental compiles, and sccache is cleared
-    # above (it EPERMs in the gate sandbox anyway; see BUG-579). With sccache
-    # gone, CARGO_INCREMENTAL=0 is pure waste: the gate worktree persists its
-    # target/ across gates and is idle-prewarmed, so incremental lets an
-    # unchanged crate be REUSED instead of recompiled. Measured (test profile,
-    # 1-line change): incremental rebuild 13s vs CARGO_INCREMENTAL=0 rebuild 72s
-    # — ~59s saved per gate. `unset` overrides the coordinator's exported 0
-    # without editing run_gate. (Cost: incremental/ grows on disk; the gate
-    # target is periodically reclaimable.)
+    # Incremental is the serialized-gate profile (run_gate / prewarm / prepare
+    # now match). `unset` still overrides a stale coordinator that exported 0.
+    # Measured (test profile, 1-line change): incremental rebuild 13s vs
+    # CARGO_INCREMENTAL=0 rebuild 72s. (Cost: incremental/ grows on disk.)
     unset CARGO_INCREMENTAL
 fi
 

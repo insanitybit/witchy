@@ -969,9 +969,10 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # Serialized gates deliberately bypass the globally configured sccache
     # wrapper. Detached coordinators can run in a sandbox where the wrapper
     # itself exits EPERM before Cargo metadata; exporting both Cargo controls
-    # keeps daemon and foreground coordinators equivalent. Incremental output
-    # remains disabled because this worktree is repeatedly rebased across
-    # unrelated branches and otherwise accumulates low-value state.
+    # keeps daemon and foreground coordinators equivalent. Incremental is
+    # left ON: check.sh already unsets CARGO_INCREMENTAL=0, and a prewarm
+    # that built with incremental=0 / no test-strip forces the next gate to
+    # rebuild every crate (measured: 13s incremental reuse vs 72s+ cold).
     set -m
     # Test execution runs at nextest's normal width. The macOS dyld stall that
     # once motivated NEXTEST_TEST_THREADS=4 here was a DISCOVERY problem —
@@ -981,7 +982,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env -u CARGO_INCREMENTAL "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -1482,10 +1483,9 @@ submission_is_represented() { # submission_is_represented <submitted-sha>
 #     compiler diffs (focused nextest does not run the snapshot tests).
 #     `src/`, `std/`, corpus trees, and Cargo/toolchain still pay the
 #     generator `cargo build` — that gate runs the freshness tests, and
-#     nextest needs the same dev-profile `witchy` bin. Keep Cargo's
-#     incremental setting identical to run_gate as well; changing that flag in
-#     one shared target invalidates the preparation artifacts and forces the
-#     full gate to rebuild every workspace crate.
+#     nextest needs the same dev-profile `witchy` bin. Match run_gate /
+#     check.sh (incremental on, test-strip=symbols): flipping those flags
+#     in one shared target invalidates the artifacts and rebuilds every crate.
 rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <branch> <change-id> <attempt-id> <cargo-target>
     local rb_base="$1" rb_branch="$2" rb_change_id="$3" rb_attempt_id="$4"
     local rb_target="${5:-target}"
@@ -1513,7 +1513,7 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     # Clear the globally configured sccache wrapper exactly like run_gate does:
     # a detached daemon's sandbox EPERMs it, and a silently failing build here
     # would neuter the whole re-baseline path for daemon coordinators.
-    if ! ( cd "$gate_wt" && env "CARGO_TARGET_DIR=$rb_target" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
+    if ! ( cd "$gate_wt" && env -u CARGO_INCREMENTAL "CARGO_TARGET_DIR=$rb_target" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
         cargo build --bin witchy --bin rfc0087-census ) >/dev/null 2>&1; then
         note "rebaseline: generator build failed; skipping regen (the gate adjudicates)"
         return 0
@@ -2463,8 +2463,9 @@ prewarm_gate() {
     # build. Put the complete tree, including rustup setup that can wait on its
     # global lock, in its own process group before watching the queue. Terminate
     # only the prewarm process group we started.
-    # Match run_gate once for every Cargo phase below. Detached daemons cannot
-    # use the checkout's configured compiler wrapper.
+    # Match run_gate / check.sh once for every Cargo phase below (incremental
+    # on, CARGO_PROFILE_TEST_STRIP=symbols, no sccache). A profile mismatch
+    # here makes promotion a cold rebuild for the next gate.
     # Cargo can trust a fingerprint whose executable was lost when an old
     # prewarm was cancelled mid-write. Recover only the validated inactive
     # generation, inside this cancellable process group; the active generation
@@ -2494,7 +2495,8 @@ prewarm_gate() {
             rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
             tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
         fi
-        export CARGO_TARGET_DIR="$inactive_target" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
+        unset CARGO_INCREMENTAL
+        export CARGO_TARGET_DIR="$inactive_target" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
         cargo build --workspace >/dev/null 2>&1
         cargo test --workspace --no-run >/dev/null 2>&1
         if [ -n "$tc_bin" ]; then

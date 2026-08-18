@@ -273,7 +273,7 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
     fs::write(
         &cargo,
         format!(
-            "#!/bin/sh\nif [ -e \"{}\" ]; then\n  printf '%s|%s|%s' \"${{CARGO_INCREMENTAL-unset}}\" \"${{RUSTC_WRAPPER-unset}}\" \"${{CARGO_BUILD_RUSTC_WRAPPER-unset}}\" >\"{}\"\nfi\nexit 0\n",
+            "#!/bin/sh\nif [ -e \"{}\" ]; then\n  printf '%s|%s|%s|%s' \"${{CARGO_INCREMENTAL-unset}}\" \"${{RUSTC_WRAPPER-unset}}\" \"${{CARGO_BUILD_RUSTC_WRAPPER-unset}}\" \"${{CARGO_PROFILE_TEST_STRIP-unset}}\" >\"{}\"\nfi\nexit 0\n",
             gate_proceed.display(),
             cargo_env.display(),
         ),
@@ -365,8 +365,8 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
     }
     assert_eq!(
         fs::read_to_string(&cargo_env).expect("read prewarm Cargo environment"),
-        "0||",
-        "idle prewarm did not match the full gate Cargo profile",
+        "unset|||symbols",
+        "idle prewarm did not match the serialized gate Cargo profile",
     );
 
     stop_coordinator(

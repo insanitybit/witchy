@@ -1053,8 +1053,8 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
     );
     assert_eq!(
         fs::read_to_string(&incremental).expect("read preparation Cargo profile"),
-        "0",
-        "preparation did not match the full gate's incremental setting",
+        "unset",
+        "preparation did not match the serialized gate incremental setting",
     );
     assert_eq!(
         git(&root, &["show", "master:rfcs/0087-migration-census.tsv"]),

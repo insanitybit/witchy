@@ -430,7 +430,9 @@ instead of `--workspace --all-targets`. `--full` / CI still run everything.
 7. Queue empty → idle prewarm: under the lock, move the gate worktree to
    master, mark the generation not named by `gate-target` incomplete, and
    build its dev/test/wasm plus corresponding `-check`/`-clippy` directories.
-   Completed outputs are never copied or renamed between generations. Only a
+   Prewarm uses the same Cargo profile as the serialized gate (incremental
+   on, `CARGO_PROFILE_TEST_STRIP=symbols`, no sccache) so promotion is not a
+   cold rebuild. Completed outputs are never copied or renamed between generations. Only a
    fully green prewarm atomically replaces `gate-target`, clears the incomplete
    marker, and records the sha in `prewarmed`. A submission arriving during
    this opportunistic work terminates only its process group; the active
