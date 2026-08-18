@@ -32,6 +32,7 @@ impl<'types> Codegen<'types> {
         &mut self,
         expr: &Expr,
         result_kind: Kind,
+        target: &Expr,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
@@ -70,6 +71,48 @@ impl<'types> Codegen<'types> {
                 }),
             }),
         };
+        // A root `&Record` uses projection zero to name the record pointer
+        // itself.  Projection zero means the scalar cell only for scalar
+        // references; treating an aggregate root as an i64-cell read loads its
+        // header/tag as if it were a pointer and traps when the value is used.
+        let aggregate_root_type = self.ast_type_of_expr(target).is_some_and(|ty| {
+            matches!(
+                ty.unqualified(),
+                Type::Named(name, _)
+                    if self.record_fields.contains_key(name)
+            )
+        });
+        let projected_read = || {
+            W::FromSlot(
+                Box::new(W::Load {
+                    ptr: Box::new(W::Binary {
+                        op: witchy_wir::wir::BinOp::Add,
+                        kind: witchy_wir::wir::Kind::I32,
+                        lhs: Box::new(aggregate_root.clone()),
+                        rhs: Box::new(projection.clone()),
+                    }),
+                    kind: witchy_wir::wir::Kind::I64,
+                    offset: 0,
+                }),
+                Self::wir_kind(result_kind),
+            )
+        };
+        let aggregate_read = if aggregate_root_type {
+            W::Control(Box::new(N::If {
+                cond: W::Binary {
+                    op: witchy_wir::wir::BinOp::Eq,
+                    kind: witchy_wir::wir::Kind::I32,
+                    lhs: Box::new(projection.clone()),
+                    rhs: Box::new(W::ConstI32(0)),
+                },
+                then_: vec![N::Push(aggregate_root.clone())],
+                els: vec![N::Push(projected_read())],
+                result: Some(Self::wir_ty_for_kind(result_kind)),
+            }))
+        } else {
+            projected_read()
+        };
+        let scalar_root = !aggregate_root_type;
         Some(W::Seq(vec![
             N::SetLocal {
                 local: carrier,
@@ -77,25 +120,18 @@ impl<'types> Codegen<'types> {
             },
             N::If {
                 cond: W::Binary {
-                    op: witchy_wir::wir::BinOp::Eq,
+                    op: witchy_wir::wir::BinOp::And,
                     kind: witchy_wir::wir::Kind::I32,
-                    lhs: Box::new(projection.clone()),
-                    rhs: Box::new(W::ConstI32(0)),
+                    lhs: Box::new(W::ConstI32(i32::from(scalar_root))),
+                    rhs: Box::new(W::Binary {
+                        op: witchy_wir::wir::BinOp::Eq,
+                        kind: witchy_wir::wir::Kind::I32,
+                        lhs: Box::new(projection),
+                        rhs: Box::new(W::ConstI32(0)),
+                    }),
                 },
                 then_: vec![N::Push(scalar)],
-                els: vec![N::Push(W::FromSlot(
-                    Box::new(W::Load {
-                        ptr: Box::new(W::Binary {
-                            op: witchy_wir::wir::BinOp::Add,
-                            kind: witchy_wir::wir::Kind::I32,
-                            lhs: Box::new(aggregate_root),
-                            rhs: Box::new(projection),
-                        }),
-                        kind: witchy_wir::wir::Kind::I64,
-                        offset: 0,
-                    }),
-                    Self::wir_kind(result_kind),
-                ))],
+                els: vec![N::Push(aggregate_read)],
                 result: Some(Self::wir_ty_for_kind(result_kind)),
             },
         ]))
@@ -592,7 +628,7 @@ impl<'types> Codegen<'types> {
                             .ast_type_of_expr(e)
                             .map(|ty| self.kind_for_type(&ty))
                             .unwrap_or(Kind::I64);
-                        return self.lower_place_reference_read(expr, result_kind);
+                        return self.lower_place_reference_read(expr, result_kind, e);
                     }
                     return self.lower_expr(expr);
                 }
@@ -2784,7 +2820,7 @@ impl<'types> Codegen<'types> {
                         .call_access_signature(e)
                         .map(|access| self.kind_for_type(access.result().ty()))
                         .unwrap_or_else(|| self.kind_of(e));
-                    return self.lower_place_reference_read(&args[0], result_kind);
+                    return self.lower_place_reference_read(&args[0], result_kind, e);
                 }
                 // (RFC-0062 tier-1) An ELIDED closure local `f(x)`: no env exists — thread
                 // the captures (from their current locals) as leading i64 arg slots, then

@@ -69,6 +69,20 @@ impl Codegen<'_> {
         {
             return Kind::GcRef(super::PLACE_REFERENCE_ID);
         }
+        // A place-reference dereference of a nominal aggregate uses the
+        // legacy linear-memory record pointer carried by `REFERENCE_I32_CELL`.
+        // The source type may also have a registered GC nominal layout because
+        // the same type participates in a generic carrier elsewhere, but that
+        // layout is not the physical kind of this executable place read.
+        if let Expr::Unary {
+            op: UnOp::Deref,
+            expr: referent,
+        } = e
+            && self.kind_of(referent) == Kind::GcRef(super::PLACE_REFERENCE_ID)
+            && self.record_type_of(e).is_some()
+        {
+            return Kind::I32;
+        }
         let nullable_ctor = matches!(
             e,
             Expr::Ctor { name, .. } if name == "Some" || name == "None"

@@ -177,6 +177,20 @@ fn rfc0122_owned_exclusive_parameter_releases_the_owner_after_mutation_on_both_b
     assert_eq!(compiled, want, "compiled backend releases an owned exclusive handle at return");
 }
 
+#[test]
+fn rfc0122_generic_mutable_to_shared_aggregate_resumes_owner_after_final_use_on_all_backends() {
+    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn share(value: &'a mut a) -> &'a a:\n    value\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let observed = share(&mut pair)\n    let snapshot = *observed\n    console.print(\"${snapshot.left}\")\n    pair = Pair(3, 4)\n    console.print(\"${pair}\")\n";
+    let want = ["1", "Pair(3, 4)"];
+    assert_eq!(link_run(src), want, "interpreter resumes a generic aggregate owner after shared final use");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm resumes a generic aggregate owner after shared final use");
+    assert_eq!(forced_copy, want, "forced-copy Wasm resumes a generic aggregate owner after shared final use");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.
