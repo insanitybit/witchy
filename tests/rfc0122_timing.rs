@@ -19,8 +19,10 @@ fn aggregate_reference_timing_reports_checker_and_execution_samples() {
     assert_eq!(forced_copy.stats.output, optimized.stats.output);
     assert!(optimized.checker_time_us > 0);
     assert!(optimized.execution_time_us > 0);
+    assert!(optimized.execution_throughput_batches_per_s > 0.0);
     assert!(forced_copy.checker_time_us > 0);
     assert!(forced_copy.execution_time_us > 0);
+    assert!(forced_copy.execution_throughput_batches_per_s > 0.0);
     assert_eq!(
         optimized.stats.loan_control_flow_edges,
         forced_copy.stats.loan_control_flow_edges,
@@ -31,7 +33,7 @@ fn aggregate_reference_timing_reports_checker_and_execution_samples() {
 #[test]
 fn precision_telemetry_artifact_covers_each_reference_phase() {
     assert!(PRECISION_ARTIFACT.contains(
-        "schema=phase,fixture,mode,checker_time_us,execution_time_us"
+        "schema=phase,fixture,mode,checker_time_us,execution_time_us,execution_throughput_batches_per_s"
     ));
     for phase in ["baseline-scalar", "aggregate-carrier"] {
         assert!(PRECISION_ARTIFACT.contains(&format!("phase={phase}")), "missing {phase} phase");
@@ -60,6 +62,10 @@ fn precision_telemetry_artifact_covers_each_reference_phase() {
             assert_eq!(timed.stats.loan_control_flow_edges, expected_edges);
             assert!(timed.checker_time_us > 0, "{fixture} {mode} checker sample missing");
             assert!(timed.execution_time_us > 0, "{fixture} {mode} execution sample missing");
+            assert!(
+                timed.execution_throughput_batches_per_s > 0.0,
+                "{fixture} {mode} throughput sample missing"
+            );
             assert!(timed.stats.heap_bytes >= 0);
             assert!(timed.stats.rc_alloc_calls >= 0);
             assert!(timed.stats.bump_alloc_calls >= 0);
@@ -77,7 +83,7 @@ fn precision_telemetry_artifact_covers_each_reference_phase() {
             );
             assert!(
                 PRECISION_ARTIFACT.contains(&format!(
-                    "fixture={fixture},mode={mode},checker_time_us=measured,execution_time_us=measured,peak_memory=heap_bytes,loan_edges={expected_edges},subset_edges=0,no_copy_misses=2,repair_entries=2"
+                    "fixture={fixture},mode={mode},checker_time_us=measured,execution_time_us=measured,execution_throughput_batches_per_s=measured,peak_memory=heap_bytes,loan_edges={expected_edges},subset_edges=0,no_copy_misses=2,repair_entries=2"
                 )),
                 "missing checked analysis counters for {fixture}/{mode}"
             );

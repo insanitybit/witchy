@@ -98,6 +98,12 @@ pub struct TimedStats {
     pub checker_time_us: u128,
     /// Microseconds spent executing the compiled Wasm sample.
     pub execution_time_us: u128,
+    /// Completed batch executions per second for this single-run sample.
+    ///
+    /// This is a throughput-shaped companion to `execution_time_us`, not a
+    /// benchmark claim: one successful `vm.run()` is the measured unit and
+    /// callers should compare repeated samples when making performance claims.
+    pub execution_throughput_batches_per_s: f64,
 }
 
 /// Compile `src` (resolved against the bundled std) and run it under the active
@@ -130,6 +136,8 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
     let execution_started = Instant::now();
     vm.run().map_err(|e| e.root_cause().to_string())?;
     let execution_time_us = execution_started.elapsed().as_micros();
+    let execution_throughput_batches_per_s =
+        1_000_000.0 / execution_time_us.max(1) as f64;
     let stats = Stats {
         output: vm.output(),
         heap_bytes: vm.heap_bytes().unwrap_or(0),
@@ -167,6 +175,7 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         stats,
         checker_time_us,
         execution_time_us,
+        execution_throughput_batches_per_s,
     })
 }
 
@@ -182,6 +191,7 @@ mod tests {
         assert_eq!(timed.stats.output, ["ok"]);
         assert!(timed.checker_time_us > 0);
         assert!(timed.execution_time_us > 0);
+        assert!(timed.execution_throughput_batches_per_s > 0.0);
     }
 
     #[test]

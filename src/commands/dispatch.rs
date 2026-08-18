@@ -154,6 +154,10 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 let s = timed.stats;
                 println!("checker_time_us {}", timed.checker_time_us);
                 println!("execution_time_us {}", timed.execution_time_us);
+                println!(
+                    "execution_throughput_batches_per_s {:.3}",
+                    timed.execution_throughput_batches_per_s
+                );
                 println!("heap_bytes {}", s.heap_bytes);
                 println!("reowns {}", s.reowns);
                 println!("indirect_ownership_calls {}", s.indirect_ownership_calls);
