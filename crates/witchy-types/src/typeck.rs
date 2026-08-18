@@ -825,6 +825,14 @@ fn reject_borrowed_nominal_containers(
                         if lifetime_nominals.contains(element)
                             || element_arguments.iter().any(|argument| lifetime_argument_name(argument).is_some())
                 );
+            let is_borrowed_nominal_result = name == "Result"
+                && arguments.len() == 2
+                && matches!(
+                    arguments.first(),
+                    Some(ast::Type::Named(element, element_arguments))
+                        if lifetime_nominals.contains(element)
+                            || element_arguments.iter().any(|argument| lifetime_argument_name(argument).is_some())
+                );
             let is_direct_reference_list = name == "List"
                 && arguments.len() == 1
                 && matches!(
@@ -854,6 +862,7 @@ fn reject_borrowed_nominal_containers(
             if !is_borrowed_shell
                 && !is_borrowed_nominal_list
                 && !is_borrowed_nominal_option
+                && !is_borrowed_nominal_result
                 && !is_direct_reference_list
                 && !is_explicit_reference_list
                 && !is_explicit_reference_option
