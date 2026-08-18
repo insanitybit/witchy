@@ -534,6 +534,14 @@ mod tests {
     }
 
     #[test]
+    fn explicit_reference_nominal_can_cross_result_list_carrier() {
+        check_str(
+            "mode opt\n\ntype Pair('a, 'b):\n    left: &'a mut String\n    right: &'b mut String\n\nfn choose(left: &'a mut String, right: &'b mut String) -> Result(List(Pair('a, 'b)), String):\n    Ok([Pair(left, right)])\n",
+        )
+        .expect("an explicit-reference nominal can cross a Result list carrier");
+    }
+
+    #[test]
     fn borrowed_nominals_reject_owned_container_storage_before_descriptors() {
         let error = check_str(
             "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntype Bag('a):\n    holders: List(Holder('a))\n",
