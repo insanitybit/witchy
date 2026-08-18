@@ -19,6 +19,18 @@ fn rfc0122_returned_exclusive_reborrow_preserves_the_caller_place_on_both_backen
     assert_eq!(compiled, want, "compiled backend preserves the returned projected place");
 }
 
+/// A conditional tail keeps the selected projection in the returned place
+/// carrier; the source has one callable identity even though each arm selects
+/// a different field.
+#[test]
+fn rfc0122_conditional_tail_preserves_the_selected_reference_place_on_both_backends() {
+    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn choose(pair: &'a mut Pair, left: Bool) -> &'a mut Int:\n    let selected = if left:\n        &mut pair.left\n    else:\n        &mut pair.right\n    selected\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let slot = choose(&mut pair, false)\n    *slot = 9\n    console.print(\"${pair.left}:${pair.right}\")\n";
+    let want = ["1:9"];
+    assert_eq!(link_run(src), want, "interpreter preserves the selected conditional tail place");
+    let (compiled, _) = wasm_run_reowns(src);
+    assert_eq!(compiled, want, "compiled backend preserves the selected conditional tail place");
+}
+
 #[test]
 fn rfc0122_indexed_exclusive_reference_preserves_its_runtime_place_on_both_backends() {
     let src = "mode opt\n\nimport list\n\nfn second(values: &'a mut List(Int)) -> &'a mut Int:\n    &mut values[1]\n\nfn main(console: Console):\n    var values = [1, 2, 3]\n    let slot = second(&mut values)\n    *slot = 9\n    console.print(\"${values}\")\n    console.print(\"${*slot}\")\n";

@@ -4349,7 +4349,9 @@ impl<'types> Codegen<'types> {
         loan_roots.sort_by(|a, b| a.local.cmp(&b.local));
         loan_roots.dedup_by(|a, b| a.local == b.local);
         for root in loan_roots {
-            locals.push(WirLocal { name: root.local, ty: i32t() });
+            if !self.loan_root_is_carrier(&root) {
+                locals.push(WirLocal { name: root.local, ty: i32t() });
+            }
         }
         // (RFC-0027) Scalar-replaced aggregates: each field lives in a `${name}$<i>`
         // i64-slot local instead of a heap object. (The plain `${name}` local from
@@ -5063,6 +5065,12 @@ impl<'types> Codegen<'types> {
                 owner.local, event.view
             ),
         })?;
+        // An explicit reference is already a GC-rooted executable carrier. Its
+        // referent is not a linear-memory owner pointer, so it must not enter
+        // the scalar rc_dup/rc_drop ABI used for ordinary owner locals.
+        if Self::is_executable_reference_type(owner_type) {
+            return Ok(None);
+        }
         let bias = rc_leaf_bias(owner_type).ok_or_else(|| CodegenError {
             message: format!(
                 "internal: loan root `{}` for view `{}` has unresolved checked type `{:?}`",
@@ -5086,7 +5094,11 @@ impl<'types> Codegen<'types> {
         let mut roots = Vec::new();
         for event in events {
             match Self::loan_root(event) {
-                Ok(Some(root)) => roots.push(root),
+                Ok(Some(root)) => {
+                    if !self.loan_root_is_carrier(&root) {
+                        roots.push(root);
+                    }
+                }
                 Ok(None) => {}
                 Err(error) => {
                     self.reject_reason.get_or_insert(error);
@@ -5094,6 +5106,10 @@ impl<'types> Codegen<'types> {
             }
         }
         roots
+    }
+
+    fn loan_root_is_carrier(&self, root: &LoanRoot) -> bool {
+        matches!(self.locals.get(&root.value), Some(Kind::GcRef(PLACE_REFERENCE_ID)))
     }
 
     fn loan_region(root: &LoanRoot) -> witchy_wir::wir::WirExpr {
@@ -8743,7 +8759,9 @@ impl<'types> Codegen<'types> {
                 loan_roots.sort_by(|a, b| a.local.cmp(&b.local));
                 loan_roots.dedup_by(|a, b| a.local == b.local);
                 for root in loan_roots {
-                    locals.push(WirLocal { name: root.local, ty: i32t() });
+                    if !self.loan_root_is_carrier(&root) {
+                        locals.push(WirLocal { name: root.local, ty: i32t() });
+                    }
                 }
                 let mut cap_vars: Vec<&String> = lambda_inplace.iter().collect();
                 cap_vars.sort();
