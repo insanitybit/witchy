@@ -3670,7 +3670,18 @@ impl<'types> Codegen<'types> {
                     // A reborrow's checked surface result can be erased to its
                     // referent by the legacy type table.  Its executable value
                     // is nevertheless a PlaceReference carrier.
-                    let k = if matches!(value, Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }) {
+                    let k = if matches!(value, Expr::Call { name, args }
+                        if witchy_syntax::cap_ops::surface_name(name) == intrinsics::LIST_AT
+                            && args.len() == 2)
+                        && self.elem_kind_of_list_arg(value) == Kind::GcRef(PLACE_REFERENCE_ID)
+                    {
+                        // The type table may record a reference-list element as
+                        // its erased referent, but list.at's physical result is
+                        // authenticated by the source list carrier. Preserve it
+                        // on the local before resolved_type can collapse it to
+                        // the scalar i32 ABI.
+                        self.elem_kind_of_list_arg(value)
+                    } else if matches!(value, Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }) {
                         Kind::GcRef(PLACE_REFERENCE_ID)
                     } else if let Some((type_id, _, _)) = match value {
                         Expr::List(items) => self.gc_reference_list_literal_layout(value, items),
@@ -4300,10 +4311,19 @@ impl<'types> Codegen<'types> {
             .map(|p| p.name.clone());
         // Result = the normal return value, then one slot per `var` parameter
         // (moved back out to the caller).
-        let ret_kind = match &resolved_ret {
-            Some(t) => self.kind_for_type(t),
-            None => self.block_kind(renamed),
-        };
+        // The finalized function-result map is the physical ABI authority.
+        // Access analysis can retain an erased nested reference refinement for
+        // `Option(List(T))`; re-deriving the kind from that shell here would make
+        // a scalar function return a GC reference even though its registered
+        // callable ABI and body are scalar.
+        let ret_kind = self
+            .fn_ret
+            .get(&f.name)
+            .copied()
+            .unwrap_or_else(|| match &resolved_ret {
+                Some(t) => self.kind_for_type(t),
+                None => self.block_kind(renamed),
+            });
         self.cur_fn_ret_kind = ret_kind;
         self.cur_fn_ret_ty = resolved_ret.clone().or_else(|| {
             let Stmt::Expr(tail) = renamed.stmts.last()? else {

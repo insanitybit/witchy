@@ -23,6 +23,28 @@ impl Codegen<'_> {
         {
             return kind;
         }
+        // A finalized direct-call ABI is authoritative for the call result.
+        // The source-level `Option(List(T))` shell may have an erased nested
+        // qualifier and collide with a reference-list registry key; consulting
+        // that shell before the callable ABI would turn a scalar return into a
+        // GC reference.
+        if let Expr::Call { name, .. } = e
+            && intrinsics::lookup(cap_ops::surface_name(name)).is_none()
+            && let Some(kind) = self
+                .fn_ret
+                .get(name)
+                .copied()
+                .or_else(|| {
+                    let bare = name.rsplit('.').next()?;
+                    let mut matches = self.fn_ret.iter().filter_map(|(candidate, kind)| {
+                        (candidate.rsplit('.').next() == Some(bare)).then_some(*kind)
+                    });
+                    let first = matches.next()?;
+                    matches.next().is_none().then_some(first)
+                })
+        {
+            return kind;
+        }
         // Tuple literals may have been reconstructed after the address-keyed
         // type table was produced. Recover their registered carrier from the
         // item kinds before accepting an obsolete scalar fallback.

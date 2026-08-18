@@ -1244,3 +1244,64 @@ fn main(console: Console):
         "interpreter keeps scalar Result lists distinct",
     );
 }
+
+#[test]
+fn scalar_option_and_result_function_carriers_remain_scalar_beside_reference_lists() {
+    let src = r#"mode opt
+
+fn scalar_option_values() -> Option(List(String)):
+    Some(["scalar option"])
+
+fn scalar_result_values() -> Result(List(String), String):
+    Ok(["scalar result"])
+
+fn main(console: Console):
+    var first = "first"
+    let views = [&first]
+    match scalar_option_values():
+        Some(values) -> console.print(values[0])
+        None -> console.print("missing option")
+    match scalar_result_values():
+        Ok(values) -> console.print(values[0])
+        Err(error) -> console.print(error)
+    let selected = views[0]
+    console.print(*selected)
+"#;
+    let want = ["scalar option", "scalar result", "first"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves scalar function carriers");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves scalar function carriers");
+}
+
+#[test]
+fn interpreter_scalar_option_and_result_function_carriers_remain_scalar_beside_reference_lists() {
+    let src = r#"mode opt
+
+fn scalar_option_values() -> Option(List(String)):
+    Some(["scalar option"])
+
+fn scalar_result_values() -> Result(List(String), String):
+    Ok(["scalar result"])
+
+fn main(console: Console):
+    var first = "first"
+    let views = [&first]
+    match scalar_option_values():
+        Some(values) -> console.print(values[0])
+        None -> console.print("missing option")
+    match scalar_result_values():
+        Ok(values) -> console.print(values[0])
+        Err(error) -> console.print(error)
+    let selected = views[0]
+    console.print(*selected)
+"#;
+    assert_eq!(
+        link_run(src),
+        ["scalar option", "scalar result", "first"],
+        "interpreter preserves scalar function carriers",
+    );
+}
