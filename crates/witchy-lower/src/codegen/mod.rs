@@ -2166,6 +2166,13 @@ impl<'types> Codegen<'types> {
         // scratch for a registered reference-list result. Keep those carrier
         // locals available at the same function-wide boundary as tuples.
         ids.extend(self.gc_reference_list_ids.values().copied());
+        // Aggregate constructors and projections can likewise be reconstructed
+        // after annotation (notably `Option(&mut T) ?? fallback`). The
+        // reference-aware lowering still selects the registered nominal carrier
+        // ID, so every registered aggregate ID must be available in the
+        // function-local scratch ABI even when the rewritten expression no
+        // longer retains an address-keyed type-table row for that aggregate.
+        ids.extend(self.gc_aggregate_ids.values().copied());
         ids
     }
 
@@ -2320,10 +2327,62 @@ impl<'types> Codegen<'types> {
         matches!(kind, Kind::ExternRef | Kind::GcRef(_)).then_some((inner, kind))
     }
 
+    /// Recover an explicit-reference Option constructor after typeck has
+    /// erased the qualifier from the constructor's nominal result. The
+    /// function result remains authoritative while lowering a tail `if` such
+    /// as `Some(view) / None`, so use it only for the matching Option
+    /// constructors and never for an unrelated `Some` expression.
+    fn option_reference_ctor_kind(
+        &self,
+        expr: &Expr,
+        name: &str,
+        arity: usize,
+    ) -> Option<Kind> {
+        if !((name == "Some" && arity == 1) || (name == "None" && arity == 0)) {
+            return None;
+        }
+        let Some(ty) = self.ast_type_of_expr(expr) else {
+            return None;
+        };
+        if let Some((_, kind)) = self.option_reference_inner(&ty) {
+            return Some(kind);
+        }
+        let Type::Named(name, args) = ty.unqualified() else {
+            return None;
+        };
+        let Some(Type::Named(ret_name, ret_args)) = self
+            .cur_fn_ret_ty
+            .as_ref()
+            .map(Type::unqualified)
+        else {
+            return None;
+        };
+        if name != "Option"
+            || ret_name != "Option"
+            || args.len() != 1
+            || ret_args.len() != 1
+            || args[0].unqualified() != ret_args[0].unqualified()
+        {
+            return None;
+        }
+        self.cur_fn_ret_ty
+            .as_ref()
+            .and_then(|ty| self.option_reference_inner(ty).map(|(_, kind)| kind))
+    }
+
     fn reference_try_shape(&self, expr: &Expr) -> Option<ReferenceTryShape> {
         let owner = self.ast_type_of_expr(expr)?;
         if let Some((_, payload_kind)) = self.option_reference_inner(&owner) {
             return Some(ReferenceTryShape::Nullable { payload_kind });
+        }
+        // Typeck may retain only the nominal `Option(T)` shell on a rewritten
+        // call expression. If its finalized callable ABI is already a nullable
+        // reference carrier, preserve that representation instead of selecting
+        // the ordinary tagged aggregate layout for `??`.
+        if matches!(owner.unqualified(), Type::Named(name, _) if name == "Option")
+            && let kind @ Kind::GcRef(PLACE_REFERENCE_ID) = self.kind_of(expr)
+        {
+            return Some(ReferenceTryShape::Nullable { payload_kind: kind });
         }
         let Type::Named(name, _) = owner.unqualified() else {
             return None;

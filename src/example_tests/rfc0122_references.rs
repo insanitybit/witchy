@@ -170,6 +170,34 @@ fn main(console: Console):
 }
 
 #[test]
+fn wasm_first_exclusive_reference_option_return_writes_selected_owner() {
+    let src = r#"mode opt
+
+fn choose(value: &'a mut String, selected: Bool) -> Option(&'a mut String):
+    if selected:
+        Some(value)
+    else:
+        None
+
+fn main(console: Console):
+    var text = "before"
+    var fallback = "fallback"
+    let selected = choose(&mut text, true)
+    let value = selected ?? &mut fallback
+    *value = "after"
+    console.print(text)
+"#;
+    let want = ["after"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves an Option exclusive-reference carrier");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves an Option exclusive-reference carrier");
+}
+
+#[test]
 fn unique_exclusive_reference_callable_tuple_projection_preserves_its_contract_on_all_backends() {
     let src = r#"mode opt
 

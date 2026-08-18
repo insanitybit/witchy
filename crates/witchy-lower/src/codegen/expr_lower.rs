@@ -1818,8 +1818,8 @@ impl<'types> Codegen<'types> {
                 if self.specialized_layout_of_expr(e).is_some() {
                     return self.lower_packed_record_ctor(e, args);
                 }
-                if let Some(ty) = self.ast_type_of_expr(e)
-                    && let Some((_, option_kind)) = self.option_reference_inner(&ty)
+                if let Some(option_kind) =
+                    self.option_reference_ctor_kind(e, name, args.len())
                 {
                     if name == "Some" && args.len() == 1 {
                         return self.lower_expr(&args[0]);

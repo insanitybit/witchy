@@ -7,7 +7,7 @@
 //! incremental break-up of that file.
 
 use super::{name_kind, promote_kind, valtype_kind, ty_to_valtype};
-use super::{Codegen, Kind, ValType};
+use super::{Codegen, Kind, ReferenceTryShape, ValType};
 use witchy_syntax::ast::{BinOp, Block, Expr, Pattern, Stmt, Type, UnOp};
 use witchy_syntax::{cap_ops, intrinsics};
 
@@ -85,10 +85,13 @@ impl Codegen<'_> {
                 }
                 // `a ?? b` carries its payload kind (an Int payload is i64) —
                 // matching the `??` emission's branch kind.
-                BinOp::Coalesce => self
-                    .match_payload_valtype(lhs)
-                    .map(valtype_kind)
-                    .unwrap_or_else(|| self.kind_of(rhs)),
+                BinOp::Coalesce => match self.reference_try_shape(lhs) {
+                    Some(ReferenceTryShape::Nullable { payload_kind }) => payload_kind,
+                    _ => self
+                        .match_payload_valtype(lhs)
+                        .map(valtype_kind)
+                        .unwrap_or_else(|| self.kind_of(rhs)),
+                },
                 // concat (ptr) and comparisons / and / or (bool) are i32.
                 _ => Kind::I32,
             },
@@ -212,8 +215,7 @@ impl Codegen<'_> {
             Expr::Ctor { name, args }
                 if (name == "Some" && args.len() == 1) || (name == "None" && args.is_empty()) =>
             {
-                self.ast_type_of_expr(e)
-                    .and_then(|t| self.option_reference_inner(&t).map(|(_, kind)| kind))
+                self.option_reference_ctor_kind(e, name, args.len())
                     .unwrap_or(Kind::I32)
             }
             Expr::Ctor { name, .. } if self.transparent_externref_ctors.contains_key(name) => {

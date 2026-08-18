@@ -32,8 +32,8 @@
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use witchy_syntax::ast::{
-    is_lifetime_param, Block, Convention, Expr, Function, Item, Module, Param, Pattern, Stmt,
-    Type, TypeQual, UnOp,
+    is_lifetime_param, BinOp, Block, Convention, Expr, Function, Item, Module, Param, Pattern,
+    Stmt, Type, TypeQual, UnOp,
 };
 use witchy_syntax::intrinsics;
 
@@ -3318,6 +3318,15 @@ impl LoanCtx<'_> {
                     return;
                 };
                 self.collect_call_owners(&callee, args, &sig, callables, live, out);
+            }
+            Expr::Binary { op: BinOp::Coalesce, lhs, rhs } => {
+                // `Option(&mut T) ?? &mut fallback` yields the same executable
+                // reference carrier as either branch. Recover the selected
+                // source from a live aggregate binding and retain the fallback
+                // source for the other control-flow edge.
+                self.collect_alias_sources(lhs, live, out);
+                self.collect_view_owners(lhs, callables, live, out);
+                self.collect_view_owners(rhs, callables, live, out);
             }
             Expr::If { then_block, else_block, .. } => {
                 self.collect_block_result(then_block, callables, live, out);
