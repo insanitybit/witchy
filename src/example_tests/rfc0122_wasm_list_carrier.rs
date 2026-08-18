@@ -60,11 +60,14 @@ fn main(console: Console):
     console.print("${*selected}")
 "#;
 
-    assert_eq!(
-        wasm_run_reowns(src).0,
-        ["[1, 9]", "9"],
-        "compiled Wasm preserves a selected list element place through a conditional tail",
-    );
+    let want = ["[1, 9]", "9"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves a selected list element place through a conditional tail");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves a selected list element place through a conditional tail");
 }
 
 /// Keep the callable result ABI on the same compiled-Wasm-first list carrier
@@ -92,11 +95,14 @@ fn main(console: Console):
     console.print("${*selected}")
 "#;
 
-    assert_eq!(
-        wasm_run_reowns(src).0,
-        ["[1, 9]", "9"],
-        "compiled Wasm preserves a conditional list place through a function value",
-    );
+    let want = ["[1, 9]", "9"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves a conditional list place through a function value");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves a conditional list place through a function value");
 }
 
 #[test]
