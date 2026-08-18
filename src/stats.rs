@@ -1,7 +1,7 @@
 //! RFC-0030: deterministic optimization counters (`witchy stats`).
 //!
 //! Compile a program and run it under the active [`crate::opt`] (`WITCHY_OPT`)
-//! setting, returning exact operation *counts* — not timings — so an
+//! setting, returning exact operation *counts* plus an opt-in timing view so an
 //! optimization's effect is a unit-testable fact rather than a flaky benchmark.
 //! A forced-copy run (`WITCHY_OPT=-inplace`) re-owns at every accumulation site
 //! and allocates O(n^2) heap; an in-place run re-owns far fewer times and
@@ -11,6 +11,7 @@
 
 use witchy_runtime::runtime::{Capabilities, Runtime};
 use witchy_lower::codegen;
+use std::time::Instant;
 #[cfg(test)]
 use witchy_types::typeck;
 
@@ -85,14 +86,37 @@ pub struct Stats {
     pub loan_subset_edges: usize,
 }
 
+/// Deterministic counters plus one measured compiler/runtime sample.
+///
+/// `Stats` remains the stable counter-only API. Timings are deliberately kept
+/// in this separate result so callers that compare optimization facts do not
+/// accidentally make wall-clock measurements part of deterministic tests.
+#[derive(Debug, Clone)]
+pub struct TimedStats {
+    pub stats: Stats,
+    /// Microseconds spent resolving, checking, and publishing loan facts.
+    pub checker_time_us: u128,
+    /// Microseconds spent executing the compiled Wasm sample.
+    pub execution_time_us: u128,
+}
+
 /// Compile `src` (resolved against the bundled std) and run it under the active
 /// `WITCHY_OPT` setting, returning its deterministic counters. The program must
 /// need nothing beyond `Console` (the stats corpus is pure compute).
 pub fn compute(src: &str) -> Result<Stats, String> {
+    compute_timed(src).map(|timed| timed.stats)
+}
+
+/// Compile and run a stats corpus while retaining measured checker and
+/// execution durations for performance reports. The returned counters remain
+/// deterministic; callers must treat the two duration fields as measurements.
+pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
+    let checker_started = Instant::now();
     let checked = crate::resolve_std_only_checked(src).map_err(|error| error.to_string())?;
     let loan_telemetry = witchy_types::loans::facts(checked.module())
         .map_err(|error| error.message)?
         .telemetry();
+    let checker_time_us = checker_started.elapsed().as_micros();
     let bytes = match codegen::compile_checked_module_binary(&checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
@@ -103,8 +127,10 @@ pub fn compute(src: &str) -> Result<Stats, String> {
     let mut vm = rt
         .spawn(&bytes, caps, STATS_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
+    let execution_started = Instant::now();
     vm.run().map_err(|e| e.root_cause().to_string())?;
-    Ok(Stats {
+    let execution_time_us = execution_started.elapsed().as_micros();
+    let stats = Stats {
         output: vm.output(),
         heap_bytes: vm.heap_bytes().unwrap_or(0),
         reowns: vm.reowns().unwrap_or(0),
@@ -136,6 +162,11 @@ pub fn compute(src: &str) -> Result<Stats, String> {
         loan_shell_mutations: loan_telemetry.shell_mutations,
         loan_control_flow_edges: loan_telemetry.control_flow_edges,
         loan_subset_edges: loan_telemetry.subset_edges,
+    };
+    Ok(TimedStats {
+        stats,
+        checker_time_us,
+        execution_time_us,
     })
 }
 
@@ -143,6 +174,15 @@ pub fn compute(src: &str) -> Result<Stats, String> {
 mod tests {
     use super::*;
     use witchy_syntax::opt::{self, Opt, OptSet};
+
+    #[test]
+    fn timed_stats_keep_durations_separate_from_deterministic_counters() {
+        let timed = compute_timed("fn main(console: Console):\n    console.print(\"ok\")\n")
+            .expect("measure a small stats fixture");
+        assert_eq!(timed.stats.output, ["ok"]);
+        assert!(timed.checker_time_us > 0);
+        assert!(timed.execution_time_us > 0);
+    }
 
     #[test]
     fn ownership_and_layout_counters_default_to_zero_without_boundaries() {

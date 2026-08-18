@@ -119,11 +119,10 @@ pub(crate) fn run() -> wasmtime::Result<()> {
     // file, inside a project, it analyzes the project's entry module (the
     // whole dependency tree's footprint is `witchy audit`).
     // `witchy stats <file>` (RFC-0030) compiles + runs a Console program and
-    // prints its deterministic optimization counters under the active WITCHY_OPT
-    // setting — exact counts (heap-frontier bytes, in-place re-owns, region
-    // copy-out bytes), not timings, so an optimization's effect is a checkable
-    // fact. Diff two runs (e.g. `WITCHY_OPT=all` vs `WITCHY_OPT=-inplace`) to see
-    // an optimization fire.
+    // prints its deterministic optimization counters and measured checker/
+    // execution durations under the active WITCHY_OPT setting. Diff two runs
+    // (e.g. `WITCHY_OPT=all` vs `WITCHY_OPT=-inplace`) to see an optimization
+    // fire; treat the duration fields as performance samples, not exact facts.
     if std::env::args().nth(1).as_deref() == Some("stats") {
         let Some(path) = std::env::args().nth(2) else {
             eprintln!("usage: witchy stats <file>   (counters honor WITCHY_OPT)");
@@ -150,8 +149,11 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 std::process::exit(1);
             }
         }
-        match witchy::stats::compute(&src) {
-            Ok(s) => {
+        match witchy::stats::compute_timed(&src) {
+            Ok(timed) => {
+                let s = timed.stats;
+                println!("checker_time_us {}", timed.checker_time_us);
+                println!("execution_time_us {}", timed.execution_time_us);
                 println!("heap_bytes {}", s.heap_bytes);
                 println!("reowns {}", s.reowns);
                 println!("indirect_ownership_calls {}", s.indirect_ownership_calls);
