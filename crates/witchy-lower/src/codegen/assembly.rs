@@ -2061,9 +2061,18 @@ fn register_module_items(
     // the `(ref null $s)` ABI at call sites.
     for item in &module.items {
         if let Item::Function(f) = item {
-            let ret = f.ret.as_ref().map(|t| cg.kind_for_type(t)).unwrap_or(Kind::I32);
+            // Async lowering creates ordinary segment functions with `ret: None`.
+            // Their finalized access declaration still carries the concrete Task
+            // result, so do not let this late registry refresh erase that GC kind
+            // back to the legacy i32 fallback.
+            let resolved_ret = cg
+                .access_facts
+                .declaration(&f.name)
+                .map(|signature| signature.result().ty())
+                .or(f.ret.as_ref());
+            let ret = resolved_ret.map(|t| cg.kind_for_type(t)).unwrap_or(Kind::I32);
             cg.fn_ret.insert(f.name.clone(), ret);
-            if let Some(Type::Fn(_, cret, _)) = &f.ret {
+            if let Some(Type::Fn(_, cret, _)) = resolved_ret {
                 cg.fn_ret_closure_kind.insert(f.name.clone(), cg.kind_for_type(cret));
             }
         }
