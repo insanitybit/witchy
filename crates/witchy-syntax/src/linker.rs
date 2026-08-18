@@ -4929,6 +4929,26 @@ mod tests {
     }
 
     #[test]
+    fn normal_from_import_rejects_a_nested_reference_bearing_export() {
+        let api = crate::parser::parse_module(
+            "mode opt\n\ntype Pair('a, 'b):\n    left: &'a String\n    right: &'b String\n\npub fn make(left: &'a String, right: &'b String) -> Option(List(Pair('a, 'b))):\n    Some([Pair(left, right)])\n",
+        )
+        .expect("nested reference-bearing opt API parses");
+        let normal = crate::parser::parse_module(
+            "from api import make\n\nfn main():\n    var left = \"left\"\n    var right = \"right\"\n    make(&left, &right)\n",
+        )
+        .expect("normal from-import caller parses before interface filtering");
+
+        let error = link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect_err("from-import must not expose a nested reference-bearing opt export");
+        assert!(error.message.contains("reference-bearing opt API `api.make`"), "{}", error.message);
+    }
+
+    #[test]
     fn linker_repairs_constructors_for_imports_added_after_parsing() {
         let lib = crate::parser::parse_module(
             "type Choice:\n    Pick(Int)\n",
