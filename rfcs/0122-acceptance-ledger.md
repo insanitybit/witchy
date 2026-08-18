@@ -144,6 +144,7 @@ Wasm-first result is executable progress, not completion.
 
 | acceptance row | executable evidence | status |
 | --- | --- | --- |
+| 3 normal interface filtering | `loans_tests::normal_callers_reject_nested_nominal_reference_exports` rejects an opt export returning `Option(List(Pair(&'a mut String, &'b mut String)))` before a normal caller can observe the hidden reference contract | focused checker/link slice passes; no interpreter parity debt applies to this rejection-only boundary |
 | 12 exclusive loans | `exclusive_reference_loop_reborrow_writes_and_restores_parent_on_all_backends` exercises a loop-carried `&mut` reborrow, mutation through the child, explicit child discard, parent write-back, interpreter execution, optimized Wasm, and forced-copy Wasm | focused slice passes; retain post-freeze differential debt above |
 | 17 CFG precision | `exclusive_reference_loop_reborrow_writes_and_restores_parent_on_all_backends` plus `loop_reborrow_discard_restores_the_parent_at_the_back_edge` cover nested-scope reborrow transfer and loop back-edge restoration | focused checker/runtime slice passes; full CFG matrix remains open |
 | 19 interpreter/Wasm parity | `exclusive_reference_loop_reborrow_writes_and_restores_parent_on_all_backends` produces `after` identically on interpreter, optimized Wasm, and forced-copy Wasm | focused differential passes; retain post-freeze ABI debt above |
