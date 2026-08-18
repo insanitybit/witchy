@@ -191,6 +191,20 @@ fn rfc0122_generic_mutable_to_shared_aggregate_resumes_owner_after_final_use_on_
     assert_eq!(forced_copy, want, "forced-copy Wasm resumes a generic aggregate owner after shared final use");
 }
 
+#[test]
+fn rfc0122_generic_shared_aggregate_function_value_copy_destructure_and_owner_resume_on_all_backends() {
+    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn share(value: &'a mut a) -> &'a a:\n    value\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let project = share\n    let observed = project(&mut pair)\n    let copied = observed\n    let snapshot = *copied\n    let Pair(left, right) = snapshot\n    console.print(\"${left}:${right}\")\n    pair = Pair(3, 4)\n    console.print(\"${pair}\")\n";
+    let want = ["1:2", "Pair(3, 4)"];
+    assert_eq!(link_run(src), want, "interpreter preserves generic aggregate function-value copy and destructure");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves generic aggregate function-value copy and destructure");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves generic aggregate function-value copy and destructure");
+}
+
     /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
     /// Materializing the view ends the loan, but the resulting owned snapshot
     /// must remain independent when the original owner mutates afterward.
