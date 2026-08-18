@@ -198,6 +198,32 @@ fn main(console: Console):
 }
 
 #[test]
+fn interpreter_exclusive_reference_option_return_writes_selected_owner() {
+    let src = r#"mode opt
+
+fn choose(value: &'a mut String, selected: Bool) -> Option(&'a mut String):
+    if selected:
+        Some(value)
+    else:
+        None
+
+fn main(console: Console):
+    var text = "before"
+    var fallback = "fallback"
+    let selected = choose(&mut text, true)
+    let value = selected ?? &mut fallback
+    *value = "after"
+    console.print(text)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["after"],
+        "interpreter preserves a nullable Option exclusive-reference carrier",
+    );
+}
+
+#[test]
 fn wasm_first_exclusive_reference_result_return_writes_selected_owner() {
     let src = r#"mode opt
 
@@ -223,6 +249,32 @@ fn main(console: Console):
     codegen::set_force_copy_for_tests(None);
     assert_eq!(optimized, want, "optimized Wasm preserves a Result exclusive-reference carrier");
     assert_eq!(forced_copy, want, "forced-copy Wasm preserves a Result exclusive-reference carrier");
+}
+
+#[test]
+fn interpreter_exclusive_reference_result_return_writes_selected_owner() {
+    let src = r#"mode opt
+
+fn choose(value: &'a mut String, selected: Bool) -> Result(&'a mut String, String):
+    if selected:
+        Ok(value)
+    else:
+        Err("not selected")
+
+fn main(console: Console):
+    var text = "before"
+    var fallback = "fallback"
+    let selected = choose(&mut text, true)
+    let value = selected ?? &mut fallback
+    *value = "after"
+    console.print(text)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["after"],
+        "interpreter preserves a tagged Result exclusive-reference carrier",
+    );
 }
 
 #[test]
