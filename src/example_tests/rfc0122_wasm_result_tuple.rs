@@ -172,6 +172,73 @@ fn main(console: Console):
 }
 
 #[test]
+fn interpreter_exclusive_reference_result_tuple_match_writes_both_owners() {
+    let src = r#"mode opt
+
+fn choose(
+    left: &'a mut String,
+    right: &'a mut String,
+    selected: Bool,
+) -> Result((&'a mut String, &'a mut String), String):
+    if selected:
+        Ok((left, right))
+    else:
+        Err("not selected")
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(&mut first, &mut second, true)
+    match selected:
+        Ok(pair) ->
+            let (left, right) = pair
+            *left = "left updated"
+            *right = "right updated"
+        Err(_) -> console.print("unexpected")
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["left updated", "right updated"],
+        "interpreter preserves a tagged Result tuple carrier",
+    );
+}
+
+#[test]
+fn interpreter_exclusive_reference_result_list_match_projects_and_writes() {
+    let src = r#"mode opt
+
+fn choose(
+    left: &'a mut String,
+    right: &'a mut String,
+) -> Result(List((&'a mut String, &'a mut String)), String):
+    Ok([(left, right)])
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(&mut first, &mut second)
+    match selected:
+        Ok(values) ->
+            let pair = values[0]
+            let (left, right) = pair
+            *left = "left updated"
+            *right = "right updated"
+        Err(_) -> console.print("unexpected")
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["left updated", "right updated"],
+        "interpreter preserves a tagged Result list tuple carrier",
+    );
+}
+
+#[test]
 fn interpreter_exclusive_reference_option_list_none_branch_preserves_owners() {
     let src = r#"mode opt
 
