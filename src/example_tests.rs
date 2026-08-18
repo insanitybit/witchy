@@ -734,11 +734,13 @@
     /// counters exported by the compiled module. Boundary and ordinary
     /// accumulation counters are separate: the former proves whether a
     /// normal caller needed a repair adapter, while the latter records a
-    /// runtime detach/copy caused by an owner mutation.
+    /// runtime detach/copy caused by an owner mutation. The two boundary
+    /// counters are returned separately so fixtures can prove that a repair
+    /// event is accounted for exactly once rather than inferred from output.
     fn run_linked_on_wasm_ownership_counters(
         sources: &[(&str, &str)],
         entry: &str,
-    ) -> (Vec<String>, i64, i64) {
+    ) -> (Vec<String>, i64, i64, i64) {
         use crate::runtime::{Capabilities, Runtime};
         let mods: Vec<(String, ast::Module)> = sources
             .iter()
@@ -761,6 +763,7 @@
             actor.output(),
             actor.reowns().unwrap_or(0),
             actor.boundary_reown_copies().unwrap_or(0),
+            actor.ownership_token_repairs().unwrap_or(0),
         )
     }
 

@@ -554,10 +554,11 @@ fn main(console: Console):
             expected,
             "compiled code detaches the ordinary result before owner mutation",
         );
-        let (compiled, reowns, boundary_repairs) =
+        let (compiled, reowns, boundary_repairs, token_repairs) =
             run_linked_on_wasm_ownership_counters(&[("api", api), ("app", app)], "app");
         assert_eq!(compiled, expected);
         assert_eq!(boundary_repairs, 0, "an owned normal result needs no boundary repair");
+        assert_eq!(token_repairs, 0, "an owned normal result needs no token repair");
         assert_eq!(reowns, 1, "owner mutation detaches the result exactly once");
     }
 
@@ -602,6 +603,12 @@ fn main(console: Console):
             expected,
             "compiled backend performs the same repair and write-back",
         );
+        let (compiled, reowns, boundary_repairs, token_repairs) =
+            run_linked_on_wasm_ownership_counters(&[("api", api), ("app", app)], "app");
+        assert_eq!(compiled, expected);
+        assert_eq!(reowns, 1, "boundary repair performs one copy-backed re-own");
+        assert_eq!(boundary_repairs, 1, "the normal alias crosses one repair boundary");
+        assert_eq!(token_repairs, 1, "the repair reconstructs one ownership token");
     }
 
 /// The generated normal-mode repair entry is an ABI adapter, not a second
