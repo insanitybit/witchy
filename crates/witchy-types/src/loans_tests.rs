@@ -896,6 +896,31 @@
     }
 
     #[test]
+    fn normal_callers_reject_nested_nominal_reference_exports() {
+        let api = witchy_syntax::parser::parse_module(
+            "mode opt\n\ntype Pair('a, 'b):\n    left: &'a mut String\n    right: &'b mut String\n\npub fn make(left: &'a mut String, right: &'b mut String) -> Option(List(Pair('a, 'b))):\n    Some([Pair(left, right)])\n",
+        )
+        .expect("parse nested nominal opt API");
+        let main = witchy_syntax::parser::parse_module(
+            "import api\n\nfn main():\n    var left = \"left\"\n    var right = \"right\"\n    let value = api.make(&mut left, &mut right)\n",
+        )
+        .expect("parse normal nested nominal caller");
+        let linked = witchy_syntax::linker::link(
+            vec![("main".into(), main), ("api".into(), api)],
+            "main",
+            no_comptime,
+        )
+        .map_err(|error| crate::typeck::TypeError { message: error.to_string() });
+        let error = match linked {
+            Err(error) => error.to_string(),
+            Ok(linked) => check(&linked)
+                .expect_err("normal interface must reject nested nominal references")
+                .to_string(),
+        };
+        assert!(error.contains("reference-bearing opt API `api.make`"), "{error}");
+    }
+
+    #[test]
     fn normal_callers_reject_callable_fields_that_hide_reference_contracts() {
         let api = witchy_syntax::parser::parse_module(
             "mode opt\n\n\
