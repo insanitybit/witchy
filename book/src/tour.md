@@ -46,6 +46,7 @@ The tour is organized as follows:
 Every `witchy` code block in the book is checked. Complete non-negative examples
 are also executed through the browser host and receive a Run button when their
 authority has an honest browser provider. Each click runs in a fresh
-opaque-origin frame under grant-derived CSP. Partial declarations, deliberate
-errors, and examples requiring native-only authority remain read-only and
+opaque-origin frame under grant-derived CSP. Partial declarations use a
+`witchy-static` fence so they highlight but are not executed. Deliberate
+errors and examples requiring native-only authority remain read-only and
 include the grant needed to run them locally.

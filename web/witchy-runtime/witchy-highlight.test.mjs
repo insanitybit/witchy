@@ -30,6 +30,7 @@ ok(hRef.replace(/<[^>]+>/g, "") === escapeHtml(reference), "reference syntax rec
 const h2 = highlightWitchy("grantable capability UiRoot:");
 ok(h2.includes('<span class="t-kw">grantable</span>'), "`grantable` is a keyword");
 ok(h2.includes('<span class="t-kw">capability</span>'), "`capability` is a keyword");
+ok(highlightWitchy("mode opt").includes('<span class="t-kw">mode</span>'), "`mode` is a keyword");
 ok(h2.includes('<span class="t-type">UiRoot</span>'), "the capability name is a type");
 
 // `${…}` interpolation is coloured distinctly inside a string.

@@ -5,7 +5,7 @@ Normal files remain reference-free: they use owned values and the conventional
 `let`, `var`, `own`, and `move` call vocabulary. A file opts into explicit
 references with a leading directive:
 
-```text
+```witchy-static
 mode opt
 ```
 
@@ -14,6 +14,23 @@ This chapter is the user-facing guide to the complete RFC-0122 feature set. The
 passes and counters. The [RFC-0122 acceptance
 ledger](https://github.com/insanitybit/witchy/blob/master/rfcs/0122-acceptance-ledger.md)
 records the executable evidence for each criterion.
+
+A complete program that returns a shared reference through a named lifetime:
+
+```witchy
+mode opt
+
+fn first(let text: &'a String) -> &'a String:
+    text
+
+fn main(console: Console):
+    let text = "hello"
+    console.print("${*first(&text)}")
+```
+
+```text
+hello
+```
 
 The repository's `scratch/learn-witchy-2026-08-18/` learning corpus is useful
 for trying these forms, but the acceptance ledger remains the implementation
@@ -39,7 +56,7 @@ store a source reference. It also cannot be rejected because an internal
 optimization loan was difficult to prove. A normal call into an opt module uses
 the same value-oriented signature as any other call:
 
-```text
+```witchy-static
 fn inspect(let text: String) -> Int
 fn normalize(var text: String) -> Nil
 fn digest(own text: String) -> Digest
@@ -55,7 +72,7 @@ mode-boundary diagnostic before lifetime or loan analysis begins.
 
 The two reference kinds are:
 
-```text
+```witchy-static
 &'a T          shared, read-only access valid for 'a
 &'a mut T      exclusive, mutable access valid for 'a
 ```
@@ -63,7 +80,7 @@ The two reference kinds are:
 Every lifetime written in an opt-mode declaration is explicit. Borrow
 expressions infer their local lifetime:
 
-```text
+```witchy-static
 fn first(text: &'a String) -> &'a String:
     text
 
@@ -83,7 +100,7 @@ read and written for a lifetime.
 Borrow expressions require stable places such as locals, parameters,
 dereferences, fields, tuple elements, or checked projections:
 
-```text
+```witchy-static
 let text = make_string()
 let view = &text
 let field = &mut account.name
@@ -93,14 +110,14 @@ let item = &items.at(index)
 Borrowing an unbound temporary is rejected. Bind the owner first rather than
 depending on a temporary-lifetime extension:
 
-```text
+```witchy-static
 let bad = &make_string()       // error: bind the owner first
 ```
 
 Dereference and projection operate on the same logical place. Reading through
 either kind is allowed; assignment through a shared reference is not:
 
-```text
+```witchy-static
 fn clear(text: &'a mut String) -> Nil:
     *text = ""
 
@@ -117,7 +134,7 @@ Shared references are copyable handles to read-only access. Several overlapping
 shared references may coexist, but the owner cannot be moved, consumed,
 reassigned, mutated, dropped, or mutably borrowed while one remains live:
 
-```text
+```witchy-static
 var text = "hello"
 let left = &text
 let right = &text
@@ -129,7 +146,7 @@ text = "done"                 // valid after both final uses
 Exclusive references are affine. They grant read and write access to one place,
 exclude overlapping access, and may be moved but never copied:
 
-```text
+```witchy-static
 var text = "hello"
 let editable = &mut text
 editable.push("!")
@@ -145,7 +162,7 @@ An exclusive reference passed to an ordinary parameter is reborrowed for that
 call. The outer reference is suspended only for the returned reborrow's live
 duration:
 
-```text
+```witchy-static
 fn append_mark(text: &'call mut String) -> Nil:
     text.push("!")
 
@@ -163,7 +180,7 @@ not consume its owner.
 An exclusive reference can be shortened to a shared reference. The exclusive
 capability is not recoverable through that shared result:
 
-```text
+```witchy-static
 fn finish(text: &'a mut String) -> &'a String:
     text.trim_in_place()
     text
@@ -176,7 +193,7 @@ fn inspect_then_edit(text: &'outer mut String) -> Nil:
 
 An exclusive projection can also return an exclusive reference to a field:
 
-```text
+```witchy-static
 fn name(account: &'a mut Account) -> &'a mut String:
     &mut account.name
 ```
@@ -189,7 +206,7 @@ general outlives clause in this model.
 
 Distinct lifetime names express independent result dependencies:
 
-```text
+```witchy-static
 fn left(left: &'left String, right: &'right String) -> &'left String:
     left
 ```
@@ -202,7 +219,7 @@ disjoint; unknown overlap remains an error.
 
 Nominal lifetime parameters are retained only for relations stored in fields:
 
-```text
+```witchy-static
 type Parser('input):
     input: &'input String
     offset: Int
@@ -219,7 +236,7 @@ fields.
 
 Reference placement identifies the borrowed storage precisely:
 
-```text
+```witchy-static
 List(&'input Token)             // owned list of shared references
 &'list List(Token)              // shared reference to list storage
 &'list mut List(Token)          // exclusive reference to list storage
@@ -236,7 +253,7 @@ transport preserve the carrier rather than recovering a place from syntax.
 
 References apply directly to type variables:
 
-```text
+```witchy-static
 fn identity(value: &'a t) -> &'a t:
     value
 
@@ -256,7 +273,7 @@ the unforgeable lease with the data relation.
 Reference kind, lifetime relation, affinity, and parameter convention are part
 of callable identity:
 
-```text
+```witchy-static
 fn(own String) -> String
 fn(let String) -> Int
 fn(&'a String) -> &'a String
@@ -294,7 +311,7 @@ use the reference type directly.
 
 An opt module may publish conventional value-oriented functions to normal code:
 
-```text
+```witchy-static
 mode opt
 
 pub fn inspect(let text: String) -> Int:
@@ -410,7 +427,7 @@ generated adapters, aggregate construction, returns, and reborrows. Lowering
 never recovers a caller place from the spelling of an argument after a call.
 The access envelope is conceptually:
 
-```text
+```witchy-static
 (explicit arguments, value ownership inputs, reference access inputs)
     -> (ordinary result, var write-backs, ownership outputs, result references)
 ```

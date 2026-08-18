@@ -1,11 +1,11 @@
 // Progressive host for runnable Witchy fences in the statically published book.
 // The application HTML and Glamour islands are already complete; this module
 // runs only on routes whose checked output contains a runnable host marker.
-import { enhanceRunnableCells } from "./witchy-runnable.js";
+import { enhanceRunnableCells, enhanceStaticSlots } from "./witchy-runnable.js";
 import { createSandboxedProgramRunner } from "./witchy-cell-sandbox.js";
 import { assetUrl } from "./docs-asset-url.js";
 import { fetchWasm } from "./wasm-fetch.js";
-import { highlightWitchy } from "./witchy-highlight.js";
+import { highlightWitchy, highlightShell, highlightToml } from "./witchy-highlight.js";
 import { DOCS_SANDBOX_RUN_OPTIONS } from "./docs-run-options.js";
 
 const here = import.meta.url;
@@ -32,6 +32,11 @@ if (document.querySelector("script[data-witchy-islands]")
     );
   });
 }
+enhanceStaticSlots(document.body, {
+  highlight: highlightWitchy,
+  highlightShell,
+  highlightToml,
+});
 enhanceRunnableCells(document.body, {
   runProgram,
   highlight: highlightWitchy,

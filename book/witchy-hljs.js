@@ -7,7 +7,7 @@
       keyword:
         "fn let var if else match for in while return break continue type " +
         "trait impl actor on import pub own move spawn where as " +
-        "gen yield",
+        "gen yield mode async await sealed capability grantable mut",
       literal: "true false",
       built_in:
         // capability ops + common builtins, so calls read clearly

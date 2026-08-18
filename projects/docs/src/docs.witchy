@@ -202,7 +202,7 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
         // live (via the book's own glamour-dom runtime, network denied).
 
         // `text` (program output / diagrams) and untagged fences stay
-        // as plain styled blocks — not code to syntax-highlight.
+        // as plain styled blocks. Source fragments use `witchy-static`.
         Element(tag, _attrs, kids) ->
             if tag == "pre" && kids.length() == 1:
                 match kids.at(0):
@@ -215,6 +215,12 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
                                     embed_region(runner.interactive_runner(code))
                                 else:
                                     glamour.slot("witchy-static", code)
+                            else if lang == "witchy-static":
+                                // Highlighted fragments that are not executed
+                                // programs. The example harness only extracts
+                                // ```witchy fences, so these stay out of the
+                                // runnable census.
+                                glamour.slot("witchy-static", code)
                             else if lang == "sh":
                                 glamour.slot("shell-static", code)
                             else if lang == "toml":

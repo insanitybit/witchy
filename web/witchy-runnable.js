@@ -339,6 +339,48 @@ export function staticSlot(opts = {}) {
  * `pre>code.language-witchy` or a compiler-emitted `witchy-runnable` host marker
  * under `root` and REPLACE it with a runnable cell. Idempotent and DOM-agnostic.
  */
+const STATIC_SLOT_KINDS = new Set(["witchy-static", "shell-static", "toml-static"]);
+
+/**
+ * Paint compiler-emitted static highlight slots (`data-glamour-slot-kind`) and
+ * `pre>code.language-witchy-static` fences. Used on published pages after the
+ * host loader starts. Does not create Run cells.
+ */
+export function enhanceStaticSlots(root, opts = {}) {
+  const highlight = typeof opts.highlight === "function" ? opts.highlight : null;
+  const highlightShell = typeof opts.highlightShell === "function" ? opts.highlightShell : null;
+  const highlightToml = typeof opts.highlightToml === "function" ? opts.highlightToml : null;
+  const paint = (node, fn, source) => {
+    if (!fn || !("innerHTML" in node)) {
+      if (!node.childNodes || node.childNodes.length === 0) {
+        node.appendChild((opts.document || node.ownerDocument).createTextNode(source));
+      }
+      return;
+    }
+    node.innerHTML = fn(source);
+  };
+  const visit = (node) => {
+    if (typeof node.getAttribute === "function") {
+      const kind = node.getAttribute("data-glamour-slot-kind");
+      if (STATIC_SLOT_KINDS.has(kind)) {
+        const source = node.textContent || "";
+        const code = node.childNodes && node.childNodes[0];
+        const target = code && isCode(code) ? code : node;
+        if (kind === "witchy-static") paint(target, highlight, source);
+        else if (kind === "shell-static") paint(target, highlightShell, source);
+        else if (kind === "toml-static") paint(target, highlightToml, source);
+        return;
+      }
+    }
+    if (isCode(node) && classOf(node).split(/\s+/).includes("language-witchy-static")) {
+      paint(node, highlight, node.textContent || "");
+      return;
+    }
+    for (const child of node.childNodes || []) visit(child);
+  };
+  visit(root);
+}
+
 export function enhanceRunnableCells(root, opts = {}) {
   const doc = opts.document || (typeof document !== "undefined" ? document : null);
   if (!doc) throw new Error("witchy-runnable: no `document` (pass opts.document)");

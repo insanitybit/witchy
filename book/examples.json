@@ -1953,6 +1953,20 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/opt-mode-references.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "hello"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
