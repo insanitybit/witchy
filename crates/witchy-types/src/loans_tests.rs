@@ -583,6 +583,39 @@
     }
 
     #[test]
+    fn exclusive_reference_coalesce_transfers_the_selected_handle() {
+        check_str(
+            "mode opt\n\n\
+             fn select(value: &'a mut String, selected: Bool) -> Option(&'a mut String):\n\
+             \x20   if selected:\n\
+             \x20       Some(value)\n\
+             \x20   else:\n\
+             \x20       None\n\n\
+             fn main():\n\
+             \x20   var text = \"before\"\n\
+             \x20   var fallback = \"fallback\"\n\
+             \x20   let selected = select(&mut text, true)\n\
+             \x20   let value = selected ?? &mut fallback\n\
+             \x20   *value = \"after\"\n",
+        )
+        .expect("coalescing an exclusive Option transfers its selected handle");
+
+        let err = check_str(
+            "mode opt\n\n\
+             fn select(value: &'a mut String, selected: Bool) -> Option(&'a mut String):\n\
+             \x20   Some(value)\n\n\
+             fn main():\n\
+             \x20   var text = \"before\"\n\
+             \x20   var fallback = \"fallback\"\n\
+             \x20   let selected = select(&mut text, true)\n\
+             \x20   let value = selected ?? &mut fallback\n\
+             \x20   let again = selected ?? &mut fallback\n",
+        )
+        .expect_err("coalescing consumes the selected exclusive handle");
+        assert!(err.contains("moved exclusive reference `selected`") || err.contains("used more than once"), "{err}");
+    }
+
+    #[test]
     fn mutable_reborrow_suspends_and_then_restores_its_parent_handle() {
         let err = check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"before\"\n    let parent = &mut text\n    let child = &mut *parent\n    *parent = \"blocked\"\n    console.print(*child)\n",

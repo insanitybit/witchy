@@ -2199,6 +2199,16 @@ impl LoanCtx<'_> {
                 }
                 _ => Vec::new(),
             };
+            // Coalescing consumes an exclusive left-hand carrier when it is
+            // selected. Its owner relation is transferred to the result
+            // binding below, so do not report that same relation as an
+            // overlapping `&mut` while constructing the coalesced value.
+            let coalesced_exclusive = match stmt {
+                Stmt::Let { value, .. } => {
+                    self.coalesced_exclusive_arguments(value, &local)
+                }
+                _ => Vec::new(),
+            };
             let live: Vec<Loan> = inherited
                 .iter()
                 .filter(|loan| !suspended_inherited.contains(&loan.view))
@@ -2212,6 +2222,8 @@ impl LoanCtx<'_> {
                         && loan.kind == BorrowKind::Exclusive)
                         && !(loan.kind == BorrowKind::Exclusive
                             && relinquished_exclusive.iter().any(|name| name == &loan.view))
+                        && !(loan.kind == BorrowKind::Exclusive
+                            && coalesced_exclusive.iter().any(|name| name == &loan.view))
                 })
                 .cloned()
                 .collect();
@@ -2357,6 +2369,9 @@ impl LoanCtx<'_> {
                         suspended_exclusive.insert(source.clone(), (name.clone(), reborrowed[0].clone()));
                         continue;
                     }
+                }
+                for source in &coalesced_exclusive {
+                    moved_exclusive.insert(source.clone());
                 }
                 // Extracting a fixed element/field from an affine aggregate
                 // transfers only the selected owner contributions to the new
@@ -3633,6 +3648,28 @@ impl LoanCtx<'_> {
             }
         }
         result
+    }
+
+    /// Names of exclusive handles consumed by the left side of a coalesce.
+    /// `selected ?? fallback` transfers the selected handle to the result
+    /// binding when the left side is present; the fallback is an independent
+    /// source and remains available for the other branch.
+    fn coalesced_exclusive_arguments(&self, value: &Expr, live: &[Loan]) -> Vec<String> {
+        let Expr::Binary { op: BinOp::Coalesce, lhs, .. } = value else {
+            return Vec::new();
+        };
+        let Expr::Var(name) = lhs.as_ref() else {
+            return Vec::new();
+        };
+        live.iter()
+            .filter(|loan| loan.view == *name && loan.kind == BorrowKind::Exclusive)
+            .map(|loan| loan.view.clone())
+            .fold(Vec::new(), |mut names, name| {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+                names
+            })
     }
 
     fn push_source(&self, source: BorrowSource, out: &mut Vec<BorrowSource>) {
