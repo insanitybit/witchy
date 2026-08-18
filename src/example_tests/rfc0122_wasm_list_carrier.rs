@@ -370,6 +370,80 @@ fn main(console: Console):
 }
 
 #[test]
+fn wasm_first_exclusive_reference_option_nominal_list_none_branch_preserves_owners() {
+    let src = r#"mode opt
+
+type Pair('a, 'b):
+    left: &'a mut String
+    right: &'b mut String
+
+fn choose(
+    enabled: Bool,
+    left: &'a mut String,
+    right: &'b mut String,
+) -> Option(List(Pair('a, 'b))):
+    if enabled:
+        Some([Pair(left, right)])
+    else:
+        None
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(false, &mut first, &mut second)
+    match selected:
+        Some(_) -> console.print("unexpected")
+        None -> console.print("none")
+    console.print(first)
+    console.print(second)
+"#;
+    let want = ["none", "first", "second"];
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves a None nominal list carrier");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves a None nominal list carrier");
+}
+
+#[test]
+fn interpreter_exclusive_reference_option_nominal_list_none_branch_preserves_owners() {
+    let src = r#"mode opt
+
+type Pair('a, 'b):
+    left: &'a mut String
+    right: &'b mut String
+
+fn choose(
+    enabled: Bool,
+    left: &'a mut String,
+    right: &'b mut String,
+) -> Option(List(Pair('a, 'b))):
+    if enabled:
+        Some([Pair(left, right)])
+    else:
+        None
+
+fn main(console: Console):
+    var first = "first"
+    var second = "second"
+    let selected = choose(false, &mut first, &mut second)
+    match selected:
+        Some(_) -> console.print("unexpected")
+        None -> console.print("none")
+    console.print(first)
+    console.print(second)
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["none", "first", "second"],
+        "interpreter preserves owners when an Option nominal list is None",
+    );
+}
+
+#[test]
 fn unique_exclusive_reference_nominal_field_move_and_write_work_on_all_backends() {
     let src = r#"mode opt
 
