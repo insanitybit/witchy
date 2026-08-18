@@ -1138,3 +1138,23 @@ fn main(console: Console):
     assert_eq!(optimized, want, "optimized Wasm keeps scalar and reference lists distinct");
     assert_eq!(forced_copy, want, "forced-copy Wasm keeps scalar and reference lists distinct");
 }
+
+#[test]
+fn interpreter_scalar_list_remains_scalar_when_a_reference_list_has_the_same_element_type() {
+    let src = r#"mode opt
+
+fn main(console: Console):
+    var first = "first"
+    let views = [&first]
+    let scalar_values = ["scalar"]
+    let view = views[0]
+    let scalar = scalar_values[0]
+    console.print(*view)
+    console.print(scalar)
+"#;
+    assert_eq!(
+        link_run(src),
+        ["first", "scalar"],
+        "interpreter keeps scalar and reference lists distinct",
+    );
+}
