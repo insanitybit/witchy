@@ -144,13 +144,23 @@ for p in "${paths[@]}"; do
             add_pkg witchy-types
             add "cargo nextest run -p witchy-types"
             add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
-        crates/witchy-lower/* | crates/witchy-wir/* | crates/witchy-runtime/*)
+        crates/witchy-lower/*)
             any_rust=1
             add_pkg witchy-lower
+            add "cargo nextest run -p witchy-lower"
+            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "./scripts/check.sh --wasm" ;;
+        crates/witchy-wir/*)
+            any_rust=1
             add_pkg witchy-wir
+            add "cargo nextest run -p witchy-wir"
+            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "./scripts/check.sh --wasm" ;;
+        crates/witchy-runtime/*)
+            any_rust=1
             add_pkg witchy-runtime
-            add "cargo nextest run -p witchy-lower -p witchy-wir -p witchy-runtime"
-            add "cargo nextest run -E 'test(/^example_tests::/)'"     # the parity matrix
+            add "cargo nextest run -p witchy-runtime"
+            add "cargo nextest run -E 'test(/^example_tests::/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-syntax/*)
             any_rust=1
@@ -204,6 +214,7 @@ for p in "${paths[@]}"; do
         web/witchy-runtime/heap-reset.test.mjs | \
         web/witchy-runtime/highlighter.test.mjs | \
         web/witchy-runtime/user-cap-export.test.mjs)
+            add_gate_test glamour
             add "cargo nextest run --test glamour -E 'test(/^dom::/)'" ;;
         web/witchy-runtime/abort-message.test.mjs | \
         web/witchy-runtime/playground-examples.test.mjs | \
@@ -211,15 +222,27 @@ for p in "${paths[@]}"; do
         web/witchy-runtime/witchy-highlight.test.mjs | \
         web/witchy-runtime/witchy-runnable.test.mjs | \
         web/witchy-runtime/witchy-cell-sandbox.test.mjs | \
+        web/witchy-highlight.js | \
         web/witchy-cell-sandbox.js | \
         web/witchy-cell-frame.js)
+            add_gate_test browser
             add "cargo nextest run --test browser -E 'test(/^shim::/)'" ;;
         web/witchy-runtime/encoding-abi.test.mjs)
+            add_gate_test browser
             add "cargo nextest run --test browser -E 'test(/^encoding::/)'" ;;
         web/witchy-runtime/import-catalog.test.mjs)
+            add_gate_test misc
             add "cargo nextest run --test misc -E 'test(/^wasm_abi_catalog::/)'" ;;
         web/witchy-runtime/witchy-runtime.mjs)
+            add_gate_test browser
+            add_gate_test glamour
+            add_gate_test misc
             add "cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'" ;;
+        web/*)
+            # Playground / highlighter JS is not a Rust surface. Keep a
+            # focused browser binary rather than fail-safe --workspace.
+            add_gate_test browser
+            add "cargo nextest run --test browser" ;;
         tests/merge_queue.rs | tests/merge_queue/*.rs)
             any_rust=1
             add_gate_test merge_queue

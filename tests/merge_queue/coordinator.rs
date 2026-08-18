@@ -490,6 +490,14 @@ fn lower_and_syntax_batches_skip_rust_class_and_wasm() {
             !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
             "{label} launched unfiltered --workspace nextest: {env}",
         );
+        if path.contains("witchy-lower") {
+            assert!(
+                env.contains("nextest=[-p witchy-lower")
+                    && !env.contains("witchy-wir")
+                    && !env.contains("witchy-runtime"),
+                "{label} still attached wir/runtime to a lower-only batch: {env}",
+            );
+        }
     }
 }
 

@@ -178,6 +178,36 @@ fn gate_nextest_crate_only_interp_does_not_attach_example_tests_matrix() {
 }
 
 #[test]
+fn gate_nextest_lower_only_does_not_attach_wir_or_runtime() {
+    let output = gate_nextest(&["crates/witchy-lower/src/codegen/expr_lower.rs"]);
+    assert!(
+        output.contains("-p witchy-lower"),
+        "lower-only mapping dropped the crate: {output}",
+    );
+    assert!(
+        !output.contains("witchy-wir") && !output.contains("witchy-runtime"),
+        "lower-only mapping still attached wir/runtime: {output}",
+    );
+    assert!(
+        !output.contains("example_tests") && !output.contains("WORKSPACE"),
+        "lower-only mapping was not crate-scoped: {output}",
+    );
+}
+
+#[test]
+fn gate_nextest_highlighter_js_is_not_workspace() {
+    let output = gate_nextest(&["web/witchy-highlight.js"]);
+    assert!(
+        output.contains("--test browser"),
+        "highlighter JS did not select the browser test binary: {output}",
+    );
+    assert!(
+        !output.contains("WORKSPACE") && !output.contains("--workspace"),
+        "highlighter JS fail-safed to the full workspace: {output}",
+    );
+}
+
+#[test]
 fn rust_integration_tests_use_fast_without_redundant_binary_run() {
     let output = route(&["tests/differential_fuzz.rs"]);
     assert!(output.contains("./scripts/check.sh --fast"));

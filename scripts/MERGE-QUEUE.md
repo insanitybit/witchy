@@ -290,11 +290,14 @@ rebase and gate.
 run the full workspace suite. The coordinator feeds the batch paths through
 `test-for-paths.sh --gate-nextest` (the same crate/binary mapping as the
 pre-submit router) and passes `WITCHY_GATE_NEXTEST` / `_EXPR` to check.sh. A
-types-only batch therefore runs `-p witchy-types` plus `example_tests`, not
+types-only batch therefore runs `-p witchy-types`, not
 unfiltered `--workspace`. `src/example_tests/**` is the `example_tests`
 area. Touched files in that tree select those modules only (not the whole
 matrix). A crate-only compiler diff runs that crate's tests, not the
-full `example_tests` matrix; `--full` / CI remain the backstop.
+full `example_tests` matrix and not sibling compiler crates
+(`witchy-lower` does not pull `witchy-wir` / `witchy-runtime`).
+Playground / highlighter JS under `web/` selects `--test browser`, not
+the Rust workspace. `--full` / CI remain the backstop.
 Unknown, mixed, or empty mappings fail safe to
 `--workspace`. `--full`, CI, and standalone `check.sh` keep the complete
 suite.
