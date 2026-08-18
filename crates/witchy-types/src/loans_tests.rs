@@ -731,6 +731,24 @@
     }
 
     #[test]
+    fn explicitly_discarding_a_shared_reference_tuple_from_a_function_value_closes_each_owner_loan() {
+        check_str(
+            "mode opt\n\n\
+             fn pair(first: &'a String, second: &'a String) -> (&'a String, &'a String):\n\
+             \x20   (first, second)\n\n\
+             fn main():\n\
+             \x20   var first = \"first\"\n\
+             \x20   var second = \"second\"\n\
+             \x20   let make = pair\n\
+             \x20   let views = make(&first, &second)\n\
+             \x20   let _ = views\n\
+             \x20   first = \"updated-first\"\n\
+             \x20   second = \"updated-second\"\n",
+        )
+        .expect("discarding a function-value shared tuple closes every owner loan");
+    }
+
+    #[test]
     fn explicitly_discarding_a_shared_reference_list_closes_each_owner_loan() {
         check_str(
             "mode opt\n\nfn main():\n    var first = \"first\"\n    var second = \"second\"\n    let views = [&first, &second]\n    let _ = views\n    first = \"updated-first\"\n    second = \"updated-second\"\n",
