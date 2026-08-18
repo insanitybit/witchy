@@ -562,6 +562,56 @@ fn main(console: Console):
         assert_eq!(reowns, 1, "owner mutation detaches the result exactly once");
     }
 
+    /// A conventional normal function may return an owned result that came
+    /// from an opt export. The returned value remains an ordinary normal
+    /// value, and the caller can mutate it without exposing a hidden borrow
+    /// or requiring a boundary repair.
+    #[test]
+    fn rfc0122_normal_opt_result_survives_normal_return_and_mutation_on_both_backends() {
+        let api = r#"
+mode opt
+
+pub fn snapshot(own values: List(Int)) -> List(Int):
+    values
+"#;
+        let app = r#"
+import api
+import list
+
+fn forward() -> List(Int):
+    api.snapshot([1])
+
+fn main(console: Console):
+    var values = forward()
+    values.push(2)
+    console.print("${values}")
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app")
+            .expect("link normal return escape from opt result");
+        typeck::check(&linked).expect("normal return has no reference contract");
+        let expected = ["[1, 2]"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter preserves the owned normal return",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled backend preserves the owned normal return",
+        );
+        let (compiled, reowns, boundary_repairs, token_repairs) =
+            run_linked_on_wasm_ownership_counters(&[("api", api), ("app", app)], "app");
+        assert_eq!(compiled, expected);
+        assert_eq!(reowns, 1, "normal return materializes one owned result carrier");
+        assert_eq!(boundary_repairs, 0, "fresh owned result needs no boundary repair");
+        assert_eq!(token_repairs, 0, "fresh owned result needs no token repair");
+    }
+
     /// An aliased normal caller selects the copy-correct conventional entry for
     /// an opt `var unique` export: the callee's write-back updates the caller's
     /// variable while the pre-existing value alias keeps its original contents.
