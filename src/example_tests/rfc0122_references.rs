@@ -250,6 +250,38 @@ fn main(console: Console):
 }
 
 #[test]
+fn unique_exclusive_reference_option_return_writes_selected_owner_on_all_backends() {
+    let src = r#"mode opt
+
+fn choose(
+    own value: unique &'a mut String,
+    selected: Bool,
+) -> Option(unique &'a mut String):
+    if selected:
+        Some(value)
+    else:
+        None
+
+fn main(console: Console):
+    var text = "before"
+    var fallback = "fallback"
+    let selected = choose(&mut text, true)
+    let value = selected ?? &mut fallback
+    *value = "after"
+    console.print(text)
+"#;
+    let want = ["after"];
+    assert_eq!(link_run(src), want, "interpreter preserves unique Option ownership");
+    codegen::set_force_copy_for_tests(None);
+    let optimized = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(Some(true));
+    let forced_copy = wasm_run_reowns(src).0;
+    codegen::set_force_copy_for_tests(None);
+    assert_eq!(optimized, want, "optimized Wasm preserves unique Option ownership");
+    assert_eq!(forced_copy, want, "forced-copy Wasm preserves unique Option ownership");
+}
+
+#[test]
 fn wasm_first_exclusive_reference_result_return_writes_selected_owner() {
     let src = r#"mode opt
 
