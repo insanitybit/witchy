@@ -762,6 +762,34 @@
         assert!(alias_hidden.contains("reference-bearing opt API `api.make`"), "{alias_hidden}");
     }
 
+    #[test]
+    fn normal_callers_reject_callable_fields_that_hide_reference_contracts() {
+        let api = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             type Holder:\n    project: fn(&'a String) -> &'a String\n\n\
+             fn first(value: &'a String) -> &'a String:\n    value\n\n\
+             pub fn make() -> Holder:\n    Holder(project: first)\n",
+        )
+        .expect("parse opt callable-field API");
+        let main = witchy_syntax::parser::parse_module(
+            "import api\n\nfn main():\n    let holder = api.make()\n",
+        )
+        .expect("parse normal callable-field caller");
+        let linked = witchy_syntax::linker::link(
+            vec![("main".into(), main), ("api".into(), api)],
+            "main",
+            no_comptime,
+        )
+        .map_err(|error| crate::typeck::TypeError { message: error.to_string() });
+        let error = match linked {
+            Err(error) => error.to_string(),
+            Ok(linked) => crate::typeck::check(&linked)
+                .expect_err("normal interface must reject callable reference contracts")
+                .to_string(),
+        };
+        assert!(error.contains("reference-bearing opt API `api.make`"), "{error}");
+    }
+
     // --- non-lexical last use + .owned() (acceptance 3) ---------------------
 
     #[test]

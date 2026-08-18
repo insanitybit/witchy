@@ -330,6 +330,10 @@ fn type_mentions_reference(ty: &Type) -> bool {
     }
 }
 
+fn type_is_reference_bearing(ty: &Type, bearing: &HashSet<String>) -> bool {
+    type_mentions_reference(ty) || type_mentions_named_reference(ty, bearing)
+}
+
 /// Compute the opt-only nominal interface transitively. A normal importer must
 /// not be able to hide a reference merely by naming an opt type whose fields
 /// (or nested nominal fields) contain one.
@@ -1981,6 +1985,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
     // unmerged here, so each item knows its home module.
     check_sealing(&modules, &origin_tables, mode, entry)?;
 
+    let reference_bearing = reference_bearing_type_names(&modules);
     let mut fns: FnTable = HashMap::new();
     for (name, m) in &modules {
         let mut names: HashMap<String, EtaSig> = HashMap::new();
@@ -1996,8 +2001,11 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                             .params
                             .iter()
                             .filter_map(|param| param.ty.as_ref())
-                            .any(type_mentions_reference)
-                            || f.ret.as_ref().is_some_and(type_mentions_reference),
+                            .any(|ty| type_is_reference_bearing(ty, &reference_bearing))
+                            || f
+                                .ret
+                                .as_ref()
+                                .is_some_and(|ty| type_is_reference_bearing(ty, &reference_bearing)),
                         method_alias: false,
                         alias_target: None,
                     },
@@ -2027,8 +2035,11 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                             .params
                             .iter()
                             .filter_map(|param| param.ty.as_ref())
-                            .any(type_mentions_reference)
-                            || method.ret.as_ref().is_some_and(type_mentions_reference),
+                            .any(|ty| type_is_reference_bearing(ty, &reference_bearing))
+                            || method
+                                .ret
+                                .as_ref()
+                                .is_some_and(|ty| type_is_reference_bearing(ty, &reference_bearing)),
                         method_alias: true,
                             alias_target: Some(inherent_method_symbol(im, &method.name)),
                         },
@@ -2710,6 +2721,7 @@ pub fn mark_definition_site_expr(
         &available,
     )?;
 
+    let reference_bearing = reference_bearing_type_names(&available);
     let mut fns = FnTable::new();
     for (module_name, module) in &available {
         let mut names = HashMap::new();
@@ -2729,8 +2741,11 @@ pub fn mark_definition_site_expr(
                             .params
                             .iter()
                             .filter_map(|param| param.ty.as_ref())
-                            .any(type_mentions_reference)
-                            || function.ret.as_ref().is_some_and(type_mentions_reference),
+                            .any(|ty| type_is_reference_bearing(ty, &reference_bearing))
+                            || function
+                                .ret
+                                .as_ref()
+                                .is_some_and(|ty| type_is_reference_bearing(ty, &reference_bearing)),
                         method_alias: false,
                         alias_target: None,
                     },
