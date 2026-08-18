@@ -148,6 +148,47 @@ fn result_list_tuple_relations_preserve_success_payload_projections() {
 }
 
 #[test]
+fn option_list_tuple_relations_preserve_success_payload_projections() {
+    let signature = catalog_signature(
+        "mode opt\n\n\
+         fn choose(left: &'a mut String, right: &'a mut String) \
+             -> Option(List((&'a mut String, &'a mut String))):\n\
+         \x20   Some([(left, right)])\n",
+        "choose",
+    );
+
+    let relations = signature.borrow_relations();
+    assert_eq!(relations.len(), 2);
+    assert_eq!(
+        relations[0].output_projection(),
+        &LoanProjection {
+            steps: vec![
+                LoanProjectionStep::Tuple(0),
+                LoanProjectionStep::AnyIndex,
+                LoanProjectionStep::Tuple(0),
+            ],
+        }
+    );
+    assert_eq!(
+        relations[1].output_projection(),
+        &LoanProjection {
+            steps: vec![
+                LoanProjectionStep::Tuple(0),
+                LoanProjectionStep::AnyIndex,
+                LoanProjectionStep::Tuple(1),
+            ],
+        }
+    );
+    assert!(relations.iter().all(|relation| {
+        relation
+            .owners()
+            .iter()
+            .map(|owner| owner.position())
+            .eq([0, 1])
+    }));
+}
+
+#[test]
 fn nominal_borrow_relations_preserve_exact_input_and_output_projections() {
     let signature = catalog_signature(
         "mode opt\n\n\
