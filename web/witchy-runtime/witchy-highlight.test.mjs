@@ -5,7 +5,7 @@
 //
 // Usage:  node web/witchy-runtime/witchy-highlight.test.mjs
 
-import { highlightWitchy, highlightShell, highlightToml } from "../witchy-highlight.js";
+import { escapeHtml, highlightWitchy, highlightShell, highlightToml } from "../witchy-highlight.js";
 
 let failures = 0;
 const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if (!cond) failures++; };
@@ -16,6 +16,15 @@ ok(h1.includes('<span class="t-kw">fn</span>'), "`fn` is a keyword");
 ok(h1.includes('<span class="t-type">Console</span>'), "a Title-case name is a type");
 ok(h1.includes('<span class="t-builtin">print</span>'), "`print` is a builtin");
 ok(h1.includes('<span class="t-str">'), "a string literal is coloured");
+
+// RFC-0122 explicit reference types keep the lifetime together and classify the
+// mutable access keyword. The highlighter must still reconstruct the source exactly.
+const reference = "fn edit(value: &'a mut String) -> &'a mut String:";
+const hRef = highlightWitchy(reference);
+ok(hRef.includes('<span class="t-type">\'a</span>'), "an explicit reference lifetime is coloured");
+ok(hRef.includes('<span class="t-kw">mut</span>'), "mutable reference access is coloured as a keyword");
+ok(hRef.includes('<span class="t-type">String</span>'), "the referenced type is coloured");
+ok(hRef.replace(/<[^>]+>/g, "") === escapeHtml(reference), "reference syntax reconstructs the escaped source exactly");
 
 // Capability keywords (RFC-0038/0039 surface).
 const h2 = highlightWitchy("grantable capability UiRoot:");

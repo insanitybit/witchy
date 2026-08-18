@@ -11,7 +11,7 @@
 export const KEYWORDS = new Set(
   ("fn let var if else match for in while return break continue type trait " +
     "impl actor on import pub own move spawn where as gen yield " +
-    "retain without capability grantable")
+    "retain without capability grantable mut")
     .split(" "),
 );
 
@@ -34,9 +34,11 @@ export function escapeHtml(s) {
 }
 
 // One pass: comments, strings (with ${...} interpolation), numbers (incl. duration
-// suffixes), then identifier words.
+// suffixes), lifetimes, then identifier words. Lifetimes are kept as one token so
+// explicit reference types such as `&'a mut String` are recognizable without
+// changing the source-preserving nature of this highlighter.
 const TOKEN =
-  /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\])*")|(\b\d+(?:\.\d+)?(?:ms|hr|s|m|h|d|w)?\b)|([A-Za-z_][A-Za-z0-9_]*)/g;
+  /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\])*")|(\b\d+(?:\.\d+)?(?:ms|hr|s|m|h|d|w)?\b)|('[A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*)/g;
 
 function highlightString(str) {
   // Colour ${...} interpolations distinctly inside an otherwise-green string.
@@ -64,8 +66,9 @@ export function highlightWitchy(src) {
     if (m[1]) out += `<span class="t-comment">${escapeHtml(m[1])}</span>`;
     else if (m[2]) out += highlightString(m[2]);
     else if (m[3]) out += `<span class="t-num">${escapeHtml(m[3])}</span>`;
+    else if (m[4]) out += `<span class="t-type">${escapeHtml(m[4])}</span>`;
     else {
-      const w = m[4];
+      const w = m[5];
       const cls = KEYWORDS.has(w)
         ? "t-kw"
         : LITERALS.has(w)
