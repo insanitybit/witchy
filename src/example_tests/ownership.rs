@@ -656,6 +656,49 @@ fn main(console: Console):
         );
     }
 
+    /// The same conventional boundary preserves an owned tagged result. The
+    /// normal caller handles the error arm and mutates the owned success list.
+    #[test]
+    fn rfc0122_normal_to_opt_result_list_preserves_owned_payload_on_both_backends() {
+        let api = r#"
+mode opt
+
+pub fn snapshot(own values: List(Int)) -> Result(List(Int), String):
+    Ok(values)
+"#;
+        let app = r#"
+import api
+import list
+
+fn main(console: Console):
+    let selected = api.snapshot([1])
+    match selected:
+        Ok(values) ->
+            var mutable = move values
+            list.push(mutable, 2)
+            console.print("${mutable}")
+        Err(error) -> console.print(error)
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app")
+            .expect("link normal caller with an opt Result list result");
+        typeck::check(&linked).expect("normal Result list has no reference contract");
+        let expected = ["[1, 2]"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter preserves the owned Result success payload",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled backend preserves the owned Result success payload",
+        );
+    }
+
     /// An aliased normal caller selects the copy-correct conventional entry for
     /// an opt `var unique` export: the callee's write-back updates the caller's
     /// variable while the pre-existing value alias keeps its original contents.
