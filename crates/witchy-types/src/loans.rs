@@ -2077,19 +2077,23 @@ impl LoanCtx<'_> {
             .and_then(|table| table.type_of(value))
             .and_then(ty_to_ast)
         {
-            return type_contains_explicit_reference_relation(&ty)
+            if type_contains_explicit_reference_relation(&ty)
                 || matches!(ty, Type::Named(name, _) if self.catalog.borrowed_record(&name))
-                || matches!(
-                    value,
-                    Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }
-                );
+            {
+                return true;
+            }
         }
         match value {
             // An explicit reference is a first-class value. `List(&'a T)`
             // retains the element's owner contribution just like the legacy
             // borrowed shell, rather than erasing it at aggregate storage.
             Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. } => true,
-            Expr::Ctor { name, .. } => self.catalog.borrowed_constructor(name),
+            Expr::Ctor { name, args } => {
+                self.catalog.borrowed_constructor(name)
+                    || args
+                        .iter()
+                        .any(|arg| self.is_direct_borrowed_shell_value(arg, callables))
+            }
             Expr::Record { name, .. } => self.catalog.borrowed_record(name),
             Expr::List(items) | Expr::Tuple(items) => {
                 !items.is_empty()
@@ -3393,6 +3397,17 @@ impl LoanCtx<'_> {
                     );
                 }
             }
+            Expr::Ctor { name, args } => {
+                for (index, arg) in args.iter().enumerate() {
+                    self.collect_aggregate_slot(
+                        arg,
+                        self.catalog.constructor_step(name, index),
+                        callables,
+                        live,
+                        out,
+                    );
+                }
+            }
             Expr::Record { name, fields, .. } if self.catalog.borrowed_record(name) => {
                 for (field, value) in fields {
                     self.collect_aggregate_slot(
@@ -3792,6 +3807,7 @@ impl LoanCtx<'_> {
             Expr::Ctor { name, args } if self.catalog.borrowed_constructor(name) => args
                 .iter()
                 .find_map(|arg| self.aggregate_borrow_source(arg, callables, live)),
+            Expr::Ctor { .. } if self.is_direct_borrowed_shell_value(value, callables) => None,
             Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => args
                 .iter()
                 .find_map(&mut inspect)
