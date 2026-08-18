@@ -256,6 +256,43 @@
     }
 
     #[test]
+    fn exclusive_reference_option_list_tuple_preserves_affine_transport() {
+        check_str(
+            "mode opt\n\n\
+             fn make(own left: unique &'a mut String, own right: unique &'a mut String) \
+                 -> Option(List((unique &'a mut String, unique &'a mut String))):\n\
+             \x20   Some([(left, right)])\n\
+             fn main():\n\
+             \x20   var first = \"first\"\n\
+             \x20   var second = \"second\"\n\
+             \x20   let selected = make(&mut first, &mut second)\n\
+             \x20   match selected:\n\
+             \x20       Some(values) ->\n\
+             \x20           let (left, right) = values[0]\n\
+             \x20           *left = \"left updated\"\n\
+             \x20           *right = \"right updated\"\n\
+             \x20       None ->\n\
+             \x20           return\n",
+        )
+        .expect("a nullable Option list tuple carries both exclusive places once");
+
+        let err = check_str(
+            "mode opt\n\n\
+             fn make(own left: unique &'a mut String, own right: unique &'a mut String) \
+                 -> Option(List((unique &'a mut String, unique &'a mut String))):\n\
+             \x20   Some([(left, right)])\n\
+             fn bad():\n\
+             \x20   var first = \"first\"\n\
+             \x20   var second = \"second\"\n\
+             \x20   let selected = make(&mut first, &mut second)\n\
+             \x20   let moved = selected\n\
+             \x20   let duplicate = selected\n",
+        )
+        .expect_err("moving a nullable Option list retires its previous affine handle");
+        assert!(err.contains("moved exclusive reference `selected`") || err.contains("used more than once"), "{err}");
+    }
+
+    #[test]
     fn mutable_exclusive_reference_retains_writeback_access() {
         check_str(
             "mode opt\n\nfn replace(var text: &'a mut String) -> Nil:\n    *text = \"changed\"\n",
