@@ -385,6 +385,48 @@ fn main(console: Console):
         );
     }
 
+    /// A normal caller may pass a conventional opt function value into an opt
+    /// export. The adapter must preserve the ordinary `own` callable envelope
+    /// for both the callback argument and the value it consumes.
+    #[test]
+    fn rfc0122_normal_to_opt_function_argument_preserves_value_semantics_on_both_backends() {
+        let api = r#"
+mode opt
+
+pub fn decorate(own text: String) -> String:
+    text + "!"
+
+pub fn apply(own action: fn(own String) -> String, own text: String) -> String:
+    action(text)
+"#;
+        let app = r#"
+import api
+
+fn main(console: Console):
+    let action = api.decorate
+    let result = api.apply(action, "hello")
+    console.print(result)
+"#;
+        let modules = vec![
+            ("api".into(), parser::parse_module(api).expect("parse opt API")),
+            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
+        ];
+        let linked = crate::pipeline::link(modules, "app")
+            .expect("link normal-to-opt function-argument caller");
+        typeck::check(&linked).expect("normal function argument has no reference contract");
+        let expected = ["hello!"];
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
+            expected,
+            "interpreter preserves the conventional callback envelope",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
+            expected,
+            "compiled backend preserves the conventional callback envelope",
+        );
+    }
+
     /// A conventional result from an opt export is logically owned in normal
     /// source. It may share an internal owner only until either side mutates;
     /// normal code must observe two independent values without a loan.
