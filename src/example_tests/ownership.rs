@@ -425,6 +425,11 @@ fn main(console: Console):
             expected,
             "compiled code detaches the ordinary result before owner mutation",
         );
+        let (compiled, reowns, boundary_repairs) =
+            run_linked_on_wasm_ownership_counters(&[("api", api), ("app", app)], "app");
+        assert_eq!(compiled, expected);
+        assert_eq!(boundary_repairs, 0, "an owned normal result needs no boundary repair");
+        assert_eq!(reowns, 1, "owner mutation detaches the result exactly once");
     }
 
     /// An aliased normal caller selects the copy-correct conventional entry for

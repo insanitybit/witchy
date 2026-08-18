@@ -730,6 +730,40 @@
         actor.output()
     }
 
+    /// Link and run a multi-module program while retaining the ownership
+    /// counters exported by the compiled module. Boundary and ordinary
+    /// accumulation counters are separate: the former proves whether a
+    /// normal caller needed a repair adapter, while the latter records a
+    /// runtime detach/copy caused by an owner mutation.
+    fn run_linked_on_wasm_ownership_counters(
+        sources: &[(&str, &str)],
+        entry: &str,
+    ) -> (Vec<String>, i64, i64) {
+        use crate::runtime::{Capabilities, Runtime};
+        let mods: Vec<(String, ast::Module)> = sources
+            .iter()
+            .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
+            .collect();
+        let linked = crate::pipeline::link(mods, entry).expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("the binary path lowers this program");
+        let mut rt = Runtime::new().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
+                4,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        (
+            actor.output(),
+            actor.reowns().unwrap_or(0),
+            actor.boundary_reown_copies().unwrap_or(0),
+        )
+    }
+
 
     /// Link + run a single-`main` source on the interpreter with a `Net` allowlist grant.
     fn link_run_net(src: &str, net_allow: &[&str]) -> Vec<String> {
