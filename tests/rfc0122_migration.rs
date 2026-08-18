@@ -4,6 +4,7 @@ use std::process::Command;
 
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter};
+use witchy_types::loans;
 use witchy_syntax::format::migrate_references;
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
@@ -103,6 +104,51 @@ fn migrated_mutable_parameter_preserves_interpreter_wasm_behavior() {
         interpreted,
         "migrated mutable reference semantics must agree on both backends"
     );
+}
+
+#[test]
+fn migrated_fixtures_preserve_checked_loan_and_runtime_counters() {
+    for (label, legacy) in [
+        ("shared call", LEGACY_SHARED_CALL),
+        ("mutable parameter", LEGACY_MUTABLE_PARAMETER),
+    ] {
+        let migration = migrate_references(legacy).expect("migrate the parity fixture");
+        let checked = witchy::resolve_std_only_checked(&migration.source)
+            .expect("migrated parity fixture must resolve and type-check");
+        let facts = loans::facts(checked.module()).expect("publish migrated loan facts");
+        let telemetry = facts.telemetry();
+        let stats = witchy::stats::compute(&migration.source)
+            .unwrap_or_else(|error| panic!("compute migrated {label} telemetry: {error}"));
+
+        assert!(
+            telemetry.opens > 0 || telemetry.return_transfers > 0,
+            "migrated {label} fixture must publish an owner relation"
+        );
+        assert_eq!(stats.loan_opens, telemetry.opens, "migrated {label} loan opens drifted");
+        assert_eq!(stats.loan_closes, telemetry.closes, "migrated {label} loan closes drifted");
+        assert_eq!(
+            stats.loan_return_transfers,
+            telemetry.return_transfers,
+            "migrated {label} return transfers drifted"
+        );
+        assert_eq!(
+            stats.loan_shell_mutations,
+            telemetry.shell_mutations,
+            "migrated {label} shell mutations drifted"
+        );
+        assert_eq!(
+            stats.loan_control_flow_edges,
+            telemetry.control_flow_edges,
+            "migrated {label} control-flow facts drifted"
+        );
+        assert_eq!(
+            stats.loan_subset_edges,
+            telemetry.subset_edges,
+            "migrated {label} subset facts drifted"
+        );
+        assert_eq!(stats.live_cells, 0, "migrated {label} fixture must not leak runtime roots");
+        assert_eq!(stats.output, ["value"], "migrated {label} output drifted");
+    }
 }
 
 #[test]
