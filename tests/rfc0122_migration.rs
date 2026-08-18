@@ -210,10 +210,17 @@ fn migrated_fixtures_preserve_checked_loan_and_runtime_counters() {
 
 #[test]
 fn migrated_rfc0083_rfc0112_fixtures_preserve_full_parity() {
-    for (label, legacy, expected_roots, expected_output, expected_live_cells) in [
-        ("shared call", LEGACY_SHARED_CALL, vec!["text"], ["value"], 0),
-        ("mutable parameter", LEGACY_MUTABLE_PARAMETER, vec!["value"], ["value"], 0),
-        ("parser shell", LEGACY_PARSER_SHELL, vec!["input"], ["5"], 3),
+    for (
+        label,
+        legacy,
+        expected_roots,
+        expected_output,
+        expected_live_cells,
+        expected_allocations,
+    ) in [
+        ("shared call", LEGACY_SHARED_CALL, vec!["text"], ["value"], 0, 0),
+        ("mutable parameter", LEGACY_MUTABLE_PARAMETER, vec!["value"], ["value"], 0, 0),
+        ("parser shell", LEGACY_PARSER_SHELL, vec!["input"], ["5"], 3, 3),
     ] {
         let Some(migration) = migrate_references(legacy) else {
             panic!("migrate historical {label} fixture");
@@ -250,6 +257,11 @@ fn migrated_rfc0083_rfc0112_fixtures_preserve_full_parity() {
         assert_eq!(migrated_stats.output, expected_output, "{label} migrated counters lost output");
         assert_eq!(migrated_stats.loan_opens, migrated_stats.loan_closes, "{label} loan roots unbalanced");
         assert_eq!(migrated_stats.live_cells, expected_live_cells, "{label} aggregate allocation baseline drifted");
+        assert_eq!(migrated_stats.reowns, 0, "{label} inserted a materialization reown");
+        assert_eq!(migrated_stats.rc_alloc_calls, expected_allocations, "{label} allocation count drifted");
+        assert_eq!(migrated_stats.bump_alloc_calls, expected_allocations, "{label} bump allocation count drifted");
+        assert_eq!(migrated_stats.rc_reuse_calls, 0, "{label} unexpectedly reused an allocation");
+        assert_eq!(migrated_stats.rc_free_calls, 0, "{label} runtime free count drifted");
     }
 }
 
