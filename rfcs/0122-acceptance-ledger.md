@@ -17,7 +17,7 @@ Once that milestone is reached, the named fixture must pass on both backends
 before its row can become `PROVEN` or experimental opt mode can exit. A
 Wasm-first result is executable progress, not completion.
 
-### Active interpreter parity debts
+### Interpreter parity debt ledger
 
 | acceptance row | fixture | missing interpreter boundary | convergence milestone |
 | --- | --- | --- | --- |
@@ -154,6 +154,24 @@ Wasm-first result is executable progress, not completion.
 | 8 uniform reference types | `scalar_list_remains_scalar_when_a_reference_list_has_the_same_element_type` | interpreter execution of a mixed `List(&String)` and scalar `List(String)` module through literal construction, local binding, indexing, and dereference is not yet paired with this Wasm regression | freeze the reference-list registry key plus physical element-kind contract, then run the fixture on interpreter, optimized Wasm, and forced-copy Wasm |
 | 18 aggregate affine roots | `scalar_list_remains_scalar_when_a_reference_list_has_the_same_element_type` | interpreter coverage of the erased aggregate/list type classification boundary is missing; this fixture proves Wasm carrier selection and scalar preservation only | freeze aggregate/list carrier classification, then add the interpreter fixture to the final aggregate and projection matrix |
 | 19 interpreter/Wasm parity | `scalar_list_remains_scalar_when_a_reference_list_has_the_same_element_type` | interpreter parity for simultaneous reference-backed and scalar lists sharing an erased source key is intentionally deferred while the carrier registry ABI changes | freeze the reference-list carrier ABI, then require interpreter, optimized Wasm, and forced-copy Wasm agreement before PROVEN |
+
+### Carrier convergence checkpoint (2026-08-18)
+
+Current `master` now closes interpreter parity for the named direct, callable,
+Option, Result, tuple, nominal, and list carriers above. The executable focused
+matrix is green:
+
+- `cargo test --bin witchy 'example_tests::rfc0122_' -- --nocapture`: 97 passed
+- `cargo test -p witchy-types --lib loans::tests:: -- --nocapture`: 153 passed
+- `cargo test -p witchy-lower --lib analysis::no_copy_tests:: -- --nocapture`: 22 passed
+
+Those results retire the interpreter boundary debt for fixtures that have all
+three named halves: interpreter, optimized Wasm, and forced-copy Wasm. They do
+not mark an acceptance row `PROVEN`; the final type, boundary, escape, CFG,
+telemetry, and migration matrix remains required. The still-active Wasm-first
+debt rows are the local nullable Option/Result aggregate fixtures and the
+scalar/reference-list registry collision fixture; each retains its fixture,
+missing interpreter boundary, and carrier-freeze milestone in the table above.
 
 ### Newly landed focused evidence
 
