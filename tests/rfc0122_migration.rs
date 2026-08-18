@@ -26,6 +26,21 @@ fn main(console: Console):
     console.print(caller("value"))
 "#;
 
+const LEGACY_MUTABLE_PARAMETER: &str = r#"mode opt
+
+import borrow
+
+fn normalize(var('a) value: String) -> &'a mut String:
+    value
+
+fn caller(var value: String) -> String:
+    normalize(value).owned()
+
+fn main(console: Console):
+    var value = "value"
+    console.print(caller(value))
+"#;
+
 fn compiled_output(checked: &witchy_types::pipeline::CheckedModule) -> Vec<String> {
     let bytes = codegen::compile_checked_module_binary(checked)
         .expect_lowered("compile migrated RFC-0122 fixture");
@@ -59,6 +74,35 @@ fn migrated_direct_shared_call_preserves_interpreter_wasm_behavior() {
         .expect("interpret migrated RFC-0122 fixture");
     assert_eq!(interpreted, ["value"]);
     assert_eq!(compiled_output(&checked), interpreted, "migrated reference semantics must agree on both backends");
+}
+
+#[test]
+fn migrated_mutable_parameter_preserves_interpreter_wasm_behavior() {
+    let migration = migrate_references(LEGACY_MUTABLE_PARAMETER)
+        .expect("migrate legacy mutable-parameter fixture");
+    assert!(migration.ambiguities.is_empty(), "{:#?}", migration.ambiguities);
+    assert!(
+        migration.source.contains("normalize(&mut value)"),
+        "{}",
+        migration.source
+    );
+    assert!(
+        migration.source.contains("fn normalize(value: &'a mut String) -> &'a mut String"),
+        "{}",
+        migration.source
+    );
+    assert!(!migration.source.contains("var('a)"), "{}", migration.source);
+
+    let checked = witchy::resolve_std_only_checked(&migration.source)
+        .expect("migrated mutable fixture must resolve and type-check");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret migrated mutable RFC-0122 fixture");
+    assert_eq!(interpreted, ["value"]);
+    assert_eq!(
+        compiled_output(&checked),
+        interpreted,
+        "migrated mutable reference semantics must agree on both backends"
+    );
 }
 
 #[test]
