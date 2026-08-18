@@ -70,6 +70,34 @@ fn main(console: Console):
     assert_eq!(forced_copy, want, "forced-copy Wasm preserves a selected list element place through a conditional tail");
 }
 
+#[test]
+fn interpreter_exclusive_reference_list_conditional_projection_writes_selected_owner() {
+    let src = r#"mode opt
+
+import list
+
+fn choose(values: &'a mut List(Int), left: Bool) -> &'a mut Int:
+    let selected = if left:
+        &mut values[0]
+    else:
+        &mut values[1]
+    selected
+
+fn main(console: Console):
+    var values = [1, 2]
+    let selected = choose(&mut values, false)
+    *selected = 9
+    console.print("${values}")
+    console.print("${*selected}")
+"#;
+
+    assert_eq!(
+        link_run(src),
+        ["[1, 9]", "9"],
+        "interpreter preserves a selected list element place through a conditional tail",
+    );
+}
+
 /// Keep the callable result ABI on the same compiled-Wasm-first list carrier
 /// path: the function value selects the projected place inside its conditional
 /// body, then the caller writes through the returned handle.
