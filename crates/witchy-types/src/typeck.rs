@@ -838,11 +838,17 @@ fn reject_borrowed_nominal_containers(
                 && arguments
                     .first()
                     .is_some_and(type_contains_explicit_reference_relation);
+            let is_explicit_reference_result = name == "Result"
+                && arguments.len() == 2
+                && arguments
+                    .first()
+                    .is_some_and(type_contains_explicit_reference_relation);
             if !is_borrowed_shell
                 && !is_borrowed_nominal_list
                 && !is_direct_reference_list
                 && !is_explicit_reference_list
                 && !is_explicit_reference_option
+                && !is_explicit_reference_result
                 && arguments
                     .iter()
                     .any(type_contains_nominal_lifetime_relation)

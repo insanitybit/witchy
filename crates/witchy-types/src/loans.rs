@@ -3320,10 +3320,9 @@ impl LoanCtx<'_> {
                 self.collect_call_owners(&callee, args, &sig, callables, live, out);
             }
             Expr::Binary { op: BinOp::Coalesce, lhs, rhs } => {
-                // `Option(&mut T) ?? &mut fallback` yields the same executable
-                // reference carrier as either branch. Recover the selected
-                // source from a live aggregate binding and retain the fallback
-                // source for the other control-flow edge.
+                // A Result/Option coalesce yields the same executable reference
+                // carrier as either branch. Preserve the selected source and
+                // the fallback source so a later dereference sees a live loan.
                 self.collect_alias_sources(lhs, live, out);
                 self.collect_view_owners(lhs, callables, live, out);
                 self.collect_view_owners(rhs, callables, live, out);
