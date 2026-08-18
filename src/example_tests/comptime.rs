@@ -112,6 +112,49 @@ fn main(console: Console):
         );
     }
 
+    /// Explicit shared and mutable reference fields must remain structured
+    /// `meta.TReference` values at the comptime boundary. This keeps access
+    /// kind and nominal lifetime distinct without relying on rendered syntax.
+    #[test]
+    fn comptime_typeinfo_preserves_shared_and_mutable_reference_kinds_on_both_backends() {
+        let src = r#"mode opt
+
+import list
+import meta
+
+type Pair('left, 'right):
+    shared: &'left String
+    mutable: &'right mut String
+
+comptime:
+    for t in module_types:
+        if t.name == "Pair":
+            let shared = list.at(t.fields, 0)
+            match shared.type_expr:
+                meta.TReference("shared", inner, lifetime) ->
+                    emit("fn generated_shared_relation() -> String:")
+                    emit("    \"shared:" + meta.type_source(inner) + ":'" + lifetime + "\"")
+                _ -> emit("fn generated_shared_relation() -> String:\n    \"wrong\"")
+            let mutable = list.at(t.fields, 1)
+            match mutable.type_expr:
+                meta.TReference("mut", inner, lifetime) ->
+                    emit("fn generated_mutable_relation() -> String:")
+                    emit("    \"mut:" + meta.type_source(inner) + ":'" + lifetime + "\"")
+                _ -> emit("fn generated_mutable_relation() -> String:\n    \"wrong\"")
+
+fn main(console: Console):
+    console.print(generated_shared_relation())
+    console.print(generated_mutable_relation())
+"#;
+        let expected = ["shared:String:'left", "mut:String:'right"];
+        assert_eq!(link_run(src), expected, "interp preserves explicit reference metadata");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled code preserves explicit reference metadata",
+        );
+    }
+
     /// (BUG-518) Built-in derives consume the same normalized TypeInfo as
     /// comptime reflection. Alias-typed fields derive the aliased decoder, and an
     /// implicit generic record derives a parameterized `Reflect` impl with bounds.
