@@ -793,6 +793,20 @@
     }
 
     #[test]
+    fn explicitly_discarding_a_result_exclusive_tuple_releases_each_place() {
+        check_str(
+            "mode opt\n\nfn main():\n    var first = \"first\"\n    var second = \"second\"\n    let selected = if true:\n        Ok((&mut first, &mut second))\n    else:\n        Err(\"none\")\n    let _ = selected\n    first = \"updated-first\"\n    second = \"updated-second\"\n",
+        )
+        .expect("discarding a Result exclusive tuple releases every place");
+
+        let err = check_str(
+            "mode opt\n\nfn main():\n    var first = \"first\"\n    var second = \"second\"\n    let selected = if true:\n        Ok((&mut first, &mut second))\n    else:\n        Err(\"none\")\n    first = \"updated-first\"\n    let _ = selected\n    second = \"updated-second\"\n",
+        )
+        .expect_err("a live Result exclusive tuple retains both owner places");
+        assert!(err.contains("reassigned") || err.contains("borrowed"), "{err}");
+    }
+
+    #[test]
     fn explicitly_discarding_a_mutable_reborrow_resumes_its_parent() {
         check_str(
             "mode opt\n\nfn main():\n    var text = \"hello\"\n    let parent = &mut text\n    let child = &mut *parent\n    let _ = child\n    *parent = \"changed\"\n",
