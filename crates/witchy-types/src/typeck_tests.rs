@@ -75,6 +75,19 @@
     }
 
     #[test]
+    fn must_consume_generic_propagation_follows_owning_field_positions() {
+        let deferred = "must type Ticket:\n    Ticket(Int)\n\ntype Boxed(a):\n    Boxed(a)\n\ntype Recipe(a):\n    Recipe(fn() -> a)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    let recipe = Recipe(fn(): Ticket(1))\n    let _ = recipe\n    finish(Ticket(2))\n";
+        check_source(deferred)
+            .expect("a callable result type is not storage owned by its enclosing recipe");
+
+        let stored = check_source(
+            "must type Ticket:\n    Ticket(Int)\n\ntype Boxed(a):\n    Boxed(a)\n\nfn main():\n    let boxed = Boxed(Ticket(1))\n",
+        )
+        .expect_err("a generic field that stores its parameter propagates the obligation");
+        assert!(stored.message.contains("must-consume value `boxed`"));
+    }
+
+    #[test]
     fn typed_module_rebuilds_address_keyed_facts_after_structural_rewrite() {
         use witchy_syntax::ast::{Expr, Item, Stmt};
 

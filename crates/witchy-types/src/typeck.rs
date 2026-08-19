@@ -3674,6 +3674,11 @@ struct Checker {
     /// Nominal declarations whose values carry a must-consume obligation,
     /// including aggregates that transitively contain one of those values.
     must_consume_types: HashSet<String>,
+    /// For each nominal generic, whether each type parameter is stored in an
+    /// owning field position. Function parameter/result positions are not
+    /// storage: `Task(Ticket)` does not own a Ticket before the task produces
+    /// one, while `Box(Ticket)` and `List(Ticket)` do.
+    must_consume_parameters: HashMap<String, Vec<bool>>,
     /// Owned must-consume bindings that still require disposition on at least
     /// one control-flow path. Branch joins use union: a value is discharged
     /// only when every path consumes or returns it.
@@ -5014,9 +5019,14 @@ impl Checker {
             Ty::Tuple(items) => items.iter().any(|item| self.ty_carries_must_consume(item)),
             Ty::Named(name, arguments) | Ty::Dyn(name, arguments) => {
                 self.must_consume_types.contains(&name)
-                    || arguments
-                        .iter()
-                        .any(|argument| self.ty_carries_must_consume(argument))
+                    || self
+                        .must_consume_parameters
+                        .get(&name)
+                        .is_some_and(|positions| {
+                            positions.iter().zip(&arguments).any(|(stored, argument)| {
+                                *stored && self.ty_carries_must_consume(argument)
+                            })
+                        })
             }
             // A callable's parameter/result contract does not mean the function
             // value owns either value. Captured obligations are rejected at the
@@ -5113,7 +5123,11 @@ impl Checker {
         if !self.ty_carries_must_consume(parameter) {
             return Ok(());
         }
-        if matches!(expression, Expr::Var(name) if self.is_must_binding(name)) {
+        // Every ordinary owned or borrowed local is tracked separately. An
+        // untracked variable here is an `own` operation parameter: the call
+        // boundary already discharged its caller's obligation, and the
+        // operation implementation may forward the value into generic storage.
+        if matches!(expression, Expr::Var(_)) {
             return Ok(());
         }
         terr(format!(
@@ -10342,18 +10356,82 @@ fn run_check_with_trait_methods(
     )
 }
 
-fn must_consume_type_names(module: &Module) -> HashSet<String> {
-    fn carries(ty: &ast::Type, names: &HashSet<String>) -> bool {
+struct MustConsumeCatalog {
+    types: HashSet<String>,
+    parameters: HashMap<String, Vec<bool>>,
+}
+
+fn must_consume_catalog(module: &Module) -> MustConsumeCatalog {
+    fn stores_parameter(
+        ty: &ast::Type,
+        parameter: &str,
+        positions: &HashMap<String, Vec<bool>>,
+    ) -> bool {
         match ty {
-            ast::Type::Qualified(_, inner) => carries(inner, names),
-            ast::Type::Named(name, arguments) | ast::Type::Dyn(name, arguments) => {
-                names.contains(name) || arguments.iter().any(|argument| carries(argument, names))
+            ast::Type::Qualified(_, inner) => stores_parameter(inner, parameter, positions),
+            ast::Type::Named(name, arguments) => {
+                if name == parameter && arguments.is_empty() {
+                    return true;
+                }
+                match positions.get(name) {
+                    Some(stored) => stored.iter().zip(arguments).any(|(stored, argument)| {
+                        *stored && stores_parameter(argument, parameter, positions)
+                    }),
+                    // Unknown/builtin nominal storage stays conservative. Known
+                    // wrappers such as Task and Iter acquire an exact mask from
+                    // their declarations in the linked module.
+                    None => arguments
+                        .iter()
+                        .any(|argument| stores_parameter(argument, parameter, positions)),
+                }
             }
-            ast::Type::Tuple(items) => items.iter().any(|item| carries(item, names)),
+            ast::Type::Dyn(_, _) | ast::Type::Fn(..) => false,
+            ast::Type::Tuple(items) => items
+                .iter()
+                .any(|item| stores_parameter(item, parameter, positions)),
             ast::Type::RecordCompose { base, fields } => {
-                carries(base, names) || fields.iter().any(|(_, field)| carries(field, names))
+                stores_parameter(base, parameter, positions)
+                    || fields
+                        .iter()
+                        .any(|(_, field)| stores_parameter(field, parameter, positions))
             }
-            ast::Type::Fn(..) => false,
+        }
+    }
+
+    fn carries(
+        ty: &ast::Type,
+        names: &HashSet<String>,
+        positions: &HashMap<String, Vec<bool>>,
+        local_parameters: &HashSet<String>,
+    ) -> bool {
+        match ty {
+            ast::Type::Qualified(_, inner) => {
+                carries(inner, names, positions, local_parameters)
+            }
+            ast::Type::Named(name, arguments) => {
+                if local_parameters.contains(name) && arguments.is_empty() {
+                    return false;
+                }
+                names.contains(name)
+                    || match positions.get(name) {
+                        Some(stored) => stored.iter().zip(arguments).any(|(stored, argument)| {
+                            *stored && carries(argument, names, positions, local_parameters)
+                        }),
+                        None => arguments
+                            .iter()
+                            .any(|argument| carries(argument, names, positions, local_parameters)),
+                    }
+            }
+            ast::Type::Dyn(_, _) | ast::Type::Fn(..) => false,
+            ast::Type::Tuple(items) => items
+                .iter()
+                .any(|item| carries(item, names, positions, local_parameters)),
+            ast::Type::RecordCompose { base, fields } => {
+                carries(base, names, positions, local_parameters)
+                    || fields
+                        .iter()
+                        .any(|(_, field)| carries(field, names, positions, local_parameters))
+            }
         }
     }
 
@@ -10365,6 +10443,34 @@ fn must_consume_type_names(module: &Module) -> HashSet<String> {
             _ => None,
         })
         .collect::<Vec<_>>();
+    let mut positions = definitions
+        .iter()
+        .map(|definition| {
+            (
+                definition.name.clone(),
+                vec![false; ast::effective_type_def_params(definition).len()],
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    loop {
+        let before = positions.clone();
+        for definition in &definitions {
+            let parameters = ast::effective_type_def_params(definition);
+            let stored = positions
+                .get_mut(&definition.name)
+                .expect("every definition has a parameter mask");
+            for (index, parameter) in parameters.iter().enumerate() {
+                stored[index] |= definition
+                    .variants
+                    .iter()
+                    .flat_map(|variant| &variant.fields)
+                    .any(|field| stores_parameter(field, parameter, &before));
+            }
+        }
+        if positions == before {
+            break;
+        }
+    }
     let mut names = definitions
         .iter()
         .filter(|definition| definition.must_consume)
@@ -10373,17 +10479,20 @@ fn must_consume_type_names(module: &Module) -> HashSet<String> {
     loop {
         let before = names.len();
         for definition in &definitions {
+            let local_parameters = ast::effective_type_def_params(definition)
+                .into_iter()
+                .collect::<HashSet<_>>();
             if definition
                 .variants
                 .iter()
                 .flat_map(|variant| &variant.fields)
-                .any(|field| carries(field, &names))
+                .any(|field| carries(field, &names, &positions, &local_parameters))
             {
                 names.insert(definition.name.clone());
             }
         }
         if names.len() == before {
-            return names;
+            return MustConsumeCatalog { types: names, parameters: positions };
         }
     }
 }
@@ -10398,6 +10507,7 @@ fn run_check_selected(
     compiler_syntax_allowed: bool,
 ) -> Result<Option<TypeTable>, TypeError> {
     let module = &module;
+    let must_consume = must_consume_catalog(module);
     let mut c = Checker {
         type_record: if record { Some(HashMap::new()) } else { None },
         // Construction requests are also retained during ordinary checking so
@@ -10498,7 +10608,8 @@ fn run_check_selected(
         next_var: 0,
         scopes: vec![HashMap::new()],
         consumed: HashSet::new(),
-        must_consume_types: must_consume_type_names(module),
+        must_consume_types: must_consume.types,
+        must_consume_parameters: must_consume.parameters,
         must_live: HashSet::new(),
         must_borrowed: HashSet::new(),
         region_locals: Vec::new(),
