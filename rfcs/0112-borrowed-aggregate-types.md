@@ -1,7 +1,7 @@
 ---
 rfc: 0112
 title: "Borrowed aggregate types and projection-aware loans"
-status: accepted
+status: implemented
 created: 2026-08-01
 updated: 2026-08-09
 tracking: "Design accepted; no open questions (non-goals fixed: no mutable/shared refs, no pointer identity, no loan across await/yield initially). Adds lifetime parameters to nominal type declarations; shared read-only borrows only. Criteria 1-11 are PROVEN in the current closure set. Row 6 proves scalar update/replacement ordering; row 7 proves escape diagnostics plus owned-companion conversion (`Owned__a__owned_companion`); row 8 proves root lifecycle under checked-heap/no-reuse/UAF-style coverage; row 9 proves full `List(B('a))` lifecycle and relation-erasing boundary checks; row 10 proves parser/iterator zero-materialization behavior through compiled and sanity-check runs; row 11 confirms language/book/TypeInfo/documentation contract and runnable counters. Rust-class scalar performance remains a long-term target: accepted opt-path borrows add no dynamic checker and no payload materialization, while the stable point-based facts permit the solver and lowering to be replaced or specialized when corpus evidence warrants it. Per rfcs/0110-0112-acceptance-ledger.md."

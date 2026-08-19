@@ -1,14 +1,12 @@
 ---
 rfc: 0104
 title: "Compiler filesystem-authority discipline: cap-std and lint-gated ambient authority"
-status: draft
+status: deferred
 created: 2026-07-24
 tracking: >
-  Draft. Phase order: (1) land the ambient-authority module + clippy
-  disallowed-methods gate with the current sites baselined (non-blocking),
-  (2..N) migrate file clusters off `std::fs` onto cap-std, ratcheting the
-  baseline down, each cluster its own branch; the source-loader cluster
-  doubles as an over-authority audit.
+  Deferred 2026-08-19. No implementation cut or owner is currently scheduled.
+  Revisit when a compiler-wide ambient-authority audit is staffed and the
+  disallowed-method baseline can be maintained as a tracked migration ledger.
 predecessors:
   - "[0103](0103-derived-platform-confinement.md) (derived confinement — adopted cap-std for the Dir capability; this RFC extends the same discipline to the compiler's own trusted filesystem access)"
   - "[0002](0002-user-definable-capabilities.md) (the capability doctrine the compiler's implementation should mirror)"

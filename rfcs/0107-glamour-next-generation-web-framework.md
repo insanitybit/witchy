@@ -1,7 +1,7 @@
 ---
 rfc: 0107
 title: "Glamour 1.0: capability-safe, compiler-directed web applications"
-status: accepted
+status: implemented
 created: 2026-07-29
 updated: 2026-08-13
 superseded-by:

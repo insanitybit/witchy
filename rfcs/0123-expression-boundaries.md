@@ -1,18 +1,22 @@
 ---
 rfc: 0123
-title: "Newline-terminated expressions and `;` as discard"
+title: "Expression boundaries, `;` discard, and dead-return collection lowering"
 status: accepted
 created: 2026-08-17
 predecessors:
+  - "[0022](0022-index-assignment.md) (place-assignment sugar and collection updates)"
+  - "[0033](0033-place-based-uniqueness.md) (place-based uniqueness and in-place helpers)"
   - "[0043](0043-declared-mutation-writeback.md) (`let _ =` as the explicit discard; non-`var` non-`Nil` throwaway is an error)"
   - "[0122](0122-uniform-borrow-relations.md) (`&place`, `&mut place`, and `*place` reuse infix glyphs)"
 related:
+  - "[0050](0050-method-call-generalization.md) (method call dispatch)"
   - "[0064](0064-complete-mutation-classification.md) (statement-position write-back and the discard diagnostic)"
   - "[0078](0078-anonymous-tagged-unions.md) (inline-arm `.Tag` is the next pattern, not a method)"
-tracking: "unimplemented; staged in three cuts"
+  - "[0122](0122-uniform-borrow-relations.md) (opt-mode place references)"
+tracking: "accepted; staged in four cuts: layout boundaries, written discard, editor grammar, and discard-aware collection lowering. RFC-0124 is consolidated here; implementation and evidence remain outstanding."
 ---
 
-# RFC-0123: Newline-terminated expressions and `;` as discard
+# RFC-0123: Expression boundaries, `;` discard, and dead-return collection lowering
 
 > Provisional syntax. Code blocks are deliberately **not** tagged `witchy`,
 > so the doc-examples sweep does not compile pre-implementation snippets.
@@ -31,6 +35,13 @@ An author-written `;` is a different token, `Tok::Semi`. Both stop
 `expr()`. Only `Semi` builds `Stmt::Discard`. That mark *replaces*
 `let _ = e`. `let`, `var`, assignment, `for`, `return`, and the other
 non-value forms do not take a semicolon.
+
+The same discard marker also gives lowering a precise place to remove
+unobservable extraction results. Collection mutators keep their value-returning
+API in expression position, while a discarded `dict.insert`, `dict.remove`, or
+`list.pop` may use the corresponding in-place update path without constructing
+an unused `Option` or copying a displaced leaf. The lowering and acceptance
+contract for that optimization is part of this RFC; it is not a separate RFC.
 
 ## Motivation
 
@@ -372,6 +383,86 @@ when it starts with `|`. Then `*slot = 9` on the next line is a
 statement without a hack that breaks `n * 2`, and
 `coven_proto.witchy:68` still highlights as one expression.
 
+### 7. Discard-aware collection lowering
+
+The written `;` and the statement boundary established above distinguish an
+unused result from a result that flows into another expression. That distinction
+is useful beyond diagnostics. Standard collection mutators return a displaced
+element or mutation status (`Option(v)` or `Bool`), but statement-position calls
+and explicit discards immediately drop that value.
+
+Today the compiler lowers these calls through extraction intrinsics such as
+`dict.__insert_extract`, `dict.__remove_extract`, and `list.__pop_extract`.
+Those paths search for and copy the displaced leaf and allocate an
+`Option::Some(old_val)` even when the caller cannot observe it. The discard-aware
+rewrite runs after type checking and before in-place uniqueness analysis. It
+rewrites only calls whose result is definitely discarded to the non-extracting
+update operation, allowing the existing in-place analysis and capacity helpers
+to do their work.
+
+#### Opportunity matrix
+
+| Operation | Current lowering | Discard lowering | Runtime path |
+| --- | --- | --- | --- |
+| `dict.insert(var d, k, v)` | `dict.__insert_extract` | `d = dict.__insert(d, k, v)` | `$dict_insert_cap` |
+| `dict.remove(var d, k)` | `dict.__remove_extract` | `d = dict.__remove(d, k)` | `$dict_remove_cap` |
+| `list.pop(var xs)` | `list.__pop_extract` | `xs = list.__pop(xs)` | in-place length decrement |
+| `set.insert(var s, x)` | status-producing insert | status-free update | in-place append when missing |
+| `set.remove(var s, x)` | status-producing remove | status-free update | in-place filter |
+
+The rewrite is observable only through performance and counters. Key hashing,
+equality evaluation, mutation order, and the final collection contents remain
+the same as the extraction operation. A value used in an assignment, returned,
+passed to another call, or stored in an aggregate remains on the extracting
+path.
+
+#### Dead-return rewrite
+
+The lowering pass is named `rewrite_dead_extracts_module` and runs during AST
+preparation, after type checking and before in-place uniqueness analysis. It
+traverses statement blocks and recognizes both a standalone discarded expression
+and the explicit `Stmt::Discard` introduced by this RFC:
+
+```text
+pub(crate) fn rewrite_dead_extracts_module(
+    module: &mut Module,
+    table: &TypeTable,
+) -> bool
+```
+
+The concrete rewrite rules are:
+
+1. `dict.__insert_extract(d, k, v)` becomes an assignment of
+   `dict.__insert(d, k, v)` back to `d`.
+2. `dict.__remove_extract(d, k)` becomes an assignment of
+   `dict.__remove(d, k)` back to `d`.
+3. `list.__pop_extract(xs)` becomes an assignment of `list.__pop(xs)` back to
+   `xs`.
+
+The pass must preserve the original receiver, argument evaluation order, and
+write-back location. It must not rewrite an expression merely because an
+intermediate value is unused: only a statement-position result or an explicit
+discard qualifies. The existing `analysis.rs` classification then sees a normal
+unique `var` assignment and selects the capacity-retaining in-place helper.
+
+#### Semantic parity
+
+The interpreter and Wasm backends already implement the pure update operations.
+The differential fixture compares expression-position and discard-position
+updates for the same initial collection and arguments. It checks final contents,
+return behavior when the value is used, and allocation/capacity counters when the
+value is discarded. No backend may observe a different key lookup, equality
+order, or collection state.
+
+#### Alternatives
+
+Adding public `dict.put` or `list.drop_last` methods would duplicate names for
+one conceptual update and make callers choose an API based on whether they need
+the result. A WIR-level dead-value pass would be too late: the extraction helper
+would already have performed the lookup and copied the displaced value. The
+discard-aware AST rewrite is the narrowest boundary that can select the existing
+in-place lowering without expanding the public language surface.
+
 ## Alternatives
 
 **Pure indent, separator on every same-indent line.** Token-agnostic.
@@ -467,6 +558,12 @@ prefix reuse that made the missing separator loud.
    `spec/stdlib.md`.
 3. Tree-sitter's indent scanner emits the same statement-break:
    statement-block deny-list, arm-list `|` only.
+4. Once `Stmt::Discard` is available, add
+   `rewrite_dead_extracts_module` to the post-type-check, pre-uniqueness
+   lowering pipeline. Rewrite only discarded collection extraction calls to
+   their pure update counterparts, then exercise the interpreter/Wasm
+   differential and allocation/capacity counters. This cut is the consolidated
+   RFC-0124 implementation phase.
 
 Step 1 can land without step 2. Step 2 without step 1 still helps
 last-line discard. The two tokens must not be collapsed.
@@ -522,3 +619,15 @@ parity-bearing row is the `;` block-value typing.
 - The tree-sitter parse of the RFC-0122 `*slot = 9` fixture has no
   `ERROR` node, `n * 2` still parses as multiply, and
   `coven_proto.witchy:68` is one expression.
+- A discarded `dict.insert` does not allocate an `Option` wrapper or extract the
+  displaced leaf; a used `dict.insert` retains its `Option` result.
+- A discarded `dict.remove` takes the non-extracting in-place path; a used
+  `dict.remove` retains its displaced value and its existing semantics.
+- A discarded `list.pop` decrements the list in place without copying the tail;
+  a used `list.pop` retains the extracted element.
+- `set.insert` and `set.remove` use status-free in-place paths only when their
+  status result is explicitly discarded.
+- The collection differential fixture agrees on interpreter and compiled Wasm
+  for final contents, evaluation order, used results, and discard-path counters.
+- The `dict_count` update workload reaches parity with equivalent subscript
+  assignment, with zero `Option` wrapper allocations on the discard path.

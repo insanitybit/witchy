@@ -1,10 +1,14 @@
 ---
 rfc: 0114
 title: Must-consume obligations (linear resource handles)
-status: proposed
+status: deferred
 created: 2026-08-03
 superseded-by:
-tracking:
+tracking: >
+  Deferred 2026-08-19. The design remains a candidate, but no concrete
+  must-consume resource type or implementation owner is scheduled. Revisit
+  when a resource API requires guaranteed cleanup beyond ordinary ownership
+  and can provide executable diagnostics and drop-path acceptance criteria.
 ---
 
 # RFC-0114: Must-consume obligations (linear resource handles)
