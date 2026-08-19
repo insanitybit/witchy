@@ -71,7 +71,7 @@ Two distinct defects, and neither is a "tier contract" item:
 
 ### Diagnosis — three compounding causes
 
-**D1 — closure per await.** `await E` lowers to `task.and_then(E, fn(x): rest)`
+**D1 — closure per await.** `await E` lowers to `task.and_then(E, fn(own x): rest)`
 (`crates/witchy-syntax/src/async_lower.rs`): every await point allocates a
 closure capturing the live locals, per execution.
 
@@ -310,7 +310,7 @@ must be scalar-columnar, not a boxed record.** Two landable increments, in order
 1. **`async_lower.rs` → single-step state machine, executor UNCHANGED (low risk,
    ~10× + expressiveness, no flat).** Keep the existing `Step`/`Task` shape and the
    `std/task`/`std/chan` executor exactly as they are; only change what `async_lower`
-   emits: instead of nested `task.and_then(inner, fn(x): rest)` (the tower), compile
+   emits: instead of nested `task.and_then(inner, fn(own x): rest)` (the tower), compile
    each `async fn` to a frame record + a step function, and emit each suspension's
    continuation as a **single** closure `fn(x): __f_step(inject(frame, x))` (captures
    the frame — one pointer — never a tower). `and_then` leaves the hot path;
@@ -474,7 +474,7 @@ both executors, every `std/chan` combinator, the book chapter, and the concurren
 under the full parity + interleaving-determinism + heap-check gate. Concretely:
 
 1. **Defunctionalize the continuation to data, not a closure.** Today `async_lower` emits
-   `task.and_then(inner, fn(x): __seg(carried…, x))` — the closure IS the boxed frame.
+   `task.and_then(inner, fn(own x): __seg(carried…, x))` — the closure IS the boxed frame.
    Replace it with a `(seg-id, task-id)` pair: each lifted segment function gets a global
    integer `seg-id`, and the executor resumes a task by dispatching on `seg-id` through a
    **whole-program generated `step` dispatcher** (`match seg_id: 0 -> __seg0(cols…); …`)

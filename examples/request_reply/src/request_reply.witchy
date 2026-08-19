@@ -15,7 +15,7 @@ type Msg:
 async fn server(inbox: Receiver(Msg)):
     chan.serve(inbox, 0, fn(seen, m):
         match m:
-            Square(n, reply_to) -> chan.and_then(chan.send(reply_to, Result(n * n)), fn(_u): chan.done(seen + 1))
+            Square(n, reply_to) -> chan.and_then(chan.send(reply_to, Result(n * n)), fn(own _u): chan.done(seen + 1))
             Result(_r) -> chan.done(seen)
     ).await
 

@@ -4152,7 +4152,14 @@ mod tests {
             assert_eq!(function.ret.as_ref(), Some(&result), "return drift for {}", spec.name);
             assert_eq!(
                 function.params[0].convention,
-                if *name == LIST_POP_EXTRACT { Convention::Var } else { Convention::Let },
+                match *name {
+                    LIST_POP_EXTRACT => Convention::Var,
+                    // `__push` returns the repaired list. Consuming the old
+                    // shell lets must-consume elements move through that
+                    // write-back boundary without creating a dropped copy.
+                    LIST_PUSH => Convention::Own,
+                    _ => Convention::Let,
+                },
                 "receiver convention drift for {}",
                 spec.name
             );

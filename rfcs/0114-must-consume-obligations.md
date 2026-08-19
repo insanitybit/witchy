@@ -5,10 +5,11 @@ status: experimental
 created: 2026-08-03
 superseded-by:
 tracking: >
-  Core syntax and checker slice implemented 2026-08-19. `must type`,
+  Core syntax, checker, and structured-task integration implemented 2026-08-19. `must type`,
   `must sealed type`, and `must capability` preserve declaration metadata;
   all-path disposition, move/copy, overwrite, borrow, aggregate propagation,
-  and own-call attempt semantics have executable checker coverage. The standard
+  own-call attempt semantics, suspension-frame transfer, and must-consume task
+  handles have executable checker and compiled-Wasm coverage. The standard
   `transaction` resource now proves success, conflict, rollback, branch, move,
   and aggregate behavior through the checker and compiled Wasm, plus rejection
   when an early return would abandon the resource.
@@ -198,7 +199,8 @@ this follows.
   all-path branch joins enforce one live obligation per binding identity.
   Evidence: `must_consume_requires_disposition_on_every_path`,
   `must_consume_transfers_without_copying_and_propagates_through_aggregates`,
-  and `must_consume_own_calls_discharge_at_attempt_and_shadowing_keeps_binding_identity`.
+  `must_consume_own_calls_discharge_at_attempt_and_shadowing_keeps_binding_identity`,
+  and `owned_function_values_transfer_must_consume_closure_captures`.
 - PROVEN: borrowed must-consume values retain the caller's obligation and may
   not be consumed by the callee; unbound borrowed temporaries are rejected.
   Evidence:
@@ -219,6 +221,13 @@ this follows.
   `transaction_resource_consumes_success_conflict_rollback_moves_aggregates_and_cfg_early_return_on_wasm`,
   and
   `transaction_resource_rejects_lifecycle_loss_on_scope_branch_move_and_aggregate_paths`.
+- PROVEN: `task.Handle` and `List(task.Handle)` are must-consume; `join`,
+  `cancel`, `join_all`, and `cancel_all` are consuming operations. Plain drop,
+  early return, aggregate drop, and one-path disposition are rejected, while
+  all-path join/cancel checks and aggregate execution completes on compiled
+  Wasm. Evidence:
+  `task_handles_must_be_joined_cancelled_or_returned_on_every_path` and
+  `structured_task_handle_aggregates_run_on_compiled_wasm`.
 - OPEN: run the final workspace matrix and promote the RFC only after the
   standard-library integration is merged.
 

@@ -30,6 +30,8 @@ async fn collector(console: Console, a: Receiver(Int), b: Receiver(Int)):
 async fn main(console: Console):
     let (tick_tx, tick_rx) = chan.channel(4).await
     let (beat_tx, beat_rx) = chan.channel(4).await
-    chan.spawn(ticks(tick_tx)).await
-    chan.spawn(beats(beat_tx)).await
+    let ticks_handle = chan.spawn(ticks(tick_tx)).await
+    let beats_handle = chan.spawn(beats(beat_tx)).await
     collector(console, tick_rx, beat_rx).await
+    chan.join(ticks_handle).await
+    chan.join(beats_handle).await

@@ -59,7 +59,7 @@ fn unit():
 // ---- core combinators ----
 
 // A finished task.
-pub fn done(x: a) -> Task(a):
+pub fn done(own x: a) -> Task(a):
     Task(fn(): Done(x))
 
 // An already-complete `Task(Nil)` - the async/await lowering target for a body
@@ -73,10 +73,10 @@ pub fn yield_now() -> Task(Nil):
 
 // Sequence: run `t`, then continue with `k` applied to its result. This is what
 // `await` lowers to - the continuation `k` is the rest of the body.
-pub fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b):
+pub fn and_then(t: Task(a), own k: fn(own a) -> Task(b)) -> Task(b):
     Task(fn(): and_then_step(poll(t), k))
 
-fn and_then_step(s: Step(a), k: fn(a) -> Task(b)) -> Step(b):
+fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
     match s:
         Done(v) -> Yield(k(v))
         Yield(t2) -> Yield(and_then(t2, k))
@@ -89,8 +89,8 @@ fn and_then_step(s: Step(a), k: fn(a) -> Task(b)) -> Step(b):
         Cancel(target, cont) -> Cancel(target, fn(u): and_then(cont(u), k))
 
 // Transform a task's result.
-pub fn map(t: Task(a), f: fn(a) -> b) -> Task(b):
-    and_then(t, fn(x): Task(fn(): Done(f(x))))
+pub fn map(t: Task(a), f: fn(own a) -> b) -> Task(b):
+    and_then(t, fn(own x): Task(fn(): Done(f(x))))
 
 // Build the task `thunk()` lazily: nothing runs until this task is polled. A
 // `Task` is a replayable execution recipe, not a memo cell; the standard driver
@@ -105,10 +105,10 @@ pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
     if list.is_empty(xs):
         ready_unit()
     else:
-        and_then(f(list.at(xs, 0)), fn(_done): for_each(list.tail(xs), f))
+        and_then(f(list.at(xs, 0)), fn(own _done): for_each(list.tail(xs), f))
 
 // ---- spawn + join ----
-sealed type Handle:
+must sealed type Handle:
     Handle(Int)
 
 // Channel identity shared with std/chan. User source cannot mint one; the
@@ -144,7 +144,7 @@ pub fn spawn(child: Task(Nil)) -> Task(Handle):
 // Wait for the spawned task behind `h` while the executor can make progress. If
 // the whole executor reaches quiescence with this join parked, the close pass
 // releases it even if the joined task has a continuation that will run afterward.
-pub fn join(h: Handle) -> Task(Nil):
+pub fn join(own h: Handle) -> Task(Nil):
     match h:
         Handle(id) -> Task(fn(): Wait(id, fn(u): Task(fn(): Done(u))))
 
@@ -152,7 +152,7 @@ pub fn join(h: Handle) -> Task(Nil):
 // finished, so anyone `join`ing it unblocks. Shallow (stops this one task, not its
 // descendants) and idempotent (already-finished is a no-op). Deterministic on the
 // round-robin schedule, hence byte-identical on both backends.
-pub fn cancel(h: Handle) -> Task(Nil):
+pub fn cancel(own h: Handle) -> Task(Nil):
     match h:
         Handle(id) -> Task(fn(): Cancel(id, fn(u): Task(fn(): Done(u))))
 

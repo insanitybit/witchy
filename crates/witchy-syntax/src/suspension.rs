@@ -10,6 +10,12 @@
 use crate::ast::{pattern_binds, Block, Expr, Stmt};
 use foldhash::{HashSet, HashSetExt as _};
 
+/// Compiler-owned marker on generated segment functions. An `own` parameter on
+/// an ordinary function is a consuming operation; on a suspension segment it
+/// is an affine frame transfer, so the callee assumes (rather than discharges)
+/// any must-consume obligation carried by that slot.
+pub const FRAME_FUNCTION_ATTRIBUTE: &str = "__compiler_suspension_frame";
+
 /// Free lexical bindings referenced by `expression`, in deterministic first-use
 /// order. Bindings introduced by nested blocks, patterns, loops, and lambdas are
 /// excluded from the result.

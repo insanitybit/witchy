@@ -25,6 +25,11 @@
             "{prelude}fn run(flag: Bool):\n    let ticket = make()\n    if flag:\n        finish(ticket)\n    else:\n        finish(ticket)\n\nfn main():\n    run(true)\n"
         ))
         .expect("both branches consume the obligation");
+
+        check_source(&format!(
+            "{prelude}fn score(own ticket: Ticket) -> Int:\n    1\n\nfn run(flag: Bool) -> Int:\n    let ticket = make()\n    let result: Int = if flag:\n        score(ticket)\n    else:\n        score(ticket)\n    result\n\nfn main():\n    let _ = run(true)\n"
+        ))
+        .expect("expected-type checking isolates moves made by sibling branches");
     }
 
     #[test]
@@ -82,6 +87,15 @@
     }
 
     #[test]
+    fn owned_function_values_transfer_must_consume_closure_captures() {
+        let source = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn run(own action: fn() -> Nil):\n    action()\n\nfn main():\n    let invoke = run\n    let ticket = make()\n    invoke(fn(): finish(ticket))\n";
+
+        check_source(source).expect(
+            "an own higher-order boundary transfers a closure and its must-consume captures",
+        );
+    }
+
+    #[test]
     fn must_consume_borrows_require_a_live_owner_and_only_own_operations_may_destructure() {
         let temporary_borrow = check_source(
             "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn inspect(let ticket: Ticket) -> Bool:\n    true\n\nfn main():\n    inspect(make())\n",
@@ -112,6 +126,23 @@
         )
         .expect_err("a generic field that stores its parameter propagates the obligation");
         assert!(stored.message.contains("must-consume value `boxed`"));
+    }
+
+    #[test]
+    fn suspension_frame_own_parameters_assume_must_obligations() {
+        let mut module = witchy_syntax::parser::parse_module(
+            "must type Ticket:\n    Ticket(Int)\n\nfn segment(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    let _ = 0\n",
+        )
+        .expect("frame-obligation fixture parses");
+        let witchy_syntax::ast::Item::Function(segment) = &mut module.items[1] else {
+            panic!("expected segment function")
+        };
+        segment
+            .attributes
+            .push(witchy_syntax::suspension::FRAME_FUNCTION_ATTRIBUTE.into());
+
+        let error = check(&module).expect_err("a frame slot may not drop its transferred obligation");
+        assert!(error.message.contains("must-consume value `ticket`"), "{error:?}");
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub fn at(xs: List(a), index: Int) -> a:
     list.at(xs, index)
 
 // Compiler primitive used by the public move-in/move-out operation below.
-fn __push(xs: List(a), x: a) -> List(a):
+fn __push(own xs: List(a), x: a) -> List(a):
     list.__push(xs, x)
 
 // Remove the final element and return its old leaf. The repaired list travels

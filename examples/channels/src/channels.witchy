@@ -17,6 +17,7 @@ async fn consumer(console: Console, rx: Receiver(Int)):
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
-    chan.spawn(producer(tx)).await
+    let producer_handle = chan.spawn(producer(tx)).await
     consumer(console, rx).await
+    chan.join(producer_handle).await
     console.print("channel drained")

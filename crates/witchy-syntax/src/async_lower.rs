@@ -24,7 +24,7 @@
 //! becomes (schematically):
 //! ```text
 //! fn pipe(seed: Int) -> Task(Int):
-//!     task.lazy(fn(): task.and_then(step(seed), fn(a): __async_pipe_0(a)))
+//!     task.lazy(fn(): task.and_then(step(seed), fn(own a): __async_pipe_0(a)))
 //! fn __async_pipe_0(a) -> Task(Int):
 //!     print_it(a)
 //!     task.done(a + 1)
@@ -960,7 +960,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// Emit a suspension on `inner` (a `Task`): compute the continuation for
-    /// `rest`, lift it to a segment, and return `and_then(inner, fn(bind):
+    /// `rest`, lift it to a segment, and return `and_then(inner, fn(own bind):
     /// seg(carried…, bind))`. `bind` is the resume value (`None` for a discarded
     /// `await`).
     fn suspend(
@@ -969,6 +969,19 @@ impl<'a> Ctx<'a> {
         bind: Option<Local>,
         cont: Continuation<'_>,
     ) -> Result<Expr, String> {
+        // Even a source-level discarded await needs a frame input. If its
+        // produced type is must-consume, the generated segment's affine slot
+        // must reject dropping it instead of losing the obligation in the
+        // shallow continuation closure.
+        let bind = bind.or_else(|| {
+            Some(Local {
+                name: self.fresh_tmp(),
+                ty: None,
+                mutable: false,
+                borrowed_view: false,
+                returns_view: false,
+            })
+        });
         let mut cont_scope = cont.scope.to_vec();
         if let Some(b) = &bind {
             cont_scope.push(b.clone());
@@ -980,7 +993,7 @@ impl<'a> Ctx<'a> {
 
     /// Lift `cont_expr` (the continuation) to a top-level segment function whose
     /// parameters are the live locals it references (plus the resume `bind`), and
-    /// return `and_then(inner, fn(bind): seg(carried…, bind))`.
+    /// return `and_then(inner, fn(own bind): seg(carried…, bind))`.
     fn lift_suspend(
         &mut self,
         inner: impl IntoTask,
@@ -1009,7 +1022,7 @@ impl<'a> Ctx<'a> {
             params.push(Param {
                 name: b.name.clone(),
                 ty: None,
-                convention: if b.mutable { Convention::Own } else { Convention::Let },
+                convention: Convention::Own,
                 default: None,
             });
         }
@@ -1035,7 +1048,7 @@ impl<'a> Ctx<'a> {
                 vec![Param {
                     name: b.name.clone(),
                     ty: None,
-                    convention: Convention::Let,
+                    convention: Convention::Own,
                     default: None,
                 }]
             }
@@ -1249,7 +1262,7 @@ impl<'a> Ctx<'a> {
                 recv_params.push(Param {
                     name: o.clone(),
                     ty: None,
-                    convention: Convention::Let,
+                    convention: Convention::Own,
                     default: None,
                 });
                 self.segments.push(Function {
@@ -1265,7 +1278,7 @@ impl<'a> Ctx<'a> {
                     is_gen: false,
                     is_async: false,
                 });
-                // loop-segment: and_then(chan.recv(src), fn(o): recv(carried…, o))
+                // loop-segment: and_then(chan.recv(src), fn(own o): recv(carried…, o))
                 let mut recv_args: Vec<Expr> =
                     carried.iter().map(|l| Expr::Var(l.name.clone())).collect();
                 recv_args.push(Expr::Var(o.clone()));
@@ -1273,7 +1286,7 @@ impl<'a> Ctx<'a> {
                     params: vec![Param {
                         name: o,
                         ty: None,
-                        convention: Convention::Let,
+                        convention: Convention::Own,
                         default: None,
                     }],
                     body: tail_block_at(call(&recv_name, recv_args), first_line(&body.lines)),
@@ -1378,13 +1391,15 @@ fn lower_async_fn_with(
         ));
     }
 
+    let mut segment_attributes = f.attributes.clone();
+    segment_attributes.push(crate::suspension::FRAME_FUNCTION_ATTRIBUTE.to_string());
     let mut ctx = Ctx {
         fname: f.name.clone(),
         counter,
         segments: Vec::new(),
         view_fns,
         borrowed_shells,
-        attributes: f.attributes.clone(),
+        attributes: segment_attributes,
     };
     let scope: Vec<Local> = f
         .params
@@ -1451,7 +1466,7 @@ fn local_to_param(l: &Local) -> Param {
     Param {
         name: l.name.clone(),
         ty: l.ty.clone(),
-        convention: if l.mutable { Convention::Own } else { Convention::Let },
+        convention: Convention::Own,
         default: None,
     }
 }
@@ -1531,11 +1546,16 @@ fn live_locals(expr: &Expr, scope: &[Local], skip: Option<&str>) -> Vec<Local> {
     let free = crate::suspension::free_bindings(expr)
         .into_iter()
         .collect::<HashSet<_>>();
-    scope
+    let mut shadowed = HashSet::new();
+    let mut live = scope
         .iter()
+        .rev()
         .filter(|l| Some(l.name.as_str()) != skip && free.contains(&l.name))
+        .filter(|l| shadowed.insert(l.name.clone()))
         .cloned()
-        .collect()
+        .collect::<Vec<_>>();
+    live.reverse();
+    live
 }
 
 // ---- small AST helpers ----
@@ -1691,10 +1711,10 @@ fn stmt_contains_await(s: &Stmt) -> bool {
     }
 }
 
-/// `task.and_then(inner, fn(bind): k)`.
+/// `task.and_then(inner, fn(own bind): k)`.
 fn and_then(inner: Expr, bind: String, k: Expr) -> Expr {
     let lambda = Expr::Lambda {
-        params: vec![Param { name: bind, ty: None, convention: Convention::Let, default: None }],
+        params: vec![Param { name: bind, ty: None, convention: Convention::Own, default: None }],
         body: tail_block(k),
         ret: None,
     };
@@ -1754,6 +1774,32 @@ mod tests {
 
     fn int_type() -> Type {
         Type::Named("Int".to_string(), Vec::new())
+    }
+
+    #[test]
+    fn suspension_slots_keep_only_the_innermost_shadowed_binding() {
+        let local = |name: &str, mutable| Local {
+            name: name.to_string(),
+            ty: Some(int_type()),
+            mutable,
+            borrowed_view: false,
+            returns_view: false,
+        };
+        let expression = Expr::Binary {
+            op: BinOp::Add,
+            lhs: Box::new(Expr::Var("sum".into())),
+            rhs: Box::new(Expr::Var("n".into())),
+        };
+        let slots = live_locals(
+            &expression,
+            &[local("sum", false), local("n", false), local("sum", true)],
+            None,
+        );
+
+        assert_eq!(
+            slots.iter().map(|slot| (slot.name.as_str(), slot.mutable)).collect::<Vec<_>>(),
+            [("n", false), ("sum", true)],
+        );
     }
 
     #[test]
@@ -1985,6 +2031,15 @@ mod tests {
         assert!(functions.len() >= 2, "an await must produce a lifted segment");
         assert!(functions
             .iter()
-            .all(|function| function.attributes == ["browser"]));
+            .all(|function| function.attributes.iter().any(|attribute| attribute == "browser")));
+        assert!(functions.iter().all(|function| {
+            function.name == "browser_value"
+                || function
+                    .attributes
+                    .iter()
+                    .any(|attribute| {
+                        attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE
+                    })
+        }));
     }
 }

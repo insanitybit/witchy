@@ -78,7 +78,7 @@ async fn server(inbox: Receiver(Msg)):
     chan.serve(inbox, (0, 0), fn(state: (Int, Int), m):
         match m:
             Reading(v) -> chan.done((state.0 + 1, state.1 + v))
-            Report(reply) -> chan.and_then(chan.send(reply, Summary(state.0, state.1)), fn(_u): chan.done(state))
+            Report(reply) -> chan.and_then(chan.send(reply, Summary(state.0, state.1)), fn(own _u): chan.done(state))
             Summary(_c, _t) -> chan.done(state)
     ).await
 

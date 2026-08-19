@@ -76,8 +76,9 @@ async fn source(tx: Sender(String)):
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
-    chan.spawn(source(tx)).await
+    let source_handle = chan.spawn(source(tx)).await
     chan.consume(rx, fn(msg): chan.done(console.print("got: ${msg}"))).await
+    chan.join(source_handle).await
 ```
 
 ## Request, reply, and stateful servers
@@ -99,7 +100,7 @@ async fn accumulator(inbox: Receiver(Msg)):
     chan.serve(inbox, 0, fn(sum, m):
         match m:
             Add(n) -> chan.done(sum + n)
-            Get(reply) -> chan.and_then(chan.send(reply, Total(sum)), fn(_u): chan.done(sum))
+            Get(reply) -> chan.and_then(chan.send(reply, Total(sum)), fn(own _u): chan.done(sum))
             Total(_t) -> chan.done(sum)
     ).await
 
@@ -142,17 +143,19 @@ async fn worker(jobs: Receiver(Int), out: Sender(Int)):
 async fn main(console: Console):
     let (jobs_tx, jobs_rx) = chan.channel(2).await
     let (out_tx, out_rx) = chan.channel(2).await
-    chan.spawn(worker(jobs_rx, out_tx)).await
-    chan.spawn(worker(jobs_rx, out_tx)).await
+    let first_worker = chan.spawn(worker(jobs_rx, out_tx)).await
+    let second_worker = chan.spawn(worker(jobs_rx, out_tx)).await
     for n in [3, 4, 5]:
         chan.send(jobs_tx, n).await
     chan.consume(out_rx, fn(r): chan.done(console.print("sq ${r}"))).await
+    chan.join_all([move first_worker, move second_worker]).await
 ```
 
 ## Structured concurrency: the form to reach for first
 
-A bare `chan.spawn` hands you a task handle you must remember to `join` - forget
-it, or return early past it, and the worker outlives the code that started it.
+A bare `chan.spawn` hands you a must-consume task handle. The checker requires
+every path to `join` it, `cancel` it, return it, or transfer it into another
+`own` operation; forgetting it or returning early is a compile-time error.
 The `chan` module gives you a *structured* layer on top, where the tasks are
 never visible and the join is guaranteed. Prefer these over a raw `spawn`:
 
@@ -232,9 +235,11 @@ async fn squares(rx: Receiver(Int), out: Sender(Int)):
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     let (out_tx, out_rx) = chan.channel(4).await
-    chan.spawn(producer(tx)).await
-    chan.spawn(squares(rx, out_tx)).await
+    let producer_handle = chan.spawn(producer(tx)).await
+    let squares_handle = chan.spawn(squares(rx, out_tx)).await
     chan.consume(out_rx, fn(v): chan.done(console.print("got ${v}"))).await
+    chan.join(producer_handle).await
+    chan.join(squares_handle).await
 ```
 
 A `while` loop may `await` in its body too, and a `var` local may cross an
@@ -260,8 +265,9 @@ async fn total(console: Console, rx: Receiver(Int)):
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
-    chan.spawn(counter(tx, 5)).await
+    let counter_handle = chan.spawn(counter(tx, 5)).await
     total(console, rx).await
+    chan.join(counter_handle).await
 ```
 
 ```text

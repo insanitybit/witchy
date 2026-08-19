@@ -1841,8 +1841,9 @@ async fn producer(tx: Sender(Int)):
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
-    chan.spawn(producer(tx)).await
+    let producer_handle = chan.spawn(producer(tx)).await
     chan.consume(rx, fn(n): chan.done(console.print("got ${n}"))).await
+    chan.join(producer_handle).await
 ```
 
 `chan.channel(cap)` is a bounded channel - the sender blocks when it's full
@@ -1856,6 +1857,8 @@ channel can be shared by many receivers (a worker pool) or many senders. Each
 channel is typed independently - a program may use channels of many different
 message types (the executor carries messages erased and each endpoint recovers
 its own type). A spawned task returns `Nil`, reporting results over a channel.
+Its `Handle` is must-consume: every control-flow path must join, cancel, return,
+or transfer it, so accidentally detached work is rejected before execution.
 See the book's *Concurrency* chapter and `std/chan` for the full model.
 
 ## 15. In-language tests

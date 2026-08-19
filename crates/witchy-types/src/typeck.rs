@@ -3634,6 +3634,16 @@ struct Checker {
     /// record update. A standalone update expression remains an untracked copy
     /// and is rejected.
     borrowed_shell_update_target: Option<String>,
+    /// The assignment target of a checker-recognized mutation that preserves
+    /// every existing must-consume element (currently list push). Its private
+    /// rebuilding intrinsic may temporarily own the list before the assignment
+    /// writes the rebuilt value back to the same borrowed place.
+    must_self_update_target: Option<String>,
+    /// Set while checking a closure expression passed directly to an `own`
+    /// parameter. Such a boundary transfers the closure and its by-value
+    /// captures, so live must-consume captures become obligations of the
+    /// closure body instead of forbidden copies.
+    must_capture_transfer: bool,
     /// Mutable locals whose initializer created a checked borrowed shell. This
     /// is deliberately separate from type identity: a borrowed shell received
     /// as an ordinary parameter has no compiler-owned root companions at this
@@ -4825,6 +4835,13 @@ impl Checker {
             && self.is_borrowed_shell_binding(name)
             && matches!(value, Expr::RecordUpdate { base, .. }
                 if matches!(base.as_ref(), Expr::Var(base) if base == name))
+    }
+
+    fn is_must_preserving_self_update(&self, name: &str, value: &Expr) -> bool {
+        matches!(value, Expr::Call { name: operation, args }
+            if witchy_syntax::intrinsics::canonical_operation_name(operation)
+                == witchy_syntax::intrinsics::LIST_PUSH
+                && matches!(args.first(), Some(Expr::Var(base)) if base == name))
     }
 
     fn is_authorized_borrowed_shell_update(&self, base: &Expr, ty: &Ty) -> bool {
@@ -6373,15 +6390,18 @@ impl Checker {
                             "cannot assign to `{name}`: it is immutable (declared with `let`)"
                         ));
                     }
+                    let must_preserving_self_update =
+                        self.is_must_preserving_self_update(name, value);
                     if self.ty_carries_must_consume(&existing)
                         && self.is_live_must_binding(name)
+                        && !must_preserving_self_update
                     {
                         self.pop();
                         return terr(format!(
                             "assignment would overwrite live must-consume value `{name}`; consume the old value before assigning a replacement"
                         ));
                     }
-                    if self.is_borrowed_must_binding(name) {
+                    if self.is_borrowed_must_binding(name) && !must_preserving_self_update {
                         self.pop();
                         return terr(format!(
                             "assignment would replace borrowed must-consume value `{name}` and erase its caller-owned obligation"
@@ -6399,8 +6419,13 @@ impl Checker {
                     if self.is_borrowed_shell_binding(name) {
                         self.borrowed_shell_update_target = Some(name.clone());
                     }
+                    let saved_must_target = self.must_self_update_target.take();
+                    if must_preserving_self_update {
+                        self.must_self_update_target = Some(name.clone());
+                    }
                     let inferred = self.infer_expected(value, &existing);
                     self.borrowed_shell_update_target = saved_shell_target;
+                    self.must_self_update_target = saved_must_target;
                     let vt = inferred?;
                     if self.ty_carries_must_consume(&vt) {
                         self.reject_implicit_must_copy(value, &format!("assignment to `{name}`"))?;
@@ -6417,7 +6442,9 @@ impl Checker {
                         self.unify(&existing, &vt)?;
                     }
                     self.reinitialize_binding(name); // reassignment re-initializes
-                    if self.ty_carries_must_consume(&existing) {
+                    if self.ty_carries_must_consume(&existing)
+                        && !self.is_borrowed_must_binding(name)
+                    {
                         if let Some(binding) = self.must_binding_key(name) {
                             self.must_live.insert(binding);
                         }
@@ -6800,8 +6827,12 @@ impl Checker {
                         })?;
                     }
                     for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
-                        let at = self.infer_expected(arg, pty)
-                            .map_err(|e| in_call_context(&display, e))?;
+                        let saved_capture_transfer = self.must_capture_transfer;
+                        self.must_capture_transfer = conventions.get(index)
+                            == Some(&Convention::Own);
+                        let inferred = self.infer_expected(arg, pty);
+                        self.must_capture_transfer = saved_capture_transfer;
+                        let at = inferred.map_err(|e| in_call_context(&display, e))?;
                         self.reject_borrowed_nominal_runtime_ty(
                             &at,
                             &format!("call to function value `{display}`"),
@@ -7000,7 +7031,12 @@ impl Checker {
         for (index, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
             let typed_vm_callback = call_name == "vm.with_dir" && index == 1;
             let exact_generic = exact_generic_positions.get(index).copied().unwrap_or(false);
-            let at = if typed_vm_callback {
+            let saved_capture_transfer = self.must_capture_transfer;
+            self.must_capture_transfer = call_conventions
+                .as_ref()
+                .and_then(|conventions| conventions.get(index))
+                == Some(&Convention::Own);
+            let inferred = if typed_vm_callback {
                 let Expr::Var(function) = arg else {
                     unreachable!("the isolated callback contract rejects non-function values")
                 };
@@ -7034,8 +7070,9 @@ impl Checker {
                 self.infer(arg)
             } else {
                 self.infer_expected(arg, param_ty)
-            }
-            .map_err(|e| in_call_context(&display, e))?;
+            };
+            self.must_capture_transfer = saved_capture_transfer;
+            let at = inferred.map_err(|e| in_call_context(&display, e))?;
             let borrowed_list_read = self.is_nested_borrowed_nominal_list(&at)
                 && matches!(
                     witchy_syntax::intrinsics::canonical_operation_name(&call_name),
@@ -7219,10 +7256,12 @@ impl Checker {
                     }
                     Convention::Own => {
                         if let Expr::Var(v) = arg {
-                            self.reject_own_of_borrowed_must(
-                                v,
-                                &format!("argument {} to `{name}`", i + 1),
-                            )?;
+                            if self.must_self_update_target.as_deref() != Some(v.as_str()) {
+                                self.reject_own_of_borrowed_must(
+                                    v,
+                                    &format!("argument {} to `{name}`", i + 1),
+                                )?;
+                            }
                             self.mark_consumed_binding(v);
                             self.consume_must_binding(v);
                         }
@@ -7967,6 +8006,7 @@ impl Checker {
                 terr(format!("unbound variable `{name}`"))
             }
             Expr::Lambda { params, body, ret } => {
+                let transfers_captures = std::mem::take(&mut self.must_capture_transfer);
                 validate_callable_nominal_lifetimes(
                     "lambda",
                     params,
@@ -7986,12 +8026,20 @@ impl Checker {
                         outer.join("`, `")
                     ));
                 }
+                let mut transferred_captures = Vec::new();
                 for capture in scan.captures() {
                     let Some(captured_ty) = self.lookup(&capture) else { continue };
                     if self.is_live_must_binding(&capture) {
-                        return terr(format!(
-                            "closure capture `{capture}` would copy a live must-consume value into an escaping closure; consume it before creating the closure or pass it through an `own` parameter"
-                        ));
+                        if !transfers_captures {
+                            return terr(format!(
+                                "closure capture `{capture}` would copy a live must-consume value into an escaping closure; consume it before creating the closure or pass it through an `own` parameter"
+                            ));
+                        }
+                        self.reject_own_of_borrowed_must(
+                            &capture,
+                            "owned closure capture",
+                        )?;
+                        transferred_captures.push((capture.clone(), captured_ty.clone()));
                     }
                     if self
                         .explicit_reference_bindings
@@ -8011,7 +8059,15 @@ impl Checker {
                         ));
                     }
                 }
+                for (capture, _) in &transferred_captures {
+                    self.mark_consumed_binding(capture);
+                    self.consume_must_binding(capture);
+                }
                 self.push();
+                for (capture, ty) in &transferred_captures {
+                    self.define(capture.clone(), ty.clone(), false);
+                    self.mark_must_consume_binding(capture, ty);
+                }
                 let param_tys: Vec<Ty> = params
                     .iter()
                     .map(|p| match &p.ty {
@@ -8025,6 +8081,20 @@ impl Checker {
                         ty.clone(),
                         p.convention.binds_mutable() || parameter_binds_exclusive_reference(p),
                     );
+                    if self.ty_carries_must_consume(ty) {
+                        match p.convention {
+                            Convention::Own => self.mark_must_consume_binding(&p.name, ty),
+                            Convention::Borrow | Convention::Var => {
+                                self.mark_borrowed_must_binding(&p.name)
+                            }
+                            Convention::Let => {
+                                return terr(format!(
+                                    "lambda parameter `{}` receives must-consume `{ty}` by copying; use `own` to transfer the obligation or explicit `let` to borrow it",
+                                    p.name,
+                                ));
+                            }
+                        }
+                    }
                     if p.ty.as_ref().is_some_and(type_is_explicit_reference) {
                         self.explicit_reference_bindings
                             .last_mut()
@@ -8054,6 +8124,7 @@ impl Checker {
                     message: format!("closure body type does not match its declared return type: {}", e.message),
                 })?;
                 self.current_ret = saved_ret;
+                self.reject_live_must_in_current_scope()?;
                 self.pop();
                 let conventions = params.iter().map(|p| p.convention).collect();
                 let function_ty = Ty::Fn(param_tys, Box::new(lambda_ret), conventions, vec![false; params.len()]);
@@ -8083,7 +8154,12 @@ impl Checker {
                         ));
                     }
                     for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
-                        let at = self.infer_expected(arg, pty)?;
+                        let saved_capture_transfer = self.must_capture_transfer;
+                        self.must_capture_transfer = conventions.get(index)
+                            == Some(&Convention::Own);
+                        let inferred = self.infer_expected(arg, pty);
+                        self.must_capture_transfer = saved_capture_transfer;
+                        let at = inferred?;
                         self.reject_borrowed_nominal_runtime_ty(
                             &at,
                             "function-value application",
@@ -9654,6 +9730,9 @@ impl Checker {
             &ret,
             &format!("return type of `{}`", diagnostic_callable_name(&func.name)),
         )?;
+        let suspension_frame = func.attributes.iter().any(|attribute| {
+            attribute == witchy_syntax::suspension::FRAME_FUNCTION_ATTRIBUTE
+        });
         for (param, ty) in func.params.iter().zip(&params) {
             // (RFC-0025) A `frozen` parameter is deeply immutable, so a mutable
             // convention (`var`/`own`, which exist to mutate/consume the argument)
@@ -9681,6 +9760,9 @@ impl Checker {
                     // operation. The caller's obligation is discharged at the
                     // call boundary; a must value returned by this function
                     // creates a fresh obligation for its caller.
+                    Convention::Own if suspension_frame => {
+                        self.mark_must_consume_binding(&param.name, ty);
+                    }
                     Convention::Own => {}
                     Convention::Borrow | Convention::Var => {
                         self.mark_borrowed_must_binding(&param.name);
@@ -10693,6 +10775,8 @@ fn run_check_selected(
             .map(|definition| definition.name.clone())
             .collect(),
         borrowed_shell_update_target: None,
+        must_self_update_target: None,
+        must_capture_transfer: false,
         borrowed_shell_bindings: vec![HashSet::new()],
         explicit_reference_bindings: vec![HashSet::new()],
         frozen_bindings: vec![HashSet::new()],

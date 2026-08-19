@@ -32,8 +32,9 @@ async fn producer(tx: Sender(Int), n: Int):
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(64).await
-    chan.spawn(producer(tx, 64000)).await
+    let producer_handle = chan.spawn(producer(tx, 64000)).await
     var sum = 0
     for await v in rx:
         sum = sum + v
+    chan.join(producer_handle).await
     console.print("${sum}")

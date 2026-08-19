@@ -18,10 +18,11 @@ async fn printer(console: Console, results: Receiver(Int)):
 async fn main(console: Console):
     let (jobs_tx, jobs_rx) = chan.channel(2).await
     let (res_tx, res_rx) = chan.channel(2).await
-    chan.spawn(worker(jobs_rx, res_tx)).await
-    chan.spawn(worker(jobs_rx, res_tx)).await
-    chan.spawn(worker(jobs_rx, res_tx)).await
+    let w1 = chan.spawn(worker(jobs_rx, res_tx)).await
+    let w2 = chan.spawn(worker(jobs_rx, res_tx)).await
+    let w3 = chan.spawn(worker(jobs_rx, res_tx)).await
     let p = chan.spawn(printer(console, res_rx)).await
     for n in [10, 20, 30, 40, 50]:
         chan.send(jobs_tx, n).await
+    chan.join_all([move w1, move w2, move w3]).await
     chan.join(p).await
