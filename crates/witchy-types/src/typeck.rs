@@ -3670,7 +3670,19 @@ struct Checker {
     scopes: Vec<HashMap<String, (Ty, bool)>>,
     /// Bindings that have been consumed (moved out via an `own` parameter) and
     /// may not be used again until reassigned. Flow-sensitive within a body.
-    consumed: HashSet<String>,
+    consumed: HashSet<(usize, String)>,
+    /// Nominal declarations whose values carry a must-consume obligation,
+    /// including aggregates that transitively contain one of those values.
+    must_consume_types: HashSet<String>,
+    /// Owned must-consume bindings that still require disposition on at least
+    /// one control-flow path. Branch joins use union: a value is discharged
+    /// only when every path consumes or returns it.
+    must_live: HashSet<(usize, String)>,
+    /// Must-consume values received through `let`/`var` borrowing conventions.
+    /// The caller retains their obligation, so the callee may inspect or mutate
+    /// through the borrow but may not move, return, replace, or pass them to an
+    /// `own` boundary.
+    must_borrowed: HashSet<(usize, String)>,
     /// One entry per ACTIVE `region:` block, holding the names declared
     /// inside it — an assignment to a name outside the innermost region must
     /// be scalar (a region's only pointer-escape is its value).
@@ -4964,6 +4976,12 @@ impl Checker {
         self.frozen_bindings.push(HashSet::new());
     }
     fn pop(&mut self) {
+        let scope = self.scopes.len().saturating_sub(1);
+        self.consumed
+            .retain(|(binding_scope, _)| *binding_scope != scope);
+        self.must_live.retain(|(binding_scope, _)| *binding_scope != scope);
+        self.must_borrowed
+            .retain(|(binding_scope, _)| *binding_scope != scope);
         self.scopes.pop();
         self.borrowed_shell_bindings.pop();
         self.explicit_reference_bindings.pop();
@@ -4988,6 +5006,147 @@ impl Checker {
             r.insert(name.clone());
         }
         self.scopes.last_mut().unwrap().insert(name, (ty, mutable));
+    }
+
+    fn ty_carries_must_consume(&self, ty: &Ty) -> bool {
+        match self.resolve(ty) {
+            Ty::List(element) => self.ty_carries_must_consume(&element),
+            Ty::Tuple(items) => items.iter().any(|item| self.ty_carries_must_consume(item)),
+            Ty::Named(name, arguments) | Ty::Dyn(name, arguments) => {
+                self.must_consume_types.contains(&name)
+                    || arguments
+                        .iter()
+                        .any(|argument| self.ty_carries_must_consume(argument))
+            }
+            // A callable's parameter/result contract does not mean the function
+            // value owns either value. Captured obligations are rejected at the
+            // closure-capture boundary instead.
+            Ty::Fn(..) => false,
+            _ => false,
+        }
+    }
+
+    fn mark_must_consume_binding(&mut self, name: &str, ty: &Ty) {
+        if !self.ty_carries_must_consume(ty) {
+            return;
+        }
+        self.must_live
+            .insert((self.scopes.len().saturating_sub(1), name.to_string()));
+    }
+
+    fn must_binding_key(&self, name: &str) -> Option<(usize, String)> {
+        self.scopes
+            .iter()
+            .rposition(|scope| scope.contains_key(name))
+            .map(|scope| (scope, name.to_string()))
+    }
+
+    fn is_consumed_binding(&self, name: &str) -> bool {
+        self.must_binding_key(name)
+            .is_some_and(|binding| self.consumed.contains(&binding))
+    }
+
+    fn mark_consumed_binding(&mut self, name: &str) {
+        if let Some(binding) = self.must_binding_key(name) {
+            self.consumed.insert(binding);
+        }
+    }
+
+    fn reinitialize_binding(&mut self, name: &str) {
+        if let Some(binding) = self.must_binding_key(name) {
+            self.consumed.remove(&binding);
+        }
+    }
+
+    fn is_live_must_binding(&self, name: &str) -> bool {
+        self.must_binding_key(name)
+            .is_some_and(|binding| self.must_live.contains(&binding))
+    }
+
+    fn is_borrowed_must_binding(&self, name: &str) -> bool {
+        self.must_binding_key(name)
+            .is_some_and(|binding| self.must_borrowed.contains(&binding))
+    }
+
+    fn is_must_binding(&self, name: &str) -> bool {
+        self.is_live_must_binding(name) || self.is_borrowed_must_binding(name)
+    }
+
+    fn mark_borrowed_must_binding(&mut self, name: &str) {
+        if let Some(binding) = self.must_binding_key(name) {
+            self.must_borrowed.insert(binding);
+        }
+    }
+
+    fn reject_own_of_borrowed_must(&self, name: &str, context: &str) -> Result<(), TypeError> {
+        if self.is_borrowed_must_binding(name) {
+            return terr(format!(
+                "{context} cannot consume borrowed must-consume value `{name}`; only its caller-owned binding may cross an `own` boundary"
+            ));
+        }
+        Ok(())
+    }
+
+    fn consume_must_binding(&mut self, name: &str) {
+        if let Some(binding) = self.must_binding_key(name) {
+            self.must_live.remove(&binding);
+        }
+    }
+
+    fn reject_implicit_must_copy(&self, expression: &Expr, context: &str) -> Result<(), TypeError> {
+        if let Expr::Var(name) = expression
+            && self.is_must_binding(name)
+        {
+            return terr(format!(
+                "{context} would copy must-consume value `{name}`; transfer it with `move {name}` or pass it to an `own` parameter"
+            ));
+        }
+        Ok(())
+    }
+
+    fn reject_must_borrowed_temporary(
+        &self,
+        expression: &Expr,
+        parameter: &Ty,
+        context: &str,
+    ) -> Result<(), TypeError> {
+        if !self.ty_carries_must_consume(parameter) {
+            return Ok(());
+        }
+        if matches!(expression, Expr::Var(name) if self.is_must_binding(name)) {
+            return Ok(());
+        }
+        terr(format!(
+            "{context} borrows a temporary must-consume value whose obligation would be lost after the call; bind it, borrow the binding, then consume or return it"
+        ))
+    }
+
+    fn expression_introduces_must_obligation(&self, expression: &Expr, ty: &Ty) -> bool {
+        self.ty_carries_must_consume(ty)
+            && !matches!(expression, Expr::Var(name) if !self.is_live_must_binding(name))
+    }
+
+    fn reject_live_must_in_current_scope(&self) -> Result<(), TypeError> {
+        let scope = self.scopes.len().saturating_sub(1);
+        if let Some((_, name)) = self
+            .must_live
+            .iter()
+            .find(|(binding_scope, _)| *binding_scope == scope)
+        {
+            return terr(format!(
+                "must-consume value `{name}` reaches the end of its scope without being consumed; pass it to an `own` parameter or return it"
+            ));
+        }
+        Ok(())
+    }
+
+    fn reject_all_live_must_before_return(&self) -> Result<(), TypeError> {
+        if let Some((_, name)) = self.must_live.iter().next() {
+            return terr(format!(
+                "return leaves must-consume value `{name}` undisposed; consume it on this path or return that value"
+            ));
+        }
+        Ok(())
     }
     /// Walk frames inner→outer, returning the binding at the first frame that
     /// defines the name (inner bindings shadow outer ones).
@@ -6115,6 +6274,9 @@ impl Checker {
                     } else {
                         self.infer(value)?
                     };
+                    if self.ty_carries_must_consume(&vt) {
+                        self.reject_implicit_must_copy(value, &format!("binding `{name}`"))?;
+                    }
                     let borrowed_shell_binding = self.is_direct_borrowed_nominal(&vt)
                         && Self::borrowed_shell_binding_source(value);
                     let borrowed_list_binding = self.is_direct_borrowed_nominal_list(&vt)
@@ -6128,6 +6290,8 @@ impl Checker {
                         )?;
                     }
                     self.define(name.clone(), vt, *mutable);
+                    let binding_ty = self.lookup(name).expect("new binding retains its type");
+                    self.mark_must_consume_binding(name, &binding_ty);
                     if decl.as_ref().is_some_and(is_frozen_type) {
                         self.authorize_frozen_binding(name.clone());
                     }
@@ -6160,6 +6324,20 @@ impl Checker {
                             "cannot assign to `{name}`: it is immutable (declared with `let`)"
                         ));
                     }
+                    if self.ty_carries_must_consume(&existing)
+                        && self.is_live_must_binding(name)
+                    {
+                        self.pop();
+                        return terr(format!(
+                            "assignment would overwrite live must-consume value `{name}`; consume the old value before assigning a replacement"
+                        ));
+                    }
+                    if self.is_borrowed_must_binding(name) {
+                        self.pop();
+                        return terr(format!(
+                            "assignment would replace borrowed must-consume value `{name}` and erase its caller-owned obligation"
+                        ));
+                    }
                     if let Some(scope) = self.region_locals.last() {
                         if !scope.contains(name) && !is_scalar_ty(&self.resolve(&existing)) {
                             self.pop();
@@ -6175,6 +6353,9 @@ impl Checker {
                     let inferred = self.infer_expected(value, &existing);
                     self.borrowed_shell_update_target = saved_shell_target;
                     let vt = inferred?;
+                    if self.ty_carries_must_consume(&vt) {
+                        self.reject_implicit_must_copy(value, &format!("assignment to `{name}`"))?;
+                    }
                     if !self.is_borrowed_shell_self_update(name, &existing, value) {
                         self.reject_borrowed_nominal_runtime_ty(
                             &vt,
@@ -6186,7 +6367,12 @@ impl Checker {
                     {
                         self.unify(&existing, &vt)?;
                     }
-                    self.consumed.remove(name); // reassignment re-initializes
+                    self.reinitialize_binding(name); // reassignment re-initializes
+                    if self.ty_carries_must_consume(&existing) {
+                        if let Some(binding) = self.must_binding_key(name) {
+                            self.must_live.insert(binding);
+                        }
+                    }
                     ty = Ty::Unit;
                 }
                 Stmt::LetPattern { pattern, value } => {
@@ -6201,6 +6387,14 @@ impl Checker {
                         ));
                     }
                     let vt = self.infer(value)?;
+                    if self.ty_carries_must_consume(&vt) {
+                        self.reject_implicit_must_copy(value, "pattern destructuring")?;
+                        if self.expression_introduces_must_obligation(value, &vt) {
+                            return terr(
+                                "pattern destructuring would erase a must-consume obligation; transfer the value to an `own` operation before inspecting it",
+                            );
+                        }
+                    }
                     if let Some(reason) = self.pattern_refutable(pattern, &vt) {
                         return terr(reason);
                     }
@@ -6220,6 +6414,17 @@ impl Checker {
                             message: format!("`return` value: {}", e.message),
                         })?;
                     }
+                    if self.ty_carries_must_consume(&t)
+                        && let Some(Expr::Var(name)) = opt
+                    {
+                        if self.is_borrowed_must_binding(name) {
+                            return terr(format!(
+                                "cannot return borrowed must-consume value `{name}`; the caller retains its obligation"
+                            ));
+                        }
+                        self.consume_must_binding(name);
+                    }
+                    self.reject_all_live_must_before_return()?;
                     // A return diverges: its position can satisfy any expected
                     // type, so contribute a fresh var (which unifies with anything).
                     ty = self.fresh();
@@ -6234,6 +6439,11 @@ impl Checker {
                         self.infer(e)?
                     };
                     if i != tail {
+                        if self.ty_carries_must_consume(&ty) {
+                            return terr(
+                                "a must-consume expression result cannot be discarded; bind it and consume it, pass it to an `own` parameter, or return it",
+                            );
+                        }
                         self.reject_borrowed_nominal_runtime_ty(
                             &ty,
                             "non-tail expression statement",
@@ -6258,6 +6468,17 @@ impl Checker {
                 }
             }
         }
+        if let Some(Stmt::Expr(Expr::Var(name))) = block.stmts.last()
+            && self.ty_carries_must_consume(&ty)
+        {
+            if self.is_borrowed_must_binding(name) {
+                return terr(format!(
+                    "cannot return borrowed must-consume value `{name}`; the caller retains its obligation"
+                ));
+            }
+            self.consume_must_binding(name);
+        }
+        self.reject_live_must_in_current_scope()?;
         self.pop();
         Ok(ty)
     }
@@ -6305,6 +6526,11 @@ impl Checker {
                         let at = self.infer_expected(item, &elem)?;
                         self.coerce_arg(&elem, &at)?;
                     }
+                    if self.ty_carries_must_consume(expected) {
+                        for item in items {
+                            self.reject_implicit_must_copy(item, "list construction")?;
+                        }
+                    }
                     return self.finish_infer(expr, expected.clone());
                 }
                 let at = self.infer(expr)?;
@@ -6317,6 +6543,11 @@ impl Checker {
                         for (item, slot) in items.iter().zip(&slots) {
                             let at = self.infer_expected(item, slot)?;
                             self.coerce_arg(slot, &at)?;
+                        }
+                        if self.ty_carries_must_consume(expected) {
+                            for item in items {
+                                self.reject_implicit_must_copy(item, "tuple construction")?;
+                            }
                         }
                         return self.finish_infer(expr, expected.clone());
                     }
@@ -6364,6 +6595,14 @@ impl Checker {
                             message: format!("in constructor `{name}`: {}", e.message),
                         })?;
                     }
+                    if self.ty_carries_must_consume(&result) {
+                        for argument in args {
+                            self.reject_implicit_must_copy(
+                                argument,
+                                &format!("constructor `{name}`"),
+                            )?;
+                        }
+                    }
                     self.reject_externref_cap_aggregate_ty(&result, &format!("constructor `{name}`"))?;
                     self.reject_structural_authority_ty(&result, &format!("constructor `{name}`"))?;
                     return self.finish_infer(expr, result);
@@ -6379,7 +6618,9 @@ impl Checker {
             Expr::If { cond, then_block, else_block } => {
                 let ct = self.infer(cond)?;
                 self.unify(&Ty::Bool, &ct)?;
+                let must_before = self.must_live.clone();
                 let tt = self.infer_block_expected(then_block, expected)?;
+                let must_then = std::mem::replace(&mut self.must_live, must_before.clone());
                 self.coerce_arg(expected, &tt)?;
                 if let Some(else_block) = else_block {
                     let et = self.infer_block_expected(else_block, expected)?;
@@ -6394,6 +6635,7 @@ impl Checker {
                         message: format!("`if` without `else` produces `Nil`: {}", e.message),
                     })?;
                 }
+                self.must_live = &must_then | &self.must_live;
                 self.finish_infer(expr, expected.clone())
             }
             Expr::Block(block) => {
@@ -6525,7 +6767,13 @@ impl Checker {
                             &format!("function value `{name}`"),
                         )?;
                     }
-                    self.enforce_function_value_conventions(name, args, &conventions, &reference_params)?;
+                    self.enforce_function_value_conventions(
+                        name,
+                        args,
+                        &param_tys,
+                        &conventions,
+                        &reference_params,
+                    )?;
                     self.reject_borrowed_nominal_runtime_ty(
                         ret.as_ref(),
                         &format!("call to function value `{display}` result"),
@@ -6912,13 +7160,39 @@ impl Checker {
                     }
                     Convention::Own => {
                         if let Expr::Var(v) = arg {
-                            self.consumed.insert(v.clone());
+                            self.reject_own_of_borrowed_must(
+                                v,
+                                &format!("argument {} to `{name}`", i + 1),
+                            )?;
+                            self.mark_consumed_binding(v);
+                            self.consume_must_binding(v);
                         }
                     }
                     // An owned value or an immutable borrow: no call-site
                     // obligation (a borrow's no-escape rule is enforced at
                     // native-lowering time by Rust's borrow checker).
-                    Convention::Let | Convention::Borrow => {}
+                    Convention::Let => {
+                        self.reject_implicit_must_copy(
+                            arg,
+                            &format!("argument {} to `{name}`", i + 1),
+                        )?;
+                        if let Some(parameter) = params.get(i) {
+                            self.reject_must_borrowed_temporary(
+                                arg,
+                                parameter,
+                                &format!("argument {} to `{name}`", i + 1),
+                            )?;
+                        }
+                    }
+                    Convention::Borrow => {
+                        if let Some(parameter) = params.get(i) {
+                            self.reject_must_borrowed_temporary(
+                                arg,
+                                parameter,
+                                &format!("argument {} to `{name}`", i + 1),
+                            )?;
+                        }
+                    }
                 }
             }
         }
@@ -6955,6 +7229,7 @@ impl Checker {
         &mut self,
         name: &str,
         args: &[Expr],
+        parameter_types: &[Ty],
         conventions: &[Convention],
         reference_params: &[bool],
     ) -> Result<(), TypeError> {
@@ -7036,10 +7311,36 @@ impl Checker {
                 }
                 Convention::Own => {
                     if let Expr::Var(var) = arg {
-                        self.consumed.insert(var.clone());
+                        self.reject_own_of_borrowed_must(
+                            var,
+                            &format!("argument {} to function value `{name}`", index + 1),
+                        )?;
+                        self.mark_consumed_binding(var);
+                        self.consume_must_binding(var);
                     }
                 }
-                Convention::Let | Convention::Borrow => {}
+                Convention::Let => {
+                    self.reject_implicit_must_copy(
+                        arg,
+                        &format!("argument {} to function value `{name}`", index + 1),
+                    )?;
+                    if let Some(parameter) = parameter_types.get(index) {
+                        self.reject_must_borrowed_temporary(
+                            arg,
+                            parameter,
+                            &format!("argument {} to function value `{name}`", index + 1),
+                        )?;
+                    }
+                }
+                Convention::Borrow => {
+                    if let Some(parameter) = parameter_types.get(index) {
+                        self.reject_must_borrowed_temporary(
+                            arg,
+                            parameter,
+                            &format!("argument {} to function value `{name}`", index + 1),
+                        )?;
+                    }
+                }
             }
         }
         Ok(())
@@ -7117,10 +7418,21 @@ impl Checker {
                 }
                 Convention::Own => {
                     if let Expr::Var(name) = operand {
-                        self.consumed.insert(name.clone());
+                        self.reject_own_of_borrowed_must(
+                            name,
+                            &format!("operand {} to existential `{callee}`", index + 1),
+                        )?;
+                        self.mark_consumed_binding(name);
+                        self.consume_must_binding(name);
                     }
                 }
-                Convention::Let | Convention::Borrow => {}
+                Convention::Let => {
+                    self.reject_implicit_must_copy(
+                        operand,
+                        &format!("operand {} to existential `{callee}`", index + 1),
+                    )?;
+                }
+                Convention::Borrow => {}
             }
         }
         Ok(())
@@ -7526,6 +7838,11 @@ impl Checker {
                     self.unify(&elem, &t)?;
                 }
                 let ty = Ty::List(Box::new(elem));
+                if self.ty_carries_must_consume(&ty) {
+                    for item in items {
+                        self.reject_implicit_must_copy(item, "list construction")?;
+                    }
+                }
                 self.reject_externref_cap_aggregate_ty(&ty, "list literal")?;
                 self.reject_structural_authority_ty(&ty, "list literal")?;
                 Ok(ty)
@@ -7536,12 +7853,17 @@ impl Checker {
                     .map(|e| self.infer(e))
                     .collect::<Result<Vec<_>, _>>()?;
                 let ty = Ty::Tuple(tys);
+                if self.ty_carries_must_consume(&ty) {
+                    for item in items {
+                        self.reject_implicit_must_copy(item, "tuple construction")?;
+                    }
+                }
                 self.reject_externref_cap_aggregate_ty(&ty, "tuple literal")?;
                 self.reject_structural_authority_ty(&ty, "tuple literal")?;
                 Ok(ty)
             }
             Expr::Var(name) => {
-                if self.consumed.contains(name) {
+                if self.is_consumed_binding(name) {
                     return terr(format!(
                         "use of `{name}` after it was moved (consumed by an `own` parameter)"
                     ));
@@ -7607,6 +7929,11 @@ impl Checker {
                 }
                 for capture in scan.captures() {
                     let Some(captured_ty) = self.lookup(&capture) else { continue };
+                    if self.is_live_must_binding(&capture) {
+                        return terr(format!(
+                            "closure capture `{capture}` would copy a live must-consume value into an escaping closure; consume it before creating the closure or pass it through an `own` parameter"
+                        ));
+                    }
                     if self
                         .explicit_reference_bindings
                         .iter()
@@ -7717,6 +8044,7 @@ impl Checker {
                     self.enforce_function_value_conventions(
                         "function value",
                         args,
+                        &param_tys,
                         &conventions,
                         &reference_params,
                     )?;
@@ -7789,6 +8117,14 @@ impl Checker {
                             message: format!("in constructor `{name}`: {}", e.message),
                         })?;
                     }
+                    if self.ty_carries_must_consume(&result) {
+                        for argument in args {
+                            self.reject_implicit_must_copy(
+                                argument,
+                                &format!("constructor `{name}`"),
+                            )?;
+                        }
+                    }
                     self.reject_externref_cap_aggregate_ty(&result, &format!("constructor `{name}`"))?;
                     self.reject_structural_authority_ty(&result, &format!("constructor `{name}`"))?;
                     Ok(result)
@@ -7821,7 +8157,9 @@ impl Checker {
                     UnOp::Move => {
                         self.reject_borrowed_nominal_runtime_ty(&t, "unary `move`")?;
                         if let Expr::Var(v) = expr.as_ref() {
-                            self.consumed.insert(v.clone());
+                            self.reject_own_of_borrowed_must(v, "`move`")?;
+                            self.mark_consumed_binding(v);
+                            self.consume_must_binding(v);
                         }
                         Ok(t)
                     }
@@ -8113,8 +8451,10 @@ impl Checker {
                 self.unify(&Ty::Bool, &ct)
                     .map_err(|e| TypeError { message: format!("`if` condition: {}", e.message) })?;
                 let before = self.consumed.clone();
+                let must_before = self.must_live.clone();
                 let tt = self.infer_block(then_block)?;
                 let consumed_then = std::mem::replace(&mut self.consumed, before.clone());
+                let must_then = std::mem::replace(&mut self.must_live, must_before.clone());
                 match else_block {
                     Some(eb) => {
                         let et = self.infer_block(eb)?;
@@ -8128,6 +8468,9 @@ impl Checker {
                 }
                 // A binding consumed on either path is treated as consumed after.
                 self.consumed = &consumed_then | &self.consumed;
+                // A must obligation remains live when either path leaves it
+                // undisposed. Only consumption on every path discharges it.
+                self.must_live = &must_then | &self.must_live;
                 Ok(tt)
             }
             Expr::Block(b) => self.infer_block(b),
@@ -8136,7 +8479,9 @@ impl Checker {
                 self.unify(&Ty::Bool, &ct).map_err(|e| TypeError {
                     message: format!("`while` condition: {}", e.message),
                 })?;
+                let must_before = self.must_live.clone();
                 self.infer_block(body)?;
+                self.must_live = &must_before | &self.must_live;
                 Ok(Ty::Unit)
             }
             Expr::For { var, iter, body } => {
@@ -8371,11 +8716,22 @@ impl Checker {
         expected: Option<&Ty>,
     ) -> Result<Ty, TypeError> {
         let st = self.infer(scrutinee)?;
+        if self.ty_carries_must_consume(&st) {
+            self.reject_implicit_must_copy(scrutinee, "match scrutinee")?;
+            if self.expression_introduces_must_obligation(scrutinee, &st) {
+                return terr(
+                    "matching would erase a must-consume obligation; transfer the value to an `own` operation before inspecting it",
+                );
+            }
+        }
         let result = expected.cloned().unwrap_or_else(|| self.fresh());
         let before = self.consumed.clone();
         let mut merged = before.clone();
+        let must_before = self.must_live.clone();
+        let mut must_merged = HashSet::new();
         for arm in arms {
             self.consumed = before.clone();
+            self.must_live = must_before.clone();
             self.push();
             if let Some(dup) = pattern_dup_binding(&arm.pattern) {
                 return terr(format!(
@@ -8402,10 +8758,13 @@ impl Checker {
                     message: format!("match arms produce different types: {}", e.message),
                 })?;
             }
+            self.reject_live_must_in_current_scope()?;
             self.pop();
             merged = &merged | &self.consumed;
+            must_merged = &must_merged | &self.must_live;
         }
         self.consumed = merged;
+        self.must_live = must_merged;
         // Coverage analysis (exhaustiveness + unreachability) reasons per
         // alternative, so flatten a top-level `Pattern::Or` arm into one synthetic
         // arm per alternative (sharing the guard) — exactly what the old
@@ -8536,9 +8895,13 @@ impl Checker {
             self.reject_borrowed_nominal_runtime_ty(expected, "pattern destructuring")?;
         }
         match pat {
+            Pattern::Wildcard if self.ty_carries_must_consume(expected) => terr(
+                "a wildcard pattern would discard a must-consume value; bind and consume it",
+            ),
             Pattern::Wildcard => Ok(()),
             Pattern::Var(name) => {
                 self.define(name.clone(), expected.clone(), false);
+                self.mark_must_consume_binding(name, expected);
                 Ok(())
             }
             Pattern::Int(_) => self.unify(expected, &Ty::Int),
@@ -8559,7 +8922,9 @@ impl Checker {
                     self.check_pattern(p, &elem)?;
                 }
                 if let Some(Some(name)) = rest {
-                    self.define(name.clone(), Ty::List(Box::new(elem)), false);
+                    let rest_ty = Ty::List(Box::new(elem));
+                    self.define(name.clone(), rest_ty.clone(), false);
+                    self.mark_must_consume_binding(name, &rest_ty);
                 }
                 Ok(())
             }
@@ -9183,6 +9548,8 @@ impl Checker {
         self.explicit_reference_bindings = vec![HashSet::new()];
         self.frozen_bindings = vec![HashSet::new()];
         self.consumed.clear();
+        self.must_live.clear();
+        self.must_borrowed.clear();
         self.current_ret = Some(ret.clone());
         self.current_isolated_callback = isolated_vm_callback_contract(
             &func.name,
@@ -9243,6 +9610,25 @@ impl Checker {
                 ty.clone(),
                 param.convention.binds_mutable() || parameter_binds_exclusive_reference(param),
             );
+            if self.ty_carries_must_consume(ty) {
+                match param.convention {
+                    // An `own` parameter is the declaration of a consuming
+                    // operation. The caller's obligation is discharged at the
+                    // call boundary; a must value returned by this function
+                    // creates a fresh obligation for its caller.
+                    Convention::Own => {}
+                    Convention::Borrow | Convention::Var => {
+                        self.mark_borrowed_must_binding(&param.name);
+                    }
+                    Convention::Let => {
+                        return terr(format!(
+                            "parameter `{}` of `{}` receives must-consume `{ty}` by copying; use `own` to transfer the obligation or explicit `let` to borrow it",
+                            param.name,
+                            diagnostic_callable_name(&func.name),
+                        ));
+                    }
+                }
+            }
             if param.ty.as_ref().is_some_and(type_is_explicit_reference) {
                 self.explicit_reference_bindings
                     .last_mut()
@@ -9273,6 +9659,7 @@ impl Checker {
                 e.message
             ),
         })?;
+        self.reject_all_live_must_before_return()?;
         // (BUG-395 / RFC-0047) A generic `Dict` key operation performed in this
         // (unbounded) body must have an `Eq` key. Now that the body is fully
         // inferred, a key type that still carries a type variable is an UNBOUNDED
@@ -9955,6 +10342,52 @@ fn run_check_with_trait_methods(
     )
 }
 
+fn must_consume_type_names(module: &Module) -> HashSet<String> {
+    fn carries(ty: &ast::Type, names: &HashSet<String>) -> bool {
+        match ty {
+            ast::Type::Qualified(_, inner) => carries(inner, names),
+            ast::Type::Named(name, arguments) | ast::Type::Dyn(name, arguments) => {
+                names.contains(name) || arguments.iter().any(|argument| carries(argument, names))
+            }
+            ast::Type::Tuple(items) => items.iter().any(|item| carries(item, names)),
+            ast::Type::RecordCompose { base, fields } => {
+                carries(base, names) || fields.iter().any(|(_, field)| carries(field, names))
+            }
+            ast::Type::Fn(..) => false,
+        }
+    }
+
+    let definitions = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(definition) => Some(definition),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut names = definitions
+        .iter()
+        .filter(|definition| definition.must_consume)
+        .map(|definition| definition.name.clone())
+        .collect::<HashSet<_>>();
+    loop {
+        let before = names.len();
+        for definition in &definitions {
+            if definition
+                .variants
+                .iter()
+                .flat_map(|variant| &variant.fields)
+                .any(|field| carries(field, &names))
+            {
+                names.insert(definition.name.clone());
+            }
+        }
+        if names.len() == before {
+            return names;
+        }
+    }
+}
+
 fn run_check_selected(
     module: &Module,
     record: bool,
@@ -10065,6 +10498,9 @@ fn run_check_selected(
         next_var: 0,
         scopes: vec![HashMap::new()],
         consumed: HashSet::new(),
+        must_consume_types: must_consume_type_names(module),
+        must_live: HashSet::new(),
+        must_borrowed: HashSet::new(),
         region_locals: Vec::new(),
         current_ret: None,
         current_isolated_callback: None,

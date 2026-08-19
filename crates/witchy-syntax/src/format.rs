@@ -421,6 +421,9 @@ fn type_def(s: &mut String, t: &TypeDef, c: &mut Comments, upper: u32) {
     // header, below.
     const HEADER_COL: u32 = 1;
     if t.sealed && t.is_capability {
+        if t.must_consume {
+            s.push_str("must ");
+        }
         if t.grantable {
             s.push_str("grantable ");
         }
@@ -462,6 +465,9 @@ fn type_def(s: &mut String, t: &TypeDef, c: &mut Comments, upper: u32) {
     }
     // `sealed type X …` (RFC-0065): a sealed general type renders through the
     // ordinary type path with a leading `sealed ` (a capability took the branch above).
+    if t.must_consume {
+        s.push_str("must ");
+    }
     if t.sealed {
         s.push_str("sealed ");
     }

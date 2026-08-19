@@ -59,6 +59,30 @@ fn add(a: Int, b: Int) -> Int:
     }
 
     #[test]
+    fn must_consume_marker_is_nominal_declaration_metadata() {
+        let module = parse_module(
+            "must type Transaction:\n    Transaction(Int)\n\nmust sealed type Guard:\n    Guard(Int)\n\nmust capability Session:\n    token: String\n",
+        )
+        .expect("must-consume declarations parse");
+        let declarations = module
+            .items
+            .iter()
+            .map(|item| match item {
+                Item::Type(definition) => definition,
+                _ => panic!("expected nominal declaration"),
+            })
+            .collect::<Vec<_>>();
+        assert!(declarations.iter().all(|definition| definition.must_consume));
+        assert!(!declarations[0].sealed);
+        assert!(declarations[1].sealed && !declarations[1].is_capability);
+        assert!(declarations[2].sealed && declarations[2].is_capability);
+
+        let error = parse_module("must type Alias = Int\n")
+            .expect_err("an alias cannot carry a nominal obligation");
+        assert!(error.to_string().contains("nominal type declarations"));
+    }
+
+    #[test]
     fn sealed_type_marker_parses() {
         // `sealed type X:` (RFC-0065) sets the same `sealed` flag a `capability`
         // sets, but is NOT a capability (so it renders as `sealed type`, not

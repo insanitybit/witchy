@@ -528,7 +528,7 @@ impl Parser {
         if self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async) {
             Ok(Item::Function(self.function(public, false, attributes)?))
         } else if self.at(&Tok::Type) {
-            self.type_def(false)
+            self.type_def(false, false)
         } else if self.at_ident("sealed") {
             // `sealed type X:` (RFC-0065) — seal a type's data constructor(s) so a
             // value may be built only in its home module (the same enforcement
@@ -538,20 +538,38 @@ impl Parser {
             if !self.at(&Tok::Type) {
                 return Err(self.error("`sealed` may only precede a `type` declaration"));
             }
-            self.type_def(true)
+            self.type_def(true, false)
+        } else if self.at_ident("must") {
+            // `must` is contextual so existing bindings and functions may keep
+            // using the name. At declaration position it marks a nominal type
+            // or capability as carrying a linear disposition obligation.
+            self.advance();
+            let sealed = if self.at_ident("sealed") {
+                self.advance();
+                true
+            } else {
+                false
+            };
+            if self.at(&Tok::Type) {
+                self.type_def(sealed, true)
+            } else if !sealed && self.at(&Tok::Capability) {
+                self.capability_def(false, true)
+            } else {
+                Err(self.error("`must` may only precede a `type`, `sealed type`, or `capability` declaration"))
+            }
         } else if self.at(&Tok::Trait) {
             Ok(Item::Trait(self.trait_def()?))
         } else if self.at(&Tok::Impl) {
             Ok(Item::Impl(self.impl_def()?))
         } else if self.at(&Tok::Capability) {
-            self.capability_def(false)
+            self.capability_def(false, false)
         } else if self.at_ident("grantable") {
             // `grantable capability X:` (RFC-0038) — a root-grantable sealed cap.
             self.advance();
             if !self.at(&Tok::Capability) {
                 return Err(self.error("`grantable` may only precede a `capability` declaration"));
             }
-            self.capability_def(true)
+            self.capability_def(true, false)
         } else if self.at(&Tok::Let) {
             // A module-level constant: `let NAME = EXPR`. Inlined at use sites.
             self.advance();
@@ -785,7 +803,7 @@ impl Parser {
         })
     }
 
-    fn type_def(&mut self, sealed: bool) -> Result<Item, ParseError> {
+    fn type_def(&mut self, sealed: bool, must_consume: bool) -> Result<Item, ParseError> {
         self.expect(&Tok::Type)?;
         let name = self.ident()?;
         // Optional explicit nominal parameters: `type Pair(a, 'left, 'right):`.
@@ -819,6 +837,11 @@ impl Parser {
         // A type alias: `type Id = Int` or `type Pair(a) = (a, a)`. Expanded to
         // its target before later stages.
         if self.eat(&Tok::Eq) {
+            if must_consume {
+                return Err(self.error(
+                    "`must` applies to nominal type declarations, not type aliases",
+                ));
+            }
             if let Some(lifetime) = params
                 .iter()
                 .find_map(|parameter| crate::ast::lifetime_param_name(parameter))
@@ -895,6 +918,7 @@ impl Parser {
             // its field types positional and field names recorded alongside.
             Ok(Item::Type(TypeDef {
                 name: name.clone(),
+                must_consume,
                 params,
                 variants: vec![Variant {
                     name,
@@ -914,6 +938,7 @@ impl Parser {
         } else {
             Ok(Item::Type(TypeDef {
                 name,
+                must_consume,
                 params,
                 variants,
                 derives,
@@ -945,7 +970,7 @@ impl Parser {
     /// It desugars to a sealed record `Postgres(net, table)`; its footprint is the
     /// UNION of its capability-typed fields (the `String` contributes nothing), so
     /// it still audits as `Net` — carried policy state with no authority hidden.
-    fn capability_def(&mut self, grantable: bool) -> Result<Item, ParseError> {
+    fn capability_def(&mut self, grantable: bool, must_consume: bool) -> Result<Item, ParseError> {
         self.expect(&Tok::Capability)?;
         let name = self.ident()?;
         // Record form: `capability X:` with named fields (carried state).
@@ -967,6 +992,7 @@ impl Parser {
             }
             return Ok(Item::Type(TypeDef {
                 name: name.clone(),
+                must_consume,
                 params: vec![],
                 variants: vec![Variant {
                     name,
@@ -1007,6 +1033,7 @@ impl Parser {
         }
         Ok(Item::Type(TypeDef {
             name: name.clone(),
+            must_consume,
             params: vec![],
             variants: vec![Variant {
                 name,

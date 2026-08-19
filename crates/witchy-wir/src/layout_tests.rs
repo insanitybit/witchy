@@ -94,6 +94,7 @@ fn record(name: &str, packed: bool, fields: Vec<(&str, Type)>) -> TypeDef {
         .unzip();
     TypeDef {
         name: name.to_owned(),
+        must_consume: false,
         params: Vec::new(),
         variants: vec![Variant {
             name: name.to_owned(),
@@ -115,6 +116,7 @@ fn record(name: &str, packed: bool, fields: Vec<(&str, Type)>) -> TypeDef {
 fn sum(name: &str, arities: &[usize]) -> TypeDef {
     TypeDef {
         name: name.to_owned(),
+        must_consume: false,
         params: Vec::new(),
         variants: arities
             .iter()

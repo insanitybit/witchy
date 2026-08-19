@@ -1,5 +1,79 @@
     use super::*;
 
+    fn check_source(source: &str) -> Result<(), TypeError> {
+        let module = witchy_syntax::parser::parse_module(source).expect("source parses");
+        check(&module)
+    }
+
+    #[test]
+    fn must_consume_requires_disposition_on_every_path() {
+        let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\n";
+
+        let missing = check_source(&format!(
+            "{prelude}fn main():\n    let ticket = make()\n"
+        ))
+        .expect_err("scope exit must reject a live obligation");
+        assert!(missing.message.contains("must-consume value `ticket`"));
+
+        let one_branch = check_source(&format!(
+            "{prelude}fn run(flag: Bool):\n    let ticket = make()\n    if flag:\n        finish(ticket)\n\nfn main():\n    run(true)\n"
+        ))
+        .expect_err("one branch cannot discharge an all-path obligation");
+        assert!(one_branch.message.contains("must-consume value `ticket`"));
+
+        check_source(&format!(
+            "{prelude}fn run(flag: Bool):\n    let ticket = make()\n    if flag:\n        finish(ticket)\n    else:\n        finish(ticket)\n\nfn main():\n    run(true)\n"
+        ))
+        .expect("both branches consume the obligation");
+    }
+
+    #[test]
+    fn must_consume_transfers_without_copying_and_propagates_through_aggregates() {
+        let returned = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn forward() -> Ticket:\n    let ticket = make()\n    ticket\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    finish(forward())\n";
+        check_source(returned).expect("return and own-call boundaries transfer obligations");
+
+        let copied = check_source(
+            "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    let first = make()\n    let second = first\n    finish(second)\n",
+        )
+        .expect_err("a linear obligation cannot be copied");
+        assert!(copied.message.contains("would copy must-consume value `first`"));
+
+        let aggregate = check_source(
+            "must type Ticket:\n    Ticket(Int)\n\ntype Envelope:\n    Envelope(Ticket)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn main():\n    let envelope = Envelope(make())\n",
+        )
+        .expect_err("an aggregate containing a must value carries the obligation");
+        assert!(aggregate.message.contains("must-consume value `envelope`"));
+    }
+
+    #[test]
+    fn must_consume_own_calls_discharge_at_attempt_and_shadowing_keeps_binding_identity() {
+        let source = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn try_finish(own ticket: Ticket) -> Bool:\n    false\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    let ticket = make()\n    if true:\n        let ticket = make()\n        finish(ticket)\n    let attempted = try_finish(ticket)\n    let _ = attempted\n";
+
+        check_source(source).expect(
+            "an own call discharges on invocation even when its result reports failure, and a shadowed obligation remains distinct",
+        );
+    }
+
+    #[test]
+    fn must_consume_borrows_require_a_live_owner_and_only_own_operations_may_destructure() {
+        let temporary_borrow = check_source(
+            "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn inspect(let ticket: Ticket) -> Bool:\n    true\n\nfn main():\n    inspect(make())\n",
+        )
+        .expect_err("borrowing a temporary must value would lose its obligation");
+        assert!(temporary_borrow.message.contains("borrows a temporary must-consume value"));
+
+        check_source(
+            "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn inspect(let ticket: Ticket) -> Bool:\n    true\n\nfn finish(own ticket: Ticket):\n    match ticket:\n        Ticket(_) -> ()\n\nfn main():\n    let consume = finish\n    let ticket = make()\n    let seen = inspect(ticket)\n    let _ = seen\n    consume(ticket)\n",
+        )
+        .expect("callables are not obligations, a live owner may be borrowed, and an own operation may inspect consumed state");
+
+        let consume_borrow = check_source(
+            "must type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn invalid(let ticket: Ticket):\n    finish(ticket)\n\nfn main():\n    let ticket = Ticket(1)\n    invalid(ticket)\n    finish(ticket)\n",
+        )
+        .expect_err("a borrowed must value cannot cross an own boundary");
+        assert!(consume_borrow.message.contains("cannot consume borrowed must-consume value `ticket`"));
+    }
+
     #[test]
     fn typed_module_rebuilds_address_keyed_facts_after_structural_rewrite() {
         use witchy_syntax::ast::{Expr, Item, Stmt};
@@ -358,4 +432,3 @@ fn load(dir: Dir[Read], policy: DirPolicy) -> String:
         // An unknown home is a no-op.
         assert_eq!(strip_home_qualifiers("found `app.Point`", ""), "found `app.Point`");
     }
-

@@ -1,14 +1,16 @@
 ---
 rfc: 0114
 title: Must-consume obligations (linear resource handles)
-status: deferred
+status: experimental
 created: 2026-08-03
 superseded-by:
 tracking: >
-  Deferred 2026-08-19. The design remains a candidate, but no concrete
-  must-consume resource type or implementation owner is scheduled. Revisit
-  when a resource API requires guaranteed cleanup beyond ordinary ownership
-  and can provide executable diagnostics and drop-path acceptance criteria.
+  Core syntax and checker slice implemented 2026-08-19. `must type`,
+  `must sealed type`, and `must capability` preserve declaration metadata;
+  all-path disposition, move/copy, overwrite, borrow, aggregate propagation,
+  and own-call attempt semantics have executable checker coverage. Promotion
+  still requires a standard-library structured-resource integration and the
+  full compile-fail/runtime matrix.
 ---
 
 # RFC-0114: Must-consume obligations (linear resource handles)
@@ -90,11 +92,14 @@ A `must` value obeys one rule:
 
 ```
 # a handle whose type is declared must-consume
-fn open_txn(store: own Store) -> must Txn
-fn commit(txn: own Txn) -> Result[Unit, Error]   # consumes the obligation
-fn rollback(txn: own Txn)                          # also consumes it
+must sealed type Txn:
+    Txn(Int)
 
-fn publish(store: own Store) -> Result[Unit, Error]
+fn open_txn(own store: Store) -> Txn
+fn commit(own txn: Txn) -> Result(Nil, Error)   # consumes the obligation
+fn rollback(own txn: Txn)                        # also consumes it
+
+fn publish(own store: Store) -> Result(Nil, Error):
     var txn = open_txn(store)
     # ... do work ...
     commit(txn)        # OK: obligation discharged
@@ -114,7 +119,8 @@ A type carries the obligation by annotating its declaration, not by implementing
 a trait:
 
 ```
-must type Txn = ...          # every Txn value is must-consume
+must type Txn:
+    Txn(Int)                 # every Txn value is must-consume
 ```
 
 This keeps the base type "capability-free" and layers the obligation on top —
@@ -162,8 +168,10 @@ borrow-from-parent scoped-spawn pattern safely, without a lifetime system.
 - A new obligation axis in the checker and the uniqueness/escape analysis, plus
   new diagnostics ("must-consume value not discharged on all paths").
 - `must` values cannot be stored in ordinary collections without the collection
-  itself propagating the obligation — deliberately restrictive in v1; container
-  support is future work.
+  itself propagating the obligation. Nominal aggregates, tuples, and lists now
+  propagate it transitively; moving individual values back out of containers
+  remains deliberately restricted until their extraction APIs preserve affine
+  identity.
 - Ergonomic gap vs. auto-drop languages: the programmer writes the consuming call
   explicitly. Accepted as the price of parity safety.
 
@@ -177,6 +185,25 @@ borrow-from-parent scoped-spawn pattern safely, without a lifetime system.
 - Baker, *Must move types* (2023) — the must-consume concept this mirrors.
 - witchy RFC-0083 (borrowed views), RFC-0087 (fused mutators / callee-`?`
   commit), RFC-0089 (FIP contract) — the static, erased-before-backend pattern
-  this follows.
+this follows.
+
+## Acceptance ledger
+
+- PROVEN: declaration syntax and formatting preserve `must` metadata.
+  Evidence: `must_consume_marker_is_nominal_declaration_metadata` and
+  `must_consume_declarations_survive_formatting`.
+- PROVEN: scope exit, overwrite, implicit copy, explicit transfer, return, and
+  all-path branch joins enforce one live obligation per binding identity.
+  Evidence: `must_consume_requires_disposition_on_every_path`,
+  `must_consume_transfers_without_copying_and_propagates_through_aggregates`,
+  and `must_consume_own_calls_discharge_at_attempt_and_shadowing_keeps_binding_identity`.
+- PROVEN: borrowed must-consume values retain the caller's obligation and may
+  not be consumed by the callee; unbound borrowed temporaries are rejected.
+  Evidence:
+  `must_consume_borrows_require_a_live_owner_and_only_own_operations_may_destructure`.
+- OPEN: migrate one structured standard-library resource API and prove its
+  success, early-return, branch, aggregate, and failure paths in compiled Wasm.
+- OPEN: run the final workspace matrix and promote the RFC only after the
+  standard-library integration is merged.
 
 ---

@@ -53,6 +53,20 @@
     }
 
     #[test]
+    fn must_consume_declarations_survive_formatting() {
+        let source = "must type Transaction:\n    Transaction(Int)\n\nmust sealed type Guard:\n    Guard(Int)\n\nmust capability Session:\n    token: String\n";
+        let formatted = reformat(source).expect("must-consume declarations round-trip");
+        assert!(formatted.contains("must type Transaction:"), "{formatted}");
+        assert!(formatted.contains("must sealed type Guard:"), "{formatted}");
+        assert!(formatted.contains("must capability Session:"), "{formatted}");
+        assert_eq!(
+            reformat(&formatted).as_deref(),
+            Some(formatted.as_str()),
+            "formatting is idempotent",
+        );
+    }
+
+    #[test]
     fn grantable_capability_survives_formatting() {
         // (RFC-0038) the `grantable` marker must round-trip through `witchy fmt`,
         // not be silently dropped (which would un-grant the capability).

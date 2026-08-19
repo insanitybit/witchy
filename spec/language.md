@@ -299,6 +299,35 @@ library uses it widely - `Set` (distinct members), `semver.Version`
 [capabilities.md](capabilities.md) for the capability-specific form
 (`capability X from U`).
 
+**Must-consume types.** Prefixing a nominal declaration with `must` gives every
+owned value of that type a compile-time disposition obligation. The value must
+be returned or transferred to an `own` parameter on every control-flow path;
+it cannot be copied, overwritten, wildcard-discarded, or allowed to reach scope
+exit. `must` composes with sealing and capabilities:
+
+```witchy
+must sealed type Transaction:
+    Transaction(Int)
+
+fn commit(own transaction: Transaction) -> Bool:
+    true
+
+fn publish(flag: Bool) -> Bool:
+    let transaction = Transaction(1)
+    if flag:
+        commit(transaction)
+    else:
+        commit(transaction)
+```
+
+An explicit `let` parameter borrows a must-consume value and leaves the
+obligation with its caller. An `own` call discharges the obligation when the
+operation is attempted, including when the operation reports failure or its
+result is propagated with `?`. Nominal aggregates, tuples, and lists containing
+a must-consume value carry the obligation transitively. The marker is erased
+after checking: it adds no finalizer, destructor, or backend-specific runtime
+behavior.
+
 ## 3. Bindings and assignment
 
 ```witchy

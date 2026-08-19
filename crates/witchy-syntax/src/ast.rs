@@ -231,6 +231,13 @@ pub enum ImplOrigin {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeDef {
     pub name: String,
+    /// `must type T` / `must capability T`: values of this nominal type carry
+    /// a linear disposition obligation. The ownership checker must prove that
+    /// every live value is transferred through an `own` boundary or returned;
+    /// runtime lowering erases this declaration bit and never synthesizes drop
+    /// glue or a destructor.
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    pub must_consume: bool,
     /// Explicit nominal parameters in source order. Ordinary type parameters are
     /// stored bare (`a`); lifetime parameters retain their leading apostrophe
     /// (`'a`). The spelling makes the two kinds unambiguous while preserving the
@@ -1147,6 +1154,7 @@ pub(crate) fn synthetic_anon_record_def(fields: &[String]) -> TypeDef {
         // generated generic impl keeps field types bounded by Eq, so a record
         // containing a non-Eq field is still rejected rather than laundered.
         derives: vec!["Reflect".into(), "Eq".into()],
+        must_consume: false,
         sealed: false,
         is_capability: false,
         grantable: false,
