@@ -1,8 +1,9 @@
 ---
 rfc: 0123
 title: "Expression boundaries, `;` discard, and dead-return collection lowering"
-status: accepted
+status: superseded
 created: 2026-08-17
+superseded-by: 0125
 predecessors:
   - "[0022](0022-index-assignment.md) (place-assignment sugar and collection updates)"
   - "[0033](0033-place-based-uniqueness.md) (place-based uniqueness and in-place helpers)"
@@ -13,7 +14,7 @@ related:
   - "[0064](0064-complete-mutation-classification.md) (statement-position write-back and the discard diagnostic)"
   - "[0078](0078-anonymous-tagged-unions.md) (inline-arm `.Tag` is the next pattern, not a method)"
   - "[0122](0122-uniform-borrow-relations.md) (opt-mode place references)"
-tracking: "accepted; staged in four cuts: layout boundaries, written discard, editor grammar, and discard-aware collection lowering. RFC-0124 is consolidated here; implementation and evidence remain outstanding."
+tracking: "Superseded by RFC-0125 as the canonical core-language contract. Its four implementation cuts and acceptance criteria remain the detailed execution plan; implementation and evidence remain outstanding and are tracked by RFC-0125. RFC-0124 was consolidated here and is not reused."
 ---
 
 # RFC-0123: Expression boundaries, `;` discard, and dead-return collection lowering

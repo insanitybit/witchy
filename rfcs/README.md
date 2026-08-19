@@ -22,6 +22,33 @@ ledger](./0087-acceptance-ledger.md) and the [release-readiness
 ledger](../RELEASE-READINESS.md); both record executable evidence rather than
 RFC intent.
 
+## Canonical language and standard-library RFCs
+
+Most numbered RFCs are narrow historical decisions. The canonical language
+story is intentionally smaller. Start with these capstones, then follow their
+`predecessors` only when the design history or implementation evidence matters:
+
+| Canonical RFC | Owns | Principal historical decisions |
+|---|---|---|
+| [RFC-0125](0125-core-language-contract.md) | Core data model, functions, modules, traits, patterns, errors, and expression boundaries | 0021, 0022, 0042, 0045, 0046, 0048-0050, 0052, 0054, 0056, 0062, 0065, 0078, 0081, 0097, 0098, 0113, 0123; 0084 stays deferred |
+| [RFC-0126](0126-capability-effects-contract.md) | Capabilities, effects, refinement, grants, host bindings, and effectful stdlib rules | 0002, 0003, 0005, 0009, 0011-0014, 0020, 0038, 0040, 0057, 0060, 0068, 0076, 0077, 0091, 0102, 0103, 0106, 0121; 0085/0086 stay deferred |
+| [RFC-0127](0127-ownership-and-opt-mode.md) | Value ownership, mutation, qualifiers, `mode opt`, references, lifetimes, layouts, and no-copy contracts | 0024-0030, 0033, 0034, 0043, 0051, 0062, 0064, 0083, 0087-0090, 0110-0112, 0122; 0114 stays deferred |
+| [RFC-0128](0128-regions-and-reclamation.md) | `region:`, arenas, RC fallback, copy-out, and predictable reclamation | 0016, 0024, 0035, 0051, `regions.md` |
+| [RFC-0129](0129-concurrency-tasks-and-channels.md) | `async`/`await`, tasks, typed channels, structured concurrency, and parallel workers | 0032, 0036, 0055, 0059, `concurrency-design.md` |
+| [RFC-0130](0130-generators-and-iterators.md) | `Iter`, `gen fn`, `yield`, resumable frames, and `FromIterator` | 0052, 0059, 0074 |
+| [RFC-0131](0131-reflection-and-comptime.md) | `Reflect`, `Mirror`, `TypeInfo`, `comptime`, quotation, derives, and tagged literals | 0006, 0053, 0065, 0069, 0080 |
+| [RFC-0132](0132-runtime-dynamic.md) | Explicit owned `Dynamic` values, descriptors, checked invocation, and dynamic trait queries | 0081, 0082 |
+| [RFC-0133](0133-standard-library-contract.md) | Protocols, collections, errors, module families, target availability, and stdlib maturity | 0021, 0031, 0044, 0047, 0048, 0053, 0054, 0065, 0069, 0074 |
+
+These capstones consolidate navigation and long-term product intent. They do not
+turn the RFC directory into a mutable specification. Current behavior remains in
+`spec/`, source, and executable evidence. Compiler architecture, release
+engineering, contributor process, Glamour, Coven, packaging, and deployment RFCs
+remain outside this language/stdlib subset and retain their own histories.
+
+RFC-0124 is intentionally not reused. Its discarded-collection optimization was
+absorbed into RFC-0123 and then into RFC-0125.
+
 ## Status lifecycle
 
 ```
