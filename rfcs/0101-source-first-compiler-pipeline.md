@@ -1,9 +1,9 @@
 ---
 rfc: 0101
 title: source-first compiler pipeline
-status: deferred
+status: experimental
 created: 2026-07-20
-tracking: "landed proof boundaries are retained; body type checking and trait lowering are parked until a concrete correctness defect justifies reviving the broader pipeline reorder with executable acceptance evidence"
+tracking: "active implementation: destructive lowering now consumes an explicit linked-source semantic proof; complete body checking and trait lowering are moving behind that boundary before promotion"
 related:
   - "[0070](0070-0-1-blocking-set.md) (terminal 0.1 decision record and checked-module seam)"
   - "BUG-428 / BUG-429 / BUG-434 / BUG-436 (closed regression classes)"
@@ -13,17 +13,19 @@ related:
 
 ## Status and implementation progress
 
-Proposed, with the first proof boundary implemented. The destructive sequence
+Experimental, with source and linked-semantic proof boundaries implemented. The destructive sequence
 is represented by opaque `SourceCheckedModule`, `GeneratorsLoweredModule`,
 `AsyncLoweredModule`, and terminal `SourceLoweredModule` typestates. Both the
 ordinary linker and compile-time emitted-item normalization enter that sequence
 through the non-destructive source check, and executable guards pin the
-function signatures and handwritten/generated diagnostic parity.
+function signatures and handwritten/generated diagnostic parity. The expanded
+link set then crosses an opaque `SemanticallyCheckedSource` boundary; destructive
+linked-source lowering cannot accept bare `ResolvedSource`.
 
 This does not yet prove the complete contract. Traits and method dispatch are
 checked only after linking, and the proof currently covers source-only
 generator/async safety rules rather than the full imported-name and type
-semantics. Those are the next implementation slices. The RFC remains proposed
+semantics. Those are the next implementation slices. The RFC remains experimental
 until every destructive pass is behind the proof and the linked source checker
 owns the complete semantic contract.
 
@@ -32,6 +34,10 @@ Implemented evidence:
 - `witchy_syntax::source_check::check` is the sole constructor of the initial
   proof; generator, async, and record lowering each require the immediately
   preceding typestate, so no public caller can skip a destructive stage.
+- The injected linked-source checker produces the only value accepted by
+  `lower_expanded_source`: `SemanticallyCheckedSource`. A source inspection
+  guard pins that signature and the proof construction after successful
+  checking.
 - The production linker checks every initially supplied module, projects only
   the imports introduced by lowering, and retains handwritten source nodes
   through expansion. Comptime normalization applies the same rule to merged

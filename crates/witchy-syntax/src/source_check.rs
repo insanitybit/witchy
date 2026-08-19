@@ -97,6 +97,15 @@ pub struct ResolvedSource {
     method_owners: crate::type_resolve::MethodOwnerCandidates,
 }
 
+/// A resolved expanded source set whose injected semantic checker completed
+/// successfully while generator, async, record, trait, and impl nodes were
+/// still intact. Destructive lowering accepts this proof rather than bare
+/// [`ResolvedSource`].
+#[derive(Debug)]
+pub(crate) struct SemanticallyCheckedSource {
+    resolved: ResolvedSource,
+}
+
 impl ResolvedSource {
     pub fn modules(&self) -> &[(String, Module)] {
         &self.modules
@@ -106,15 +115,26 @@ impl ResolvedSource {
         &self.method_owners
     }
 
+    pub(crate) fn after_semantic_check(self) -> SemanticallyCheckedSource {
+        SemanticallyCheckedSource { resolved: self }
+    }
+}
+
+impl SemanticallyCheckedSource {
+    pub(crate) fn modules(&self) -> &[(String, Module)] {
+        self.resolved.modules()
+    }
+
     pub(crate) fn into_checked_modules(
         self,
     ) -> (Vec<(String, SourceCheckedModule)>, crate::type_resolve::ResolvedDeclarations) {
         let modules = self
+            .resolved
             .modules
             .into_iter()
             .map(|(name, module)| (name, SourceCheckedModule { module }))
             .collect();
-        (modules, self.declarations)
+        (modules, self.resolved.declarations)
     }
 }
 
@@ -324,8 +344,9 @@ mod tests {
         assert!(records.contains("pub fn lower(module: AsyncLoweredModule)"));
         assert!(records.contains("pub fn lower_lenient(module: AsyncLoweredModule)"));
         assert!(linker.contains(
-            "fn lower_expanded_source(\n    resolved: crate::source_check::ResolvedSource"
+            "fn lower_expanded_source(\n    checked: crate::source_check::SemanticallyCheckedSource"
         ));
+        assert!(linker.contains("let checked = resolved.after_semantic_check();"));
         assert!(source_check.contains("pub(crate) fn into_module(self) -> Module"));
         assert_eq!(
             source_check

@@ -1195,18 +1195,18 @@ fn prepare_source_for_expansion(
 }
 
 fn lower_expanded_source(
-    resolved: crate::source_check::ResolvedSource,
+    checked: crate::source_check::SemanticallyCheckedSource,
     origin_tables: &mut HashMap<String, crate::origin::OriginTable>,
 ) -> Result<
     (Vec<(String, Module)>, crate::type_resolve::ResolvedDeclarations),
     LinkError,
 > {
-    let view_fns = resolved
+    let view_fns = checked
         .modules()
         .iter()
-        .map(|(name, module)| expanded_view_fns(resolved.modules(), name, module))
+        .map(|(name, module)| expanded_view_fns(checked.modules(), name, module))
         .collect::<Vec<_>>();
-    let (checked_modules, declarations) = resolved.into_checked_modules();
+    let (checked_modules, declarations) = checked.into_checked_modules();
     let mut lowered_modules = Vec::with_capacity(checked_modules.len());
     for ((module_name, checked), view_fns) in checked_modules.into_iter().zip(view_fns) {
         let cache_key = lowered_source_cache_key(&module_name, checked.module(), &view_fns);
@@ -1948,7 +1948,8 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
     }
     let resolved = crate::source_check::resolve_linked_source(modules, user_modules)?;
     check_source(&resolved).map_err(SourceLinkError::Source)?;
-    let (mut modules, declarations) = lower_expanded_source(resolved, &mut origin_tables)?;
+    let checked = resolved.after_semantic_check();
+    let (mut modules, declarations) = lower_expanded_source(checked, &mut origin_tables)?;
 
     // MethodCall nodes survive linking: `x.f(a)` resolves to a REAL method
     // (impl/trait/static) during trait lowering, not to arbitrary free
