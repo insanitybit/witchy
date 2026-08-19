@@ -35,7 +35,7 @@
                     body.push_str(line);
                     body.push('\n');
                 }
-            } else if trimmed.starts_with("```witchy") {
+            } else if trimmed == "```witchy" {
                 in_witchy = true;
                 start_line = idx + 2;
             }
@@ -970,3 +970,31 @@
         assert!(out.contains("as dyn Render"), "explicit cast survives: {out}");
         assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
     }
+
+#[test]
+fn test_debug_fmt() {
+    let src = "let bad = &make_string()";
+    let original = crate::parser::parse_module(src).unwrap();
+    let comments = crate::lexer::own_line_comments(src);
+    let trailing = crate::lexer::trailing_comments(src);
+    let out = crate::format::module_with_trailing(&original, &comments, &trailing);
+    println!("Out: {:?}", out);
+    if let Some(out) = out {
+        let reparsed = crate::parser::parse_module(&out);
+        println!("Reparsed: {:?}", reparsed);
+    }
+}
+
+#[test]
+fn test_debug_fmt_comment() {
+    let src = "let bad = &make_string()       // error: bind the owner first";
+    let original = crate::parser::parse_module(src).unwrap();
+    let comments = crate::lexer::own_line_comments(src);
+    let trailing = crate::lexer::trailing_comments(src);
+    let out = crate::format::module_with_trailing(&original, &comments, &trailing);
+    println!("Out: {:?}", out);
+    if let Some(out) = out {
+        let reparsed = crate::parser::parse_module(&out);
+        println!("Reparsed: {:?}", reparsed);
+    }
+}
