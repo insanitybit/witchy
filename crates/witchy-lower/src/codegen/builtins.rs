@@ -675,6 +675,9 @@ impl Codegen<'_> {
                     call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
                 }
             }
+            (intrinsics::LIST_WITH_CAPACITY, 1) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
+            }
             (intrinsics::DICT_NEW, 0) => {
                 self.uses_dict = true;
                 call(intrinsic_helper(name), vec![])

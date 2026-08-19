@@ -5552,6 +5552,11 @@ impl Checker {
                     Ty::Named("Option".into(), vec![elem]),
                 ))
             }
+            S::GenericListWithCapacity => {
+                let elem = self.fresh();
+                let list = Ty::List(Box::new(elem));
+                Some((vec![Ty::Int], list))
+            }
             S::GenericDictNew => {
                 let key = self.fresh();
                 let value = self.fresh();

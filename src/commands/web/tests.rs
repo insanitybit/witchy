@@ -1413,13 +1413,13 @@ pub fn web() -> Site:
             .get_mut(Path::new("src/source_functions.witchy"))
             .expect("starter source");
         source.push_str("
-fn same_line_mix() -> Int:
-    1 + 2
-    3 + 4
+fn same_line_mix(x: Int) -> Int:
+    x + 2
+    x + 4
 ");
         *source = source.replace("pub fn glamour_dispatch(state: BrowserState, _input: Bytes) -> BrowserState:
     state","pub fn glamour_dispatch(state: BrowserState, _input: Bytes) -> BrowserState:
-    let _ = same_line_mix()
+    let _ = same_line_mix(1)
     state");
         create_project_atomically(&root, &files).expect("create source map project");
 

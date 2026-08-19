@@ -700,6 +700,19 @@ pub struct WirFunc {
     pub raw_body: Option<Vec<u8>>,
 }
 
+impl WirFunc {
+    /// Prune declared body locals that are never read or written in the function body.
+    /// Parameters are always preserved.
+    pub fn prune_unused_locals(&mut self) {
+        if self.raw_body.is_some() {
+            return;
+        }
+        let mut used = std::collections::HashSet::new();
+        collect_used_locals_seq(&self.body, &mut used);
+        self.locals.retain(|l| used.contains(l.name.as_str()));
+    }
+}
+
 /// An active data segment: bytes placed at a fixed memory offset.
 #[derive(Debug, Clone)]
 pub struct DataSegment {
@@ -722,6 +735,15 @@ pub struct WirModule {
     pub exports: Vec<(String, String)>,
 }
 
+impl WirModule {
+    /// Prune unused locals across all defined functions in the module.
+    pub fn prune_unused_locals(&mut self) {
+        for func in &mut self.funcs {
+            func.prune_unused_locals();
+        }
+    }
+}
+
 /// Render a module to WAT text, for debugging and test assertions (`witchy
 /// emit-wat`). This is not the build path: `wir_encode` emits the wasm binary
 /// directly. Scalar modules are kept instruction-for-instruction aligned. GC
@@ -729,6 +751,14 @@ pub struct WirModule {
 /// module's external `WirStructDef` list; the binary encoder is authoritative
 /// for GC modules.
 pub fn to_wat(module: &WirModule) -> String {
+    let mut module_clone;
+    let module = if module.funcs.iter().any(|f| f.raw_body.is_none()) {
+        module_clone = module.clone();
+        module_clone.prune_unused_locals();
+        &module_clone
+    } else {
+        module
+    };
     let mut s = String::new();
     s.push_str("(module\n");
 
@@ -1002,11 +1032,18 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
                 let _ = writeln!(s, "br ${target}");
             }
         },
-        WirNode::Drop(e) => {
-            print_expr(s, e, depth);
-            indent(s, depth);
-            s.push_str("drop\n");
-        }
+        WirNode::Drop(e) => match e {
+            WirExpr::ConstI32(_)
+            | WirExpr::ConstI64(_)
+            | WirExpr::ConstF64(_)
+            | WirExpr::StrPtr(_)
+            | WirExpr::RefNull(_) => {}
+            _ => {
+                print_expr(s, e, depth);
+                indent(s, depth);
+                s.push_str("drop\n");
+            }
+        },
         WirNode::Do(e) => {
             print_expr(s, e, depth);
         }
@@ -1415,6 +1452,143 @@ pub(crate) fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSig
             }
             WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
                 collect_clos_signatures_seq(body, out)
+            }
+            WirNode::Br { cond: Some(c), .. } => walk_expr(c, out),
+            WirNode::Drop(e) | WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {
+                walk_expr(e, out)
+            }
+            WirNode::Br { cond: None, .. } | WirNode::Return(None) | WirNode::Unreachable => {}
+        }
+    }
+    for node in seq {
+        walk_node(node, out);
+    }
+}
+
+/// Collect all local variable names read or written in `seq`.
+pub(crate) fn collect_used_locals_seq(seq: &WirSeq, out: &mut std::collections::HashSet<String>) {
+    fn walk_expr(e: &WirExpr, out: &mut std::collections::HashSet<String>) {
+        match e {
+            WirExpr::GetLocal(name) => {
+                out.insert(name.clone());
+            }
+            WirExpr::ToSlot(inner, _)
+            | WirExpr::FromSlot(inner, _)
+            | WirExpr::Unary { arg: inner, .. }
+            | WirExpr::Convert { arg: inner, .. } => walk_expr(inner, out),
+            WirExpr::Binary { lhs, rhs, .. } => {
+                walk_expr(lhs, out);
+                walk_expr(rhs, out);
+            }
+            WirExpr::Load { ptr, .. } | WirExpr::Load8U { ptr, .. } => walk_expr(ptr, out),
+            WirExpr::MemoryGrow(pages) => walk_expr(pages, out),
+            WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
+            WirExpr::CallIndirect { args, index, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+                walk_expr(index, out);
+            }
+            WirExpr::Control(node) => walk_node(node, out),
+            WirExpr::Seq(nodes) => collect_used_locals_seq(nodes, out),
+            WirExpr::StructNew { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
+            WirExpr::ArrayNew { value, len, .. } => {
+                walk_expr(value, out);
+                walk_expr(len, out);
+            }
+            WirExpr::ArrayNewFixed { items, .. } => {
+                for item in items {
+                    walk_expr(item, out);
+                }
+            }
+            WirExpr::ArrayGet { array, index, .. } => {
+                walk_expr(array, out);
+                walk_expr(index, out);
+            }
+            WirExpr::StructGet { base, .. }
+            | WirExpr::RefCast { value: base, .. }
+            | WirExpr::RefCastNullable { value: base, .. }
+            | WirExpr::ArrayLen(base)
+            | WirExpr::RefIsNull(base) => walk_expr(base, out),
+            WirExpr::ConstI64(_)
+            | WirExpr::ConstF64(_)
+            | WirExpr::ConstI32(_)
+            | WirExpr::StrPtr(_)
+            | WirExpr::MemorySize
+            | WirExpr::GetGlobal(_)
+            | WirExpr::RefNull(_) => {}
+        }
+    }
+    fn walk_node(node: &WirNode, out: &mut std::collections::HashSet<String>) {
+        match node {
+            WirNode::Source { body, .. } => collect_used_locals_seq(body, out),
+            WirNode::SetLocal { local, value } => {
+                out.insert(local.clone());
+                walk_expr(value, out);
+            }
+            WirNode::SetGlobal { value, .. } => {
+                walk_expr(value, out);
+            }
+            WirNode::StructSet { base, value, .. } => {
+                walk_expr(base, out);
+                walk_expr(value, out);
+            }
+            WirNode::ArraySet { array, index, value, .. } => {
+                walk_expr(array, out);
+                walk_expr(index, out);
+                walk_expr(value, out);
+            }
+            WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
+                walk_expr(ptr, out);
+                walk_expr(value, out);
+            }
+            WirNode::CallStoreMulti { args, dests, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+                for d in dests {
+                    out.insert(d.clone());
+                }
+            }
+            WirNode::CallIndirectStoreMulti {
+                signature: _,
+                args,
+                index,
+                dests,
+            } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+                walk_expr(index, out);
+                for d in dests {
+                    out.insert(d.clone());
+                }
+            }
+            WirNode::MemoryCopy { dest, src, len } => {
+                walk_expr(dest, out);
+                walk_expr(src, out);
+                walk_expr(len, out);
+            }
+            WirNode::MemoryFill { dest, value, len } => {
+                walk_expr(dest, out);
+                walk_expr(value, out);
+                walk_expr(len, out);
+            }
+            WirNode::If { cond, then_, els, .. } => {
+                walk_expr(cond, out);
+                collect_used_locals_seq(then_, out);
+                collect_used_locals_seq(els, out);
+            }
+            WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
+                collect_used_locals_seq(body, out);
             }
             WirNode::Br { cond: Some(c), .. } => walk_expr(c, out),
             WirNode::Drop(e) | WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {

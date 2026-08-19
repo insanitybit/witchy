@@ -2429,7 +2429,7 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         (intrinsics::MATH_TO_FLOAT, 1)
         | (intrinsics::MATH_TO_INT, 1)
         | (intrinsics::MATH_SQRT, 1) => read_all(argc),
-        (intrinsics::DICT_NEW, 0) => Some(Vec::new()),
+        (intrinsics::LIST_WITH_CAPACITY, 1) | (intrinsics::DICT_NEW, 0) => Some(Vec::new()),
         _ => None,
     }
 }
@@ -2462,7 +2462,9 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
         // `replace_helper` keeps the worst-case `ensure` + actual-bump pattern, not
         // routed) and NOT string `+` (a Binary, never a Call — handled in-place by
         // `$str_append_cap`).
-        ("list.push" | intrinsics::LIST_PUSH, 2) | (intrinsics::LIST_CONCAT, 2) => Some(0),
+        ("list.push" | intrinsics::LIST_PUSH, 2)
+        | (intrinsics::LIST_CONCAT, 2)
+        | (intrinsics::LIST_WITH_CAPACITY, 1) => Some(0),
         (intrinsics::STRING_TO_UPPER, 1)
         | (intrinsics::STRING_TO_LOWER, 1)
         | (intrinsics::STRING_TRIM, 1)

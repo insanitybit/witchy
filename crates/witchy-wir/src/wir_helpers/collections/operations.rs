@@ -533,6 +533,52 @@ pub(crate) fn list_push_helper() -> WirFunc {
     }
 }
 
+/// `$list_with_capacity(cap: i64) -> i32` — allocate an empty list with pre-allocated capacity `cap`.
+pub(crate) fn list_with_capacity_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "list_with_capacity".into(),
+        params: vec![
+            WirLocal { name: "cap".into(), ty: WirTy::Int }, // i64 capacity
+        ],
+        ret: vec![WirTy::Bool], // i32 pointer
+        locals: vec![
+            WirLocal { name: "c".into(), ty: WirTy::Bool },
+            WirLocal { name: "ptr".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal {
+                local: "c".into(),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("cap")) },
+            },
+            N::If {
+                cond: b(BinOp::Lt, getl("c"), i32c(0)),
+                then_: vec![N::SetLocal { local: "c".into(), value: i32c(0) }],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal {
+                local: "ptr".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("c"), i32c(8)))],
+                },
+            },
+            N::Store {
+                ptr: getl("ptr"),
+                value: i32c(0),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            N::Push(getl("ptr")),
+        ],
+        raw_body: None,
+    }
+}
 
 /// `$list_concat(a, b) -> i32` — a fresh list holding `a`'s elements followed by
 /// `b`'s. Like the string `$concat`, but elements are 8-byte slots: allocate

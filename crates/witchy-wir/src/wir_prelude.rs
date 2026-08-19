@@ -66,6 +66,7 @@ const HELPER_NAMES: &[&str] = &[
     "concat",
     "list_at",
     "list_push",
+    "list_with_capacity",
     "list_push_cap",
     "str_append_cap",
     "dict_insert_cap",

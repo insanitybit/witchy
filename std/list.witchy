@@ -19,6 +19,10 @@ import cmp
 // `list.set_at`, ...). These must stay module-level; the methods below
 // delegate to them. Everything else is methods-only (RFC-0099). ---
 
+// An empty list with pre-allocated capacity.
+pub fn with_capacity(capacity: Int) -> List(a):
+    list.with_capacity(capacity)
+
 // The number of elements.
 pub fn length(xs: List(a)) -> Int:
     list.length(xs)

@@ -2085,6 +2085,10 @@ Select the RSA public key for `kid` from a JWKS document (`{"keys":[{"kty":"RSA"
 
 The witchy standard list library. Every function here is pure: the module declares no capability parameters, so importing it grants no authority - it can only transform data. This is the capability model in miniature: a library you didn't hand a Console/Dir/Net to literally cannot reach them.
 
+#### `fn with_capacity(capacity: Int) -> List(a)`
+
+An empty list with pre-allocated capacity.
+
 #### `fn length(xs: List(a)) -> Int`
 
 The number of elements.

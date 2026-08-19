@@ -130,7 +130,24 @@ fn simplify_node(node: &mut WirNode, changed: &mut bool) {
             simplify_expr(value, changed);
         }
         WirNode::Br { cond: Some(c), .. } => simplify_expr(c, changed),
-        WirNode::Drop(e) | WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {
+        WirNode::Drop(e) => {
+            simplify_expr(e, changed);
+            if let WirExpr::Seq(seq) = e {
+                if let Some(WirNode::Push(
+                    WirExpr::ConstI32(_)
+                    | WirExpr::ConstI64(_)
+                    | WirExpr::ConstF64(_)
+                    | WirExpr::StrPtr(_)
+                    | WirExpr::RefNull(_),
+                )) = seq.last()
+                {
+                    seq.pop();
+                    *node = WirNode::Do(WirExpr::Seq(std::mem::take(seq)));
+                    *changed = true;
+                }
+            }
+        }
+        WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {
             simplify_expr(e, changed);
         }
         WirNode::Br { cond: None, .. } | WirNode::Return(None) | WirNode::Unreachable => {}

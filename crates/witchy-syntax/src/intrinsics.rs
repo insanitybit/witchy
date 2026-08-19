@@ -140,6 +140,7 @@ pub enum IntrinsicId {
     ListSetAt,
     ListConcat,
     ListPopExtract,
+    ListWithCapacity,
     DictNew,
     DictInsert,
     DictInsertExtract,
@@ -227,6 +228,7 @@ pub enum IntrinsicSignature {
     GenericListSetAt,
     GenericListConcat,
     GenericListPopExtract,
+    GenericListWithCapacity,
     GenericDictNew,
     GenericDictInsert,
     GenericDictInsertExtract,
@@ -311,6 +313,7 @@ impl IntrinsicSignature {
             Self::GenericListPush
                 | Self::GenericListSetAt
                 | Self::GenericListConcat
+                | Self::GenericListWithCapacity
                 | Self::GenericDictKeys
                 | Self::GenericDictValues
                 | Self::GenericDictPairs
@@ -604,6 +607,7 @@ pub const LIST_SET_AT: &str = "list.__set_at";
 pub const REFERENCE_WRITE: &str = "@reference_write";
 pub const LIST_CONCAT: &str = "list.concat";
 pub const LIST_POP_EXTRACT: &str = "list.__pop_extract";
+pub const LIST_WITH_CAPACITY: &str = "list.with_capacity";
 
 pub const DICT_NEW: &str = "dict.new";
 pub const DICT_INSERT: &str = "dict.__insert";
@@ -2618,6 +2622,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::ListWithCapacity,
+        name: LIST_WITH_CAPACITY,
+        arity: 1,
+        signature: IntrinsicSignature::GenericListWithCapacity,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["list_with_capacity"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: LIST_WITH_CAPACITY,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::DictNew,
         name: DICT_NEW,
         arity: 0,
@@ -2903,6 +2922,7 @@ pub const LIST_OPERATIONS: &[&str] = &[
     LIST_SET_AT,
     LIST_CONCAT,
     LIST_POP_EXTRACT,
+    LIST_WITH_CAPACITY,
 ];
 
 pub const DICT_OPERATIONS: &[&str] = &[
@@ -3101,6 +3121,7 @@ pub fn is_list_operation(name: &str) -> bool {
                 | IntrinsicId::ListSetAt
                 | IntrinsicId::ListConcat
                 | IntrinsicId::ListPopExtract
+                | IntrinsicId::ListWithCapacity
         )
     })
 }
@@ -4013,7 +4034,7 @@ mod tests {
             .map(|spec| spec.name)
             .collect();
         assert_eq!(actual, expected);
-        assert_eq!(actual.len(), 6);
+        assert_eq!(actual.len(), 7);
 
         for name in LIST_OPERATIONS {
             let spec = lookup(name).expect("list operation");
@@ -4034,12 +4055,13 @@ mod tests {
 
         assert!(lookup(LIST_LENGTH).expect("list.length").signature.returns_int());
         assert!(lookup(LIST_AT).expect("list.at").signature.returns_list_element());
-        for name in [LIST_PUSH, LIST_SET_AT, LIST_CONCAT] {
+        for name in [LIST_PUSH, LIST_SET_AT, LIST_CONCAT, LIST_WITH_CAPACITY] {
             assert!(lookup(name).expect("list-producing operation").signature.returns_list());
         }
         assert_eq!(declared_wir_helper(LIST_PUSH, "list_push"), Some("list_push"));
         assert_eq!(declared_wir_helper(LIST_PUSH, "list_push_cap"), Some("list_push_cap"));
         assert_eq!(sole_wir_helper(LIST_CONCAT), Some("list_concat"));
+        assert_eq!(sole_wir_helper(LIST_WITH_CAPACITY), Some("list_with_capacity"));
         assert_eq!(sole_wir_helper(LIST_POP_EXTRACT), Some("list_pop_extract"));
         assert_eq!(
             lookup("list.__pop_extract__String").map(|spec| spec.name),
@@ -4075,6 +4097,7 @@ mod tests {
                 IntrinsicSignature::GenericListPopExtract => {
                     (vec![list()], Type::Named("Option".into(), vec![elem()]))
                 }
+                IntrinsicSignature::GenericListWithCapacity => (vec![named("Int")], list()),
                 other => panic!("unexpected list signature {other:?}"),
             }
         }

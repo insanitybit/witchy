@@ -297,6 +297,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "list_with_capacity" => Some(WirHelperSpec {
+            func: list_with_capacity_helper(),
+            helper_deps: &["rc_alloc"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "split" => Some(WirHelperSpec {
             func: split_helper(),
             helper_deps: &["rc_alloc", "substr", "list_push"],

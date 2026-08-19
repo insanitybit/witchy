@@ -2375,6 +2375,54 @@ impl<'types> Codegen<'types> {
                 }
                 // The plain numeric path only. Every special case returns `None` so
                 // the legacy arm keeps its exact emission.
+                if ck == Kind::I64 && matches!(op, BinOp::Eq | BinOp::NotEq) {
+                    if let (Expr::Binary { op: BinOp::Mod, lhs: sub_lhs, rhs: sub_rhs }, Expr::Int(0)) = (lhs.as_ref(), rhs.as_ref()) {
+                        if let Expr::Int(2) = sub_rhs.as_ref() {
+                            let sub_lk = self.kind_of(sub_lhs);
+                            let sub_w = Self::wir_convert(self.lower_expr(sub_lhs)?, sub_lk, Kind::I64);
+                            let and_w = W::Binary {
+                                op: witchy_wir::wir::BinOp::And,
+                                kind: witchy_wir::wir::Kind::I64,
+                                lhs: Box::new(sub_w),
+                                rhs: Box::new(W::ConstI64(1)),
+                            };
+                            let cmp_op = if *op == BinOp::Eq {
+                                witchy_wir::wir::BinOp::Eq
+                            } else {
+                                witchy_wir::wir::BinOp::Ne
+                            };
+                            return Some(W::Binary {
+                                op: cmp_op,
+                                kind: witchy_wir::wir::Kind::I64,
+                                lhs: Box::new(and_w),
+                                rhs: Box::new(W::ConstI64(0)),
+                            });
+                        }
+                    }
+                    if let (Expr::Int(0), Expr::Binary { op: BinOp::Mod, lhs: sub_lhs, rhs: sub_rhs }) = (lhs.as_ref(), rhs.as_ref()) {
+                        if let Expr::Int(2) = sub_rhs.as_ref() {
+                            let sub_lk = self.kind_of(sub_lhs);
+                            let sub_w = Self::wir_convert(self.lower_expr(sub_lhs)?, sub_lk, Kind::I64);
+                            let and_w = W::Binary {
+                                op: witchy_wir::wir::BinOp::And,
+                                kind: witchy_wir::wir::Kind::I64,
+                                lhs: Box::new(sub_w),
+                                rhs: Box::new(W::ConstI64(1)),
+                            };
+                            let cmp_op = if *op == BinOp::Eq {
+                                witchy_wir::wir::BinOp::Eq
+                            } else {
+                                witchy_wir::wir::BinOp::Ne
+                            };
+                            return Some(W::Binary {
+                                op: cmp_op,
+                                kind: witchy_wir::wir::Kind::I64,
+                                lhs: Box::new(and_w),
+                                rhs: Box::new(W::ConstI64(0)),
+                            });
+                        }
+                    }
+                }
                 let wop = match op {
                     // `Add` is string concat when either operand is a `Str`.
                     BinOp::Add

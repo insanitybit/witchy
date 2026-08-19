@@ -493,7 +493,14 @@ impl<'types> Codegen<'types> {
                                 Expr::List(items) => items.len() as i32,
                                 _ => 0,
                             };
-                            let initial_cap = if self.expression_returns_unique_capacity(value) {
+                            let initial_cap = if let Expr::Call { name: callee, args } = value
+                                && (callee == "list.with_capacity" || callee == "with_capacity" || callee == intrinsics::LIST_WITH_CAPACITY)
+                                && args.len() == 1
+                            {
+                                let cap_w = self.lower_expr(&args[0])?;
+                                let cap_k = self.kind_of(&args[0]);
+                                Self::wir_convert(cap_w, cap_k, Kind::I32)
+                            } else if self.expression_returns_unique_capacity(value) {
                                 W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
                             } else {
                                 W::ConstI32(initial_cap)
@@ -528,14 +535,14 @@ impl<'types> Codegen<'types> {
                     if self.try_inline_dict_insert(analyzed_stmt, e, &mut seq)? {
                         tail_is_value = false;
                     } else {
-                    let v = self.lower_expr(e)?;
-                    if i == last {
-                        seq.push(N::Push(v));
-                        tail_is_value = true;
-                    } else {
-                        seq.push(N::Drop(v));
-                        tail_is_value = false;
-                    }
+                        let v = self.lower_expr(e)?;
+                        if i == last {
+                            seq.push(N::Push(v));
+                            tail_is_value = true;
+                        } else {
+                            seq.push(N::Drop(v));
+                            tail_is_value = false;
+                        }
                     }
                 }
                 Stmt::Return(opt) => {
@@ -1766,7 +1773,14 @@ impl<'types> Codegen<'types> {
                         // exact capacity, and a direct `unique` collection result
                         // supplies the token returned by its compiled ABI.
                         if self.collect_wir && self.inplace_push.contains(name) {
-                            let cap = if self.expression_returns_unique_capacity(value) {
+                            let cap = if let Expr::Call { name: callee, args } = value
+                                && (callee == "list.with_capacity" || callee == "with_capacity" || callee == intrinsics::LIST_WITH_CAPACITY)
+                                && args.len() == 1
+                            {
+                                let cap_w = self.lower_expr(&args[0])?;
+                                let cap_k = self.kind_of(&args[0]);
+                                Self::wir_convert(cap_w, cap_k, Kind::I32)
+                            } else if self.expression_returns_unique_capacity(value) {
                                 W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
                             } else {
                                 match value {
@@ -1974,7 +1988,7 @@ impl<'types> Codegen<'types> {
         seq: &mut Vec<witchy_wir::wir::WirNode>,
     ) -> Option<bool> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
-        let (call_name, args) = match value {
+        let (_call_name, args) = match value {
             Expr::Call { name, args } if name.starts_with("dict.insert") && args.len() == 3 => {
                 (name, args)
             }
@@ -1998,15 +2012,13 @@ impl<'types> Codegen<'types> {
         let mode = self.dict_key_mode_wir(kexpr)?;
         let kk = self.kind_of(kexpr);
         let vk = self.kind_of(vexpr);
-        if let vt = self.val_type_of(kexpr) {
-            if !matches!(vt, ValType::Other) {
-                self.local_dict_key_valtype.insert(d_name.clone(), vt);
-            }
+        let vt_k = self.val_type_of(kexpr);
+        if !matches!(vt_k, ValType::Other) {
+            self.local_dict_key_valtype.insert(d_name.clone(), vt_k);
         }
-        if let vt = self.val_type_of(vexpr) {
-            if !matches!(vt, ValType::Other) {
-                self.local_dict_value_valtype.insert(d_name.clone(), vt);
-            }
+        let vt_v = self.val_type_of(vexpr);
+        if !matches!(vt_v, ValType::Other) {
+            self.local_dict_value_valtype.insert(d_name.clone(), vt_v);
         }
         let cap = if dirty {
             W::ConstI32(0)

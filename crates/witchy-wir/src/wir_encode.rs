@@ -529,6 +529,14 @@ fn encode_with_gc_source_map(
     structs: &[WirStructDef],
     arrays: &[WirArrayDef],
 ) -> EncodedModule {
+    let mut module_clone;
+    let module = if module.funcs.iter().any(|f| f.raw_body.is_none()) {
+        module_clone = module.clone();
+        module_clone.prune_unused_locals();
+        &module_clone
+    } else {
+        module
+    };
     // --- Type section: collect unique (params, results) signatures ---------
     // Imports carry their param/result `Kind`s directly. Funcs derive params
     // from `params[*].ty.kind()` and results from `ret[*].kind()`. Dedup uses a
@@ -1149,10 +1157,17 @@ impl EncodeCtx<'_> {
                     func.instruction(&Instruction::Br(self.branch_depth(target)));
                 }
             },
-            WirNode::Drop(e) => {
-                self.encode_expr(func, e);
-                func.instruction(&Instruction::Drop);
-            }
+            WirNode::Drop(e) => match e {
+                WirExpr::ConstI32(_)
+                | WirExpr::ConstI64(_)
+                | WirExpr::ConstF64(_)
+                | WirExpr::StrPtr(_)
+                | WirExpr::RefNull(_) => {}
+                _ => {
+                    self.encode_expr(func, e);
+                    func.instruction(&Instruction::Drop);
+                }
+            },
             // Do/Push both just evaluate the inner expression (Do for void,
             // Push to leave a value), matching the printer.
             WirNode::Do(e) => self.encode_expr(func, e),

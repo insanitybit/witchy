@@ -2003,6 +2003,13 @@ impl Interpreter {
                 }
                 _ => err("concat expects two lists"),
             },
+            intrinsics::LIST_WITH_CAPACITY => match args {
+                [Value::Int(cap)] => {
+                    let cap_val = (*cap).max(0) as usize;
+                    Ok(Some(Value::list(Vec::with_capacity(cap_val))))
+                }
+                _ => err("with_capacity expects an Int capacity"),
+            },
             // --- Dict: an immutable association map ---
             intrinsics::DICT_NEW => match args {
                 [] => Ok(Some(Value::dict(Vec::new()))),
