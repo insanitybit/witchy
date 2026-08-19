@@ -40,8 +40,8 @@ fn precision_telemetry_artifact_covers_each_reference_phase() {
     }
 
     for (fixture, source, expected_output, expected_edges) in [
-        ("telemetry_reference_return", RETURN_FIXTURE, "9 8", 807),
-        ("telemetry_reference_list", FIXTURE, "resumed resumed", 809),
+        ("telemetry_reference_return", RETURN_FIXTURE, "9 8", 808),
+        ("telemetry_reference_list", FIXTURE, "resumed resumed", 810),
     ] {
         let checked = witchy::resolve_std_only_checked(source)
             .unwrap_or_else(|error| panic!("resolve {fixture}: {error}"));

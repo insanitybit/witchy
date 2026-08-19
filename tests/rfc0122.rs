@@ -118,7 +118,7 @@ fn reference_return_telemetry_corpus_pins_schema_and_copy_parity() {
     assert_eq!(forced_copy_runtime, optimized_runtime);
     assert_eq!(
         optimized_row,
-        [1, 1, 1, 1, 2, 0, 807, 0, 0, 0, 0],
+        [1, 1, 1, 1, 2, 0, 808, 0, 0, 0, 0],
         "the pinned optimized telemetry artifact changed"
     );
     assert_eq!(
@@ -126,8 +126,8 @@ fn reference_return_telemetry_corpus_pins_schema_and_copy_parity() {
         optimized_row,
         "forced-copy lowering must retain the same source loan facts"
     );
-    assert!(EXPECTED.contains("optimized.metrics=1,1,1,1,2,0,807,0,0,0,0"));
-    assert!(EXPECTED.contains("forced_copy.metrics=1,1,1,1,2,0,807,0,0,0,0"));
+    assert!(EXPECTED.contains("optimized.metrics=1,1,1,1,2,0,808,0,0,0,0"));
+    assert!(EXPECTED.contains("forced_copy.metrics=1,1,1,1,2,0,808,0,0,0,0"));
 }
 
 #[test]
