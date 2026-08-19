@@ -1175,21 +1175,15 @@ impl<'a> Ctx<'a> {
         want_accs: bool,
     ) -> Result<(Expr, Vec<Local>), String> {
         // Live locals of the header + body, in scope order.
-        let mut probe = Vec::new();
-        let mut seen = HashSet::new();
-        let mut order = Vec::new();
-        match &header {
-            LoopHeader::While { cond } => fv_expr(cond, &HashSet::new(), &mut seen, &mut order),
-            LoopHeader::Recv { src, .. } => fv_expr(src, &HashSet::new(), &mut seen, &mut order),
-        }
+        let mut probe = match &header {
+            LoopHeader::While { cond } => crate::suspension::free_bindings(cond),
+            LoopHeader::Recv { src, .. } => crate::suspension::free_bindings(src),
+        };
         let mut body_bound = HashSet::new();
         if let LoopHeader::Recv { var, .. } = &header {
             body_bound.insert(var.clone());
         }
-        fv_block(body, &body_bound, &mut seen, &mut order);
-        for n in order {
-            probe.push(n);
-        }
+        probe.extend(crate::suspension::free_bindings_in_block(body, &body_bound));
         let probe: HashSet<String> = probe.into_iter().collect();
         let carried: Vec<Local> =
             scope.iter().filter(|l| probe.contains(&l.name)).cloned().collect();
@@ -1534,180 +1528,14 @@ fn rebind_accs(accs: &[Local], acc_bind: &str) -> Vec<Stmt> {
 /// The live locals referenced by `expr` that are present in `scope`, in scope
 /// order (deterministic), excluding `skip` (the resume bind, passed separately).
 fn live_locals(expr: &Expr, scope: &[Local], skip: Option<&str>) -> Vec<Local> {
-    let mut free = HashSet::new();
-    let mut seen = HashSet::new();
-    let mut order = Vec::new();
-    fv_expr(expr, &HashSet::new(), &mut seen, &mut order);
-    for n in order {
-        free.insert(n);
-    }
+    let free = crate::suspension::free_bindings(expr)
+        .into_iter()
+        .collect::<HashSet<_>>();
     scope
         .iter()
         .filter(|l| Some(l.name.as_str()) != skip && free.contains(&l.name))
         .cloned()
         .collect()
-}
-
-// ---- free-variable analysis (binder-aware) ----
-
-fn fv_expr(e: &Expr, bound: &HashSet<String>, seen: &mut HashSet<String>, out: &mut Vec<String>) {
-    match e {
-        Expr::Var(n) => {
-            if !bound.contains(n) && seen.insert(n.clone()) {
-                out.push(n.clone());
-            }
-        }
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Duration(_)
-        | Expr::Str(_)
-        | Expr::Bool(_)
-        | Expr::TaggedLit { .. } => {}
-        Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::Try(expr)
-        | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. }
-        | Expr::ExistentialUpcast { expr, .. } => {
-            fv_expr(expr, bound, seen, out)
-        }
-        Expr::ExistentialCall { receiver, args, .. } => {
-            fv_expr(receiver, bound, seen, out);
-            for arg in args { fv_expr(arg, bound, seen, out); }
-        }
-        Expr::Index { base, index } => {
-            fv_expr(base, bound, seen, out);
-            fv_expr(index, bound, seen, out);
-        }
-        Expr::Binary { lhs, rhs, .. } => {
-            fv_expr(lhs, bound, seen, out);
-            fv_expr(rhs, bound, seen, out);
-        }
-        Expr::Range { lo, hi, .. } => {
-            fv_expr(lo, bound, seen, out);
-            fv_expr(hi, bound, seen, out);
-        }
-        Expr::List(xs) | Expr::Tuple(xs) => {
-            for x in xs {
-                fv_expr(x, bound, seen, out);
-            }
-        }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. }
-        | Expr::AnonCtor { args, .. } => {
-            for a in args {
-                fv_expr(a, bound, seen, out);
-            }
-        }
-        Expr::LabeledCall { args, .. } => {
-            for (_, a) in args {
-                fv_expr(a, bound, seen, out);
-            }
-        }
-        Expr::LabeledMethodCall { receiver, args, .. } => {
-            fv_expr(receiver, bound, seen, out);
-            for (_, a) in args {
-                fv_expr(a, bound, seen, out);
-            }
-        }
-        Expr::MethodCall { receiver, args, .. } => {
-            fv_expr(receiver, bound, seen, out);
-            for a in args {
-                fv_expr(a, bound, seen, out);
-            }
-        }
-        Expr::Apply { func, args } => {
-            fv_expr(func, bound, seen, out);
-            for a in args {
-                fv_expr(a, bound, seen, out);
-            }
-        }
-        Expr::RecordUpdate { name: _, base, fields } => {
-            fv_expr(base, bound, seen, out);
-            for (_, v) in fields {
-                fv_expr(v, bound, seen, out);
-            }
-        }
-        Expr::Record { fields, spread, .. } => {
-            for (_, v) in fields {
-                fv_expr(v, bound, seen, out);
-            }
-            if let Some(s) = spread {
-                fv_expr(s, bound, seen, out);
-            }
-        }
-        Expr::If { cond, then_block, else_block } => {
-            fv_expr(cond, bound, seen, out);
-            fv_block(then_block, bound, seen, out);
-            if let Some(b) = else_block {
-                fv_block(b, bound, seen, out);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            fv_expr(scrutinee, bound, seen, out);
-            for a in arms {
-                let mut binds = Vec::new();
-                pattern_binds(&a.pattern, &mut binds);
-                let mut inner = bound.clone();
-                inner.extend(binds);
-                if let Some(g) = &a.guard {
-                    fv_expr(g, &inner, seen, out);
-                }
-                fv_expr(&a.body, &inner, seen, out);
-            }
-        }
-        Expr::Block(b) => fv_block(b, bound, seen, out),
-        Expr::While { cond, body } => {
-            fv_expr(cond, bound, seen, out);
-            fv_block(body, bound, seen, out);
-        }
-        Expr::For { var, iter, body } => {
-            fv_expr(iter, bound, seen, out);
-            let mut inner = bound.clone();
-            inner.insert(var.clone());
-            fv_block(body, &inner, seen, out);
-        }
-        Expr::WhileLet { pattern, scrutinee, body } => {
-            fv_expr(scrutinee, bound, seen, out);
-            let mut binds = Vec::new();
-            pattern_binds(pattern, &mut binds);
-            let mut inner = bound.clone();
-            inner.extend(binds);
-            fv_block(body, &inner, seen, out);
-        }
-        Expr::Lambda { params, body, .. } => {
-            let mut inner = bound.clone();
-            for p in params {
-                inner.insert(p.name.clone());
-            }
-            fv_block(body, &inner, seen, out);
-        }
-    }
-}
-
-/// Free variables of a block's statement sequence: `let`/`var`/`let PAT`
-/// bindings are added to `bound` for the statements that follow them.
-fn fv_block(b: &Block, bound: &HashSet<String>, seen: &mut HashSet<String>, out: &mut Vec<String>) {
-    let mut bound = bound.clone();
-    for s in &b.stmts {
-        match s {
-            Stmt::Let { name, value, .. } => {
-                fv_expr(value, &bound, seen, out);
-                bound.insert(name.clone());
-            }
-            Stmt::LetPattern { pattern, value } => {
-                fv_expr(value, &bound, seen, out);
-                let mut binds = Vec::new();
-                pattern_binds(pattern, &mut binds);
-                bound.extend(binds);
-            }
-            Stmt::Assign { value, .. } => fv_expr(value, &bound, seen, out),
-            Stmt::Expr(e) | Stmt::Yield(e) => fv_expr(e, &bound, seen, out),
-            Stmt::Return(v) => {
-                if let Some(e) = v {
-                    fv_expr(e, &bound, seen, out);
-                }
-            }
-            Stmt::Break | Stmt::Continue => {}
-        }
-    }
 }
 
 // ---- small AST helpers ----
@@ -1975,6 +1803,28 @@ mod tests {
         assert!(mapping[1][1..]
             .iter()
             .all(|index| *index >= 3 && *index < lowered_item_count));
+    }
+
+    #[test]
+    fn lowering_carries_a_local_callable_across_await() {
+        let source = "async fn run() -> Int:\n    let stepper = fn(x: Int): x + 1\n    let _ = task.done(0).await\n    stepper(41)\n";
+        let module = crate::parser::parse_module(source).expect("parse callable-frame fixture");
+        let lowered = lower_module(module).expect("lower callable-frame fixture");
+        let segment = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name.starts_with("__async_run_") => {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("await produces a continuation segment");
+        assert!(
+            segment.params.iter().any(|parameter| parameter.name == "stepper"),
+            "the frame must carry the local callable used after suspension: {:?}",
+            segment.params,
+        );
     }
 
     #[test]

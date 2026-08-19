@@ -35,5 +35,6 @@ pub mod parser;
 pub mod records;
 pub mod reflect;
 pub mod source_check;
+pub(crate) mod suspension;
 pub mod syntax_holes;
 pub mod type_resolve;
