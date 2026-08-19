@@ -2985,6 +2985,7 @@ fn assemble_wir_module_with_structs_mode(
     // type table.
     typed = typed.rewrite_and_reannotate(|table, module| {
         rewrite_try_ctx_module(module, table);
+        
     });
     let prepared = match (build_entrypoint, runtime_catalog) {
         (true, Some(runtime_catalog)) => {

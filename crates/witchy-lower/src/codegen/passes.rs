@@ -642,3 +642,4 @@ fn alpha_rename(body: &Block, params: &[Param]) -> Block {
     r.rename_block(&mut b);
     b
 }
+

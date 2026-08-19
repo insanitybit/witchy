@@ -525,6 +525,9 @@ impl<'types> Codegen<'types> {
                     tail_is_value = false;
                 }
                 Stmt::Expr(e) if assignment_name.is_none() => {
+                    if self.try_inline_dict_insert(analyzed_stmt, e, &mut seq)? {
+                        tail_is_value = false;
+                    } else {
                     let v = self.lower_expr(e)?;
                     if i == last {
                         seq.push(N::Push(v));
@@ -532,6 +535,7 @@ impl<'types> Codegen<'types> {
                     } else {
                         seq.push(N::Drop(v));
                         tail_is_value = false;
+                    }
                     }
                 }
                 Stmt::Return(opt) => {
@@ -631,6 +635,11 @@ impl<'types> Codegen<'types> {
                 // Handles nested tuples, ctor/record destructures, and list heads
                 // uniformly, superseding the old flat-slot-only loop.
                 Stmt::LetPattern { pattern, value } => {
+                    let mut optimized = false;
+                    if let Pattern::Wildcard = pattern {
+                        optimized = self.try_inline_dict_insert(analyzed_stmt, value, &mut seq)?;
+                    }
+                    if !optimized {
                     let vk = self.kind_of(value);
                     let v = self.lower_expr(value)?;
                     let pat_ty = self.ast_type_of_expr(value);
@@ -666,6 +675,7 @@ impl<'types> Codegen<'types> {
                     };
                     seq.extend(binds);
                     tail_is_value = false;
+                    }
                 }
                 // `break`/`continue` -> a `br` to the enclosing loop's exit/continue
                 // label. Outside a loop -> `None` (legacy emits the loud error).
@@ -1957,4 +1967,73 @@ impl<'types> Codegen<'types> {
         }
         Some(seq)
     }
+    fn try_inline_dict_insert(
+        &mut self,
+        stmt: &Stmt,
+        value: &Expr,
+        seq: &mut Vec<witchy_wir::wir::WirNode>,
+    ) -> Option<bool> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        let (call_name, args) = match value {
+            Expr::Call { name, args } if name.starts_with("dict.insert") && args.len() == 3 => {
+                (name, args)
+            }
+            _ => return Some(false),
+        };
+        let d_name = match &args[0] {
+            Expr::Var(v) => v,
+            _ => return Some(false),
+        };
+        if !self.collect_wir || !self.inplace_push.contains(d_name) {
+            return Some(false);
+        }
+        let dirty = match self.facts_stack.last() {
+            Some((facts, _, _)) if facts.accumulators.contains(d_name) => {
+                facts.is_dirty(stmt)
+            }
+            _ => true,
+        };
+        let kexpr = &args[1];
+        let vexpr = &args[2];
+        let mode = self.dict_key_mode_wir(kexpr)?;
+        let kk = self.kind_of(kexpr);
+        let vk = self.kind_of(vexpr);
+        if let vt = self.val_type_of(kexpr) {
+            if !matches!(vt, ValType::Other) {
+                self.local_dict_key_valtype.insert(d_name.clone(), vt);
+            }
+        }
+        if let vt = self.val_type_of(vexpr) {
+            if !matches!(vt, ValType::Other) {
+                self.local_dict_value_valtype.insert(d_name.clone(), vt);
+            }
+        }
+        let cap = if dirty {
+            W::ConstI32(0)
+        } else {
+            W::GetLocal(format!("{d_name}__cap"))
+        };
+        let kw = self.lower_expr(kexpr)?;
+        let vw = self.lower_expr(vexpr)?;
+        self.uses_dict_insert_cap = true;
+        seq.push(N::CallStoreMulti {
+            func: intrinsics::declared_wir_helper(
+                intrinsics::DICT_INSERT,
+                "dict_insert_cap",
+            )
+            .unwrap()
+            .to_string(),
+            args: vec![
+                W::GetLocal(d_name.clone()),
+                W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
+                W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
+                W::ConstI32(mode as i32),
+                cap,
+            ],
+            dests: vec![d_name.clone(), format!("{d_name}__cap")],
+        });
+        Some(true)
+    }
 }
+
+

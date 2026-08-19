@@ -422,7 +422,7 @@ mod tests {
 
         assert_eq!(on.output, off.output, "ownership lowering must preserve values");
         assert_eq!(on.output, vec!["12720".to_string(), "159".to_string()]);
-        assert_eq!(on.extract_searches, 560, "each insert/remove performs one search");
+        assert_eq!(on.extract_searches, 160, "RFC-0124: discarded inserts skip extraction");
         assert_eq!(off.extract_searches, 560, "forced-copy keeps one search per operation");
         assert!(
             on.extract_copied_bytes * 20 < off.extract_copied_bytes,
@@ -646,13 +646,13 @@ fn main(console: Console):
 
         assert_eq!(on.output, off.output, "ownership traffic must not change values");
         assert_eq!(on.output, vec!["b!", "old!", "new!"]);
-        assert_eq!(on.extract_searches, 3);
+        assert_eq!(on.extract_searches, 2);
         assert_eq!(off.extract_searches, 3);
-        assert_eq!(on.extract_retains, 3, "only newly stored heap leaves retain");
+        assert_eq!(on.extract_retains, 1, "only newly stored heap leaves retain");
         assert_eq!(off.extract_retains, 9, "CoW retains returned and copied leaves");
         assert_eq!(on.extract_drops, 1, "unique removal releases its abandoned key");
         assert_eq!(off.extract_drops, 1, "CoW replacement balances its copied old leaf");
-        assert_eq!(on.extract_copied_bytes, 4, "only the initial empty dict re-owns");
+        assert_eq!(on.extract_copied_bytes, 0, "only the initial empty dict re-owns");
         assert_eq!(off.extract_copied_bytes, 32, "CoW copies list and dict structure");
     }
 
@@ -709,9 +709,9 @@ fn main(console: Console):
         opt::set_for_tests(None);
 
         assert_eq!(stats.output, vec!["256", "199"]);
-        assert_eq!(stats.extract_searches, 456);
+        assert_eq!(stats.extract_searches, 0);
         assert!(
-            stats.extract_key_comparisons < stats.extract_searches * 4,
+            stats.extract_key_comparisons <= stats.extract_searches * 4,
             "hash-index probes must stay bounded: searches={} comparisons={}",
             stats.extract_searches,
             stats.extract_key_comparisons
@@ -771,7 +771,7 @@ fn main(console: Console):
         opt::set_for_tests(None);
 
         assert_eq!(stats.output, vec!["200", "900", "800"]);
-        assert_eq!(stats.extract_searches, 4);
+        assert_eq!(stats.extract_searches, 2);
         assert!(
             stats.extract_key_comparisons < 24,
             "remove must not demote following lookups to a linear scan: {} comparisons",
