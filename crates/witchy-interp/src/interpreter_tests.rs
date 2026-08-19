@@ -49,6 +49,13 @@
         Interpreter::new(module)
     }
 
+    fn run_raw_runtime_fixture(source: &str) -> Result<Vec<String>, RuntimeError> {
+        let module = witchy_syntax::parser::parse_module(source).map_err(|error| RuntimeError {
+            message: error.to_string(),
+        })?;
+        run_module(module, ".", Vec::new())
+    }
+
     #[test]
     fn checked_evaluation_accepts_and_returns_only_owned_compiler_values() {
         let source = "\
@@ -747,6 +754,26 @@ fn main():
     nope()
 "#).unwrap_err();
         assert!(e.message.contains("unknown function"));
+    }
+
+    #[test]
+    fn source_runner_requires_the_checked_pipeline_before_execution() {
+        let error = run(
+            r#"
+fn invalid() -> Int:
+    "not an int"
+
+fn main(console: Console):
+    console.print("must not execute")
+    let _ = invalid()
+"#,
+        )
+        .expect_err("a source runner must reject the body type error before execution");
+        assert!(
+            error.message.contains("expected `Int`") && error.message.contains("found `String`"),
+            "unexpected checked-pipeline diagnostic: {}",
+            error.message,
+        );
     }
 
     /// The capability thesis at the language level: a function that was never
@@ -1590,7 +1617,7 @@ fn main(console: Console):
     value = 9
     console.print("${*reference}")
 "#;
-        assert_eq!(run(src).unwrap(), vec!["9"]);
+        assert_eq!(run_raw_runtime_fixture(src).unwrap(), vec!["9"]);
     }
 
     #[test]
@@ -1607,7 +1634,7 @@ fn main(console: Console):
     value = 9
     console.print("${*reference}")
 "#;
-        assert_eq!(run(src).unwrap(), vec!["9"]);
+        assert_eq!(run_raw_runtime_fixture(src).unwrap(), vec!["9"]);
     }
 
     #[test]
@@ -1684,7 +1711,7 @@ fn main(console: Console):
     *left = 9
     console.print("${pair.left}:${pair.right}")
 "#;
-        assert_eq!(run(src).unwrap(), vec!["9:3"]);
+        assert_eq!(run_raw_runtime_fixture(src).unwrap(), vec!["9:3"]);
     }
 
     #[test]
@@ -1698,7 +1725,7 @@ fn main(console: Console):
     let view = &*editable
     console.print("${*view}")
 "#;
-        assert_eq!(run(src).unwrap(), vec!["9"]);
+        assert_eq!(run_raw_runtime_fixture(src).unwrap(), vec!["9"]);
     }
 
     #[test]
@@ -1714,7 +1741,7 @@ fn main(console: Console):
     let reference = identity(&value)
     console.print("${*reference}")
 "#;
-        assert_eq!(run(src).unwrap(), vec!["9"]);
+        assert_eq!(run_raw_runtime_fixture(src).unwrap(), vec!["9"]);
     }
 
     #[test]

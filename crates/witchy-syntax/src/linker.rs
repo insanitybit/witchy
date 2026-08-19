@@ -3534,6 +3534,14 @@ fn resolve_call(
             ),
         };
     }
+    // A lexical binding wins over every function namespace. `f(...)` is an
+    // indirect call when a parameter or local closure named `f` is in scope,
+    // even if the module also declares a top-level `f`. Resolve this before the
+    // same-module and builtin cases so checked linking preserves source
+    // shadowing instead of silently turning the call into self-recursion.
+    if bound.contains(name) {
+        return Ok(name.to_string());
+    }
     // A function defined in THIS module wins over a builtin of the same name, so
     // e.g. `list.contains` is reachable as a bare `contains` inside `list` (a
     // builtin would otherwise shadow it). Checked before BUILTINS for that
@@ -3544,7 +3552,7 @@ fn resolve_call(
     if BUILTINS.contains(&name) {
         return Ok(name.to_string());
     }
-    if !bound.contains(name) {
+    {
         if let Some(srcmod) = bare_imports.and_then(|imports| imports.get(name)) {
             if !opt
                 && fns
@@ -4745,6 +4753,26 @@ mod tests {
                     if name == "sealed_lib.shown" && args.len() == 1
             ),
             "the lexical receiver must not become a zero-receiver module call: {invocation:?}"
+        );
+    }
+
+    #[test]
+    fn lexical_callable_shadows_a_same_module_function_during_linking() {
+        let module = crate::parser::parse_module(
+            "fn apply_once(n: Int) -> Int:\n    let apply_once = fn(x: Int): x + 1\n    apply_once(n)\n\nfn main() -> Int:\n    apply_once(41)\n",
+        )
+        .expect("shadowing fixture parses");
+        let linked = link(vec![("main".into(), module)], "main", noop_expand)
+            .expect("shadowing fixture links");
+        let local_call = linked.items.iter().find_map(|item| match item {
+            Item::Function(function) if function.name.ends_with("apply_once") => {
+                function.body.stmts.last()
+            }
+            _ => None,
+        });
+        assert!(
+            matches!(local_call, Some(Stmt::Expr(Expr::Call { name, .. })) if name == "apply_once"),
+            "the local callable must remain an indirect call: {local_call:?}"
         );
     }
 

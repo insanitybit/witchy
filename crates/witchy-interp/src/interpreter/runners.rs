@@ -36,10 +36,15 @@ pub fn run_with(
     net_allow: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
     let module = parse_module(src).map_err(|e| RuntimeError { message: e.to_string() })?;
-    run_module(module, root, net_allow)
+    let checked = crate::pipeline::link_checked(vec![("main".to_string(), module)], "main")
+        .map_err(|error| RuntimeError {
+            message: error.to_string(),
+        })?;
+    run_checked_module_without_catalog(&checked, root, net_allow)
 }
 
 /// Run an already-built (e.g. linked) module.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module(
     module: Module,
     root: impl AsRef<Path>,
@@ -247,6 +252,39 @@ pub fn run_checked_module(
             None,
             None,
             Some(runtime_catalog),
+            None,
+        )
+    })
+    .map(|outcome| outcome.output)
+}
+
+/// Execute a checked in-memory source unit that has no loader-authenticated
+/// package identities. This is the proof-carrying boundary used by the source
+/// convenience runners; runtime `Dynamic` operations continue to require the
+/// authenticated [`run_checked_module`] entrypoint above.
+fn run_checked_module_without_catalog(
+    checked: &witchy_types::pipeline::CheckedModule,
+    root: impl AsRef<Path>,
+    net_allow: Vec<String>,
+) -> Result<Vec<String>, RuntimeError> {
+    let module = checked.module().clone();
+    let root = root.as_ref().to_path_buf();
+    run_on_deep_stack(move || {
+        run_module_inner_limited_with_catalog(
+            module,
+            root,
+            Vec::new(),
+            Vec::new(),
+            net_allow,
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+            UserCapGrants::new(),
+            DEFAULT_STEP_LIMIT,
+            None,
+            None,
+            None,
             None,
         )
     })
@@ -536,6 +574,7 @@ pub fn run_module_files(
 /// Like [`run_module`], but also hands command-line `args` to a `main` that
 /// declares a `List(String)` parameter to receive them (argv is input data, not
 /// authority, so it is an ordinary value parameter — not a capability).
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module_args(
     module: Module,
     root: impl AsRef<Path>,
@@ -548,6 +587,7 @@ pub fn run_module_args(
 /// Like [`run_module_args`], but also grants the root `Secret` capability
 /// from `signing_key` (an Ed25519 seed) to a `main` that declares one. Signing is
 /// authority, so the key is host-provided, never constructed by the program.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module_signed(
     module: Module,
     root: impl AsRef<Path>,
@@ -560,6 +600,7 @@ pub fn run_module_signed(
 
 /// Like [`run_module_signed`], but also returns the process exit code (`main`'s
 /// `Int` return, or 0). Used by the CLI to set the process status.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module_exit(
     module: Module,
     root: impl AsRef<Path>,
@@ -614,6 +655,7 @@ pub fn run_module_exit_secrets(
 /// backs the first `Dir` param of `main` (handle 0), `roots[1..]` the rest, in
 /// order. For multi-directory programs — e.g. the witchy CLI holding both a
 /// project `Dir` and a toolchain-`bin` `Dir`. See rfcs/0004-self-hosted-cli.md.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_module_exit_dirs(
     module: Module,
     roots: Vec<PathBuf>,
@@ -629,6 +671,7 @@ pub fn run_module_exit_dirs(
 
 /// Parse and run `src` with several `Dir` grants (the multi-`Dir` analog of
 /// [`run_in`]); test/CLI helper for [`run_module_exit_dirs`].
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn run_in_dirs(src: &str, roots: &[PathBuf]) -> Result<Vec<String>, RuntimeError> {
     let module = parse_module(src).map_err(|e| RuntimeError { message: e.to_string() })?;
     run_module_exit_dirs(module, roots.to_vec(), Vec::new(), Vec::new(), None).map(|(out, _)| out)
@@ -698,6 +741,7 @@ pub fn run_module_user_caps(
     .map(|outcome| outcome.output)
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn run_module_inner(
     module: Module,
     root: PathBuf,

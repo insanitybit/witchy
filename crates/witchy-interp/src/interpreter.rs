@@ -66,7 +66,7 @@ pub(crate) use runners::{
 };
 pub use runners::{
     evaluate_checked, evaluate_checked_noargs, evaluate_compiler_module, run,
-    run_checked_module, run_in, run_in_dirs, run_with, CompilerValue,
+    run_checked_module, run_in, run_with, CompilerValue,
 };
 #[cfg(feature = "test-fixtures")]
 pub use runners::{
@@ -79,7 +79,7 @@ pub use runners::{
 pub use runners::run_module_fixtures;
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub use runners::{
-    BuildGrants, run_build_step, run_module, run_module_args, run_module_budgeted,
+    BuildGrants, run_build_step, run_in_dirs, run_module, run_module_args, run_module_budgeted,
     run_module_console_input, run_module_exit, run_module_exit_dirs,
     run_module_exit_secrets, run_module_fetch, run_module_files, run_module_signed,
     run_module_user_caps, run_program,
@@ -312,6 +312,7 @@ pub(crate) struct PositionedComptimeItem {
 
 struct InterpreterOutcome {
     output: Vec<String>,
+    #[allow(dead_code)]
     exit_code: i32,
     comptime_items: Vec<PositionedComptimeItem>,
     comptime_exprs: Vec<ComptimeExprEmission>,
