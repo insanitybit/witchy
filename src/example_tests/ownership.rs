@@ -292,56 +292,6 @@ fn rfc0122_generic_exclusive_aggregate_function_value_write_and_owner_resume_on_
         )
         .expect_err("normal callers cannot name a legacy reference-bearing opt export");
         assert!(err.to_string().contains("reference-bearing opt API `api.view`"), "{err}");
-        return;
-
-        let async_main = parser::parse_module(
-            "import api\n\nasync fn main(console: Console):\n    let text = \"original\"\n    let w = api.view(text)\n    let _ = task.done(0).await\n    console.print(w)\n",
-        )
-        .expect("parse async normal caller");
-        let err = crate::pipeline::link(
-            vec![
-                (
-                    "api".into(),
-                    parser::parse_module(
-                        "mode opt\n\npub fn view(text: let('a) String) -> View(String, 'a):\n    text\n",
-                    )
-                    .expect("parse opt API"),
-                ),
-                ("main".into(), async_main),
-            ],
-            "main",
-        )
-        .expect_err("an imported view may not cross async suspension");
-        assert!(
-            err.to_string()
-                .contains("async fn `main`: borrowed value `w` remains live across `await`"),
-            "{err}"
-        );
-
-        let list_api = "mode opt\n\npub fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n";
-        let indirect_main = "import api\nimport list\n\nfn main(console: Console):\n    var xs = [1]\n    let make_view = api.view\n    let w = make_view(xs)\n    console.print(\"${list.length(w)}\")\n    list.push(xs, 2)\n    console.print(\"${list.length(xs)}\")\n";
-        let linked = crate::pipeline::link(
-            vec![
-                ("api".into(), parser::parse_module(list_api).expect("parse opt list API")),
-                (
-                    "main".into(),
-                    parser::parse_module(indirect_main).expect("parse normal indirect caller"),
-                ),
-            ],
-            "main",
-        )
-        .expect("link normal indirect caller");
-        typeck::check(&linked).expect("an imported function value preserves its loan relation");
-        assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("run indirect view"),
-            ["1", "2"],
-            "interpreter ends the indirect view loan at last use",
-        );
-        assert_eq!(
-            run_linked_on_wasm(&[("api", list_api), ("main", indirect_main)], "main"),
-            ["1", "2"],
-            "compiled backend ends the indirect view loan at last use",
-        );
     }
 
     /// RFC-0122's normal-to-opt boundary exposes only the ordinary access

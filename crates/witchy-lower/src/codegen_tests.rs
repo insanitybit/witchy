@@ -1,50 +1,5 @@
     use super::*;
     use witchy_syntax::parser::parse_module;
-    use std::sync::{Arc, Mutex};
-    use wasmtime::{Caller, Engine, Linker, Module as WtModule, Store};
-
-    fn gc_wasm_features() -> wasmparser::WasmFeatures {
-        wasmparser::WasmFeatures::default()
-            | wasmparser::WasmFeatures::GC
-            | wasmparser::WasmFeatures::REFERENCE_TYPES
-            | wasmparser::WasmFeatures::FUNCTION_REFERENCES
-    }
-
-    fn gc_wasm_payloads(
-        wasm: &[u8],
-    ) -> impl Iterator<Item = wasmparser::Result<wasmparser::Payload<'_>>> {
-        wasmparser::Validator::new_with_features(gc_wasm_features())
-            .validate_all(wasm)
-            .expect("valid Wasm GC module");
-        wasmparser::Parser::new(0).parse_all(wasm)
-    }
-
-    fn gc_wasmtime_engine() -> Engine {
-        let mut config = wasmtime::Config::new();
-        config.wasm_reference_types(true);
-        config.wasm_function_references(true);
-        config.wasm_gc(true);
-        Engine::new(&config).expect("Wasm GC engine")
-    }
-
-    fn assert_catalog_names_live_wir_helpers(names: &[&str]) {
-        for &name in names {
-            let spec = witchy_syntax::intrinsics::lookup(name).expect("cataloged operation");
-            assert!(
-                witchy_types::typeck::intrinsic(name),
-                "{} must not compile its self-recursive std placeholder",
-                spec.name
-            );
-            for helper in spec.wir_helpers {
-                assert!(
-                    witchy_wir::wir_helpers::wir_helper(helper).is_some(),
-                    "{} names missing WIR helper {}",
-                    spec.name,
-                    helper
-                );
-            }
-        }
-    }
 
     #[test]
     fn projected_place_from_a_direct_dict_root_keeps_the_dict_layout_bias() {
@@ -148,22 +103,6 @@
             matches!(Codegen::loan_root(&scalar_event), Ok(None)),
             "a checked scalar root is intentionally non-retainable, unlike missing evidence",
         );
-    }
-
-    fn assert_partial_capture_reaches_wir_fallback(source: &str) {
-        let module = parse_module(source).expect("parse partial-capture fallback fixture");
-        let unsupported = compile_module_binary(&module)
-            .expect_unsupported("partial WIR capture must remain a fallback, not an identity error");
-        assert!(
-            unsupported.message.contains("reachable functions do not fully lower to WIR"),
-            "the whole-unit fallback must survive partial loan-fact consumption: {unsupported}",
-        );
-    }
-
-    fn beyond_wir_assignment_scratch_pool() -> String {
-        (0..=SCRUT_POOL).fold("values".to_string(), |value, _| {
-            format!("list.__set_at({value}, 0, 0)")
-        })
     }
 
     #[test]

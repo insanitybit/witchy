@@ -7810,16 +7810,6 @@ impl<'types> Codegen<'types> {
         }
     }
 
-    fn project_codegen_place_fields(mut place: CodegenPlace, fields: &[String]) -> CodegenPlace {
-        for field in fields {
-            place = CodegenPlace::Field {
-                base: Box::new(place),
-                field: field.clone(),
-            };
-        }
-        place
-    }
-
     fn codegen_place_read(place: &CodegenPlace) -> Expr {
         let root = Expr::Var(Self::codegen_place_root(place).to_string());
         Self::codegen_place_read_from(place, &root)
