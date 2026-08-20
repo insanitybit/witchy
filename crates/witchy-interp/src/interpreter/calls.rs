@@ -131,7 +131,7 @@ impl Interpreter {
                 }
                 TailCallable::Closure(_) => break err("attempted to call a non-function value"),
             };
-            self.cur_fn = function.name.clone();
+            self.cur_fn = witchy_syntax::suspension::source_callable_name(&function);
             self.tail_function = Some(function.clone());
             dynamic_chain |= is_closure;
             self.tail_dynamic_chain = dynamic_chain;

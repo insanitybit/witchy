@@ -29,8 +29,11 @@ use crate::{interpreter, parser, typeck};
         let err = typeck::check(&resolve_std_src(after_await))
             .expect_err("async type error after await must be rejected")
             .to_string();
-        assert!(err.contains("`async_work_"), "continuation diagnostic must name segment: {err}");
-        assert!(err.contains("`, line 7:"), "continuation diagnostic lost source line: {err}");
+        assert!(
+            err.contains("`main.work`, line 7:"),
+            "continuation diagnostic lost its source callable or line: {err}",
+        );
+        assert!(!err.contains("__async_"), "continuation diagnostic leaked lowering: {err}");
         assert!(err.contains("expected `Int`, found `String`"), "{err}");
     }
 

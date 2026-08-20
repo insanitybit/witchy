@@ -22,6 +22,11 @@ pub const FRAME_FUNCTION_ATTRIBUTE: &str = "__compiler_suspension_frame";
 /// first state associated with this source callable.
 pub const FRAME_ENTRY_ATTRIBUTE: &str = "__compiler_suspension_entry";
 
+/// Source callable represented by a compiler-generated suspension segment.
+/// The runtime function name remains an internal dispatch identity; diagnostics
+/// use this attribute so lowering never leaks `__async_*` names to users.
+pub const SOURCE_CALLABLE_ATTRIBUTE_PREFIX: &str = "__compiler_source_callable=";
+
 /// Prefix for the stable, module-local integer state attached to every async
 /// entry and lifted segment. The state is data consumed by the typed carrier
 /// catalog; generated function names are deliberately not the runtime ABI.
@@ -38,6 +43,24 @@ pub fn frame_state(function: &Function) -> Option<usize> {
             .strip_prefix(FRAME_STATE_ATTRIBUTE_PREFIX)
             .and_then(|state| state.parse().ok())
     })
+}
+
+pub fn source_callable_attribute(name: &str) -> String {
+    format!("{SOURCE_CALLABLE_ATTRIBUTE_PREFIX}{name}")
+}
+
+pub fn source_callable_name(function: &Function) -> String {
+    let Some(source) = function.attributes.iter().find_map(|attribute| {
+        attribute.strip_prefix(SOURCE_CALLABLE_ATTRIBUTE_PREFIX)
+    }) else {
+        return function.name.clone();
+    };
+    match function.name.rsplit_once('.') {
+        Some((module, _)) if !source.starts_with(&format!("{module}.")) => {
+            format!("{module}.{source}")
+        }
+        _ => source.to_string(),
+    }
 }
 
 /// Free lexical bindings referenced by `expression`, in deterministic first-use

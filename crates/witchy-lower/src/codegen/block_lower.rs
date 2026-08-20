@@ -1820,7 +1820,7 @@ impl<'types> Codegen<'types> {
             // host edge; successful nested calls therefore cannot stale an outer
             // operation's location.
             if assembly::wir_seq_needs_diagnostic_site(&seq[stmt_start..]) {
-                let func = self.cur_fn_name.clone();
+                let func = self.cur_diagnostic_fn_name.clone();
                 let func_ptr = self.intern(&func);
                 let line = block.lines.get(i).copied().filter(|line| *line != u32::MAX).unwrap_or(0);
                 let site = witchy_syntax::diag::pack_site(func_ptr, line);
@@ -2062,5 +2062,4 @@ impl<'types> Codegen<'types> {
         Some(true)
     }
 }
-
 

@@ -1181,6 +1181,9 @@ struct Codegen<'types> {
     cur_fn_has_type_vars: bool,
     /// The function being compiled, for error context.
     cur_fn_name: String,
+    /// Source callable used only for runtime diagnostics. Suspension segments
+    /// retain their generated `cur_fn_name` as the physical ABI identity.
+    cur_diagnostic_fn_name: String,
     /// Whether any lowered statement propagates a source site to a host-backed
     /// operation. The assembler uses this to declare the failure-only global.
     uses_diagnostic_sites: bool,
@@ -1677,6 +1680,7 @@ impl<'types> Codegen<'types> {
             cur_fn_own_param: None,
             cur_fn_has_type_vars: false,
             cur_fn_name: String::new(),
+            cur_diagnostic_fn_name: String::new(),
             uses_diagnostic_sites: false,
             type_table,
             uses_list_push_cap: false,
@@ -4286,6 +4290,7 @@ impl<'types> Codegen<'types> {
         // Rename shadowing bindings to unique names so function-wide locals
         // don't alias (the interpreter scopes lexically; this preserves that).
         self.cur_fn_name = f.name.clone();
+        self.cur_diagnostic_fn_name = witchy_syntax::suspension::source_callable_name(f);
         self.cur_fn_has_type_vars = resolved_params.iter().any(|p| {
             matches!(&p.ty, Some(Type::Named(n, args))
                 if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.'))

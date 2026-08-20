@@ -1131,7 +1131,8 @@ impl<'a> Ctx<'a> {
         cont: Continuation<'_>,
     ) -> Result<Expr, String> {
         reject_await(src, &self.fname)?;
-        if !body_folds(body, cont.scope) {
+        let carries_return = block_contains_return(body);
+        if !body_folds(body, cont.scope) && !carries_return {
             // Drain / effect body: keep `chan.consume` (interleaving preserved).
             let mut scope2 = cont.scope.to_vec();
             scope2.push(Local {
@@ -1157,6 +1158,20 @@ impl<'a> Ctx<'a> {
             let consume = call("chan.consume", vec![src.clone(), f]);
             return self.sequence_loop(consume, vec![], cont);
         }
+        if carries_return {
+            // An early return yields the async function's result, not the loop's
+            // accumulator tuple. Run the remaining source continuation on the
+            // normal exit so every branch of the loop segment has that result.
+            let exit = self.go(cont.rest, cont.rest_lines, cont.scope, cont.tail)?;
+            let (entry, _) = self.build_loop_seg(
+                LoopHeader::Recv { src: src.clone(), var: var.to_string() },
+                body,
+                cont.scope,
+                false,
+                Some(exit),
+            )?;
+            return Ok(entry);
+        }
         // Folding receive loop.
         let want_accs = !(cont.rest.is_empty() && matches!(cont.tail, Tail::Return));
         let (entry, accs) = self.build_loop_seg(
@@ -1164,6 +1179,7 @@ impl<'a> Ctx<'a> {
             body,
             cont.scope,
             want_accs,
+            None,
         )?;
         self.sequence_loop(entry, accs, cont)
     }
@@ -1177,12 +1193,26 @@ impl<'a> Ctx<'a> {
         body: &Block,
         cont: Continuation<'_>,
     ) -> Result<Expr, String> {
+        if block_contains_return(body) {
+            // See `lower_for_await`: normal exit and early return must share the
+            // enclosing async function's result type.
+            let exit = self.go(cont.rest, cont.rest_lines, cont.scope, cont.tail)?;
+            let (entry, _) = self.build_loop_seg(
+                LoopHeader::While { cond: cond.clone() },
+                body,
+                cont.scope,
+                false,
+                Some(exit),
+            )?;
+            return Ok(entry);
+        }
         let want_accs = !(cont.rest.is_empty() && matches!(cont.tail, Tail::Return));
         let (entry, accs) = self.build_loop_seg(
             LoopHeader::While { cond: cond.clone() },
             body,
             cont.scope,
             want_accs,
+            None,
         )?;
         self.sequence_loop(entry, accs, cont)
     }
@@ -1199,6 +1229,7 @@ impl<'a> Ctx<'a> {
         body: &Block,
         scope: &[Local],
         want_accs: bool,
+        continuation: Option<Expr>,
     ) -> Result<(Expr, Vec<Local>), String> {
         // Live locals of the header + body, in scope order.
         let mut probe = match &header {
@@ -1210,6 +1241,9 @@ impl<'a> Ctx<'a> {
             body_bound.insert(var.clone());
         }
         probe.extend(crate::suspension::free_bindings_in_block(body, &body_bound));
+        if let Some(continuation) = &continuation {
+            probe.extend(crate::suspension::free_bindings(continuation));
+        }
         let probe: HashSet<String> = probe.into_iter().collect();
         let carried: Vec<Local> =
             scope.iter().filter(|l| probe.contains(&l.name)).cloned().collect();
@@ -1222,7 +1256,7 @@ impl<'a> Ctx<'a> {
 
         let seg_name = self.fresh_seg();
         let loop_tail = Tail::Loop { seg: seg_name.clone(), carried: carried.clone() };
-        let exit = self.loop_exit(&accs);
+        let exit = continuation.unwrap_or_else(|| self.loop_exit(&accs));
 
         // Loop-segment parameters: the carried columns (`own` for mutable ones).
         let params: Vec<Param> = carried.iter().map(local_to_param).collect();
@@ -1412,6 +1446,14 @@ fn lower_async_fn_with(
     *state_counter += 1;
     let mut segment_attributes = f.attributes.clone();
     segment_attributes.push(crate::suspension::FRAME_FUNCTION_ATTRIBUTE.to_string());
+    let source_callable = self_ty
+        .as_ref()
+        .and_then(|ty| match ty.unqualified() {
+            Type::Named(name, _) => Some(format!("{name}.{}", f.name)),
+            _ => None,
+        })
+        .unwrap_or_else(|| f.name.clone());
+    segment_attributes.push(crate::suspension::source_callable_attribute(&source_callable));
     let mut ctx = Ctx {
         fname: f.name.clone(),
         counter,
@@ -1731,6 +1773,40 @@ fn stmt_contains_await(s: &Stmt) -> bool {
         | Stmt::Yield(value) => contains_await(value),
         Stmt::Return(v) => v.as_ref().is_some_and(contains_await),
         Stmt::Break | Stmt::Continue => false,
+    }
+}
+
+fn block_contains_return(block: &Block) -> bool {
+    block.stmts.iter().any(stmt_contains_return)
+}
+
+fn stmt_contains_return(statement: &Stmt) -> bool {
+    match statement {
+        Stmt::Return(_) => true,
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Expr(value)
+        | Stmt::Yield(value) => expr_contains_return(value),
+        Stmt::Break | Stmt::Continue => false,
+    }
+}
+
+fn expr_contains_return(expression: &Expr) -> bool {
+    match expression {
+        Expr::If { then_block, else_block, .. } => {
+            block_contains_return(then_block)
+                || else_block.as_ref().is_some_and(block_contains_return)
+        }
+        Expr::Match { arms, .. } => arms.iter().any(|arm| expr_contains_return(&arm.body)),
+        Expr::Block(block)
+        | Expr::While { body: block, .. }
+        | Expr::For { body: block, .. }
+        | Expr::WhileLet { body: block, .. } => block_contains_return(block),
+        // A return in a nested callable belongs to that callable, not the async
+        // function whose loop is being lowered.
+        Expr::Lambda { .. } => false,
+        _ => false,
     }
 }
 

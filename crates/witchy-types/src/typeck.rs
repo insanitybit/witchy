@@ -9679,6 +9679,7 @@ impl Checker {
 
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
         borrow_escape_check(func)?;
+        let source_callable = witchy_syntax::suspension::source_callable_name(func);
         let prev_compiler_syntax_allowed = self.compiler_syntax_allowed;
         if func.comptime_only {
             self.compiler_syntax_allowed = true;
@@ -9723,12 +9724,12 @@ impl Checker {
         for (param, ty) in func.params.iter().zip(&params) {
             self.reject_runtime_compiler_syntax_ty(
                 ty,
-                &format!("parameter `{}` of `{}`", param.name, diagnostic_callable_name(&func.name)),
+                &format!("parameter `{}` of `{}`", param.name, diagnostic_callable_name(&source_callable)),
             )?;
         }
         self.reject_runtime_compiler_syntax_ty(
             &ret,
-            &format!("return type of `{}`", diagnostic_callable_name(&func.name)),
+            &format!("return type of `{}`", diagnostic_callable_name(&source_callable)),
         )?;
         let suspension_frame = func.attributes.iter().any(|attribute| {
             attribute == witchy_syntax::suspension::FRAME_FUNCTION_ATTRIBUTE
@@ -9743,7 +9744,7 @@ impl Checker {
                         return Err(TypeError {
                             message: format!(
                                 "parameter `{}` of `{}` is `frozen` (deeply immutable) but its convention is mutable (`var`/`own`) — a frozen value cannot be mutated; use a plain (read-only) parameter",
-                                param.name, func.name
+                                param.name, source_callable
                             ),
                         });
                     }
@@ -9771,7 +9772,7 @@ impl Checker {
                         return terr(format!(
                             "parameter `{}` of `{}` receives must-consume `{ty}` by copying; use `own` to transfer the obligation or explicit `let` to borrow it",
                             param.name,
-                            diagnostic_callable_name(&func.name),
+                            diagnostic_callable_name(&source_callable),
                         ));
                     }
                 }
@@ -9789,7 +9790,7 @@ impl Checker {
         let body = if func.ret.is_some() {
             self.infer_block_tail_expected(&func.body, &ret).map_err(|e| {
                 type_mismatch_context(
-                    || format!("function `{}` body", diagnostic_callable_name(&func.name)),
+                    || format!("function `{}` body", diagnostic_callable_name(&source_callable)),
                     e,
                 )
             })?
@@ -9802,7 +9803,7 @@ impl Checker {
         self.coerce_arg(&ret, &body).map_err(|e| TypeError {
             message: format!(
                 "function `{}` body: {}",
-                diagnostic_callable_name(&func.name),
+                diagnostic_callable_name(&source_callable),
                 e.message
             ),
         })?;
@@ -11015,9 +11016,11 @@ fn run_check_selected(
             Item::Function(f)
                 if selected_functions.is_some_and(|names| !names.contains(&f.name)) => {}
             Item::Function(f) if selected_functions.is_none() && !f.bounds.is_empty() => {}
-            Item::Function(f) => c
-                .check_function(f)
-                .map_err(|e| at_loc(e, c.cur_line, &f.name, &c.cur_module))?,
+            Item::Function(f) => {
+                let source_callable = witchy_syntax::suspension::source_callable_name(f);
+                c.check_function(f)
+                    .map_err(|e| at_loc(e, c.cur_line, &source_callable, &c.cur_module))?
+            }
             Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }

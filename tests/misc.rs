@@ -33,6 +33,8 @@ mod spec_freshness;
 mod url_components;
 #[path = "misc/async_contract.rs"]
 mod async_contract;
+#[path = "misc/rfc0129_async_lowering.rs"]
+mod rfc0129_async_lowering;
 #[path = "misc/architecture.rs"]
 mod architecture;
 #[path = "misc/policy_sealing.rs"]
