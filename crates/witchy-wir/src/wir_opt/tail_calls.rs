@@ -958,6 +958,7 @@ fn carrier_ty(kind: Kind) -> WirTy {
         Kind::F64 => WirTy::Float,
         Kind::ExternRef => WirTy::Extern,
         Kind::StructRef => WirTy::StructRef,
+        Kind::AnyRef => WirTy::AnyRef,
         Kind::GcRef(id) => WirTy::GcRef(id),
     }
 }
@@ -1174,7 +1175,9 @@ fn default_value(ty: &WirTy) -> WirExpr {
         Kind::I64 => WirExpr::ConstI64(0),
         Kind::F64 => WirExpr::ConstF64(0.0),
         Kind::I32 => WirExpr::ConstI32(0),
-        kind @ (Kind::ExternRef | Kind::StructRef | Kind::GcRef(_)) => WirExpr::RefNull(kind),
+        kind @ (Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_)) => {
+            WirExpr::RefNull(kind)
+        }
     }
 }
 

@@ -2129,7 +2129,9 @@ impl<'types> Codegen<'types> {
                     witchy_wir::wir::Kind::I64 => Kind::I64,
                     witchy_wir::wir::Kind::F64 => Kind::F64,
                     witchy_wir::wir::Kind::ExternRef => Kind::ExternRef,
-                    witchy_wir::wir::Kind::StructRef => return None,
+                    witchy_wir::wir::Kind::StructRef | witchy_wir::wir::Kind::AnyRef => {
+                        return None;
+                    }
                     witchy_wir::wir::Kind::GcRef(id) => Kind::GcRef(id),
                 };
                 Some((type_id, kind))
@@ -8245,6 +8247,7 @@ impl<'types> Codegen<'types> {
             witchy_wir::wir::Kind::F64 => W::ConstF64(0.0),
             reference @ (witchy_wir::wir::Kind::ExternRef
             | witchy_wir::wir::Kind::StructRef
+            | witchy_wir::wir::Kind::AnyRef
             | witchy_wir::wir::Kind::GcRef(_)) => W::RefNull(reference),
         }
     }

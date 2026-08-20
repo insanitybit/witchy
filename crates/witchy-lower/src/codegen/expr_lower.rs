@@ -2031,6 +2031,7 @@ impl<'types> Codegen<'types> {
                         witchy_wir::wir::Kind::F64 => W::ConstF64(0.0),
                         ref_kind @ (witchy_wir::wir::Kind::ExternRef
                         | witchy_wir::wir::Kind::StructRef
+                        | witchy_wir::wir::Kind::AnyRef
                         | witchy_wir::wir::Kind::GcRef(_)) => W::RefNull(ref_kind),
                     };
                     let mut lowered: Vec<W> = self

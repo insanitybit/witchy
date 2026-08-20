@@ -40,6 +40,10 @@ pub enum Kind {
     /// a lifted lambda casts it back to its statically known payload struct
     /// before reading captures.
     StructRef,
+    /// The abstract wasm GC heap type `(ref null any)`. This is the erased
+    /// carrier for values that may be either a GC struct or GC array, such as
+    /// a channel message whose source type is `List(T)`.
+    AnyRef,
     /// (RFC-0005) A typed concrete GC reference `(ref null $t)`, where the `u32`
     /// is the module's GC type-definition index (structs first, then arrays).
     /// This is the representation of a reference-carrying aggregate, so an
@@ -141,6 +145,7 @@ impl Kind {
             Kind::F64 => "f64",
             Kind::ExternRef => "externref",
             Kind::StructRef => "(ref null struct)",
+            Kind::AnyRef => "(ref null any)",
             Kind::GcRef(_) => "(ref null $gc)",
         }
     }
@@ -151,7 +156,7 @@ impl Kind {
     /// scalar-only path (the i64 Slot boundary is a `typeck` reject, so hitting one
     /// of those paths at runtime is a compiler bug, not a program error).
     pub fn is_ref(self) -> bool {
-        matches!(self, Kind::ExternRef | Kind::StructRef | Kind::GcRef(_))
+        matches!(self, Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_))
     }
 }
 
@@ -175,6 +180,8 @@ pub enum WirTy {
     Extern,
     /// An erased nullable GC struct reference (`structref`).
     StructRef,
+    /// An erased nullable GC reference that may name a struct or array.
+    AnyRef,
     /// (RFC-0005) A reference-carrying aggregate lowered to a concrete GC type,
     /// referenced by its module GC-definition index. Named capability-bearing
     /// records use structs; reference-bearing collections use arrays.
@@ -190,6 +197,7 @@ impl WirTy {
             WirTy::Slot => Kind::I64,
             WirTy::Extern => Kind::ExternRef,
             WirTy::StructRef => Kind::StructRef,
+            WirTy::AnyRef => Kind::AnyRef,
             WirTy::GcRef(id) => Kind::GcRef(*id),
             // Bool, Str (ptr), Unit, Capability (handle/placeholder), List (ptr).
             _ => Kind::I32,
@@ -256,7 +264,7 @@ pub const MESSAGE_I32_FIELD: u32 = 0;
 pub const MESSAGE_I64_FIELD: u32 = 1;
 pub const MESSAGE_F64_FIELD: u32 = 2;
 pub const MESSAGE_EXTERNREF_FIELD: u32 = 3;
-pub const MESSAGE_STRUCTREF_FIELD: u32 = 4;
+pub const MESSAGE_ANYREF_FIELD: u32 = 4;
 
 pub fn message_wrapper_struct() -> WirStructDef {
     WirStructDef {
@@ -265,7 +273,7 @@ pub fn message_wrapper_struct() -> WirStructDef {
             Kind::I64,
             Kind::F64,
             Kind::ExternRef,
-            Kind::StructRef,
+            Kind::AnyRef,
         ],
         mutable: false,
     }
@@ -1273,6 +1281,7 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
             let heap = match kind {
                 Kind::ExternRef => "extern".to_string(),
                 Kind::StructRef => "struct".to_string(),
+                Kind::AnyRef => "any".to_string(),
                 Kind::GcRef(id) => format!("{id}"),
                 _ => "extern".to_string(),
             };
@@ -1303,7 +1312,7 @@ fn to_slot_op(kind: Kind) -> Option<&'static str> {
         // (RFC-0005) A reference has no i64 bit-pattern, so it cannot enter the
         // universal slot. Reaching here means the i64 Slot-boundary `typeck`
         // reject (§4.4) was bypassed — a compiler bug, not a program error.
-        Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
+        Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             panic!("cannot box a reference-typed value (a capability) into the i64 slot")
         }
     }
@@ -1315,7 +1324,7 @@ fn from_slot_op(kind: Kind) -> Option<&'static str> {
         Kind::I64 => None,
         Kind::I32 => Some("i32.wrap_i64"),
         Kind::F64 => Some("f64.reinterpret_i64"),
-        Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
+        Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             panic!("cannot recover a reference-typed value (a capability) from the i64 slot")
         }
     }
@@ -1341,6 +1350,7 @@ fn clos_type_name(signature: &ClosureSignature) -> String {
             Kind::F64 => "f64".into(),
             Kind::ExternRef => "externref".into(),
             Kind::StructRef => "structref".into(),
+            Kind::AnyRef => "anyref".into(),
             Kind::GcRef(id) => format!("gc{id}"),
         }
     }

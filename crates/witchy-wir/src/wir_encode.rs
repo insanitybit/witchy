@@ -451,6 +451,7 @@ fn val_type(kind: Kind, gc_base: u32) -> ValType {
         Kind::StructRef => {
             ValType::Ref(RefType::new_abstract(AbstractHeapType::Struct, true, false))
         }
+        Kind::AnyRef => ValType::Ref(RefType::new_abstract(AbstractHeapType::Any, true, false)),
         // (RFC-0005) A nullable reference to the concrete GC struct type.
         Kind::GcRef(id) => ValType::Ref(RefType {
             nullable: true,
@@ -466,7 +467,7 @@ fn load_align(kind: Kind) -> u32 {
         Kind::I64 => 3, // 8 bytes
         Kind::F64 => 3, // 8 bytes
         // (RFC-0005) Reference kinds are never a linear-memory load/store.
-        Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
+        Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             unreachable!("reference-typed values are not linear-memory loads")
         }
     }
@@ -1022,7 +1023,7 @@ impl EncodeCtx<'_> {
                     Kind::I32 => Instruction::I32Store(mem),
                     Kind::I64 => Instruction::I64Store(mem),
                     Kind::F64 => Instruction::F64Store(mem),
-                    Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
+                    Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
                         unreachable!("reference-typed values are not stored to linear memory")
                     }
                 };
@@ -1315,7 +1316,7 @@ impl EncodeCtx<'_> {
                     Kind::I32 => Instruction::I32Load(mem),
                     Kind::I64 => Instruction::I64Load(mem),
                     Kind::F64 => Instruction::F64Load(mem),
-                    Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
+                    Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
                         unreachable!("reference-typed values are not loaded from linear memory")
                     }
                 };
@@ -1439,6 +1440,10 @@ impl EncodeCtx<'_> {
                         shared: false,
                         ty: AbstractHeapType::Struct,
                     },
+                    Kind::AnyRef => HeapType::Abstract {
+                        shared: false,
+                        ty: AbstractHeapType::Any,
+                    },
                     Kind::GcRef(id) => HeapType::Concrete(self.gc_base + id),
                     _ => unreachable!("RefNull of a non-reference kind {kind:?}"),
                 };
@@ -1461,7 +1466,7 @@ fn to_slot_instr(kind: Kind) -> Option<Instruction<'static>> {
         Kind::F64 => Some(Instruction::I64ReinterpretF64),
         // (RFC-0005) A reference cannot be boxed into the i64 slot (no bit-pattern);
         // the crossing is a `typeck` reject (§4.4), so this is unreachable.
-        Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
+        Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             unreachable!("cannot box a reference-typed value (a capability) into the i64 slot")
         }
     }
@@ -1474,7 +1479,7 @@ fn from_slot_instr(kind: Kind) -> Option<Instruction<'static>> {
         Kind::I64 => None,
         Kind::I32 => Some(Instruction::I32WrapI64),
         Kind::F64 => Some(Instruction::F64ReinterpretI64),
-        Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
+        Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             unreachable!("cannot recover a reference-typed value (a capability) from the i64 slot")
         }
     }
@@ -1486,7 +1491,7 @@ fn const_zero(kind: Kind) -> Instruction<'static> {
         Kind::I32 => Instruction::I32Const(0),
         Kind::I64 => Instruction::I64Const(0),
         Kind::F64 => Instruction::F64Const(0.0.into()),
-        Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
+        Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             unreachable!("no `.const 0` for a reference kind")
         }
     }
@@ -1498,7 +1503,7 @@ fn const_neg_one(kind: Kind) -> Instruction<'static> {
         Kind::I32 => Instruction::I32Const(-1),
         Kind::I64 => Instruction::I64Const(-1),
         Kind::F64 => Instruction::F64Const((-1.0).into()),
-        Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
+        Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             unreachable!("no `.const -1` for a reference kind")
         }
     }

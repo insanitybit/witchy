@@ -19,7 +19,7 @@ impl Codegen<'_> {
             W::ConstI64(0),
             W::ConstF64(0.0),
             W::RefNull(WK::ExternRef),
-            W::RefNull(WK::StructRef),
+            W::RefNull(WK::AnyRef),
         ];
         match source {
             Kind::I32 => fields[witchy_wir::wir::MESSAGE_I32_FIELD as usize] = value,
@@ -29,9 +29,9 @@ impl Codegen<'_> {
                 fields[witchy_wir::wir::MESSAGE_EXTERNREF_FIELD as usize] = value;
             }
             Kind::GcRef(id) => {
-                fields[witchy_wir::wir::MESSAGE_STRUCTREF_FIELD as usize] = W::Convert {
+                fields[witchy_wir::wir::MESSAGE_ANYREF_FIELD as usize] = W::Convert {
                     from: WK::GcRef(id),
-                    to: WK::StructRef,
+                    to: WK::AnyRef,
                     arg: Box::new(value),
                 };
             }
@@ -51,7 +51,7 @@ impl Codegen<'_> {
             Kind::I64 => witchy_wir::wir::MESSAGE_I64_FIELD,
             Kind::F64 => witchy_wir::wir::MESSAGE_F64_FIELD,
             Kind::ExternRef => witchy_wir::wir::MESSAGE_EXTERNREF_FIELD,
-            Kind::GcRef(_) => witchy_wir::wir::MESSAGE_STRUCTREF_FIELD,
+            Kind::GcRef(_) => witchy_wir::wir::MESSAGE_ANYREF_FIELD,
         };
         let value = W::StructGet {
             struct_id: MESSAGE_WRAPPER_ID,
