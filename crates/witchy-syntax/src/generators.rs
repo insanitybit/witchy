@@ -455,14 +455,6 @@ fn lower_owned_loop_frame(
     entry_state: usize,
     resume_state: usize,
 ) -> Result<Option<(Function, Function)>, String> {
-    // Inherent-method lowering temporarily restores the local receiver spelling
-    // so the existing linker bridge can canonicalize the hoisted helper's
-    // direct `self` parameter. The owned frame nests that receiver in a tuple,
-    // which needs the bridge to recurse before method frames can use this path.
-    // Keep methods on the established replay lowering in this slice.
-    if method.is_some() {
-        return Ok(None);
-    }
     let Some(elem) = iter_elem(&f.ret) else { return Ok(None) };
     let Some((last, prelude)) = f.body.stmts.split_last() else { return Ok(None) };
     let Stmt::Expr(Expr::While { cond, body }) = last else { return Ok(None) };

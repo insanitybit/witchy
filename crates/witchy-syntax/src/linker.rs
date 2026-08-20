@@ -1348,17 +1348,62 @@ fn lower_generators_with_canonical_impls(
                 else {
                     continue;
                 };
-                if let Some(Type::Named(receiver, _)) =
-                    function.params.first_mut().and_then(|param| param.ty.as_mut())
-                    && receiver == local
-                {
-                    receiver.clone_from(canonical);
+                for parameter in &mut function.params {
+                    if let Some(ty) = &mut parameter.ty {
+                        canonicalize_generator_receiver_type(ty, local, canonical);
+                    }
+                }
+                if let Some(ty) = &mut function.ret {
+                    canonicalize_generator_receiver_type(ty, local, canonical);
+                }
+                for (_, _, arguments) in &mut function.bounds {
+                    for argument in arguments {
+                        canonicalize_generator_receiver_type(argument, local, canonical);
+                    }
+                }
+                for statement in &mut function.body.stmts {
+                    if let Stmt::Let { ty: Some(ty), .. } = statement {
+                        canonicalize_generator_receiver_type(ty, local, canonical);
+                    }
                 }
             }
             _ => {}
         }
     }
     Ok(lowered)
+}
+
+fn canonicalize_generator_receiver_type(ty: &mut Type, local: &str, canonical: &str) {
+    match ty {
+        Type::Named(name, arguments) => {
+            if name == local {
+                *name = canonical.to_string();
+            }
+            for argument in arguments {
+                canonicalize_generator_receiver_type(argument, local, canonical);
+            }
+        }
+        Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
+            for argument in arguments {
+                canonicalize_generator_receiver_type(argument, local, canonical);
+            }
+        }
+        Type::RecordCompose { base, fields } => {
+            canonicalize_generator_receiver_type(base, local, canonical);
+            for (_, field) in fields {
+                canonicalize_generator_receiver_type(field, local, canonical);
+            }
+        }
+        Type::Fn(parameters, result, _) => {
+            for parameter in parameters {
+                canonicalize_generator_receiver_type(parameter, local, canonical);
+            }
+            canonicalize_generator_receiver_type(result, local, canonical);
+        }
+        Type::Qualified(_, inner) => {
+            canonicalize_generator_receiver_type(inner, local, canonical);
+        }
+    }
 }
 
 /// Resolve parser-ambiguous `module.member(...)` expressions against this
@@ -4497,7 +4542,7 @@ mod tests {
     fn canonicalized_generator_method_helper_stays_in_its_source_module() {
         let source = "import iter\n\n\
                       type Counter:\n    n: Int\n\n\
-                      impl Counter:\n    gen fn upto(self) -> Iter(Int):\n        yield self.n\n\n\
+                      impl Counter:\n    gen fn upto(self) -> Iter(Int):\n        var i = 0\n        while i < self.n:\n            yield i\n            i = i + 1\n\n\
                       fn main(console: Console):\n    let c = Counter(n: 1)\n    console.print(\"${iter.collect(c.upto())}\")\n";
         let module = crate::parser::parse_module(source).expect("generator method parses");
         let linked = link(vec![("main".to_string(), module)], "main", noop_expand)
@@ -4513,10 +4558,11 @@ mod tests {
                 _ => None,
             })
             .expect("generator helper remains a local function");
-        assert_eq!(
+        assert!(matches!(
             helper.params[0].ty,
-            Some(Type::Named("main.Counter".into(), Vec::new()))
-        );
+            Some(Type::Tuple(ref fields))
+                if fields.first() == Some(&Type::Named("main.Counter".into(), Vec::new()))
+        ));
     }
 
     #[test]
