@@ -55,6 +55,33 @@ use crate::{interpreter, parser};
         );
     }
 
+    /// A conditional yield resumes inside the branch that suspended. Its
+    /// condition and prefix effects are not replayed, while iterations that do
+    /// not yield continue inside the same pull.
+    #[test]
+    fn generator_conditional_yield_resumes_once_on_both_backends() {
+        let src = "import iter\n\ngen fn evens(console: Console) -> Iter(Int):\n    var i: Int = 0\n    while i < 4:\n        console.print(\"scan ${i}\")\n        if i % 2 == 0:\n            console.print(\"before ${i}\")\n            yield i\n            console.print(\"after ${i}\")\n        else:\n            console.print(\"skip ${i}\")\n        i = i + 1\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(evens(console))\n    console.print(\"${xs}\")\n";
+        let expected = [
+            "scan 0",
+            "before 0",
+            "after 0",
+            "scan 1",
+            "skip 1",
+            "scan 2",
+            "before 2",
+            "after 2",
+            "scan 3",
+            "skip 3",
+            "[0, 2]",
+        ];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// (BUG-007) A `gen fn` declared as a METHOD of an inherent `impl` lowers just
     /// like a top-level one: it stays a method (`value.upto()` resolves by receiver
     /// type and returns `Iter(a)`), and its hoisted helper is named per-type so two

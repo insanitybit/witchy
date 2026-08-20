@@ -435,6 +435,77 @@ struct GeneratorFrameBinding {
     mutable: bool,
 }
 
+struct NestedConditionalYield {
+    outer_prefix: Vec<Stmt>,
+    outer_suffix: Vec<Stmt>,
+    branch_condition: Expr,
+    then_prefix: Vec<Stmt>,
+    then_suffix: Vec<Stmt>,
+    yielded: Expr,
+    else_block: Option<Block>,
+}
+
+/// Recognize one conditional suspension point inside the generator's outer
+/// loop. This is deliberately structural: the resume helper enters the suffix
+/// of the taken branch directly, so it neither re-evaluates the condition nor
+/// repeats effects that ran before the yield.
+fn single_nested_conditional_yield(body: &Block) -> Option<NestedConditionalYield> {
+    let mut found = None;
+    for (outer_index, statement) in body.stmts.iter().enumerate() {
+        let Stmt::Expr(Expr::If {
+            cond,
+            then_block,
+            else_block,
+        }) = statement
+        else {
+            continue;
+        };
+        let direct_yields = then_block
+            .stmts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, statement)| matches!(statement, Stmt::Yield(_)).then_some(index))
+            .collect::<Vec<_>>();
+        if direct_yields.len() != 1
+            || block_has_nested_yield(then_block)
+            || else_block.as_ref().is_some_and(block_has_any_yield)
+        {
+            continue;
+        }
+        let yield_index = direct_yields[0];
+        let Stmt::Yield(yielded) = &then_block.stmts[yield_index] else { unreachable!() };
+        if found.is_some()
+            || block_has_any_yield(&Block {
+                stmts: body.stmts[..outer_index].to_vec(),
+                lines: Vec::new(),
+                region: None,
+            })
+            || block_has_any_yield(&Block {
+                stmts: body.stmts[outer_index + 1..].to_vec(),
+                lines: Vec::new(),
+                region: None,
+            })
+        {
+            return None;
+        }
+        found = Some(NestedConditionalYield {
+            outer_prefix: body.stmts[..outer_index].to_vec(),
+            outer_suffix: body.stmts[outer_index + 1..].to_vec(),
+            branch_condition: cond.as_ref().clone(),
+            then_prefix: then_block.stmts[..yield_index].to_vec(),
+            then_suffix: then_block.stmts[yield_index + 1..].to_vec(),
+            yielded: yielded.clone(),
+            else_block: else_block.clone(),
+        });
+    }
+    found
+}
+
+fn block_has_any_yield(block: &Block) -> bool {
+    block.stmts.iter().any(|statement| matches!(statement, Stmt::Yield(_)))
+        || block_has_nested_yield(block)
+}
+
 /// Lower the common imperative generator shape to an actual one-pass owned
 /// frame instead of replaying the body to the Nth yield:
 ///
@@ -468,14 +539,17 @@ fn lower_owned_loop_frame(
         .enumerate()
         .filter_map(|(index, statement)| matches!(statement, Stmt::Yield(_)).then_some(index))
         .collect::<Vec<_>>();
-    if yields.is_empty()
-        || block_has_nested_yield(body)
+    let nested_conditional = if yields.is_empty() {
+        single_nested_conditional_yield(body)
+    } else {
+        None
+    };
+    if (yields.is_empty() && nested_conditional.is_none())
+        || (!yields.is_empty() && block_has_nested_yield(body))
         || block_has_generator_loop_control_transfer(body)
     {
         return Ok(None);
     }
-    let first_yield_index = yields[0];
-    let Stmt::Yield(first_yielded) = &body.stmts[first_yield_index] else { unreachable!() };
 
     let mut bindings = Vec::new();
     for parameter in &f.params {
@@ -520,6 +594,7 @@ fn lower_owned_loop_frame(
     let frame_name = "__generator_frame".to_string();
     let resume_name = "__generator_resume_after_yield".to_string();
     let yielded_name = "__generator_yielded".to_string();
+    let suspended_name = "__generator_suspended".to_string();
     let mut step_statements = bindings
         .iter()
         .enumerate()
@@ -542,92 +617,204 @@ fn lower_owned_loop_frame(
             field: bindings.len().to_string(),
         },
     });
-    for (phase, window) in yields.windows(2).enumerate() {
-        let previous_yield = window[0];
-        let next_yield = window[1];
-        let Stmt::Yield(yielded) = &body.stmts[next_yield] else { unreachable!() };
-        let mut resume = rewrite_owned_frame_returns(Block {
-            stmts: body.stmts[previous_yield + 1..next_yield].to_vec(),
+    if let Some(nested) = nested_conditional {
+        step_statements.push(Stmt::Let {
+            name: suspended_name.clone(),
+            ty: Some(Type::Named("Bool".into(), Vec::new())),
+            mutable: true,
+            value: Expr::Bool(false),
+        });
+        let mut resume = nested.then_suffix;
+        resume.extend(nested.outer_suffix.clone());
+        let resume = rewrite_owned_frame_returns(Block {
+            stmts: resume,
+            lines: Vec::new(),
+            region: None,
+        })?;
+        step_statements.push(Stmt::Expr(Expr::If {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(Expr::Var(resume_name)),
+                rhs: Box::new(Expr::Int(1)),
+            }),
+            then_block: resume,
+            else_block: None,
+        }));
+
+        let mut yielding_branch = rewrite_owned_frame_returns(Block {
+            stmts: nested.then_prefix,
             lines: Vec::new(),
             region: None,
         })?
         .stmts;
-        resume.push(Stmt::Let {
+        yielding_branch.push(Stmt::Assign {
+            name: suspended_name.clone(),
+            value: Expr::Bool(true),
+        });
+
+        let mut loop_statements = rewrite_owned_frame_returns(Block {
+            stmts: nested.outer_prefix,
+            lines: Vec::new(),
+            region: None,
+        })?
+        .stmts;
+        loop_statements.push(Stmt::Expr(Expr::If {
+            cond: Box::new(nested.branch_condition),
+            then_block: Block {
+                stmts: yielding_branch,
+                lines: Vec::new(),
+                region: None,
+            },
+            else_block: nested
+                .else_block
+                .map(rewrite_owned_frame_returns)
+                .transpose()?,
+        }));
+        let suffix = rewrite_owned_frame_returns(Block {
+            stmts: nested.outer_suffix,
+            lines: Vec::new(),
+            region: None,
+        })?;
+        loop_statements.push(Stmt::Expr(Expr::If {
+            cond: Box::new(Expr::Unary {
+                op: UnOp::Not,
+                expr: Box::new(Expr::Var(suspended_name.clone())),
+            }),
+            then_block: suffix,
+            else_block: None,
+        }));
+        step_statements.push(Stmt::Expr(Expr::While {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::And,
+                lhs: Box::new(cond.as_ref().clone()),
+                rhs: Box::new(Expr::Unary {
+                    op: UnOp::Not,
+                    expr: Box::new(Expr::Var(suspended_name.clone())),
+                }),
+            }),
+            body: Block {
+                stmts: loop_statements,
+                lines: Vec::new(),
+                region: None,
+            },
+        }));
+        let mut next_frame_fields = bindings
+            .iter()
+            .map(|binding| Expr::Var(binding.name.clone()))
+            .collect::<Vec<_>>();
+        next_frame_fields.push(Expr::Int(1));
+        step_statements.push(Stmt::Expr(Expr::If {
+            cond: Box::new(Expr::Var(suspended_name)),
+            then_block: Block {
+                stmts: vec![Stmt::Expr(Expr::Ctor {
+                    name: "Some".into(),
+                    args: vec![Expr::Tuple(vec![
+                        nested.yielded,
+                        Expr::Tuple(next_frame_fields),
+                    ])],
+                })],
+                lines: Vec::new(),
+                region: None,
+            },
+            else_block: Some(Block {
+                stmts: vec![Stmt::Expr(Expr::Ctor {
+                    name: "None".into(),
+                    args: Vec::new(),
+                })],
+                lines: Vec::new(),
+                region: None,
+            }),
+        }));
+    } else {
+        let first_yield_index = yields[0];
+        let Stmt::Yield(first_yielded) = &body.stmts[first_yield_index] else { unreachable!() };
+        for (phase, window) in yields.windows(2).enumerate() {
+            let previous_yield = window[0];
+            let next_yield = window[1];
+            let Stmt::Yield(yielded) = &body.stmts[next_yield] else { unreachable!() };
+            let mut resume = rewrite_owned_frame_returns(Block {
+                stmts: body.stmts[previous_yield + 1..next_yield].to_vec(),
+                lines: Vec::new(),
+                region: None,
+            })?
+            .stmts;
+            resume.push(Stmt::Let {
+                name: yielded_name.clone(),
+                ty: Some(elem.clone()),
+                mutable: false,
+                value: yielded.clone(),
+            });
+            let mut next_frame_fields = bindings
+                .iter()
+                .map(|binding| Expr::Var(binding.name.clone()))
+                .collect::<Vec<_>>();
+            next_frame_fields.push(Expr::Int((phase + 2) as i64));
+            resume.push(Stmt::Return(Some(Expr::Ctor {
+                name: "Some".into(),
+                args: vec![Expr::Tuple(vec![
+                    Expr::Var(yielded_name.clone()),
+                    Expr::Tuple(next_frame_fields),
+                ])],
+            })));
+            step_statements.push(Stmt::Expr(Expr::If {
+                cond: Box::new(Expr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(Expr::Var(resume_name.clone())),
+                    rhs: Box::new(Expr::Int((phase + 1) as i64)),
+                }),
+                then_block: Block { stmts: resume, lines: Vec::new(), region: None },
+                else_block: None,
+            }));
+        }
+
+        let last_yield_index = *yields.last().expect("non-empty direct yield set");
+        let after = rewrite_owned_frame_returns(Block {
+            stmts: body.stmts[last_yield_index + 1..].to_vec(),
+            lines: Vec::new(),
+            region: None,
+        })?;
+        step_statements.push(Stmt::Expr(Expr::If {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(Expr::Var(resume_name)),
+                rhs: Box::new(Expr::Int(yields.len() as i64)),
+            }),
+            then_block: after,
+            else_block: None,
+        }));
+
+        let mut produce = rewrite_owned_frame_returns(Block {
+            stmts: body.stmts[..first_yield_index].to_vec(),
+            lines: Vec::new(),
+            region: None,
+        })?
+        .stmts;
+        produce.push(Stmt::Let {
             name: yielded_name.clone(),
             ty: Some(elem.clone()),
             mutable: false,
-            value: yielded.clone(),
+            value: first_yielded.clone(),
         });
         let mut next_frame_fields = bindings
             .iter()
             .map(|binding| Expr::Var(binding.name.clone()))
             .collect::<Vec<_>>();
-        next_frame_fields.push(Expr::Int((phase + 2) as i64));
-        resume.push(Stmt::Return(Some(Expr::Ctor {
+        next_frame_fields.push(Expr::Int(1));
+        let next_frame = Expr::Tuple(next_frame_fields);
+        produce.push(Stmt::Expr(Expr::Ctor {
             name: "Some".into(),
-            args: vec![Expr::Tuple(vec![
-                Expr::Var(yielded_name.clone()),
-                Expr::Tuple(next_frame_fields),
-            ])],
-        })));
+            args: vec![Expr::Tuple(vec![Expr::Var(yielded_name), next_frame])],
+        }));
         step_statements.push(Stmt::Expr(Expr::If {
-            cond: Box::new(Expr::Binary {
-                op: BinOp::Eq,
-                lhs: Box::new(Expr::Var(resume_name.clone())),
-                rhs: Box::new(Expr::Int((phase + 1) as i64)),
+            cond: Box::new(cond.as_ref().clone()),
+            then_block: Block { stmts: produce, lines: Vec::new(), region: None },
+            else_block: Some(Block {
+                stmts: vec![Stmt::Expr(Expr::Ctor { name: "None".into(), args: Vec::new() })],
+                lines: Vec::new(),
+                region: None,
             }),
-            then_block: Block { stmts: resume, lines: Vec::new(), region: None },
-            else_block: None,
         }));
     }
-
-    let last_yield_index = *yields.last().expect("non-empty direct yield set");
-    let after = rewrite_owned_frame_returns(Block {
-        stmts: body.stmts[last_yield_index + 1..].to_vec(),
-        lines: Vec::new(),
-        region: None,
-    })?;
-    step_statements.push(Stmt::Expr(Expr::If {
-        cond: Box::new(Expr::Binary {
-            op: BinOp::Eq,
-            lhs: Box::new(Expr::Var(resume_name)),
-            rhs: Box::new(Expr::Int(yields.len() as i64)),
-        }),
-        then_block: after,
-        else_block: None,
-    }));
-
-    let mut produce = rewrite_owned_frame_returns(Block {
-        stmts: body.stmts[..first_yield_index].to_vec(),
-        lines: Vec::new(),
-        region: None,
-    })?
-    .stmts;
-    produce.push(Stmt::Let {
-        name: yielded_name.clone(),
-        ty: Some(elem.clone()),
-        mutable: false,
-        value: first_yielded.clone(),
-    });
-    let mut next_frame_fields = bindings
-        .iter()
-        .map(|binding| Expr::Var(binding.name.clone()))
-        .collect::<Vec<_>>();
-    next_frame_fields.push(Expr::Int(1));
-    let next_frame = Expr::Tuple(next_frame_fields);
-    produce.push(Stmt::Expr(Expr::Ctor {
-        name: "Some".into(),
-        args: vec![Expr::Tuple(vec![Expr::Var(yielded_name), next_frame])],
-    }));
-    step_statements.push(Stmt::Expr(Expr::If {
-        cond: Box::new(cond.as_ref().clone()),
-        then_block: Block { stmts: produce, lines: Vec::new(), region: None },
-        else_block: Some(Block {
-            stmts: vec![Stmt::Expr(Expr::Ctor { name: "None".into(), args: Vec::new() })],
-            lines: Vec::new(),
-            region: None,
-        }),
-    }));
 
     let mut helper_attributes = f.attributes.clone();
     helper_attributes.push(crate::suspension::FRAME_FUNCTION_ATTRIBUTE.into());
@@ -1118,5 +1305,18 @@ mod target_availability_tests {
         assert!(!debug.contains("iter.from_gen"), "direct yields must not replay: {debug}");
         assert!(debug.contains("__generator_resume_after_yield"));
         assert!(debug.contains("Int(2)"), "second yield needs its own resume phase: {debug}");
+    }
+
+    #[test]
+    fn conditional_yield_loop_resumes_inside_the_taken_branch() {
+        let module = crate::parser::parse_module(
+            "gen fn evens() -> Iter(Int):\n    var i = 0\n    while i < 4:\n        if i % 2 == 0:\n            yield i\n            i = i + 1\n        else:\n            i = i + 1\n",
+        )
+        .expect("parse conditional-yield generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower generator").into_module();
+        let debug = format!("{:?}", lowered);
+        assert!(!debug.contains("iter.from_gen"), "conditional yield must not replay: {debug}");
+        assert!(debug.contains("__generator_resume_after_yield"));
     }
 }
