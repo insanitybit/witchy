@@ -1619,6 +1619,9 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             if t.packed {
                 packed_names.insert(t.name.as_str());
             }
+        } else if let Item::TypeAlias { name, params, .. } = item {
+            known.insert(name.as_str());
+            arities.insert(name.as_str(), params.len());
         }
     }
     // Computed once per module check: `validate_type_model` previously rebuilt
