@@ -351,6 +351,34 @@ fn main(console: Console):
         );
     }
 
+    /// Capability effects in the terminal-loop prelude are lazy entry work:
+    /// constructing the iterator does nothing, and the first pull runs them once.
+    #[test]
+    fn generator_effectful_prelude_is_lazy_and_runs_once() {
+        let src = r#"import iter
+
+gen fn values(console: Console) -> Iter(Int):
+    console.print("init")
+    var i = 0
+    while i < 2:
+        yield i
+        i = i + 1
+
+fn main(console: Console):
+    let unused = values(console)
+    console.print("made")
+    let result: List(Int) = iter.collect(values(console))
+    console.print("${result}")
+"#;
+        let expected = ["made", "init", "[0, 1]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.

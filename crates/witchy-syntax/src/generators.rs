@@ -1872,19 +1872,28 @@ fn lower_owned_loop_frame(
     let parameter_count = bindings.len();
     let mut initializers = Vec::new();
     for statement in prelude {
-        let Stmt::Let { name, ty, mutable, value } = statement else { return Ok(None) };
-        let Some(ty) = ty
-            .clone()
-            .or_else(|| generator_frame_type_from_bindings(value, &bindings))
-        else {
-            return Ok(None);
-        };
-        bindings.push(GeneratorFrameBinding {
-            name: name.clone(),
-            ty,
-            mutable: *mutable,
-        });
-        initializers.push(statement.clone());
+        match statement {
+            Stmt::Let { name, ty, mutable, value } => {
+                let Some(ty) = ty
+                    .clone()
+                    .or_else(|| generator_frame_type_from_bindings(value, &bindings))
+                else {
+                    return Ok(None);
+                };
+                bindings.push(GeneratorFrameBinding {
+                    name: name.clone(),
+                    ty,
+                    mutable: *mutable,
+                });
+                initializers.push(statement.clone());
+            }
+            Stmt::Expr(_) | Stmt::Assign { .. } => initializers.push(statement.clone()),
+            Stmt::LetPattern { .. }
+            | Stmt::Yield(_)
+            | Stmt::Return(_)
+            | Stmt::Break
+            | Stmt::Continue => return Ok(None),
+        }
     }
     if let Some(nested) = &nested_match
         && nested.arms.iter().any(|arm| arm.rebind_on_resume)
@@ -3129,6 +3138,19 @@ mod target_availability_tests {
         assert!(debug.contains("iter.unfold"), "Collatz needs an owned frame: {debug}");
         assert!(!debug.contains("iter.from_gen"), "Collatz must not replay its seed: {debug}");
         assert!(debug.contains("once"), "Collatz must record whether the seed was yielded: {debug}");
+    }
+
+    #[test]
+    fn effectful_terminal_loop_prelude_runs_in_the_owned_entry_phase() {
+        let module = crate::parser::parse_module(
+            "gen fn values(console: Console) -> Iter(Int):\n    console.print(\"init\")\n    var i = 0\n    while i < 2:\n        yield i\n        i = i + 1\n",
+        )
+        .expect("parse effectful-prelude generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower effectful prelude").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(!debug.contains("iter.from_gen"), "entry effects must not replay: {debug}");
+        assert!(debug.contains("init"), "the entry effect must be retained: {debug}");
     }
 
     #[test]
