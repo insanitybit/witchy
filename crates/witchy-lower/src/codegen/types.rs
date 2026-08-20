@@ -53,6 +53,15 @@ impl Codegen<'_> {
         {
             return Kind::GcRef(id);
         }
+        // A list literal containing explicit-reference tuples can retain only
+        // the erased referent shell in the source type table. Its item kinds
+        // still select a typed GC array during lowering; report that same
+        // physical kind to enclosing constructors and call boundaries.
+        if let Expr::List(items) = e
+            && let Some((type_id, _, _)) = self.gc_reference_list_literal_layout(e, items)
+        {
+            return Kind::GcRef(type_id);
+        }
         if let Expr::Field { base, field } = e
             && let Ok(index) = field.parse::<usize>()
             && let Some(kind) = self.gc_tuple_field_kind(base, index)
