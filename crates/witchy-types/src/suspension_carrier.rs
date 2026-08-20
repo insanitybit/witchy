@@ -67,6 +67,7 @@ impl CarrierState {
 pub struct SuspensionCarrierCatalog {
     states: Vec<CarrierState>,
     max_lane_width: usize,
+    scalar_transitions: Vec<Result<Vec<ScalarTransition>, String>>,
 }
 
 /// Closed eligibility proof for RFC-0059's allocation-free compiled scheduler.
@@ -86,6 +87,7 @@ pub struct ScalarExecutorState {
     pub function: String,
     pub source_callable: String,
     pub slots: Vec<ScalarExecutorSlot>,
+    pub transitions: Vec<ScalarTransition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,12 +97,29 @@ pub struct ScalarExecutorSlot {
     pub lanes: Vec<CarrierLane>,
 }
 
+/// One terminal edge from a compiler-generated suspension state. Conditions,
+/// matches, and ordinary scalar statements remain in the state body; this is
+/// the effect/jump ABI the closure-free dispatcher must implement at each leaf.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScalarTransition {
+    Jump { target: usize },
+    Done,
+    ChannelOpen { resume: usize },
+    ChannelSend { resume: usize },
+    ChannelReceive { resume: usize },
+    Spawn { child: usize, resume: usize },
+    Join { resume: usize },
+    Yield { resume: usize },
+    Call { callee: usize, resume: usize },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScalarExecutorRejection {
     NoSuspensionStates,
     BoxedState { function: String },
     NonScalarLane { function: String, slot: String, lane: CarrierLane },
     NonIntegerChannel { channel: String, message: String },
+    UnsupportedTransition { function: String, detail: String },
 }
 
 impl SuspensionCarrierCatalog {
@@ -158,7 +177,24 @@ impl SuspensionCarrierCatalog {
         }
 
         let max_lane_width = states.iter().map(CarrierState::lane_width).max().unwrap_or(0);
-        Ok(Self { states, max_lane_width })
+        let state_ids: HashMap<String, usize> = states
+            .iter()
+            .map(|state| (state.function.clone(), state.id))
+            .collect();
+        let scalar_transitions = states
+            .iter()
+            .map(|state| {
+                let function = typed.module().items.iter().find_map(|item| match item {
+                    Item::Function(function) if function.name == state.function => Some(function),
+                    _ => None,
+                });
+                let function = function.ok_or_else(|| {
+                    format!("carrier state `{}` has no typed function body", state.function)
+                })?;
+                scalar_transitions_for_function(function, &state_ids)
+            })
+            .collect();
+        Ok(Self { states, max_lane_width, scalar_transitions })
     }
 
     pub fn states(&self) -> &[CarrierState] {
@@ -218,7 +254,14 @@ impl SuspensionCarrierCatalog {
         let states = self
             .states
             .iter()
-            .map(|state| {
+            .enumerate()
+            .map(|(state_index, state)| {
+                let transitions = self.scalar_transitions[state_index]
+                    .clone()
+                    .map_err(|detail| ScalarExecutorRejection::UnsupportedTransition {
+                        function: state.function.clone(),
+                        detail,
+                    })?;
                 let mut lane_start = 0;
                 let slots = state
                     .slots
@@ -237,14 +280,15 @@ impl SuspensionCarrierCatalog {
                         planned
                     })
                     .collect();
-                ScalarExecutorState {
+                Ok(ScalarExecutorState {
                     id: state.id,
                     function: state.function.clone(),
                     source_callable: state.source_callable.clone(),
                     slots,
-                }
+                    transitions,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, ScalarExecutorRejection>>()?;
         Ok(ScalarExecutorPlan {
             state_count: self.states.len(),
             max_lane_width: self.max_lane_width,
@@ -286,6 +330,187 @@ impl SuspensionCarrierCatalog {
         }
         bytes
     }
+}
+
+fn scalar_transitions_for_function(
+    function: &Function,
+    state_ids: &HashMap<String, usize>,
+) -> Result<Vec<ScalarTransition>, String> {
+    let terminal = terminal_block_expr(&function.body).ok_or_else(|| {
+        "state body has no terminal expression".to_string()
+    })?;
+    let mut transitions = Vec::new();
+    collect_scalar_transitions(terminal, state_ids, &mut transitions)?;
+    if transitions.is_empty() {
+        return Err("state body has no terminal transition".into());
+    }
+    Ok(transitions)
+}
+
+fn terminal_block_expr(block: &ast::Block) -> Option<&ast::Expr> {
+    match block.stmts.last()? {
+        ast::Stmt::Expr(expression) => Some(expression),
+        ast::Stmt::Return(Some(expression)) => Some(expression),
+        ast::Stmt::Return(None) => None,
+        _ => None,
+    }
+}
+
+fn collect_scalar_transitions(
+    expression: &ast::Expr,
+    state_ids: &HashMap<String, usize>,
+    transitions: &mut Vec<ScalarTransition>,
+) -> Result<(), String> {
+    match expression {
+        ast::Expr::Block(block) => {
+            let terminal = terminal_block_expr(block)
+                .ok_or_else(|| "terminal block has no value expression".to_string())?;
+            collect_scalar_transitions(terminal, state_ids, transitions)
+        }
+        ast::Expr::If { then_block, else_block: Some(else_block), .. } => {
+            let then_terminal = terminal_block_expr(then_block)
+                .ok_or_else(|| "suspension-state `if` then-branch has no terminal value".to_string())?;
+            let else_terminal = terminal_block_expr(else_block)
+                .ok_or_else(|| "suspension-state `if` else-branch has no terminal value".to_string())?;
+            collect_scalar_transitions(then_terminal, state_ids, transitions)?;
+            collect_scalar_transitions(else_terminal, state_ids, transitions)
+        }
+        ast::Expr::If { else_block: None, .. } => {
+            Err("suspension-state `if` is missing an else transition".into())
+        }
+        ast::Expr::Match { arms, .. } if !arms.is_empty() => {
+            for arm in arms {
+                collect_scalar_transitions(&arm.body, state_ids, transitions)?;
+            }
+            Ok(())
+        }
+        ast::Expr::Tuple(items) if items.is_empty() => {
+            transitions.push(ScalarTransition::Done);
+            Ok(())
+        }
+        ast::Expr::Ctor { name, args } if name == "Nil" && args.is_empty() => {
+            transitions.push(ScalarTransition::Done);
+            Ok(())
+        }
+        ast::Expr::Call { name, args } if state_ids.contains_key(name) => {
+            let _ = args;
+            transitions.push(ScalarTransition::Jump { target: state_ids[name] });
+            Ok(())
+        }
+        ast::Expr::Call { name, args } if call_family(name, "task.run") && args.len() == 1 => {
+            collect_task_expression(&args[0], None, state_ids, transitions)
+        }
+        ast::Expr::Call { name, args } if call_family(name, "task.lazy") && args.len() == 1 => {
+            let ast::Expr::Lambda { body, .. } = &args[0] else {
+                return Err("`task.lazy` state entry does not contain a lambda body".into());
+            };
+            let terminal = terminal_block_expr(body)
+                .ok_or_else(|| "`task.lazy` lambda has no terminal task".to_string())?;
+            collect_scalar_transitions(terminal, state_ids, transitions)
+        }
+        ast::Expr::Call { name, args }
+            if call_family(name, "task.and_then") && args.len() == 2 =>
+        {
+            let resume = continuation_state(&args[1], state_ids)?;
+            collect_task_expression(&args[0], Some(resume), state_ids, transitions)
+        }
+        ast::Expr::Call { name, .. }
+            if call_family(name, "task.done") || call_family(name, "task.ready_unit") =>
+        {
+            transitions.push(ScalarTransition::Done);
+            Ok(())
+        }
+        ast::Expr::Call { name, .. } => {
+            Err(format!("unsupported terminal task call `{name}`"))
+        }
+        other => Err(format!("unsupported terminal state expression `{other:?}`")),
+    }
+}
+
+fn collect_task_expression(
+    task: &ast::Expr,
+    resume: Option<usize>,
+    state_ids: &HashMap<String, usize>,
+    transitions: &mut Vec<ScalarTransition>,
+) -> Result<(), String> {
+    let ast::Expr::Call { name, args } = task else {
+        return Err(format!("unsupported awaited task expression `{task:?}`"));
+    };
+    if let Some(&callee) = state_ids.get(name) {
+        if let Some(resume) = resume {
+            transitions.push(ScalarTransition::Call { callee, resume });
+        } else {
+            transitions.push(ScalarTransition::Jump { target: callee });
+        }
+        return Ok(());
+    }
+    if call_family(name, "task.lazy") && args.len() == 1 {
+        let ast::Expr::Lambda { body, .. } = &args[0] else {
+            return Err("awaited `task.lazy` does not contain a lambda".into());
+        };
+        let terminal = terminal_block_expr(body)
+            .ok_or_else(|| "awaited `task.lazy` lambda has no terminal task".to_string())?;
+        return collect_task_expression(terminal, resume, state_ids, transitions);
+    }
+    if call_family(name, "task.and_then") && args.len() == 2 {
+        let continuation = continuation_state(&args[1], state_ids)?;
+        return collect_task_expression(&args[0], Some(continuation), state_ids, transitions);
+    }
+    let resume = resume.ok_or_else(|| {
+        format!("effect task `{name}` has no compiler-owned resume state")
+    })?;
+    let transition = if call_family(name, "chan.channel") {
+        ScalarTransition::ChannelOpen { resume }
+    } else if call_family(name, "chan.send") {
+        ScalarTransition::ChannelSend { resume }
+    } else if call_family(name, "chan.recv") {
+        ScalarTransition::ChannelReceive { resume }
+    } else if call_family(name, "chan.spawn") {
+        let child = args
+            .first()
+            .and_then(|child| task_entry_state(child, state_ids))
+            .ok_or_else(|| "`chan.spawn` child is not a compiler-owned state entry".to_string())?;
+        ScalarTransition::Spawn { child, resume }
+    } else if call_family(name, "chan.join") {
+        ScalarTransition::Join { resume }
+    } else if call_family(name, "chan.yield_now") || call_family(name, "task.yield_now") {
+        ScalarTransition::Yield { resume }
+    } else if call_family(name, "task.done") || call_family(name, "task.ready_unit") {
+        ScalarTransition::Jump { target: resume }
+    } else {
+        return Err(format!("unsupported awaited task call `{name}`"));
+    };
+    transitions.push(transition);
+    Ok(())
+}
+
+fn continuation_state(
+    continuation: &ast::Expr,
+    state_ids: &HashMap<String, usize>,
+) -> Result<usize, String> {
+    let ast::Expr::Lambda { body, .. } = continuation else {
+        return Err("`task.and_then` continuation is not a lambda".into());
+    };
+    let terminal = terminal_block_expr(body)
+        .ok_or_else(|| "continuation lambda has no terminal state call".to_string())?;
+    task_entry_state(terminal, state_ids)
+        .ok_or_else(|| format!("continuation does not tail-call a compiler state: `{terminal:?}`"))
+}
+
+fn task_entry_state(
+    expression: &ast::Expr,
+    state_ids: &HashMap<String, usize>,
+) -> Option<usize> {
+    match expression {
+        ast::Expr::Block(block) => terminal_block_expr(block)
+            .and_then(|terminal| task_entry_state(terminal, state_ids)),
+        ast::Expr::Call { name, .. } => state_ids.get(name).copied(),
+        _ => None,
+    }
+}
+
+fn call_family(name: &str, family: &str) -> bool {
+    name == family || name.strip_prefix(family).is_some_and(|suffix| suffix.starts_with("__"))
 }
 
 fn non_integer_channel(ty: &Type) -> Option<(String, &Type)> {
@@ -607,6 +832,23 @@ mod tests {
                 channel: "Sender".into(),
                 message: "String".into(),
             }),
+        );
+    }
+
+    #[test]
+    fn scalar_transition_plan_unwraps_lazy_and_then_effect_edges() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn state() -> Nil:\n    task.lazy__Nil(fn(): task.and_then__Int__Nil(chan.send__Int(tx, value), fn(ignored): resume()))\n",
+        )
+        .expect("transition fixture parses");
+        let Item::Function(function) = &module.items[0] else {
+            panic!("state function")
+        };
+        let state_ids = HashMap::from_iter([("resume".to_string(), 7)]);
+
+        assert_eq!(
+            scalar_transitions_for_function(function, &state_ids),
+            Ok(vec![ScalarTransition::ChannelSend { resume: 7 }]),
         );
     }
 }
