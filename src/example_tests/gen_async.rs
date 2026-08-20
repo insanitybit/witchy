@@ -295,6 +295,34 @@ fn main(console: Console):
         );
     }
 
+    /// A conditional continue before the suspension point loops inside one
+    /// helper pull until the next item is produced, without replaying scans.
+    #[test]
+    fn generator_conditional_continue_seeks_next_yield_without_replay() {
+        let src = r#"import iter
+
+gen fn evens(console: Console) -> Iter(Int):
+    var i = 0
+    while i < 5:
+        i = i + 1
+        console.print("scan ${i}")
+        if i % 2 == 1:
+            continue
+        yield i
+
+fn main(console: Console):
+    let result: List(Int) = iter.collect(evens(console))
+    console.print("${result}")
+"#;
+        let expected = ["scan 1", "scan 2", "scan 3", "scan 4", "scan 5", "[2, 4]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.

@@ -1224,29 +1224,88 @@ fn block_has_any_yield(block: &Block) -> bool {
         || block_has_nested_yield(block)
 }
 
-/// A direct `continue` after the only yield makes the remaining source suffix
-/// unreachable. Dropping that marker and suffix gives the owned transition its
-/// natural loop-back: finish the current resume step, then produce from the
-/// next iteration.
-fn normalize_single_yield_trailing_continue(mut block: Block) -> Block {
-    let yields = block
-        .stmts
-        .iter()
-        .enumerate()
-        .filter_map(|(index, statement)| matches!(statement, Stmt::Yield(_)).then_some(index))
-        .collect::<Vec<_>>();
-    let [yield_index] = yields.as_slice() else { return block };
-    if let Some(continue_index) = block
-        .stmts
-        .iter()
-        .enumerate()
-        .skip(*yield_index + 1)
-        .find_map(|(index, statement)| matches!(statement, Stmt::Continue).then_some(index))
-    {
-        block.stmts.truncate(continue_index);
-        block.lines.truncate(block.lines.len().min(continue_index));
+fn rewrite_outer_generator_continues(block: Block, resume_name: &str) -> Block {
+    fn rewrite_expr(expression: Expr, resume_name: &str, loop_depth: usize) -> Expr {
+        match expression {
+            Expr::If { cond, then_block, else_block } => Expr::If {
+                cond,
+                then_block: rewrite_block(then_block, resume_name, loop_depth),
+                else_block: else_block
+                    .map(|block| rewrite_block(block, resume_name, loop_depth)),
+            },
+            Expr::Match { scrutinee, arms } => Expr::Match {
+                scrutinee,
+                arms: arms
+                    .into_iter()
+                    .map(|arm| MatchArm {
+                        line: arm.line,
+                        pattern: arm.pattern,
+                        guard: arm.guard,
+                        body: rewrite_expr(arm.body, resume_name, loop_depth),
+                    })
+                    .collect(),
+            },
+            Expr::Block(block) => {
+                Expr::Block(rewrite_block(block, resume_name, loop_depth))
+            }
+            Expr::While { cond, body } => Expr::While {
+                cond,
+                body: rewrite_block(body, resume_name, loop_depth + 1),
+            },
+            Expr::For { var, iter, body } => Expr::For {
+                var,
+                iter,
+                body: rewrite_block(body, resume_name, loop_depth + 1),
+            },
+            Expr::WhileLet { pattern, scrutinee, body } => Expr::WhileLet {
+                pattern,
+                scrutinee,
+                body: rewrite_block(body, resume_name, loop_depth + 1),
+            },
+            Expr::Lambda { params, body, ret } => Expr::Lambda {
+                params,
+                body: rewrite_block(body, resume_name, loop_depth + 1),
+                ret,
+            },
+            other => other,
+        }
     }
-    block
+
+    fn rewrite_block(block: Block, resume_name: &str, loop_depth: usize) -> Block {
+        let mut statements = Vec::with_capacity(block.stmts.len() + 1);
+        for statement in block.stmts {
+            match statement {
+                Stmt::Continue if loop_depth == 0 => {
+                    statements.push(Stmt::Assign {
+                        name: resume_name.to_string(),
+                        value: Expr::Int(0),
+                    });
+                    statements.push(Stmt::Continue);
+                }
+                Stmt::Let { name, ty, mutable, value } => statements.push(Stmt::Let {
+                    name,
+                    ty,
+                    mutable,
+                    value: rewrite_expr(value, resume_name, loop_depth),
+                }),
+                Stmt::LetPattern { pattern, value } => statements.push(Stmt::LetPattern {
+                    pattern,
+                    value: rewrite_expr(value, resume_name, loop_depth),
+                }),
+                Stmt::Assign { name, value } => statements.push(Stmt::Assign {
+                    name,
+                    value: rewrite_expr(value, resume_name, loop_depth),
+                }),
+                Stmt::Expr(value) => {
+                    statements.push(Stmt::Expr(rewrite_expr(value, resume_name, loop_depth)))
+                }
+                other => statements.push(other),
+            }
+        }
+        Block { stmts: statements, lines: block.lines, region: block.region }
+    }
+
+    rewrite_block(block, resume_name, 0)
 }
 
 /// Direct loop locals that are read or assigned after the yield are live across
@@ -1657,6 +1716,7 @@ fn lower_owned_loop_frame(
     names: &GeneratorNames,
 ) -> Result<Option<(Function, Function)>, String> {
     let Some(elem) = iter_elem(&f.ret) else { return Ok(None) };
+    let resume_name = names.name("resume_after_yield");
     let Some((last, prelude)) = f.body.stmts.split_last() else { return Ok(None) };
     let (cond, owned_body) = match last {
         Stmt::Expr(Expr::While { cond, body }) => (cond.clone(), body.clone()),
@@ -1701,7 +1761,7 @@ fn lower_owned_loop_frame(
         }
         _ => return Ok(None),
     };
-    let owned_body = normalize_single_yield_trailing_continue(owned_body);
+    let owned_body = rewrite_outer_generator_continues(owned_body, &resume_name);
     let body = &owned_body;
     let yields = body
         .stmts
@@ -1857,7 +1917,6 @@ fn lower_owned_loop_frame(
     frame_fields.push(Type::Named("Int".into(), Vec::new()));
     let frame_ty = Type::Tuple(frame_fields);
     let frame_name = names.name("frame");
-    let resume_name = names.name("resume_after_yield");
     let yielded_name = names.name("yielded");
     let suspended_name = names.name("suspended");
     let mut step_statements = bindings[..parameter_count]
@@ -1876,7 +1935,7 @@ fn lower_owned_loop_frame(
     step_statements.push(Stmt::Let {
         name: resume_name.clone(),
         ty: Some(Type::Named("Int".into(), Vec::new())),
-        mutable: false,
+        mutable: true,
         value: Expr::Field {
             base: Box::new(Expr::Var(frame_name.clone())),
             field: (bindings.len() + live_locals.len()).to_string(),
@@ -2304,6 +2363,7 @@ fn lower_owned_loop_frame(
     } else {
         let first_yield_index = yields[0];
         let Stmt::Yield(first_yielded) = &body.stmts[first_yield_index] else { unreachable!() };
+        let mut direct_loop_statements = Vec::new();
         step_statements.push(Stmt::Expr(Expr::If {
             cond: Box::new(Expr::Binary {
                 op: BinOp::Or,
@@ -2367,7 +2427,7 @@ fn lower_owned_loop_frame(
                 names,
                 Block { stmts: resume, lines: Vec::new(), region: None },
             );
-            step_statements.push(Stmt::Expr(Expr::If {
+            direct_loop_statements.push(Stmt::Expr(Expr::If {
                 cond: Box::new(Expr::Binary {
                     op: BinOp::Eq,
                     lhs: Box::new(Expr::Var(resume_name.clone())),
@@ -2384,7 +2444,7 @@ fn lower_owned_loop_frame(
             lines: Vec::new(),
             region: None,
         })?;
-        let after = restore_direct_loop_locals(
+        let mut after = restore_direct_loop_locals(
             &frame_name,
             bindings.len(),
             &direct_live_locals,
@@ -2392,7 +2452,11 @@ fn lower_owned_loop_frame(
             names,
             after,
         );
-        step_statements.push(Stmt::Expr(Expr::If {
+        after.stmts.push(Stmt::Assign {
+            name: resume_name.clone(),
+            value: Expr::Int(0),
+        });
+        direct_loop_statements.push(Stmt::Expr(Expr::If {
             cond: Box::new(Expr::Binary {
                 op: BinOp::Eq,
                 lhs: Box::new(Expr::Var(resume_name.clone())),
@@ -2423,18 +2487,33 @@ fn lower_owned_loop_frame(
         ));
         next_frame_fields.push(Expr::Int(1));
         let next_frame = Expr::Tuple(next_frame_fields);
-        produce.push(Stmt::Expr(Expr::Ctor {
+        produce.push(Stmt::Return(Some(Expr::Ctor {
             name: "Some".into(),
             args: vec![Expr::Tuple(vec![Expr::Var(yielded_name), next_frame])],
-        }));
-        step_statements.push(Stmt::Expr(Expr::If {
+        })));
+        direct_loop_statements.push(Stmt::Expr(Expr::If {
             cond: Box::new(cond.as_ref().clone()),
             then_block: Block { stmts: produce, lines: Vec::new(), region: None },
             else_block: Some(Block {
-                stmts: vec![Stmt::Expr(Expr::Ctor { name: "None".into(), args: Vec::new() })],
+                stmts: vec![Stmt::Return(Some(Expr::Ctor {
+                    name: "None".into(),
+                    args: Vec::new(),
+                }))],
                 lines: Vec::new(),
                 region: None,
             }),
+        }));
+        step_statements.push(Stmt::Expr(Expr::While {
+            cond: Box::new(Expr::Bool(true)),
+            body: Block {
+                stmts: direct_loop_statements,
+                lines: Vec::new(),
+                region: None,
+            },
+        }));
+        step_statements.push(Stmt::Expr(Expr::Ctor {
+            name: "None".into(),
+            args: Vec::new(),
         }));
     }
 
@@ -2669,8 +2748,8 @@ fn block_has_generator_loop_control_transfer(block: &Block) -> bool {
 
     fn visit(block: &Block, loop_depth: usize) -> bool {
         block.stmts.iter().any(|statement| match statement {
-            Stmt::Return(Some(_)) | Stmt::Continue => true,
-            Stmt::Break => loop_depth > 0,
+            Stmt::Return(Some(_)) => true,
+            Stmt::Break | Stmt::Continue => loop_depth > 0,
             Stmt::Let { value, .. }
             | Stmt::LetPattern { value, .. }
             | Stmt::Assign { value, .. }
@@ -3123,7 +3202,22 @@ mod target_availability_tests {
         let lowered = lower(checked).expect("lower continue generator").into_module();
         let debug = format!("{lowered:?}");
         assert!(!debug.contains("iter.from_gen"), "trailing continue must not replay: {debug}");
-        assert!(!debug.contains("Int(99)"), "unreachable suffix must be removed: {debug}");
+        assert!(debug.contains("resume_after_yield"), "continue must reset the phase: {debug}");
+    }
+
+    #[test]
+    fn conditional_continue_seeks_the_next_owned_yield() {
+        let module = crate::parser::parse_module(
+            "gen fn values() -> Iter(Int):\n    var i = 0\n    while i < 5:\n        i = i + 1\n        if i % 2 == 1:\n            continue\n        yield i\n",
+        )
+        .expect("parse conditional continue generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked)
+            .expect("lower conditional continue generator")
+            .into_module();
+        let debug = format!("{lowered:?}");
+        assert!(!debug.contains("iter.from_gen"), "conditional continue must not replay: {debug}");
+        assert!(debug.contains("While"), "the direct phase dispatcher must loop: {debug}");
     }
 
     #[test]
