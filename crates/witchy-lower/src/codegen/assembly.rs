@@ -2669,6 +2669,45 @@ fn append_layout_bundle(mut wasm: Vec<u8>, bundle: &witchy_wir::layout::LayoutBu
     wasm
 }
 
+fn append_suspension_carrier(
+    mut wasm: Vec<u8>,
+    carrier: &witchy_types::suspension_carrier::SuspensionCarrierCatalog,
+) -> Vec<u8> {
+    const SECTION_NAME: &[u8] = b"witchy.suspension-carrier";
+    if carrier.states().is_empty() {
+        return wasm;
+    }
+    fn push_u32_leb(bytes: &mut Vec<u8>, mut value: u32) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            bytes.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    let data = carrier.canonical_bytes();
+    let mut payload = Vec::with_capacity(SECTION_NAME.len() + data.len() + 5);
+    push_u32_leb(
+        &mut payload,
+        u32::try_from(SECTION_NAME.len()).expect("carrier section name fits u32"),
+    );
+    payload.extend_from_slice(SECTION_NAME);
+    payload.extend_from_slice(&data);
+    wasm.push(0);
+    push_u32_leb(
+        &mut wasm,
+        u32::try_from(payload.len()).expect("validated carrier payload fits u32"),
+    );
+    wasm.extend_from_slice(&payload);
+    wasm
+}
+
 fn encoded_module_outcome(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -2689,6 +2728,7 @@ fn assemble_optimized_wir_with_structs(
         Vec<witchy_wir::wir::WirStructDef>,
         Vec<witchy_wir::wir::WirArrayDef>,
         witchy_wir::layout::LayoutBundle,
+        witchy_types::suspension_carrier::SuspensionCarrierCatalog,
     ),
     LoweringFailure,
 > {
@@ -2732,10 +2772,11 @@ fn assemble_optimized_wir_with_structs_mode(
         Vec<witchy_wir::wir::WirStructDef>,
         Vec<witchy_wir::wir::WirArrayDef>,
         witchy_wir::layout::LayoutBundle,
+        witchy_types::suspension_carrier::SuspensionCarrierCatalog,
     ),
     LoweringFailure,
 > {
-    let (mut wir_module, gc_structs, gc_arrays, layouts) =
+    let (mut wir_module, gc_structs, gc_arrays, layouts, carrier) =
         assemble_wir_module_with_structs_mode(
             module,
             build_entrypoint,
@@ -2745,7 +2786,7 @@ fn assemble_optimized_wir_with_structs_mode(
         )?;
     witchy_wir::wir_opt::lower_direct_tail_calls(&mut wir_module);
     witchy_wir::wir_opt::optimize(&mut wir_module);
-    Ok((wir_module, gc_structs, gc_arrays, layouts))
+    Ok((wir_module, gc_structs, gc_arrays, layouts, carrier))
 }
 
 /// Compile a module straight to a wasm **binary** via WIR + `wir_encode::encode`.
@@ -2908,7 +2949,7 @@ fn compile_module_binary_with_source_map_mode(
     glamour_development: Option<&GlamourDevelopmentMetadata>,
     collect_source_map: bool,
 ) -> LoweringOutcome<witchy_wir::wir_encode::EncodedModule> {
-    let (wir_module, gc_structs, gc_arrays, layouts) =
+    let (wir_module, gc_structs, gc_arrays, layouts, carrier) =
         match assemble_optimized_wir_with_structs_mode(
             module,
             build_entrypoint,
@@ -2922,6 +2963,7 @@ fn compile_module_binary_with_source_map_mode(
     match encoded_module_outcome(&wir_module, &gc_structs, &gc_arrays) {
         LoweringOutcome::Lowered(mut encoded) => {
             encoded.wasm = append_layout_bundle(encoded.wasm, &layouts);
+            encoded.wasm = append_suspension_carrier(encoded.wasm, &carrier);
             match wasmparser::validate(&encoded.wasm) {
                 Ok(_) => LoweringOutcome::Lowered(encoded),
                 Err(error) => LoweringOutcome::Rejected(CodegenError {
@@ -2941,7 +2983,7 @@ fn compile_module_binary_with_source_map_mode(
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::WirModule> {
     match assemble_wir_module_with_structs(module) {
-        Ok((module, gc_structs, gc_arrays, _)) => {
+        Ok((module, gc_structs, gc_arrays, _, _)) => {
             validated_module_outcome(module, &gc_structs, &gc_arrays)
         }
         Err(failure) => public_outcome(Err(failure)),
@@ -2962,7 +3004,7 @@ pub fn assemble_checked_optimized_wir_module(
         None,
         false,
     ) {
-        Ok((module, gc_structs, gc_arrays, _)) => {
+        Ok((module, gc_structs, gc_arrays, _, _)) => {
             validated_module_outcome(module, &gc_structs, &gc_arrays)
         }
         Err(failure) => public_outcome(Err(failure)),
@@ -2974,7 +3016,7 @@ pub fn assemble_optimized_wir_module(
     module: &Module,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
     match assemble_optimized_wir_with_structs(module) {
-        Ok((module, gc_structs, gc_arrays, _)) => {
+        Ok((module, gc_structs, gc_arrays, _, _)) => {
             validated_module_outcome(module, &gc_structs, &gc_arrays)
         }
         Err(failure) => public_outcome(Err(failure)),
@@ -2990,6 +3032,7 @@ fn assemble_wir_module_with_structs(
         Vec<witchy_wir::wir::WirStructDef>,
         Vec<witchy_wir::wir::WirArrayDef>,
         witchy_wir::layout::LayoutBundle,
+        witchy_types::suspension_carrier::SuspensionCarrierCatalog,
     ),
     LoweringFailure,
 > {
@@ -3008,6 +3051,7 @@ fn assemble_wir_module_with_structs_mode(
         Vec<witchy_wir::wir::WirStructDef>,
         Vec<witchy_wir::wir::WirArrayDef>,
         witchy_wir::layout::LayoutBundle,
+        witchy_types::suspension_carrier::SuspensionCarrierCatalog,
     ),
     LoweringFailure,
 > {
@@ -3049,6 +3093,9 @@ fn assemble_wir_module_with_structs_mode(
         rewrite_try_ctx_module(module, table);
         
     });
+    let suspension_carrier =
+        witchy_types::suspension_carrier::SuspensionCarrierCatalog::from_typed(&typed)
+            .map_err(|message| CodegenError { message })?;
     let prepared = match (build_entrypoint, runtime_catalog) {
         (true, Some(runtime_catalog)) => {
             witchy_types::existential::lower_explicit_packs_with_runtime_types_for_build(
@@ -5759,7 +5806,7 @@ fn assemble_wir_module_with_structs_mode(
                     }
                     exports
                 },
-            }, gc_structs, gc_arrays, layout_bundle));
+            }, gc_structs, gc_arrays, layout_bundle, suspension_carrier));
         }
 
         // Otherwise the program reaches a prelude helper not yet migrated to a
@@ -6349,6 +6396,34 @@ mod checked_codegen_boundary_tests {
         assert!(
             matches!(compile_checked_module_binary(&checked), LoweringOutcome::Lowered(_)),
             "authenticated Dynamic construction must lower"
+        );
+    }
+
+    #[test]
+    fn compiled_async_module_carries_one_typed_suspension_abi_section() {
+        let checked = authenticated_checked(
+            "import task\n\nasync fn main():\n    let value = task.done(7).await\n    let _keep = value\n",
+        );
+        let bytes = compile_checked_module_binary(&checked)
+            .expect_lowered("compile typed suspension-carrier fixture");
+        let sections = wasmparser::Parser::new(0)
+            .parse_all(&bytes)
+            .filter_map(|payload| match payload.expect("valid carrier Wasm") {
+                wasmparser::Payload::CustomSection(section)
+                    if section.name() == "witchy.suspension-carrier" =>
+                {
+                    Some(section.data().to_vec())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(sections.len(), 1, "async binaries carry exactly one carrier ABI");
+        assert_eq!(sections[0][0], 1, "carrier ABI version");
+        assert_eq!(
+            u32::from_le_bytes(sections[0][1..5].try_into().expect("state count")),
+            2,
+            "entry plus one continuation segment",
         );
     }
 

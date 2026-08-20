@@ -70,20 +70,21 @@ impl SuspensionCarrierCatalog {
     pub fn from_typed(typed: &TypedModule) -> Result<Self, String> {
         let definitions = type_definitions(typed.module());
         let mut states = Vec::new();
-        let mut ids = HashSet::new();
 
         for item in &typed.module().items {
             let Item::Function(function) = item else { continue };
-            let Some(id) = frame_state(function) else { continue };
+            let Some(source_state) = frame_state(function) else { continue };
             let kind = state_kind(function).ok_or_else(|| {
                 format!(
-                    "compiler suspension state {id} on `{}` has neither entry nor segment marker",
+                    "compiler suspension state {source_state} on `{}` has neither entry nor segment marker",
                     function.name
                 )
             })?;
-            if !ids.insert(id) {
-                return Err(format!("duplicate compiler suspension state id {id}"));
-            }
+            // Syntax lowering is intentionally module-local and therefore may
+            // reuse source state numbers in separately lowered dependencies.
+            // Linked item order is deterministic; canonicalize it here to the
+            // dense whole-program dispatch identity consumed by Wasm.
+            let id = states.len();
 
             let inferred = inferred_parameters(typed, function);
             let slots = function
@@ -109,7 +110,6 @@ impl SuspensionCarrierCatalog {
             states.push(CarrierState { id, function: function.name.clone(), kind, slots });
         }
 
-        states.sort_by_key(|state| state.id);
         let max_lane_width = states.iter().map(CarrierState::lane_width).max().unwrap_or(0);
         Ok(Self { states, max_lane_width })
     }
@@ -124,6 +124,56 @@ impl SuspensionCarrierCatalog {
 
     pub fn is_wholly_flat_scalar(&self) -> bool {
         !self.states.is_empty() && self.states.iter().all(CarrierState::is_flat_scalar)
+    }
+
+    /// Versioned, name-independent carrier ABI consumed by compiled backends.
+    /// Function and slot names remain diagnostics only; runtime dispatch is by
+    /// dense state id and fixed lane position.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        const VERSION: u8 = 1;
+        let mut bytes = vec![VERSION];
+        push_u32(&mut bytes, self.states.len());
+        push_u32(&mut bytes, self.max_lane_width);
+        for state in &self.states {
+            push_u32(&mut bytes, state.id);
+            bytes.push(match state.kind {
+                CarrierStateKind::Entry => 0,
+                CarrierStateKind::Segment => 1,
+            });
+            push_u32(&mut bytes, state.slots.len());
+            for slot in &state.slots {
+                bytes.push(convention_tag(slot.convention));
+                match &slot.lanes {
+                    Some(lanes) => {
+                        bytes.push(1);
+                        push_u32(&mut bytes, lanes.len());
+                        bytes.extend(lanes.iter().map(|lane| match lane {
+                            CarrierLane::I64 => 0,
+                            CarrierLane::F64 => 1,
+                        }));
+                    }
+                    None => bytes.push(0),
+                }
+            }
+        }
+        bytes
+    }
+}
+
+fn push_u32(bytes: &mut Vec<u8>, value: usize) {
+    bytes.extend_from_slice(
+        &u32::try_from(value)
+            .expect("suspension carrier dimensions fit u32")
+            .to_le_bytes(),
+    );
+}
+
+fn convention_tag(convention: Convention) -> u8 {
+    match convention {
+        Convention::Let => 0,
+        Convention::Borrow => 1,
+        Convention::Var => 2,
+        Convention::Own => 3,
     }
 }
 
@@ -252,11 +302,13 @@ mod tests {
         let typed = crate::typeck::annotate_checked(module).expect("fixture type checks");
         let catalog = SuspensionCarrierCatalog::from_typed(&typed).expect("carrier catalog");
 
-        assert_eq!(catalog.states().iter().map(|state| state.id).collect::<Vec<_>>(), [2, 4]);
+        assert_eq!(catalog.states().iter().map(|state| state.id).collect::<Vec<_>>(), [0, 1]);
         assert!(catalog.is_wholly_flat_scalar());
         assert_eq!(catalog.max_lane_width(), 2);
         assert_eq!(catalog.states()[0].kind, CarrierStateKind::Segment);
         assert_eq!(catalog.states()[0].slots[0].convention, Convention::Own);
         assert_eq!(catalog.states()[0].slots[0].lanes, Some(vec![CarrierLane::I64]));
+        assert_eq!(catalog.canonical_bytes()[0], 1);
+        assert_eq!(catalog.canonical_bytes(), catalog.canonical_bytes());
     }
 }
