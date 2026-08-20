@@ -463,7 +463,7 @@ struct NestedMatchArmYield {
     guard: Option<Expr>,
     prefix: Vec<Stmt>,
     suffix: Vec<Stmt>,
-    yielded: Expr,
+    yielded: Option<Expr>,
     rebind_on_resume: bool,
 }
 
@@ -492,6 +492,31 @@ fn direct_yield_parts(block: &Block) -> Option<(Vec<Stmt>, Expr, Vec<Stmt>)> {
         return None;
     }
     Some((prefix, yielded.clone(), suffix))
+}
+
+fn optional_direct_yield_parts(block: &Block) -> Option<(Vec<Stmt>, Option<Expr>, Vec<Stmt>)> {
+    if block_has_nested_yield(block) {
+        return None;
+    }
+    let yields = block
+        .stmts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, statement)| matches!(statement, Stmt::Yield(_)).then_some(index))
+        .collect::<Vec<_>>();
+    match yields.as_slice() {
+        [] => Some((block.stmts.clone(), None, Vec::new())),
+        [yield_index] => {
+            let Stmt::Yield(yielded) = &block.stmts[*yield_index] else { unreachable!() };
+            let prefix = block.stmts[..*yield_index].to_vec();
+            let suffix = block.stmts[*yield_index + 1..].to_vec();
+            if !live_loop_local_bindings(&prefix, &suffix)?.is_empty() {
+                return None;
+            }
+            Some((prefix, Some(yielded.clone()), suffix))
+        }
+        _ => None,
+    }
 }
 
 /// Recognize an `if` whose two branches each suspend once. The frame records
@@ -543,9 +568,9 @@ fn nested_branch_yields(body: &Block) -> Option<NestedBranchYields> {
     found
 }
 
-/// Recognize a `match` whose arms each contain one direct suspension point.
-/// The chosen arm becomes the resume phase, preserving pattern/guard behavior
-/// without re-evaluating the scrutinee or replaying an arm prefix.
+/// Recognize a `match` with one or more directly suspending arms. Ordinary arms
+/// run to completion at phase zero; a yielding arm records its own resume phase,
+/// preserving pattern/guard behavior without replaying its prefix.
 fn nested_match_yields(body: &Block) -> Option<NestedMatchYields> {
     let mut found = None;
     for (outer_index, statement) in body.stmts.iter().enumerate() {
@@ -557,7 +582,7 @@ fn nested_match_yields(body: &Block) -> Option<NestedMatchYields> {
             .iter()
             .map(|arm| {
                 let Expr::Block(block) = &arm.body else { return None };
-                let (prefix, yielded, suffix) = direct_yield_parts(block)?;
+                let (prefix, yielded, suffix) = optional_direct_yield_parts(block)?;
                 let suffix_block = Block {
                     stmts: suffix.clone(),
                     lines: Vec::new(),
@@ -565,7 +590,8 @@ fn nested_match_yields(body: &Block) -> Option<NestedMatchYields> {
                 };
                 let mut pattern_bindings = Vec::new();
                 crate::ast::pattern_binds(&arm.pattern, &mut pattern_bindings);
-                let rebind_on_resume = pattern_bindings
+                let rebind_on_resume = yielded.is_some()
+                    && pattern_bindings
                     .iter()
                     .any(|binding| block_references_binding(&suffix_block, binding));
                 // Rebinding a selected arm can safely read a restored frame
@@ -586,6 +612,9 @@ fn nested_match_yields(body: &Block) -> Option<NestedMatchYields> {
             })
             .collect::<Option<Vec<_>>>();
         let Some(arms) = lowered_arms else { continue };
+        if !arms.iter().any(|arm| arm.yielded.is_some()) {
+            continue;
+        }
         if found.is_some()
             || block_has_any_yield(&Block {
                 stmts: body.stmts[..outer_index].to_vec(),
@@ -1169,6 +1198,9 @@ fn lower_owned_loop_frame(
             value: Expr::Ctor { name: "None".into(), args: Vec::new() },
         });
         for (index, arm) in nested.arms.iter().enumerate() {
+            if arm.yielded.is_none() {
+                continue;
+            }
             let mut resume = arm.suffix.clone();
             resume.extend(nested.outer_suffix.clone());
             let resume = rewrite_owned_frame_returns(Block {
@@ -1236,14 +1268,16 @@ fn lower_owned_loop_frame(
                     region: None,
                 })?
                 .stmts;
-                statements.push(Stmt::Assign {
-                    name: yielded_option_name.clone(),
-                    value: Expr::Ctor { name: "Some".into(), args: vec![arm.yielded] },
-                });
-                statements.push(Stmt::Assign {
-                    name: suspended_name.clone(),
-                    value: Expr::Int((index + 1) as i64),
-                });
+                if let Some(yielded) = arm.yielded {
+                    statements.push(Stmt::Assign {
+                        name: yielded_option_name.clone(),
+                        value: Expr::Ctor { name: "Some".into(), args: vec![yielded] },
+                    });
+                    statements.push(Stmt::Assign {
+                        name: suspended_name.clone(),
+                        value: Expr::Int((index + 1) as i64),
+                    });
+                }
                 Ok::<MatchArm, String>(MatchArm {
                     line: arm.line,
                     pattern: arm.pattern,

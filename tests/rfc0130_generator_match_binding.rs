@@ -19,7 +19,6 @@ gen fn guarded(console: Console) -> Iter(Int):
                 console.print("after ${value}")
                 running = false
             _ ->
-                yield 0
                 running = false
 
 fn drain(values: Iter(Int), console: Console):
