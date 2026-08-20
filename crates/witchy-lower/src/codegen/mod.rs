@@ -47,6 +47,7 @@ mod block_lower;
 mod header_elision;
 mod specialization;
 mod glamour_metadata;
+mod scalar_executor;
 pub use glamour_metadata::{
     checked_glamour_island_execution_module, checked_glamour_islands,
     checked_glamour_worker_execution_module,

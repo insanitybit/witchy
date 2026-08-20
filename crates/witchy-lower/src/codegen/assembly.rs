@@ -5832,7 +5832,7 @@ fn assemble_wir_module_with_structs_mode(
             .map_err(|error| CodegenError {
                 message: format!("specialized layout bundle rejected: {error}"),
             })?;
-            return Ok((WirModule {
+            let mut wir_module = WirModule {
                 imports: pruned_imports,
                 funcs: pruned_funcs,
                 memory_pages: cg.next_offset.div_ceil(64 * 1024).max(1),
@@ -5908,7 +5908,11 @@ fn assemble_wir_module_with_structs_mode(
                     }
                     exports
                 },
-            }, gc_structs, gc_arrays, layout_bundle, suspension_carrier));
+            };
+            if let Ok(plan) = suspension_carrier.scalar_executor_plan() {
+                super::scalar_executor::synthesize(&plan, &mut wir_module);
+            }
+            return Ok((wir_module, gc_structs, gc_arrays, layout_bundle, suspension_carrier));
         }
 
         // Otherwise the program reaches a prelude helper not yet migrated to a
@@ -6571,7 +6575,7 @@ mod checked_codegen_boundary_tests {
         let checked = authenticated_checked(include_str!(
             "../../../../benchmarks/chan_throughput.witchy"
         ));
-        let (_, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
             checked.module(),
             false,
             None,
@@ -6602,6 +6606,118 @@ mod checked_codegen_boundary_tests {
             .expect("the Int channel soak must qualify for the closure-free scheduler");
         assert_eq!(scalar.state_count, carrier.states().len());
         assert_eq!(scalar.max_lane_width, carrier.max_lane_width());
+        let main = wir.funcs.iter().find(|function| function.name == "main")
+            .expect("compiled entry function");
+        assert!(
+            main.locals.iter().any(|local| local.name == "__witchy_scalar_accumulator"),
+            "the qualifying graph must install scalar frame lanes"
+        );
+        assert!(
+            format!("{:?}", main.body).contains("__witchy_scalar_dispatch"),
+            "the qualifying graph must execute through the scalar dispatch loop"
+        );
+        let mut calls = HashSet::new();
+        collect_called_funcs(&main.body, &mut calls);
+        assert!(!calls.contains("task.run"), "the scalar entry bypasses Task/Step polling");
+        let terminal = scalar.states.iter().find(|state| {
+            state.transitions == [witchy_types::suspension_carrier::ScalarTransition::Done]
+                && state.slots.iter().any(|slot| slot.name == "console")
+                && state.slots.iter().any(|slot| slot.name == "sum")
+        }).expect("post-join terminal state");
+        assert!(
+            calls.contains(&terminal.function),
+            "the scalar entry must retain the source program's post-join effects: {calls:?}"
+        );
+        let bytes = compile_checked_module_binary(&checked)
+            .expect_lowered("encode the scalar channel soak to Wasm");
+        assert_eq!(&bytes[..4], b"\0asm");
+        let mut config = wasmtime::Config::new();
+        config.wasm_reference_types(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
+        let engine = wasmtime::Engine::new(&config).expect("Wasm GC engine");
+        let compiled = wasmtime::Module::new(&engine, &bytes).expect("valid scalar executor Wasm");
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&output);
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker.func_wrap(
+            "witchy",
+            "print",
+            move |mut caller: wasmtime::Caller<'_, ()>, ptr: i32, len: i32| {
+                let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+                let data = memory.data(&caller);
+                sink.lock().unwrap().push(
+                    String::from_utf8_lossy(&data[ptr as usize..(ptr + len) as usize]).into_owned(),
+                );
+            },
+        ).expect("print host");
+        linker.func_wrap(
+            "witchy",
+            "__witchy_abort",
+            |_: wasmtime::Caller<'_, ()>, _: i32, _: i64, _: i64, _: i32| -> wasmtime::Result<()> {
+                wasmtime::bail!("unexpected scalar executor abort")
+            },
+        ).expect("abort host");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = linker.instantiate(&mut store, &compiled).expect("instantiate scalar soak");
+        instance.get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect("run scalar channel soak");
+        assert_eq!(*output.lock().unwrap(), ["2047968000"]);
+        let allocations = instance.get_global(&mut store, "__witchy_rc_alloc_calls")
+            .expect("allocation counter export")
+            .get(&mut store)
+            .i64()
+            .expect("i64 allocation counter");
+        assert!(
+            allocations < 100,
+            "64,000 messages must not allocate per resume; observed {allocations} linear allocations"
+        );
+    }
+
+    #[test]
+    fn scalar_channel_executor_selection_is_independent_of_source_names() {
+        let checked = authenticated_checked(
+            "from chan import Sender\n\nasync fn source(out: Sender(Int), count: Int):\n    var cursor = 3\n    while cursor < count:\n        chan.send(out, cursor).await\n        cursor = cursor + 1\n\nasync fn main(io: Console):\n    let (left, right) = chan.channel(8).await\n    let ticket = chan.spawn(source(left, 91)).await\n    var total = 5\n    for await item in right:\n        total = total + item\n    chan.join(ticket).await\n    io.print(\"${total}\")\n",
+        );
+        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(),
+            false,
+            None,
+            None,
+            false,
+        )
+        .expect("assemble renamed scalar channel graph");
+        carrier.scalar_executor_plan().expect("renamed graph qualifies");
+        let main = wir.funcs.iter().find(|function| function.name == "main")
+            .expect("compiled entry function");
+        assert!(
+            main.locals.iter().any(|local| local.name == "__witchy_scalar_accumulator"),
+            "selection must follow typed state edges and WIR data flow, not producer or binding names"
+        );
+    }
+
+    #[test]
+    fn unsupported_scalar_graph_retains_the_task_scheduler_fallback() {
+        let checked = authenticated_checked(
+            "import task\n\nasync fn main():\n    let value = task.done(7).await\n    let _keep = value\n",
+        );
+        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(),
+            false,
+            None,
+            None,
+            false,
+        )
+        .expect("assemble fallback scalar graph");
+        carrier.scalar_executor_plan().expect("simple graph still has scalar lanes");
+        let main = wir.funcs.iter().find(|function| function.name == "main")
+            .expect("compiled entry function");
+        let mut calls = HashSet::new();
+        collect_called_funcs(&main.body, &mut calls);
+        assert!(calls.contains("task.run"), "unsupported shape must retain fallback: {calls:?}");
+        assert!(!main.locals.iter().any(|local| local.name == "__witchy_scalar_accumulator"));
     }
 
     #[test]
