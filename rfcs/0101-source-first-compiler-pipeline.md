@@ -13,7 +13,8 @@ related:
 
 ## Status and implementation progress
 
-Experimental, with source and linked-semantic proof boundaries implemented. The destructive sequence
+Implemented. Source and linked-semantic proof boundaries cover every production
+entrypoint. The destructive sequence
 is represented by opaque `SourceCheckedModule`, `GeneratorsLoweredModule`,
 `AsyncLoweredModule`, and terminal `SourceLoweredModule` typestates. Both the
 ordinary linker and compile-time emitted-item normalization enter that sequence

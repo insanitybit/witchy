@@ -1,19 +1,20 @@
 ---
 rfc: 0114
 title: Must-consume obligations (linear resource handles)
-status: experimental
+status: implemented
 created: 2026-08-03
 superseded-by:
 tracking: >
-  Core syntax, checker, and structured-task integration implemented 2026-08-19. `must type`,
+  Implemented 2026-08-20 across syntax, the CFG-aware checker, aggregates,
+  transactions, and structured tasks. `must type`,
   `must sealed type`, and `must capability` preserve declaration metadata;
   all-path disposition, move/copy, overwrite, borrow, aggregate propagation,
   own-call attempt semantics, suspension-frame transfer, and must-consume task
   handles have executable checker and compiled-Wasm coverage. The standard
   `transaction` resource now proves success, conflict, rollback, branch, move,
   and aggregate behavior through the checker and compiled Wasm, plus rejection
-  when an early return would abandon the resource.
-  Promotion still requires the final workspace matrix.
+  when an early return would abandon the resource. The serialized workspace
+  matrix passed after both standard-library integrations merged.
 ---
 
 # RFC-0114: Must-consume obligations (linear resource handles)
@@ -228,7 +229,9 @@ this follows.
   Wasm. Evidence:
   `task_handles_must_be_joined_cancelled_or_returned_on_every_path` and
   `structured_task_handle_aggregates_run_on_compiled_wasm`.
-- OPEN: run the final workspace matrix and promote the RFC only after the
-  standard-library integration is merged.
+- PROVEN: the serialized workspace matrix passed after the transaction and
+  structured-task integrations merged. The focused evidence above remains in
+  the ordinary gate, and the subsequent typed-carrier landing `8b32e13e`
+  passed that complete gate on current master.
 
 ---
