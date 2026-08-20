@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use witchy::opt::OptSet;
 
 const MESSAGES: i64 = 1_000_000;
+const BASELINE_MESSAGES: i64 = 1_000;
 const ACCEPTED_NS_PER_MESSAGE: f64 = 300.0;
 const MAX_LINEAR_ALLOCATIONS: i64 = 100;
 
@@ -92,6 +93,7 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
     witchy::opt::set_for_tests(Some(OptSet::all()));
     let _reset_optimization_override = ResetOptimizationOverride;
     let source = benchmark_source(MESSAGES);
+    let baseline_source = benchmark_source(BASELINE_MESSAGES);
     let wasm = witchy::compile_source(&source).expect("compile real scalar channel benchmark");
     assert_scalar_main_bypasses_task_run(&wasm);
 
@@ -102,12 +104,30 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
     assert!(repetitions > 0, "at least one measurement repetition is required");
 
     let expected = (MESSAGES * (MESSAGES - 1) / 2).to_string();
+    let baseline_expected =
+        (BASELINE_MESSAGES * (BASELINE_MESSAGES - 1) / 2).to_string();
     let mut execution_times_us = Vec::with_capacity(repetitions);
     let mut allocation_counts = Vec::with_capacity(repetitions);
     for repetition in 1..=repetitions {
+        let baseline = witchy::stats::compute_timed(&baseline_source)
+            .unwrap_or_else(|error| panic!("execute scalar baseline {repetition}: {error}"));
+        assert_eq!(
+            baseline.stats.output,
+            [baseline_expected.as_str()],
+            "baseline fold checksum"
+        );
         let measured = witchy::stats::compute_timed(&source)
             .unwrap_or_else(|error| panic!("execute scalar repetition {repetition}: {error}"));
         assert_eq!(measured.stats.output, [expected.as_str()], "observable fold checksum");
+        assert!(
+            baseline.gc_heap_capacity_bytes > 0,
+            "the scalar benchmark must exercise Wasmtime's GC heap"
+        );
+        assert_eq!(
+            measured.gc_heap_capacity_bytes,
+            baseline.gc_heap_capacity_bytes,
+            "repetition {repetition}: Wasmtime GC backing capacity must be independent of message count"
+        );
         assert!(
             measured.stats.rc_alloc_calls < MAX_LINEAR_ALLOCATIONS,
             "one million scalar messages must not allocate per resume; observed {} linear allocations",
@@ -117,9 +137,10 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
         execution_times_us.push(measured.execution_time_us);
         allocation_counts.push(measured.stats.rc_alloc_calls);
         println!(
-            "scalar repetition={repetition} execution_us={} ns_per_message={latency:.3} rc_alloc_calls={}",
+            "scalar repetition={repetition} execution_us={} ns_per_message={latency:.3} rc_alloc_calls={} gc_heap_capacity_bytes={}",
             measured.execution_time_us,
             measured.stats.rc_alloc_calls,
+            measured.gc_heap_capacity_bytes,
         );
     }
     let (median_us, min_us, max_us) = median_min_max(execution_times_us);

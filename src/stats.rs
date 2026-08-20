@@ -94,6 +94,10 @@ pub struct Stats {
 #[derive(Debug, Clone)]
 pub struct TimedStats {
     pub stats: Stats,
+    /// Wasmtime GC backing-heap capacity after execution. Under the current
+    /// deferred-reference-counting collector this is the VM-lifetime capacity
+    /// high-water, not live-object bytes or process RSS.
+    pub gc_heap_capacity_bytes: usize,
     /// Microseconds spent resolving, checking, and publishing loan facts.
     pub checker_time_us: u128,
     /// Microseconds spent executing the compiled Wasm sample.
@@ -138,6 +142,7 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
     let execution_time_us = execution_started.elapsed().as_micros();
     let execution_throughput_batches_per_s =
         1_000_000.0 / execution_time_us.max(1) as f64;
+    let gc_heap_capacity_bytes = vm.gc_heap_capacity_bytes();
     let stats = Stats {
         output: vm.output(),
         heap_bytes: vm.heap_bytes().unwrap_or(0),
@@ -173,6 +178,7 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
     };
     Ok(TimedStats {
         stats,
+        gc_heap_capacity_bytes,
         checker_time_us,
         execution_time_us,
         execution_throughput_batches_per_s,

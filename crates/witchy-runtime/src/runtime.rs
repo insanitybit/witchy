@@ -1075,6 +1075,17 @@ impl Vm {
             .map(i64::from)
     }
 
+    /// The current capacity in bytes of Wasmtime's GC backing heap.
+    ///
+    /// This is authoritative runtime accounting, not process RSS or Witchy's
+    /// linear-memory `$heap`. Wasmtime 45's deferred-reference-counting heap
+    /// only adds capacity, so reading this after execution is that VM's GC-heap
+    /// capacity high-water. It does not expose live-object bytes or an object
+    /// count.
+    pub fn gc_heap_capacity_bytes(&self) -> usize {
+        self.store.gc_heap_capacity()
+    }
+
     /// Everything this VM has printed so far, in order. (Used by tests to
     /// assert a compiled program's behavior end to end.)
     pub fn output(&self) -> Vec<String> {
