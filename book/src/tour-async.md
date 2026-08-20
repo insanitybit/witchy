@@ -85,10 +85,11 @@ The promoted bounded workflow in `examples/channels` uses a capacity of one,
 so its four sends cannot all queue at once: the producer parks and the consumer
 must drain the channel before it can continue. The installed bounded-channel
 smoke test recreates that project under a fresh temporary home, places only a
-copied public `witchy` binary on `PATH`, and checks the exact output. The release
-archive runs the same smoke against its extracted binary. This is the workflow
-available after installation; it does not import compiler sources,
-standard-library files, or package state from a Witchy checkout.
+copied public `witchy` binary on `PATH`, scrubs the inherited environment, and
+checks the exact output. The release archive runs the same smoke against its
+extracted binary. This is the workflow available after installation; it does
+not import compiler sources, standard-library files, package state, or cache
+state from a Witchy checkout.
 
 ## Request, reply, and stateful servers
 

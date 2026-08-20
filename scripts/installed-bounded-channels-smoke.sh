@@ -26,9 +26,11 @@ done
 }
 
 CP="$(command -v cp)"
+ENV="$(command -v env)"
 MKDIR="$(command -v mkdir)"
 MKTEMP="$(command -v mktemp)"
 RM="$(command -v rm)"
+SH="$(command -v sh)"
 
 scratch="$($MKTEMP -d "${TMPDIR:-/tmp}/witchy-installed-bounded.XXXXXX")"
 cleanup() { "$RM" -rf "$scratch"; }
@@ -39,16 +41,20 @@ work="$scratch/work"
 home="$scratch/home"
 tmp="$scratch/tmp"
 cache="$scratch/cache"
-"$MKDIR" -p "$install/bin" "$work/bounded-channels/src" "$home" "$tmp" "$cache/stdlib"
+"$MKDIR" -p "$install/bin" "$work/bounded-channels/src" "$home" "$tmp" "$cache"
 "$CP" "$binary" "$install/bin/witchy"
 
-export HOME="$home"
-export TMPDIR="$tmp"
-export XDG_CACHE_HOME="$cache"
-export WITCHY_TEST_STDLIB_CACHE_DIR="$cache/stdlib"
-export PATH="$install/bin"
+run_witchy() {
+    "$ENV" -i \
+        HOME="$home" \
+        TMPDIR="$tmp" \
+        XDG_CACHE_HOME="$cache" \
+        PATH="$install/bin" \
+        "$install/bin/witchy" "$@"
+}
 
-[ "$(command -v witchy)" = "$install/bin/witchy" ] || {
+resolved="$("$ENV" -i PATH="$install/bin" "$SH" -c 'command -v witchy')"
+[ "$resolved" = "$install/bin/witchy" ] || {
     echo "installed-bounded-channels-smoke: clean install is not the selected PATH binary" >&2
     exit 1
 }
@@ -77,9 +83,9 @@ printf '%s\n' \
     '    chan.join(producer_handle).await' \
     '    console.print("channel drained")' > bounded-channels/src/bounded_channels.witchy
 
-witchy check bounded-channels/src/bounded_channels.witchy >/dev/null
-witchy build bounded-channels >/dev/null
-output="$(witchy run bounded-channels)"
+run_witchy check bounded-channels/src/bounded_channels.witchy >/dev/null
+run_witchy build bounded-channels >/dev/null
+output="$(run_witchy run bounded-channels)"
 expected="got 1
 got 2
 got 3
