@@ -6597,6 +6597,11 @@ mod checked_codegen_boundary_tests {
             }),
             "the root Console must remain a direct externref lane"
         );
+        let scalar = carrier
+            .scalar_executor_plan()
+            .expect("the Int channel soak must qualify for the closure-free scheduler");
+        assert_eq!(scalar.state_count, carrier.states().len());
+        assert_eq!(scalar.max_lane_width, carrier.max_lane_width());
     }
 
     #[test]
