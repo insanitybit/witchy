@@ -1224,6 +1224,31 @@ fn block_has_any_yield(block: &Block) -> bool {
         || block_has_nested_yield(block)
 }
 
+/// A direct `continue` after the only yield makes the remaining source suffix
+/// unreachable. Dropping that marker and suffix gives the owned transition its
+/// natural loop-back: finish the current resume step, then produce from the
+/// next iteration.
+fn normalize_single_yield_trailing_continue(mut block: Block) -> Block {
+    let yields = block
+        .stmts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, statement)| matches!(statement, Stmt::Yield(_)).then_some(index))
+        .collect::<Vec<_>>();
+    let [yield_index] = yields.as_slice() else { return block };
+    if let Some(continue_index) = block
+        .stmts
+        .iter()
+        .enumerate()
+        .skip(*yield_index + 1)
+        .find_map(|(index, statement)| matches!(statement, Stmt::Continue).then_some(index))
+    {
+        block.stmts.truncate(continue_index);
+        block.lines.truncate(block.lines.len().min(continue_index));
+    }
+    block
+}
+
 /// Direct loop locals that are read or assigned after the yield are live across
 /// suspension. They are distinct from the generator's entry bindings: there is
 /// no value for them until the loop prefix has run, so the frame carries each as
@@ -1676,6 +1701,7 @@ fn lower_owned_loop_frame(
         }
         _ => return Ok(None),
     };
+    let owned_body = normalize_single_yield_trailing_continue(owned_body);
     let body = &owned_body;
     let yields = body
         .stmts
@@ -3085,6 +3111,19 @@ mod target_availability_tests {
         let debug = format!("{lowered:?}");
         assert!(!debug.contains("iter.from_gen"), "terminal break must not replay: {debug}");
         assert!(debug.contains("resume_after_yield"));
+    }
+
+    #[test]
+    fn trailing_continue_resumes_the_next_owned_iteration() {
+        let module = crate::parser::parse_module(
+            "gen fn values() -> Iter(Int):\n    var i = 0\n    while i < 3:\n        yield i\n        i = i + 1\n        continue\n        i = 99\n",
+        )
+        .expect("parse continue generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower continue generator").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(!debug.contains("iter.from_gen"), "trailing continue must not replay: {debug}");
+        assert!(!debug.contains("Int(99)"), "unreachable suffix must be removed: {debug}");
     }
 
     #[test]

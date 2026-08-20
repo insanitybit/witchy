@@ -258,6 +258,43 @@ fn main(console: Console):
         );
     }
 
+    /// A top-level continue in the post-yield suffix resumes the next owned
+    /// iteration and never executes the unreachable source tail.
+    #[test]
+    fn generator_trailing_continue_resumes_without_replay() {
+        let src = r#"import iter
+
+gen fn values(console: Console) -> Iter(Int):
+    var i = 0
+    while i < 3:
+        console.print("before ${i}")
+        yield i
+        console.print("after ${i}")
+        i = i + 1
+        continue
+        console.print("unreachable")
+
+fn main(console: Console):
+    let result: List(Int) = iter.collect(values(console))
+    console.print("${result}")
+"#;
+        let expected = [
+            "before 0",
+            "after 0",
+            "before 1",
+            "after 1",
+            "before 2",
+            "after 2",
+            "[0, 1, 2]",
+        ];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.
