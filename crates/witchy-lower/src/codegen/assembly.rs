@@ -892,6 +892,7 @@ fn collect_gc_block_plans(
 fn collect_direct_suspension_type(
     cg: &Codegen<'_>,
     ty: &Type,
+    defs: &HashMap<String, &witchy_syntax::ast::TypeDef>,
     seen: &mut HashSet<String>,
     types: &mut Vec<Type>,
 ) {
@@ -902,17 +903,33 @@ fn collect_direct_suspension_type(
         }
     }
     match ty.unqualified() {
-        Type::Named(_, args) | Type::Dyn(_, args) | Type::Tuple(args) => {
-            for arg in args {
-                collect_direct_suspension_type(cg, arg, seen, types);
+        Type::Tuple(items) => {
+            for item in items {
+                collect_direct_suspension_type(cg, item, defs, seen, types);
             }
         }
-        Type::Fn(params, result, _) => {
-            for param in params {
-                collect_direct_suspension_type(cg, param, seen, types);
+        Type::Named(name, args) => {
+            let owner = cg.gc_nominal_names.get(name).unwrap_or(name);
+            if let Some(def) = defs.get(owner)
+                && witchy_syntax::ast::effective_nominal_type_def_params(def).len() == args.len()
+            {
+                for field in witchy_types::storage::instantiate_type_def_fields(def, args)
+                    .into_iter()
+                    .flatten()
+                {
+                    collect_direct_suspension_type(cg, &field, defs, seen, types);
+                }
+            } else if matches!(name.as_str(), "Option" | "Result") {
+                // These built-in sums store their type arguments as payloads.
+                // Other unresolved constructors may have phantom parameters
+                // (notably Sender(m)/Receiver(m)); do not infer storage from
+                // generic arguments when no declaration proves it.
+                for arg in args {
+                    collect_direct_suspension_type(cg, arg, defs, seen, types);
+                }
             }
-            collect_direct_suspension_type(cg, result, seen, types);
         }
+        Type::Fn(_, _, _) | Type::Dyn(_, _) => {}
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: record composition must be normalized before Wasm suspension planning"
         ),
@@ -926,16 +943,25 @@ fn collect_direct_suspension_type(
 /// retain their ordinary representation.
 fn direct_suspension_types(
     cg: &Codegen<'_>,
+    module: &Module,
     carrier: &witchy_types::suspension_carrier::SuspensionCarrierCatalog,
 ) -> Vec<Type> {
     if !carrier.is_wholly_direct() {
         return Vec::new();
     }
+    let defs: HashMap<String, &witchy_syntax::ast::TypeDef> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(def) => Some((def.name.clone(), def)),
+            _ => None,
+        })
+        .collect();
     let mut seen = HashSet::new();
     let mut types = Vec::new();
     for state in carrier.states() {
         for slot in &state.slots {
-            collect_direct_suspension_type(cg, &slot.ty, &mut seen, &mut types);
+            collect_direct_suspension_type(cg, &slot.ty, &defs, &mut seen, &mut types);
         }
     }
     types
@@ -1840,7 +1866,7 @@ fn register_module_items(
             cg.gc_nominal_names.entry(bare).or_insert_with(|| def.name.clone());
         }
     }
-    cg.direct_suspension_types = direct_suspension_types(cg, suspension_carrier);
+    cg.direct_suspension_types = direct_suspension_types(cg, module, suspension_carrier);
     // Demand-plan every closed nominal instance that transitively stores a
     // WebAssembly reference. Keys include the concrete type arguments, so
     // `Task(Int)` and `Task(String)` cannot accidentally share a field layout.
