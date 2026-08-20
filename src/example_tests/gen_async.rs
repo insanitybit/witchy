@@ -6,11 +6,29 @@ use crate::{interpreter, parser};
     /// prior yields. The syntax-level lowering test pins the `iter.unfold` ABI;
     /// this fixture proves that ABI through linking, checking, and compiled Wasm.
     #[test]
-    fn generator_owned_loop_frame_runs_on_compiled_wasm() {
+    fn generator_owned_loop_frame_runs_on_both_backends() {
         let src = "import iter\n\ngen fn fibs() -> Iter(Int):\n    var a: Int = 0\n    var b: Int = 1\n    while true:\n        yield a\n        let next: Int = a + b\n        a = b\n        b = next\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(fibs().take(10))\n    console.print(\"${xs}\")\n";
+        let expected = ["[0, 1, 1, 2, 3, 5, 8, 13, 21, 34]"];
+        assert_eq!(link_run(src), expected, "interpreter");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
-            ["[0, 1, 1, 2, 3, 5, 8, 13, 21, 34]"],
+            expected,
+            "compiled Wasm",
+        );
+    }
+
+    /// The owned frame suspends at the yield itself. An effect after a yield is
+    /// delayed until the next pull, executes once, and is never run merely
+    /// because a short-circuiting consumer drops the remaining iterator.
+    #[test]
+    fn generator_owned_frame_delays_post_yield_effect_until_resume() {
+        let src = "import iter\n\ngen fn values(console: Console) -> Iter(Int):\n    var i: Int = 0\n    while i < 3:\n        yield i\n        console.print(\"after ${i}\")\n        i = i + 1\n\nfn main(console: Console):\n    match iter.next(values(console)):\n        Empty -> console.print(\"one empty\")\n        Item(one, _rest) -> console.print(\"one ${one}\")\n    match iter.next(values(console)):\n        Empty -> console.print(\"two empty\")\n        Item(first, rest) ->\n            match iter.next(rest):\n                Empty -> console.print(\"two short\")\n                Item(second, _more) -> console.print(\"two ${first} ${second}\")\n";
+        let expected = ["one 0", "after 0", "two 0 1"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
         );
     }
 

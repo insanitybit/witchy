@@ -446,10 +446,11 @@ struct GeneratorFrameBinding {
 ///     <after>
 /// ```
 ///
-/// The frame is a fixed typed tuple of parameters and initialized locals. One
-/// `iter.unfold` step restores those bindings, executes exactly one loop
-/// iteration, and returns the yielded value plus the next owned frame. More
-/// general CFGs retain the replay fallback until they are split into states.
+/// The frame is a fixed typed tuple of parameters, initialized locals, and a
+/// resume phase. One `iter.unfold` step restores those bindings, executes the
+/// statements after the previous yield only when resuming, and stops exactly at
+/// the next yield. More general CFGs retain the replay fallback until they are
+/// split into states.
 fn lower_owned_loop_frame(
     f: &Function,
     method: Option<&MethodCtx>,
@@ -468,7 +469,7 @@ fn lower_owned_loop_frame(
         .collect::<Vec<_>>();
     if yields.len() != 1
         || block_has_nested_yield(body)
-        || block_has_generator_control_transfer(body)
+        || block_has_generator_loop_control_transfer(body)
     {
         return Ok(None);
     }
@@ -509,8 +510,14 @@ fn lower_owned_loop_frame(
         return Ok(None);
     }
 
-    let frame_ty = Type::Tuple(bindings.iter().map(|binding| binding.ty.clone()).collect());
+    let mut frame_fields = bindings
+        .iter()
+        .map(|binding| binding.ty.clone())
+        .collect::<Vec<_>>();
+    frame_fields.push(Type::Named("Bool".into(), Vec::new()));
+    let frame_ty = Type::Tuple(frame_fields);
     let frame_name = "__generator_frame".to_string();
+    let resume_name = "__generator_resume_after_yield".to_string();
     let yielded_name = "__generator_yielded".to_string();
     let mut step_statements = bindings
         .iter()
@@ -525,21 +532,44 @@ fn lower_owned_loop_frame(
             },
         })
         .collect::<Vec<_>>();
-    step_statements.extend(body.stmts[..yield_index].iter().cloned());
+    step_statements.push(Stmt::Let {
+        name: resume_name.clone(),
+        ty: Some(Type::Named("Bool".into(), Vec::new())),
+        mutable: false,
+        value: Expr::Field {
+            base: Box::new(Expr::Var(frame_name.clone())),
+            field: bindings.len().to_string(),
+        },
+    });
+    let after = rewrite_owned_frame_returns(Block {
+        stmts: body.stmts[yield_index + 1..].to_vec(),
+        lines: Vec::new(),
+        region: None,
+    })?;
+    step_statements.push(Stmt::Expr(Expr::If {
+        cond: Box::new(Expr::Var(resume_name)),
+        then_block: after,
+        else_block: None,
+    }));
 
-    let mut produce = vec![Stmt::Let {
+    let mut produce = rewrite_owned_frame_returns(Block {
+        stmts: body.stmts[..yield_index].to_vec(),
+        lines: Vec::new(),
+        region: None,
+    })?
+    .stmts;
+    produce.push(Stmt::Let {
         name: yielded_name.clone(),
         ty: Some(elem.clone()),
         mutable: false,
         value: yielded.clone(),
-    }];
-    produce.extend(body.stmts[yield_index + 1..].iter().cloned());
-    let next_frame = Expr::Tuple(
-        bindings
-            .iter()
-            .map(|binding| Expr::Var(binding.name.clone()))
-            .collect(),
-    );
+    });
+    let mut next_frame_fields = bindings
+        .iter()
+        .map(|binding| Expr::Var(binding.name.clone()))
+        .collect::<Vec<_>>();
+    next_frame_fields.push(Expr::Bool(true));
+    let next_frame = Expr::Tuple(next_frame_fields);
     produce.push(Stmt::Expr(Expr::Ctor {
         name: "Some".into(),
         args: vec![Expr::Tuple(vec![Expr::Var(yielded_name), next_frame])],
@@ -587,6 +617,7 @@ fn lower_owned_loop_frame(
                 bindings
                     .iter()
                     .map(|binding| Expr::Var(binding.name.clone()))
+                    .chain(std::iter::once(Expr::Bool(false)))
                     .collect(),
             ),
             Expr::Var(helper_name.to_string()),
@@ -668,10 +699,10 @@ fn block_has_nested_yield(block: &Block) -> bool {
     nested
 }
 
-fn block_has_generator_control_transfer(block: &Block) -> bool {
+fn block_has_generator_loop_control_transfer(block: &Block) -> bool {
     fn directly_transfers(block: &Block) -> bool {
         block.stmts.iter().any(|statement| {
-            matches!(statement, Stmt::Return(_) | Stmt::Break | Stmt::Continue)
+            matches!(statement, Stmt::Return(Some(_)) | Stmt::Break | Stmt::Continue)
         })
     }
 
@@ -706,6 +737,100 @@ fn block_has_generator_control_transfer(block: &Block) -> bool {
         Ok(())
     });
     transfers
+}
+
+/// A bare source `return` ends the generator. In an owned resume helper that
+/// means returning the helper's `Option((item, frame))` value `None`. This
+/// rewrite is applied independently to the pre-yield and post-yield segments,
+/// so post-yield effects and termination happen on the next pull, never eagerly
+/// before the current item is observed.
+fn rewrite_owned_frame_returns(block: Block) -> Result<Block, String> {
+    let mut statements = Vec::with_capacity(block.stmts.len());
+    for statement in block.stmts {
+        statements.push(match statement {
+            Stmt::Return(None) => Stmt::Return(Some(Expr::Ctor {
+                name: "None".into(),
+                args: Vec::new(),
+            })),
+            Stmt::Return(Some(_)) => {
+                return Err("`return <value>` is not allowed in a generator".into());
+            }
+            Stmt::Let {
+                name,
+                ty,
+                mutable,
+                value,
+            } => Stmt::Let {
+                name,
+                ty,
+                mutable,
+                value: rewrite_owned_frame_return_expr(value)?,
+            },
+            Stmt::Assign { name, value } => Stmt::Assign {
+                name,
+                value: rewrite_owned_frame_return_expr(value)?,
+            },
+            Stmt::LetPattern { pattern, value } => Stmt::LetPattern {
+                pattern,
+                value: rewrite_owned_frame_return_expr(value)?,
+            },
+            Stmt::Expr(value) => Stmt::Expr(rewrite_owned_frame_return_expr(value)?),
+            other => other,
+        });
+    }
+    Ok(Block {
+        stmts: statements,
+        lines: block.lines,
+        region: block.region,
+    })
+}
+
+fn rewrite_owned_frame_return_expr(expression: Expr) -> Result<Expr, String> {
+    Ok(match expression {
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => Expr::If {
+            cond,
+            then_block: rewrite_owned_frame_returns(then_block)?,
+            else_block: else_block.map(rewrite_owned_frame_returns).transpose()?,
+        },
+        Expr::While { cond, body } => Expr::While {
+            cond,
+            body: rewrite_owned_frame_returns(body)?,
+        },
+        Expr::For { var, iter, body } => Expr::For {
+            var,
+            iter,
+            body: rewrite_owned_frame_returns(body)?,
+        },
+        Expr::WhileLet {
+            pattern,
+            scrutinee,
+            body,
+        } => Expr::WhileLet {
+            pattern,
+            scrutinee,
+            body: rewrite_owned_frame_returns(body)?,
+        },
+        Expr::Match { scrutinee, arms } => Expr::Match {
+            scrutinee,
+            arms: arms
+                .into_iter()
+                .map(|arm| {
+                    Ok(MatchArm {
+                        line: arm.line,
+                        pattern: arm.pattern,
+                        guard: arm.guard,
+                        body: rewrite_owned_frame_return_expr(arm.body)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+        },
+        Expr::Block(block) => Expr::Block(rewrite_owned_frame_returns(block)?),
+        other => other,
+    })
 }
 
 /// Replace each `yield e` with `if __i == __target: return Some(e)` followed by
@@ -918,19 +1043,21 @@ mod target_availability_tests {
         assert_eq!(helper.params[0].convention, Convention::Own);
         assert!(matches!(
             helper.params[0].ty,
-            Some(Type::Tuple(ref fields)) if fields.len() == 2
+            Some(Type::Tuple(ref fields)) if fields.len() == 3
         ));
         assert!(!format!("{:?}", lowered).contains("iter.from_gen"));
     }
 
     #[test]
-    fn generator_control_transfer_retains_replay_fallback() {
+    fn generator_early_return_stays_in_the_owned_frame() {
         let module = crate::parser::parse_module(
             "gen fn firstn(n: Int) -> Iter(Int):\n    var i = 0\n    while true:\n        if i >= n:\n            return\n        yield i\n        i = i + 1\n",
         )
         .expect("parse generator return");
         let checked = crate::source_check::check(module).expect("source check");
         let lowered = lower(checked).expect("lower generator").into_module();
-        assert!(format!("{:?}", lowered).contains("iter.from_gen"));
+        let debug = format!("{:?}", lowered);
+        assert!(!debug.contains("iter.from_gen"), "early return must not select replay: {debug}");
+        assert!(debug.contains("__generator_resume_after_yield"));
     }
 }
