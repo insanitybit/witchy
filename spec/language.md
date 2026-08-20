@@ -869,9 +869,11 @@ aliasing. Concretely:
   position. `await` is supported in loop bodies, including `while` bodies and
   `for await` folds; it remains unsupported in branch conditions, loop
   conditions, and match scrutinees.
-- A **`gen fn`** is the exception: a `var` *may* be freely mutated across a
-  `yield` (§11), because a generator re-runs its body to the next yield rather
-  than capturing a continuation.
+- A **`gen fn`** owns the locals live across `yield` in a resumable frame
+  (§11). A `var` may be mutated across a supported suspension, and the next
+  pull continues after that `yield` without replaying earlier effects. A
+  yielding CFG outside the supported frame catalog is rejected at the source
+  declaration.
 
 **Ownership/immutability qualifiers** (`frozen`, `unique`, `local unique`, and
 borrowed `View`) are
@@ -1588,6 +1590,21 @@ fn main(console: Console):
 A `gen fn` body runs imperatively but `yield`s a sequence; calling it returns a
 lazy `iter.Iter` that computes only what's demanded, so an infinite generator
 is fine when something bounds it.
+
+Each successfully lowered generator owns its live parameters and locals in a
+fixed resumable frame. A pull executes until the next `yield`, records the
+resume phase, and runs that segment only once. Supported bodies include finite
+direct yields; conditional and `match` yields; one terminal `while`, `while
+let`, or list `for`; early `return`; outer-loop `break` and `continue`; a finite
+prefix before a terminal loop; and one finite tail after a yielding loop.
+Locals, destructured bindings, and direct call results that cross a suspension
+become frame fields.
+
+Nested yielding loops do not silently use a slower or effect-repeating
+implementation. Put the inner yielding traversal in its own generator; the
+compiler otherwise reports the unsupported suspension CFG at the `gen fn`.
+The public `Iter(T)` protocol yields owned values, so explicit references and
+borrowed views may not enter the frame or be yielded.
 
 ```witchy
 import iter

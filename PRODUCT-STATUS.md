@@ -5,7 +5,7 @@ research and development surface. It is a product-claim boundary, not a feature
 freeze: experimental work may continue and may merge without becoming part of
 the supported story automatically.
 
-Evidence snapshot: `d8abe463c2353297f640ce985999dbcf0da46bb7`.
+Evidence snapshot: `b04d3e22209eebb87c983c54ca297a2caf2bf0ee`.
 The snapshot records current evidence; it is not a compatibility promise.
 `Supported preview` identifies the intended dependable component contract; it
 does not by itself declare the whole project ready for broad public presentation.
@@ -82,7 +82,7 @@ adjacent work, not prerequisites for it.
 | Standard-library APIs used by the supported journey and curated examples | Supported preview | Documentation freshness and executable examples cover this subset. This status does not silently promote every std module. |
 | Bounded async tasks, typed channels, and structured concurrency ([RFC-0129](rfcs/0129-concurrency-tasks-and-channels.md)) | Experimental | Core destination. Implemented, documented, and parity-tested for bounded workloads. Promotion remains separate from long-lived service queues because the compiled continuation executor has a known sustained-message memory ceiling. |
 | Parallel worker VMs ([RFC-0129](rfcs/0129-concurrency-tasks-and-channels.md)) | Experimental | Core destination. True parallelism is distinct from deterministic cooperative tasks and crosses owned serialization and capability boundaries. Its cost and availability need a curated workflow separate from `chan` examples. |
-| Generators and lazy iterators ([RFC-0130](rfcs/0130-generators-and-iterators.md)) | Experimental | Core destination. `Iter`, `gen fn`, `yield`, adapters, and backend parity are implemented. The current generator lowering replays the body to the requested yield; promotion requires a resumable owned frame or a statically enforced replay-safe subset. |
+| Generators and lazy iterators ([RFC-0130](rfcs/0130-generators-and-iterators.md)) | Supported preview | `Iter`, `gen fn`, `yield`, adapters, collection, diagnostics, tooling, and the installed examples are covered by the RFC acceptance matrix. Every accepted suspension shape resumes an owned frame with one-time effects and bounded live state; a residual nested yielding CFG fails at its source declaration instead of selecting replay semantics. |
 | Static reflection ([RFC-0131](rfcs/0131-reflection-and-comptime.md)) | Experimental | Core destination. `Reflect`, `Mirror`, derives, structural JSON encoding, docs, and backend parity are implemented. It is retained language surface awaiting an installed curated workflow and limitation review. |
 | `comptime`, typed quotation, derives, and tagged literals ([RFC-0131](rfcs/0131-reflection-and-comptime.md)) | Experimental | Core destination. Structured syntax, hygiene, provenance, deterministic zero-capability evaluation, expansion tooling, and generated-code checking are implemented. Raw source compatibility paths still need an explicit public policy. |
 | `region:` ([RFC-0128](rfcs/0128-regions-and-reclamation.md)) | Experimental | Core destination. Lexical regions, conservative copy-out, Wasm reclamation, counters, docs, and parity are implemented. Promotion promises those semantics, not future destination inference. |

@@ -75,9 +75,28 @@ fn main(console: Console):
 ```
 
 The `while true` loop never finishes on its own; `fibs().take(10)` stops
-pulling after ten values, so only ten Fibonacci numbers are ever computed. A
-generator can branch and loop as freely as any function. The Collatz sequence is
-finite, but its length isn't known before iteration:
+pulling after ten values, so only ten Fibonacci numbers are ever computed. The
+generator's parameters and live locals sit in an owned frame. Each pull resumes
+after the previous `yield`, so effects in an earlier segment are not repeated
+and frame storage does not grow with the number of pulls.
+
+### Control flow and the owned frame
+
+You can use finite direct yields, conditional and `match` yields, or one
+terminal `while`, `while let`, or list `for` loop. A bare `return` ends the
+stream; `break` and `continue` work in the yielding outer loop. A generator can
+also yield a finite prefix before its terminal loop or one finite value after a
+yielding loop. Values initialized before the loop, including destructured
+bindings and inferred function-call results, become frame fields when later
+pulls need them.
+
+The current supported catalog does not put a yielding loop inside another
+yielding loop. Split the inner traversal into its own generator and compose the
+iterators. The compiler reports any residual suspension CFG at the source
+`gen fn`; it never falls back to restarting the body and repeating effects.
+
+The Collatz sequence combines a prefix yield, branching, and a terminal loop.
+It is finite, but its length isn't known before iteration:
 
 ```witchy
 import iter

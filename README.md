@@ -98,8 +98,8 @@ fn main(console: Console):
 `List`/`Dict`/tuples/records/ADTs, `Option`/`Result` with `?`, traits with
 `where` bounds, and Hylo-style parameter conventions (`let`/`var`/`own`, with
 use-after-move as a compile error). Structural equality is deep on both
-backends. Async/channels, generators, and comptime exist as experimental
-surfaces.
+backends. Generators and lazy iterators are supported preview; async/channels
+and comptime remain experimental surfaces.
 
 ## Why capabilities?
 
