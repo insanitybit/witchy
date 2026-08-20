@@ -360,6 +360,7 @@ fn lower_gen(
     stmts.push(Stmt::Expr(Expr::Ctor { name: "None".to_string(), args: vec![] }));
     let mut helper_attributes = f.attributes.clone();
     helper_attributes.push(crate::suspension::FRAME_FUNCTION_ATTRIBUTE.into());
+    helper_attributes.push(crate::suspension::FRAME_BOXED_ATTRIBUTE.into());
     helper_attributes.push(crate::suspension::frame_state_attribute(resume_state));
     let helper = Function {
         line: f.line,
@@ -400,6 +401,7 @@ fn lower_gen(
     };
     let mut wrapper_attributes = f.attributes;
     wrapper_attributes.push(crate::suspension::FRAME_ENTRY_ATTRIBUTE.into());
+    wrapper_attributes.push(crate::suspension::FRAME_BOXED_ATTRIBUTE.into());
     wrapper_attributes.push(crate::suspension::frame_state_attribute(entry_state));
     let wrapper = Function {
         line: f.line,
@@ -878,6 +880,10 @@ mod target_availability_tests {
             .any(|attribute| attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE));
         assert_eq!(crate::suspension::frame_state(wrapper), Some(0));
         assert_eq!(crate::suspension::frame_state(helper), Some(1));
+        assert!(generated.iter().all(|function| function
+            .attributes
+            .iter()
+            .any(|attribute| attribute == crate::suspension::FRAME_BOXED_ATTRIBUTE)));
     }
 
     #[test]

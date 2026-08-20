@@ -27,6 +27,11 @@ pub const FRAME_ENTRY_ATTRIBUTE: &str = "__compiler_suspension_entry";
 /// use this attribute so lowering never leaks `__async_*` names to users.
 pub const SOURCE_CALLABLE_ATTRIBUTE_PREFIX: &str = "__compiler_source_callable=";
 
+/// Compiler-owned marker for the historical replay-based generator adapter.
+/// It has suspension metadata for diagnostics and target propagation, but it
+/// is not an owned direct frame and must keep the module on the boxed carrier.
+pub const FRAME_BOXED_ATTRIBUTE: &str = "__compiler_suspension_boxed";
+
 /// Prefix for the stable, module-local integer state attached to every async
 /// entry and lifted segment. The state is data consumed by the typed carrier
 /// catalog; generated function names are deliberately not the runtime ABI.

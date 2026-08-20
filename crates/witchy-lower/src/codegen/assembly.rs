@@ -599,6 +599,12 @@ fn type_has_planned_reference(
     if Codegen::is_executable_reference_type(ty) {
         return true;
     }
+    if cg.is_direct_suspension_type(ty)
+        && !type_has_var(ty)
+        && matches!(ty.unqualified(), Type::Tuple(_))
+    {
+        return true;
+    }
     match ty.unqualified() {
         Type::Fn(_, _, _) => true,
         // An existential's erased envelope is always a GC reference. Its trait
@@ -668,13 +674,14 @@ fn collect_gc_type_plans(
             }
             if name == "List" {
                 if let Some(element) = args.first()
-                    && type_has_planned_reference(
-                        cg,
-                        element,
-                        storage,
-                        nominals,
-                        reference_lists,
-                    )
+                    && ((cg.is_direct_suspension_type(ty) && !type_has_var(ty))
+                        || type_has_planned_reference(
+                            cg,
+                            element,
+                            storage,
+                            nominals,
+                            reference_lists,
+                        ))
                 {
                     reference_lists
                         .entry(cg.gc_lookup_type_key(ty))
@@ -717,13 +724,15 @@ fn collect_gc_type_plans(
             } else {
                 return;
             };
-            if !variants.iter().flatten().any(|field| {
+            if !cg.is_direct_suspension_type(ty)
+                && !variants.iter().flatten().any(|field| {
                 // `ReferenceStorageClassifier` tracks host/reference-bearing
                 // storage, while RFC-0122 explicit `&` fields are a place
                 // carrier even when their referent is an ordinary scalar.
                 // Both must select a typed GC nominal layout.
                 type_has_planned_reference(cg, field, storage, nominals, reference_lists)
-            }) {
+                })
+            {
                 return;
             }
             let key = cg.gc_lookup_type_key(ty);
@@ -870,6 +879,109 @@ fn collect_gc_block_plans(
             );
         }
     }
+}
+
+fn collect_direct_suspension_type(
+    cg: &Codegen<'_>,
+    ty: &Type,
+    seen: &mut HashSet<String>,
+    types: &mut Vec<Type>,
+) {
+    if !type_has_var(ty) {
+        let key = cg.gc_lookup_type_key(ty);
+        if seen.insert(key) {
+            types.push(ty.clone());
+        }
+    }
+    match ty.unqualified() {
+        Type::Named(_, args) | Type::Dyn(_, args) | Type::Tuple(args) => {
+            for arg in args {
+                collect_direct_suspension_type(cg, arg, seen, types);
+            }
+        }
+        Type::Fn(params, result, _) => {
+            for param in params {
+                collect_direct_suspension_type(cg, param, seen, types);
+            }
+            collect_direct_suspension_type(cg, result, seen, types);
+        }
+        Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: record composition must be normalized before Wasm suspension planning"
+        ),
+        Type::Qualified(_, _) => unreachable!("unqualified above"),
+    }
+}
+
+fn collect_direct_suspension_expr_types(
+    cg: &Codegen<'_>,
+    expr: &Expr,
+    seen: &mut HashSet<String>,
+    types: &mut Vec<Type>,
+) {
+    if let Some(ty) = explicit_reference_carrier_type(cg, expr) {
+        collect_direct_suspension_type(cg, &ty, seen, types);
+    }
+    if let Some(ty) = cg.ast_type_of_expr(expr) {
+        collect_direct_suspension_type(cg, &ty, seen, types);
+    }
+    crate::escape::for_each_immediate_subexpr(expr, &mut |child| {
+        collect_direct_suspension_expr_types(cg, child, seen, types);
+    });
+}
+
+fn collect_direct_suspension_block_types(
+    cg: &Codegen<'_>,
+    block: &Block,
+    seen: &mut HashSet<String>,
+    types: &mut Vec<Type>,
+) {
+    for stmt in &block.stmts {
+        if let Stmt::Let { ty: Some(ty), .. } = stmt {
+            collect_direct_suspension_type(cg, ty, seen, types);
+        }
+        let expr = match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => Some(value),
+            Stmt::Return(value) => value.as_ref(),
+            Stmt::Break | Stmt::Continue => None,
+        };
+        if let Some(expr) = expr {
+            collect_direct_suspension_expr_types(cg, expr, seen, types);
+        }
+    }
+}
+
+/// Exact closed types owned by the runtime call graph below compiler-generated
+/// suspension entries. Keeping this graph separate from ordinary reachability
+/// lets async/generator executors use typed Wasm-GC carriers without changing
+/// the representation of unrelated aggregates in the same module.
+fn direct_suspension_types(
+    cg: &Codegen<'_>,
+    module: &Module,
+    reachable: &HashSet<String>,
+) -> Vec<Type> {
+    let mut seen = HashSet::new();
+    let mut types = Vec::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        if !reachable.contains(&function.name) {
+            continue;
+        }
+        if let Some(ty) = cg.type_table.function_type(&function.name) {
+            collect_direct_suspension_type(cg, &ty, &mut seen, &mut types);
+        }
+        for ty in function.params.iter().filter_map(|param| param.ty.as_ref()) {
+            collect_direct_suspension_type(cg, ty, &mut seen, &mut types);
+        }
+        if let Some(ty) = &function.ret {
+            collect_direct_suspension_type(cg, ty, &mut seen, &mut types);
+        }
+        collect_direct_suspension_block_types(cg, &function.body, &mut seen, &mut types);
+    }
+    types
 }
 
 fn gc_type_plans(
@@ -1548,7 +1660,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
 /// call is invisible to the AST walk; seeding those impls as roots keeps them (and
 /// their transitive callees) emitted, so the honored-at-every-depth guarantee holds
 /// for the compiled backend too.
-fn reachable_functions_with(module: &Module, extra_roots: &[String]) -> HashSet<String> {
+fn reachable_functions_from(module: &Module, roots: &[String]) -> HashSet<String> {
     let mut bodies: HashMap<&str, &Block> = HashMap::new();
     for item in &module.items {
         if let Item::Function(f) = item {
@@ -1557,19 +1669,7 @@ fn reachable_functions_with(module: &Module, extra_roots: &[String]) -> HashSet<
     }
     let mut reachable: HashSet<String> = HashSet::new();
     let mut work: Vec<String> = Vec::new();
-    if bodies.contains_key("main") {
-        reachable.insert("main".to_string());
-        work.push("main".to_string());
-    }
-    // String exports (`pub fn f(String) -> String`) are additional roots: the host
-    // calls them directly through their `__export_*` wrapper, so they must be
-    // compiled and kept even when `main` never reaches them.
-    for name in string_export_functions(module) {
-        if reachable.insert(name.clone()) {
-            work.push(name);
-        }
-    }
-    for name in extra_roots {
+    for name in roots {
         if bodies.contains_key(name.as_str()) && reachable.insert(name.clone()) {
             work.push(name.clone());
         }
@@ -1586,6 +1686,19 @@ fn reachable_functions_with(module: &Module, extra_roots: &[String]) -> HashSet<
         }
     }
     reachable
+}
+
+fn reachable_functions_with(module: &Module, extra_roots: &[String]) -> HashSet<String> {
+    let mut roots = Vec::new();
+    if module.items.iter().any(|item| matches!(item, Item::Function(f) if f.name == "main")) {
+        roots.push("main".to_string());
+    }
+    // String exports (`pub fn f(String) -> String`) are additional roots: the host
+    // calls them directly through their `__export_*` wrapper, so they must be
+    // compiled and kept even when `main` never reaches them.
+    roots.extend(string_export_functions(module));
+    roots.extend_from_slice(extra_roots);
+    reachable_functions_from(module, &roots)
 }
 
 fn eq_impl_types(module: &Module) -> HashSet<String> {
@@ -1667,6 +1780,7 @@ fn register_module_items(
     cg: &mut Codegen,
     module: &Module,
     reachable: &HashSet<String>,
+    direct_suspension_reachable: &HashSet<String>,
     witnesses: &witchy_types::witness::WitnessPlan,
     generic_specializations: &BTreeMap<
         String,
@@ -1768,6 +1882,7 @@ fn register_module_items(
             cg.gc_nominal_names.entry(bare).or_insert_with(|| def.name.clone());
         }
     }
+    cg.direct_suspension_types = direct_suspension_types(cg, module, direct_suspension_reachable);
     // Demand-plan every closed nominal instance that transitively stores a
     // WebAssembly reference. Keys include the concrete type arguments, so
     // `Task(Int)` and `Task(String)` cannot accidentally share a field layout.
@@ -1804,7 +1919,9 @@ fn register_module_items(
             continue;
         };
         let element_kind = cg.kind_for_type(element);
-        if !matches!(element_kind, Kind::ExternRef | Kind::GcRef(_)) {
+        if !cg.is_direct_suspension_type(ty)
+            && !matches!(element_kind, Kind::ExternRef | Kind::GcRef(_))
+        {
             continue;
         }
         let wir_element = Codegen::wir_kind(element_kind);
@@ -3151,12 +3268,23 @@ fn assemble_wir_module_with_structs_mode(
         extra_roots.extend(codec.migrations.iter().map(|migration| migration.decoder.clone()));
     }
     let reachable = reachable_functions_with(&module, &extra_roots);
+    let direct_suspension_reachable = if suspension_carrier.is_wholly_direct() {
+        let roots = suspension_carrier
+            .states()
+            .iter()
+            .map(|state| state.function.clone())
+            .collect::<Vec<_>>();
+        reachable_functions_from(&module, &roots)
+    } else {
+        HashSet::new()
+    };
     let mut cg = Codegen::new(&module, &type_table, loan_facts, access_facts);
     cg.collect_wir = true;
     register_module_items(
         &mut cg,
         &module,
         &reachable,
+        &direct_suspension_reachable,
         &witnesses,
         &generic_specializations,
     )?;
@@ -6419,11 +6547,44 @@ mod checked_codegen_boundary_tests {
             .collect::<Vec<_>>();
 
         assert_eq!(sections.len(), 1, "async binaries carry exactly one carrier ABI");
-        assert_eq!(sections[0][0], 1, "carrier ABI version");
+        assert_eq!(sections[0][0], 2, "carrier ABI version");
         assert_eq!(
             u32::from_le_bytes(sections[0][1..5].try_into().expect("state count")),
             2,
             "entry plus one continuation segment",
+        );
+    }
+
+    #[test]
+    fn compiled_channel_soak_has_a_wholly_direct_wasm_carrier() {
+        let checked = authenticated_checked(include_str!(
+            "../../../../benchmarks/chan_throughput.witchy"
+        ));
+        let (_, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(),
+            false,
+            None,
+            None,
+            false,
+        )
+        .expect("assemble channel-soak carrier");
+
+        assert!(
+            carrier.is_wholly_direct(),
+            "the compiled soak must not require a boxed suspension slot: {:#?}",
+            carrier.states()
+        );
+        assert!(
+            carrier.states().iter().any(|state| {
+                state.slots.iter().any(|slot| {
+                    slot.lanes.as_ref().is_some_and(|lanes| {
+                        lanes.contains(
+                            &witchy_types::suspension_carrier::CarrierLane::ExternRef,
+                        )
+                    })
+                })
+            }),
+            "the root Console must remain a direct externref lane"
         );
     }
 
@@ -6447,7 +6608,7 @@ mod checked_codegen_boundary_tests {
             .collect::<Vec<_>>();
 
         assert_eq!(sections.len(), 1, "generators use the shared carrier ABI");
-        assert_eq!(sections[0][0], 1, "carrier ABI version");
+        assert_eq!(sections[0][0], 2, "carrier ABI version");
         assert_eq!(
             u32::from_le_bytes(sections[0][1..5].try_into().expect("state count")),
             2,

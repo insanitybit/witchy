@@ -1604,6 +1604,241 @@ impl Codegen<'_> {
         Some(name)
     }
 
+    fn render_gc_value_wir(
+        &mut self,
+        ty: &Type,
+        shape: &EqShape,
+        value: witchy_wir::wir::WirExpr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{Kind as WK, WirExpr as W, WirNode as N, WirTy};
+        Some(match shape {
+            EqShape::Int => {
+                self.uses_int_to_string = true;
+                W::Call {
+                    func: "int_to_string".into(),
+                    args: vec![Self::wir_convert(
+                        value,
+                        self.kind_for_type(ty),
+                        super::Kind::I64,
+                    )],
+                }
+            }
+            EqShape::Bool => {
+                let t = self.intern("true");
+                let f = self.intern("false");
+                W::Control(Box::new(N::If {
+                    cond: value,
+                    then_: vec![N::Push(W::StrPtr(t))],
+                    els: vec![N::Push(W::StrPtr(f))],
+                    result: Some(WirTy::Str),
+                }))
+            }
+            EqShape::Float => {
+                self.uses_float_to_str = true;
+                W::Call { func: "float_to_str".into(), args: vec![value] }
+            }
+            EqShape::Str => value,
+            EqShape::Bytes => {
+                self.uses_int_to_string = true;
+                let open = self.intern("Bytes(len=");
+                let close = self.intern(")");
+                let length = Self::wir_convert(
+                    W::Load { ptr: Box::new(value), kind: WK::I32, offset: 0 },
+                    super::Kind::I32,
+                    super::Kind::I64,
+                );
+                W::Call {
+                    func: "concat".into(),
+                    args: vec![
+                        W::Call {
+                            func: "concat".into(),
+                            args: vec![
+                                W::StrPtr(open),
+                                W::Call { func: "int_to_string".into(), args: vec![length] },
+                            ],
+                        },
+                        W::StrPtr(close),
+                    ],
+                }
+            }
+            compound => {
+                let helper = match self.kind_for_type(ty) {
+                    super::Kind::GcRef(_) => self.ensure_ts_gc_wir_helper(ty, compound)?,
+                    super::Kind::I32 => self.ensure_ts_wir_helper(compound)?,
+                    _ => return None,
+                };
+                W::Call { func: helper, args: vec![value] }
+            }
+        })
+    }
+
+    /// Structural renderer for a nominal stored in a typed Wasm-GC struct.
+    /// Its semantic shape is shared with the linear renderer, but its ABI and
+    /// field reads use the exact finalized GC layout.
+    pub(crate) fn ensure_ts_gc_wir_helper(
+        &mut self,
+        ty: &Type,
+        shape: &EqShape,
+    ) -> Option<String> {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W, WirLocal, WirNode as N, WirTy};
+
+        let struct_id = self.gc_struct_id_for_type(ty)?;
+        let Type::Named(tyname, _) = ty.unqualified() else { return None };
+        let variant_shapes = match shape {
+            EqShape::AdtInst(_, variants) => variants.clone(),
+            EqShape::Adt(name) => self
+                .adt_variants
+                .get(name)?
+                .iter()
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .map(|field| self.eq_shape_of_type(field))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .collect::<Option<Vec<_>>>()?,
+            _ => return None,
+        };
+        let variant_names = self
+            .adt_variant_names
+            .get(tyname)
+            .cloned()
+            .or_else(|| anon_union_variant_names(tyname))?;
+        if variant_names.len() != variant_shapes.len() {
+            return None;
+        }
+        let name = format!("ts_gc_{struct_id}_{}", shape.id());
+        if self.ts_wir_helpers.contains_key(&name) {
+            return Some(name);
+        }
+        if !self.ts_building.insert(name.clone()) {
+            return None;
+        }
+        let empty = self.intern("");
+        self.ts_wir_helpers.insert(
+            name.clone(),
+            witchy_wir::wir::WirFunc {
+                name: name.clone(),
+                params: vec![WirLocal { name: "p".into(), ty: WirTy::GcRef(struct_id) }],
+                ret: vec![WirTy::Str],
+                locals: Vec::new(),
+                body: vec![N::Push(W::StrPtr(empty))],
+                raw_body: None,
+            },
+        );
+
+        let owner_key = self.gc_lookup_type_key(ty);
+        let (open, close, comma) = (self.intern("("), self.intern(")"), self.intern(", "));
+        let mut body = Vec::new();
+        let mut built = true;
+        for (variant_name, field_shapes) in variant_names.iter().zip(&variant_shapes) {
+            let Some(layout) = self
+                .gc_ctor_layouts
+                .get(&(owner_key.clone(), variant_name.clone()))
+                .cloned()
+            else {
+                built = false;
+                break;
+            };
+            if layout.field_types.len() != field_shapes.len() {
+                built = false;
+                break;
+            }
+            let shown = variant_name
+                .rsplit_once('.')
+                .map_or(variant_name.as_str(), |(_, ctor)| ctor);
+            let label = self.intern(shown);
+            let mut arm = if field_shapes.is_empty() {
+                vec![N::Return(Some(W::StrPtr(label)))]
+            } else {
+                vec![N::SetLocal { local: "acc".into(), value: W::StrPtr(label) },
+                     N::SetLocal {
+                         local: "acc".into(),
+                         value: W::Call {
+                             func: "concat".into(),
+                             args: vec![W::GetLocal("acc".into()), W::StrPtr(open)],
+                         },
+                     }]
+            };
+            for (index, (field_ty, field_shape)) in
+                layout.field_types.iter().zip(field_shapes).enumerate()
+            {
+                if index > 0 {
+                    arm.push(N::SetLocal {
+                        local: "acc".into(),
+                        value: W::Call {
+                            func: "concat".into(),
+                            args: vec![W::GetLocal("acc".into()), W::StrPtr(comma)],
+                        },
+                    });
+                }
+                let value = W::StructGet {
+                    struct_id,
+                    field: layout.field_base + index as u32,
+                    base: Box::new(W::GetLocal("p".into())),
+                };
+                let Some(rendered) = self.render_gc_value_wir(field_ty, field_shape, value) else {
+                    built = false;
+                    break;
+                };
+                arm.push(N::SetLocal {
+                    local: "acc".into(),
+                    value: W::Call {
+                        func: "concat".into(),
+                        args: vec![W::GetLocal("acc".into()), rendered],
+                    },
+                });
+            }
+            if !built {
+                break;
+            }
+            if !field_shapes.is_empty() {
+                arm.push(N::Return(Some(W::Call {
+                    func: "concat".into(),
+                    args: vec![W::GetLocal("acc".into()), W::StrPtr(close)],
+                })));
+            }
+            if let Some(tag) = layout.tag {
+                body.push(N::If {
+                    cond: W::Binary {
+                        op: BinOp::Eq,
+                        kind: Kind::I32,
+                        lhs: Box::new(W::StructGet {
+                            struct_id,
+                            field: 0,
+                            base: Box::new(W::GetLocal("p".into())),
+                        }),
+                        rhs: Box::new(W::ConstI32(tag as i32)),
+                    },
+                    then_: arm,
+                    els: Vec::new(),
+                    result: None,
+                });
+            } else {
+                body.extend(arm);
+            }
+        }
+        self.ts_building.remove(&name);
+        if !built {
+            self.ts_wir_helpers.remove(&name);
+            return None;
+        }
+        let unknown = self.intern("?");
+        body.push(N::Push(W::StrPtr(unknown)));
+        self.ts_wir_helpers.insert(
+            name.clone(),
+            witchy_wir::wir::WirFunc {
+                name: name.clone(),
+                params: vec![WirLocal { name: "p".into(), ty: WirTy::GcRef(struct_id) }],
+                ret: vec![WirTy::Str],
+                locals: vec![WirLocal { name: "acc".into(), ty: WirTy::Str }],
+                body,
+                raw_body: None,
+            },
+        );
+        Some(name)
+    }
+
     /// Build the `(body, locals)` of a `$ts` renderer: a tuple `(f0, f1)` or a
     /// list `[e0, e1]`, accumulating with `$concat`. `None` for Record/Adt/etc.
     pub(crate) fn build_ts_wir_body(&mut self, shape: &EqShape) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {

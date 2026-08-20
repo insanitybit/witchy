@@ -280,6 +280,12 @@ impl Codegen<'_> {
                 if (name == "Some" && args.len() == 1) || (name == "None" && args.is_empty()) =>
             {
                 self.option_reference_ctor_kind(e, name, args.len())
+                    .or_else(|| {
+                        self.ast_type_of_expr(e)
+                            .filter(|ty| self.is_direct_suspension_type(ty))
+                            .and_then(|ty| self.gc_struct_id_for_type(&ty))
+                            .map(Kind::GcRef)
+                    })
                     .unwrap_or(Kind::I32)
             }
             Expr::Ctor { name, .. } if self.transparent_externref_ctors.contains_key(name) => {

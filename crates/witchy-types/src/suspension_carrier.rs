@@ -1,17 +1,17 @@
 //! Typed, backend-neutral ABI description for compiler-owned suspension state.
 //!
 //! Syntax lowering assigns stable state identities, but it runs before type
-//! inference and therefore cannot decide whether a frame can use the scalar
+//! inference and therefore cannot decide whether a frame can use the direct
 //! Wasm carrier. This catalog is deliberately built from [`TypedModule`]: it
 //! joins each generated callable with its finalized parameter signature and
-//! flattens transparent, single-variant scalar wrappers into fixed-width lanes.
+//! flattens closed products/sums plus host capabilities into fixed-width lanes.
 //! Async and generator lowering can target the same catalog without making a
 //! generated function name or a closure layout part of the runtime contract.
 
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use witchy_syntax::ast::{self, Convention, Function, Item, Type, TypeDef};
 use witchy_syntax::suspension::{
-    frame_state, FRAME_ENTRY_ATTRIBUTE, FRAME_FUNCTION_ATTRIBUTE,
+    frame_state, FRAME_BOXED_ATTRIBUTE, FRAME_ENTRY_ATTRIBUTE, FRAME_FUNCTION_ATTRIBUTE,
 };
 
 use crate::typeck::TypedModule;
@@ -20,6 +20,7 @@ use crate::typeck::TypedModule;
 pub enum CarrierLane {
     I64,
     F64,
+    ExternRef,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +35,7 @@ pub struct CarrierSlot {
     pub convention: Convention,
     pub ty: Type,
     /// `None` means the value needs the boxed fallback. `Some([])` is a
-    /// zero-width `Nil`; all other `Some` values are fixed scalar columns.
+    /// zero-width `Nil`; all other `Some` values are fixed direct lanes.
     pub lanes: Option<Vec<CarrierLane>>,
 }
 
@@ -43,12 +44,13 @@ pub struct CarrierState {
     pub id: usize,
     pub function: String,
     pub kind: CarrierStateKind,
+    pub direct: bool,
     pub slots: Vec<CarrierSlot>,
 }
 
 impl CarrierState {
-    pub fn is_flat_scalar(&self) -> bool {
-        self.slots.iter().all(|slot| slot.lanes.is_some())
+    pub fn is_direct(&self) -> bool {
+        self.direct && self.slots.iter().all(|slot| slot.lanes.is_some())
     }
 
     pub fn lane_width(&self) -> usize {
@@ -80,12 +82,15 @@ impl SuspensionCarrierCatalog {
                     function.name
                 )
             })?;
-            // Syntax lowering is intentionally module-local and therefore may
-            // reuse source state numbers in separately lowered dependencies.
-            // Linked item order is deterministic; canonicalize it here to the
-            // dense whole-program dispatch identity consumed by Wasm.
+            // Lowering state numbers are module-local and may collide after
+            // linking. Linked item order is already deterministic, so assign
+            // the whole-program dispatch identity in that order instead of
+            // re-sorting by a non-unique source-local number.
             let id = states.len();
-
+            let direct = !function
+                .attributes
+                .iter()
+                .any(|attribute| attribute == FRAME_BOXED_ATTRIBUTE);
             let inferred = inferred_parameters(typed, function);
             let slots = function
                 .params
@@ -98,7 +103,7 @@ impl SuspensionCarrierCatalog {
                         .cloned()
                         .or_else(|| parameter.ty.clone())
                         .unwrap_or_else(|| Type::Named("__Unknown".into(), Vec::new()));
-                    let lanes = scalar_lanes(&ty, &definitions, &HashMap::new(), &mut HashSet::new());
+                    let lanes = direct_lanes(&ty, &definitions, &HashMap::new(), &mut HashSet::new());
                     CarrierSlot {
                         name: parameter.name.clone(),
                         convention: parameter.convention,
@@ -107,7 +112,13 @@ impl SuspensionCarrierCatalog {
                     }
                 })
                 .collect();
-            states.push(CarrierState { id, function: function.name.clone(), kind, slots });
+            states.push(CarrierState {
+                id,
+                function: function.name.clone(),
+                kind,
+                direct,
+                slots,
+            });
         }
 
         let max_lane_width = states.iter().map(CarrierState::lane_width).max().unwrap_or(0);
@@ -122,15 +133,15 @@ impl SuspensionCarrierCatalog {
         self.max_lane_width
     }
 
-    pub fn is_wholly_flat_scalar(&self) -> bool {
-        !self.states.is_empty() && self.states.iter().all(CarrierState::is_flat_scalar)
+    pub fn is_wholly_direct(&self) -> bool {
+        !self.states.is_empty() && self.states.iter().all(CarrierState::is_direct)
     }
 
     /// Versioned, name-independent carrier ABI consumed by compiled backends.
     /// Function and slot names remain diagnostics only; runtime dispatch is by
     /// dense state id and fixed lane position.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        const VERSION: u8 = 1;
+        const VERSION: u8 = 2;
         let mut bytes = vec![VERSION];
         push_u32(&mut bytes, self.states.len());
         push_u32(&mut bytes, self.max_lane_width);
@@ -140,6 +151,7 @@ impl SuspensionCarrierCatalog {
                 CarrierStateKind::Entry => 0,
                 CarrierStateKind::Segment => 1,
             });
+            bytes.push(u8::from(state.direct));
             push_u32(&mut bytes, state.slots.len());
             for slot in &state.slots {
                 bytes.push(convention_tag(slot.convention));
@@ -150,6 +162,7 @@ impl SuspensionCarrierCatalog {
                         bytes.extend(lanes.iter().map(|lane| match lane {
                             CarrierLane::I64 => 0,
                             CarrierLane::F64 => 1,
+                            CarrierLane::ExternRef => 2,
                         }));
                     }
                     None => bytes.push(0),
@@ -205,18 +218,21 @@ fn type_definitions(module: &ast::Module) -> HashMap<String, &TypeDef> {
         .collect()
 }
 
-fn scalar_lanes(
+fn direct_lanes(
     ty: &Type,
     definitions: &HashMap<String, &TypeDef>,
     substitutions: &HashMap<String, Type>,
     visiting: &mut HashSet<String>,
 ) -> Option<Vec<CarrierLane>> {
+    if crate::typeck::is_capability_type(ty) {
+        return Some(vec![CarrierLane::ExternRef]);
+    }
     match ty {
-        Type::Qualified(_, inner) => scalar_lanes(inner, definitions, substitutions, visiting),
+        Type::Qualified(_, inner) => direct_lanes(inner, definitions, substitutions, visiting),
         Type::Tuple(items) => flatten_all(items, definitions, substitutions, visiting),
         Type::Named(name, arguments) if arguments.is_empty() => {
             if let Some(actual) = substitutions.get(name) {
-                return scalar_lanes(actual, definitions, substitutions, visiting);
+                return direct_lanes(actual, definitions, substitutions, visiting);
             }
             match name.as_str() {
                 "Int" | "Bool" | "Duration" => Some(vec![CarrierLane::I64]),
@@ -240,7 +256,7 @@ fn flatten_all(
 ) -> Option<Vec<CarrierLane>> {
     let mut lanes = Vec::new();
     for field in fields {
-        lanes.extend(scalar_lanes(field, definitions, substitutions, visiting)?);
+        lanes.extend(direct_lanes(field, definitions, substitutions, visiting)?);
     }
     Some(lanes)
 }
@@ -256,9 +272,7 @@ fn flatten_nominal(
         let short = name.rsplit('.').next()?;
         definitions.get(short).copied()
     })?;
-    // A sum needs a runtime tag and variant-dependent payload rules. The first
-    // scalar executor slice intentionally admits only transparent products.
-    if definition.variants.len() != 1 || !visiting.insert(definition.name.clone()) {
+    if !visiting.insert(definition.name.clone()) {
         return None;
     }
     let parameters = ast::effective_type_def_params(definition);
@@ -268,14 +282,46 @@ fn flatten_nominal(
     }
     let mut nested = substitutions.clone();
     nested.extend(parameters.into_iter().zip(arguments.iter().cloned()));
-    let result = flatten_all(
-        &definition.variants[0].fields,
-        definitions,
-        &nested,
-        visiting,
-    );
+    let result = if definition.variants.len() == 1 {
+        flatten_all(
+            &definition.variants[0].fields,
+            definitions,
+            &nested,
+            visiting,
+        )
+    } else {
+        flatten_sum(definition, definitions, &nested, visiting)
+    };
     visiting.remove(&definition.name);
     result
+}
+
+fn flatten_sum(
+    definition: &TypeDef,
+    definitions: &HashMap<String, &TypeDef>,
+    substitutions: &HashMap<String, Type>,
+    visiting: &mut HashSet<String>,
+) -> Option<Vec<CarrierLane>> {
+    let variants = definition
+        .variants
+        .iter()
+        .map(|variant| flatten_all(&variant.fields, definitions, substitutions, visiting))
+        .collect::<Option<Vec<_>>>()?;
+    let width = variants.iter().map(Vec::len).max().unwrap_or(0);
+    let mut lanes = Vec::with_capacity(width + 1);
+    lanes.push(CarrierLane::I64);
+    for index in 0..width {
+        let mut lane = None;
+        for fields in &variants {
+            let Some(field) = fields.get(index) else { continue };
+            if lane.is_some_and(|existing| existing != *field) {
+                return None;
+            }
+            lane = Some(*field);
+        }
+        lanes.push(lane?);
+    }
+    Some(lanes)
 }
 
 #[cfg(test)]
@@ -298,18 +344,59 @@ mod tests {
         segment
             .attributes
             .push(witchy_syntax::suspension::frame_state_attribute(2));
+        let mut boxed_module = module.clone();
 
         let typed = crate::typeck::annotate_checked(module).expect("fixture type checks");
         let catalog = SuspensionCarrierCatalog::from_typed(&typed).expect("carrier catalog");
 
         assert_eq!(catalog.states().iter().map(|state| state.id).collect::<Vec<_>>(), [0, 1]);
-        assert!(catalog.is_wholly_flat_scalar());
+        assert!(catalog.is_wholly_direct());
         assert_eq!(catalog.max_lane_width(), 2);
         assert_eq!(catalog.states()[0].kind, CarrierStateKind::Entry);
         assert_eq!(catalog.states()[1].kind, CarrierStateKind::Segment);
         assert_eq!(catalog.states()[1].slots[0].convention, Convention::Own);
         assert_eq!(catalog.states()[1].slots[0].lanes, Some(vec![CarrierLane::I64]));
-        assert_eq!(catalog.canonical_bytes()[0], 1);
+        assert_eq!(catalog.canonical_bytes()[0], 2);
         assert_eq!(catalog.canonical_bytes(), catalog.canonical_bytes());
+
+        let Item::Function(boxed_segment) = &mut boxed_module.items[2] else {
+            panic!("boxed segment")
+        };
+        boxed_segment.attributes.push(FRAME_BOXED_ATTRIBUTE.into());
+        let boxed_typed =
+            crate::typeck::annotate_checked(boxed_module).expect("boxed fixture type checks");
+        let boxed =
+            SuspensionCarrierCatalog::from_typed(&boxed_typed).expect("boxed carrier catalog");
+        assert!(!boxed.is_wholly_direct());
+        assert!(!boxed.states()[1].direct);
+    }
+
+    #[test]
+    fn typed_catalog_flattens_capability_and_sum_resume_lanes() {
+        let mut module = witchy_syntax::parser::parse_module(
+            "type Maybe(a):\n    None\n    Some(a)\n\nfn entry(console: Console) -> Nil:\n    ()\n\nfn resume(console: Console, own value: Maybe(Int)) -> Nil:\n    ()\n",
+        )
+        .expect("mixed carrier fixture parses");
+        let Item::Function(entry) = &mut module.items[1] else { panic!("entry") };
+        entry.attributes.push(FRAME_ENTRY_ATTRIBUTE.into());
+        entry
+            .attributes
+            .push(witchy_syntax::suspension::frame_state_attribute(0));
+        let Item::Function(segment) = &mut module.items[2] else { panic!("segment") };
+        segment.attributes.push(FRAME_FUNCTION_ATTRIBUTE.into());
+        segment
+            .attributes
+            .push(witchy_syntax::suspension::frame_state_attribute(1));
+
+        let typed = crate::typeck::annotate_checked(module).expect("fixture type checks");
+        let catalog = SuspensionCarrierCatalog::from_typed(&typed).expect("carrier catalog");
+
+        assert!(catalog.is_wholly_direct());
+        assert_eq!(catalog.max_lane_width(), 3);
+        assert_eq!(catalog.states()[0].slots[0].lanes, Some(vec![CarrierLane::ExternRef]));
+        assert_eq!(
+            catalog.states()[1].slots[1].lanes,
+            Some(vec![CarrierLane::I64, CarrierLane::I64]),
+        );
     }
 }

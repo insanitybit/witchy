@@ -1936,10 +1936,16 @@ impl<'types> Codegen<'types> {
             Expr::List(items)
                 if self.gc_reference_list_literal_layout(e, items).is_some() =>
             {
-                let (_, array_id, _) = self.gc_reference_list_literal_layout(e, items)?;
+                let (_, array_id, element_kind) =
+                    self.gc_reference_list_literal_layout(e, items)?;
                 let mut lowered = Vec::with_capacity(items.len());
                 for item in items {
-                    lowered.push(self.lower_expr(item)?);
+                    let item_kind = self.kind_of(item);
+                    lowered.push(Self::wir_convert(
+                        self.lower_expr(item)?,
+                        item_kind,
+                        element_kind,
+                    ));
                 }
                 return Some(W::ArrayNewFixed { array_id, items: lowered });
             }

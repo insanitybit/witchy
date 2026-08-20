@@ -964,6 +964,10 @@ struct Codegen<'types> {
     gc_nominal_names: HashMap<String, String>,
     /// Fully concrete cap-carrying tuple layouts, interned by representation.
     gc_tuple_ids: HashMap<GcTupleShape, u32>,
+    /// Exact finalized types used as slots by a wholly direct suspension graph.
+    /// Only these types select the direct Wasm-GC representation; unrelated
+    /// aggregates in the same module retain their ordinary lowering.
+    direct_suspension_types: Vec<Type>,
     /// `(canonical owner type, constructor)` -> optional sum tag and payload band.
     gc_ctor_layouts: HashMap<(String, String), GcCtorLayout>,
     /// The WIR struct type declarations for `gc_aggregate_ids`, indexed by id.
@@ -1574,6 +1578,7 @@ impl<'types> Codegen<'types> {
             gc_aggregate_ids: HashMap::new(),
             gc_nominal_names: HashMap::new(),
             gc_tuple_ids: HashMap::new(),
+            direct_suspension_types: Vec::new(),
             gc_ctor_layouts: HashMap::new(),
             gc_structs: Vec::new(),
             gc_arrays: Vec::new(),
@@ -1794,6 +1799,10 @@ impl<'types> Codegen<'types> {
             {
                 match self.kind_for_type(&args[0]) {
                     kind @ (Kind::ExternRef | Kind::GcRef(_)) => kind,
+                    _ if self.is_direct_suspension_type(t) => self
+                        .gc_struct_id_for_type(t)
+                        .map(Kind::GcRef)
+                        .unwrap_or_else(|| ty_kind(t)),
                     _ => ty_kind(t),
                 }
             }
@@ -1849,8 +1858,9 @@ impl<'types> Codegen<'types> {
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         let value = self.lower_expr(arg)?;
-        if type_has_var(field_ty) && self.gc_field_storage_kind(field_ty) == Kind::I64 {
-            let concrete = self.kind_of(arg);
+        let concrete = self.kind_of(arg);
+        let storage = self.gc_field_storage_kind(field_ty);
+        if type_has_var(field_ty) && storage == Kind::I64 {
             debug_assert!(
                 !concrete.is_ref(),
                 "typeck must reject reference substitutions in generic GC fields"
@@ -1859,8 +1869,12 @@ impl<'types> Codegen<'types> {
                 return None;
             }
             Some(W::ToSlot(Box::new(value), Self::wir_kind(concrete)))
-        } else {
+        } else if concrete == storage {
             Some(value)
+        } else if !concrete.is_ref() && !storage.is_ref() {
+            Some(Self::wir_convert(value, concrete, storage))
+        } else {
+            None
         }
     }
 
@@ -1922,15 +1936,24 @@ impl<'types> Codegen<'types> {
         }
     }
 
+    fn is_direct_suspension_type(&self, ty: &Type) -> bool {
+        let key = self.gc_lookup_type_key(ty);
+        self.direct_suspension_types
+            .iter()
+            .any(|carrier_ty| self.gc_lookup_type_key(carrier_ty) == key)
+    }
+
     fn type_is_reference_list_candidate(&self, ty: &Type) -> bool {
         matches!(ty.unqualified(), Type::Named(name, args)
             if name == "List"
-                && args.first().is_some_and(|element| {
-                    matches!(
-                        self.kind_for_type(element),
-                        Kind::ExternRef | Kind::GcRef(_)
-                    )
-                }))
+                && ((self.is_direct_suspension_type(ty) && !type_has_var(ty))
+                    || self.gc_reference_list_ids.contains_key(&self.gc_lookup_type_key(ty))
+                    || args.first().is_some_and(|element| {
+                        matches!(
+                            self.kind_for_type(element),
+                            Kind::ExternRef | Kind::GcRef(_)
+                        )
+                    })))
     }
 
     fn gc_reference_list_layout(&self, ty: &Type) -> Option<(u32, u32, Kind)> {
@@ -2242,9 +2265,8 @@ impl<'types> Codegen<'types> {
         }
         let fields: Vec<GcFieldShape> =
             items.iter().map(|item| self.gc_field_shape(item)).collect::<Option<_>>()?;
-        fields
-            .iter()
-            .any(|field| {
+        (self.is_direct_suspension_type(ty)
+            || fields.iter().any(|field| {
                 matches!(
                     field,
                     GcFieldShape::ExternRef
@@ -2254,8 +2276,8 @@ impl<'types> Codegen<'types> {
                         | GcFieldShape::Nominal(_)
                         | GcFieldShape::Tuple(_)
                 )
-            })
-            .then_some(GcTupleShape(fields))
+            }))
+        .then_some(GcTupleShape(fields))
     }
 
     /// Resolve a tuple literal's GC layout even when a prior AST rewrite has
@@ -6828,7 +6850,7 @@ impl<'types> Codegen<'types> {
                 local: dst.clone(),
                 value: W::ArrayNew {
                     array_id,
-                    value: Box::new(W::RefNull(Self::wir_kind(element_kind))),
+                    value: Box::new(Self::zero_for_kind(Self::wir_kind(element_kind))),
                     len: Box::new(add(W::GetLocal(len.clone()), W::ConstI32(1))),
                 },
             },
@@ -6966,7 +6988,7 @@ impl<'types> Codegen<'types> {
                 local: dst.clone(),
                 value: W::ArrayNew {
                     array_id,
-                    value: Box::new(W::RefNull(Self::wir_kind(element_kind))),
+                    value: Box::new(Self::zero_for_kind(Self::wir_kind(element_kind))),
                     len: Box::new(W::GetLocal(len.clone())),
                 },
             },
@@ -7070,7 +7092,7 @@ impl<'types> Codegen<'types> {
                 local: dst.clone(),
                 value: W::ArrayNew {
                     array_id,
-                    value: Box::new(W::RefNull(Self::wir_kind(element_kind))),
+                    value: Box::new(Self::zero_for_kind(Self::wir_kind(element_kind))),
                     len: Box::new(W::GetLocal(len.clone())),
                 },
             },
@@ -7175,7 +7197,7 @@ impl<'types> Codegen<'types> {
                 local: dst.clone(),
                 value: W::ArrayNew {
                     array_id,
-                    value: Box::new(W::RefNull(Self::wir_kind(element_kind))),
+                    value: Box::new(Self::zero_for_kind(Self::wir_kind(element_kind))),
                     len: Box::new(W::GetLocal(len.clone())),
                 },
             },

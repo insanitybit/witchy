@@ -517,7 +517,14 @@ impl Codegen<'_> {
                     _ => {
                         if let Some(shape) = self.eq_operand_shape(&args[0]) {
                             if shape.is_compound() {
-                                if let Some(h) = self.ensure_ts_wir_helper(&shape) {
+                                let kind = self.kind_of(&args[0]);
+                                let helper = match kind {
+                                    Kind::GcRef(_) => self
+                                        .ast_type_of_expr(&args[0])
+                                        .and_then(|ty| self.ensure_ts_gc_wir_helper(&ty, &shape)),
+                                    _ => self.ensure_ts_wir_helper(&shape),
+                                };
+                                if let Some(h) = helper {
                                     let arg = self.lower_expr(&args[0])?;
                                     return Some(W::Call { func: h, args: vec![arg] });
                                 }

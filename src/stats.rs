@@ -1349,37 +1349,32 @@ fn main(console: Console):
         );
     }
 
-    /// (RFC-0059 DoD item 3, BLOCKED on the scalar-SoA executor — increment-2 step 2) The async
-    /// channel executor must reclaim its per-message garbage to a BOUNDED live-cell count under
-    /// rc-floor. Progress so far: RFC-0036 Design B (owned executor) bounded the O(n^2) array churn;
-    /// RFC-0059 increment 1 (defunctionalized state-machine lowering) removed the `and_then` closure
-    /// TOWER (one shallow continuation per resume, not O(depth)); RFC-0059 increment-2 step 1 made
-    /// channels fixed-capacity RINGS (send = in-place `set_at`, recv = advance `head`, no `list.tail`
-    /// rebuild). What REMAINS is per-message CLOSURE/Task/Step garbage from the CPS-over-closures
-    /// executor INTERFACE — measured (2026-07-05, post-ring) at ~45–48 live cells PER MESSAGE, FLAT
-    /// per message but LINEAR in N (N=200 → ~9.1k cells; N=64000 → ~3.07M; N=1M OOM-traps). The ring
-    /// does NOT move this: the round-robin schedule keeps buffer occupancy at ~1, so the buffer churn
-    /// was already reclaimed — the leak is the segment closures `fn(x): __seg(carried, x)`, their
-    /// `Task`/`Step` wrappers, and the erased `__Msg`, whose heap children shell-only drop cannot
-    /// free. Closing it to `< 500` requires increment-2 step 2 (scalar SoA frames): reify each
-    /// segment's carried columns as scalar `Int` columns indexed by task id + defunctionalize the
-    /// continuation to a `(seg-id, task-id)` dispatch, so a resume allocates NOTHING (the reference
-    /// spike proved 13 cells FLAT to N=1M, 10 ns/msg). The alternative — recursive `$rdrop` for the
-    /// closure shapes — is the highest use-after-free-risk path and stays blocked on the per-capture
-    /// move/borrow oracle. Un-ignore when the executor reclaims. See rfcs/0059.
+    /// (RFC-0059 DoD item 3) A wholly direct suspension graph keeps its closed
+    /// tuples, sums, capabilities, and lists in typed Wasm lanes. In particular,
+    /// the channel ring no longer loses a linear-list ownership token when it is
+    /// carried inside the scheduler tuple. Prove the resulting linear heap is
+    /// bounded by comparing two message counts, not by accepting a small slope.
     #[test]
-    #[ignore = "chan_throughput closure garbage not yet reclaimed — needs the scalar-SoA executor (RFC-0059 increment-2 step 2). Increment 1 (state-machine lowering) + increment-2 step 1 (ring channels) landed; ~45–48 live cells/message remain (measures live_cells≈9.1k at N=200, cap8, via --run-ignored — the CPS closure/Task/Step interface churn, unaffected by the ring). See rfcs/0059 note 2026-07-05"]
     fn chan_throughput_bounded_by_rc_floor() {
-        let src = "from chan import Receiver, Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 200)).await\n    for await v in rx:\n        chan.done(v)\n    console.print(\"200\")\n";
+        let run = |messages| {
+            let src = format!(
+                "from chan import Receiver, Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, {messages})).await\n    for await v in rx:\n        chan.done(v)\n    console.print(\"{messages}\")\n"
+            );
+            compute(&src).unwrap_or_else(|error| panic!("compile+run {messages} messages: {error}"))
+        };
         opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
-        let on = compute(src).expect("compile+run executor");
+        let small = run(20);
+        let large = run(200);
         opt::set_for_tests(None);
-        assert_eq!(on.output, vec!["200".to_string()]);
-        assert!(
-            on.live_cells < 500,
-            "the executor must reclaim its per-message garbage to bounded live cells, got {}",
-            on.live_cells
+        assert_eq!(small.output, vec!["20".to_string()]);
+        assert_eq!(large.output, vec!["200".to_string()]);
+        assert_eq!(
+            large.live_cells, small.live_cells,
+            "the real async executor's live linear cells must be flat: {} @ 200 vs {} @ 20",
+            large.live_cells, small.live_cells
         );
+        assert_eq!(large.rc_alloc_calls, small.rc_alloc_calls);
+        assert_eq!(large.reowns, 0, "the typed channel carrier must not re-own its ring");
     }
 
     /// (RFC-0059 increment-2 step 2 — the FLAT TARGET, proven falsifiably in-tree.)
