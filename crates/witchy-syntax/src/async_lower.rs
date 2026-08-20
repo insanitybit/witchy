@@ -783,6 +783,16 @@ impl<'a> Ctx<'a> {
             if let Some(src) = as_recv_stream(iter) {
                 return self.lower_for_await(var, src, body, cont);
             } else if block_contains_await(body) {
+                if let Expr::Range { lo, hi, inclusive } = iter.as_ref() {
+                    return self.lower_range_for(
+                        var,
+                        lo,
+                        hi,
+                        *inclusive,
+                        body,
+                        cont,
+                    );
+                }
                 let loop_future = self.lower_for(var, iter, body, cont.scope)?;
                 return self.sequence_loop(loop_future, vec![], cont);
             }
@@ -1117,12 +1127,96 @@ impl<'a> Ctx<'a> {
         Ok(call("task.for_each", vec![list_expr, f]))
     }
 
-    /// `for await x in rx:` — a receive-until-closed loop. A body that does NOT
-    /// fold into an outer variable keeps the `chan.consume` lowering (its message
-    /// variable is a lambda parameter, so its type is inferred and the interleaving
-    /// is byte-identical to before). A body that DOES assign an outer, in-scope var
-    /// (a fold, RFC-0059 expressiveness) lowers to a recursive segment loop that
-    /// threads the accumulator through a parameter and yields it at close.
+    /// An awaited integer range is itself suspension state, not a temporary
+    /// `List(Int)`. Evaluate both bounds once, carry one scalar cursor through a
+    /// recursive segment, and bind the source loop variable for each iteration.
+    /// This is the range analogue of [`Self::lower_while`]: no range materialization,
+    /// element boxes, iterator tail copies, or loop-body continuation closure.
+    fn lower_range_for(
+        &mut self,
+        var: &str,
+        lo: &Expr,
+        hi: &Expr,
+        inclusive: bool,
+        body: &Block,
+        cont: Continuation<'_>,
+    ) -> Result<Expr, String> {
+        reject_await(lo, &self.fname)?;
+        reject_await(hi, &self.fname)?;
+        let cursor = self.fresh_tmp();
+        let end = self.fresh_tmp();
+        let line = cont.line;
+        let body_line = first_line(&body.lines).max(line);
+
+        let mut loop_stmts = Vec::with_capacity(body.stmts.len() + 2);
+        let mut loop_lines = Vec::with_capacity(body.lines.len() + 2);
+        loop_stmts.push(Stmt::Let {
+            name: var.to_string(),
+            ty: Some(named("Int")),
+            mutable: false,
+            value: Expr::Var(cursor.clone()),
+        });
+        loop_lines.push(body_line);
+        loop_stmts.extend(body.stmts.iter().cloned());
+        loop_lines.extend(body.lines.iter().copied());
+        loop_stmts.push(Stmt::Assign {
+            name: cursor.clone(),
+            value: Expr::Binary {
+                op: BinOp::Add,
+                lhs: Box::new(Expr::Var(cursor.clone())),
+                rhs: Box::new(Expr::Int(1)),
+            },
+        });
+        loop_lines.push(body.lines.last().copied().unwrap_or(body_line));
+
+        let end_value = if inclusive {
+            Expr::Binary {
+                op: BinOp::Add,
+                lhs: Box::new(hi.clone()),
+                rhs: Box::new(Expr::Int(1)),
+            }
+        } else {
+            hi.clone()
+        };
+        let condition = Expr::Binary {
+            op: BinOp::Lt,
+            lhs: Box::new(Expr::Var(cursor.clone())),
+            rhs: Box::new(Expr::Var(end.clone())),
+        };
+        let loop_expr = Expr::While {
+            cond: Box::new(condition),
+            body: Block { stmts: loop_stmts, lines: loop_lines, region: None },
+        };
+
+        let mut statements = Vec::with_capacity(cont.rest.len() + 3);
+        let mut lines = Vec::with_capacity(cont.rest_lines.len() + 3);
+        statements.push(Stmt::Let {
+            name: cursor,
+            ty: Some(named("Int")),
+            mutable: true,
+            value: lo.clone(),
+        });
+        lines.push(line);
+        statements.push(Stmt::Let {
+            name: end,
+            ty: Some(named("Int")),
+            mutable: false,
+            value: end_value,
+        });
+        lines.push(line);
+        statements.push(Stmt::Expr(loop_expr));
+        lines.push(line);
+        statements.extend(cont.rest.iter().cloned());
+        lines.extend(cont.rest_lines.iter().copied());
+
+        self.go(&statements, &lines, cont.scope, cont.tail)
+    }
+
+    /// `for await x in rx:` — a receive-until-closed recursive segment loop.
+    /// Drains and folds use the same representation; a fold additionally threads
+    /// each live mutable accumulator through the segment parameters. Keeping the
+    /// non-folding case here avoids falling back to `chan.consume`'s first-class
+    /// body closure after the compiler has already assigned suspension states.
     fn lower_for_await(
         &mut self,
         var: &str,
@@ -1132,32 +1226,6 @@ impl<'a> Ctx<'a> {
     ) -> Result<Expr, String> {
         reject_await(src, &self.fname)?;
         let carries_return = block_contains_return(body);
-        if !body_folds(body, cont.scope) && !carries_return {
-            // Drain / effect body: keep `chan.consume` (interleaving preserved).
-            let mut scope2 = cont.scope.to_vec();
-            scope2.push(Local {
-                name: var.to_string(),
-                ty: None,
-                mutable: false,
-                borrowed_view: false,
-                returns_view: false,
-            });
-            let body_future = self.go(&body.stmts, &body.lines, &scope2, &Tail::Return)?;
-            let body_nil =
-                and_then(body_future, self.fresh_tmp(), call("task.ready_unit", vec![]));
-            let f = Expr::Lambda {
-                params: vec![Param {
-                    name: var.to_string(),
-                    ty: None,
-                    convention: Convention::Let,
-                    default: None,
-                }],
-                body: tail_block_at(body_nil, first_line(&body.lines)),
-                ret: None,
-            };
-            let consume = call("chan.consume", vec![src.clone(), f]);
-            return self.sequence_loop(consume, vec![], cont);
-        }
         if carries_return {
             // An early return yields the async function's result, not the loop's
             // accumulator tuple. Run the remaining source continuation on the
@@ -1552,39 +1620,6 @@ fn derive_type(value: &Expr) -> Option<Type> {
 
 fn named(n: &str) -> Type {
     Type::Named(n.to_string(), vec![])
-}
-
-/// Whether a loop body assigns to a variable that is already in scope — i.e. it
-/// *folds* into an outer accumulator (as opposed to a pure drain / effect body).
-/// Such a `for await` needs the recursive-segment loop; a non-folding one keeps
-/// the interleaving-preserving `chan.consume` lowering.
-fn body_folds(body: &Block, scope: &[Local]) -> bool {
-    fn stmt_assigns_outer(s: &Stmt, scope: &[Local]) -> bool {
-        match s {
-            Stmt::Assign { name, .. } => scope.iter().any(|l| &l.name == name),
-            Stmt::Expr(e) | Stmt::Let { value: e, .. } | Stmt::LetPattern { value: e, .. }
-            | Stmt::Yield(e) => expr_assigns_outer(e, scope),
-            Stmt::Return(v) => v.as_ref().is_some_and(|e| expr_assigns_outer(e, scope)),
-            Stmt::Break | Stmt::Continue => false,
-        }
-    }
-    fn block_assigns_outer(b: &Block, scope: &[Local]) -> bool {
-        b.stmts.iter().any(|s| stmt_assigns_outer(s, scope))
-    }
-    fn expr_assigns_outer(e: &Expr, scope: &[Local]) -> bool {
-        match e {
-            Expr::If { then_block, else_block, .. } => {
-                block_assigns_outer(then_block, scope)
-                    || else_block.as_ref().is_some_and(|b| block_assigns_outer(b, scope))
-            }
-            Expr::Match { arms, .. } => arms.iter().any(|a| expr_assigns_outer(&a.body, scope)),
-            Expr::Block(b) => block_assigns_outer(b, scope),
-            Expr::While { body, .. } | Expr::For { body, .. }
-            | Expr::WhileLet { body, .. } => block_assigns_outer(body, scope),
-            _ => false,
-        }
-    }
-    body.stmts.iter().any(|s| stmt_assigns_outer(s, scope))
 }
 
 /// Statements that rebind a loop's accumulator tuple `acc_bind` back to its named
@@ -2146,6 +2181,35 @@ mod tests {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn okay(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    console.print(w)\n    task.done(0).await\n";
         let module = crate::parser::parse_module(source).expect("parse borrowed async body");
         lower_module(module).expect("a dead view is not carried across suspension");
+    }
+
+    #[test]
+    fn awaited_integer_range_is_a_scalar_recursive_segment() {
+        let source = "async fn run(n: Int):\n    for i in 0..n:\n        task.done(i).await\n";
+        let module = crate::parser::parse_module(source).expect("parse awaited range");
+        let lowered = lower_module(module).expect("lower awaited range");
+        let rendered = crate::format::module(&lowered, &[]);
+
+        assert!(!rendered.contains("list.range_between"), "{rendered}");
+        assert!(!rendered.contains("task.for_each"), "{rendered}");
+        assert!(
+            lowered.items.iter().filter_map(|item| match item {
+                Item::Function(function) => crate::suspension::frame_state(function),
+                _ => None,
+            }).count() >= 3,
+            "entry, range loop, and await continuation must all be named frame states: {rendered}",
+        );
+    }
+
+    #[test]
+    fn nonfolding_receive_loop_is_a_named_segment_not_consume() {
+        let source = "from chan import Receiver\n\nasync fn drain(rx: Receiver(Int)):\n    for await value in rx:\n        task.done(value).await\n";
+        let module = crate::parser::parse_module(source).expect("parse receive drain");
+        let lowered = lower_module(module).expect("lower receive drain");
+        let rendered = crate::format::module(&lowered, &[]);
+
+        assert!(!rendered.contains("chan.consume"), "{rendered}");
+        assert!(rendered.contains("chan.recv"), "{rendered}");
     }
 
     #[test]
