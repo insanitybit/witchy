@@ -1,7 +1,7 @@
-// Channels: a producer sends values, a consumer receives them until the channel
-// closes (no task can send anymore). Spawning and the channel are independent —
-// the producer is `spawn`ed, and the channel is an ordinary value passed to both
-// sides, not a task's mailbox. Deterministic and byte-identical on both backends.
+// A capacity-one channel forces the producer to wait while the consumer drains
+// each value. Spawning and the channel are independent: the producer is
+// `spawn`ed, and the channel is an ordinary typed value passed to both sides,
+// not a task's mailbox. The result is deterministic on both backends.
 //
 // Run:  witchy examples/channels/src/channels.witchy
 //       witchy parity examples/channels/src/channels.witchy
@@ -9,14 +9,14 @@
 from chan import Receiver, Sender
 
 async fn producer(tx: Sender(Int)):
-    for n in [1, 2, 3]:
+    for n in [1, 2, 3, 4]:
         chan.send(tx, n).await
 
 async fn consumer(console: Console, rx: Receiver(Int)):
     chan.consume(rx, fn(v): chan.done(console.print("got ${v}"))).await
 
 async fn main(console: Console):
-    let (tx, rx) = chan.channel(4).await
+    let (tx, rx) = chan.channel(1).await
     let producer_handle = chan.spawn(producer(tx)).await
     consumer(console, rx).await
     chan.join(producer_handle).await

@@ -3,6 +3,10 @@
 # shellcheck disable=SC2016 # Witchy fixture interpolation must remain literal.
 set -euo pipefail
 
+script_dir="${BASH_SOURCE[0]%/*}"
+[ "$script_dir" = "${BASH_SOURCE[0]}" ] && script_dir=.
+script_dir="$(cd "$script_dir" && pwd)"
+
 version=""
 archive=""
 checksums=""
@@ -153,6 +157,8 @@ with tarfile.open(archive, mode="r:gz") as tar:
 PY
 
 root="$install/witchy-${version}-${target}"
+"$script_dir/installed-bounded-channels-smoke.sh" --witchy "$root/bin/witchy" >/dev/null
+
 work="$scratch/work"
 home="$scratch/home"
 tmp="$scratch/tmp"

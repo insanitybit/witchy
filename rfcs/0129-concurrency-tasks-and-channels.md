@@ -113,3 +113,11 @@ CPU parallelism or describe worker-VM execution as zero-cost task spawning.
    boundaries, cost models, and measurements.
 7. A clean installed binary runs the promoted bounded workflow without
    repository-only setup.
+
+### Row 7 evidence
+
+| Row | State | Executable evidence |
+| --- | --- | --- |
+| 7 | PROVEN | `scripts/installed-bounded-channels-smoke.sh` copies a public binary into a fresh install root, puts only that copy on `PATH`, creates the capacity-one `bounded_channels` project there, and checks its deterministic drain output. `scripts/release-smoke.sh` invokes that harness on the extracted archive, and `.github/workflows/release.yml` runs it on every release target. `examples/channels` and the async book chapter expose the same typed, bounded, structured workflow to users. |
+
+No other acceptance row is advanced by this installation evidence.

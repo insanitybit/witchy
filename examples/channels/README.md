@@ -1,12 +1,15 @@
 # channels
 
-A producer sends values over a channel and a consumer receives them until the
-channel closes. Spawning and the channel are independent — the producer is
-`spawn`ed, and the channel is an ordinary value passed to both sides, not a task's
-mailbox. Deterministic and byte-identical on both backends.
+A producer sends values over a capacity-one channel and a consumer receives them
+until the channel closes. The capacity forces real backpressure: the producer
+must wait while the consumer drains each value. Spawning and the channel are
+independent: the producer is `spawn`ed, and the channel is an ordinary typed
+value passed to both sides, not a task's mailbox. The result is deterministic on
+both backends.
 
 **Shows:** `async`/`await`, `chan.spawn`, first-class channels
-(`Sender`/`Receiver`), `chan.send`/`chan.consume`, and the `Console` capability.
+(`Sender(Int)`/`Receiver(Int)`), bounded backpressure, `chan.send`/`chan.consume`,
+structured `chan.join`, and the `Console` capability.
 
 ## Run
 
