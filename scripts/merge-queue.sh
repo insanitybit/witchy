@@ -2088,7 +2088,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local queue_infra=0
     if [ -n "$changed" ] \
         && printf '%s\n' "$changed" \
-            | grep -cE '^(\.config/nextest\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|worktree-status|worktree-warm)\.sh|tests/(merge_queue|test_for_paths)\.rs|tests/merge_queue/)' >/dev/null; then
+            | grep -cE '^(\.config/nextest\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|test-impact|worktree-status|worktree-warm)\.(sh|py)|tests/(merge_queue|test_for_paths)\.rs|tests/merge_queue/)' >/dev/null; then
         queue_infra=1
     fi
 
@@ -2101,11 +2101,11 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local non_queue_core=""
     if [ "$queue_infra" -eq 1 ] && [ -n "$changed" ]; then
         non_queue_core="$(printf '%s\n' "$changed" \
-            | grep -vE '^(scripts/(merge-queue|state-paths|check|test-for-paths|gate-report)\.sh|scripts/MERGE-QUEUE\.md|tests/merge_queue\.rs|tests/merge_queue/|tests/test_for_paths\.rs|rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/)' \
+            | grep -vE '^(scripts/(merge-queue|state-paths|check|test-for-paths|test-impact|gate-report)\.(sh|py)|scripts/MERGE-QUEUE\.md|tests/merge_queue\.rs|tests/merge_queue/|tests/test_for_paths\.rs|rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/)' \
             || true)"
         if [ -z "$non_queue_core" ] \
             && printf '%s\n' "$changed" \
-                | grep -cE '^(scripts/(merge-queue|state-paths|check|test-for-paths|gate-report)\.sh|tests/merge_queue\.rs|tests/merge_queue/|tests/test_for_paths\.rs)$' >/dev/null; then
+                | grep -cE '^(scripts/(merge-queue|state-paths|check|test-for-paths|test-impact|gate-report)\.(sh|py)|tests/merge_queue\.rs|tests/merge_queue/|tests/test_for_paths\.rs)$' >/dev/null; then
             queue_infra_only=1
         fi
     fi

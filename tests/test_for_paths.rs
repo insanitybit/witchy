@@ -270,6 +270,94 @@ fn gate_nextest_compiler_std_web_and_rfc0122_is_not_workspace() {
 }
 
 #[test]
+fn gate_nextest_prelude_std_keeps_the_example_tests_matrix() {
+    let output = gate_nextest(&["std/list.witchy"]);
+    assert!(
+        output.contains("test(/^example_tests::/)"),
+        "prelude std/list.witchy must fail closed to the full example_tests matrix: {output}",
+    );
+    assert!(
+        !output.contains("WORKSPACE"),
+        "prelude std mapping fell back to WORKSPACE: {output}",
+    );
+}
+
+#[test]
+fn gate_nextest_non_prelude_std_partitions_example_tests() {
+    let output = gate_nextest(&["std/json.witchy"]);
+    assert!(
+        output.contains("example_tests::json") || output.contains("example_tests::stdlib_evidence"),
+        "std/json.witchy did not select json-related example_tests: {output}",
+    );
+    assert!(
+        !output.contains("test(/^example_tests::/)"),
+        "non-prelude std/json.witchy still selected the full example_tests matrix: {output}",
+    );
+    assert!(
+        output.contains("all_std_modules_type_check")
+            || output.contains("stdlib_has_no_performance_cliffs"),
+        "std/json.witchy dropped the stdlib sweep tests: {output}",
+    );
+    assert!(!output.contains("WORKSPACE"), "std/json mapping was WORKSPACE: {output}");
+}
+
+#[test]
+fn gate_nextest_book_is_documentation_examples_not_the_matrix() {
+    let output = gate_nextest(&["book/src/tour-values.md"]);
+    assert!(
+        output.contains("documentation_examples_are_valid"),
+        "book change did not select documentation_examples_are_valid: {output}",
+    );
+    assert!(
+        !output.contains("test(/^example_tests::/)"),
+        "book change still selected the full example_tests matrix: {output}",
+    );
+    assert!(!output.contains("WORKSPACE"), "book mapping was WORKSPACE: {output}");
+}
+
+#[test]
+fn gate_nextest_readme_is_documentation_examples_not_the_matrix() {
+    let output = gate_nextest(&["README.md"]);
+    assert!(
+        output.contains("documentation_examples_are_valid"),
+        "README.md did not select documentation_examples_are_valid: {output}",
+    );
+    assert!(
+        !output.contains("test(/^example_tests::/)"),
+        "README.md still selected the full example_tests matrix: {output}",
+    );
+}
+
+#[test]
+fn gate_nextest_examples_are_not_the_full_matrix() {
+    let output = gate_nextest(&["examples/calc/src/calc.witchy"]);
+    assert!(
+        output.contains("examples_programs") || output.contains("all_examples_validate"),
+        "examples/ change dropped the example corpus tests: {output}",
+    );
+    assert!(
+        !output.contains("test(/^example_tests::/)"),
+        "examples/ change still selected the full example_tests matrix: {output}",
+    );
+    assert!(!output.contains("WORKSPACE"), "examples mapping was WORKSPACE: {output}");
+}
+
+#[test]
+fn gate_nextest_labeled_std_chan_partitions() {
+    let output = gate_nextest(&["std/chan.witchy"]);
+    assert!(
+        output.contains("async_channels")
+            || output.contains("concurrency")
+            || output.contains("gen_async"),
+        "labeled std/chan.witchy did not select async example_tests: {output}",
+    );
+    assert!(
+        !output.contains("test(/^example_tests::/)"),
+        "labeled std/chan.witchy still selected the full matrix: {output}",
+    );
+}
+
+#[test]
 fn gate_nextest_highlighter_js_is_not_workspace() {
     let output = gate_nextest(&["web/witchy-highlight.js"]);
     assert!(

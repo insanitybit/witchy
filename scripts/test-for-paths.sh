@@ -64,6 +64,7 @@ gate_tests=()
 gate_need_examples=0
 gate_need_stdlib_docs=0
 gate_workspace=0
+corpus_impact=0
 gate_example_mods=()
 gate_witchy_tests=()
 add_pkg() {
@@ -119,17 +120,17 @@ emit_gate_nextest() {
         need_witchy=1
         expr="${expr:+$expr or }binary($t)"
     done
-    # Touched example_tests files win over the crate-wide matrix: run those
-    # modules (plus mapped crate tests), not every example_tests::* case.
-    # Crate-only diffs still take the full matrix via gate_need_examples.
-    if [ "${#gate_example_mods[@]}" -gt 0 ]; then
+    # The full example_tests matrix (prelude std, or src/example_tests.rs)
+    # subsumes per-file module partitions. Touched example_tests files still
+    # win over an unforced matrix: crate + one module is not every case.
+    if [ "$gate_need_examples" -eq 1 ]; then
+        need_witchy=1
+        expr="${expr:+$expr or }test(/^example_tests::/)"
+    elif [ "${#gate_example_mods[@]}" -gt 0 ]; then
         need_witchy=1
         for m in "${gate_example_mods[@]}"; do
             expr="${expr:+$expr or }test(/^example_tests::${m}::/)"
         done
-    elif [ "$gate_need_examples" -eq 1 ]; then
-        need_witchy=1
-        expr="${expr:+$expr or }test(/^example_tests::/)"
     fi
     if [ "$gate_need_stdlib_docs" -eq 1 ]; then
         need_witchy=1
@@ -246,13 +247,15 @@ for p in "${paths[@]}"; do
             any_rust=1
             gate_workspace=1 ;;
         std/*.witchy)
-            gate_need_examples=1
+            corpus_impact=1
             gate_need_stdlib_docs=1
-            add "cargo nextest run -E 'test(/^example_tests::/)'"
             add "cargo nextest run -E 'test(stdlib_docs_are_current)'"
             add "./target/debug/witchy fmt --check std/*.witchy" ;;
-        README.md | examples/* | book/*)
-            gate_need_examples=1
+        README.md)
+            corpus_impact=1
+            add "cargo nextest run -E 'test(documentation_examples_are_valid)'" ;;
+        examples/* | book/*)
+            corpus_impact=1
             add "cargo nextest run -E 'test(/^example_tests::/)'"
             # A book/example change can flip a block's browser-runnability (e.g.
             # add a Console-only-footprint program that uses std/vm's worker ops —
@@ -362,7 +365,7 @@ for p in "${paths[@]}"; do
         scripts/check-spec-freshness.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/check-spec-freshness.sh" ;;
-        scripts/test-for-paths.sh)
+        scripts/test-for-paths.sh | scripts/test-impact.py)
             add_gate_test test_for_paths
             add_gate_test merge_queue
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
@@ -386,6 +389,38 @@ for p in "${paths[@]}"; do
             : ;; # prose only — but book/README witchy blocks are covered above
     esac
 done
+
+# Corpus impact: partition example_tests by what the tests already name
+# (std/foo.witchy strings, include_str, // gate-covers: labels, filename
+# stems). Prelude std modules fail closed to the full matrix. python3
+# missing or a nonempty corpus with no inferred tests also fails closed.
+apply_corpus_impact() {
+    local line impact rc
+    command -v python3 >/dev/null 2>&1 || { gate_need_examples=1; return 0; }
+    impact="$(printf '%s\n' "${paths[@]}" | python3 scripts/test-impact.py --example-mods)"
+    rc=$?
+    [ "$rc" -eq 0 ] || { gate_need_examples=1; return 0; }
+    [ -n "$impact" ] || return 0
+    while IFS= read -r line; do
+        case "$line" in
+            full) gate_need_examples=1; return 0 ;;
+            mod\ *) add_example_mod "${line#mod }" ;;
+            test\ *) add_witchy_test "${line#test }" ;;
+        esac
+    done <<EOF
+$impact
+EOF
+}
+
+if [ "$corpus_impact" -eq 1 ]; then
+    apply_corpus_impact
+    if [ "$gate_need_examples" -eq 0 ] \
+        && [ "${#gate_example_mods[@]}" -eq 0 ] \
+        && [ "${#gate_witchy_tests[@]}" -eq 0 ]; then
+        gate_need_examples=1
+    fi
+fi
+
 if [ "$gate_nextest" -eq 1 ]; then
     emit_gate_nextest
     exit 0

@@ -471,6 +471,28 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
 }
 
 #[test]
+fn book_only_batch_selects_documentation_examples_not_the_matrix() {
+    let fixture = QueueFixture::stack(&["book/src/tour.md"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'nextest=[%s] expr=[%s]\\n' \
+         \"${{WITCHY_GATE_NEXTEST:-}}\" \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" >{}",
+        env_log.display(),
+    );
+    fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified gate env");
+    assert!(
+        env.contains("documentation_examples_are_valid"),
+        "book-only batch did not select documentation_examples_are_valid: {env}",
+    );
+    assert!(
+        !env.contains("expr=[test(/^example_tests::/)"),
+        "book-only batch still selected the full example_tests matrix: {env}",
+    );
+}
+
+#[test]
 fn crate_plus_integration_test_unions_without_workspace() {
     let fixture = QueueFixture::stack(&["crates/witchy-lower/src/lib.rs"]);
     run_git(&fixture.root, &["switch", "a"]);
