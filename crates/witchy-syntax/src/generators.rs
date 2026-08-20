@@ -1204,11 +1204,6 @@ fn single_nested_conditional_yield(body: &Block) -> Option<NestedConditionalYiel
         let Stmt::Yield(yielded) = &then_block.stmts[yield_index] else { unreachable!() };
         let then_prefix = then_block.stmts[..yield_index].to_vec();
         let then_suffix = then_block.stmts[yield_index + 1..].to_vec();
-        if then_prefix.iter().any(|statement| matches!(statement, Stmt::LetPattern { .. }))
-            || !live_loop_local_bindings(&then_prefix, &then_suffix)?.is_empty()
-        {
-            continue;
-        }
         if found.is_some()
             || block_has_any_yield(&Block {
                 stmts: body.stmts[..outer_index].to_vec(),
@@ -1312,6 +1307,40 @@ fn direct_loop_live_locals(
             }
         }
         type_environment.extend(declared);
+    }
+    Some(live)
+}
+
+fn branch_live_locals(
+    before: &[Stmt],
+    after: &[Stmt],
+    entry_bindings: &[GeneratorFrameBinding],
+) -> Option<Vec<GeneratorFrameBinding>> {
+    let after = Block { stmts: after.to_vec(), lines: Vec::new(), region: None };
+    let mut environment = entry_bindings.to_vec();
+    let mut live = Vec::new();
+    for statement in before {
+        let declared = match statement {
+            Stmt::Let { name, ty, mutable, value } => vec![GeneratorFrameBinding {
+                name: name.clone(),
+                ty: ty
+                    .clone()
+                    .or_else(|| generator_frame_type_from_bindings(value, &environment))?,
+                mutable: *mutable,
+            }],
+            Stmt::LetPattern { pattern, value } => {
+                let value_ty = generator_frame_type_from_bindings(value, &environment)?;
+                generator_pattern_bindings(pattern, &value_ty)?
+            }
+            _ => continue,
+        };
+        live.extend(
+            declared
+                .iter()
+                .filter(|binding| block_references_binding(&after, &binding.name))
+                .cloned(),
+        );
+        environment.extend(declared);
     }
     Some(live)
 }
@@ -1725,10 +1754,19 @@ fn lower_owned_loop_frame(
         };
         live
     };
-    let live_locals = direct_live_locals
-        .iter()
-        .map(|local| local.binding.clone())
-        .collect::<Vec<_>>();
+    let live_locals = if let Some(nested) = &nested_conditional {
+        let mut after = nested.then_suffix.clone();
+        after.extend(nested.outer_suffix.clone());
+        let Some(live) = branch_live_locals(&nested.then_prefix, &after, &bindings) else {
+            return Ok(None);
+        };
+        live
+    } else {
+        direct_live_locals
+            .iter()
+            .map(|local| local.binding.clone())
+            .collect::<Vec<_>>()
+    };
     let mut frame_fields = bindings
         .iter()
         .enumerate()
@@ -1775,12 +1813,32 @@ fn lower_owned_loop_frame(
     });
     let core_start = step_statements.len();
     if let Some(nested) = nested_conditional {
+        let yielded_option_name = names.name("yielded_option");
+        let captured_live_names = live_locals
+            .iter()
+            .enumerate()
+            .map(|(index, _)| names.name(&format!("captured_branch_live_{index}")))
+            .collect::<Vec<_>>();
         step_statements.push(Stmt::Let {
             name: suspended_name.clone(),
             ty: Some(Type::Named("Bool".into(), Vec::new())),
             mutable: true,
             value: Expr::Bool(false),
         });
+        step_statements.push(Stmt::Let {
+            name: yielded_option_name.clone(),
+            ty: Some(Type::Named("Option".into(), vec![elem.clone()])),
+            mutable: true,
+            value: Expr::Ctor { name: "None".into(), args: Vec::new() },
+        });
+        for (binding, captured) in live_locals.iter().zip(&captured_live_names) {
+            step_statements.push(Stmt::Let {
+                name: captured.clone(),
+                ty: Some(Type::Named("Option".into(), vec![binding.ty.clone()])),
+                mutable: true,
+                value: Expr::Ctor { name: "None".into(), args: Vec::new() },
+            });
+        }
         let mut resume = nested.then_suffix;
         resume.extend(nested.outer_suffix.clone());
         let resume = rewrite_owned_frame_returns(Block {
@@ -1788,6 +1846,14 @@ fn lower_owned_loop_frame(
             lines: Vec::new(),
             region: None,
         })?;
+        let resume = restore_optional_bindings(
+            &frame_name,
+            bindings.len(),
+            &live_locals,
+            names,
+            "branch_live",
+            resume,
+        );
         step_statements.push(Stmt::Expr(Expr::If {
             cond: Box::new(Expr::Binary {
                 op: BinOp::Eq,
@@ -1804,6 +1870,19 @@ fn lower_owned_loop_frame(
             region: None,
         })?
         .stmts;
+        yielding_branch.push(Stmt::Assign {
+            name: yielded_option_name.clone(),
+            value: Expr::Ctor { name: "Some".into(), args: vec![nested.yielded] },
+        });
+        for (binding, captured) in live_locals.iter().zip(&captured_live_names) {
+            yielding_branch.push(Stmt::Assign {
+                name: captured.clone(),
+                value: Expr::Ctor {
+                    name: "Some".into(),
+                    args: vec![Expr::Var(binding.name.clone())],
+                },
+            });
+        }
         yielding_branch.push(Stmt::Assign {
             name: suspended_name.clone(),
             value: Expr::Bool(true),
@@ -1856,28 +1935,33 @@ fn lower_owned_loop_frame(
             },
         }));
         let mut next_frame_fields = capture_frame_bindings(&bindings, parameter_count);
+        next_frame_fields.extend(captured_live_names.into_iter().map(Expr::Var));
         next_frame_fields.push(Expr::Int(1));
-        step_statements.push(Stmt::Expr(Expr::If {
-            cond: Box::new(Expr::Var(suspended_name)),
-            then_block: Block {
-                stmts: vec![Stmt::Expr(Expr::Ctor {
-                    name: "Some".into(),
-                    args: vec![Expr::Tuple(vec![
-                        nested.yielded,
-                        Expr::Tuple(next_frame_fields),
-                    ])],
-                })],
-                lines: Vec::new(),
-                region: None,
-            },
-            else_block: Some(Block {
-                stmts: vec![Stmt::Expr(Expr::Ctor {
-                    name: "None".into(),
-                    args: Vec::new(),
-                })],
-                lines: Vec::new(),
-                region: None,
-            }),
+        step_statements.push(Stmt::Expr(Expr::Match {
+            scrutinee: Box::new(Expr::Var(yielded_option_name)),
+            arms: vec![
+                MatchArm {
+                    line: 0,
+                    pattern: Pattern::Ctor {
+                        name: "Some".into(),
+                        args: vec![Pattern::Var(yielded_name.clone())],
+                    },
+                    guard: None,
+                    body: Expr::Ctor {
+                        name: "Some".into(),
+                        args: vec![Expr::Tuple(vec![
+                            Expr::Var(yielded_name),
+                            Expr::Tuple(next_frame_fields),
+                        ])],
+                    },
+                },
+                MatchArm {
+                    line: 0,
+                    pattern: Pattern::Ctor { name: "None".into(), args: Vec::new() },
+                    guard: None,
+                    body: Expr::Ctor { name: "None".into(), args: Vec::new() },
+                },
+            ],
         }));
     } else if let Some(nested) = nested_branches {
         let yielded_option_name = names.name("yielded_option");
@@ -2858,15 +2942,16 @@ mod target_availability_tests {
     }
 
     #[test]
-    fn conditional_local_crossing_a_yield_waits_for_branch_frame_fields() {
+    fn conditional_local_crossing_a_yield_uses_branch_frame_fields() {
         let module = crate::parser::parse_module(
             "gen fn values() -> Iter(Int):\n    var running = true\n    while running:\n        if running:\n            let value = 7\n            yield value\n            running = false\n            let after = value\n",
         )
         .expect("parse branch-local generator");
         let checked = crate::source_check::check(module).expect("source check");
-        let lowered = lower(checked).expect("preserve branch-local generator").into_module();
+        let lowered = lower(checked).expect("lower branch-local generator").into_module();
         let debug = format!("{lowered:?}");
-        assert!(debug.contains("iter.from_gen"), "branch locals need explicit frame fields: {debug}");
+        assert!(!debug.contains("iter.from_gen"), "branch locals must not replay: {debug}");
+        assert!(debug.contains("branch_live"), "the branch local must be restored: {debug}");
     }
 
     #[test]

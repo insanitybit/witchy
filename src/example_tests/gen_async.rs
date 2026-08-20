@@ -171,6 +171,35 @@ fn main(console: Console):
         );
     }
 
+    /// A local introduced in the taken yielding branch is captured with that
+    /// branch's resume phase, so its suffix runs once with the original value.
+    #[test]
+    fn generator_conditional_branch_local_survives_yield_without_replay() {
+        let src = r#"import iter
+
+gen fn values(console: Console) -> Iter(Int):
+    var running = true
+    while running:
+        if running:
+            let value = 7
+            console.print("before ${value}")
+            yield value
+            console.print("after ${value}")
+            running = false
+
+fn main(console: Console):
+    let result: List(Int) = iter.collect(values(console))
+    console.print("${result}")
+"#;
+        let expected = ["before 7", "after 7", "[7]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.
