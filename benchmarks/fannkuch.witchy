@@ -30,7 +30,7 @@ fn fannkuch(n: Int) -> Int:
             r = r - 1
         if list.at(perm1, 0) != 0:
             var j = 0
-            while j < n:
+            while j < list.length(perm):
                 list.set_at(perm, j, list.at(perm1, j))
                 j = j + 1
             var flips = 0

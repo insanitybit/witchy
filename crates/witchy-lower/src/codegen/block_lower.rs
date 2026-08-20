@@ -63,6 +63,21 @@ impl<'types> Codegen<'types> {
         let mut tail_is_value = false;
         let tail_is_terminal = matches!(block.stmts.last(), Some(Stmt::Return(_)));
         for (i, stmt) in block.stmts.iter().enumerate() {
+            match stmt {
+                Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. } => {
+                    if let Expr::Int(k) = value {
+                        if *k >= 0 {
+                            self.known_non_negative_vars.insert(name.clone());
+                        } else {
+                            self.known_non_negative_vars.remove(name);
+                        }
+                    } else {
+                        // Any other assignment might make it negative
+                        self.known_non_negative_vars.remove(name);
+                    }
+                }
+                _ => {}
+            }
             // Public collection intrinsics still lower to their value-producing
             // implementation internally. In RFC-0087 statement form, feed that
             // value into the existing self-assignment machinery so the receiver

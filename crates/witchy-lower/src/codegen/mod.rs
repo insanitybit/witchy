@@ -940,6 +940,7 @@ struct Codegen<'types> {
     /// A call lowers to a direct `WirExpr::Call` only for a member; an intrinsic
     /// or native (`math.sqrt`, `crypto.ed25519_verify`) is NOT one, so it defers.
     emitted_funcs: HashSet<String>,
+    known_non_negative_vars: HashSet<String>,
     /// Parameter conventions per function, so call sites can write back `var`
     /// results (move-in / move-out).
     fn_conventions: HashMap<String, Vec<Convention>>,
@@ -1560,6 +1561,7 @@ impl<'types> Codegen<'types> {
             collect_wir: false,
             collect_source_map: false,
             emitted_funcs: HashSet::new(),
+            known_non_negative_vars: HashSet::new(),
             fn_conventions: HashMap::new(),
             fn_params: HashMap::new(),
             ctors: HashMap::new(),

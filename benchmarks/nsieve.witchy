@@ -6,16 +6,14 @@
 import list
 
 fn nsieve(n: Int) -> Int:
-    var flags = []
-    for i in list.range(n):
-        list.push(flags, true)
+    var flags = list.repeat(true, n)
     var count = 0
     var i = 2
-    while i < n:
+    while i < list.length(flags):
         if list.at(flags, i):
             count = count + 1
             var j = i + i
-            while j < n:
+            while j < list.length(flags):
                 list.set_at(flags, j, false)
                 j = j + i
         i = i + 1

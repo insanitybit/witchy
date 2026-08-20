@@ -1352,10 +1352,94 @@ impl<'types> Codegen<'types> {
                 };
                 // Per-iteration arena reset (the watermark), if the body is
                 // resettable — same treatment as the for-loops.
+
+                let mut elide_pair = None;
+                if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
+                    if let Expr::Binary { op: witchy_syntax::ast::BinOp::Lt, lhs, rhs, .. } = cond.as_ref() {
+                        if let Expr::Var(i_var) = lhs.as_ref() {
+                            if self.known_non_negative_vars.contains(i_var) {
+                                if let Expr::Call { name, args } = rhs.as_ref() {
+                                    if name == intrinsics::LIST_LENGTH && args.len() == 1 {
+                                        if let Expr::Var(xs_var) = &args[0] {
+                                            let mut scan = crate::codegen::type_vars::DevirtScan::default();
+                                            scan.walk_block(body);
+                                            
+                                            let xs_stable = !scan.let_bind.contains_key(xs_var) 
+                                                && !scan.other_bind.contains(xs_var) 
+                                                && !scan.reassigned.contains(xs_var);
+                                                
+                                            if xs_stable {
+                                                let mut num_assigns = 0;
+                                                let mut valid_induction = true;
+                                                
+                                                fn check_induction<S: std::hash::BuildHasher>(
+                                                    b: &witchy_syntax::ast::Block,
+                                                    i_var: &str,
+                                                    num_assigns: &mut usize,
+                                                    known: &std::collections::HashSet<String, S>
+                                                ) -> bool {
+                                                    for stmt in &b.stmts {
+                                                        match stmt {
+                                                            witchy_syntax::ast::Stmt::Assign { name, value } => {
+                                                                if name == i_var {
+                                                                    *num_assigns += 1;
+                                                                    if let witchy_syntax::ast::Expr::Binary { op: witchy_syntax::ast::BinOp::Add, lhs: alhs, rhs: arhs, .. } = value {
+                                                                        if let witchy_syntax::ast::Expr::Var(vlhs) = alhs.as_ref() {
+                                                                            if vlhs == i_var {
+                                                                                match arhs.as_ref() {
+                                                                                    witchy_syntax::ast::Expr::Int(k) if *k >= 0 => continue,
+                                                                                    witchy_syntax::ast::Expr::Var(v) if known.contains(v) => continue,
+                                                                                    _ => return false,
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    return false;
+                                                                }
+                                                            }
+                                                            witchy_syntax::ast::Stmt::Let { name, .. } => {
+                                                                if name == i_var { return false; }
+                                                            }
+                                                            witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::While { body, .. }) => {
+                                                                if !check_induction(body, i_var, num_assigns, known) { return false; }
+                                                            }
+                                                            witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::If { then_block, else_block, .. }) => {
+                                                                if !check_induction(then_block, i_var, num_assigns, known) { return false; }
+                                                                if let Some(eb) = else_block {
+                                                                    if !check_induction(eb, i_var, num_assigns, known) { return false; }
+                                                                }
+                                                            }
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                    true
+                                                }
+                                                
+                                                valid_induction = check_induction(body, i_var, &mut num_assigns, &self.known_non_negative_vars);
+                                                
+                                                if valid_induction && num_assigns > 0 {
+                                                    elide_pair = Some((i_var.clone(), xs_var.clone()));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if let Some(p) = &elide_pair {
+                    self.elide_index_list.push(p.clone());
+                }
                 let wm = self.loop_watermark_wir(body);
                 self.loop_labels.push((format!("$we{id}"), format!("$wl{id}")));
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
+
+                if elide_pair.is_some() {
+                    self.elide_index_list.pop();
+                }
                 if wm.is_some() {
                     self.wm_level -= 1;
                 }

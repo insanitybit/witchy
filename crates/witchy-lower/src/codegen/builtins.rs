@@ -1416,10 +1416,73 @@ impl Codegen<'_> {
             (intrinsics::DICT_UPDATE, 4) => {
                 self.uses_dict = true;
                 self.uses_dict_update = true;
-                self.clos_arities.insert(1);
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 let dk = self.kind_of(&args[2]);
+
+                if let Expr::Lambda { params, body, .. } = &args[3] {
+                    // Inline the closure body directly instead of constructing a closure object
+                    // and dispatching it dynamically via `dict_update_cap`.
+                    let d_local = crate::codegen::var_scratch("dict_inline_d", 0, Kind::I32);
+                    let k_local = crate::codegen::var_scratch("dict_inline_k", 0, kk);
+                    let def_local = crate::codegen::var_scratch("dict_inline_def", 0, dk);
+                    let new_val_local = crate::codegen::var_scratch("dict_inline_new", 0, dk);
+                    
+                    self.locals.insert(d_local.clone(), Kind::I32);
+                    self.locals.insert(k_local.clone(), kk);
+                    self.locals.insert(def_local.clone(), dk);
+                    self.locals.insert(new_val_local.clone(), dk);
+                    
+                    // The lambda parameter receives the result of `dict_get_or`.
+                    let param_name = params[0].name.clone();
+                    let param_kind = self.kind_for_type(params[0].ty.as_ref().unwrap());
+                    self.locals.insert(param_name.clone(), param_kind);
+                    
+                    let mut seq = vec![
+                        N::SetLocal { local: d_local.clone(), value: self.lower_expr(&args[0])? },
+                        N::SetLocal { local: k_local.clone(), value: self.lower_expr(&args[1])? },
+                        N::SetLocal { local: def_local.clone(), value: self.lower_expr(&args[2])? },
+                    ];
+                    
+                    let get_or_call = W::Call {
+                        func: "dict_get_or".to_string(),
+                        args: vec![
+                            W::GetLocal(d_local.clone()),
+                            W::ToSlot(Box::new(W::GetLocal(k_local.clone())), Self::wir_kind(kk)),
+                            W::ToSlot(Box::new(W::GetLocal(def_local.clone())), Self::wir_kind(dk)),
+                            W::ConstI32(mode as i32),
+                        ],
+                    };
+                    
+                    seq.push(N::SetLocal {
+                        local: param_name,
+                        value: W::FromSlot(Box::new(get_or_call), Self::wir_kind(param_kind)),
+                    });
+                    
+                    // Body evaluation
+                    seq.push(N::SetLocal {
+                        local: new_val_local.clone(),
+                        value: W::Seq(self.lower_block(body)?),
+                    });
+                    
+                    // Insert the updated value
+                    seq.push(N::Push(W::Call {
+                        func: "dict_insert".to_string(),
+                        args: vec![
+                            W::GetLocal(d_local.clone()),
+                            W::ToSlot(Box::new(W::GetLocal(k_local)), Self::wir_kind(kk)),
+                            W::ToSlot(Box::new(W::GetLocal(new_val_local)), Self::wir_kind(dk)),
+                            W::ConstI32(mode as i32),
+                        ],
+                    }));
+                    
+                    // `dict.update` evaluates to the modified dictionary pointer (d_local)
+                    seq.push(N::Push(W::GetLocal(d_local)));
+                    
+                    return Some(W::Seq(seq));
+                }
+
+                self.clos_arities.insert(1);
                 call(
                     intrinsic_helper_variant(name, "dict_update"),
                     vec![

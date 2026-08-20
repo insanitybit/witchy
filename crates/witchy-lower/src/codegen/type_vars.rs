@@ -122,18 +122,18 @@ pub(crate) fn type_has_var(t: &Type) -> bool {
 /// future `Expr`/`Stmt` variant that could rebind a name is a compile error, not a
 /// silent unsound devirt.
 #[derive(Default)]
-struct DevirtScan {
+pub(crate) struct DevirtScan {
     /// `let name = …` occurrences, by name (a count, so a second `let` excludes it).
-    let_bind: HashMap<String, u32>,
+    pub(crate) let_bind: HashMap<String, u32>,
     /// Names introduced by any NON-`let` binder (tuple destructure, `for` var, lambda
     /// param, match/while-let pattern) — a single one disqualifies the name.
-    other_bind: HashSet<String>,
+    pub(crate) other_bind: HashSet<String>,
     /// Names reassigned via `name = …` — a single one disqualifies the name.
-    reassigned: HashSet<String>,
+    pub(crate) reassigned: HashSet<String>,
 }
 
 impl DevirtScan {
-    fn walk_block(&mut self, b: &Block) {
+    pub(crate) fn walk_block(&mut self, b: &Block) {
         for stmt in &b.stmts {
             match stmt {
                 Stmt::Let { name, value, .. } => {
