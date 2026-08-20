@@ -6,8 +6,9 @@
 // consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite
 // iterators are fine (`count_from`, `repeat`) as long as something bounds them
 // (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends.
-// `gen fn`/`yield` lower to this representation; `from_gen` is the low-level
-// desugaring target for compiler-generated iterators.
+// `gen fn`/`yield` lower to this representation: common loops use `unfold` with
+// an owned typed frame, while `from_gen` remains the fallback for irregular
+// control flow.
 //
 // Adapters and consumers are METHODS on `Iter` (`it.map(f).take(3)`), so
 // pipelines read left-to-right. The module level keeps only what has no
@@ -49,10 +50,10 @@ pub fn once(x: a) -> Iter(a):
 // Build an iterator from a `seed` by repeatedly applying `f`, which returns
 // `Some((value, next_seed))` to yield a value or `None` to stop. The general
 // generator primitive - count/fibonacci/range are all unfolds.
-pub fn unfold(seed: s, f: fn(s) -> Option((a, s))) -> Iter(a):
+pub fn unfold(own seed: s, f: fn(own s) -> Option((a, s))) -> Iter(a):
     Iter(fn(): unfold_step(seed, f))
 
-fn unfold_step(seed: s, f: fn(s) -> Option((a, s))) -> Step(a):
+fn unfold_step(own seed: s, f: fn(own s) -> Option((a, s))) -> Step(a):
     match f(seed):
         Some(pair) ->
             match pair:
@@ -61,11 +62,11 @@ fn unfold_step(seed: s, f: fn(s) -> Option((a, s))) -> Step(a):
 
 // The integers n, n+1, n+2, ... (infinite).
 pub fn count_from(n: Int) -> Iter(Int):
-    unfold(n, fn(i: Int): Some((i, i + 1)))
+    unfold(n, fn(own i: Int): Some((i, i + 1)))
 
 // The half-open integer range [lo, hi).
 pub fn range(lo: Int, hi: Int) -> Iter(Int):
-    unfold(lo, fn(i: Int): if i < hi: Some((i, i + 1)) else: None)
+    unfold(lo, fn(own i: Int): if i < hi: Some((i, i + 1)) else: None)
 
 // `x` forever (infinite).
 pub fn repeat(x: a) -> Iter(a):
@@ -73,13 +74,12 @@ pub fn repeat(x: a) -> Iter(a):
 
 // A list's elements, in order.
 pub fn from_list(xs: List(a)) -> Iter(a):
-    unfold(0, fn(i: Int): if i < list.length(xs): Some((list.at(xs, i), i + 1)) else: None)
+    unfold(0, fn(own i: Int): if i < list.length(xs): Some((list.at(xs, i), i + 1)) else: None)
 
 // Build an iterator from an index function: `f(0)`, `f(1)`, ... each `Some(x)`
-// is the next element and the first `None` ends it. This is the de-sugaring
-// target for the `gen`/`yield` syntax: a generator body becomes a function from
-// "which yield" to its value, and pulling element i re-runs it to the i-th
-// yield (so the body may use any control flow, including unbounded loops).
+// is the next element and the first `None` ends it. This is the compatibility
+// target for generator control flow that cannot yet use the owned-frame path:
+// pulling element i re-runs the body to its i-th yield.
 pub fn from_gen(f: fn(Int) -> Option(a)) -> Iter(a):
     from_gen_at(f, 0)
 

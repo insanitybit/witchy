@@ -3,7 +3,7 @@ import iter
 // Remove consecutive duplicates — a user-defined iterator transform built from
 // split_first (peek the head) and drop_while (skip the equal run after it).
 pub fn dedup(it: Iter(Int)) -> Iter(Int):
-    iter.unfold(it, fn(s: Iter(Int)): dedup_step(s))
+    iter.unfold(it, fn(own s: Iter(Int)): dedup_step(s))
 
 fn dedup_step(s: Iter(Int)) -> Option((Int, Iter(Int))):
     match s.split_first():

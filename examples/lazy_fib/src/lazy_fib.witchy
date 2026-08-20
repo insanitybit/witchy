@@ -9,7 +9,7 @@ import iter
 // The Fibonacci numbers 0, 1, 1, 2, 3, 5, 8, ... as an infinite iterator.
 // `unfold` threads the pair (current, next) as its state, yielding `current`.
 pub fn fibs() -> Iter(Int):
-    iter.unfold((0, 1), fn(p: (Int, Int)): fib_step(p))
+    iter.unfold((0, 1), fn(own p: (Int, Int)): fib_step(p))
 
 fn fib_step(p: (Int, Int)) -> Option((Int, (Int, Int))):
     match p:

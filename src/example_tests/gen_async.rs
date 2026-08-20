@@ -1,6 +1,19 @@
 use super::*;
 use crate::{interpreter, parser};
 
+    /// The common single-yield loop is a one-pass owned suspension frame on the
+    /// compiled backend: each pull resumes from `(a, b)` instead of replaying all
+    /// prior yields. The syntax-level lowering test pins the `iter.unfold` ABI;
+    /// this fixture proves that ABI through linking, checking, and compiled Wasm.
+    #[test]
+    fn generator_owned_loop_frame_runs_on_compiled_wasm() {
+        let src = "import iter\n\ngen fn fibs() -> Iter(Int):\n    var a: Int = 0\n    var b: Int = 1\n    while true:\n        yield a\n        let next: Int = a + b\n        a = b\n        b = next\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(fibs().take(10))\n    console.print(\"${xs}\")\n";
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            ["[0, 1, 1, 2, 3, 5, 8, 13, 21, 34]"],
+        );
+    }
+
     /// (BUG-007) A `gen fn` declared as a METHOD of an inherent `impl` lowers just
     /// like a top-level one: it stays a method (`value.upto()` resolves by receiver
     /// type and returns `Iter(a)`), and its hoisted helper is named per-type so two

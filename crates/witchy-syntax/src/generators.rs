@@ -8,9 +8,9 @@
 //!         yield i
 //!         i = i + 1
 //! ```
-//! becomes two plain functions: a helper that, given which yield is wanted,
-//! re-runs the body counting yields and returns that one, and a wrapper that
-//! turns the helper into a lazy `iter.Iter`:
+//! becomes two plain functions. A single-yield loop gets an owned tuple frame
+//! advanced once per `iter.unfold` pull. Irregular control flow retains the
+//! compatibility helper below, which re-runs the body to the requested yield:
 //! ```text
 //! fn __gen_count_up(n: Int, __target: Int) -> Option(Int):
 //!     var __i = 0
@@ -320,6 +320,15 @@ fn lower_gen(
         Some(ctx) => format!("__gen_{}_{}", ctx.type_name, f.name),
         None => format!("__gen_{}", f.name),
     };
+    if let Some(lowered) = lower_owned_loop_frame(
+        &f,
+        method,
+        &helper_name,
+        entry_state,
+        resume_state,
+    )? {
+        return Ok(lowered);
+    }
 
     // Helper params: the original params plus `__target: Int`.
     let mut helper_params = f.params.clone();
@@ -414,6 +423,295 @@ fn lower_gen(
     };
 
     Ok((helper, wrapper))
+}
+
+#[derive(Clone)]
+struct GeneratorFrameBinding {
+    name: String,
+    ty: Type,
+    mutable: bool,
+}
+
+/// Lower the common imperative generator shape to an actual one-pass owned
+/// frame instead of replaying the body to the Nth yield:
+///
+/// ```text
+/// <typed params>
+/// <let/var initializers>
+/// while condition:
+///     <before>
+///     yield value
+///     <after>
+/// ```
+///
+/// The frame is a fixed typed tuple of parameters and initialized locals. One
+/// `iter.unfold` step restores those bindings, executes exactly one loop
+/// iteration, and returns the yielded value plus the next owned frame. More
+/// general CFGs retain the replay fallback until they are split into states.
+fn lower_owned_loop_frame(
+    f: &Function,
+    method: Option<&MethodCtx>,
+    helper_name: &str,
+    entry_state: usize,
+    resume_state: usize,
+) -> Result<Option<(Function, Function)>, String> {
+    // Inherent-method lowering temporarily restores the local receiver spelling
+    // so the existing linker bridge can canonicalize the hoisted helper's
+    // direct `self` parameter. The owned frame nests that receiver in a tuple,
+    // which needs the bridge to recurse before method frames can use this path.
+    // Keep methods on the established replay lowering in this slice.
+    if method.is_some() {
+        return Ok(None);
+    }
+    let Some(elem) = iter_elem(&f.ret) else { return Ok(None) };
+    let Some((last, prelude)) = f.body.stmts.split_last() else { return Ok(None) };
+    let Stmt::Expr(Expr::While { cond, body }) = last else { return Ok(None) };
+    let yields = body
+        .stmts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, statement)| matches!(statement, Stmt::Yield(_)).then_some(index))
+        .collect::<Vec<_>>();
+    if yields.len() != 1
+        || block_has_nested_yield(body)
+        || block_has_generator_control_transfer(body)
+    {
+        return Ok(None);
+    }
+    let yield_index = yields[0];
+    let Stmt::Yield(yielded) = &body.stmts[yield_index] else { unreachable!() };
+
+    let mut bindings = Vec::new();
+    for parameter in &f.params {
+        let ty = parameter
+            .ty
+            .clone()
+            .or_else(|| {
+                (parameter.name == "self")
+                    .then(|| method.map(|context| context.self_ty.clone()))
+                    .flatten()
+            });
+        let Some(ty) = ty else { return Ok(None) };
+        bindings.push(GeneratorFrameBinding {
+            name: parameter.name.clone(),
+            ty,
+            mutable: parameter.convention.binds_mutable(),
+        });
+    }
+    let mut initializers = Vec::new();
+    for statement in prelude {
+        let Stmt::Let { name, ty, mutable, value } = statement else { return Ok(None) };
+        let Some(ty) = ty.clone().or_else(|| generator_frame_type(value)) else {
+            return Ok(None);
+        };
+        bindings.push(GeneratorFrameBinding {
+            name: name.clone(),
+            ty,
+            mutable: *mutable,
+        });
+        initializers.push(statement.clone());
+    }
+    if bindings.is_empty() {
+        return Ok(None);
+    }
+
+    let frame_ty = Type::Tuple(bindings.iter().map(|binding| binding.ty.clone()).collect());
+    let frame_name = "__generator_frame".to_string();
+    let yielded_name = "__generator_yielded".to_string();
+    let mut step_statements = bindings
+        .iter()
+        .enumerate()
+        .map(|(index, binding)| Stmt::Let {
+            name: binding.name.clone(),
+            ty: Some(binding.ty.clone()),
+            mutable: binding.mutable,
+            value: Expr::Field {
+                base: Box::new(Expr::Var(frame_name.clone())),
+                field: index.to_string(),
+            },
+        })
+        .collect::<Vec<_>>();
+    step_statements.extend(body.stmts[..yield_index].iter().cloned());
+
+    let mut produce = vec![Stmt::Let {
+        name: yielded_name.clone(),
+        ty: Some(elem.clone()),
+        mutable: false,
+        value: yielded.clone(),
+    }];
+    produce.extend(body.stmts[yield_index + 1..].iter().cloned());
+    let next_frame = Expr::Tuple(
+        bindings
+            .iter()
+            .map(|binding| Expr::Var(binding.name.clone()))
+            .collect(),
+    );
+    produce.push(Stmt::Expr(Expr::Ctor {
+        name: "Some".into(),
+        args: vec![Expr::Tuple(vec![Expr::Var(yielded_name), next_frame])],
+    }));
+    step_statements.push(Stmt::Expr(Expr::If {
+        cond: Box::new(cond.as_ref().clone()),
+        then_block: Block { stmts: produce, lines: Vec::new(), region: None },
+        else_block: Some(Block {
+            stmts: vec![Stmt::Expr(Expr::Ctor { name: "None".into(), args: Vec::new() })],
+            lines: Vec::new(),
+            region: None,
+        }),
+    }));
+
+    let mut helper_attributes = f.attributes.clone();
+    helper_attributes.push(crate::suspension::FRAME_FUNCTION_ATTRIBUTE.into());
+    helper_attributes.push(crate::suspension::frame_state_attribute(resume_state));
+    let helper = Function {
+        line: f.line,
+        public: false,
+        comptime_only: false,
+        attributes: helper_attributes,
+        name: helper_name.to_string(),
+        params: vec![Param {
+            name: frame_name,
+            ty: Some(frame_ty.clone()),
+            convention: Convention::Own,
+            default: None,
+        }],
+        ret: Some(Type::Named(
+            "Option".into(),
+            vec![Type::Tuple(vec![elem, frame_ty])],
+        )),
+        body: Block { stmts: step_statements, lines: Vec::new(), region: None },
+        bounds: method.map_or_else(|| f.bounds.clone(), |context| context.bounds.clone()),
+        is_gen: false,
+        is_async: false,
+    };
+
+    let mut wrapper_statements = initializers;
+    wrapper_statements.push(Stmt::Expr(Expr::Call {
+        name: "iter.unfold".into(),
+        args: vec![
+            Expr::Tuple(
+                bindings
+                    .iter()
+                    .map(|binding| Expr::Var(binding.name.clone()))
+                    .collect(),
+            ),
+            Expr::Var(helper_name.to_string()),
+        ],
+    }));
+    let mut wrapper_attributes = f.attributes.clone();
+    wrapper_attributes.push(crate::suspension::FRAME_ENTRY_ATTRIBUTE.into());
+    wrapper_attributes.push(crate::suspension::frame_state_attribute(entry_state));
+    let wrapper = Function {
+        line: f.line,
+        public: f.public,
+        comptime_only: false,
+        attributes: wrapper_attributes,
+        name: f.name.clone(),
+        params: f.params.clone(),
+        ret: f.ret.clone(),
+        body: Block { stmts: wrapper_statements, lines: Vec::new(), region: None },
+        bounds: f.bounds.clone(),
+        is_gen: false,
+        is_async: false,
+    };
+    Ok(Some((helper, wrapper)))
+}
+
+fn generator_frame_type(value: &Expr) -> Option<Type> {
+    match value {
+        Expr::Int(_) => Some(Type::Named("Int".into(), Vec::new())),
+        Expr::Float(_) => Some(Type::Named("Float".into(), Vec::new())),
+        Expr::Duration(_) => Some(Type::Named("Duration".into(), Vec::new())),
+        Expr::Str(_) => Some(Type::Named("String".into(), Vec::new())),
+        Expr::Bool(_) => Some(Type::Named("Bool".into(), Vec::new())),
+        Expr::Tuple(values) => Some(Type::Tuple(
+            values
+                .iter()
+                .map(generator_frame_type)
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Expr::List(values) => {
+            let first = generator_frame_type(values.first()?)?;
+            values
+                .iter()
+                .skip(1)
+                .all(|value| generator_frame_type(value).as_ref() == Some(&first))
+                .then(|| Type::Named("List".into(), vec![first]))
+        }
+        _ => None,
+    }
+}
+
+fn block_has_nested_yield(block: &Block) -> bool {
+    let mut nested = false;
+    let _: Result<(), ()> = crate::ast::visit::visit_block(block, &mut |expression| {
+        let blocks = match expression {
+            Expr::If { then_block, else_block, .. } => {
+                let mut blocks = vec![then_block];
+                blocks.extend(else_block.iter());
+                blocks
+            }
+            Expr::Match { arms, .. } => {
+                if arms.iter().any(|arm| matches!(&arm.body, Expr::Block(block) if block.stmts.iter().any(|statement| matches!(statement, Stmt::Yield(_))))) {
+                    nested = true;
+                }
+                Vec::new()
+            }
+            Expr::Block(block)
+            | Expr::Lambda { body: block, .. }
+            | Expr::While { body: block, .. }
+            | Expr::For { body: block, .. }
+            | Expr::WhileLet { body: block, .. } => vec![block],
+            _ => Vec::new(),
+        };
+        if blocks.into_iter().any(|block| {
+            block.stmts.iter().any(|statement| matches!(statement, Stmt::Yield(_)))
+        }) {
+            nested = true;
+        }
+        Ok(())
+    });
+    nested
+}
+
+fn block_has_generator_control_transfer(block: &Block) -> bool {
+    fn directly_transfers(block: &Block) -> bool {
+        block.stmts.iter().any(|statement| {
+            matches!(statement, Stmt::Return(_) | Stmt::Break | Stmt::Continue)
+        })
+    }
+
+    if directly_transfers(block) {
+        return true;
+    }
+    let mut transfers = false;
+    let _: Result<(), ()> = crate::ast::visit::visit_block(block, &mut |expression| {
+        let blocks = match expression {
+            Expr::If { then_block, else_block, .. } => {
+                let mut blocks = vec![then_block];
+                blocks.extend(else_block.iter());
+                blocks
+            }
+            Expr::Match { arms, .. } => arms
+                .iter()
+                .filter_map(|arm| match &arm.body {
+                    Expr::Block(block) => Some(block),
+                    _ => None,
+                })
+                .collect(),
+            Expr::Block(block)
+            | Expr::Lambda { body: block, .. }
+            | Expr::While { body: block, .. }
+            | Expr::For { body: block, .. }
+            | Expr::WhileLet { body: block, .. } => vec![block],
+            _ => Vec::new(),
+        };
+        if blocks.into_iter().any(directly_transfers) {
+            transfers = true;
+        }
+        Ok(())
+    });
+    transfers
 }
 
 /// Replace each `yield e` with `if __i == __target: return Some(e)` followed by
@@ -588,5 +886,53 @@ mod target_availability_tests {
             .any(|attribute| attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE));
         assert_eq!(crate::suspension::frame_state(wrapper), Some(0));
         assert_eq!(crate::suspension::frame_state(helper), Some(1));
+    }
+
+    #[test]
+    fn single_yield_loop_lowers_to_one_pass_owned_unfold_frame() {
+        let module = crate::parser::parse_module(
+            "gen fn fibs() -> Iter(Int):\n    var a = 0\n    var b = 1\n    while true:\n        yield a\n        let next = a + b\n        a = b\n        b = next\n",
+        )
+        .expect("parse owned generator frame");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower generator").into_module();
+        let wrapper = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "fibs" => Some(function),
+                _ => None,
+            })
+            .expect("generator wrapper");
+        assert!(matches!(
+            wrapper.body.stmts.last(),
+            Some(Stmt::Expr(Expr::Call { name, .. })) if name == "iter.unfold"
+        ));
+        let helper = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "__gen_fibs" => Some(function),
+                _ => None,
+            })
+            .expect("generator resume helper");
+        assert_eq!(helper.params.len(), 1);
+        assert_eq!(helper.params[0].convention, Convention::Own);
+        assert!(matches!(
+            helper.params[0].ty,
+            Some(Type::Tuple(ref fields)) if fields.len() == 2
+        ));
+        assert!(!format!("{:?}", lowered).contains("iter.from_gen"));
+    }
+
+    #[test]
+    fn generator_control_transfer_retains_replay_fallback() {
+        let module = crate::parser::parse_module(
+            "gen fn firstn(n: Int) -> Iter(Int):\n    var i = 0\n    while true:\n        if i >= n:\n            return\n        yield i\n        i = i + 1\n",
+        )
+        .expect("parse generator return");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower generator").into_module();
+        assert!(format!("{:?}", lowered).contains("iter.from_gen"));
     }
 }
