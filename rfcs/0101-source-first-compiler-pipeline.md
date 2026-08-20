@@ -55,6 +55,12 @@ Implemented evidence:
   legacy raw linking names its no-op path explicitly. An emitted-generator
   probe proves the injected checker observes generated source and can stop the
   pipeline before lowering.
+- The resolved-source proof now validates type names and arity, trait names,
+  existential declaration safety, and `PublicState` implementation shape over
+  one read-only aggregate of the complete link set. Imported canonical
+  identities are therefore checked while async/generator/record/impl nodes are
+  intact. `checked_link_rejects_resolved_signature_semantics_before_source_lowering`
+  pins a wrong imported async-signature arity to `PipelineStage::Source`.
 - Strict and lenient record lowering are proof-gated at linker, type-checker,
   interpreter, and Wasm assembly entrypoints; projection and record-update
   backend parity tests remain green.
@@ -132,13 +138,14 @@ Implemented evidence:
 ## Remaining migration
 
 The linker still interleaves standard-library discovery, compile-time
-expansion, name/type resolution, and destructive transforms. The remaining
-work must move those boundaries incrementally without creating a second
-semantic pipeline or weakening the existing fail-closed checks. In dependency
-order: establish non-destructive linked name/trait/method resolution; move
-complete source type checking before trait desugaring; then remove the remaining
-raw production `Module` entrypoints and promote the RFC only after backend and
-diagnostic-origin criteria are green.
+expansion, body inference, and destructive transforms. Resolve-wide type and
+trait declaration semantics now sit before the proof; complete body inference
+and method dispatch still run on the lowered linked clone. The remaining work
+must move those boundaries incrementally without creating a second semantic
+pipeline or weakening the existing fail-closed checks. In dependency order:
+move complete source body checking before trait desugaring; then remove the
+remaining raw production `Module` entrypoints and promote the RFC only after
+backend and diagnostic-origin criteria are green.
 
 A labeled module call still requires its import to be present in parsed source;
 method labels remain rejected rather than being reinterpreted after an import

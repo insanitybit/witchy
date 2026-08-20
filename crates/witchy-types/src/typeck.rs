@@ -9772,6 +9772,47 @@ pub fn check_linked_source_headers(
             witchy_syntax::source_check::SourceCheckError::new(error.message)
         })?;
     }
+
+    // Resolve-wide declaration semantics do not require generator, async,
+    // record, trait, or impl lowering. Run them over one read-only aggregate so
+    // imported canonical type/trait identities are visible to each signature.
+    // This deliberately stops before body inference: source-only body nodes are
+    // retained and the remaining migration is tracked by RFC-0101.
+    let mut modules = source.modules().iter();
+    let Some((_, first)) = modules.next() else { return Ok(()) };
+    let mut aggregate = first.clone();
+    aggregate.imports.clear();
+    aggregate.import_lines.clear();
+    aggregate.from_imports.clear();
+    aggregate.item_lines.clear();
+    for (_, module) in modules {
+        aggregate.items.extend(module.items.iter().cloned());
+        aggregate
+            .compiler_item_syntax
+            .extend(module.compiler_item_syntax.iter().cloned());
+        aggregate
+            .compiler_expr_syntax
+            .extend(module.compiler_expr_syntax.iter().cloned());
+        aggregate
+            .compiler_type_syntax
+            .extend(module.compiler_type_syntax.iter().cloned());
+        aggregate
+            .compiler_pattern_syntax
+            .extend(module.compiler_pattern_syntax.iter().cloned());
+        aggregate
+            .compiler_stmt_syntax
+            .extend(module.compiler_stmt_syntax.iter().cloned());
+        aggregate
+            .compiler_block_syntax
+            .extend(module.compiler_block_syntax.iter().cloned());
+    }
+    let source_error = |error: TypeError| {
+        witchy_syntax::source_check::SourceCheckError::new(error.message)
+    };
+    check_type_names(&aggregate).map_err(source_error)?;
+    check_trait_names(&aggregate).map_err(source_error)?;
+    check_existential_types(&aggregate.items).map_err(source_error)?;
+    check_public_state_impls(&aggregate).map_err(source_error)?;
     Ok(())
 }
 

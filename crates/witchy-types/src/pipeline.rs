@@ -516,6 +516,27 @@ mod tests {
     }
 
     #[test]
+    fn checked_link_rejects_resolved_signature_semantics_before_source_lowering() {
+        let modules = vec![
+            (
+                "main".to_string(),
+                parse("import helper\n\nfn main() -> Int:\n  0\n"),
+            ),
+            (
+                "helper".to_string(),
+                parse(
+                    "type Box(a):\n  Box(a)\n\nasync fn bad(value: Box(Int, String)) -> Int:\n  0\n",
+                ),
+            ),
+        ];
+        let error = link_checked(modules, "main", no_expand)
+            .expect_err("wrong resolved arity must fail before async lowering");
+
+        assert_eq!(error.stage(), PipelineStage::Source, "{error}");
+        assert!(error.to_string().contains("expects 1 type argument"), "{error}");
+    }
+
+    #[test]
     fn structured_metadata_preserves_link_and_ownership_stage() {
         let link = PipelineError::Link(LinkError {
             message: "bad import".into(),
