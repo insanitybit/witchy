@@ -45,6 +45,21 @@ The scheduler has one specified deterministic interleaving. Backend parity
 therefore includes output order, channel selection, cancellation, closure, and
 join behavior rather than merely final values.
 
+## Message carrier ABI
+
+The scheduler remains monomorphic over the opaque `__Msg`, while checked
+`Sender(T)` and `Receiver(T)` endpoints retain the message type. On compiled
+WebAssembly, `__Msg` is one GC envelope with i32, i64, f64, externref, and
+erased structref fields. `send` writes the field matching its checked `T`, and
+`recv` statically selects that field and casts an erased structural reference
+back to its known GC type.
+
+This is semantic erasure, not a universal scalar-slot identity. It permits
+heterogeneous scalar, host-reference, and direct-reference messages under one
+scheduler ABI without bit-casting references through integers. The envelope is
+opaque to scheduler code, and endpoint pairing preserves the erase/recover type
+identity.
+
 ## Channel closure
 
 Witchy values have no RAII destructor event that can define "last sender

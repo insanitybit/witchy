@@ -1858,8 +1858,11 @@ released, and parked joins resume. That is the close condition
 values, so "closed" doesn't mean no `Sender` value can ever be used again. A
 channel can be shared by many receivers (a worker pool) or many senders. Each
 channel is typed independently - a program may use channels of many different
-message types (the executor carries messages erased and each endpoint recovers
-its own type). A spawned task returns `Nil`, reporting results over a channel.
+message types. The compiled executor carries one opaque GC message envelope with
+i32, i64, f64, host-reference, and erased structural-reference fields; each
+checked endpoint statically recovers its own field and type, without bit-casting
+references through integer slots. A spawned task returns `Nil`, reporting
+results over a channel.
 Its `Handle` is must-consume: every control-flow path must join, cancel, return,
 or transfer it, so accidentally detached work is rejected before execution.
 See the book's *Concurrency* chapter and `std/chan` for the full model.

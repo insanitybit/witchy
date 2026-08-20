@@ -378,6 +378,8 @@ and polls tasks in a fixed round-robin order. `std/chan` is the ergonomic channe
 surface over that task executor. No scheduler state lives in the
 runtime, no operating-system threads are involved, and nothing is shared mutably -
 so the interleaving is identical on both backends. Each channel carries its own
-message type (the executor moves messages erased and every endpoint recovers its
-type), and a spawned task returns `()` (it reports results by sending them),
+message type. The executor moves one opaque message envelope, and the checked
+endpoint type recovers the envelope's i32, i64, f64, host-reference, or direct
+GC-reference field; references are never bit-cast through an integer slot. A
+spawned task returns `()` (it reports results by sending them),
 which is what keeps the whole executor expressible in pure witchy.

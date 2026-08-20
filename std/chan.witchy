@@ -10,9 +10,12 @@
 // may carry different types - a library may pipeline work through a private channel
 // without forcing its message type on the whole program. Under the hood the
 // executor is ERASED: its effects and buffers carry the opaque `__Msg`; the
-// typed endpoints erase a message on `send` and recover it on `recv`. The erasure
-// is representationally the identity on both backends (a message already rides the
-// universal slot), so interleavings stay byte-identical. Spawned tasks return
+// typed endpoints erase a message on `send` and recover it on `recv`. Compiled
+// WebAssembly represents `__Msg` as one typed GC envelope whose i32, i64, f64,
+// externref, and erased structref fields preserve the message's physical kind;
+// the checked endpoint type selects the field to recover. No reference is
+// bit-cast through an integer slot. Erasure remains observationally invisible,
+// so interleavings stay byte-identical. Spawned tasks return
 // `Nil`; a task reports a result by sending it on a channel, not by returning it (a
 // typed `JoinHandle(T)` would force a native runtime and break the parity
 // contract). `send`/`recv` are always `await`ed because messaging is an effect on
@@ -42,9 +45,10 @@ fn appended(own xs: List(a), own x: a) -> List(a):
 // remain the same type without exposing construction of the erased protocol.
 // ---- erasure boundary (RFC-0055) ----
 
-// Recover a received `Option(__Msg)` at the endpoint's message type. `__unerase`
-// is the identity on both backends; the `Sender(m)`/`Receiver(m)` pairing to one
-// channel id guarantees the value was erased at the same `m`.
+// Recover a received `Option(__Msg)` at the endpoint's message type. The checked
+// `m` selects the matching field of the compiled message envelope; the
+// `Sender(m)`/`Receiver(m)` pairing to one channel id guarantees the value was
+// erased at that same `m`.
 fn unerase_option(o: Option(__Msg)) -> Option(m):
     match o:
         Some(x) -> Some(__unerase(x))

@@ -17,10 +17,13 @@
 // carry the opaque `__Msg`, so ONE program can run channels of many different
 // message types - a library may use channels privately without forcing its type
 // on the whole program. The typed channel endpoints (`Sender(m)`/`Receiver(m)`
-// in `std/chan`) erase a message on `send` and recover it on `recv`; the
-// erasure is representationally the identity on both backends (a message already
-// rides the universal slot), so interleavings stay byte-identical. Spawned tasks
-// return `Nil`; a task reports a result by sending it on a channel, not by
+// in `std/chan`) erase a message on `send` and recover it on `recv`. Compiled
+// WebAssembly carries one typed GC envelope with separate i32, i64, f64,
+// externref, and erased structref fields; the checked endpoint type selects the
+// field to recover. That keeps heterogeneous scalars and direct references in one
+// scheduler ABI without bit-casting references through an integer slot. Erasure
+// is observationally invisible, so interleavings stay byte-identical. Spawned
+// tasks return `Nil`; a task reports a result by sending it on a channel, not by
 // returning it (a typed `JoinHandle(T)` would force a native runtime and break
 // the parity contract).
 //

@@ -234,6 +234,14 @@ implementation body.
 > `__Msg` agree on both backends (no divergence), and users never obtain one
 > in normal use.
 
+> 2026-08-20 ABI update: the compiled implementation no longer realizes
+> `__Msg` as the identity over a universal scalar slot. The canonical RFC-0129
+> carrier uses one typed GC envelope with i32, i64, f64, externref, and erased
+> structref fields; checked endpoints statically recover the matching field.
+> This preserves heterogeneous scalar and direct-reference messages without
+> bit-casting references through integers. The source-level erasure contract
+> remains observationally invisible.
+
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.
   - To change the decision: write a NEW RFC that supersedes this one.
