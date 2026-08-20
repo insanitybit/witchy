@@ -25,16 +25,12 @@
 //!     var i = n
 //!     iter.unfold((n, i, 0), __gen_count_up)
 //! ```
-//! Each migrated shape resumes from its recorded phase. The isolated replay
-//! compatibility path remains only for accepted CFGs whose owned transitions
-//! are still being implemented; those shapes are not part of the promoted
-//! effect or complexity contract.
+//! Every successfully lowered generator resumes from its recorded phase. A
+//! suspension CFG that cannot yet be represented by the owned frame fails at
+//! its source `gen fn`; lowering never substitutes replay semantics.
 
 use crate::ast::*;
 use crate::source_check::{GeneratorsLoweredModule, SourceCheckedModule};
-
-const COUNTER: &str = "__i";
-const TARGET: &str = "__target";
 
 /// Map each source item to the item positions it occupies after generator
 /// lowering. Origin tables use this before the destructive rewrite so helper
@@ -423,7 +419,6 @@ fn lower_gen(
     function_returns: &std::collections::HashMap<String, Type>,
     state_counter: &mut usize,
 ) -> Result<(Function, Function), String> {
-    let elem = iter_elem(&f.ret);
     let entry_state = *state_counter;
     *state_counter += 1;
     let resume_state = *state_counter;
@@ -446,119 +441,10 @@ fn lower_gen(
         return Ok(lowered);
     }
 
-    lower_replay_fallback(f, method, helper_name, entry_state, resume_state, elem)
-}
-
-/// Preserve the historical surface while an irregular CFG is migrated to the
-/// owned-frame state machine. This compatibility path is deliberately isolated
-/// so each new owned lowering removes callers from one place, and the final
-/// no-replay slice can delete this function without changing accepted syntax.
-fn lower_replay_fallback(
-    f: Function,
-    method: Option<&MethodCtx>,
-    helper_name: String,
-    entry_state: usize,
-    resume_state: usize,
-    elem: Option<Type>,
-) -> Result<(Function, Function), String> {
-    let mut helper_params = f.params.clone();
-    helper_params.push(Param {
-        name: TARGET.to_string(),
-        ty: Some(Type::Named("Int".to_string(), vec![])),
-        convention: Convention::Let,
-        default: None,
-    });
-    if let Some(context) = method {
-        if let Some(first) = helper_params.first_mut() {
-            if first.ty.is_none() {
-                first.ty = Some(context.self_ty.clone());
-            }
-        }
-    }
-
-    let mut statements = vec![Stmt::Let {
-        name: COUNTER.to_string(),
-        ty: None,
-        mutable: true,
-        value: Expr::Int(0),
-    }];
-    statements.extend(rewrite_block(f.body.clone(), &f.name, false)?.stmts);
-    statements.push(Stmt::Expr(Expr::Ctor {
-        name: "None".to_string(),
-        args: vec![],
-    }));
-    let mut helper_attributes = f.attributes.clone();
-    helper_attributes.push(crate::suspension::FRAME_FUNCTION_ATTRIBUTE.into());
-    helper_attributes.push(crate::suspension::FRAME_BOXED_ATTRIBUTE.into());
-    helper_attributes.push(crate::suspension::frame_state_attribute(resume_state));
-    let helper = Function {
-        line: f.line,
-        public: false,
-        comptime_only: false,
-        attributes: helper_attributes,
-        name: helper_name.clone(),
-        params: helper_params,
-        ret: elem
-            .as_ref()
-            .map(|item| Type::Named("Option".to_string(), vec![item.clone()])),
-        body: Block {
-            stmts: statements,
-            lines: Vec::new(),
-            region: None,
-        },
-        bounds: method.map_or_else(|| f.bounds.clone(), |context| context.bounds.clone()),
-        is_gen: false,
-        is_async: false,
-    };
-
-    let forwarded = f
-        .params
-        .iter()
-        .map(|parameter| Expr::Var(parameter.name.clone()))
-        .chain(std::iter::once(Expr::Var(TARGET.to_string())))
-        .collect();
-    let thunk = Expr::Lambda {
-        params: vec![Param {
-            name: TARGET.to_string(),
-            ty: Some(Type::Named("Int".to_string(), vec![])),
-            convention: Convention::Let,
-            default: None,
-        }],
-        body: Block {
-            stmts: vec![Stmt::Expr(Expr::Call {
-                name: helper_name,
-                args: forwarded,
-            })],
-            lines: vec![0],
-            region: None,
-        },
-        ret: None,
-    };
-    let mut wrapper_attributes = f.attributes;
-    wrapper_attributes.push(crate::suspension::FRAME_ENTRY_ATTRIBUTE.into());
-    wrapper_attributes.push(crate::suspension::FRAME_BOXED_ATTRIBUTE.into());
-    wrapper_attributes.push(crate::suspension::frame_state_attribute(entry_state));
-    let wrapper = Function {
-        line: f.line,
-        public: f.public,
-        comptime_only: false,
-        attributes: wrapper_attributes,
-        name: f.name,
-        params: f.params,
-        ret: f.ret,
-        body: Block {
-            stmts: vec![Stmt::Expr(Expr::Call {
-                name: "iter.from_gen".to_string(),
-                args: vec![thunk],
-            })],
-            lines: vec![0],
-            region: None,
-        },
-        bounds: f.bounds,
-        is_gen: false,
-        is_async: false,
-    };
-    Ok((helper, wrapper))
+    Err(format!(
+        "gen fn `{}` at line {} has a suspension control-flow shape that cannot yet be represented by Witchy's owned resumable frame; use finite direct/conditional/match yields or one terminal `while`, `while let`, or list `for` loop, and keep nested yielding loops in separate generators",
+        f.name, f.line,
+    ))
 }
 
 /// Normalize accepted finite forms and the flagship seed-yield loop into the
@@ -1772,9 +1658,8 @@ fn capture_direct_loop_locals(
 /// The frame is a fixed typed tuple of parameters, initialized locals, and an
 /// integer resume phase. One `iter.unfold` step restores those bindings,
 /// executes the statements after the previous yield only when resuming, and
-/// stops exactly at the next direct yield. Residual CFGs keep their existing
-/// surface through [`lower_replay_fallback`] until a later slice gives them the
-/// same owned transition contract.
+/// stops exactly at the next direct yield. Residual CFGs fail at the source
+/// boundary instead of silently selecting different effect semantics.
 fn lower_owned_loop_frame(
     f: &Function,
     method: Option<&MethodCtx>,
@@ -2963,119 +2848,22 @@ fn rewrite_owned_frame_return_expr(expression: Expr) -> Result<Expr, String> {
     })
 }
 
-fn rewrite_block(b: Block, gen_name: &str, in_region: bool) -> Result<Block, String> {
-    let in_region = in_region || b.region.is_some();
-    let mut out = Vec::with_capacity(b.stmts.len());
-    for stmt in b.stmts {
-        match stmt {
-            Stmt::Yield(e) => {
-                if in_region {
-                    return Err(
-                        "cannot `yield` inside `region:`: the generator frame outlives the region"
-                            .to_string(),
-                    );
-                }
-                let check = Expr::If {
-                    cond: Box::new(Expr::Binary {
-                        op: BinOp::Eq,
-                        lhs: Box::new(Expr::Var(COUNTER.to_string())),
-                        rhs: Box::new(Expr::Var(TARGET.to_string())),
-                    }),
-                    then_block: Block {
-                        stmts: vec![Stmt::Return(Some(Expr::Ctor {
-                            name: "Some".to_string(),
-                            args: vec![e],
-                        }))],
-                        lines: vec![0],
-                        region: None,
-                    },
-                    else_block: None,
-                };
-                out.push(Stmt::Expr(check));
-                out.push(Stmt::Assign {
-                    name: COUNTER.to_string(),
-                    value: Expr::Binary {
-                        op: BinOp::Add,
-                        lhs: Box::new(Expr::Var(COUNTER.to_string())),
-                        rhs: Box::new(Expr::Int(1)),
-                    },
-                });
-            }
-            Stmt::Let { name, ty, mutable, value } => out.push(Stmt::Let {
-                name,
-                ty,
-                mutable,
-                value: rewrite_expr(value, gen_name, in_region)?,
-            }),
-            Stmt::Assign { name, value } => out.push(Stmt::Assign {
-                name,
-                value: rewrite_expr(value, gen_name, in_region)?,
-            }),
-            Stmt::LetPattern { pattern, value } => out.push(Stmt::LetPattern {
-                pattern,
-                value: rewrite_expr(value, gen_name, in_region)?,
-            }),
-            Stmt::Return(None) => out.push(Stmt::Return(Some(Expr::Ctor {
-                name: "None".to_string(),
-                args: vec![],
-            }))),
-            Stmt::Return(Some(_)) => {
-                return Err(format!(
-                    "`return <value>` is not allowed in generator `{gen_name}`: a `gen fn` \
-                     declares `-> Iter(a)` and produces its elements with `yield` — use a bare \
-                     `return` to end the stream early"
-                ));
-            }
-            Stmt::Expr(e) => out.push(Stmt::Expr(rewrite_expr(e, gen_name, in_region)?)),
-            other => out.push(other),
-        }
-    }
-    Ok(Block { stmts: out, lines: b.lines, region: b.region })
-}
-
-/// Rewrite nested control-flow blocks for the compatibility fallback while
-/// their equivalent owned-frame lowering is migrated.
-fn rewrite_expr(e: Expr, gen_name: &str, in_region: bool) -> Result<Expr, String> {
-    Ok(match e {
-        Expr::If { cond, then_block, else_block } => Expr::If {
-            cond,
-            then_block: rewrite_block(then_block, gen_name, in_region)?,
-            else_block: match else_block {
-                Some(b) => Some(rewrite_block(b, gen_name, in_region)?),
-                None => None,
-            },
-        },
-        Expr::While { cond, body } => {
-            Expr::While { cond, body: rewrite_block(body, gen_name, in_region)? }
-        }
-        Expr::For { var, iter, body } => {
-            Expr::For { var, iter, body: rewrite_block(body, gen_name, in_region)? }
-        }
-        Expr::WhileLet { pattern, scrutinee, body } => Expr::WhileLet {
-            pattern,
-            scrutinee,
-            body: rewrite_block(body, gen_name, in_region)?,
-        },
-        Expr::Match { scrutinee, arms } => {
-            let mut new_arms = Vec::with_capacity(arms.len());
-            for a in arms {
-                new_arms.push(MatchArm {
-                    line: a.line,
-                    pattern: a.pattern,
-                    guard: a.guard,
-                    body: rewrite_expr(a.body, gen_name, in_region)?,
-                });
-            }
-            Expr::Match { scrutinee, arms: new_arms }
-        }
-        Expr::Block(b) => Expr::Block(rewrite_block(b, gen_name, in_region)?),
-        other => other,
-    })
-}
-
 #[cfg(test)]
 mod target_availability_tests {
     use super::*;
+
+    #[test]
+    fn residual_suspension_cfg_fails_closed_instead_of_replaying() {
+        let module = crate::parser::parse_module(
+            "gen fn grid() -> Iter(Int):\n    var outer = 0\n    while outer < 2:\n        var inner = 0\n        while inner < 2:\n            yield outer * 10 + inner\n            inner = inner + 1\n        outer = outer + 1\n",
+        )
+        .expect("parse nested yielding loops");
+        let checked = crate::source_check::check(module).expect("source check");
+        let error = lower(checked).expect_err("nested yielding loops need an owned transition");
+        assert!(error.contains("gen fn `grid` at line 1"), "source identity: {error}");
+        assert!(error.contains("owned resumable frame"), "missing frame contract: {error}");
+        assert!(!error.contains("from_gen"), "diagnostic must not advertise replay: {error}");
+    }
 
     #[test]
     fn generator_helpers_preserve_target_availability() {

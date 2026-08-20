@@ -201,8 +201,8 @@ fn rfc0130_rows_1_to_3_generators_resume_owned_frames_once_with_linear_work_on_w
         "no state needs more than the two source inputs",
     );
     assert_eq!(
-        small_carrier.max_lane_width, 4,
-        "the phase-aware owned resume frame has four fixed direct lanes",
+        small_carrier.max_lane_width, 5,
+        "the lazy phase-aware owned resume frame has five fixed direct lanes",
     );
     assert!(
         small_carrier.wholly_direct,

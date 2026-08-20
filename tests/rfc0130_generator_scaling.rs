@@ -127,7 +127,10 @@ fn rfc0130_acceptance_row_3_owned_frame_pulls_are_linear_and_storage_is_bounded_
     assert!(small_carrier.wholly_direct, "owned generator frame stays in direct Wasm lanes");
     assert_eq!(small_carrier.states, 2, "one entry and one resume state");
     assert_eq!(small_carrier.max_slots, 2, "the entry/resume ABI needs at most two slots");
-    assert_eq!(small_carrier.max_lane_width, 4, "the owned frame needs four direct lanes");
+    assert_eq!(
+        small_carrier.max_lane_width, 5,
+        "the lazy owned frame needs five direct lanes",
+    );
     assert_eq!(
         large_carrier, small_carrier,
         "live state, frame slots, and lane width stay bounded as pulls grow",
