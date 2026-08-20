@@ -336,7 +336,7 @@ esac
 if cargo nextest --version >/dev/null 2>&1; then
     # On macOS the list wrapper avoids a second cold exec per test binary by
     # deriving the ignored list from the ordinary list. Keep that optimization
-    # fail-closed: a new/renamed #[ignore] must update its two-name audit before
+    # fail-closed: a new/renamed #[ignore] must update its audited-name policy before
     # the gate runs, otherwise nextest could misclassify the test.
     scripts/nextest-list-wrapper.sh --validate-ignore-policy "$PWD"
     # Combine the e2e exclusion (default/--fast) and the fuzz-skip exclusion into one

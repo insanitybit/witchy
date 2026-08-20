@@ -17,6 +17,24 @@ wrapper="$PWD/scripts/nextest-list-wrapper.sh"
 
 # The optimization is fail-closed around the source-level ignored-test policy.
 "$wrapper" --validate-ignore-policy "$PWD"
+zero_ignore_root="$tmp/zero-ignore-policy"
+mkdir -p "$zero_ignore_root/src" "$zero_ignore_root/crates" "$zero_ignore_root/tests"
+printf '%s\n' 'fn chan_throughput_bounded_by_rc_floor() {}' \
+    >"$zero_ignore_root/src/stats.rs"
+"$wrapper" --validate-ignore-policy "$zero_ignore_root"
+
+unexpected_ignore_root="$tmp/unexpected-ignore-policy"
+mkdir -p "$unexpected_ignore_root/src" "$unexpected_ignore_root/crates" \
+    "$unexpected_ignore_root/tests"
+printf '%s\n' '#[ignore]' 'fn unrelated() {}' \
+    >"$unexpected_ignore_root/src/unrelated.rs"
+set +e
+"$wrapper" --validate-ignore-policy "$unexpected_ignore_root" \
+    >"$tmp/unexpected-ignore.out" 2>"$tmp/unexpected-ignore.err"
+unexpected_ignore_status=$?
+set -e
+[ "$unexpected_ignore_status" -eq 1 ]
+grep -q 'ignored-test policy changed' "$tmp/unexpected-ignore.err"
 
 # Persistent discovery is content-addressed. The exact same executable and
 # argument vector executes once, while later nextest runs reuse the complete
@@ -29,6 +47,26 @@ printf '%s\n' \
     '[ "${SLOW_DISCOVERY:-0}" -eq 0 ] || sleep 0.2' \
     'printf "%s\n" "cached_test: test"' >"$fake_list"
 chmod +x "$fake_list"
+
+# Once the audited benchmark becomes ordinary, its ignored peer must receive
+# an empty inventory rather than a stale synthesized test name.
+zero_normal="$tmp/zero-normal.out"
+zero_ignored="$tmp/zero-ignored.out"
+(
+    cd "$zero_ignore_root"
+    NEXTEST_RUN_ID=zero-ignore TMPDIR="$tmp" \
+        "$wrapper" /bin/bash -c 'printf "%s\n" "stats::tests::chan_throughput_bounded_by_rc_floor: test"' \
+        >"$zero_normal" &
+    zero_normal_pid=$!
+    NEXTEST_RUN_ID=zero-ignore TMPDIR="$tmp" \
+        "$wrapper" /bin/bash -c 'exit 99' --ignored >"$zero_ignored" &
+    zero_ignored_pid=$!
+    wait "$zero_normal_pid"
+    wait "$zero_ignored_pid"
+)
+[ "$(cat "$zero_normal")" = "stats::tests::chan_throughput_bounded_by_rc_floor: test" ]
+[ ! -s "$zero_ignored" ]
+
 cache_dir="$tmp/cache"
 telemetry="$tmp/telemetry"
 count_file="$tmp/cache-runs"

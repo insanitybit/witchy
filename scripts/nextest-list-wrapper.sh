@@ -3,6 +3,22 @@
 # binary followed by its `--list` arguments.
 set -euo pipefail
 
+audited_ignored_test_name() {
+    local source="${1:-.}/src/stats.rs"
+    [ -f "$source" ] || return 0
+    awk '
+        /^[[:space:]]*#\[ignore([^]]*)?\]/ { armed=1; next }
+        armed {
+            if ($0 ~ /^[[:space:]]*fn chan_throughput_bounded_by_rc_floor\(/) {
+                print "stats::tests::chan_throughput_bounded_by_rc_floor"
+            }
+            exit
+        }
+    ' "$source"
+}
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
+
 [ "${1:-}" != "--validate-ignore-policy" ] || {
     cd "${2:-.}"
     # Keep the gate self-contained on clean CI hosts: use find+grep rather than
@@ -11,9 +27,16 @@ set -euo pipefail
         -exec grep -nH -E '^[[:space:]]*#\[ignore([^]]*)?\]' {} + || true)"
     ignore_count="$(printf '%s\n' "$ignore_lines" | awk 'NF { n += 1 } END { print n + 0 }')"
     ignore_paths="$(printf '%s\n' "$ignore_lines" | awk -F: 'NF { print $1 }' | sort -u)"
-    expected_paths="src/stats.rs"
-    if [ "$ignore_count" -ne 1 ] || [ "$ignore_paths" != "$expected_paths" ] \
-        || ! awk '/^[[:space:]]*#\[ignore([^]]*)?\]/{ armed=1; next } armed { if ($0 ~ /^[[:space:]]*fn chan_throughput_bounded_by_rc_floor\(/) found=1; armed=0 } END { exit !found }' src/stats.rs; then
+    audited_ignored_test="$(audited_ignored_test_name .)"
+    policy_valid=0
+    if [ "$ignore_count" -eq 0 ] && [ -z "$ignore_paths" ] \
+        && [ -z "$audited_ignored_test" ]; then
+        policy_valid=1
+    elif [ "$ignore_count" -eq 1 ] && [ "$ignore_paths" = "src/stats.rs" ] \
+        && [ "$audited_ignored_test" = "stats::tests::chan_throughput_bounded_by_rc_floor" ]; then
+        policy_valid=1
+    fi
+    if [ "$policy_valid" -ne 1 ]; then
         echo "nextest-list-wrapper: ignored-test policy changed; update the audited names before discovery can skip the second cold exec" >&2
         printf '%s\n' "$ignore_lines" >&2
         exit 1
@@ -22,6 +45,8 @@ set -euo pipefail
 }
 
 [ "$#" -gt 0 ] || { echo "nextest-list-wrapper: missing test binary" >&2; exit 2; }
+
+audited_ignored_test="$(audited_ignored_test_name "$repo_root")"
 
 # New nextest versions expose one NEXTEST_RUN_ID to every list process. Older
 # versions do not, but all wrappers still share the nextest runner as PPID.
@@ -133,8 +158,8 @@ fi
 # the same time. Libtest's ordinary list includes ignored tests but does not
 # identify them, so nextest normally cold-executes every freshly linked ~100 MB
 # binary twice just to learn that almost all ignored lists are empty. Capture
-# the ordinary output and derive the ignored output from the two audited ignored
-# names instead. check.sh validates that source policy before invoking nextest;
+# the ordinary output and derive the ignored output from the audited optional
+# name instead. check.sh validates that source policy before invoking nextest;
 # a future un-audited `#[ignore]` makes the gate fail rather than silently
 # changing coverage. The ignored waiter holds NO global slot.
 if [ "$ignored" -eq 1 ]; then
@@ -159,9 +184,8 @@ if [ "$ignored" -eq 1 ]; then
         fi
         sleep 0.05
     done
-    awk '
-        $0 == "stats::tests::chan_throughput_bounded_by_rc_floor: test"
-    ' "$normal_output"
+    awk -v ignored="$audited_ignored_test" \
+        'ignored != "" && $0 == ignored ": test"' "$normal_output"
     rm -f "$normal_done" "$normal_output" 2>/dev/null || true
     exit 0
 else
@@ -243,7 +267,7 @@ if [ "$cache_enabled" -eq 1 ] && [ "$cacheable" -eq 1 ]; then
         cache_key="$({
             printf '%s\0%s\0%s\0%s\0%s\0' \
                 "$cache_schema" "$binary_digest" "$binary_name" "$wrapper_digest" \
-                'stats::tests::chan_throughput_bounded_by_rc_floor'
+                "$audited_ignored_test"
             shift
             for arg in "$@"; do printf '%s\0' "$arg"; done
         } | sha256_stream 2>/dev/null || true)"
