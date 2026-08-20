@@ -2380,7 +2380,7 @@ fn lower_owned_loop_frame(
             let mut resume = resume.stmts;
             resume.push(Stmt::Let {
                 name: yielded_name.clone(),
-                ty: Some(elem.clone()),
+                ty: None,
                 mutable: false,
                 value: yielded.clone(),
             });
@@ -2454,7 +2454,7 @@ fn lower_owned_loop_frame(
         .stmts;
         produce.push(Stmt::Let {
             name: yielded_name.clone(),
-            ty: Some(elem.clone()),
+            ty: None,
             mutable: false,
             value: first_yielded.clone(),
         });
