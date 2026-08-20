@@ -457,6 +457,22 @@ struct NestedBranchYields {
     else_yielded: Expr,
 }
 
+struct NestedMatchArmYield {
+    line: u32,
+    pattern: Pattern,
+    guard: Option<Expr>,
+    prefix: Vec<Stmt>,
+    suffix: Vec<Stmt>,
+    yielded: Expr,
+}
+
+struct NestedMatchYields {
+    outer_prefix: Vec<Stmt>,
+    outer_suffix: Vec<Stmt>,
+    scrutinee: Expr,
+    arms: Vec<NestedMatchArmYield>,
+}
+
 fn direct_yield_parts(block: &Block) -> Option<(Vec<Stmt>, Expr, Vec<Stmt>)> {
     if block_has_nested_yield(block) {
         return None;
@@ -521,6 +537,69 @@ fn nested_branch_yields(body: &Block) -> Option<NestedBranchYields> {
             else_prefix,
             else_suffix,
             else_yielded,
+        });
+    }
+    found
+}
+
+/// Recognize a `match` whose arms each contain one direct suspension point.
+/// The chosen arm becomes the resume phase, preserving pattern/guard behavior
+/// without re-evaluating the scrutinee or replaying an arm prefix.
+fn nested_match_yields(body: &Block) -> Option<NestedMatchYields> {
+    let mut found = None;
+    for (outer_index, statement) in body.stmts.iter().enumerate() {
+        let Stmt::Expr(Expr::Match { scrutinee, arms }) = statement else { continue };
+        if arms.is_empty() {
+            continue;
+        }
+        let lowered_arms = arms
+            .iter()
+            .map(|arm| {
+                let Expr::Block(block) = &arm.body else { return None };
+                let (prefix, yielded, suffix) = direct_yield_parts(block)?;
+                let suffix_block = Block {
+                    stmts: suffix.clone(),
+                    lines: Vec::new(),
+                    region: None,
+                };
+                let mut pattern_bindings = Vec::new();
+                crate::ast::pattern_binds(&arm.pattern, &mut pattern_bindings);
+                if pattern_bindings
+                    .iter()
+                    .any(|binding| block_references_binding(&suffix_block, binding))
+                {
+                    return None;
+                }
+                Some(NestedMatchArmYield {
+                    line: arm.line,
+                    pattern: arm.pattern.clone(),
+                    guard: arm.guard.clone(),
+                    prefix,
+                    suffix,
+                    yielded,
+                })
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(arms) = lowered_arms else { continue };
+        if found.is_some()
+            || block_has_any_yield(&Block {
+                stmts: body.stmts[..outer_index].to_vec(),
+                lines: Vec::new(),
+                region: None,
+            })
+            || block_has_any_yield(&Block {
+                stmts: body.stmts[outer_index + 1..].to_vec(),
+                lines: Vec::new(),
+                region: None,
+            })
+        {
+            return None;
+        }
+        found = Some(NestedMatchYields {
+            outer_prefix: body.stmts[..outer_index].to_vec(),
+            outer_suffix: body.stmts[outer_index + 1..].to_vec(),
+            scrutinee: scrutinee.as_ref().clone(),
+            arms,
         });
     }
     found
@@ -748,7 +827,18 @@ fn lower_owned_loop_frame(
     } else {
         None
     };
-    if (yields.is_empty() && nested_conditional.is_none() && nested_branches.is_none())
+    let nested_match = if yields.is_empty()
+        && nested_conditional.is_none()
+        && nested_branches.is_none()
+    {
+        nested_match_yields(body)
+    } else {
+        None
+    };
+    if (yields.is_empty()
+        && nested_conditional.is_none()
+        && nested_branches.is_none()
+        && nested_match.is_none())
         || (!yields.is_empty() && block_has_nested_yield(body))
         || block_has_generator_loop_control_transfer(body)
     {
@@ -1009,6 +1099,122 @@ fn lower_owned_loop_frame(
                 nested.else_yielded,
                 2,
             )?),
+        }));
+        step_statements.push(Stmt::Expr(Expr::While {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::And,
+                lhs: Box::new(cond.as_ref().clone()),
+                rhs: Box::new(Expr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(Expr::Var(suspended_name.clone())),
+                    rhs: Box::new(Expr::Int(0)),
+                }),
+            }),
+            body: Block { stmts: loop_statements, lines: Vec::new(), region: None },
+        }));
+        let mut next_frame_fields = bindings
+            .iter()
+            .map(|binding| Expr::Var(binding.name.clone()))
+            .collect::<Vec<_>>();
+        next_frame_fields.push(Expr::Var(suspended_name));
+        step_statements.push(Stmt::Expr(Expr::Match {
+            scrutinee: Box::new(Expr::Var(yielded_option_name)),
+            arms: vec![
+                MatchArm {
+                    line: 0,
+                    pattern: Pattern::Ctor {
+                        name: "Some".into(),
+                        args: vec![Pattern::Var(yielded_name.clone())],
+                    },
+                    guard: None,
+                    body: Expr::Ctor {
+                        name: "Some".into(),
+                        args: vec![Expr::Tuple(vec![
+                            Expr::Var(yielded_name),
+                            Expr::Tuple(next_frame_fields),
+                        ])],
+                    },
+                },
+                MatchArm {
+                    line: 0,
+                    pattern: Pattern::Ctor { name: "None".into(), args: Vec::new() },
+                    guard: None,
+                    body: Expr::Ctor { name: "None".into(), args: Vec::new() },
+                },
+            ],
+        }));
+    } else if let Some(nested) = nested_match {
+        let yielded_option_name = "__generator_yielded_option".to_string();
+        step_statements.push(Stmt::Let {
+            name: suspended_name.clone(),
+            ty: Some(Type::Named("Int".into(), Vec::new())),
+            mutable: true,
+            value: Expr::Int(0),
+        });
+        step_statements.push(Stmt::Let {
+            name: yielded_option_name.clone(),
+            ty: Some(Type::Named("Option".into(), vec![elem.clone()])),
+            mutable: true,
+            value: Expr::Ctor { name: "None".into(), args: Vec::new() },
+        });
+        for (index, arm) in nested.arms.iter().enumerate() {
+            let mut resume = arm.suffix.clone();
+            resume.extend(nested.outer_suffix.clone());
+            step_statements.push(Stmt::Expr(Expr::If {
+                cond: Box::new(Expr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(Expr::Var(resume_name.clone())),
+                    rhs: Box::new(Expr::Int((index + 1) as i64)),
+                }),
+                then_block: rewrite_owned_frame_returns(Block {
+                    stmts: resume,
+                    lines: Vec::new(),
+                    region: None,
+                })?,
+                else_block: None,
+            }));
+        }
+
+        let mut loop_statements = rewrite_owned_frame_returns(Block {
+            stmts: nested.outer_prefix,
+            lines: Vec::new(),
+            region: None,
+        })?
+        .stmts;
+        let arms = nested
+            .arms
+            .into_iter()
+            .enumerate()
+            .map(|(index, arm)| {
+                let mut statements = rewrite_owned_frame_returns(Block {
+                    stmts: arm.prefix,
+                    lines: Vec::new(),
+                    region: None,
+                })?
+                .stmts;
+                statements.push(Stmt::Assign {
+                    name: yielded_option_name.clone(),
+                    value: Expr::Ctor { name: "Some".into(), args: vec![arm.yielded] },
+                });
+                statements.push(Stmt::Assign {
+                    name: suspended_name.clone(),
+                    value: Expr::Int((index + 1) as i64),
+                });
+                Ok::<MatchArm, String>(MatchArm {
+                    line: arm.line,
+                    pattern: arm.pattern,
+                    guard: arm.guard,
+                    body: Expr::Block(Block {
+                        stmts: statements,
+                        lines: Vec::new(),
+                        region: None,
+                    }),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        loop_statements.push(Stmt::Expr(Expr::Match {
+            scrutinee: Box::new(nested.scrutinee),
+            arms,
         }));
         step_statements.push(Stmt::Expr(Expr::While {
             cond: Box::new(Expr::Binary {
@@ -1675,5 +1881,20 @@ mod target_availability_tests {
         assert!(debug.contains("__generator_resume_after_yield"));
         assert!(debug.contains("__generator_yielded_option"));
         assert!(debug.contains("Int(2)"), "the else branch needs a distinct resume phase: {debug}");
+    }
+
+    #[test]
+    fn yielding_match_arms_record_the_resuming_arm() {
+        let module = crate::parser::parse_module(
+            "gen fn alternating() -> Iter(Int):\n    var i = 0\n    var current: Option(Int) = Some(0)\n    while i < 4:\n        match current:\n            Some(value) ->\n                yield value\n                i = i + 1\n                current = None\n            None ->\n                yield i + 10\n                i = i + 1\n                current = Some(i)\n",
+        )
+        .expect("parse match-yield generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower match-yield generator").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(!debug.contains("iter.from_gen"), "match-arm yields must not replay: {debug}");
+        assert!(debug.contains("__generator_resume_after_yield"));
+        assert!(debug.contains("__generator_yielded_option"));
+        assert!(debug.contains("Int(2)"), "the second match arm needs its own phase: {debug}");
     }
 }
