@@ -4503,6 +4503,34 @@ Read a string-array field from an inline table. This is the array counterpart to
 
 - `fn from(value: TomlDecodeError) -> Self`
 
+## `transaction`
+
+transaction - an explicit lifecycle for staged text updates. A transaction remembers the text seen by the caller, the replacement it wants to publish, and the revision that replacement was based on. The caller must finish every transaction with `commit` or `rollback`; silently forgetting staged work is a compile error.
+
+#### `must sealed type Transaction`
+
+A pending text update. Construction is confined to `begin`, and `must` makes the checked lifecycle part of the type rather than a review convention.
+
+- `Pending(String, String, Int)`
+
+#### `type CommitError`
+
+An optimistic commit observed a different revision. `original` is returned so the caller can recover the value it started from or begin a fresh update.
+
+- `Conflict(String, Int, Int)`
+
+#### `fn begin(original: String, proposed: String, revision: Int) -> Transaction`
+
+Stage `proposed` as a replacement for `original`, based on `revision`.
+
+#### `fn commit(own transaction: Transaction, actual_revision: Int) -> Result(String, CommitError)`
+
+Consume a transaction. A matching revision commits the proposed text; a mismatch consumes the attempt and returns the original text with both revisions so retry policy stays explicit.
+
+#### `fn rollback(own transaction: Transaction) -> String`
+
+Consume a transaction without publishing its replacement and recover the original text.
+
 ## `url`
 
 Minimal URL parsing - the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path][?query][#fragment]`; the port defaults by scheme (443 for https, else 80) and the path to "/".

@@ -8,9 +8,11 @@ tracking: >
   Core syntax and checker slice implemented 2026-08-19. `must type`,
   `must sealed type`, and `must capability` preserve declaration metadata;
   all-path disposition, move/copy, overwrite, borrow, aggregate propagation,
-  and own-call attempt semantics have executable checker coverage. Promotion
-  still requires a standard-library structured-resource integration and the
-  full compile-fail/runtime matrix.
+  and own-call attempt semantics have executable checker coverage. The standard
+  `transaction` resource now proves success, conflict, rollback, branch, move,
+  and aggregate behavior through the checker and compiled Wasm, plus rejection
+  when an early return would abandon the resource.
+  Promotion still requires the final workspace matrix.
 ---
 
 # RFC-0114: Must-consume obligations (linear resource handles)
@@ -201,8 +203,19 @@ this follows.
   not be consumed by the callee; unbound borrowed temporaries are rejected.
   Evidence:
   `must_consume_borrows_require_a_live_owner_and_only_own_operations_may_destructure`.
-- OPEN: migrate one structured standard-library resource API and prove its
-  success, early-return, branch, aggregate, and failure paths in compiled Wasm.
+- PROVEN: the standard `transaction.Transaction` resource can only be finished
+  by crossing an explicit `own` boundary. Its `commit` success and conflict,
+  `rollback`, all-path branch, explicit move, implicit-copy rejection,
+  aggregate propagation, and early-return loss execute through the ordinary
+  checker and compiled-Wasm paths. Evidence:
+  `transaction_resource_consumes_success_conflict_rollback_moves_and_aggregates_on_wasm`
+  and
+  `transaction_resource_rejects_lifecycle_loss_on_scope_branch_move_and_aggregate_paths`.
+- OPEN: accept a resource consumed on an early-returning branch while preserving
+  that resource for the fallthrough path. The checker currently joins the moved
+  state from the terminating branch and rejects the later fallthrough consumer
+  as a use after move; abandonment on an early return is already rejected by
+  the standard-resource fixture above.
 - OPEN: run the final workspace matrix and promote the RFC only after the
   standard-library integration is merged.
 

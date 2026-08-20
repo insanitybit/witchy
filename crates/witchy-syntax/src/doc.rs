@@ -268,6 +268,7 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
 
 /// A type's source-faithful declaration head, without the trailing colon.
 fn type_decl(t: &TypeDef) -> String {
+    let obligation = if t.must_consume { "must " } else { "" };
     if t.is_capability {
         let kw = if t.grantable { "grantable capability" } else { "capability" };
         let v = &t.variants[0];
@@ -280,16 +281,16 @@ fn type_decl(t: &TypeDef) -> String {
             } else {
                 format!("({})", v.fields.iter().map(type_str).collect::<Vec<_>>().join(", "))
             };
-            return format!("{kw} {} from {from}", t.name);
+            return format!("{obligation}{kw} {} from {from}", t.name);
         }
         // `capability X:` — a record capability carrying named state.
-        return format!("{kw} {}", t.name);
+        return format!("{obligation}{kw} {}", t.name);
     }
 
     let mut head = if t.sealed {
-        format!("sealed type {}", t.name)
+        format!("{obligation}sealed type {}", t.name)
     } else {
-        format!("type {}", t.name)
+        format!("{obligation}type {}", t.name)
     };
     if !t.params.is_empty() {
         head.push_str(&format!("({})", t.params.join(", ")));
@@ -592,7 +593,8 @@ fn doc_above_type(lines: &[&str], t: &TypeDef) -> String {
     } else {
         "type"
     };
-    let prefix = format!("{keyword} {}", t.name);
+    let obligation = if t.must_consume { "must " } else { "" };
+    let prefix = format!("{obligation}{keyword} {}", t.name);
     let Some(i) = lines.iter().position(|line| {
         line.strip_prefix(&prefix).is_some_and(|rest| {
             rest.as_bytes()
@@ -896,6 +898,17 @@ mod tests {
         let md = render("auth", src).unwrap();
         assert!(md.contains("#### `sealed type Token`"), "sealed heading: {md}");
         assert!(md.contains("An opaque token."), "sealed doc: {md}");
+    }
+
+    #[test]
+    fn renders_must_consume_type_with_its_docs() {
+        let src = "// A pending operation.\nmust sealed type Transaction:\n    Pending(Int)\n";
+        let md = render("transaction", src).unwrap();
+        assert!(
+            md.contains("#### `must sealed type Transaction`"),
+            "must-consume heading: {md}"
+        );
+        assert!(md.contains("A pending operation."), "must-consume doc: {md}");
     }
 
     // BUG-167: the `async`/`gen` qualifier is part of the rendered signature, and

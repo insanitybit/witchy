@@ -360,6 +360,7 @@
     mod example_sweeps;
     mod examples_programs;
     mod modes;
+    mod must_consume;
 
     fn wasm_run(src: &str) -> Vec<String> {
         witchy_interp::compiler_natives::install();
