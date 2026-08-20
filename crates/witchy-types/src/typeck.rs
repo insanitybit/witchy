@@ -3328,6 +3328,64 @@ fn is_unique_capacity_result(ty: &ast::Type) -> bool {
     )
 }
 
+/// Whether evaluating an expression can reach the statement after it.
+///
+/// Branch-state joins must ignore successors that have already transferred
+/// control with `return`, `break`, or `continue`: facts from those paths are
+/// checked at the transfer site and do not constrain a later fallthrough path.
+fn expr_can_complete(expr: &Expr) -> bool {
+    match expr {
+        Expr::If { then_block, else_block: Some(else_block), .. } => {
+            block_can_complete(then_block) || block_can_complete(else_block)
+        }
+        Expr::Match { arms, .. } if !arms.is_empty() => {
+            arms.iter().any(|arm| expr_can_complete(&arm.body))
+        }
+        Expr::Block(block) => block_can_complete(block),
+        _ => true,
+    }
+}
+
+fn block_can_complete(block: &Block) -> bool {
+    let mut reachable = true;
+    for stmt in &block.stmts {
+        if !reachable {
+            break;
+        }
+        reachable = match stmt {
+            Stmt::Return(_) | Stmt::Break | Stmt::Continue => false,
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Yield(value) => expr_can_complete(value),
+        };
+    }
+    reachable
+}
+
+/// Join ownership facts from control-flow successors that actually reach the
+/// continuation. If every successor terminates, retain one checked terminal
+/// state so the enclosing scope does not resurrect discharged obligations.
+fn join_reachable_binding_facts(
+    before_consumed: &HashSet<(usize, String)>,
+    before_must_live: &HashSet<(usize, String)>,
+    branches: &[(bool, HashSet<(usize, String)>, HashSet<(usize, String)>)],
+) -> (HashSet<(usize, String)>, HashSet<(usize, String)>) {
+    let mut reaching = branches.iter().filter(|(completes, _, _)| *completes).peekable();
+    let first = reaching.next().or_else(|| branches.first());
+    let Some((_, first_consumed, first_must_live)) = first else {
+        return (before_consumed.clone(), before_must_live.clone());
+    };
+    let mut consumed = first_consumed.clone();
+    let mut must_live = first_must_live.clone();
+    for (_, branch_consumed, branch_must_live) in reaching {
+        consumed = &consumed | branch_consumed;
+        must_live = &must_live | branch_must_live;
+    }
+    (consumed, must_live)
+}
+
 /// A `unique List` / `unique Dict` result is also a compiled capacity-token
 /// promise. Keep the proof surface deliberately explicit: fresh literals/new
 /// storage and direct calls carrying the same result ABI. Broader local-flow
@@ -3365,37 +3423,6 @@ fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
 
     fn block_produces_capacity(block: &Block, functions: &HashSet<String>) -> bool {
         matches!(block.stmts.last(), Some(Stmt::Expr(expr)) if produces_capacity(expr, functions))
-    }
-
-    fn expr_can_complete(expr: &Expr) -> bool {
-        match expr {
-            Expr::If { then_block, else_block: Some(else_block), .. } => {
-                block_can_complete(then_block) || block_can_complete(else_block)
-            }
-            Expr::Match { arms, .. } if !arms.is_empty() => {
-                arms.iter().any(|arm| expr_can_complete(&arm.body))
-            }
-            Expr::Block(block) => block_can_complete(block),
-            _ => true,
-        }
-    }
-
-    fn block_can_complete(block: &Block) -> bool {
-        let mut reachable = true;
-        for stmt in &block.stmts {
-            if !reachable {
-                break;
-            }
-            reachable = match stmt {
-                Stmt::Return(_) | Stmt::Break | Stmt::Continue => false,
-                Stmt::Let { value, .. }
-                | Stmt::Assign { value, .. }
-                | Stmt::LetPattern { value, .. }
-                | Stmt::Expr(value)
-                | Stmt::Yield(value) => expr_can_complete(value),
-            };
-        }
-        reachable
     }
 
     fn check_returns_expr(
@@ -6642,13 +6669,15 @@ impl Checker {
                 self.unify(&Ty::Bool, &ct)?;
                 let before = self.consumed.clone();
                 let must_before = self.must_live.clone();
+                let then_completes = block_can_complete(then_block);
                 let tt = self.infer_block_expected(then_block, expected)?;
                 let consumed_then = std::mem::replace(&mut self.consumed, before.clone());
                 let must_then = std::mem::replace(&mut self.must_live, must_before.clone());
                 self.coerce_arg(expected, &tt)?;
-                if let Some(else_block) = else_block {
+                let else_completes = if let Some(else_block) = else_block {
                     let et = self.infer_block_expected(else_block, expected)?;
                     self.coerce_arg(expected, &et)?;
+                    block_can_complete(else_block)
                 } else if matches!(self.resolve(expected), Ty::Dyn(_, _)) {
                     return terr(
                         "`if` without `else` has an implicit `Nil` path that cannot produce \
@@ -6658,9 +6687,14 @@ impl Checker {
                     self.coerce_arg(expected, &Ty::Unit).map_err(|e| TypeError {
                         message: format!("`if` without `else` produces `Nil`: {}", e.message),
                     })?;
-                }
-                self.consumed = &consumed_then | &self.consumed;
-                self.must_live = &must_then | &self.must_live;
+                    true
+                };
+                let branches = [
+                    (then_completes, consumed_then, must_then),
+                    (else_completes, self.consumed.clone(), self.must_live.clone()),
+                ];
+                (self.consumed, self.must_live) =
+                    join_reachable_binding_facts(&before, &must_before, &branches);
                 self.finish_infer(expr, expected.clone())
             }
             Expr::Block(block) => {
@@ -8477,25 +8511,29 @@ impl Checker {
                     .map_err(|e| TypeError { message: format!("`if` condition: {}", e.message) })?;
                 let before = self.consumed.clone();
                 let must_before = self.must_live.clone();
+                let then_completes = block_can_complete(then_block);
                 let tt = self.infer_block(then_block)?;
                 let consumed_then = std::mem::replace(&mut self.consumed, before.clone());
                 let must_then = std::mem::replace(&mut self.must_live, must_before.clone());
-                match else_block {
+                let else_completes = match else_block {
                     Some(eb) => {
                         let et = self.infer_block(eb)?;
                         self.unify(&tt, &et).map_err(|e| TypeError {
                             message: format!("`if` branches disagree: {}", e.message),
                         })?;
+                        block_can_complete(eb)
                     }
                     None => {
                         self.unify(&tt, &Ty::Unit)?;
+                        true
                     }
-                }
-                // A binding consumed on either path is treated as consumed after.
-                self.consumed = &consumed_then | &self.consumed;
-                // A must obligation remains live when either path leaves it
-                // undisposed. Only consumption on every path discharges it.
-                self.must_live = &must_then | &self.must_live;
+                };
+                let branches = [
+                    (then_completes, consumed_then, must_then),
+                    (else_completes, self.consumed.clone(), self.must_live.clone()),
+                ];
+                (self.consumed, self.must_live) =
+                    join_reachable_binding_facts(&before, &must_before, &branches);
                 Ok(tt)
             }
             Expr::Block(b) => self.infer_block(b),
@@ -8751,9 +8789,8 @@ impl Checker {
         }
         let result = expected.cloned().unwrap_or_else(|| self.fresh());
         let before = self.consumed.clone();
-        let mut merged = before.clone();
         let must_before = self.must_live.clone();
-        let mut must_merged = HashSet::new();
+        let mut branch_facts = Vec::with_capacity(arms.len());
         for arm in arms {
             self.consumed = before.clone();
             self.must_live = must_before.clone();
@@ -8785,11 +8822,14 @@ impl Checker {
             }
             self.reject_live_must_in_current_scope()?;
             self.pop();
-            merged = &merged | &self.consumed;
-            must_merged = &must_merged | &self.must_live;
+            branch_facts.push((
+                expr_can_complete(&arm.body),
+                self.consumed.clone(),
+                self.must_live.clone(),
+            ));
         }
-        self.consumed = merged;
-        self.must_live = must_merged;
+        (self.consumed, self.must_live) =
+            join_reachable_binding_facts(&before, &must_before, &branch_facts);
         // Coverage analysis (exhaustiveness + unreachability) reasons per
         // alternative, so flatten a top-level `Pattern::Or` arm into one synthetic
         // arm per alternative (sharing the guard) — exactly what the old

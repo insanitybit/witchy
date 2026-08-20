@@ -208,14 +208,17 @@ this follows.
   `rollback`, all-path branch, explicit move, implicit-copy rejection,
   aggregate propagation, and early-return loss execute through the ordinary
   checker and compiled-Wasm paths. Evidence:
-  `transaction_resource_consumes_success_conflict_rollback_moves_and_aggregates_on_wasm`
+  `transaction_resource_consumes_success_conflict_rollback_moves_aggregates_and_cfg_early_return_on_wasm`
   and
   `transaction_resource_rejects_lifecycle_loss_on_scope_branch_move_and_aggregate_paths`.
-- OPEN: accept a resource consumed on an early-returning branch while preserving
-  that resource for the fallthrough path. The checker currently joins the moved
-  state from the terminating branch and rejects the later fallthrough consumer
-  as a use after move; abandonment on an early return is already rejected by
-  the standard-resource fixture above.
+- PROVEN: CFG joins exclude ownership state from terminating `if` branches and
+  `match` arms, so a resource consumed before an early return remains available
+  to a later fallthrough consumer. Every terminating path must still discharge
+  its live obligations. Evidence:
+  `must_consume_cfg_join_excludes_terminating_branches`,
+  `transaction_resource_consumes_success_conflict_rollback_moves_aggregates_and_cfg_early_return_on_wasm`,
+  and
+  `transaction_resource_rejects_lifecycle_loss_on_scope_branch_move_and_aggregate_paths`.
 - OPEN: run the final workspace matrix and promote the RFC only after the
   standard-library integration is merged.
 

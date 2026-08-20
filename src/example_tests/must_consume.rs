@@ -8,7 +8,7 @@ fn must_error(source: &str) -> String {
 }
 
 #[test]
-fn transaction_resource_consumes_success_conflict_rollback_moves_and_aggregates_on_wasm() {
+fn transaction_resource_consumes_success_conflict_rollback_moves_aggregates_and_cfg_early_return_on_wasm() {
     let source = r#"
 import transaction
 from transaction import Transaction, CommitError
@@ -29,6 +29,15 @@ fn resolve(flag: Bool) -> String:
     else:
         transaction.rollback(pending)
 
+fn resolve_early(rollback: Bool) -> String:
+    let pending = transaction.begin("early-old", "early-new", 5)
+    if rollback:
+        let original = transaction.rollback(pending)
+        return original
+    match transaction.commit(pending, 5):
+        Ok(value) -> value
+        Err(_error) -> "unexpected"
+
 fn main(console: Console):
     let first = transaction.begin("move-old", "move-new", 2)
     let transferred = move first
@@ -45,10 +54,18 @@ fn main(console: Console):
     console.print(finish_batch(batch))
     console.print(resolve(true))
     console.print(resolve(false))
+    console.print(resolve_early(true))
+    console.print(resolve_early(false))
 "#;
 
     let expected = vec![
-        "move-new", "conflict-old:4:9", "batch-old", "new", "old",
+        "move-new",
+        "conflict-old:4:9",
+        "batch-old",
+        "new",
+        "old",
+        "early-old",
+        "early-new",
     ];
     assert_eq!(run_on_wasm(source), expected, "compiled Wasm resource lifecycle");
     assert_eq!(link_run(source), expected, "static obligation erases before backend execution");

@@ -28,6 +28,33 @@
     }
 
     #[test]
+    fn must_consume_cfg_join_excludes_terminating_branches() {
+        let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\n";
+
+        check_source(&format!(
+            "{prelude}fn run(flag: Bool) -> Int:\n    let ticket = make()\n    if flag:\n        finish(ticket)\n        return 1\n    finish(ticket)\n    2\n\nfn main():\n    let _ = run(true)\n"
+        ))
+        .expect("a terminating branch does not move from its fallthrough successor");
+
+        check_source(&format!(
+            "{prelude}fn run(flag: Bool) -> Int:\n    let ticket = make()\n    match flag:\n        true ->\n            finish(ticket)\n            return 1\n        false -> ()\n    finish(ticket)\n    2\n\nfn main():\n    let _ = run(false)\n"
+        ))
+        .expect("match joins also exclude terminating arm state");
+
+        let abandoned = check_source(&format!(
+            "{prelude}fn run(flag: Bool) -> Int:\n    let ticket = make()\n    if flag:\n        return 1\n    finish(ticket)\n    2\n\nfn main():\n    let _ = run(true)\n"
+        ))
+        .expect_err("a terminating branch must discharge every live obligation");
+        assert!(
+            abandoned
+                .message
+                .contains("return leaves must-consume value `ticket` undisposed"),
+            "{}",
+            abandoned.message
+        );
+    }
+
+    #[test]
     fn must_consume_transfers_without_copying_and_propagates_through_aggregates() {
         let returned = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn forward() -> Ticket:\n    let ticket = make()\n    ticket\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    finish(forward())\n";
         check_source(returned).expect("return and own-call boundaries transfer obligations");
