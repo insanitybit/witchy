@@ -3705,8 +3705,14 @@ fn is_generated_anon_union_name(name: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn is_generated_anon_type(name: &str, line: Option<u32>) -> bool {
-    line == Some(u32::MAX) && is_generated_anon_name(name)
+fn is_generated_anon_type(definition: &TypeDef) -> bool {
+    let Some(fields) = crate::ast::anon_record_field_names(&definition.name) else {
+        return false;
+    };
+    matches!(definition.variants.as_slice(), [variant]
+        if variant.name == definition.name
+            && variant.line == u32::MAX
+            && variant.field_names == fields)
 }
 
 fn generated_anon_trait_impl_key(im: &ImplDef) -> Option<(String, Vec<String>, String, Vec<String>)> {
@@ -3750,10 +3756,9 @@ fn check_reserved_source_names(modules: &[(String, Module)]) -> Result<(), LinkE
             continue;
         }
         let mut generated_anon_types: HashSet<&str> = HashSet::new();
-        for (idx, item) in module.items.iter().enumerate() {
-            let line = module.item_lines.get(idx).copied();
+        for item in &module.items {
             if let Item::Type(t) = item {
-                if is_generated_anon_type(&t.name, line) {
+                if is_generated_anon_type(t) {
                     generated_anon_types.insert(t.name.as_str());
                 }
             }
@@ -3780,7 +3785,7 @@ fn check_reserved_item(
             check_reserved_function(module_name, f, generated_anon_types)
         }
         Item::Type(t) => {
-            let generated_anon = is_generated_anon_type(&t.name, line);
+            let generated_anon = is_generated_anon_type(t);
             if is_reserved_user_identifier(&t.name) && !generated_anon {
                 return reserved_name_error(module_name, "type", &t.name);
             }
@@ -3821,17 +3826,19 @@ fn check_reserved_item(
             Ok(())
         }
         Item::Impl(im) => {
+            let generated_impl = im.origin == ImplOrigin::CompilerGenerated;
             if let Some(trait_name) = &im.trait_name {
                 if is_reserved_user_identifier(trait_name) {
                     return reserved_name_error(module_name, "trait", trait_name);
                 }
             }
-            if is_reserved_user_identifier(&im.type_name) {
+            let generated_anon_target = generated_impl
+                && crate::ast::anon_record_field_names(&im.type_name).is_some();
+            if is_reserved_user_identifier(&im.type_name) && !generated_anon_target {
                 return reserved_name_error(module_name, "type", &im.type_name);
             }
             for method in &im.methods {
-                let generated_method = im.origin == ImplOrigin::CompilerGenerated;
-                if generated_method {
+                if generated_impl {
                     // A typed `emit_item` owns the complete impl subtree. Its
                     // private method, parameter, local, and intrinsic names are
                     // compiler syntax rather than user-spellable declarations.
@@ -4633,6 +4640,23 @@ mod tests {
 
         link(vec![("main".to_string(), module)], "main", noop_expand)
             .expect("compiler-generated private method survives source-name validation");
+    }
+
+    #[test]
+    fn synthetic_record_identity_survives_outer_line_restamping() {
+        let mut module = crate::parser::parse_module(
+            "fn main(console: Console):\n    let value = .{name: \"Nia\", age: 9}\n    console.print(value.name)\n",
+        )
+        .expect("parse structural record fixture");
+        let synthetic = module
+            .items
+            .iter()
+            .position(|item| matches!(item, Item::Type(definition) if definition.name.starts_with("__anon")))
+            .expect("parser synthesizes a structural record declaration");
+        module.item_lines[synthetic] = 1;
+
+        link(vec![("main".to_string(), module)], "main", noop_expand)
+            .expect("the structural declaration's own marker survives outer restamping");
     }
 
     #[test]
