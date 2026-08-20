@@ -27,14 +27,14 @@ book/src/mutating-methods.md#block-1	2	auxiliary-result-discard	list.pop	-	-
 book/src/mutating-methods.md#block-4	3	expression-position-mutator	dict.insert__String__Int	-	-
 book/src/mutating-methods.md#block-4	4	expression-position-mutator	dict.insert__String__Int	-	-
 book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__String__Int	-	-
-spec/language.md#block-16	7	expression-position-mutator	main.bump	-	-
+spec/language.md#block-17	7	expression-position-mutator	main.bump	-	-
 
 witchy-files	292
-markdown-blocks	228
-checked	520
+markdown-blocks	229
+checked	521
 rejected	0
 var-declarations	41
-resolved-var-calls	736
+resolved-var-calls	735
 mechanical-self-reassignment	0
 expression-position-mutator	11
 immutable-var-argument	0

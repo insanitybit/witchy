@@ -6637,8 +6637,10 @@ impl Checker {
             Expr::If { cond, then_block, else_block } => {
                 let ct = self.infer(cond)?;
                 self.unify(&Ty::Bool, &ct)?;
+                let before = self.consumed.clone();
                 let must_before = self.must_live.clone();
                 let tt = self.infer_block_expected(then_block, expected)?;
+                let consumed_then = std::mem::replace(&mut self.consumed, before.clone());
                 let must_then = std::mem::replace(&mut self.must_live, must_before.clone());
                 self.coerce_arg(expected, &tt)?;
                 if let Some(else_block) = else_block {
@@ -6654,6 +6656,7 @@ impl Checker {
                         message: format!("`if` without `else` produces `Nil`: {}", e.message),
                     })?;
                 }
+                self.consumed = &consumed_then | &self.consumed;
                 self.must_live = &must_then | &self.must_live;
                 self.finish_infer(expr, expected.clone())
             }
