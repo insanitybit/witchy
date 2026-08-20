@@ -464,6 +464,7 @@ struct NestedMatchArmYield {
     prefix: Vec<Stmt>,
     suffix: Vec<Stmt>,
     yielded: Expr,
+    rebind_on_resume: bool,
 }
 
 struct NestedMatchYields {
@@ -564,10 +565,13 @@ fn nested_match_yields(body: &Block) -> Option<NestedMatchYields> {
                 };
                 let mut pattern_bindings = Vec::new();
                 crate::ast::pattern_binds(&arm.pattern, &mut pattern_bindings);
-                if pattern_bindings
+                let rebind_on_resume = pattern_bindings
                     .iter()
-                    .any(|binding| block_references_binding(&suffix_block, binding))
-                {
+                    .any(|binding| block_references_binding(&suffix_block, binding));
+                // Rebinding a selected arm can safely read a restored frame
+                // variable. An arbitrary scrutinee expression could repeat an
+                // effect, so those shapes retain the replay fallback.
+                if rebind_on_resume && !matches!(scrutinee.as_ref(), Expr::Var(_)) {
                     return None;
                 }
                 Some(NestedMatchArmYield {
@@ -577,6 +581,7 @@ fn nested_match_yields(body: &Block) -> Option<NestedMatchYields> {
                     prefix,
                     suffix,
                     yielded,
+                    rebind_on_resume,
                 })
             })
             .collect::<Option<Vec<_>>>();
@@ -878,6 +883,12 @@ fn lower_owned_loop_frame(
     if bindings.is_empty() {
         return Ok(None);
     }
+    if let Some(nested) = &nested_match
+        && nested.arms.iter().any(|arm| arm.rebind_on_resume)
+        && !matches!(&nested.scrutinee, Expr::Var(name) if bindings.iter().any(|binding| binding.name == *name))
+    {
+        return Ok(None);
+    }
 
     let live_locals = if yields.len() == 1 {
         let yield_index = yields[0];
@@ -1160,17 +1171,50 @@ fn lower_owned_loop_frame(
         for (index, arm) in nested.arms.iter().enumerate() {
             let mut resume = arm.suffix.clone();
             resume.extend(nested.outer_suffix.clone());
+            let resume = rewrite_owned_frame_returns(Block {
+                stmts: resume,
+                lines: Vec::new(),
+                region: None,
+            })?;
+            let resume = if arm.rebind_on_resume {
+                Block {
+                    stmts: vec![Stmt::Expr(Expr::Match {
+                        scrutinee: Box::new(nested.scrutinee.clone()),
+                        arms: vec![
+                            MatchArm {
+                                line: arm.line,
+                                pattern: arm.pattern.clone(),
+                                // The chosen phase already proves that the
+                                // source guard succeeded. Re-running it could
+                                // duplicate effects.
+                                guard: None,
+                                body: Expr::Block(resume),
+                            },
+                            MatchArm {
+                                line: 0,
+                                pattern: Pattern::Wildcard,
+                                guard: None,
+                                body: Expr::Block(Block {
+                                    stmts: Vec::new(),
+                                    lines: Vec::new(),
+                                    region: None,
+                                }),
+                            },
+                        ],
+                    })],
+                    lines: Vec::new(),
+                    region: None,
+                }
+            } else {
+                resume
+            };
             step_statements.push(Stmt::Expr(Expr::If {
                 cond: Box::new(Expr::Binary {
                     op: BinOp::Eq,
                     lhs: Box::new(Expr::Var(resume_name.clone())),
                     rhs: Box::new(Expr::Int((index + 1) as i64)),
                 }),
-                then_block: rewrite_owned_frame_returns(Block {
-                    stmts: resume,
-                    lines: Vec::new(),
-                    region: None,
-                })?,
+                then_block: resume,
                 else_block: None,
             }));
         }
