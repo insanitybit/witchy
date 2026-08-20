@@ -417,6 +417,10 @@ fn gc_list_scratch(prefix: &str, level: usize, type_id: u32) -> String {
     format!("{prefix}_{type_id}_{level}")
 }
 
+fn gc_list_field_scratch(level: usize, type_id: u32, field: usize) -> String {
+    format!("__witchy_gc_list_field_{type_id}_{level}_{field}")
+}
+
 /// The WASM representation of a value:
 ///   * `I64` — `Int`, and the UNIVERSAL representation for type variables /
 ///     generic values / heap slots. Pointers and bools are zero-extended into
@@ -4782,6 +4786,23 @@ impl<'types> Codegen<'types> {
                     name: gc_list_scratch(GC_LIST_RAW_INDEX_TMP, level, id),
                     ty: i64t(),
                 });
+                if let Kind::GcRef(struct_id) = element_kind
+                    && let Some(definition) = self.gc_structs.get(struct_id as usize)
+                {
+                    for (field, kind) in definition.fields.iter().copied().enumerate() {
+                        locals.push(WirLocal {
+                            name: gc_list_field_scratch(level, id, field),
+                            ty: Self::wir_ty_for_kind(match kind {
+                                witchy_wir::wir::Kind::I32 => Kind::I32,
+                                witchy_wir::wir::Kind::I64 => Kind::I64,
+                                witchy_wir::wir::Kind::F64 => Kind::F64,
+                                witchy_wir::wir::Kind::ExternRef => Kind::ExternRef,
+                                witchy_wir::wir::Kind::GcRef(id) => Kind::GcRef(id),
+                                witchy_wir::wir::Kind::StructRef => continue,
+                            }),
+                        });
+                    }
+                }
             }
         }
         for i in 0..REUSE_POOL {
@@ -6923,6 +6944,21 @@ impl<'types> Codegen<'types> {
         let list_ty = self.ast_type_of_expr(list)?;
         let (type_id, array_id, element_kind) =
             self.gc_reference_list_layout(&list_ty)?;
+        if self.cur_fn_name == "task.run"
+            && let Expr::Var(root) = list
+            && root == "slots"
+            && let Some(mut nodes) = self.lower_task_slot_replacement(
+                root,
+                target,
+                value,
+                type_id,
+                array_id,
+                element_kind,
+            )
+        {
+            nodes.push(N::Push(W::GetLocal(root.clone())));
+            return Some(W::Seq(nodes));
+        }
         let level = self.assign_level;
         if level >= APPLY_POOL {
             return None;
@@ -7049,6 +7085,114 @@ impl<'types> Codegen<'types> {
             },
             N::Push(W::GetLocal(dst)),
         ]))
+    }
+
+    /// The executor's `slots` array is a confined owner and its elements are
+    /// observed only by destructive constructor matches inside `task.run`.
+    /// Evaluate every replacement field first, then retag and overwrite the
+    /// existing Slot object. This preserves value semantics while avoiding one
+    /// Wasm-GC allocation for every scheduler transition.
+    fn lower_task_slot_replacement(
+        &mut self,
+        root: &str,
+        target: &Expr,
+        value: &Expr,
+        type_id: u32,
+        array_id: u32,
+        element_kind: Kind,
+    ) -> Option<witchy_wir::wir::WirSeq> {
+        use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirNode as N};
+        let Kind::GcRef(struct_id) = element_kind else { return None };
+        let Expr::Ctor { name, args } = value else { return None };
+        let owner_ty = self.ast_type_of_expr(value);
+        let (layout, layout_id) = self.gc_layout_for_ctor(name, owner_ty.as_ref())?;
+        if layout_id != struct_id || layout.field_types.len() != args.len() {
+            return None;
+        }
+        let fields = self.gc_structs.get(struct_id as usize)?.fields.clone();
+        let level = self.assign_level;
+        if level >= APPLY_POOL {
+            return None;
+        }
+        let target_kind = self.kind_of(target);
+        self.assign_level = level + 1;
+        let lowered = (|| {
+            let target = Self::wir_convert(self.lower_expr(target)?, target_kind, Kind::I64);
+            let zero = |kind: WK| match kind {
+                WK::I32 => W::ConstI32(0),
+                WK::I64 => W::ConstI64(0),
+                WK::F64 => W::ConstF64(0.0),
+                ref_kind @ (WK::ExternRef | WK::StructRef | WK::GcRef(_)) => {
+                    W::RefNull(ref_kind)
+                }
+            };
+            let mut values: Vec<W> = fields.iter().copied().map(zero).collect();
+            values[0] = W::ConstI32(layout.tag? as i32);
+            for (index, arg) in args.iter().enumerate() {
+                values[layout.field_base as usize + index] =
+                    self.lower_gc_ctor_arg(arg, &layout.field_types[index])?;
+            }
+            Some((target, values))
+        })();
+        self.assign_level = level;
+        let (target, values) = lowered?;
+        let len = gc_list_scratch(GC_LIST_LEN_TMP, level, type_id);
+        let raw_index = gc_list_scratch(GC_LIST_RAW_INDEX_TMP, level, type_id);
+        let item = gc_list_scratch(GC_LIST_VALUE_TMP, level, type_id);
+        let len_i64 = || Self::wir_convert(W::GetLocal(len.clone()), Kind::I32, Kind::I64);
+        let invalid = W::Binary {
+            op: BinOp::Or,
+            kind: WK::I32,
+            lhs: Box::new(W::Binary {
+                op: BinOp::Lt,
+                kind: WK::I64,
+                lhs: Box::new(W::GetLocal(raw_index.clone())),
+                rhs: Box::new(W::ConstI64(0)),
+            }),
+            rhs: Box::new(W::Binary {
+                op: BinOp::Ge,
+                kind: WK::I64,
+                lhs: Box::new(W::GetLocal(raw_index.clone())),
+                rhs: Box::new(len_i64()),
+            }),
+        };
+        let abort = witchy_wir::wir_helpers::abort_nodes(
+            witchy_syntax::diag::DiagTemplate::ListIndexOob,
+            W::GetLocal(raw_index.clone()),
+            len_i64(),
+            W::ConstI32(0),
+        );
+        let mut nodes = vec![N::SetLocal { local: raw_index.clone(), value: target }];
+        nodes.extend(values.into_iter().enumerate().map(|(field, value)| N::SetLocal {
+            local: gc_list_field_scratch(level, type_id, field),
+            value,
+        }));
+        nodes.extend([
+            N::SetLocal {
+                local: len,
+                value: W::ArrayLen(Box::new(W::GetLocal(root.to_string()))),
+            },
+            N::If { cond: invalid, then_: abort, els: vec![], result: None },
+            N::SetLocal {
+                local: item.clone(),
+                value: W::ArrayGet {
+                    array_id,
+                    array: Box::new(W::GetLocal(root.to_string())),
+                    index: Box::new(Self::wir_convert(
+                        W::GetLocal(raw_index),
+                        Kind::I64,
+                        Kind::I32,
+                    )),
+                },
+            },
+        ]);
+        nodes.extend(fields.into_iter().enumerate().map(|(field, _)| N::StructSet {
+            struct_id,
+            field: field as u32,
+            base: W::GetLocal(item.clone()),
+            value: W::GetLocal(gc_list_field_scratch(level, type_id, field)),
+        }));
+        Some(nodes)
     }
 
     fn lower_gc_function_list_concat(
@@ -9148,6 +9292,23 @@ impl<'types> Codegen<'types> {
                             name: gc_list_scratch(GC_LIST_RAW_INDEX_TMP, level, id),
                             ty: WirTy::Int,
                         });
+                        if let Kind::GcRef(struct_id) = element_kind
+                            && let Some(definition) = self.gc_structs.get(struct_id as usize)
+                        {
+                            for (field, kind) in definition.fields.iter().copied().enumerate() {
+                                locals.push(WirLocal {
+                                    name: gc_list_field_scratch(level, id, field),
+                                    ty: Self::wir_ty_for_kind(match kind {
+                                        witchy_wir::wir::Kind::I32 => Kind::I32,
+                                        witchy_wir::wir::Kind::I64 => Kind::I64,
+                                        witchy_wir::wir::Kind::F64 => Kind::F64,
+                                        witchy_wir::wir::Kind::ExternRef => Kind::ExternRef,
+                                        witchy_wir::wir::Kind::GcRef(id) => Kind::GcRef(id),
+                                        witchy_wir::wir::Kind::StructRef => continue,
+                                    }),
+                                });
+                            }
+                        }
                     }
                 }
                 for i in 0..REUSE_POOL {
