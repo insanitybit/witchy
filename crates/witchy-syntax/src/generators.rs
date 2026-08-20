@@ -249,7 +249,10 @@ fn validate_generator_expr(expr: &Expr, name: &str, in_region: bool) -> Result<(
                 validate_generator_block(block, name, in_region)?;
             }
         }
-        Expr::While { body, .. } | Expr::For { body, .. } | Expr::Block(body) => {
+        Expr::While { body, .. }
+        | Expr::WhileLet { body, .. }
+        | Expr::For { body, .. }
+        | Expr::Block(body) => {
             validate_generator_block(body, name, in_region)?;
         }
         Expr::Match { arms, .. } => {
@@ -844,7 +847,50 @@ fn lower_owned_loop_frame(
 ) -> Result<Option<(Function, Function)>, String> {
     let Some(elem) = iter_elem(&f.ret) else { return Ok(None) };
     let Some((last, prelude)) = f.body.stmts.split_last() else { return Ok(None) };
-    let Stmt::Expr(Expr::While { cond, body }) = last else { return Ok(None) };
+    let (cond, owned_body) = match last {
+        Stmt::Expr(Expr::While { cond, body }) => (cond.clone(), body.clone()),
+        Stmt::Expr(Expr::WhileLet {
+            pattern,
+            scrutinee,
+            body,
+        }) => {
+            // Preserve `while let` until generator lowering so a suspension in
+            // its body can use the same selected-arm phase and binding restore
+            // machinery as an ordinary `match`. The wildcard arm ends the
+            // stream because this terminal loop has no source suffix.
+            let dispatch = Expr::Match {
+                scrutinee: scrutinee.clone(),
+                arms: vec![
+                    MatchArm {
+                        line: 0,
+                        pattern: pattern.clone(),
+                        guard: None,
+                        body: Expr::Block(body.clone()),
+                    },
+                    MatchArm {
+                        line: 0,
+                        pattern: Pattern::Wildcard,
+                        guard: None,
+                        body: Expr::Block(Block {
+                            stmts: vec![Stmt::Return(None)],
+                            lines: vec![0],
+                            region: None,
+                        }),
+                    },
+                ],
+            };
+            (
+                Box::new(Expr::Bool(true)),
+                Block {
+                    stmts: vec![Stmt::Expr(dispatch)],
+                    lines: vec![0],
+                    region: None,
+                },
+            )
+        }
+        _ => return Ok(None),
+    };
+    let body = &owned_body;
     let yields = body
         .stmts
         .iter()
@@ -1798,6 +1844,15 @@ fn rewrite_expr(e: Expr, gen_name: &str, in_region: bool) -> Result<Expr, String
         Expr::For { var, iter, body } => {
             Expr::For { var, iter, body: rewrite_block(body, gen_name, in_region)? }
         }
+        Expr::WhileLet {
+            pattern,
+            scrutinee,
+            body,
+        } => Expr::WhileLet {
+            pattern,
+            scrutinee,
+            body: rewrite_block(body, gen_name, in_region)?,
+        },
         Expr::Match { scrutinee, arms } => {
             let mut new_arms = Vec::with_capacity(arms.len());
             for a in arms {
