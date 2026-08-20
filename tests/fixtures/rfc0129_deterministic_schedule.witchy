@@ -1,0 +1,98 @@
+import chan
+import list
+from chan import Receiver, Sender
+
+type Packet:
+    Packet(Int, List(Int))
+
+async fn bounded_producer(tx: Sender(Int)) -> Nil:
+    chan.send(tx, 10).await
+    chan.send(tx, 20).await
+    chan.send(tx, 30).await
+
+async fn cancelled_child(console: Console) -> Nil:
+    chan.yield_now().await
+    console.print("cancel leaked")
+
+async fn quiescent_join_child(console: Console, tx: Sender(Int)) -> Nil:
+    chan.send(tx, 1).await
+    chan.send(tx, 2).await
+    console.print("quiescent child done")
+
+async fn joined_child(console: Console, label: String) -> Nil:
+    chan.yield_now().await
+    console.print("join ${label}")
+
+async fn packet_producer(tx: Sender(Packet), count: Int) -> Nil:
+    var i = 0
+    while i < count:
+        chan.send(tx, Packet(i, [i, i + 1])).await
+        i = i + 1
+
+async fn main(console: Console):
+    let (bounded_tx, bounded_rx) = chan.channel(1).await
+    let bounded_handle = chan.spawn(bounded_producer(bounded_tx)).await
+    let bounded_a = chan.recv(bounded_rx).await
+    let bounded_b = chan.recv(bounded_rx).await
+    let bounded_c = chan.recv(bounded_rx).await
+    chan.join(bounded_handle).await
+    console.print("bounded ${bounded_a} ${bounded_b} ${bounded_c}")
+
+    let (parked_tx, _parked_rx) = chan.channel(1).await
+    let parked_handle = chan.spawn(quiescent_join_child(console, parked_tx)).await
+    chan.join(parked_handle).await
+    console.print("quiescent join released")
+
+    let (first_tx, first_rx) = chan.channel(1).await
+    let (second_tx, second_rx) = chan.channel(1).await
+    chan.send(first_tx, 1).await
+    chan.send(second_tx, 2).await
+    let selected = chan.select(first_rx, second_rx).await
+    match selected:
+        First(value) -> console.print("select first ${value}")
+        Second(value) -> console.print("select second ${value}")
+        Closed -> console.print("select closed")
+    let selected_second = chan.select(first_rx, second_rx).await
+    match selected_second:
+        First(value) -> console.print("select first ${value}")
+        Second(value) -> console.print("select second ${value}")
+        Closed -> console.print("select closed")
+    let selected_closed = chan.select(first_rx, second_rx).await
+    match selected_closed:
+        First(value) -> console.print("select first ${value}")
+        Second(value) -> console.print("select second ${value}")
+        Closed -> console.print("select closed")
+
+    let cancelled = chan.spawn(cancelled_child(console)).await
+    chan.cancel(cancelled).await
+    console.print("cancel done")
+
+    let (quiet_tx, quiet_rx) = chan.channel(0).await
+    let quiet_before = chan.recv(quiet_rx).await
+    chan.send(quiet_tx, 42).await
+    let quiet_after = chan.recv(quiet_rx).await
+    console.print("quiescence ${quiet_before} ${quiet_after}")
+
+    chan.scope([joined_child(console, "a"), joined_child(console, "b")]).await
+    console.print("scope done")
+
+    let (packet_tx, packet_rx) = chan.channel(8).await
+    let packet_handle = chan.spawn(packet_producer(packet_tx, 200)).await
+    var packet_count = 0
+    var packet_sum = 0
+    while packet_count < 200:
+        let packet = chan.recv(packet_rx).await
+        match packet:
+            Some(Packet(index, payload)) ->
+                packet_sum = packet_sum + index + list.at(payload, 1)
+                packet_count = packet_count + 1
+            None -> packet_count = 200
+    chan.join(packet_handle).await
+    console.print("packets ${packet_count} ${packet_sum}")
+
+    let (text_tx, text_rx) = chan.channel(1).await
+    chan.send(text_tx, "witchy").await
+    let text = chan.recv(text_rx).await
+    match text:
+        Some(value) -> console.print("text ${value}")
+        None -> console.print("text closed")
