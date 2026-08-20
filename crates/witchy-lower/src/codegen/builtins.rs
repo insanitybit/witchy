@@ -1459,10 +1459,16 @@ impl Codegen<'_> {
                         value: W::FromSlot(Box::new(get_or_call), Self::wir_kind(param_kind)),
                     });
                     
-                    // Body evaluation
+                    // Body evaluation with isolated unit facts
+                    let saved_inplace = self.inplace_push.clone();
+                    self.begin_unit(body);
+                    let body_seq = self.lower_block(body)?;
+                    self.finish_unit("dict_inline_lambda").unwrap();
+                    self.inplace_push = saved_inplace;
+
                     seq.push(N::SetLocal {
                         local: new_val_local.clone(),
-                        value: W::Seq(self.lower_block(body)?),
+                        value: W::Seq(body_seq),
                     });
                     
                     // Insert the updated value
