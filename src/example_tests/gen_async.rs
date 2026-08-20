@@ -142,6 +142,35 @@ fn main(console: Console):
         );
     }
 
+    /// Destructured loop locals that survive a yield are ordinary typed frame
+    /// fields; resumption neither loses their bindings nor reruns the prefix.
+    #[test]
+    fn generator_tuple_pattern_local_survives_yield_without_replay() {
+        let src = r#"import iter
+
+gen fn values(console: Console) -> Iter(Int):
+    var running = true
+    while running:
+        let (first, second) = (1, 2)
+        console.print("before")
+        yield first
+        console.print("between ${second}")
+        running = false
+        yield second
+
+fn main(console: Console):
+    let result: List(Int) = iter.collect(values(console))
+    console.print("${result}")
+"#;
+        let expected = ["before", "between 2", "[1, 2]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.

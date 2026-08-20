@@ -1273,42 +1273,97 @@ fn direct_loop_live_locals(
     let mut type_environment = entry_bindings.to_vec();
     let mut live = Vec::new();
     for (index, statement) in body.stmts.iter().enumerate() {
-        if matches!(statement, Stmt::LetPattern { .. }) {
-            return None;
-        }
-        let Stmt::Let {
-            name,
-            ty,
-            mutable,
-            value,
-        } = statement
-        else {
-            continue;
+        let declared = match statement {
+            Stmt::Let {
+                name,
+                ty,
+                mutable,
+                value,
+            } => {
+                let inferred = ty
+                    .clone()
+                    .or_else(|| generator_frame_type_from_bindings(value, &type_environment))?;
+                vec![GeneratorFrameBinding {
+                    name: name.clone(),
+                    ty: inferred,
+                    mutable: *mutable,
+                }]
+            }
+            Stmt::LetPattern { pattern, value } => {
+                let value_ty = generator_frame_type_from_bindings(value, &type_environment)?;
+                generator_pattern_bindings(pattern, &value_ty)?
+            }
+            _ => continue,
         };
-        let inferred = ty
-            .clone()
-            .or_else(|| generator_frame_type_from_bindings(value, &type_environment))?;
-        let binding = GeneratorFrameBinding {
-            name: name.clone(),
-            ty: inferred,
-            mutable: *mutable,
-        };
-        if let Some(next_yield) = yields.iter().copied().find(|yield_index| *yield_index > index) {
-            let after = Block {
-                stmts: body.stmts[next_yield + 1..].to_vec(),
-                lines: Vec::new(),
-                region: None,
-            };
-            if block_references_binding(&after, name) {
-                live.push(DirectLoopLocal {
-                    binding: binding.clone(),
-                    declaration_index: index,
-                });
+        for binding in &declared {
+            if let Some(next_yield) = yields.iter().copied().find(|yield_index| *yield_index > index)
+            {
+                let after = Block {
+                    stmts: body.stmts[next_yield + 1..].to_vec(),
+                    lines: Vec::new(),
+                    region: None,
+                };
+                if block_references_binding(&after, &binding.name) {
+                    live.push(DirectLoopLocal {
+                        binding: binding.clone(),
+                        declaration_index: index,
+                    });
+                }
             }
         }
-        type_environment.push(binding);
+        type_environment.extend(declared);
     }
     Some(live)
+}
+
+fn generator_pattern_bindings(
+    pattern: &Pattern,
+    ty: &Type,
+) -> Option<Vec<GeneratorFrameBinding>> {
+    match pattern {
+        Pattern::Wildcard
+        | Pattern::Int(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_)
+        | Pattern::Duration(_)
+        | Pattern::IntRange { .. } => Some(Vec::new()),
+        Pattern::Var(name) => Some(vec![GeneratorFrameBinding {
+            name: name.clone(),
+            ty: ty.clone(),
+            mutable: false,
+        }]),
+        Pattern::Tuple(patterns) => {
+            let Type::Tuple(types) = ty else { return None };
+            if patterns.len() != types.len() {
+                return None;
+            }
+            let mut bindings = Vec::new();
+            for (pattern, ty) in patterns.iter().zip(types) {
+                bindings.extend(generator_pattern_bindings(pattern, ty)?);
+            }
+            Some(bindings)
+        }
+        Pattern::List { elems, rest } => {
+            let Type::Named(name, args) = ty else { return None };
+            let [elem_ty] = args.as_slice() else { return None };
+            if name != "List" {
+                return None;
+            }
+            let mut bindings = Vec::new();
+            for pattern in elems {
+                bindings.extend(generator_pattern_bindings(pattern, elem_ty)?);
+            }
+            if let Some(Some(name)) = rest {
+                bindings.push(GeneratorFrameBinding {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    mutable: false,
+                });
+            }
+            Some(bindings)
+        }
+        Pattern::Ctor { .. } | Pattern::AnonCtor { .. } | Pattern::Or(_) => None,
+    }
 }
 
 fn block_references_binding(block: &Block, name: &str) -> bool {
@@ -2790,15 +2845,16 @@ mod target_availability_tests {
     }
 
     #[test]
-    fn pattern_local_crossing_a_yield_waits_for_pattern_frame_fields() {
+    fn tuple_pattern_local_crossing_a_yield_uses_frame_fields() {
         let module = crate::parser::parse_module(
             "gen fn values() -> Iter(Int):\n    var running = true\n    while running:\n        let (a, b) = (1, 2)\n        yield a\n        running = false\n        yield b\n",
         )
         .expect("parse pattern-local generator");
         let checked = crate::source_check::check(module).expect("source check");
-        let lowered = lower(checked).expect("preserve pattern-local generator").into_module();
+        let lowered = lower(checked).expect("lower pattern-local generator").into_module();
         let debug = format!("{lowered:?}");
-        assert!(debug.contains("iter.from_gen"), "pattern locals need explicit frame fields: {debug}");
+        assert!(!debug.contains("iter.from_gen"), "tuple pattern locals must not replay: {debug}");
+        assert!(debug.contains("direct_live"), "the live tuple field must be restored: {debug}");
     }
 
     #[test]
