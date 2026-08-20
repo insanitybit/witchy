@@ -43,7 +43,7 @@ that a transformed AST remains checked.
 There is **one user-program run path: the compiled WASM backend.** `witchy
 <file>`, `witchy run`, and `witchy sandbox` all compile to a wasm binary and
 execute it under wasmtime, so dev == deploy by construction. The tree-walking
-interpreter is *not* a run path - it's the differential oracle (`witchy
+interpreter is *not* a run path - it's the source-level oracle (`witchy
 parity`), the `comptime:` evaluator, the in-language test runner, and the
 effectful build-step executor.
 
@@ -76,7 +76,7 @@ are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 | `witchy-lower` | `codegen`, `analysis` | Lowers the checked AST to WIR, selecting ordinary slots, typed references, or canonical specialized layouts before Wasm-kind erasure; `analysis` is the uniqueness / cap-token pass the in-place and destination paths depend on. |
 | `witchy-confinement` | normalized policy plus platform providers | Target-neutral filesystem, network, Fetch-origin, and syscall-class confinement policy; Linux Landlock/seccomp enforcement consumes this policy without depending on compiler stages or Wasmtime. |
 | `witchy-runtime` | `value`, `native`, `net`, `confine`, `runtime` *(native-only)* | The runtime `Value` (shared by interpreter + host), native-function registry (FFI-as-capability), runtime adapters over shared confinement policy, and the Wasmtime sandbox (capability-gated host functions, memory caps, epoch preemption). The non-`runtime` modules are wasm-safe; `runtime` sits behind the `native` feature. |
-| `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking reference semantics - the parity ORACLE (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) - plus compile-time `comptime:` / `tag"…"` evaluation and the task-shaped checked-link service that injects the compile-time expander. |
+| `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking source-level oracle (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) - plus compile-time `comptime:` / `tag"…"` evaluation and the task-shaped checked-link service that injects the compile-time expander. |
 | `witchy-caps` | `capabilities`, `grants` | The footprint analyzer (`witchy caps`, `caps-diff`) - recomputed from source, never trusted metadata - and grant-document (`--grants` TOML) parsing + cross-check (`witchy grants-check`). |
 | `witchy` *(root package)* | `main`, `cli`, `source`, `lib` (the wasm-playground `cdylib`), `lsp`, `idp` | The composition package: browser entrypoints, diagnostics LSP, trusted-publishing IdP *test* simulator, and native CLI orchestration. `cli` owns help/version presentation and shared flag/secret decoding; `source` owns native project discovery, bundled lookup, dependency-aware file loading/linking, and source expansion. Dispatch and command execution remain concentrated in `main.rs` and are tracked in the architecture ledger rather than described here as already thin. |
 
@@ -85,9 +85,38 @@ are the package manager and registry, self-hosted in witchy.
 
 ## The parity discipline
 
-The interpreter defines the semantics; the compiled backend must agree -
-**zero silent divergence**, including error paths. This is the project's core
-engineering invariant, enforced by:
+Stable observable semantics converge before support
+([RFC-0135](../rfcs/0135-stable-semantics-converge.md)). Independent expected
+results adjudicate correctness. Interpreter/Wasm agreement proves the
+backends match; it does not prove they are right. A silent split (two
+different answers) is a bug. A loud error on a backend that does not yet
+implement an experimental surface is how unfinished work is allowed to
+exist.
+
+The compiled backend is the user run path. The interpreter is a
+source-level oracle for `witchy parity`, `comptime`, in-language tests, and
+effectful build steps. It does not reproduce Wasm carrier layouts, GC
+encodings, SIMD, or allocation strategies.
+
+Verification, by kind of work:
+
+- **Stable language semantics** land on both backends in the same change,
+  with an independent expected result, and stay under focused
+  `witchy parity` in the inner loop.
+- **Experimental runtime representations** (unsettled carriers, ABIs,
+  host layouts) are Wasm-first. The slice records a named interpreter
+  debt: fixture, missing boundary, convergence milestone. The interpreter
+  errors loudly until that debt is paid, at or before the feature is
+  marked supported.
+- **Pure optimizations** (SIMD, SROA, bounds elision, local pruning)
+  exist only on compiled Wasm. Compare optimized Wasm to scalar Wasm and
+  to the expected result. Do not implement them in the interpreter.
+- **Capability, confinement, and ABI security** keep strict differential
+  coverage. No interpreter debt.
+- **The full parity corpus** runs at stabilization, release, and
+  periodic CI. It is not the default check on every experimental slice.
+
+Enforced by:
 
 - `witchy parity <file>`: runs both backends and compares values and complete
   error diagnostics byte-for-byte. An error/value split, different errors, or a
@@ -99,16 +128,14 @@ engineering invariant, enforced by:
   injects a shared semantic mutation that both backends agree on and proves the
   external expectation still rejects it.
 
-The consequence for contributors: **any observable behavior you add must land
-on both backends in the same change**, or be a loud error on the one that
-lacks it. The codebase treats a "documented divergence" as a bug.
-
-Parity isn't a specification oracle: the interpreter and compiled backend
-share parsing, linking, type checking, and parts of lowering policy, so a
-common-mode defect can preserve agreement. New semantics therefore need an
-independent expected result or rejection in addition to parity. The
-conformance corpus is deliberately small and reviewable; broad generated
-coverage stays in the differential and property suites.
+The interpreter and compiled backend share parsing, linking, type checking,
+and parts of lowering policy, so a common-mode defect can preserve
+agreement. New supported semantics therefore need an independent expected
+result or rejection in addition to parity. The conformance corpus is
+deliberately small and reviewable; broad generated coverage stays in the
+differential and property suites. [RFC-0058](../rfcs/0058-differential-harness-integrity.md)
+still governs the corpus when it runs: fail-closed classification, vacuity
+guards, seeded divergence controls.
 
 ## The WASM value model
 

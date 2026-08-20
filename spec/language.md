@@ -1,11 +1,14 @@
 # The witchy language reference
 
 This is the reference for witchy's syntax and semantics. The behavioral
-contract is enforced by differential testing: the tree-walking interpreter is
-the reference semantics, and the compiled backend (WebAssembly) must produce
-identical results. The test suite and a CI sweep (the project's
-`witchy parity` harness) hold the backends to **zero silent divergence**,
-including error paths.
+contract is enforced at support by independent expected results plus
+interpreter/Wasm agreement ([RFC-0135](../rfcs/0135-stable-semantics-converge.md)):
+the tree-walking interpreter is a source-level oracle, and the compiled
+backend (WebAssembly) is the user run path. Both must match the expected
+result, or loudly error. The test suite and a CI sweep (the project's
+`witchy parity` harness) catch silent splits, including error paths. Experimental
+runtime work may lead on Wasm with a named interpreter debt; pure
+optimizations never enter the interpreter.
 
 Every ` ```witchy ` block below is a complete program that the test suite
 type-checks - and, when it needs nothing beyond `Console`, runs on both

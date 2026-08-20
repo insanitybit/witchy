@@ -35,7 +35,7 @@ needs to know to use witchy *right now*:
 - [`stdlib.md`](stdlib.md) - the module-by-module API. **Generated** from
   `std/*.witchy` doc-comments - never hand-edit it.
 - [`architecture.md`](architecture.md) - the compile/run pipeline, the file map,
-  and the parity discipline between the two backends.
+  and the parity discipline (convergence before support; RFC-0135).
 - [`value-model.md`](value-model.md) - the compiled value representation shared
   by lowering, WIR, and the wasmtime runtime.
 - [`wasm-abi.md`](wasm-abi.md) - the WebAssembly ABI: the host imports, the value

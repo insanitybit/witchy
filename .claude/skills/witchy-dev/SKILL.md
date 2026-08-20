@@ -17,16 +17,34 @@ you didn't make are someone's work-in-progress rather than mess to clean up, and
 master moves under you mid-task. §3 has the mechanics; the rule of thumb is
 **re-check before you act, and never undo what you didn't do.**
 
-## 0. The one rule: parity
+## 0. The one rule: converge before support
 
-Two backends, **zero silent divergence.** The interpreter
-(`crates/witchy-interp/src/interpreter.rs`) is the reference semantics; the
-compiled-WASM path (`crates/witchy-lower/src/codegen/`) must match it. Any
-observable behavior must work — or loudly error — identically on both.
+Stable observable semantics converge before support
+([RFC-0135](../../../../rfcs/0135-stable-semantics-converge.md)).
+The interpreter (`crates/witchy-interp`) is a source-level oracle for
+`comptime`, tests, and parity; the compiled-WASM path
+(`crates/witchy-lower/src/codegen/`) is the user run path. Independent
+expected results adjudicate correctness. Backend agreement only proves
+the backends match.
 
-Anything a backend cannot run identically is a **loud compile or runtime error,
-never a different answer.** If you add user-visible behavior, add a differential
-test in `src/example_tests.rs`. `witchy parity <file>` is how you check a claim.
+- **Stable language semantics:** interpreter and Wasm both match an
+  independent expected result. Focused `witchy parity` stays in the inner
+  loop.
+- **Experimental runtime representations:** Wasm-first with a named
+  interpreter debt (fixture, missing boundary, convergence milestone).
+  The interpreter loudly errors until that debt is paid.
+- **Pure optimizations** (SIMD, SROA, bounds elision): never implement
+  them in the interpreter. Compare optimized Wasm to scalar Wasm and the
+  expected result.
+- **Capability, confinement, ABI security:** strict differential
+  coverage. No debt.
+- **Full parity corpus:** stabilization, release, and periodic CI, not
+  every experimental slice.
+
+Disagreement is a **loud compile or runtime error, never a different
+answer.** If you add user-visible *stable* behavior, add a differential
+test with an expected result in `src/example_tests.rs`. `witchy parity
+<file>` is how you check that the backends agree.
 
 ## 1. witchy the language — the 90% rundown
 
@@ -357,8 +375,10 @@ Only when this page is genuinely insufficient:
   `spec/stdlib.md` — generated module-by-module API. `spec/architecture.md` —
   pipeline and workspace layout.
 - `CONTRIBUTING.md` — build/test/parity. `docs/agile-agent-playbook.md` — agent
-  process, boundaries, handoff format.
+  process, boundaries, handoff format. `rfcs/0135-stable-semantics-converge.md`
+  — when dual implementation is required.
 - `book/src/` — narrative tour, ordered by `book/src/SUMMARY.md`.
 - Source of truth when docs disagree:
-  `crates/witchy-interp/src/interpreter.rs` + `std/*.witchy` + the differential
-  tests.
+  `spec/` + `std/*.witchy` + independent expected results
+  (`src/example_tests/`, `tests/misc/semantic_conformance.rs`). The
+  interpreter is a source-level oracle, not the spec.

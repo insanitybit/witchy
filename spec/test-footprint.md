@@ -12,7 +12,9 @@ Use `--files` when reviewing ownership or a proposed deletion.
 - `src/example_tests/` supplies independently expected semantics and compares
   the interpreter with compiled Wasm. Parity tells you the two backends agree.
   It can't tell you they're right - for that you need an oracle that doesn't
-  come from either one.
+  come from either one. [RFC-0135](../rfcs/0135-stable-semantics-converge.md)
+  requires that independent expected result at support; experimental runtime
+  work may lead on Wasm with a named interpreter debt.
 - `tests/misc/semantic_conformance.rs` states exact values, rejection
   diagnostics, and capability footprints independently. Its seeded shared-stage
   mutation proves that parity can agree on a wrong implementation while the

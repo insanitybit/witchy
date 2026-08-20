@@ -3,7 +3,7 @@
 This document is the single source of truth for agent-driven contributor workflow.
 Its intent is fast, predictable progress without weakening gate guarantees.
 
-Last updated: 2026-08-02
+Last updated: 2026-08-20
 
 ## 1) Standard contribution pipeline
 
@@ -32,12 +32,16 @@ Boundary ownership is explicit in every task handoff:
 - `spec`: `spec/*` and runnable docs artifacts.
 - `tests`: `src/example_tests.rs`, `tests/*`, and any touched fixture.
 
-### Wasm-first iteration for unsettled opt-mode features
+### Wasm-first iteration for unsettled runtime representations
 
-Compiled Wasm is the delivery backend. During active design of a new opt-mode
-runtime representation or ABI, implement and validate the Wasm path first.
-Do not require a matching interpreter implementation for every intermediate
-carrier, lowering, or optimization experiment.
+[RFC-0135](../rfcs/0135-stable-semantics-converge.md) is the policy: stable
+observable semantics converge before support. Compiled Wasm is the delivery
+backend. During active design of a new runtime representation or ABI
+(opt-mode references, async frames, `Dynamic` carriers, host ABI
+experiments), implement and validate the Wasm path first. Do not require a
+matching interpreter implementation for every intermediate carrier, lowering,
+or optimization experiment. Pure optimizations (SIMD, SROA, bounds elision)
+never enter the interpreter at all.
 
 Each Wasm-first slice must instead carry:
 
@@ -47,12 +51,23 @@ Each Wasm-first slice must instead carry:
   handoff: fixture name, missing interpreter boundary, and the milestone when
   it must converge.
 
+The interpreter must loudly error, reject, or be unreachable for that
+surface until the debt is paid. A different answer is a bug.
+
 Interpreter work becomes required when the representation and surface contract
 are stable, before the RFC row is marked **PROVEN**, before the feature exits
-experimental opt mode, or when an interpreter-only consumer needs it. At that
+experimental status, or when an interpreter-only consumer (`comptime`,
+`witchy test`, effectful build steps) needs it. At that
 point the same fixture becomes a differential interpreter/Wasm check. Do not
 duplicate a changing backend design merely to keep parity green during
 iteration.
+
+Capability, confinement, and ABI security still require strict differential
+coverage in the same change. No debt there.
+
+Focused `witchy parity` on a *stable* semantic change stays in the inner
+loop. The full parity corpus belongs at stabilization, release, and
+periodic CI, not on every experimental carrier slice.
 
 ## 2) Required artifacts per task
 
@@ -69,12 +84,14 @@ For each task, include:
 
 ### RFC-0122 experimental opt-mode policy: Wasm first
 
-While the explicit-reference carrier ABI is changing, RFC-0122 aggregate,
+RFC-0122 is the first instance of the RFC-0135 Wasm-first rule. While the
+explicit-reference carrier ABI is changing, RFC-0122 aggregate,
 list, and exclusive-reference fixtures are **compiled-Wasm-first**. A focused
 fixture must execute through `wasm_run_reowns`; do not hold a lowering slice
-for interpreter parity. The interpreter remains the semantic convergence target,
-but parity is mandatory only after the carrier contract is stable, and before
-an RFC-0122 acceptance row is marked `PROVEN` or experimental opt mode exits.
+for interpreter parity. The interpreter remains the source-level
+convergence target at support, but parity is mandatory only after the
+carrier contract is stable, and before an RFC-0122 acceptance row is marked
+`PROVEN` or experimental opt mode exits.
 
 Every Wasm-first row carries an explicit interpreter debt until its named
 convergence milestone. Record the same fixture, missing boundary, and milestone
@@ -208,14 +225,14 @@ Rejection is only terminal when it has:
 - Rewrite/link change in syntax+types with required `target --package witchy-types`
   check and a regression fixture in `src/example_tests.rs` when behavior is visible.
 - Stable parity-sensitive backend change with `./scripts/agent-check.sh parity`
-  and a matching example test update; an unsettled opt-mode Wasm-first slice
-  instead records interpreter parity debt as above.
+  and a matching example test update; an unsettled runtime Wasm-first slice
+  instead records interpreter parity debt as above (RFC-0135).
 
 ### Rejected
 
 - Changing `crates/witchy-lower` without either a corresponding interpreter
   slice or an explicit, time-bounded interpreter parity debt for an unsettled
-  opt-mode representation.
+  runtime representation (RFC-0135).
 - Editing multiple ownership boundaries without updating the handoff block.
 - Running only docs edits and skipping merge-queue submission while the branch is
   already green.

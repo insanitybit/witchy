@@ -1,7 +1,7 @@
 ---
 rfc: 0135
 title: "Stable observable semantics converge before support"
-status: accepted
+status: implemented
 created: 2026-08-20
 related:
   - "0031 (SIMD stays scalar in the interpreter)"
@@ -10,7 +10,7 @@ related:
   - "0115 (agent contributor workflow)"
   - "0122 (Wasm-first carrier iteration as the first instance)"
   - "oracle-only-migration.md (interpreter is not a user run path)"
-tracking: "Accepted 2026-08-20. Implementation: rewrite the agent briefing, playbook, spec parity section, and CONTRIBUTING.md to this invariant. RFC-0058 harness rules stay."
+tracking: "Implemented 2026-08-20: witchy-dev section 0, playbook, spec/architecture.md, spec/language.md, spec/test-footprint.md, CONTRIBUTING.md. RFC-0058 harness rules unchanged."
 ---
 
 # RFC-0135: Stable observable semantics converge before support
@@ -284,3 +284,6 @@ following are true on master:
 No compiler behavior changes in the implementation cut. The tests that
 already enforce RFC-0058, semantic conformance, and capability
 differential coverage stay.
+
+> 2026-08-20: implemented. The briefing, playbook, spec, and CONTRIBUTING
+> now state this invariant.

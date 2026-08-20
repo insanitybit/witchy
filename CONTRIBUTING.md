@@ -104,10 +104,13 @@ multi-rune example project, and doc extraction - ~30 asserted checks.
 `--quick` skips its test stage, which is redundant once `check.sh` has run the
 suite.
 
-## The one rule: parity
+## The one rule: converge before support
 
-witchy has two backends (interpreter = reference, compiled WASM) held to
-**zero silent divergence**. Before opening a PR:
+Stable observable semantics converge before support
+([RFC-0135](rfcs/0135-stable-semantics-converge.md)). Independent expected
+results adjudicate correctness; interpreter/Wasm agreement proves the
+backends match. A silent split is a bug. Before opening a PR that changes
+*stable* semantics:
 
 ```sh
 witchy parity path/to/program.witchy  # one program, both backends
@@ -120,12 +123,19 @@ control proving divergence is detected. Library modules and in-language
 `*_test.witchy` suites have no runnable `main`; `witchy test` and the Rust
 example matrix cover them instead.
 
-If you add observable behavior (a builtin, an operator, a stdlib function),
-implement it on the interpreter AND the WASM backend in the same change, with
-a differential test (`assert_eq!(interp(src), ...); assert_eq!(run_on_wasm(src), ...)`
-in `src/example_tests.rs`). If a backend genuinely can't support it
-yet, make it a **loud error** there - never a silently different answer.
-Behavior that errors should error on *both* backends (the parity tool checks
+If you add observable *stable* behavior (a builtin, an operator, a stdlib
+function), implement it on the interpreter AND the WASM backend in the same
+change, with a differential test that states the expected result
+(`assert_eq!(interp(src), ...); assert_eq!(run_on_wasm(src), ...)`
+in `src/example_tests.rs`). Experimental runtime representations may land
+Wasm-first with a named interpreter debt (fixture, missing boundary,
+convergence milestone); the interpreter must **loudly error** until that
+debt is paid. Pure optimizations never enter the interpreter: compare
+optimized Wasm to scalar Wasm and the expected result. Capability,
+confinement, and ABI security still require both backends in the same
+change. Never a silently different answer.
+
+Behavior that errors on a *supported* path should error on *both* backends (the parity tool checks
 error paths too) - and with the **same complete diagnostic** ([RFC-0045](rfcs/0045-compiled-trap-diagnostics.md)): a
 runtime abort (out-of-bounds index, integer division/modulo failure,
 `string.to_int` junk, `NaN` ordering, `fail(msg)`) carries the interpreter's

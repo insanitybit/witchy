@@ -45,6 +45,8 @@ turn the RFC directory into a mutable specification. Current behavior remains in
 `spec/`, source, and executable evidence. Compiler architecture, release
 engineering, contributor process, Glamour, Coven, packaging, and deployment RFCs
 remain outside this language/stdlib subset and retain their own histories.
+[RFC-0135](0135-stable-semantics-converge.md) is the process decision for when
+interpreter/Wasm dual implementation is required.
 
 RFC-0124 is intentionally not reused. Its discarded-collection optimization was
 absorbed into RFC-0123 and then into RFC-0125.
