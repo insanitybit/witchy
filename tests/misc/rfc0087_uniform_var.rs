@@ -51,10 +51,13 @@ fn assert_both_backends(source: &str, expected: &[&str]) {
 fn type_error(source: &str) -> String {
     match witchy::resolve_std_only_checked(source) {
         Ok(_) => panic!("diagnostic probe must be rejected"),
+        Err(witchy::ResolveStdError::Pipeline(witchy::pipeline::PipelineError::Source(
+            error,
+        ))) => error.message,
         Err(witchy::ResolveStdError::Pipeline(witchy::pipeline::PipelineError::Type(error))) => {
             error.message
         }
-        Err(error) => panic!("diagnostic probe failed before type checking: {error}"),
+        Err(error) => panic!("diagnostic probe failed outside semantic checking: {error}"),
     }
 }
 
