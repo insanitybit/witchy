@@ -203,6 +203,7 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
     let source_item_count = module.items.len();
     let mut mapping = vec![Vec::new(); source_item_count];
     let mut counter: usize = 0;
+    let mut state_counter: usize = 0;
     let mut items = Vec::with_capacity(module.items.len());
     let mut lifted: Vec<(usize, Function)> = Vec::new();
     for (source_index, item) in std::mem::take(&mut module.items).into_iter().enumerate() {
@@ -214,6 +215,7 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
                     f,
                     is_entry,
                     &mut counter,
+                    &mut state_counter,
                     &known_view_fns,
                     &borrowed_shells,
                 )?;
@@ -237,6 +239,7 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
                                 method,
                                 false,
                                 &mut counter,
+                                &mut state_counter,
                                 Some(self_ty.clone()),
                                 &known_view_fns,
                                 &borrowed_shells,
@@ -548,6 +551,7 @@ enum LoopHeader {
 struct Ctx<'a> {
     fname: String,
     counter: &'a mut usize,
+    state_counter: &'a mut usize,
     segments: Vec<Function>,
     view_fns: &'a HashSet<String>,
     borrowed_shells: &'a BorrowedShellCatalog,
@@ -574,6 +578,14 @@ impl<'a> Ctx<'a> {
         let n = *self.counter;
         *self.counter += 1;
         format!("__await{n}")
+    }
+
+    fn frame_attributes(&mut self) -> Vec<String> {
+        let state = *self.state_counter;
+        *self.state_counter += 1;
+        let mut attributes = self.attributes.clone();
+        attributes.push(crate::suspension::frame_state_attribute(state));
+        attributes
     }
 
     fn err(&self, msg: &str) -> String {
@@ -1026,11 +1038,12 @@ impl<'a> Ctx<'a> {
                 default: None,
             });
         }
+        let attributes = self.frame_attributes();
         self.segments.push(Function {
             line,
             public: false,
             comptime_only: false,
-            attributes: self.attributes.clone(),
+            attributes,
             name: seg_name.clone(),
             params,
             ret: None,
@@ -1265,11 +1278,12 @@ impl<'a> Ctx<'a> {
                     convention: Convention::Own,
                     default: None,
                 });
+                let attributes = self.frame_attributes();
                 self.segments.push(Function {
                     line: first_line(&body.lines),
                     public: false,
                     comptime_only: false,
-                    attributes: self.attributes.clone(),
+                    attributes,
                     name: recv_name.clone(),
                     params: recv_params,
                     ret: None,
@@ -1296,11 +1310,12 @@ impl<'a> Ctx<'a> {
             }
         };
 
+        let attributes = self.frame_attributes();
         self.segments.push(Function {
             line: first_line(&body.lines),
             public: false,
             comptime_only: false,
-            attributes: self.attributes.clone(),
+            attributes,
             name: seg_name.clone(),
             params,
             ret: None,
@@ -1334,10 +1349,11 @@ fn lower_async_fn(
     f: Function,
     is_entry: bool,
     counter: &mut usize,
+    state_counter: &mut usize,
     view_fns: &HashSet<String>,
     borrowed_shells: &BorrowedShellCatalog,
 ) -> Result<(Function, Vec<Function>), String> {
-    lower_async_fn_with(f, is_entry, counter, None, view_fns, borrowed_shells)
+    lower_async_fn_with(f, is_entry, counter, state_counter, None, view_fns, borrowed_shells)
 }
 
 fn resolved_async_parameter_type<'a>(
@@ -1356,6 +1372,7 @@ fn lower_async_fn_with(
     f: Function,
     is_entry: bool,
     counter: &mut usize,
+    state_counter: &mut usize,
     self_ty: Option<Type>,
     view_fns: &HashSet<String>,
     borrowed_shells: &BorrowedShellCatalog,
@@ -1391,11 +1408,14 @@ fn lower_async_fn_with(
         ));
     }
 
+    let entry_state = *state_counter;
+    *state_counter += 1;
     let mut segment_attributes = f.attributes.clone();
     segment_attributes.push(crate::suspension::FRAME_FUNCTION_ATTRIBUTE.to_string());
     let mut ctx = Ctx {
         fname: f.name.clone(),
         counter,
+        state_counter,
         segments: Vec::new(),
         view_fns,
         borrowed_shells,
@@ -1436,11 +1456,14 @@ fn lower_async_fn_with(
     } else {
         lazy_body
     };
+    let mut entry_attributes = f.attributes;
+    entry_attributes.push(crate::suspension::FRAME_ENTRY_ATTRIBUTE.to_string());
+    entry_attributes.push(crate::suspension::frame_state_attribute(entry_state));
     let entry = Function {
         line: f.line,
         public: f.public,
         comptime_only: false,
-        attributes: f.attributes,
+        attributes: entry_attributes,
         name: f.name,
         params: f.params,
         // Source `async fn f() -> T` describes the completed value, so callers
@@ -1849,6 +1872,45 @@ mod tests {
         assert!(mapping[1][1..]
             .iter()
             .all(|index| *index >= 3 && *index < lowered_item_count));
+    }
+
+    #[test]
+    fn lowering_assigns_dense_stable_carrier_states_to_entries_and_segments() {
+        let source = "async fn first() -> Int:\n    let x = task.done(1).await\n    x\n\nasync fn second() -> Int:\n    let y = task.done(2).await\n    y\n";
+        let module = crate::parser::parse_module(source).expect("parse carrier-state fixture");
+        let lowered = lower_module(module).expect("lower carrier-state fixture");
+        let mut states = lowered
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Function(function) => crate::suspension::frame_state(function)
+                    .map(|state| (state, function)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        states.sort_by_key(|(state, _)| *state);
+
+        assert_eq!(states.iter().map(|(state, _)| *state).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        assert!(states[0]
+            .1
+            .attributes
+            .iter()
+            .any(|attribute| attribute == crate::suspension::FRAME_ENTRY_ATTRIBUTE));
+        assert!(states[1]
+            .1
+            .attributes
+            .iter()
+            .any(|attribute| attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE));
+        assert!(states[2]
+            .1
+            .attributes
+            .iter()
+            .any(|attribute| attribute == crate::suspension::FRAME_ENTRY_ATTRIBUTE));
+        assert!(states[3]
+            .1
+            .attributes
+            .iter()
+            .any(|attribute| attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE));
     }
 
     #[test]

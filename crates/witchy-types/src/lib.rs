@@ -17,6 +17,7 @@ mod record_projection;
 pub mod pipeline;
 pub mod runtime_type;
 pub mod storage;
+pub mod suspension_carrier;
 pub mod traits;
 pub mod typeck;
 pub mod witness;

@@ -7,7 +7,7 @@
 //! lowering intersects that order with its lexical scope to retain declaration
 //! order and attach the checked slot type/ownership metadata.
 
-use crate::ast::{pattern_binds, Block, Expr, Stmt};
+use crate::ast::{pattern_binds, Block, Expr, Function, Stmt};
 use foldhash::{HashSet, HashSetExt as _};
 
 /// Compiler-owned marker on generated segment functions. An `own` parameter on
@@ -15,6 +15,30 @@ use foldhash::{HashSet, HashSetExt as _};
 /// is an affine frame transfer, so the callee assumes (rather than discharges)
 /// any must-consume obligation carried by that slot.
 pub const FRAME_FUNCTION_ATTRIBUTE: &str = "__compiler_suspension_frame";
+
+/// Compiler-owned marker on the ordinary entry wrapper of an async function.
+/// The wrapper is not itself a frame transfer (and therefore must not receive
+/// [`FRAME_FUNCTION_ATTRIBUTE`]), but a synthesized executor needs to know the
+/// first state associated with this source callable.
+pub const FRAME_ENTRY_ATTRIBUTE: &str = "__compiler_suspension_entry";
+
+/// Prefix for the stable, module-local integer state attached to every async
+/// entry and lifted segment. The state is data consumed by the typed carrier
+/// catalog; generated function names are deliberately not the runtime ABI.
+pub const FRAME_STATE_ATTRIBUTE_PREFIX: &str = "__compiler_suspension_state=";
+
+pub fn frame_state_attribute(state: usize) -> String {
+    format!("{FRAME_STATE_ATTRIBUTE_PREFIX}{state}")
+}
+
+/// Recover the compiler-owned state identity from a generated callable.
+pub fn frame_state(function: &Function) -> Option<usize> {
+    function.attributes.iter().find_map(|attribute| {
+        attribute
+            .strip_prefix(FRAME_STATE_ATTRIBUTE_PREFIX)
+            .and_then(|state| state.parse().ok())
+    })
+}
 
 /// Free lexical bindings referenced by `expression`, in deterministic first-use
 /// order. Bindings introduced by nested blocks, patterns, loops, and lambdas are
