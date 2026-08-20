@@ -61,6 +61,8 @@ mod rfc0105_fixture_cli;
 mod rfc0129_negative_matrix;
 #[path = "misc/rfc0129_cooperative_worker_boundary.rs"]
 mod rfc0129_cooperative_worker_boundary;
+#[path = "misc/rfc0129_channel_contract.rs"]
+mod rfc0129_channel_contract;
 #[path = "misc/typed_errors.rs"]
 mod typed_errors;
 #[path = "misc/vm_worker_isolation.rs"]
