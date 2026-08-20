@@ -886,6 +886,9 @@ enum GcFieldShape {
     PlaceReference,
     ExternRef,
     Function,
+    /// The compiler-private erased channel-message envelope. This remains a
+    /// typed GC reference when nested inside tuples such as `(task_id, msg)`.
+    Message,
     ReferenceList(String),
     Nominal(String),
     Tuple(GcTupleShape),
@@ -2276,6 +2279,7 @@ impl<'types> Codegen<'types> {
                     GcFieldShape::ExternRef
                         | GcFieldShape::PlaceReference
                         | GcFieldShape::Function
+                        | GcFieldShape::Message
                         | GcFieldShape::ReferenceList(_)
                         | GcFieldShape::Nominal(_)
                         | GcFieldShape::Tuple(_)
@@ -2308,6 +2312,9 @@ impl<'types> Codegen<'types> {
                                 GcFieldShape::ExternRef => *kind == Kind::ExternRef,
                                 GcFieldShape::Function => {
                                     *kind == Kind::GcRef(CLOSURE_WRAPPER_ID)
+                                }
+                                GcFieldShape::Message => {
+                                    *kind == Kind::GcRef(MESSAGE_WRAPPER_ID)
                                 }
                                 GcFieldShape::ReferenceList(_)
                                 | GcFieldShape::Nominal(_)
@@ -2343,6 +2350,7 @@ impl<'types> Codegen<'types> {
             GcFieldShape::PlaceReference => Some(Kind::GcRef(PLACE_REFERENCE_ID)),
             GcFieldShape::ExternRef => Some(Kind::ExternRef),
             GcFieldShape::Function => Some(Kind::GcRef(CLOSURE_WRAPPER_ID)),
+            GcFieldShape::Message => Some(Kind::GcRef(MESSAGE_WRAPPER_ID)),
             GcFieldShape::ReferenceList(key) => self.gc_reference_list_ids.get(key).copied().map(Kind::GcRef),
             GcFieldShape::Nominal(key) => self.gc_aggregate_ids.get(key).copied().map(Kind::GcRef),
             GcFieldShape::Tuple(shape) => self.gc_tuple_ids.get(shape).copied().map(Kind::GcRef),
@@ -2360,6 +2368,7 @@ impl<'types> Codegen<'types> {
         let ty = ty.unqualified();
         Some(match ty {
             Type::Fn(_, _, _) => GcFieldShape::Function,
+            Type::Named(name, _) if name == "__Msg" => GcFieldShape::Message,
             Type::Tuple(_) => self
                 .gc_tuple_shape(ty)
                 .map(GcFieldShape::Tuple)
