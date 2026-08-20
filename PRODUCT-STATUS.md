@@ -5,7 +5,7 @@ research and development surface. It is a product-claim boundary, not a feature
 freeze: experimental work may continue and may merge without becoming part of
 the supported story automatically.
 
-Evidence snapshot: `160cda43399dfafaed3f14415c50f69e23e2085e`.
+Evidence snapshot: `ce13254592d6b41821d64ae2c6fe9e5bd0ca7b17`.
 The snapshot records current evidence; it is not a compatibility promise.
 `Supported preview` identifies the intended dependable component contract; it
 does not by itself declare the whole project ready for broad public presentation.
