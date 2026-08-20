@@ -243,7 +243,7 @@ The outcome of a `select`: a message from the first or the second receiver, or `
 - `Second(m)`
 - `Closed`
 
-#### `fn done(x: a) -> Task(a)`
+#### `fn done(own x: a) -> Task(a)`
 
 A finished task.
 
@@ -255,11 +255,11 @@ An already-complete `Task(Nil)` - the async/await lowering target for a body tha
 
 Hand control back to the executor once, then continue.
 
-#### `fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b)`
+#### `fn and_then(t: Task(a), own k: fn(own a) -> Task(b)) -> Task(b)`
 
 Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to - the continuation `k` is the rest of the body.
 
-#### `fn map(t: Task(a), f: fn(a) -> b) -> Task(b)`
+#### `fn map(t: Task(a), f: fn(own a) -> b) -> Task(b)`
 
 Transform a task's result.
 
@@ -291,11 +291,11 @@ Receive the next message, or `None` when the executor reaches quiescence with th
 
 Start `child` as a concurrent task; the returned handle completes when it does.
 
-#### `fn join(h: Handle) -> Task(Nil)`
+#### `fn join(own h: Handle) -> Task(Nil)`
 
 Wait for the spawned task behind `h` while the executor can make progress. If the whole executor reaches quiescence with this join parked, the close pass releases it even if the joined task has a continuation that will run afterward.
 
-#### `fn cancel(h: Handle) -> Task(Nil)`
+#### `fn cancel(own h: Handle) -> Task(Nil)`
 
 Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow - it stops this one task, not any tasks it itself spawned - and idempotent (already finished or already cancelled is a no-op). Deterministic on the cooperative schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
 
@@ -303,11 +303,11 @@ Cancel the spawned task behind `h`: it is stepped no further and is treated as f
 
 Spawn every task in `children` concurrently, returning their handles. The children begin running on the next executor turns; nothing is joined yet.
 
-#### `fn join_all(hs: List(Handle)) -> Task(Nil)`
+#### `fn join_all(own hs: List(Handle)) -> Task(Nil)`
 
 Join every handle in `hs` while the executor can make progress. Like `join`, quiescence releases a parked join even if a child has a continuation that will run afterward.
 
-#### `fn cancel_all(hs: List(Handle)) -> Task(Nil)`
+#### `fn cancel_all(own hs: List(Handle)) -> Task(Nil)`
 
 Cancel every handle in `hs` - the companion to `spawn_all`/`join_all`. Each is stopped and treated as finished; idempotent, so cancelling an already-finished handle is a no-op. Used by `race_n` to drop the losers.
 
@@ -4139,7 +4139,7 @@ A task communicating via channels, producing an `a`.
 
 - `Task(fn() -> Step(a))`
 
-#### `sealed type Handle`
+#### `must sealed type Handle`
 
 - `Handle(Int)`
 
@@ -4160,7 +4160,7 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `WaitJoin(Int, fn(Nil) -> Task(Nil))`
 - `Ended`
 
-#### `fn done(x: a) -> Task(a)`
+#### `fn done(own x: a) -> Task(a)`
 
 A finished task.
 
@@ -4172,11 +4172,11 @@ An already-complete `Task(Nil)` - the async/await lowering target for a body tha
 
 Hand control back to the executor once, then continue.
 
-#### `fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b)`
+#### `fn and_then(t: Task(a), own k: fn(own a) -> Task(b)) -> Task(b)`
 
 Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to - the continuation `k` is the rest of the body.
 
-#### `fn map(t: Task(a), f: fn(a) -> b) -> Task(b)`
+#### `fn map(t: Task(a), f: fn(own a) -> b) -> Task(b)`
 
 Transform a task's result.
 
@@ -4192,11 +4192,11 @@ Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an
 
 Start `child` as a concurrent task; the returned handle completes when it does.
 
-#### `fn join(h: Handle) -> Task(Nil)`
+#### `fn join(own h: Handle) -> Task(Nil)`
 
 Wait for the spawned task behind `h` while the executor can make progress. If the whole executor reaches quiescence with this join parked, the close pass releases it even if the joined task has a continuation that will run afterward.
 
-#### `fn cancel(h: Handle) -> Task(Nil)`
+#### `fn cancel(own h: Handle) -> Task(Nil)`
 
 Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks. Shallow (stops this one task, not its descendants) and idempotent (already-finished is a no-op). Deterministic on the round-robin schedule, hence byte-identical on both backends.
 
