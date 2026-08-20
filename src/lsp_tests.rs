@@ -664,6 +664,7 @@ fn main(console: Console):
         let d = diags(src);
         assert_eq!(d.len(), 1, "{d:?}");
         assert_eq!(d[0]["severity"], json!(1));
+        assert_eq!(d[0]["range"]["start"]["line"], json!(2));
         assert!(
             d[0]["message"].as_str().unwrap().contains("type error"),
             "{:?}",

@@ -878,6 +878,23 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                 &format!("type error: {}", error.message),
             )];
         }
+        Err(witchy_interp::pipeline::PipelineError::Source(error)) => {
+            // Complete body checking now runs at the source-proof boundary, so
+            // semantic diagnostics that historically arrived as `Type` arrive
+            // here before destructive lowering. Preserve the LSP's stable
+            // user-facing category and prefer the structured source location.
+            let line0 = error
+                .location
+                .as_ref()
+                .map(|location| location.line.saturating_sub(1))
+                .or_else(|| extract_line(&error.message).map(|line| line.saturating_sub(1)))
+                .unwrap_or(0);
+            return vec![line_diag(
+                line0,
+                text,
+                &format!("type error: {}", error.message),
+            )];
+        }
         Err(error) => {
             let message = error.to_string();
             let line0 = extract_line(&message).map_or(0, |n| n.saturating_sub(1));
