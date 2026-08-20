@@ -1,0 +1,60 @@
+// Deterministic two-source fan-in through `chan.select`. Both bounded channels
+// are filled before the kernel clock starts, so every initial tie must select
+// the first receiver; after it drains, the second receiver supplies the rest.
+// The result checks source-local sequence, that exact phase order, and an
+// order-sensitive rolling checksum so the fan-in work stays observable.
+
+from chan import Sender
+
+async fn produce(tx: Sender(Int), start: Int, count: Int):
+    var i = 0
+    while i < count:
+        chan.send(tx, start + i * 2).await
+        i = i + 1
+
+fn expected_checksum(per_source: Int) -> Int:
+    var checksum = 0
+    var i = 0
+    while i < per_source:
+        checksum = (checksum * 257 + i * 2 + 1) % 1000000007
+        i = i + 1
+    i = 0
+    while i < per_source:
+        checksum = (checksum * 257 + i * 2 + 3) % 1000000007
+        i = i + 1
+    checksum
+
+async fn main(console: Console, clock: Clock):
+    let per_source = 2048
+    let (a_tx, a_rx) = chan.channel(per_source).await
+    let (b_tx, b_rx) = chan.channel(per_source).await
+    let a_handle = chan.spawn(produce(a_tx, 0, per_source)).await
+    let b_handle = chan.spawn(produce(b_tx, 1, per_source)).await
+    chan.join(a_handle).await
+    chan.join(b_handle).await
+
+    var seen_a = 0
+    var seen_b = 0
+    var checksum = 0
+    var order_ok = true
+    let bench_t0 = clock.now_monotonic()
+    while seen_a + seen_b < per_source * 2:
+        let selected = chan.select(a_rx, b_rx).await
+        let (add_a, add_b, next_checksum, selected_ok) = match selected:
+            First(value) ->
+                (1, 0, (checksum * 257 + value + 1) % 1000000007, seen_b == 0 && value == seen_a * 2)
+            Second(value) ->
+                (0, 1, (checksum * 257 + value + 2) % 1000000007, seen_a == per_source && value == seen_b * 2 + 1)
+            Closed -> (1, 0, checksum, false)
+        seen_a = seen_a + add_a
+        seen_b = seen_b + add_b
+        checksum = next_checksum
+        order_ok = order_ok && selected_ok
+    let bench_t1 = clock.now_monotonic()
+
+    let expected = expected_checksum(per_source)
+    if order_ok && seen_a == per_source && seen_b == per_source && checksum == expected:
+        console.print("count=${seen_a + seen_b} checksum=${checksum} order=ok")
+    else:
+        console.print("count=${seen_a + seen_b} checksum=${checksum} expected=${expected} order=bad")
+    console.print("bench_ns=${bench_t1 - bench_t0}")
