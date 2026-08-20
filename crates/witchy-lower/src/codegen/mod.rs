@@ -4798,7 +4798,8 @@ impl<'types> Codegen<'types> {
                                 witchy_wir::wir::Kind::F64 => Kind::F64,
                                 witchy_wir::wir::Kind::ExternRef => Kind::ExternRef,
                                 witchy_wir::wir::Kind::GcRef(id) => Kind::GcRef(id),
-                                witchy_wir::wir::Kind::StructRef => continue,
+                                witchy_wir::wir::Kind::StructRef
+                                | witchy_wir::wir::Kind::AnyRef => continue,
                             }),
                         });
                     }
@@ -7122,7 +7123,7 @@ impl<'types> Codegen<'types> {
                 WK::I32 => W::ConstI32(0),
                 WK::I64 => W::ConstI64(0),
                 WK::F64 => W::ConstF64(0.0),
-                ref_kind @ (WK::ExternRef | WK::StructRef | WK::GcRef(_)) => {
+                ref_kind @ (WK::ExternRef | WK::StructRef | WK::AnyRef | WK::GcRef(_)) => {
                     W::RefNull(ref_kind)
                 }
             };
@@ -9304,7 +9305,8 @@ impl<'types> Codegen<'types> {
                                         witchy_wir::wir::Kind::F64 => Kind::F64,
                                         witchy_wir::wir::Kind::ExternRef => Kind::ExternRef,
                                         witchy_wir::wir::Kind::GcRef(id) => Kind::GcRef(id),
-                                        witchy_wir::wir::Kind::StructRef => continue,
+                                        witchy_wir::wir::Kind::StructRef
+                                        | witchy_wir::wir::Kind::AnyRef => continue,
                                     }),
                                 });
                             }
