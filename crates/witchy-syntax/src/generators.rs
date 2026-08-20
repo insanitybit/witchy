@@ -2623,46 +2623,42 @@ fn block_has_nested_yield(block: &Block) -> bool {
 }
 
 fn block_has_generator_loop_control_transfer(block: &Block) -> bool {
-    fn directly_transfers(block: &Block) -> bool {
-        block.stmts.iter().any(|statement| {
-            matches!(statement, Stmt::Return(Some(_)) | Stmt::Break | Stmt::Continue)
+    fn expression_has_unsupported_transfer(expression: &Expr, loop_depth: usize) -> bool {
+        match expression {
+            Expr::If { then_block, else_block, .. } => {
+                visit(then_block, loop_depth)
+                    || else_block.as_ref().is_some_and(|block| visit(block, loop_depth))
+            }
+            Expr::Match { arms, .. } => arms.iter().any(|arm| {
+                expression_has_unsupported_transfer(&arm.body, loop_depth)
+            }),
+            Expr::Block(block) => visit(block, loop_depth),
+            Expr::While { body, .. }
+            | Expr::For { body, .. }
+            | Expr::WhileLet { body, .. } => visit(body, loop_depth + 1),
+            Expr::Lambda { body, .. } => visit(body, loop_depth + 1),
+            _ => false,
+        }
+    }
+
+    fn visit(block: &Block, loop_depth: usize) -> bool {
+        block.stmts.iter().any(|statement| match statement {
+            Stmt::Return(Some(_)) | Stmt::Continue => true,
+            Stmt::Break => loop_depth > 0,
+            Stmt::Let { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Yield(value) => expression_has_unsupported_transfer(value, loop_depth),
+            Stmt::Return(None) => false,
         })
     }
 
-    if directly_transfers(block) {
-        return true;
-    }
-    let mut transfers = false;
-    let _: Result<(), ()> = crate::ast::visit::visit_block(block, &mut |expression| {
-        let blocks = match expression {
-            Expr::If { then_block, else_block, .. } => {
-                let mut blocks = vec![then_block];
-                blocks.extend(else_block.iter());
-                blocks
-            }
-            Expr::Match { arms, .. } => arms
-                .iter()
-                .filter_map(|arm| match &arm.body {
-                    Expr::Block(block) => Some(block),
-                    _ => None,
-                })
-                .collect(),
-            Expr::Block(block)
-            | Expr::Lambda { body: block, .. }
-            | Expr::While { body: block, .. }
-            | Expr::For { body: block, .. }
-            | Expr::WhileLet { body: block, .. } => vec![block],
-            _ => Vec::new(),
-        };
-        if blocks.into_iter().any(directly_transfers) {
-            transfers = true;
-        }
-        Ok(())
-    });
-    transfers
+    visit(block, 0)
 }
 
-/// A bare source `return` ends the generator. In an owned resume helper that
+/// A bare source `return` or a `break` from the terminal generator loop ends
+/// the generator. In an owned resume helper that
 /// means returning the helper's `Option((item, frame))` value `None`. This
 /// rewrite is applied independently to the pre-yield and post-yield segments,
 /// so post-yield effects and termination happen on the next pull, never eagerly
@@ -2672,6 +2668,10 @@ fn rewrite_owned_frame_returns(block: Block) -> Result<Block, String> {
     for statement in block.stmts {
         statements.push(match statement {
             Stmt::Return(None) => Stmt::Return(Some(Expr::Ctor {
+                name: "None".into(),
+                args: Vec::new(),
+            })),
+            Stmt::Break => Stmt::Return(Some(Expr::Ctor {
                 name: "None".into(),
                 args: Vec::new(),
             })),
@@ -3071,6 +3071,19 @@ mod target_availability_tests {
         let lowered = lower(checked).expect("lower generator").into_module();
         let debug = format!("{:?}", lowered);
         assert!(!debug.contains("iter.from_gen"), "early return must not select replay: {debug}");
+        assert!(debug.contains("resume_after_yield"));
+    }
+
+    #[test]
+    fn terminal_loop_break_exhausts_the_owned_frame() {
+        let module = crate::parser::parse_module(
+            "gen fn values() -> Iter(Int):\n    var i = 0\n    while true:\n        yield i\n        if i >= 2:\n            break\n        i = i + 1\n",
+        )
+        .expect("parse break generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower break generator").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(!debug.contains("iter.from_gen"), "terminal break must not replay: {debug}");
         assert!(debug.contains("resume_after_yield"));
     }
 

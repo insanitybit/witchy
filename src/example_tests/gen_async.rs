@@ -230,6 +230,34 @@ fn main(console: Console):
         );
     }
 
+    /// Breaking from the terminal generator loop exhausts the owned frame on
+    /// the pull after the final yielded item, without replaying prior prefixes.
+    #[test]
+    fn generator_terminal_break_exhausts_without_replay() {
+        let src = r#"import iter
+
+gen fn values(console: Console) -> Iter(Int):
+    var i = 0
+    while true:
+        console.print("before ${i}")
+        yield i
+        if i >= 2:
+            break
+        i = i + 1
+
+fn main(console: Console):
+    let result: List(Int) = iter.collect(values(console))
+    console.print("${result}")
+"#;
+        let expected = ["before 0", "before 1", "before 2", "[0, 1, 2]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.
