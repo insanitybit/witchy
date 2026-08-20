@@ -304,13 +304,13 @@ unions as `-p crate -p witchy` with
 `--workspace` because `-p` AND `--test` drops whichever side is not in
 that package. `src/commands/**`, `spec/*.md`, and `tests/misc/**` have
 their own mappings for the same reason: a four-line web-test snapshot
-must not re-run 2,900 tests. Corpus files (`std/*.witchy`, `examples/`,
-`book/`, `README.md`) do not always take the full `example_tests` matrix:
-`scripts/test-impact.py` infers modules from `// gate-covers:` labels,
-`std/foo.witchy` mentions, `include_str!` paths, and filename stems.
-Prelude std modules (`list`, `string`, `dict`, `math`, `option`, `result`,
-`policy`, `show`) fail closed to the whole matrix — they are linked into
-every program. `--full` / CI remain the backstop.
+must not re-run 2,900 tests. `book/`, `README.md`, `CONTRIBUTING.md`, and
+`spec/*.md` select `documentation_examples_are_valid` (the test that walks
+those trees), not the full `example_tests` matrix. `examples/` selects
+`examples_programs` plus the example sweeps that iterate `examples/`.
+Std modules still take the matrix: prelude is in every program, and a
+path-mention scan misses most `import json` users. `--full` / CI remain
+the backstop.
 Unknown or empty mappings fail safe to `--workspace`. `--full`, CI, and
 standalone `check.sh` keep the complete suite.
 

@@ -247,8 +247,9 @@ for p in "${paths[@]}"; do
             any_rust=1
             gate_workspace=1 ;;
         std/*.witchy)
-            corpus_impact=1
+            gate_need_examples=1
             gate_need_stdlib_docs=1
+            add "cargo nextest run -E 'test(/^example_tests::/)'"
             add "cargo nextest run -E 'test(stdlib_docs_are_current)'"
             add "./target/debug/witchy fmt --check std/*.witchy" ;;
         README.md)
@@ -395,11 +396,13 @@ done
 # stems). Prelude std modules fail closed to the full matrix. python3
 # missing or a nonempty corpus with no inferred tests also fails closed.
 apply_corpus_impact() {
-    local line impact rc
+    local line impact
     command -v python3 >/dev/null 2>&1 || { gate_need_examples=1; return 0; }
-    impact="$(printf '%s\n' "${paths[@]}" | python3 scripts/test-impact.py --example-mods)"
-    rc=$?
-    [ "$rc" -eq 0 ] || { gate_need_examples=1; return 0; }
+    [ -f scripts/test-impact.py ] || { gate_need_examples=1; return 0; }
+    impact="$(printf '%s\n' "${paths[@]}" | python3 scripts/test-impact.py --example-mods)" || {
+        gate_need_examples=1
+        return 0
+    }
     [ -n "$impact" ] || return 0
     while IFS= read -r line; do
         case "$line" in

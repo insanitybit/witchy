@@ -21,6 +21,10 @@ impl TempRepo {
             path.join("scripts/test-for-paths.sh"),
         )
         .expect("copy path router");
+        let impact = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-impact.py");
+        if impact.exists() {
+            fs::copy(impact, path.join("scripts/test-impact.py")).expect("copy test-impact");
+        }
         Self(path)
     }
 
@@ -270,35 +274,16 @@ fn gate_nextest_compiler_std_web_and_rfc0122_is_not_workspace() {
 }
 
 #[test]
-fn gate_nextest_prelude_std_keeps_the_example_tests_matrix() {
-    let output = gate_nextest(&["std/list.witchy"]);
+fn gate_nextest_std_keeps_the_example_tests_matrix() {
+    let output = gate_nextest(&["std/json.witchy"]);
     assert!(
         output.contains("test(/^example_tests::/)"),
-        "prelude std/list.witchy must fail closed to the full example_tests matrix: {output}",
+        "std/json.witchy must keep the full example_tests matrix: {output}",
     );
     assert!(
         !output.contains("WORKSPACE"),
-        "prelude std mapping fell back to WORKSPACE: {output}",
+        "std mapping fell back to WORKSPACE: {output}",
     );
-}
-
-#[test]
-fn gate_nextest_non_prelude_std_partitions_example_tests() {
-    let output = gate_nextest(&["std/json.witchy"]);
-    assert!(
-        output.contains("example_tests::json") || output.contains("example_tests::stdlib_evidence"),
-        "std/json.witchy did not select json-related example_tests: {output}",
-    );
-    assert!(
-        !output.contains("test(/^example_tests::/)"),
-        "non-prelude std/json.witchy still selected the full example_tests matrix: {output}",
-    );
-    assert!(
-        output.contains("all_std_modules_type_check")
-            || output.contains("stdlib_has_no_performance_cliffs"),
-        "std/json.witchy dropped the stdlib sweep tests: {output}",
-    );
-    assert!(!output.contains("WORKSPACE"), "std/json mapping was WORKSPACE: {output}");
 }
 
 #[test]
@@ -340,21 +325,6 @@ fn gate_nextest_examples_are_not_the_full_matrix() {
         "examples/ change still selected the full example_tests matrix: {output}",
     );
     assert!(!output.contains("WORKSPACE"), "examples mapping was WORKSPACE: {output}");
-}
-
-#[test]
-fn gate_nextest_labeled_std_chan_partitions() {
-    let output = gate_nextest(&["std/chan.witchy"]);
-    assert!(
-        output.contains("async_channels")
-            || output.contains("concurrency")
-            || output.contains("gen_async"),
-        "labeled std/chan.witchy did not select async example_tests: {output}",
-    );
-    assert!(
-        !output.contains("test(/^example_tests::/)"),
-        "labeled std/chan.witchy still selected the full matrix: {output}",
-    );
 }
 
 #[test]
@@ -490,7 +460,10 @@ fn staged_change_is_discovered_without_explicit_paths() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).expect("router output is UTF-8");
-    assert!(stdout.contains("example_tests"), "staged README route: {stdout}");
+    assert!(
+        stdout.contains("documentation_examples_are_valid") || stdout.contains("example_tests"),
+        "staged README route: {stdout}"
+    );
     assert!(!stdout.contains("no changed files"), "staged README was missed: {stdout}");
 }
 
