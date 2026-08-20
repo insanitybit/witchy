@@ -119,14 +119,14 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
         let measured = witchy::stats::compute_timed(&source)
             .unwrap_or_else(|error| panic!("execute scalar repetition {repetition}: {error}"));
         assert_eq!(measured.stats.output, [expected.as_str()], "observable fold checksum");
-        assert!(
-            baseline.gc_heap_capacity_bytes > 0,
-            "the scalar benchmark must exercise Wasmtime's GC heap"
+        assert_eq!(
+            baseline.gc_heap_capacity_bytes, 0,
+            "the direct scalar executor must bypass Wasmtime's GC task heap"
         );
         assert_eq!(
             measured.gc_heap_capacity_bytes,
             baseline.gc_heap_capacity_bytes,
-            "repetition {repetition}: Wasmtime GC backing capacity must be independent of message count"
+            "repetition {repetition}: the direct scalar executor's zero GC capacity must be independent of message count"
         );
         assert!(
             measured.stats.rc_alloc_calls < MAX_LINEAR_ALLOCATIONS,
