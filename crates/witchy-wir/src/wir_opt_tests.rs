@@ -392,7 +392,11 @@
         assert_eq!(module.funcs.len(), 3, "one dispatcher per SCC");
         let dispatcher = &module.funcs[2];
         assert!(dispatcher.name.starts_with("__witchy_tail_scc_"));
-        assert_eq!(dispatcher.params.len(), 3, "state plus two disjoint parameter banks");
+        assert_eq!(
+            dispatcher.params.len(),
+            2,
+            "state plus one shared typed parameter bank",
+        );
         assert!(matches!(dispatcher.body.as_slice(), [WirNode::Loop { .. }, WirNode::Unreachable]));
         assert_eq!(module.exports, vec![("is_even".to_string(), "even".to_string())]);
         assert_eq!(

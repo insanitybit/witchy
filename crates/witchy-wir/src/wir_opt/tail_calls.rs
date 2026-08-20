@@ -15,7 +15,7 @@ use hygiene::{
     unique_function_name, unique_label, unique_local_name,
 };
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::wir::{
     ClosureSignature, Kind, WirExpr, WirFunc, WirLocal, WirModule, WirNode, WirSeq, WirTy,
@@ -54,6 +54,7 @@ struct IndirectPlan {
     args: Vec<WirLocal>,
     index: WirLocal,
     targets: Vec<(i32, TailTarget)>,
+    dispatch_state: i32,
 }
 
 struct TailCtx {
@@ -936,13 +937,23 @@ fn lower_mutual_tail_components(module: &mut WirModule) -> usize {
             .flat_map(|table| table.funcs.iter().enumerate())
             .map(|(index, name)| (name.clone(), index as i32))
             .collect();
-        let (dispatcher, rewritten) =
+        let (dispatcher, rewritten, entry_targets) =
             build_tail_dispatcher(&dispatcher_name, &originals, &table_slots);
         if rewritten == 0 {
             continue;
         }
+        let dispatcher_kind = dispatcher.ret[0].kind();
         for ((index, original), state) in component.iter().zip(&originals).zip(0i32..) {
-            module.funcs[*index] = tail_entry_wrapper(original, &dispatcher_name, state, &originals);
+            module.funcs[*index] = tail_entry_wrapper(
+                original,
+                &dispatcher_name,
+                state,
+                &dispatcher.params[1..],
+                dispatcher_kind,
+                entry_targets
+                    .get(&original.name)
+                    .expect("every dispatcher member has an entry target"),
+            );
         }
         dispatchers.push(dispatcher);
         count += rewritten;
@@ -967,7 +978,7 @@ fn build_tail_dispatcher(
     name: &str,
     functions: &[WirFunc],
     table_slots: &HashMap<String, i32>,
-) -> (WirFunc, usize) {
+) -> (WirFunc, usize, HashMap<String, TailTarget>) {
     let state_local = "__witchy_tail_state".to_string();
     let first_result = functions[0].ret[0].clone();
     let dispatcher_result = if functions
@@ -980,39 +991,33 @@ fn build_tail_dispatcher(
     };
     // `Bool` is the WIR's neutral i32 carrier; the internal tag is not exposed as
     // a Witchy Bool and may use values above one for larger components.
+    // Only one source function is active in a dispatcher iteration. Reuse one
+    // typed parameter/local/temp bank sized to the largest member instead of
+    // concatenating every member's bank. Besides reducing code size, this keeps
+    // large closure-table SCCs below WebAssembly's 1,000-parameter and
+    // 50,000-local implementation limits. Exact reference kinds remain separate
+    // keys, so pooling never erases a capability or GC type.
+    let param_bank = pooled_local_bank(
+        functions.iter().map(|function| function.params.as_slice()),
+        "__witchy_tail_p",
+    );
+    let local_bank = pooled_local_bank(
+        functions.iter().map(|function| function.locals.as_slice()),
+        "__witchy_tail_l",
+    );
+    let temp_bank = clone_local_bank(&param_bank, "__witchy_tail_arg");
+    let shared_params = flatten_local_bank(&param_bank);
     let mut params = vec![WirLocal { name: state_local.clone(), ty: WirTy::Bool }];
-    let mut locals = Vec::new();
+    params.extend(shared_params.iter().cloned());
+    let mut locals = flatten_local_bank(&local_bank);
+    locals.extend(flatten_local_bank(&temp_bank));
     let mut bodies = Vec::new();
     let mut targets = HashMap::new();
 
     for (state, function) in (0i32..).zip(functions) {
-        let renamed_params: Vec<_> = function
-            .params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| WirLocal {
-                name: format!("__witchy_tail_p_{state}_{index}"),
-                ty: param.ty.clone(),
-            })
-            .collect();
-        let renamed_locals: Vec<_> = function
-            .locals
-            .iter()
-            .enumerate()
-            .map(|(index, local)| WirLocal {
-                name: format!("__witchy_tail_l_{state}_{index}"),
-                ty: local.ty.clone(),
-            })
-            .collect();
-        let temps: Vec<_> = function
-            .params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| WirLocal {
-                name: format!("__witchy_tail_arg_{state}_{index}"),
-                ty: param.ty.clone(),
-            })
-            .collect();
+        let renamed_params = assign_local_bank(&function.params, &param_bank);
+        let renamed_locals = assign_local_bank(&function.locals, &local_bank);
+        let temps = assign_local_bank(&function.params, &temp_bank);
         let renames: HashMap<_, _> = function
             .params
             .iter()
@@ -1022,9 +1027,6 @@ fn build_tail_dispatcher(
             .collect();
         let mut body = function.body.clone();
         rename_seq_locals(&mut body, &renames);
-        params.extend(renamed_params.clone());
-        locals.extend(renamed_locals.clone());
-        locals.extend(temps.clone());
         targets.insert(
             function.name.clone(),
             TailTarget {
@@ -1054,6 +1056,8 @@ fn build_tail_dispatcher(
     let mut indirect_signatures: Vec<_> = indirect_signatures.into_iter().collect();
     indirect_signatures.sort();
     let mut indirect = HashMap::new();
+    let mut next_dispatch_state = i32::try_from(functions.len())
+        .expect("a tail-call component cannot contain more than i32::MAX functions");
     for (plan_index, signature) in indirect_signatures.into_iter().enumerate() {
         let args: Vec<_> = signature
             .params
@@ -1082,7 +1086,18 @@ fn build_tail_dispatcher(
         if !plan_targets.is_empty() {
             locals.extend(args.iter().cloned());
             locals.push(index.clone());
-            indirect.insert(signature, IndirectPlan { args, index, targets: plan_targets });
+            indirect.insert(
+                signature,
+                IndirectPlan {
+                    args,
+                    index,
+                    targets: plan_targets,
+                    dispatch_state: next_dispatch_state,
+                },
+            );
+            next_dispatch_state = next_dispatch_state
+                .checked_add(1)
+                .expect("a tail-call dispatcher cannot contain more than i32::MAX states");
         }
     }
 
@@ -1104,6 +1119,31 @@ fn build_tail_dispatcher(
         }
     }
 
+    // Route every indirect proper edge through one dispatcher state per exact
+    // callable signature. Previously each call site expanded the complete
+    // table-target choice and every target-bank transition in place. In a
+    // closure-heavy module that made the dispatcher quadratic in call sites x
+    // possible targets and could exceed the WebAssembly per-function byte
+    // limit. The call site now only stages its operands and selects this shared
+    // state; the target choice and bank transfer are emitted once here.
+    let shared_ctx = TailCtx {
+        targets: targets.clone(),
+        indirect: indirect.clone(),
+        source_bank: Vec::new(),
+        state_local: Some(state_local.clone()),
+        loop_label: loop_label.clone(),
+    };
+    let mut shared_plans: Vec<_> = indirect.values().cloned().collect();
+    shared_plans.sort_by_key(|plan| plan.dispatch_state);
+    for plan in shared_plans {
+        debug_assert_eq!(
+            usize::try_from(plan.dispatch_state).ok(),
+            Some(bodies.len()),
+            "shared indirect states must follow the source-function states densely",
+        );
+        bodies.push(indirect_dispatch_body(&plan, &dispatcher_result, &shared_ctx));
+    }
+
     let mut selection = vec![WirNode::Unreachable];
     for (state, body) in bodies.into_iter().enumerate().rev() {
         selection = vec![WirNode::If {
@@ -1118,41 +1158,115 @@ fn build_tail_dispatcher(
             result: None,
         }];
     }
-    (
-        WirFunc {
-            name: name.to_string(),
-            params,
-            ret: vec![dispatcher_result],
-            locals,
-            body: vec![WirNode::Loop { label: loop_label, body: selection }, WirNode::Unreachable],
-            raw_body: None,
-        },
-        count,
-    )
+    let dispatcher = WirFunc {
+        name: name.to_string(),
+        params,
+        ret: vec![dispatcher_result],
+        locals,
+        body: vec![WirNode::Loop { label: loop_label, body: selection }, WirNode::Unreachable],
+        raw_body: None,
+    };
+    (dispatcher, count, targets)
+}
+
+fn pooled_local_bank<'a>(
+    groups: impl Iterator<Item = &'a [WirLocal]>,
+    prefix: &str,
+) -> BTreeMap<Kind, Vec<WirLocal>> {
+    let mut maxima = BTreeMap::<Kind, usize>::new();
+    for group in groups {
+        let mut counts = HashMap::<Kind, usize>::new();
+        for local in group {
+            *counts.entry(local.ty.kind()).or_default() += 1;
+        }
+        for (kind, count) in counts {
+            maxima
+                .entry(kind)
+                .and_modify(|maximum| *maximum = (*maximum).max(count))
+                .or_insert(count);
+        }
+    }
+    maxima
+        .into_iter()
+        .enumerate()
+        .map(|(kind_index, (kind, count))| {
+            let locals = (0..count)
+                .map(|index| WirLocal {
+                    name: format!("{prefix}_{kind_index}_{index}"),
+                    ty: carrier_ty(kind),
+                })
+                .collect();
+            (kind, locals)
+        })
+        .collect()
+}
+
+fn clone_local_bank(
+    source: &BTreeMap<Kind, Vec<WirLocal>>,
+    prefix: &str,
+) -> BTreeMap<Kind, Vec<WirLocal>> {
+    source
+        .iter()
+        .enumerate()
+        .map(|(kind_index, (&kind, locals))| {
+            let locals = locals
+                .iter()
+                .enumerate()
+                .map(|(index, _)| WirLocal {
+                    name: format!("{prefix}_{kind_index}_{index}"),
+                    ty: carrier_ty(kind),
+                })
+                .collect();
+            (kind, locals)
+        })
+        .collect()
+}
+
+fn flatten_local_bank(bank: &BTreeMap<Kind, Vec<WirLocal>>) -> Vec<WirLocal> {
+    bank.values().flatten().cloned().collect()
+}
+
+fn assign_local_bank(
+    source: &[WirLocal],
+    bank: &BTreeMap<Kind, Vec<WirLocal>>,
+) -> Vec<WirLocal> {
+    let mut offsets = HashMap::<Kind, usize>::new();
+    source
+        .iter()
+        .map(|local| {
+            let kind = local.ty.kind();
+            let offset = offsets.entry(kind).or_default();
+            let assigned = bank
+                .get(&kind)
+                .and_then(|locals| locals.get(*offset))
+                .cloned()
+                .expect("a pooled local bank covers every member-local kind");
+            *offset += 1;
+            assigned
+        })
+        .collect()
 }
 
 fn tail_entry_wrapper(
     original: &WirFunc,
     dispatcher: &str,
     state: i32,
-    functions: &[WirFunc],
+    dispatcher_params: &[WirLocal],
+    dispatcher_kind: Kind,
+    target: &TailTarget,
 ) -> WirFunc {
-    let first_kind = functions[0].ret[0].kind();
-    let dispatcher_kind = if functions
-        .iter()
-        .all(|function| function.ret[0].kind() == first_kind)
-    {
-        first_kind
-    } else {
-        Kind::I64
-    };
     let mut args = vec![WirExpr::ConstI32(state)];
-    for function in functions {
-        if function.name == original.name {
-            args.extend(original.params.iter().map(|param| WirExpr::GetLocal(param.name.clone())));
-        } else {
-            args.extend(function.params.iter().map(|param| default_value(&param.ty)));
-        }
+    let original_by_slot: HashMap<_, _> = target
+        .params
+        .iter()
+        .zip(&original.params)
+        .map(|(slot, original)| (slot.name.as_str(), original))
+        .collect();
+    for slot in dispatcher_params {
+        args.push(match original_by_slot.get(slot.name.as_str()) {
+            Some(original) => WirExpr::GetLocal(original.name.clone()),
+            None => default_value(&slot.ty),
+        });
     }
     let call = WirExpr::Call { func: dispatcher.to_string(), args };
     let result = if dispatcher_kind == original.ret[0].kind() {
@@ -1230,9 +1344,8 @@ fn rewrite_tail_value_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
         WirExpr::CallIndirect { signature, args, index }
             if ctx.indirect.contains_key(signature) =>
         {
-            let signature = signature.clone();
             let result_ty = carrier_ty(signature.results[0]);
-            let plan = ctx.indirect.get(&signature).cloned().expect("guarded indirect plan");
+            let plan = ctx.indirect.get(signature).cloned().expect("guarded indirect plan");
             if args.len() != plan.args.len() {
                 return 0;
             }
@@ -1246,42 +1359,26 @@ fn rewrite_tail_value_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
                 local: plan.index.name.clone(),
                 value: *staged_index,
             });
-            let fallback = WirExpr::CallIndirect {
-                signature,
-                args: plan
-                    .args
-                    .iter()
-                    .map(|temp| WirExpr::GetLocal(temp.name.clone()))
-                    .collect(),
-                index: Box::new(WirExpr::GetLocal(plan.index.name.clone())),
-            };
-            let mut choice = fallback;
-            let mut cleanup = plan.args.clone();
-            cleanup.push(plan.index.clone());
-            for (table_index, target) in plan.targets.iter().rev() {
-                let transition = tail_transition_expr(
-                    target,
-                    plan.args
-                        .iter()
-                        .map(|temp| WirExpr::GetLocal(temp.name.clone()))
-                        .collect(),
-                    &cleanup,
-                    ctx,
-                );
-                choice = WirExpr::Control(Box::new(WirNode::If {
-                    cond: WirExpr::Binary {
-                        op: crate::wir::BinOp::Eq,
-                        kind: Kind::I32,
-                        lhs: Box::new(WirExpr::GetLocal(plan.index.name.clone())),
-                        rhs: Box::new(WirExpr::ConstI32(*table_index)),
-                    },
-                    then_: vec![WirNode::Push(transition)],
-                    els: vec![WirNode::Push(choice)],
-                    result: Some(result_ty.clone()),
-                }));
+            for local in &ctx.source_bank {
+                seq.push(WirNode::SetLocal {
+                    local: local.name.clone(),
+                    value: default_value(&local.ty),
+                });
             }
-            seq.push(WirNode::Push(choice));
-            *expr = WirExpr::Seq(seq);
+            seq.push(WirNode::SetLocal {
+                local: ctx
+                    .state_local
+                    .clone()
+                    .expect("an indirect dispatcher plan belongs to a state machine"),
+                value: WirExpr::ConstI32(plan.dispatch_state),
+            });
+            seq.push(WirNode::Br { target: ctx.loop_label.clone(), cond: None });
+            seq.push(WirNode::Unreachable);
+            *expr = WirExpr::Control(Box::new(WirNode::Block {
+                label: "__witchy_tail_indirect_escape".into(),
+                result: Some(result_ty),
+                body: seq,
+            }));
             1
         }
         WirExpr::ToSlot(inner, kind) | WirExpr::FromSlot(inner, kind)
@@ -1301,6 +1398,54 @@ fn rewrite_tail_value_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
         WirExpr::Seq(seq) => rewrite_tail_value_seq(seq, ctx),
         _ => 0,
     }
+}
+
+fn indirect_dispatch_body(
+    plan: &IndirectPlan,
+    dispatcher_result: &WirTy,
+    ctx: &TailCtx,
+) -> WirSeq {
+    let signature_result = plan
+        .targets
+        .first()
+        .map(|(_, target)| target.result_ty.kind())
+        .expect("an indirect dispatcher plan has at least one in-component target");
+    let fallback = WirExpr::CallIndirect {
+        signature: ClosureSignature {
+            params: plan.args.iter().map(|arg| arg.ty.kind()).collect(),
+            results: vec![signature_result],
+        },
+        args: plan.args.iter().map(|arg| WirExpr::GetLocal(arg.name.clone())).collect(),
+        index: Box::new(WirExpr::GetLocal(plan.index.name.clone())),
+    };
+    let fallback = if signature_result == dispatcher_result.kind() {
+        fallback
+    } else {
+        debug_assert_eq!(dispatcher_result.kind(), Kind::I64);
+        WirExpr::ToSlot(Box::new(fallback), signature_result)
+    };
+    let mut choice = vec![WirNode::Return(Some(fallback))];
+    let mut cleanup = plan.args.clone();
+    cleanup.push(plan.index.clone());
+    for (table_index, target) in plan.targets.iter().rev() {
+        choice = vec![WirNode::If {
+            cond: WirExpr::Binary {
+                op: crate::wir::BinOp::Eq,
+                kind: Kind::I32,
+                lhs: Box::new(WirExpr::GetLocal(plan.index.name.clone())),
+                rhs: Box::new(WirExpr::ConstI32(*table_index)),
+            },
+            then_: tail_transition_nodes(
+                target,
+                plan.args.iter().map(|arg| WirExpr::GetLocal(arg.name.clone())).collect(),
+                &cleanup,
+                ctx,
+            ),
+            els: choice,
+            result: None,
+        }];
+    }
+    choice
 }
 
 fn tail_transition_expr(
