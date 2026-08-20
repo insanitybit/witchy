@@ -1604,6 +1604,162 @@ impl Codegen<'_> {
         Some(name)
     }
 
+    /// Render a list whose physical carrier is a typed Wasm GC array. The
+    /// legacy `$ts_list_*` helpers walk an `i32` linear-memory buffer; feeding a
+    /// direct carrier to one of them validates as `expected i32, found ref`.
+    /// Keep the source rendering contract while selecting the helper from the
+    /// list's physical ABI.
+    pub(crate) fn ensure_gc_list_ts_wir_helper(
+        &mut self,
+        element: &EqShape,
+        type_id: u32,
+        array_id: u32,
+        element_kind: Kind,
+    ) -> Option<String> {
+        use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirLocal, WirNode as N, WirTy};
+
+        let name = format!("ts_gc_list_{type_id}_{}", element.id());
+        if self.ts_wir_helpers.contains_key(&name) {
+            return Some(name);
+        }
+        let getl = |name: &str| W::GetLocal(name.into());
+        let i32c = W::ConstI32;
+        let concat = |left: W, right: W| W::Call {
+            func: "concat".into(),
+            args: vec![left, right],
+        };
+        let value = W::ArrayGet {
+            array_id,
+            array: Box::new(getl("p")),
+            index: Box::new(getl("i")),
+        };
+        let rendered = match element {
+            EqShape::Int => {
+                self.uses_int_to_string = true;
+                W::Call {
+                    func: "int_to_string".into(),
+                    args: vec![Self::wir_convert(value, element_kind, Kind::I64)],
+                }
+            }
+            EqShape::Bool => {
+                let yes = self.intern("true");
+                let no = self.intern("false");
+                W::Control(Box::new(N::If {
+                    cond: Self::wir_convert(value, element_kind, Kind::I32),
+                    then_: vec![N::Push(W::StrPtr(yes))],
+                    els: vec![N::Push(W::StrPtr(no))],
+                    result: Some(WirTy::Str),
+                }))
+            }
+            EqShape::Str => Self::wir_convert(value, element_kind, Kind::I32),
+            EqShape::Float => {
+                self.uses_float_to_str = true;
+                W::Call {
+                    func: "float_to_str".into(),
+                    args: vec![Self::wir_convert(value, element_kind, Kind::F64)],
+                }
+            }
+            // Nested direct carriers need their own physical renderer. Do not
+            // reinterpret a reference as a legacy slot pointer.
+            _ => return None,
+        };
+        let open = self.intern("[");
+        let close = self.intern("]");
+        let comma = self.intern(", ");
+        let body = vec![
+            N::SetLocal {
+                local: "n".into(),
+                value: W::ArrayLen(Box::new(getl("p"))),
+            },
+            N::SetLocal {
+                local: "acc".into(),
+                value: W::StrPtr(open),
+            },
+            N::SetLocal {
+                local: "i".into(),
+                value: i32c(0),
+            },
+            N::Block {
+                label: "done".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "loop".into(),
+                    body: vec![
+                        N::Br {
+                            target: "done".into(),
+                            cond: Some(W::Binary {
+                                op: BinOp::Ge,
+                                kind: WK::I32,
+                                lhs: Box::new(getl("i")),
+                                rhs: Box::new(getl("n")),
+                            }),
+                        },
+                        N::If {
+                            cond: W::Binary {
+                                op: BinOp::Gt,
+                                kind: WK::I32,
+                                lhs: Box::new(getl("i")),
+                                rhs: Box::new(i32c(0)),
+                            },
+                            then_: vec![N::SetLocal {
+                                local: "acc".into(),
+                                value: concat(getl("acc"), W::StrPtr(comma)),
+                            }],
+                            els: Vec::new(),
+                            result: None,
+                        },
+                        N::SetLocal {
+                            local: "acc".into(),
+                            value: concat(getl("acc"), rendered),
+                        },
+                        N::SetLocal {
+                            local: "i".into(),
+                            value: W::Binary {
+                                op: BinOp::Add,
+                                kind: WK::I32,
+                                lhs: Box::new(getl("i")),
+                                rhs: Box::new(i32c(1)),
+                            },
+                        },
+                        N::Br {
+                            target: "loop".into(),
+                            cond: None,
+                        },
+                    ],
+                }],
+            },
+            N::Push(concat(getl("acc"), W::StrPtr(close))),
+        ];
+        self.ts_wir_helpers.insert(
+            name.clone(),
+            witchy_wir::wir::WirFunc {
+                name: name.clone(),
+                params: vec![WirLocal {
+                    name: "p".into(),
+                    ty: WirTy::GcRef(type_id),
+                }],
+                ret: vec![WirTy::Str],
+                locals: vec![
+                    WirLocal {
+                        name: "n".into(),
+                        ty: WirTy::Bool,
+                    },
+                    WirLocal {
+                        name: "i".into(),
+                        ty: WirTy::Bool,
+                    },
+                    WirLocal {
+                        name: "acc".into(),
+                        ty: WirTy::Str,
+                    },
+                ],
+                body,
+                raw_body: None,
+            },
+        );
+        Some(name)
+    }
+
     fn render_gc_value_wir(
         &mut self,
         ty: &Type,

@@ -516,6 +516,22 @@ impl Codegen<'_> {
                     // resolves its shape via typeck's type table, like a let-bound local.
                     _ => {
                         if let Some(shape) = self.eq_operand_shape(&args[0]) {
+                            if let EqShape::List(element) = &shape
+                                && let Some((type_id, array_id, element_kind)) =
+                                    self.gc_reference_list_layout_of_expr(&args[0])
+                                && let Some(helper) = self.ensure_gc_list_ts_wir_helper(
+                                    element,
+                                    type_id,
+                                    array_id,
+                                    element_kind,
+                                )
+                            {
+                                let arg = self.lower_expr(&args[0])?;
+                                return Some(W::Call {
+                                    func: helper,
+                                    args: vec![arg],
+                                });
+                            }
                             if shape.is_compound() {
                                 let kind = self.kind_of(&args[0]);
                                 let helper = match kind {
