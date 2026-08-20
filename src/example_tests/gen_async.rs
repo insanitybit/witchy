@@ -323,6 +323,34 @@ fn main(console: Console):
         );
     }
 
+    /// A finite tail after a yielding loop is a distinct owned phase. Failing
+    /// the loop condition selects it once, and resuming it exhausts the frame.
+    #[test]
+    fn generator_loop_then_tail_yield_runs_each_phase_once() {
+        let src = r#"import iter
+
+gen fn values(console: Console) -> Iter(Int):
+    var i = 0
+    while i < 2:
+        console.print("loop ${i}")
+        yield i
+        i = i + 1
+    console.print("tail")
+    yield 99
+
+fn main(console: Console):
+    let result: List(Int) = iter.collect(values(console))
+    console.print("${result}")
+"#;
+        let expected = ["loop 0", "loop 1", "tail", "[0, 1, 99]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.

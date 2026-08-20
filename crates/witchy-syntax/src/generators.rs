@@ -568,6 +568,9 @@ fn normalize_owned_generator(
     names: &GeneratorNames,
     function_returns: &std::collections::HashMap<String, Type>,
 ) -> Function {
+    if let Some(normalized) = normalize_loop_then_finite_tail(f, names) {
+        return normalized;
+    }
     if let Some(normalized) = normalize_terminal_for(f, names, function_returns) {
         return normalized;
     }
@@ -584,6 +587,58 @@ fn normalize_owned_generator(
         return normalize_finite_one_shot(f, names);
     }
     f.clone()
+}
+
+/// Normalize one yielding `while` followed by one finite tail yield into a
+/// terminal two-branch loop. The `active` frame field selects the loop branch
+/// until its condition fails; the tail branch clears it before suspension so it
+/// runs exactly once and then exhausts.
+fn normalize_loop_then_finite_tail(f: &Function, names: &GeneratorNames) -> Option<Function> {
+    let prelude_len = leading_initializers(&f.body.stmts);
+    let executable = &f.body.stmts[prelude_len..];
+    let [Stmt::Expr(Expr::While { cond, body }), tail @ ..] = executable else {
+        return None;
+    };
+    direct_yield_parts(body)?;
+    let tail_block = Block { stmts: tail.to_vec(), lines: Vec::new(), region: None };
+    direct_yield_parts(&tail_block)?;
+
+    let active = names.name("loop_tail_active");
+    let mut statements = f.body.stmts[..prelude_len].to_vec();
+    statements.push(Stmt::Let {
+        name: active.clone(),
+        ty: Some(Type::Named("Bool".into(), Vec::new())),
+        mutable: true,
+        value: Expr::Bool(true),
+    });
+    let mut tail_statements = vec![Stmt::Assign {
+        name: active.clone(),
+        value: Expr::Bool(false),
+    }];
+    tail_statements.extend(tail.iter().cloned());
+    statements.push(Stmt::Expr(Expr::While {
+        cond: Box::new(Expr::Var(active)),
+        body: Block {
+            stmts: vec![Stmt::Expr(Expr::If {
+                cond: cond.clone(),
+                then_block: body.clone(),
+                else_block: Some(Block {
+                    stmts: tail_statements,
+                    lines: Vec::new(),
+                    region: None,
+                }),
+            })],
+            lines: Vec::new(),
+            region: None,
+        },
+    }));
+    let mut normalized = f.clone();
+    normalized.body = Block {
+        stmts: statements,
+        lines: f.body.lines.clone(),
+        region: f.body.region.clone(),
+    };
+    Some(normalized)
 }
 
 /// Normalize a terminal list `for` into the same indexed owned-loop shape used
@@ -3218,6 +3273,19 @@ mod target_availability_tests {
         let debug = format!("{lowered:?}");
         assert!(!debug.contains("iter.from_gen"), "conditional continue must not replay: {debug}");
         assert!(debug.contains("While"), "the direct phase dispatcher must loop: {debug}");
+    }
+
+    #[test]
+    fn yielding_loop_then_tail_uses_two_owned_branches() {
+        let module = crate::parser::parse_module(
+            "gen fn values() -> Iter(Int):\n    var i = 0\n    while i < 2:\n        yield i\n        i = i + 1\n    yield 99\n",
+        )
+        .expect("parse loop-tail generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower loop-tail generator").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(!debug.contains("iter.from_gen"), "loop tail must not replay: {debug}");
+        assert!(debug.contains("loop_tail_active"), "the tail stage must be framed: {debug}");
     }
 
     #[test]
