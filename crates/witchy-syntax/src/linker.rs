@@ -77,11 +77,11 @@ impl std::error::Error for SourceLinkError {
 }
 
 pub type SourceChecker =
-    fn(&crate::source_check::ResolvedSource) -> Result<(), SourceCheckError>;
+    fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>;
 
 fn accept_resolved_source(
     _: &crate::source_check::ResolvedSource,
-) -> Result<(), SourceCheckError> {
+) -> Result<(), SourceLinkError> {
     Ok(())
 }
 
@@ -1946,8 +1946,8 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
     for (_, module) in &mut modules {
         reclassify_parsed_module_members(module);
     }
-    let resolved = crate::source_check::resolve_linked_source(modules, user_modules)?;
-    check_source(&resolved).map_err(SourceLinkError::Source)?;
+    let resolved = crate::source_check::resolve_linked_source(modules, user_modules, entry, mode)?;
+    check_source(&resolved)?;
     let checked = resolved.after_semantic_check();
     let (mut modules, declarations) = lower_expanded_source(checked, &mut origin_tables)?;
 
@@ -4323,13 +4323,15 @@ mod tests {
 
         fn reject_expanded_generator(
             source: &crate::source_check::ResolvedSource,
-        ) -> Result<(), SourceCheckError> {
+        ) -> Result<(), SourceLinkError> {
             assert!(source.modules().iter().any(|(_, module)| {
                 module.items.iter().any(|item| {
                     matches!(item, Item::Function(function) if function.is_gen)
                 })
             }));
-            Err(SourceCheckError::new("stop before lowering"))
+            Err(SourceLinkError::Source(SourceCheckError::new(
+                "stop before lowering",
+            )))
         }
 
         let module = crate::parser::parse_module("fn main() -> Int:\n    0\n")

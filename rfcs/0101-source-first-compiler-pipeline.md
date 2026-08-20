@@ -3,7 +3,7 @@ rfc: 0101
 title: source-first compiler pipeline
 status: experimental
 created: 2026-07-20
-tracking: "active implementation: destructive lowering now consumes an explicit linked-source semantic proof; complete body checking and trait lowering are moving behind that boundary before promotion"
+tracking: "active implementation: the complete expanded source graph is semantically proved before production destructive lowering, including comptime-emitted bodies; promotion still requires eliminating redundant post-lowering checking and sealing raw production Module sinks"
 related:
   - "[0070](0070-0-1-blocking-set.md) (terminal 0.1 decision record and checked-module seam)"
   - "BUG-428 / BUG-429 / BUG-434 / BUG-436 (closed regression classes)"
@@ -22,12 +22,14 @@ function signatures and handwritten/generated diagnostic parity. The expanded
 link set then crosses an opaque `SemanticallyCheckedSource` boundary; destructive
 linked-source lowering cannot accept bare `ResolvedSource`.
 
-This does not yet prove the complete contract. Traits and method dispatch are
-checked only after linking, and the proof currently covers source-only
-generator/async safety rules rather than the full imported-name and type
-semantics. Those are the next implementation slices. The RFC remains experimental
-until every destructive pass is behind the proof and the linked source checker
-owns the complete semantic contract.
+The linked-source proof now owns complete declaration and body semantics. It
+builds the ordinary runtime projection on a clone, runs the existing type and
+trait checker, and only then permits the authoritative expanded source to enter
+generator, async, record, trait, and impl lowering. The same proof runs after
+compile-time expansion, so emitted bodies cannot join downstream of checking.
+The RFC remains experimental while production retains a redundant check of the
+lowered result and raw `Module` sinks remain available outside explicitly
+synthetic compiler paths.
 
 Implemented evidence:
 
@@ -61,6 +63,13 @@ Implemented evidence:
   identities are therefore checked while async/generator/record/impl nodes are
   intact. `checked_link_rejects_resolved_signature_semantics_before_source_lowering`
   pins a wrong imported async-signature arity to `PipelineStage::Source`.
+- The proof now runs complete function-body and method-dispatch inference over
+  the production runtime projection before destructive lowering. Focused tests
+  pin ordinary and async body failures to `PipelineStage::Source` while source
+  nodes are still intact, without reimplementing linker or checker semantics.
+- A compile-time expander that appends a type-invalid function body receives
+  that same source-stage diagnostic before lowering, proving generated bodies
+  re-enter the complete semantic boundary rather than only declaration checks.
 - Strict and lenient record lowering are proof-gated at linker, type-checker,
   interpreter, and Wasm assembly entrypoints; projection and record-update
   backend parity tests remain green.
@@ -137,13 +146,11 @@ Implemented evidence:
 
 ## Remaining migration
 
-The linker still interleaves standard-library discovery, compile-time
-expansion, body inference, and destructive transforms. Resolve-wide type and
-trait declaration semantics now sit before the proof; complete body inference
-and method dispatch still run on the lowered linked clone. The remaining work
-must move those boundaries incrementally without creating a second semantic
-pipeline or weakening the existing fail-closed checks. In dependency order:
-move complete source body checking before trait desugaring; then remove the
+Complete semantics now precede production destructive lowering by checking an
+internal projection through the existing linker and checker. The production
+pipeline temporarily checks its final lowered result again; convergence should
+carry the proved projection or an equivalent semantic artifact through
+lowering so generated code is checked exactly once. Then remove or seal the
 remaining raw production `Module` entrypoints and promote the RFC only after
 backend and diagnostic-origin criteria are green.
 

@@ -9749,11 +9749,11 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     check_with_compiler_syntax(module, false)
 }
 
-/// Validate declaration-level semantics on the complete expanded source set
-/// before the linker lowers generators, async functions, records, or impls.
-pub fn check_linked_source_headers(
+/// Validate complete semantics on the expanded source set before the linker
+/// lowers generators, async functions, records, traits, or impls.
+pub fn check_linked_source_semantics(
     source: &witchy_syntax::source_check::ResolvedSource,
-) -> Result<(), witchy_syntax::source_check::SourceCheckError> {
+) -> Result<(), witchy_syntax::linker::SourceLinkError> {
     fn source_error(
         module_name: &str,
         module: &Module,
@@ -9773,22 +9773,38 @@ pub fn check_linked_source_headers(
     }
 
     for (module_name, module) in source.modules() {
-        check_unique_functions(module)
-            .map_err(|error| source_error(module_name, module, error))?;
-        check_unique_declarations(module)
-            .map_err(|error| source_error(module_name, module, error))?;
-        check_unique_parameters(module)
-            .map_err(|error| source_error(module_name, module, error))?;
+        check_unique_functions(module).map_err(|error| {
+            witchy_syntax::linker::SourceLinkError::Source(source_error(
+                module_name,
+                module,
+                error,
+            ))
+        })?;
+        check_unique_declarations(module).map_err(|error| {
+            witchy_syntax::linker::SourceLinkError::Source(source_error(
+                module_name,
+                module,
+                error,
+            ))
+        })?;
+        check_unique_parameters(module).map_err(|error| {
+            witchy_syntax::linker::SourceLinkError::Source(source_error(
+                module_name,
+                module,
+                error,
+            ))
+        })?;
         check_nominal_lifetime_declarations(module).map_err(|error| {
-            witchy_syntax::source_check::SourceCheckError::new(error.message)
+            witchy_syntax::linker::SourceLinkError::Source(
+                witchy_syntax::source_check::SourceCheckError::new(error.message),
+            )
         })?;
     }
 
-    // Resolve-wide declaration semantics do not require generator, async,
-    // record, trait, or impl lowering. Run them over one read-only aggregate so
-    // imported canonical type/trait identities are visible to each signature.
-    // This deliberately stops before body inference: source-only body nodes are
-    // retained and the remaining migration is tracked by RFC-0101.
+    // Resolve-wide semantics run over one read-only aggregate so imported
+    // canonical type, trait, callable, and method identities are visible to
+    // every declaration and body before the production lowering sequence can
+    // consume its source representation.
     let mut modules = source.modules().iter();
     let Some((_, first)) = modules.next() else { return Ok(()) };
     let mut aggregate = first.clone();
@@ -9818,12 +9834,18 @@ pub fn check_linked_source_headers(
             .extend(module.compiler_block_syntax.iter().cloned());
     }
     let source_error = |error: TypeError| {
-        witchy_syntax::source_check::SourceCheckError::new(error.message)
+        witchy_syntax::linker::SourceLinkError::Source(
+            witchy_syntax::source_check::SourceCheckError::new(error.message),
+        )
     };
     check_type_names(&aggregate).map_err(source_error)?;
     check_trait_names(&aggregate).map_err(source_error)?;
     check_existential_types(&aggregate.items).map_err(source_error)?;
     check_public_state_impls(&aggregate).map_err(source_error)?;
+    let body_projection = source
+        .runtime_projection()
+        .map_err(witchy_syntax::linker::SourceLinkError::Link)?;
+    check_with_compiler_syntax(&body_projection, false).map_err(source_error)?;
     Ok(())
 }
 

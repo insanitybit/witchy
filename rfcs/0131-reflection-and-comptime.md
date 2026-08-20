@@ -55,6 +55,11 @@ Generated items are appended before linking, type checking, trait resolution,
 capability-footprint analysis, and backend lowering. Generated code therefore
 obeys the same rules as handwritten code.
 
+The source-first proof checks complete handwritten and generated bodies before
+any production destructive lowering. Until that proof artifact replaces the
+redundant final lowered-module check, acceptance row 4's "exactly once" clause
+remains promotion debt rather than silently weakening the semantic boundary.
+
 ## Typed syntax and hygiene
 
 The canonical generation API uses compiler-owned values:

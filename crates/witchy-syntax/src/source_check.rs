@@ -95,6 +95,9 @@ pub struct ResolvedSource {
     modules: Vec<(String, Module)>,
     declarations: crate::type_resolve::ResolvedDeclarations,
     method_owners: crate::type_resolve::MethodOwnerCandidates,
+    entry: String,
+    mode: crate::linker::LinkMode,
+    user_modules: std::collections::HashSet<String>,
 }
 
 /// A resolved expanded source set whose injected semantic checker completed
@@ -113,6 +116,68 @@ impl ResolvedSource {
 
     pub fn method_owners(&self) -> &crate::type_resolve::MethodOwnerCandidates {
         &self.method_owners
+    }
+
+    /// Build the ordinary runtime projection on a clone while retaining this
+    /// resolved source as the authoritative pre-lowering proof input. The
+    /// legacy linker path deliberately installs no source callback, so this
+    /// reuses the production name, trait, and lowering semantics without
+    /// recursively constructing another semantic proof.
+    pub fn runtime_projection(&self) -> Result<Module, crate::linker::LinkError> {
+        fn no_expand(
+            _: &str,
+            _: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        fn restore_local_name(name: &mut String, prefix: &str) {
+            if let Some(local) = name.strip_prefix(prefix).map(str::to_string) {
+                *name = local;
+            }
+        }
+
+        let mut modules = self.modules.clone();
+        for (name, module) in &mut modules {
+            let prefix = format!("{name}.");
+            for item in &mut module.items {
+                match item {
+                    crate::ast::Item::Type(definition) => {
+                        restore_local_name(&mut definition.name, &prefix);
+                        for variant in &mut definition.variants {
+                            restore_local_name(&mut variant.name, &prefix);
+                        }
+                    }
+                    crate::ast::Item::Trait(definition) => {
+                        restore_local_name(&mut definition.name, &prefix);
+                    }
+                    crate::ast::Item::TypeAlias { name, .. } => {
+                        restore_local_name(name, &prefix);
+                    }
+                    crate::ast::Item::Impl(definition) => {
+                        restore_local_name(&mut definition.type_name, &prefix);
+                        if let Some(trait_name) = &mut definition.trait_name {
+                            restore_local_name(trait_name, &prefix);
+                        }
+                    }
+                    crate::ast::Item::Function(_)
+                    | crate::ast::Item::Const { .. }
+                    | crate::ast::Item::Comptime(_) => {}
+                }
+            }
+            if !module.imports.contains(name) {
+                module.imports.push(name.clone());
+                module.import_lines.push(0);
+            }
+        }
+        crate::linker::link_with_user_modules_with_mode(
+            modules,
+            &self.entry,
+            no_expand,
+            &self.user_modules,
+            self.mode,
+        )
     }
 
     pub(crate) fn after_semantic_check(self) -> SemanticallyCheckedSource {
@@ -230,6 +295,8 @@ pub fn check(module: Module) -> Result<SourceCheckedModule, SourceCheckError> {
 pub(crate) fn resolve_linked_source(
     mut modules: Vec<(String, Module)>,
     user_modules: &std::collections::HashSet<String>,
+    entry: &str,
+    mode: crate::linker::LinkMode,
 ) -> Result<ResolvedSource, crate::linker::LinkError> {
     for (name, module) in &modules {
         if let Some(constant) = crate::consts::find_cycle(module) {
@@ -263,6 +330,9 @@ pub(crate) fn resolve_linked_source(
         modules,
         declarations: namespace.declarations,
         method_owners: namespace.method_owners,
+        entry: entry.to_string(),
+        mode,
+        user_modules: user_modules.clone(),
     })
 }
 
@@ -305,6 +375,8 @@ mod tests {
         let error = resolve_linked_source(
             vec![("main".into(), parse("gen fn emitted() -> Int:\n  yield 1\n"))],
             &std::collections::HashSet::new(),
+            "main",
+            crate::linker::LinkMode::Production,
         )
         .expect_err("expanded source must re-enter the generator contract");
         assert_eq!(
@@ -374,6 +446,8 @@ mod tests {
         let proof = resolve_linked_source(
             vec![("main".into(), module)],
             &std::collections::HashSet::new(),
+            "main",
+            crate::linker::LinkMode::Production,
         )
         .expect("linked source resolves");
         let resolved = &proof.modules()[0].1;

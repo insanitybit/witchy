@@ -1,8 +1,9 @@
 //! The checked boundary between the front end and later compiler stages.
 //!
 //! Linking performs expansion and source name resolution, then invokes the
-//! declaration-level checker before destructive source lowering. Complete body
-//! checking remains on the linked runtime module during the migration.
+//! complete semantic checker over an internal runtime projection while the
+//! authoritative expanded source remains intact. Only that proof can enter
+//! destructive source lowering.
 
 use std::collections::HashSet;
 
@@ -259,7 +260,7 @@ fn link_checked_with(
                 expand,
                 user_modules,
                 mode,
-                typeck::check_linked_source_headers,
+                typeck::check_linked_source_semantics,
             )
         }
         None => linker::link_with_mode_and_origins_and_source_check(
@@ -267,7 +268,7 @@ fn link_checked_with(
             entry,
             expand,
             mode,
-            typeck::check_linked_source_headers,
+            typeck::check_linked_source_semantics,
         ),
     }?;
     if let Some(module_owners) = &module_owners {
@@ -455,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn checked_link_preserves_type_errors() {
+    fn checked_link_proves_body_errors_before_production_lowering() {
         let modules = vec![(
             "main".to_string(),
             parse("fn main() -> Int:\n  \"not an int\"\n"),
@@ -465,10 +466,59 @@ mod tests {
         let new = link_checked(modules, "main", no_expand)
             .expect_err("checked link must reject the body");
 
-        assert_eq!(new, PipelineError::Type(old.clone()));
-        assert_eq!(new.to_string(), old.to_string());
-        assert_eq!(new.stage(), PipelineStage::Type);
+        assert_eq!(
+            new.to_string(),
+            old.to_string()
+                .strip_prefix("type error: ")
+                .expect("legacy body error has its stage prefix")
+        );
+        assert_eq!(new.stage(), PipelineStage::Source);
         assert_eq!(new.location(), None);
+    }
+
+    #[test]
+    fn checked_link_rejects_async_body_semantics_before_source_lowering() {
+        let modules = vec![
+            (
+                "main".to_string(),
+                parse("import helper\n\nfn main() -> Int:\n  0\n"),
+            ),
+            (
+                "helper".to_string(),
+                parse("async fn bad() -> Int:\n  \"not an int\"\n"),
+            ),
+        ];
+        let error = link_checked(modules, "main", no_expand)
+            .expect_err("an invalid async body must fail before source lowering");
+
+        assert_eq!(error.stage(), PipelineStage::Source, "{error}");
+        assert!(error.to_string().contains("expected `Int`"), "{error}");
+    }
+
+    #[test]
+    fn comptime_emitted_body_reenters_semantic_proof_before_source_lowering() {
+        fn emit_invalid_body(
+            name: &str,
+            module: &mut Module,
+            _siblings: &[(String, Module)],
+        ) -> Result<OriginTable, String> {
+            if name == "main" {
+                let mut emitted = parse("fn emitted() -> Int:\n  \"not an int\"\n");
+                module.items.append(&mut emitted.items);
+            }
+            Ok(OriginTable::default())
+        }
+
+        let modules = vec![("main".to_string(), parse("fn main() -> Int:\n  0\n"))];
+        let error = link_checked(modules, "main", emit_invalid_body)
+            .expect_err("generated invalid body must re-enter semantic proof");
+
+        assert_eq!(error.stage(), PipelineStage::Source, "{error}");
+        assert!(
+            error.to_string().contains("function `main.emitted` body"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("expected `Int`"), "{error}");
     }
 
     #[test]
