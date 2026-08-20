@@ -6,6 +6,13 @@
 
 use crate::ast::Module;
 
+/// Internal marker retained on functions produced through typed `emit_item`.
+/// Source cannot forge it because the parser accepts only the public
+/// declaration attributes. The reserved-name walk uses it to preserve
+/// compiler-owned identifiers such as `meta.fresh` bindings when a resolved
+/// source set is recursively projected for complete semantic checking.
+pub const GENERATED_ITEM_ATTRIBUTE: &str = "__compiler_generated_item";
+
 /// Source location retained while source-only syntax is still intact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceCheckLocation {
@@ -138,6 +145,38 @@ impl ResolvedSource {
             }
         }
 
+        fn restore_local_type_names(ty: &mut crate::ast::Type, prefix: &str) {
+            match ty {
+                crate::ast::Type::Named(name, arguments)
+                | crate::ast::Type::Dyn(name, arguments) => {
+                    restore_local_name(name, prefix);
+                    for argument in arguments {
+                        restore_local_type_names(argument, prefix);
+                    }
+                }
+                crate::ast::Type::Tuple(items) => {
+                    for item in items {
+                        restore_local_type_names(item, prefix);
+                    }
+                }
+                crate::ast::Type::RecordCompose { base, fields } => {
+                    restore_local_type_names(base, prefix);
+                    for (_, field) in fields {
+                        restore_local_type_names(field, prefix);
+                    }
+                }
+                crate::ast::Type::Fn(inputs, output, _) => {
+                    for input in inputs {
+                        restore_local_type_names(input, prefix);
+                    }
+                    restore_local_type_names(output, prefix);
+                }
+                crate::ast::Type::Qualified(_, inner) => {
+                    restore_local_type_names(inner, prefix);
+                }
+            }
+        }
+
         let mut modules = self.modules.clone();
         for (name, module) in &mut modules {
             let prefix = format!("{name}.");
@@ -152,8 +191,13 @@ impl ResolvedSource {
                     crate::ast::Item::Trait(definition) => {
                         restore_local_name(&mut definition.name, &prefix);
                     }
-                    crate::ast::Item::TypeAlias { name, .. } => {
+                    crate::ast::Item::TypeAlias { name, ty, .. } => {
                         restore_local_name(name, &prefix);
+                        // The pre-expansion record projection runs before the
+                        // recursive link resolves names again. Keep a local
+                        // alias declaration and references inside its body in
+                        // the same namespace during that projection.
+                        restore_local_type_names(ty, &prefix);
                     }
                     crate::ast::Item::Impl(definition) => {
                         restore_local_name(&mut definition.type_name, &prefix);
@@ -507,5 +551,99 @@ mod tests {
         assert_eq!(inherent.len(), 1);
         assert_eq!(inherent[0].owner, "main.Widget");
         assert_eq!(inherent[0].kind, crate::type_resolve::MethodOwnerKind::Inherent);
+    }
+
+    #[test]
+    fn resolved_generic_structural_aliases_survive_cold_runtime_projection() {
+        fn no_expand(
+            _: &str,
+            _: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        fn project(
+            source: &ResolvedSource,
+        ) -> Result<(), crate::linker::SourceLinkError> {
+            source
+                .runtime_projection()
+                .map(|_| ())
+                .map_err(crate::linker::SourceLinkError::Link)
+        }
+
+        let module = parse(
+            r#"type Value(a) = .{value: a}
+type Located(a) = .{..Value(a), line: Int}
+fn locate(value: Located(String)) -> .{line: Int, value: String}:
+    value
+"#,
+        );
+        crate::linker::link_with_mode_and_origins_and_source_check(
+            vec![("main".into(), module)],
+            "main",
+            no_expand,
+            crate::linker::LinkMode::Production,
+            project,
+        )
+        .expect("resolved structural aliases must project without a warm linker cache");
+    }
+
+    #[test]
+    fn typed_generated_fresh_bindings_survive_cold_runtime_projection() {
+        fn expand_typed_function(
+            name: &str,
+            module: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            if name != "main" {
+                return Ok(crate::origin::OriginTable::default());
+            }
+            let mut generated = parse(
+                "fn identity(value: Int) -> Int:\n    value\n",
+            )
+            .items
+            .remove(0);
+            let crate::ast::Item::Function(function) = &mut generated else {
+                unreachable!("fixture parses a function")
+            };
+            let fresh = "__witchy_fresh_6d61696e_0_value".to_string();
+            function.params[0].name = fresh.clone();
+            function.attributes.push(GENERATED_ITEM_ATTRIBUTE.into());
+            let crate::ast::Stmt::Expr(crate::ast::Expr::Var(result)) =
+                &mut function.body.stmts[0]
+            else {
+                unreachable!("fixture returns its parameter")
+            };
+            *result = fresh;
+            module.items.push(generated);
+            module.item_lines.push(1);
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        fn project(
+            source: &ResolvedSource,
+        ) -> Result<(), crate::linker::SourceLinkError> {
+            source
+                .runtime_projection()
+                .map(|_| ())
+                .map_err(crate::linker::SourceLinkError::Link)
+        }
+
+        let module = parse("fn main():\n    ()\n");
+        crate::linker::link_with_mode_and_origins_and_source_check(
+            vec![("main".into(), module)],
+            "main",
+            expand_typed_function,
+            crate::linker::LinkMode::Production,
+            project,
+        )
+        .expect("typed generated fresh bindings retain compiler ownership");
+
+        let error = crate::parser::parse_module(
+            "@__compiler_generated_item\nfn forged():\n    ()\n",
+        )
+        .expect_err("source cannot forge the typed-item ownership marker");
+        assert!(error.message.contains("unknown declaration attribute"), "{error:?}");
     }
 }

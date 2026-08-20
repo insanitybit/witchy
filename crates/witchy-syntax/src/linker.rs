@@ -3781,6 +3781,16 @@ fn check_reserved_item(
 ) -> Result<(), LinkError> {
     match item {
         Item::Function(f) => {
+            if f.attributes.iter().any(|attribute| {
+                attribute == crate::source_check::GENERATED_ITEM_ATTRIBUTE
+            }) {
+                // Typed `emit_item` owns this complete function subtree. The
+                // parser cannot construct this internal attribute, so private
+                // fresh parameters, locals, and references remain compiler
+                // syntax when semantic checking recursively links a runtime
+                // projection.
+                return Ok(());
+            }
             if is_reserved_user_identifier(&f.name) {
                 return reserved_name_error(module_name, "function", &f.name);
             }

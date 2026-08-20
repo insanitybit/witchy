@@ -419,12 +419,28 @@ fn mark_typed_item_impls_compiler_generated(module: &mut Module) {
 }
 
 fn mark_typed_item_impl_compiler_generated(item: &mut Item) {
-    if let Item::Impl(implementation) = item {
-        // Both typed quotation and `meta.item(source)` arrive here only through
-        // the unspellable `emit_item` intrinsic. Preserve that compiler-owned
-        // boundary so source validation can distinguish generated private
-        // methods from user declarations.
-        implementation.origin = ImplOrigin::CompilerGenerated;
+    match item {
+        Item::Function(function) => {
+            if !function
+                .attributes
+                .iter()
+                .any(|attribute| {
+                    attribute == witchy_syntax::source_check::GENERATED_ITEM_ATTRIBUTE
+                })
+            {
+                function
+                    .attributes
+                    .push(witchy_syntax::source_check::GENERATED_ITEM_ATTRIBUTE.into());
+            }
+        }
+        Item::Impl(implementation) => {
+            // Both typed quotation and `meta.item(source)` arrive here only
+            // through the unspellable `emit_item` intrinsic. Preserve that
+            // compiler-owned boundary so source validation can distinguish
+            // generated private methods from user declarations.
+            implementation.origin = ImplOrigin::CompilerGenerated;
+        }
+        _ => {}
     }
 }
 
