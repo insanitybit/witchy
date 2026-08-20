@@ -1122,18 +1122,6 @@ fn nested_match_yields(body: &Block) -> Option<NestedMatchYields> {
                 if rebind_on_resume && !matches!(scrutinee.as_ref(), Expr::Var(_)) {
                     return None;
                 }
-                if rebind_on_resume
-                    && matches!(scrutinee.as_ref(), Expr::Var(name) if block_assigns_binding(
-                        &Block {
-                            stmts: prefix.clone(),
-                            lines: Vec::new(),
-                            region: None,
-                        },
-                        name,
-                    ))
-                {
-                    return None;
-                }
                 Some(NestedMatchArmYield {
                     line: arm.line,
                     pattern: arm.pattern.clone(),
@@ -1391,7 +1379,25 @@ fn generator_pattern_bindings(
             }
             Some(bindings)
         }
-        Pattern::Ctor { .. } | Pattern::AnonCtor { .. } | Pattern::Or(_) => None,
+        Pattern::Ctor { name, args } => {
+            let Type::Named(type_name, type_args) = ty else { return None };
+            let payload_types: &[Type] = match (type_name.as_str(), name.as_str()) {
+                ("Option", "Some") if type_args.len() == 1 => type_args,
+                ("Option", "None") => &[],
+                ("Result", "Ok") if type_args.len() == 2 => &type_args[..1],
+                ("Result", "Err") if type_args.len() == 2 => &type_args[1..],
+                _ => return None,
+            };
+            if args.len() != payload_types.len() {
+                return None;
+            }
+            let mut bindings = Vec::new();
+            for (pattern, ty) in args.iter().zip(payload_types) {
+                bindings.extend(generator_pattern_bindings(pattern, ty)?);
+            }
+            Some(bindings)
+        }
+        Pattern::AnonCtor { .. } | Pattern::Or(_) => None,
     }
 }
 
@@ -1754,6 +1760,43 @@ fn lower_owned_loop_frame(
         };
         live
     };
+    let match_arm_live_locals = if let Some(nested) = &nested_match {
+        let Expr::Var(scrutinee_name) = &nested.scrutinee else {
+            return Ok(None);
+        };
+        let Some(scrutinee_ty) = bindings
+            .iter()
+            .find(|binding| binding.name == *scrutinee_name)
+            .map(|binding| binding.ty.clone())
+        else {
+            return Ok(None);
+        };
+        let mut arms = Vec::with_capacity(nested.arms.len());
+        for arm in &nested.arms {
+            if !arm.rebind_on_resume {
+                arms.push(Vec::new());
+                continue;
+            }
+            let Some(pattern_bindings) = generator_pattern_bindings(&arm.pattern, &scrutinee_ty)
+            else {
+                return Ok(None);
+            };
+            let suffix = Block {
+                stmts: arm.suffix.clone(),
+                lines: Vec::new(),
+                region: None,
+            };
+            arms.push(
+                pattern_bindings
+                    .into_iter()
+                    .filter(|binding| block_references_binding(&suffix, &binding.name))
+                    .collect(),
+            );
+        }
+        arms
+    } else {
+        Vec::new()
+    };
     let live_locals = if let Some(nested) = &nested_conditional {
         let mut after = nested.then_suffix.clone();
         after.extend(nested.outer_suffix.clone());
@@ -1761,6 +1804,8 @@ fn lower_owned_loop_frame(
             return Ok(None);
         };
         live
+    } else if !match_arm_live_locals.is_empty() {
+        match_arm_live_locals.iter().flatten().cloned().collect()
     } else {
         direct_live_locals
             .iter()
@@ -2069,6 +2114,20 @@ fn lower_owned_loop_frame(
         }));
     } else if let Some(nested) = nested_match {
         let yielded_option_name = names.name("yielded_option");
+        let mut next_offset = 0usize;
+        let match_arm_offsets = match_arm_live_locals
+            .iter()
+            .map(|bindings| {
+                let offset = next_offset;
+                next_offset += bindings.len();
+                offset
+            })
+            .collect::<Vec<_>>();
+        let captured_match_names = live_locals
+            .iter()
+            .enumerate()
+            .map(|(index, _)| names.name(&format!("captured_match_live_{index}")))
+            .collect::<Vec<_>>();
         step_statements.push(Stmt::Let {
             name: suspended_name.clone(),
             ty: Some(Type::Named("Int".into(), Vec::new())),
@@ -2081,6 +2140,14 @@ fn lower_owned_loop_frame(
             mutable: true,
             value: Expr::Ctor { name: "None".into(), args: Vec::new() },
         });
+        for (binding, captured) in live_locals.iter().zip(&captured_match_names) {
+            step_statements.push(Stmt::Let {
+                name: captured.clone(),
+                ty: Some(Type::Named("Option".into(), vec![binding.ty.clone()])),
+                mutable: true,
+                value: Expr::Ctor { name: "None".into(), args: Vec::new() },
+            });
+        }
         for (index, arm) in nested.arms.iter().enumerate() {
             if arm.yielded.is_none() {
                 continue;
@@ -2092,38 +2159,14 @@ fn lower_owned_loop_frame(
                 lines: Vec::new(),
                 region: None,
             })?;
-            let resume = if arm.rebind_on_resume {
-                Block {
-                    stmts: vec![Stmt::Expr(Expr::Match {
-                        scrutinee: Box::new(nested.scrutinee.clone()),
-                        arms: vec![
-                            MatchArm {
-                                line: arm.line,
-                                pattern: arm.pattern.clone(),
-                                // The chosen phase already proves that the
-                                // source guard succeeded. Re-running it could
-                                // duplicate effects.
-                                guard: None,
-                                body: Expr::Block(resume),
-                            },
-                            MatchArm {
-                                line: 0,
-                                pattern: Pattern::Wildcard,
-                                guard: None,
-                                body: Expr::Block(Block {
-                                    stmts: Vec::new(),
-                                    lines: Vec::new(),
-                                    region: None,
-                                }),
-                            },
-                        ],
-                    })],
-                    lines: Vec::new(),
-                    region: None,
-                }
-            } else {
-                resume
-            };
+            let resume = restore_optional_bindings(
+                &frame_name,
+                bindings.len() + match_arm_offsets[index],
+                &match_arm_live_locals[index],
+                names,
+                &format!("match_arm_{index}_live"),
+                resume,
+            );
             step_statements.push(Stmt::Expr(Expr::If {
                 cond: Box::new(Expr::Binary {
                     op: BinOp::Eq,
@@ -2157,6 +2200,19 @@ fn lower_owned_loop_frame(
                         name: yielded_option_name.clone(),
                         value: Expr::Ctor { name: "Some".into(), args: vec![yielded] },
                     });
+                    let offset = match_arm_offsets[index];
+                    for (binding, captured) in match_arm_live_locals[index]
+                        .iter()
+                        .zip(&captured_match_names[offset..])
+                    {
+                        statements.push(Stmt::Assign {
+                            name: captured.clone(),
+                            value: Expr::Ctor {
+                                name: "Some".into(),
+                                args: vec![Expr::Var(binding.name.clone())],
+                            },
+                        });
+                    }
                     statements.push(Stmt::Assign {
                         name: suspended_name.clone(),
                         value: Expr::Int((index + 1) as i64),
@@ -2191,6 +2247,7 @@ fn lower_owned_loop_frame(
             body: Block { stmts: loop_statements, lines: Vec::new(), region: None },
         }));
         let mut next_frame_fields = capture_frame_bindings(&bindings, parameter_count);
+        next_frame_fields.extend(captured_match_names.into_iter().map(Expr::Var));
         next_frame_fields.push(Expr::Var(suspended_name));
         step_statements.push(Stmt::Expr(Expr::Match {
             scrutinee: Box::new(Expr::Var(yielded_option_name)),
@@ -2955,15 +3012,16 @@ mod target_availability_tests {
     }
 
     #[test]
-    fn mutated_match_scrutinee_waits_for_pattern_binding_frame_fields() {
+    fn mutated_match_scrutinee_carries_pattern_binding_frame_fields() {
         let module = crate::parser::parse_module(
             "gen fn values() -> Iter(Int):\n    var current: Option(Int) = Some(1)\n    while true:\n        match current:\n            Some(value) ->\n                current = None\n                yield value\n                let after = value\n            None -> return\n",
         )
         .expect("parse mutated-match generator");
         let checked = crate::source_check::check(module).expect("source check");
-        let lowered = lower(checked).expect("preserve mutated-match generator").into_module();
+        let lowered = lower(checked).expect("lower mutated-match generator").into_module();
         let debug = format!("{lowered:?}");
-        assert!(debug.contains("iter.from_gen"), "match bindings need explicit frame fields: {debug}");
+        assert!(!debug.contains("iter.from_gen"), "mutated match arms must not replay: {debug}");
+        assert!(debug.contains("match_arm_0_live"), "the selected arm binding must be restored: {debug}");
     }
 
     #[test]

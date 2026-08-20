@@ -200,6 +200,36 @@ fn main(console: Console):
         );
     }
 
+    /// The selected match phase carries its pattern payload directly. Mutating
+    /// the original scrutinee before suspension cannot change the resumed arm.
+    #[test]
+    fn generator_match_binding_survives_scrutinee_mutation_without_replay() {
+        let src = r#"import iter
+
+gen fn values(console: Console) -> Iter(Int):
+    var current: Option(Int) = Some(9)
+    while true:
+        match current:
+            Some(value) ->
+                current = None
+                console.print("before ${value}")
+                yield value
+                console.print("after ${value}")
+            None -> return
+
+fn main(console: Console):
+    let result: List(Int) = iter.collect(values(console))
+    console.print("${result}")
+"#;
+        let expected = ["before 9", "after 9", "[9]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.
