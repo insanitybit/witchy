@@ -61,6 +61,7 @@ struct TailCtx {
     targets: HashMap<String, TailTarget>,
     indirect: HashMap<ClosureSignature, IndirectPlan>,
     source_bank: Vec<WirLocal>,
+    reset_locals_at_loop: bool,
     state_local: Option<String>,
     loop_label: String,
 }
@@ -84,6 +85,7 @@ fn lower_func_self_tail_calls(func: &mut WirFunc) -> usize {
             ty: param.ty.clone(),
         })
         .collect();
+    let loop_locals = func.locals.clone();
     let ctx = TailCtx {
         targets: HashMap::from([(
             func.name.clone(),
@@ -96,7 +98,8 @@ fn lower_func_self_tail_calls(func: &mut WirFunc) -> usize {
             },
         )]),
         indirect: HashMap::new(),
-        source_bank: func.params.iter().chain(&func.locals).cloned().collect(),
+        source_bank: func.params.clone(),
+        reset_locals_at_loop: true,
         state_local: None,
         loop_label: loop_label.clone(),
     };
@@ -109,7 +112,9 @@ fn lower_func_self_tail_calls(func: &mut WirFunc) -> usize {
     }
 
     func.locals.extend(temps);
-    func.body = vec![WirNode::Loop { label: loop_label, body }, WirNode::Unreachable];
+    let mut loop_body = reset_local_nodes(&loop_locals);
+    loop_body.extend(body);
+    func.body = vec![WirNode::Loop { label: loop_label, body: loop_body }, WirNode::Unreachable];
     count
 }
 
@@ -146,10 +151,12 @@ fn lower_func_self_tail_envelope(func: &mut WirFunc) -> usize {
         locals: func.locals.clone(),
         result_ty: func.ret[0].clone(),
     };
+    let loop_locals = func.locals.clone();
     let ctx = TailCtx {
         targets: HashMap::from([(func.name.clone(), target.clone())]),
         indirect: HashMap::new(),
-        source_bank: func.params.iter().chain(&func.locals).cloned().collect(),
+        source_bank: func.params.clone(),
+        reset_locals_at_loop: true,
         state_local: None,
         loop_label: loop_label.clone(),
     };
@@ -200,13 +207,15 @@ fn lower_func_self_tail_envelope(func: &mut WirFunc) -> usize {
         return 0;
     }
 
+    let mut loop_body = reset_local_nodes(&loop_locals);
+    loop_body.extend(body);
     func.locals.extend(temps);
     if let Some((result_local, exit_label)) = normal_exit {
         func.locals.push(result_local.clone());
         let mut final_body = vec![WirNode::Block {
             label: exit_label,
             result: None,
-            body: vec![WirNode::Loop { label: loop_label, body }, WirNode::Unreachable],
+            body: vec![WirNode::Loop { label: loop_label, body: loop_body }, WirNode::Unreachable],
         }];
         final_body.push(WirNode::Push(WirExpr::GetLocal(result_local.name)));
         final_body.extend(
@@ -216,7 +225,7 @@ fn lower_func_self_tail_envelope(func: &mut WirFunc) -> usize {
         );
         func.body = final_body;
     } else {
-        func.body = vec![WirNode::Loop { label: loop_label, body }, WirNode::Unreachable];
+        func.body = vec![WirNode::Loop { label: loop_label, body: loop_body }, WirNode::Unreachable];
     }
     count
 }
@@ -619,6 +628,7 @@ fn has_forwarded_envelope_edge(source: &WirFunc, target: &WirFunc) -> bool {
         targets: HashMap::from([(target.name.clone(), tail_target.clone())]),
         indirect: HashMap::new(),
         source_bank: source.params.iter().chain(&source.locals).cloned().collect(),
+        reset_locals_at_loop: false,
         state_local: None,
         loop_label: "__witchy_tail_probe_loop".into(),
     };
@@ -739,6 +749,7 @@ fn build_envelope_dispatcher(name: &str, functions: &[WirFunc]) -> (WirFunc, usi
             targets: targets.clone(),
             indirect: HashMap::new(),
             source_bank: source.params.iter().chain(&source.locals).cloned().collect(),
+            reset_locals_at_loop: false,
             state_local: Some(state_local.clone()),
             loop_label: loop_label.clone(),
         };
@@ -1009,7 +1020,8 @@ fn build_tail_dispatcher(
     let shared_params = flatten_local_bank(&param_bank);
     let mut params = vec![WirLocal { name: state_local.clone(), ty: WirTy::Bool }];
     params.extend(shared_params.iter().cloned());
-    let mut locals = flatten_local_bank(&local_bank);
+    let shared_locals = flatten_local_bank(&local_bank);
+    let mut locals = shared_locals.clone();
     locals.extend(flatten_local_bank(&temp_bank));
     let mut bodies = Vec::new();
     let mut targets = HashMap::new();
@@ -1104,11 +1116,11 @@ fn build_tail_dispatcher(
     let loop_label = unique_dispatch_label(functions, "__witchy_tail_dispatch_loop");
     let mut count = 0;
     for (function, body) in functions.iter().zip(&mut bodies) {
-        let source = targets.get(&function.name).expect("SCC member has a target bank");
         let ctx = TailCtx {
             targets: targets.clone(),
             indirect: indirect.clone(),
-            source_bank: source.params.iter().chain(&source.locals).cloned().collect(),
+            source_bank: shared_params.clone(),
+            reset_locals_at_loop: true,
             state_local: Some(state_local.clone()),
             loop_label: loop_label.clone(),
         };
@@ -1130,6 +1142,7 @@ fn build_tail_dispatcher(
         targets: targets.clone(),
         indirect: indirect.clone(),
         source_bank: Vec::new(),
+        reset_locals_at_loop: true,
         state_local: Some(state_local.clone()),
         loop_label: loop_label.clone(),
     };
@@ -1158,12 +1171,20 @@ fn build_tail_dispatcher(
             result: None,
         }];
     }
+    let mut loop_body: WirSeq = shared_locals
+        .iter()
+        .map(|local| WirNode::SetLocal {
+            local: local.name.clone(),
+            value: default_value(&local.ty),
+        })
+        .collect();
+    loop_body.extend(selection);
     let dispatcher = WirFunc {
         name: name.to_string(),
         params,
         ret: vec![dispatcher_result],
         locals,
-        body: vec![WirNode::Loop { label: loop_label, body: selection }, WirNode::Unreachable],
+        body: vec![WirNode::Loop { label: loop_label, body: loop_body }, WirNode::Unreachable],
         raw_body: None,
     };
     (dispatcher, count, targets)
@@ -1490,11 +1511,13 @@ fn tail_transition_nodes(
             value: default_value(&temp.ty),
         });
     }
-    for local in &target.locals {
-        body.push(WirNode::SetLocal {
-            local: local.name.clone(),
-            value: default_value(&local.ty),
-        });
+    if !ctx.reset_locals_at_loop {
+        for local in &target.locals {
+            body.push(WirNode::SetLocal {
+                local: local.name.clone(),
+                value: default_value(&local.ty),
+            });
+        }
     }
     if let (Some(state), Some(state_local)) = (target.state, &ctx.state_local) {
         body.push(WirNode::SetLocal {
@@ -1505,6 +1528,16 @@ fn tail_transition_nodes(
     body.push(WirNode::Br { target: ctx.loop_label.clone(), cond: None });
     body.push(WirNode::Unreachable);
     body
+}
+
+fn reset_local_nodes(locals: &[WirLocal]) -> WirSeq {
+    locals
+        .iter()
+        .map(|local| WirNode::SetLocal {
+            local: local.name.clone(),
+            value: default_value(&local.ty),
+        })
+        .collect()
 }
 
 /// Match lowering leaves each selected arm as `Push(value); br $result` inside

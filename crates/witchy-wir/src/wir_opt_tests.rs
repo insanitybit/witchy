@@ -171,6 +171,52 @@
     }
 
     #[test]
+    fn self_tail_local_bank_resets_once_per_iteration() {
+        let recur = WirFunc {
+            name: "recur".into(),
+            params: vec![WirLocal { name: "value".into(), ty: WirTy::Int }],
+            ret: vec![WirTy::Int],
+            locals: (0..4)
+                .map(|index| WirLocal {
+                    name: format!("scratch_{index}"),
+                    ty: WirTy::Int,
+                })
+                .collect(),
+            body: vec![WirNode::Return(Some(WirExpr::Call {
+                func: "recur".into(),
+                args: vec![WirExpr::GetLocal("value".into())],
+            }))],
+            raw_body: None,
+        };
+        let mut module = module_with(recur);
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 1);
+        let [WirNode::Loop { body, .. }, WirNode::Unreachable] =
+            module.funcs[0].body.as_slice()
+        else {
+            panic!("expected loop-wrapped function, got {:?}", module.funcs[0].body);
+        };
+        for (index, node) in body[..4].iter().enumerate() {
+            assert!(
+                matches!(node, WirNode::SetLocal { local, value: WirExpr::ConstI64(0) }
+                    if local == &format!("scratch_{index}")),
+                "local bank must reset once at the loop header: {body:?}"
+            );
+        }
+        let WirNode::Return(Some(WirExpr::Control(escape))) = &body[4] else {
+            panic!("expected tail escape after loop-local resets, got {body:?}");
+        };
+        let WirNode::Block { body: escape_body, .. } = escape.as_ref() else {
+            panic!("expected typed escape block, got {escape:?}");
+        };
+        assert_eq!(escape_body.len(), 6, "the edge must not repeat the four local resets");
+        assert!(escape_body.iter().all(|node| !matches!(
+            node,
+            WirNode::SetLocal { local, .. } if local.starts_with("scratch_")
+        )));
+    }
+
+    #[test]
     fn source_wrappers_preserve_self_tail_call_lowering() {
         let recur = WirFunc {
             name: "count".into(),
