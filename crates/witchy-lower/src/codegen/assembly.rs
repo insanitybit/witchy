@@ -920,74 +920,23 @@ fn collect_direct_suspension_type(
     }
 }
 
-fn collect_direct_suspension_expr_types(
-    cg: &Codegen<'_>,
-    expr: &Expr,
-    seen: &mut HashSet<String>,
-    types: &mut Vec<Type>,
-) {
-    if let Some(ty) = explicit_reference_carrier_type(cg, expr) {
-        collect_direct_suspension_type(cg, &ty, seen, types);
-    }
-    if let Some(ty) = cg.ast_type_of_expr(expr) {
-        collect_direct_suspension_type(cg, &ty, seen, types);
-    }
-    crate::escape::for_each_immediate_subexpr(expr, &mut |child| {
-        collect_direct_suspension_expr_types(cg, child, seen, types);
-    });
-}
-
-fn collect_direct_suspension_block_types(
-    cg: &Codegen<'_>,
-    block: &Block,
-    seen: &mut HashSet<String>,
-    types: &mut Vec<Type>,
-) {
-    for stmt in &block.stmts {
-        if let Stmt::Let { ty: Some(ty), .. } = stmt {
-            collect_direct_suspension_type(cg, ty, seen, types);
-        }
-        let expr = match stmt {
-            Stmt::Let { value, .. }
-            | Stmt::Assign { value, .. }
-            | Stmt::LetPattern { value, .. }
-            | Stmt::Yield(value)
-            | Stmt::Expr(value) => Some(value),
-            Stmt::Return(value) => value.as_ref(),
-            Stmt::Break | Stmt::Continue => None,
-        };
-        if let Some(expr) = expr {
-            collect_direct_suspension_expr_types(cg, expr, seen, types);
-        }
-    }
-}
-
-/// Exact closed types owned by the runtime call graph below compiler-generated
-/// suspension entries. Keeping this graph separate from ordinary reachability
-/// lets async/generator executors use typed Wasm-GC carriers without changing
-/// the representation of unrelated aggregates in the same module.
+/// Exact closed types stored in compiler-generated suspension frames. The
+/// carrier catalog is the ownership boundary: transitive helper callees may be
+/// reached by a state function, but their locals are not frame slots and must
+/// retain their ordinary representation.
 fn direct_suspension_types(
     cg: &Codegen<'_>,
-    module: &Module,
-    reachable: &HashSet<String>,
+    carrier: &witchy_types::suspension_carrier::SuspensionCarrierCatalog,
 ) -> Vec<Type> {
+    if !carrier.is_wholly_direct() {
+        return Vec::new();
+    }
     let mut seen = HashSet::new();
     let mut types = Vec::new();
-    for item in &module.items {
-        let Item::Function(function) = item else { continue };
-        if !reachable.contains(&function.name) {
-            continue;
+    for state in carrier.states() {
+        for slot in &state.slots {
+            collect_direct_suspension_type(cg, &slot.ty, &mut seen, &mut types);
         }
-        if let Some(ty) = cg.type_table.function_type(&function.name) {
-            collect_direct_suspension_type(cg, &ty, &mut seen, &mut types);
-        }
-        for ty in function.params.iter().filter_map(|param| param.ty.as_ref()) {
-            collect_direct_suspension_type(cg, ty, &mut seen, &mut types);
-        }
-        if let Some(ty) = &function.ret {
-            collect_direct_suspension_type(cg, ty, &mut seen, &mut types);
-        }
-        collect_direct_suspension_block_types(cg, &function.body, &mut seen, &mut types);
     }
     types
 }
@@ -1788,7 +1737,7 @@ fn register_module_items(
     cg: &mut Codegen,
     module: &Module,
     reachable: &HashSet<String>,
-    direct_suspension_reachable: &HashSet<String>,
+    suspension_carrier: &witchy_types::suspension_carrier::SuspensionCarrierCatalog,
     witnesses: &witchy_types::witness::WitnessPlan,
     generic_specializations: &BTreeMap<
         String,
@@ -1891,7 +1840,7 @@ fn register_module_items(
             cg.gc_nominal_names.entry(bare).or_insert_with(|| def.name.clone());
         }
     }
-    cg.direct_suspension_types = direct_suspension_types(cg, module, direct_suspension_reachable);
+    cg.direct_suspension_types = direct_suspension_types(cg, suspension_carrier);
     // Demand-plan every closed nominal instance that transitively stores a
     // WebAssembly reference. Keys include the concrete type arguments, so
     // `Task(Int)` and `Task(String)` cannot accidentally share a field layout.
@@ -3277,23 +3226,13 @@ fn assemble_wir_module_with_structs_mode(
         extra_roots.extend(codec.migrations.iter().map(|migration| migration.decoder.clone()));
     }
     let reachable = reachable_functions_with(&module, &extra_roots);
-    let direct_suspension_reachable = if suspension_carrier.is_wholly_direct() {
-        let roots = suspension_carrier
-            .states()
-            .iter()
-            .map(|state| state.function.clone())
-            .collect::<Vec<_>>();
-        reachable_functions_from(&module, &roots)
-    } else {
-        HashSet::new()
-    };
     let mut cg = Codegen::new(&module, &type_table, loan_facts, access_facts);
     cg.collect_wir = true;
     register_module_items(
         &mut cg,
         &module,
         &reachable,
-        &direct_suspension_reachable,
+        &suspension_carrier,
         &witnesses,
         &generic_specializations,
     )?;
@@ -6561,6 +6500,43 @@ mod checked_codegen_boundary_tests {
             u32::from_le_bytes(sections[0][1..5].try_into().expect("state count")),
             2,
             "entry plus one continuation segment",
+        );
+    }
+
+    #[test]
+    fn direct_carrier_does_not_retype_a_transitive_helper_list() {
+        let checked = authenticated_checked(
+            "import task\n\nfn first(xs: List(Int)) -> Int:\n    xs[0]\n\nasync fn main():\n    let value = task.done(7).await\n    let _observed = first([value])\n",
+        );
+        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(),
+            false,
+            None,
+            None,
+            false,
+        )
+        .expect("assemble direct carrier with a transitive scalar-list helper");
+
+        assert!(carrier.is_wholly_direct(), "fixture must exercise direct frames");
+        let first = wir
+            .funcs
+            .iter()
+            .find(|function| {
+                function.name == "first" || function.name.ends_with(".first")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "the transitive helper remains reachable; functions={:?}",
+                    wir.funcs
+                        .iter()
+                        .map(|function| function.name.as_str())
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            first.params.first().map(|parameter| parameter.ty.kind()),
+            Some(witchy_wir::wir::Kind::I32),
+            "a helper-local List(Int) keeps the ordinary linear-memory ABI"
         );
     }
 
