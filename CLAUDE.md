@@ -7,6 +7,10 @@ build/test traps, and the merge-queue protocol.
 
 @.claude/skills/witchy-dev/SKILL.md
 
+**CRITICAL REMINDERS**:
+- **Always use isolated worktrees** (`.claude/worktrees/<name>`). **Never** edit the shared `master` checkout.
+- **Language features evolve rapidly**. If a feature seems missing in `spec/language.md`, check `rfcs/` (e.g., RFC-0122 added explicit `&'a T` references).
+
 Everything below is the **detail behind that briefing** — the exact paths, RFC
 numbers, and hard-won specifics that the briefing states as rules. It doesn't
 repeat the rules; consult it when you're working inside one of these areas.

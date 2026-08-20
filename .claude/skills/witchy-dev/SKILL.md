@@ -377,6 +377,9 @@ Only when this page is genuinely insufficient:
 - `CONTRIBUTING.md` — build/test/parity. `docs/agile-agent-playbook.md` — agent
   process, boundaries, handoff format. `rfcs/0135-stable-semantics-converge.md`
   — when dual implementation is required.
+- **Always check recent RFCs (`rfcs/`) for new language features.** The spec 
+  (`spec/language.md`) often lags behind newly implemented RFCs (e.g., RFC-0122 
+  introducing explicit `&'a T` references).
 - `book/src/` — narrative tour, ordered by `book/src/SUMMARY.md`.
 - Source of truth when docs disagree:
   `spec/` + `std/*.witchy` + independent expected results
