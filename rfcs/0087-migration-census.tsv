@@ -13,8 +13,8 @@ std/dict.witchy	21	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	27	auxiliary-result-discard	dict.__insert_extract	-	-
 std/dict.witchy	74	auxiliary-result-discard	dict.remove	-	-
 std/dict.witchy	77	auxiliary-result-discard	dict.__remove_extract	-	-
-std/list.witchy	38	auxiliary-result-discard	list.__pop_extract	-	-
-std/list.witchy	83	auxiliary-result-discard	list.__pop_extract	-	-
+std/list.witchy	42	auxiliary-result-discard	list.__pop_extract	-	-
+std/list.witchy	87	auxiliary-result-discard	list.__pop_extract	-	-
 std/prng.witchy	92	expression-position-mutator	prng.advance	-	-
 std/prng.witchy	67	expression-position-mutator	prng.draw_below	-	-
 std/prng.witchy	52	expression-position-mutator	prng.advance	-	-
