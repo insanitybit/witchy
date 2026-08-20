@@ -1471,16 +1471,20 @@ impl Codegen<'_> {
                         value: W::Seq(body_seq),
                     });
                     
+                    self.uses_dict_insert_cap = true;
                     // Insert the updated value
-                    seq.push(N::Push(W::Call {
-                        func: "dict_insert".to_string(),
-                        args: vec![
-                            W::GetLocal(d_local.clone()),
-                            W::ToSlot(Box::new(W::GetLocal(k_local)), Self::wir_kind(kk)),
-                            W::ToSlot(Box::new(W::GetLocal(new_val_local)), Self::wir_kind(dk)),
-                            W::ConstI32(mode as i32),
-                        ],
-                    }));
+                    seq.push(N::SetLocal {
+                        local: d_local.clone(),
+                        value: W::Call {
+                            func: "dict_insert".to_string(),
+                            args: vec![
+                                W::GetLocal(d_local.clone()),
+                                W::ToSlot(Box::new(W::GetLocal(k_local)), Self::wir_kind(kk)),
+                                W::ToSlot(Box::new(W::GetLocal(new_val_local)), Self::wir_kind(dk)),
+                                W::ConstI32(mode as i32),
+                            ],
+                        },
+                    });
                     
                     // `dict.update` evaluates to the modified dictionary pointer (d_local)
                     seq.push(N::Push(W::GetLocal(d_local)));

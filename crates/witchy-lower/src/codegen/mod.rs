@@ -4830,6 +4830,13 @@ impl<'types> Codegen<'types> {
             };
             body.push(witchy_wir::wir::WirNode::Push(cap));
         }
+        let mut extra_locals: Vec<(&String, &Kind)> = self.locals.iter().collect();
+        extra_locals.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, kind) in extra_locals {
+            if !params.iter().any(|p| &p.name == name) && !locals.iter().any(|l| &l.name == name) {
+                locals.push(witchy_wir::wir::WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(*kind) });
+            }
+        }
         Ok(WirFunc {
             name: f.name.clone(),
             params,

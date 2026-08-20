@@ -1370,7 +1370,7 @@ impl<'types> Codegen<'types> {
                                                 
                                             if xs_stable {
                                                 let mut num_assigns = 0;
-                                                let mut valid_induction = true;
+                                                let valid_induction;
                                                 
                                                 fn check_induction<S: std::hash::BuildHasher>(
                                                     b: &witchy_syntax::ast::Block,
