@@ -1,9 +1,9 @@
 ---
 rfc: 0101
 title: source-first compiler pipeline
-status: experimental
+status: implemented
 created: 2026-07-20
-tracking: "implementation complete: complete handwritten and comptime-emitted semantics are proved before destructive lowering, production execution/codegen sinks require proof, and promotion awaits the final backend and diagnostic-origin matrix"
+tracking: "implemented: complete handwritten and comptime-emitted semantics are proved before destructive lowering, production sinks require proof, and focused interpreter/Wasm plus RFC-0080 origin matrices pin the complete boundary"
 related:
   - "[0070](0070-0-1-blocking-set.md) (terminal 0.1 decision record and checked-module seam)"
   - "BUG-428 / BUG-429 / BUG-434 / BUG-436 (closed regression classes)"
@@ -125,6 +125,14 @@ Implemented evidence:
   semantically checked into a private `CheckedGeneratedModule`, and only then
   passed to backend lowering. A focused negative test proves a type-invalid
   generated body is rejected at that boundary rather than reaching codegen.
+- `source_only_semantics_survive_the_checked_interpreter_and_wasm_pipeline`
+  drives handwritten and comptime-emitted generator, async, region, and impl
+  method programs through the production checked resolver, then runs the same
+  proof artifact on the interpreter and compiled Wasm backend.
+- `rfc0080_diagnostic_and_origin_ancestry_survive_the_checked_pipeline` proves
+  typed item and nested expression-hole ancestry remains queryable on the
+  checked artifact, executes that artifact on both backends, and pins tagged
+  literal definition, invocation, expansion-trace, and hole-local diagnostics.
 
 ## Required contract
 
@@ -154,14 +162,19 @@ Implemented evidence:
 - All production compiler entrypoints end at a checked codegen boundary; no raw
   `Module` escape hatch bypasses either proof.
 
+| Required contract | Status | Executable evidence |
+|---|---|---|
+| 1. Complete user semantics precede destructive lowering | **PROVEN** | `source_only_semantics_survive_the_checked_interpreter_and_wasm_pipeline` covers generator, async, region, and impl-method programs through the production checked resolver and both execution backends. |
+| 2. Compile-time items re-enter the same checker | **PROVEN** | The same matrix emits generator, async, and region-bearing bodies at compile time and executes their checked result on interpreter and compiled Wasm; `comptime_emitted_body_reenters_semantic_proof_before_source_lowering` pins the negative source-stage boundary. |
+| 3. Destructive lowering and production sinks require proof | **PROVEN** | `destructive_source_lowerers_require_the_proof_wrapper`, `checked_link_does_not_recheck_the_lowered_projection`, and `compiler_generated_executable_is_checked_before_lowering` pin the typestate and generated-executable boundaries. |
+| 4. Resolution preserves source-only nodes | **PROVEN** | `linked_source_proof_retains_and_resolves_source_nodes`, `checked_link_rejects_resolved_signature_semantics_before_source_lowering`, and the checked generator impl-method matrix cover source-shaped local and imported resolution. |
+| 5. Lines and RFC-0080 ancestry survive both boundaries | **PROVEN** | `rfc0080_diagnostic_and_origin_ancestry_survive_the_checked_pipeline` checks persistent typed item/expression ancestry, both backends, and exact definition/invocation/nested-hole diagnostics. |
+
 ## Remaining migration
 
-The implementation contract is closed. Promotion from experimental status still
-requires running the final interpreter/compiled-backend source-only regression
-matrix and the RFC-0080 diagnostic-origin matrix against one current-master
-candidate. The explicitly enabled raw test feature and compiler-internal
-synthetic-module checker are outside the production boundary and remain as test
-infrastructure.
+None for the source-first production boundary. The explicitly enabled raw test
+feature and compiler-internal synthetic-module checker are outside the
+production boundary and remain as test infrastructure.
 
 A labeled module call still requires its import to be present in parsed source;
 method labels remain rejected rather than being reinterpreted after an import
