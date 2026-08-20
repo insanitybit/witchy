@@ -94,11 +94,14 @@ service queue.
 
 ## Async state machines
 
-The long-term lowering is an owned resumable frame. Each local live across an
-`await` occupies a checked frame slot; each transition drops superseded state;
-references cannot cross suspension without a proven owner relation. This model
-supports loops, branch conditions, and match scrutinees without rebuilding a
-closure chain per message.
+Async lowering uses defunctionalized owned frame segments. Each local live
+across an `await` occupies a checked segment parameter or compiled frame slot;
+function identity is the state tag, and each transition drops superseded state.
+References cannot cross suspension without a proven owner relation. The scalar
+executor specializes qualifying loops to fixed slots, while the general
+scheduler carries typed aggregate/list messages through its reusable GC-backed
+envelope. Neither promoted path rebuilds an ever-growing continuation chain per
+message.
 
 `async` trait behavior remains expressible through an ordinary trait method
 returning `Task(T)`. Dedicated async-trait syntax is unnecessary unless it adds

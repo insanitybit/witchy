@@ -353,23 +353,30 @@ when to `await` it. The inherent `async fn get` is where the suspension actually
 lives - the trait method is just a synchronous function that happens to return a
 task.
 
-## The 0.1 memory ceiling
+## The bounded-memory contract
 
-Channels provide deterministic scheduling and backpressure, but `unbounded`
-describes the channel's logical capacity, not infinite process memory. The 0.1
-compiled executor still boxes a continuation around each task resume. Its
-shell-only reclamation can't yet recursively reclaim every captured child, so a
-single long-running producer/consumer loop exhausts the current linear-memory
-arena at roughly 10,000 message resumptions (the exact point varies with the
-program and payload). The interpreter oracle may continue past that point; this
-is a compiled-memory limitation, not a semantic difference in channel order or
-results.
+Channels provide deterministic scheduling and backpressure. `unbounded`
+describes a channel's logical capacity; it does not promise infinite process
+memory.
 
-Use the current executor for bounded task graphs and bounded streams. Don't use
-0.1 channels as an indefinitely running service queue. The deferred follow-up is
-a synthesized scalar scheduler for qualifying scalar programs and recursive drop
-for boxed/heap payloads; both retain the same `chan` surface and deterministic
-schedule.
+For a qualifying scalar producer/consumer loop, the compiled optimizer
+synthesizes an owning state machine with fixed task, channel, and message slots.
+Resuming the loop retags those slots in place instead of allocating a new
+continuation. The acceptance gate executes one million messages, checks the
+result, rejects per-resume linear allocation, and enforces the documented
+latency ceiling.
+
+The general scheduler uses the same typed message envelope for nominal
+aggregates and lists. Its sustained aggregate gate compares 100 with 10,000
+messages and requires Wasmtime's GC backing capacity to remain exactly one
+65,536-byte page. Task slots and eligible direct list cells are reused rather
+than growing a continuation chain with every send.
+
+The supported-preview promise covers bounded workflows and the compiled shapes
+measured by that matrix. Use a bounded channel when the application needs an
+explicit storage bound. For a long-lived service queue with a different payload
+or control-flow shape, measure that concrete program rather than treating
+`unbounded` as an infinite-memory guarantee.
 
 ## Deterministic scheduling
 
