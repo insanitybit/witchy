@@ -4,7 +4,7 @@ title: "Value ownership, mutation, and the opt-mode access contract"
 status: accepted
 created: 2026-08-19
 superseded-by:
-tracking: "Canonical consolidation RFC. Value semantics and RFC-0122 references are implemented and proven. Promotion requires a curated installed opt-mode workflow and measured claims for each promised performance class; future representation work remains explicit rather than weakening the contract."
+tracking: "Canonical consolidation RFC. Value semantics, RFC-0122 references, and RFC-0114 must-consume obligations are implemented and proven. Promotion requires a curated installed opt-mode workflow and measured claims for each promised performance class; future representation work remains explicit rather than weakening the contract."
 predecessors:
   - "[0024](0024-unified-facts-lattice.md), [0025](0025-frozen-deep-immutability.md), [0026](0026-unique-qualifier.md), [0033](0033-place-based-uniqueness.md) (ownership facts and qualifiers)"
   - "[0028](0028-ergonomic-mutable-value-semantics.md), [0043](0043-declared-mutation-writeback.md), [0064](0064-complete-mutation-classification.md), [0087](0087-fused-mutators.md) (mutation and write-back)"
@@ -12,8 +12,7 @@ predecessors:
   - "[0034](0034-closing-the-compute-gap.md), [0051](0051-memory-safety-invariants.md), [0062](0062-closure-escape-elision.md) (runtime cost model and allocation invariants)"
   - "[0088](0088-ownership-aware-extraction.md), [0089](0089-functional-in-place.md), [0090](0090-proper-tail-calls.md) (no-copy extraction and state kernels)"
   - "[0083](0083-opt-mode-lifetimes.md), [0110](0110-opt-ownership-access-abi.md), [0111](0111-cross-boundary-specialized-layouts.md), [0112](0112-borrowed-aggregate-types.md), [0122](0122-uniform-borrow-relations.md) (references, layouts, and access ABI)"
-related:
-  - "[0114](0114-must-consume-obligations.md) (deferred linear resource obligations)"
+  - "[0114](0114-must-consume-obligations.md) (must-consume resource obligations)"
 ---
 
 # RFC-0127: Value ownership, mutation, and the opt-mode access contract
@@ -47,6 +46,22 @@ Opt mode is an explicit drop into lower-level control, not a second language.
 These are orthogonal dimensions. A parameter convention describes the call; a
 qualifier describes the value contract; a reference describes access to an
 existing place.
+
+## Must-consume obligations
+
+`must type T` makes disposition part of `T`'s static ownership contract. A live
+value cannot be dropped, overwritten, implicitly copied, or explicitly
+discarded. An `own` call, explicit transfer, or return moves the obligation;
+borrowing retains it with the caller. Every non-terminating and early-return CFG
+edge must discharge or transfer each live obligation.
+
+The rule is nominal and propagates through tuples, lists, records, closures,
+and suspension frames. It is not a destructor protocol: no finalizer, drop glue,
+or GC callback runs implicitly. Consuming operations are ordinary functions,
+and an attempted `own` call consumes on both its success and error edges. This
+keeps cleanup deterministic across the interpreter and compiled Wasm while
+supporting resources such as `transaction.Transaction` and structured
+`task.Handle` values.
 
 ## Explicit references
 
@@ -110,3 +125,14 @@ de-optimized comparison, and measured representative workloads.
    actionable negative diagnostic and measured payoff.
 7. Future CFG/SSA precision, layout expansion, and SIMD work strengthens this
    contract without adding reference burden to normal mode.
+8. Must-consume obligations propagate through calls, CFG exits, aggregates,
+   closures, and suspension frames; representative transaction and task-handle
+   APIs cannot be abandoned on any path.
+
+Acceptance row 8 is **PROVEN** by the executable ledger in
+[RFC-0114](0114-must-consume-obligations.md), including
+`must_consume_question_mark_checks_the_error_return_edge_after_call_effects`,
+`owned_function_values_transfer_must_consume_closure_captures`,
+`transaction_resource_consumes_success_conflict_rollback_moves_aggregates_and_cfg_early_return_on_wasm`,
+`task_handles_must_be_joined_cancelled_or_returned_on_every_path`, and
+`structured_task_handle_aggregates_run_on_compiled_wasm`.

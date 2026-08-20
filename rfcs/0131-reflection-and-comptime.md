@@ -4,7 +4,7 @@ title: "Static reflection and capability-free compile-time metaprogramming"
 status: accepted
 created: 2026-08-19
 superseded-by:
-tracking: "Canonical reflection/comptime RFC. Reflect, structured TypeInfo, typed quotation, hygiene, provenance, tagged literals, expansion tooling, and backend parity are implemented. Promotion requires a curated installed generator workflow and an explicit compatibility policy for raw emit/source-backed builders."
+tracking: "Canonical reflection/comptime RFC. Reflect, structured TypeInfo, typed quotation, hygiene, provenance, tagged literals, expansion tooling, source-first generated-code checking, and backend parity are implemented. Promotion requires a curated installed generator workflow and an explicit compatibility policy for raw emit/source-backed builders."
 predecessors:
   - "[0006](0006-compile-time-tagged-literals.md) (tagged literals)"
   - "[0053](0053-one-rendering.md), [0065](0065-sealed-type-constructors.md) (derived protocols and invariant boundaries)"
@@ -56,9 +56,9 @@ capability-footprint analysis, and backend lowering. Generated code therefore
 obeys the same rules as handwritten code.
 
 The source-first proof checks complete handwritten and generated bodies before
-any production destructive lowering. Until that proof artifact replaces the
-redundant final lowered-module check, acceptance row 4's "exactly once" clause
-remains promotion debt rather than silently weakening the semantic boundary.
+any production destructive lowering. Generated items re-enter the same checked
+source boundary, and production interpreter and Wasm sinks consume its proof
+without re-checking a structure-destroying lowered projection.
 
 ## Typed syntax and hygiene
 
@@ -118,3 +118,11 @@ ordinary source identifiers.
    understood through `witchy expand`.
 8. Product documentation distinguishes static reflection, compile-time
    generation, and runtime `Dynamic`.
+
+Acceptance row 4 is **PROVEN** by RFC-0101's production-boundary matrix:
+`source_only_semantics_survive_the_checked_interpreter_and_wasm_pipeline`,
+`comptime_emitted_body_reenters_semantic_proof_before_source_lowering`,
+`compiler_generated_executable_is_checked_before_lowering`, and
+`checked_link_does_not_recheck_the_lowered_projection`. The complete evidence
+and raw test-only bypass classification remain in
+[RFC-0101](0101-source-first-compiler-pipeline.md).
