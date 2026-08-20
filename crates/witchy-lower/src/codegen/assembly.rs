@@ -599,6 +599,14 @@ fn type_has_planned_reference(
     if Codegen::is_executable_reference_type(ty) {
         return true;
     }
+    // Compiler-private erased messages are a stable typed-GC envelope even
+    // when a source's suspension call graph never sends on a channel. Any
+    // reachable scheduler helper that stores `__Msg` (notably List(__Msg)
+    // rings) must therefore plan reference storage from the physical kind,
+    // rather than depending on direct-suspension reachability.
+    if matches!(cg.kind_for_type(ty), Kind::ExternRef | Kind::GcRef(_)) {
+        return true;
+    }
     if cg.is_direct_suspension_type(ty)
         && !type_has_var(ty)
         && matches!(ty.unqualified(), Type::Tuple(_))
