@@ -68,6 +68,24 @@ pub struct SuspensionCarrierCatalog {
     max_lane_width: usize,
 }
 
+/// Closed eligibility proof for RFC-0059's allocation-free compiled scheduler.
+/// The lowering may consume this value without repeating a source-shape guess:
+/// every frame state is direct, no frame column needs a floating/boxed lane, and
+/// every typed channel endpoint carries an `Int` message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScalarExecutorPlan {
+    pub state_count: usize,
+    pub max_lane_width: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScalarExecutorRejection {
+    NoSuspensionStates,
+    BoxedState { function: String },
+    NonScalarLane { function: String, slot: String, lane: CarrierLane },
+    NonIntegerChannel { channel: String, message: String },
+}
+
 impl SuspensionCarrierCatalog {
     pub fn from_typed(typed: &TypedModule) -> Result<Self, String> {
         let definitions = type_definitions(typed.module());
@@ -137,6 +155,54 @@ impl SuspensionCarrierCatalog {
         !self.states.is_empty() && self.states.iter().all(CarrierState::is_direct)
     }
 
+    /// Prove that the module can use the scalar/capability scheduler described by
+    /// RFC-0059 increment 2. Capability lanes remain direct roots; all mutable
+    /// per-task columns are integer lanes. Channel endpoints are checked from the
+    /// finalized state-slot types, so `Sender(String)` cannot qualify merely
+    /// because its runtime channel id is an integer wrapper.
+    pub fn scalar_executor_plan(
+        &self,
+    ) -> Result<ScalarExecutorPlan, ScalarExecutorRejection> {
+        if self.states.is_empty() {
+            return Err(ScalarExecutorRejection::NoSuspensionStates);
+        }
+        for state in &self.states {
+            if !state.direct {
+                return Err(ScalarExecutorRejection::BoxedState {
+                    function: state.function.clone(),
+                });
+            }
+            for slot in &state.slots {
+                let Some(lanes) = &slot.lanes else {
+                    return Err(ScalarExecutorRejection::BoxedState {
+                        function: state.function.clone(),
+                    });
+                };
+                if let Some(lane) = lanes
+                    .iter()
+                    .copied()
+                    .find(|lane| !matches!(lane, CarrierLane::I64 | CarrierLane::ExternRef))
+                {
+                    return Err(ScalarExecutorRejection::NonScalarLane {
+                        function: state.function.clone(),
+                        slot: slot.name.clone(),
+                        lane,
+                    });
+                }
+                if let Some((channel, message)) = non_integer_channel(&slot.ty) {
+                    return Err(ScalarExecutorRejection::NonIntegerChannel {
+                        channel,
+                        message: witchy_syntax::format::type_str(message),
+                    });
+                }
+            }
+        }
+        Ok(ScalarExecutorPlan {
+            state_count: self.states.len(),
+            max_lane_width: self.max_lane_width,
+        })
+    }
+
     /// Versioned, name-independent carrier ABI consumed by compiled backends.
     /// Function and slot names remain diagnostics only; runtime dispatch is by
     /// dense state id and fixed lane position.
@@ -170,6 +236,32 @@ impl SuspensionCarrierCatalog {
             }
         }
         bytes
+    }
+}
+
+fn non_integer_channel(ty: &Type) -> Option<(String, &Type)> {
+    match ty.unqualified() {
+        Type::Named(name, arguments)
+            if matches!(name.rsplit('.').next(), Some("Sender" | "Receiver"))
+                && arguments.len() == 1
+                && !matches!(arguments[0].unqualified(), Type::Named(message, args)
+                    if message == "Int" && args.is_empty()) =>
+        {
+            Some((name.clone(), &arguments[0]))
+        }
+        Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
+            arguments.iter().find_map(non_integer_channel)
+        }
+        Type::Fn(parameters, result, _) => parameters
+            .iter()
+            .find_map(non_integer_channel)
+            .or_else(|| non_integer_channel(result)),
+        Type::RecordCompose { base, fields } => non_integer_channel(base).or_else(|| {
+            fields
+                .iter()
+                .find_map(|(_, field)| non_integer_channel(field))
+        }),
+        Type::Qualified(_, _) => unreachable!("unqualified above"),
     }
 }
 
@@ -369,6 +461,16 @@ mod tests {
             SuspensionCarrierCatalog::from_typed(&boxed_typed).expect("boxed carrier catalog");
         assert!(!boxed.is_wholly_direct());
         assert!(!boxed.states()[1].direct);
+        assert_eq!(
+            catalog.scalar_executor_plan(),
+            Ok(ScalarExecutorPlan { state_count: 2, max_lane_width: 2 }),
+        );
+        assert_eq!(
+            boxed.scalar_executor_plan(),
+            Err(ScalarExecutorRejection::BoxedState {
+                function: "resume".into(),
+            }),
+        );
     }
 
     #[test]
@@ -397,6 +499,61 @@ mod tests {
         assert_eq!(
             catalog.states()[1].slots[1].lanes,
             Some(vec![CarrierLane::I64, CarrierLane::I64]),
+        );
+        assert_eq!(
+            catalog.scalar_executor_plan(),
+            Ok(ScalarExecutorPlan { state_count: 2, max_lane_width: 3 }),
+        );
+    }
+
+    #[test]
+    fn scalar_executor_qualification_rejects_float_and_non_integer_channels() {
+        let mut float_module = witchy_syntax::parser::parse_module(
+            "fn resume(value: Float) -> Nil:\n    ()\n",
+        )
+        .expect("float fixture parses");
+        let Item::Function(float_state) = &mut float_module.items[0] else {
+            panic!("float state")
+        };
+        float_state.attributes.push(FRAME_FUNCTION_ATTRIBUTE.into());
+        float_state
+            .attributes
+            .push(witchy_syntax::suspension::frame_state_attribute(0));
+        let float_typed = crate::typeck::annotate_checked(float_module)
+            .expect("float fixture type checks");
+        let float_catalog = SuspensionCarrierCatalog::from_typed(&float_typed)
+            .expect("float catalog");
+        assert_eq!(
+            float_catalog.scalar_executor_plan(),
+            Err(ScalarExecutorRejection::NonScalarLane {
+                function: "resume".into(),
+                slot: "value".into(),
+                lane: CarrierLane::F64,
+            }),
+        );
+
+        let mut channel_module = witchy_syntax::parser::parse_module(
+            "type Sender(a):\n    Sender(Int)\n\nfn resume(tx: Sender(String)) -> Nil:\n    ()\n",
+        )
+        .expect("channel fixture parses");
+        let Item::Function(channel_state) = &mut channel_module.items[1] else {
+            panic!("channel state")
+        };
+        channel_state.attributes.push(FRAME_FUNCTION_ATTRIBUTE.into());
+        channel_state
+            .attributes
+            .push(witchy_syntax::suspension::frame_state_attribute(0));
+        let channel_typed = crate::typeck::annotate_checked(channel_module)
+            .expect("channel fixture type checks");
+        let channel_catalog = SuspensionCarrierCatalog::from_typed(&channel_typed)
+            .expect("channel catalog");
+        assert!(channel_catalog.is_wholly_direct());
+        assert_eq!(
+            channel_catalog.scalar_executor_plan(),
+            Err(ScalarExecutorRejection::NonIntegerChannel {
+                channel: "Sender".into(),
+                message: "String".into(),
+            }),
         );
     }
 }
