@@ -412,6 +412,38 @@ fn main(console: Console):
         );
     }
 
+    /// Destructuring an inferred call result initializes each owned frame
+    /// field on the first pull and restores both bindings on later pulls.
+    #[test]
+    fn generator_destructured_call_prelude_is_lazy_and_runs_once() {
+        let src = r#"import iter
+
+fn observed_bounds(console: Console) -> (Int, Int):
+    console.print("bounds")
+    (4, 6)
+
+gen fn values(console: Console) -> Iter(Int):
+    let (start, end) = observed_bounds(console)
+    var i = start
+    while i < end:
+        yield i
+        i = i + 1
+
+fn main(console: Console):
+    let unused = values(console)
+    console.print("made")
+    let result: List(Int) = iter.collect(values(console))
+    console.print("${result}")
+"#;
+        let expected = ["made", "bounds", "[4, 5]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.

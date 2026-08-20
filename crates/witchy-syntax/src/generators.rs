@@ -1904,8 +1904,19 @@ fn lower_owned_loop_frame(
                 initializers.push(statement.clone());
             }
             Stmt::Expr(_) | Stmt::Assign { .. } => initializers.push(statement.clone()),
-            Stmt::LetPattern { .. }
-            | Stmt::Yield(_)
+            Stmt::LetPattern { pattern, value } => {
+                let Some(value_ty) =
+                    generator_frame_type_from_context(value, &bindings, function_returns)
+                else {
+                    return Ok(None);
+                };
+                let Some(pattern_bindings) = generator_pattern_bindings(pattern, &value_ty) else {
+                    return Ok(None);
+                };
+                bindings.extend(pattern_bindings);
+                initializers.push(statement.clone());
+            }
+            Stmt::Yield(_)
             | Stmt::Return(_)
             | Stmt::Break
             | Stmt::Continue => return Ok(None),
@@ -3191,6 +3202,20 @@ mod target_availability_tests {
         let debug = format!("{lowered:?}");
         assert!(!debug.contains("iter.from_gen"), "inferred call result must not replay: {debug}");
         assert!(debug.contains("seed"), "the lazy call initializer must be retained: {debug}");
+    }
+
+    #[test]
+    fn destructured_call_result_in_terminal_loop_prelude_uses_frame_fields() {
+        let module = crate::parser::parse_module(
+            "fn pair() -> (Int, Int):\n    (4, 6)\n\ngen fn values() -> Iter(Int):\n    let (start, end) = pair()\n    var i = start\n    while i < end:\n        yield i\n        i = i + 1\n",
+        )
+        .expect("parse destructured prelude generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower destructured prelude").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(!debug.contains("iter.from_gen"), "destructured entry values must not replay: {debug}");
+        assert!(debug.contains("prelude_0"), "the first pattern binding must be restored: {debug}");
+        assert!(debug.contains("prelude_1"), "the second pattern binding must be restored: {debug}");
     }
 
     #[test]
