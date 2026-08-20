@@ -4,7 +4,7 @@ title: "Deterministic async tasks, typed channels, and explicit parallel workers
 status: accepted
 created: 2026-08-19
 superseded-by:
-tracking: "Canonical concurrency RFC. Async/await, typed channels, deterministic scheduling, structured combinators, and backend parity are shipped for bounded workloads. Acceptance rows 6 and 7 are proven by the paired cooperative/worker-VM boundary matrix and the clean installed bounded workflow. Promotion still requires removing or enforcing the compiled long-stream memory ceiling."
+tracking: "Canonical concurrency RFC. Async/await, typed channels, deterministic scheduling, structured combinators, and backend parity are shipped for bounded workloads. Acceptance rows 1-3 and 5-7 are proven by named current-master executable evidence. Row 4 remains open until the sustained compiled producer/consumer memory evidence lands and passes its queue gate."
 predecessors:
   - "[0032](0032-multi-core-execution.md) (deterministic tasks versus explicit parallel workers)"
   - "[0036](0036-bounding-the-async-executor.md), [0059](0059-state-machine-async.md) (deferred bounded executor and state-machine destination)"
@@ -131,11 +131,16 @@ CPU parallelism or describe worker-VM execution as zero-cost task spawning.
 7. A clean installed binary runs the promoted bounded workflow without
    repository-only setup.
 
-### Rows 6 and 7 evidence
+### Acceptance evidence
 
 | Row | State | Executable evidence |
 | --- | --- | --- |
+| 1 | PROVEN | `tests/misc/rfc0129_async_lowering.rs::rfc0129_acceptance_row_1_async_lowering_preserves_source_contracts_on_both_backends` runs mutable loop state, repeated suspension, early return, and a source trap on the interpreter and compiled Wasm. It also inspects the typed suspension-carrier catalog for the exact live `Int` slots and proves the trap retains the source callable and line without leaking generated `__async_` identities. |
+| 2 | PROVEN | `tests/misc/rfc0129_channel_contract.rs::rfc0129_acceptance_row_2_typed_bounded_selected_cancelled_and_joined_channels_agree` executes `Int` and `String` channels, capacity-one backpressure, first-ready selection, quiescent closure, cancellation of a parked child, and structured scope/join. It requires the exact 18-line schedule to agree on the interpreter and compiled Wasm. |
+| 3 | PROVEN | `tests/rfc0129_schedule_parity.rs::rfc0129_acceptance_row_3_deterministic_schedule_backends_agree` executes the canonical 13-line schedule from `tests/fixtures/rfc0129_deterministic_schedule.witchy` on compiled Wasm first and then the interpreter. It covers bounded backpressure, quiescent join release, deterministic select order and closure, cancellation, retained-sender quiescence, structured joins, nominal aggregate/list carriers, and a distinct string carrier. Rows 2 and 3 landed together at `5c040cc0` after their focused 99-test coordinator gate passed. |
+| 5 | PROVEN | `tests/misc/rfc0129_negative_matrix.rs::rfc0129_acceptance_row_5_rejects_invalid_concurrency_sources_before_lowering` rejects reference escape across suspension, capability transfer through a worker result, dedicated async-trait syntax, and discarded task results. Every case checks source-level diagnostic fragments and proves rejection occurs at parse or the pre-lowering source semantic boundary. |
 | 6 | PROVEN | `tests/misc/rfc0129_cooperative_worker_boundary.rs::rfc0129_acceptance_row_6_cooperative_and_parallel_maps_use_distinct_boundaries` executes both APIs on the interpreter and compiled Wasm. It proves that `chan.par_map` keeps its explicitly passed `Console` in one VM with zero worker imports; pure `vm.par_map` crosses the two-phase `vm_par_map_run`/`vm_par_map_write` worker boundary; a capability-capturing callback stays in the parent VM; and `vm.with_dir` grants exactly one explicit `Dir`. `examples/channels/src/cooperative_map.witchy` and `worker_vm_map.witchy` are separate runnable examples, and their README records the distinct API and cost contracts. The exact measurement is the stable zero-versus-two worker-host-interface boundary, not an elapsed-time claim. The merge-coordinator landing at `22968974` passed all 111 selected tests, including this test and the example parity/validation sweeps. |
 | 7 | PROVEN | `scripts/installed-bounded-channels-smoke.sh --witchy <binary>` copies the public binary into a fresh install root, resolves only that copy on `PATH`, and uses `env -i` plus fresh home, temporary, cache, and working directories for `check`, `build`, and `run`. It creates the capacity-one `bounded_channels` project and checks its exact deterministic drain output without repository source, standard-library, package, or cache state. `scripts/release-smoke.sh` invokes the same harness on the extracted archive, and `.github/workflows/release.yml` runs it for every supported native release target. The initial installed-workflow slice passed the 584-test coordinator batch landed at `c8ff194a`; the environment-scrub hardening passed the 111-test coordinator gate landed at `22968974`. |
 
-No other acceptance row is advanced by this evidence.
+Row 4 remains open until its sustained compiled memory evidence is on current
+master and has passed the coordinator gate.
