@@ -1,4 +1,5 @@
-//! RFC-0129 row 6: cooperative tasks and parallel workers keep distinct costs.
+//! RFC-0129 row 6: cooperative tasks and parallel workers keep distinct APIs,
+//! capability boundaries, and boundary costs.
 
 use std::collections::BTreeSet;
 
@@ -12,8 +13,12 @@ async fn square(n: Int) -> Int:
     chan.yield_now().await
     n * n
 
+async fn visible_square(console: Console, n: Int) -> Int:
+    console.print("task ${n}")
+    square(n).await
+
 async fn main(console: Console):
-    let values = chan.par_map([5, 3, 8, 1], square).await
+    let values = chan.par_map([5, 3, 8, 1], fn(n): visible_square(console, n)).await
     console.print("${values}")
 "#;
 
@@ -31,10 +36,25 @@ fn main(console: Console):
 const SEQUENTIAL_WORKER_FALLBACK: &str = r#"
 import vm
 
+fn visible_square(console: Console, n: Int) -> Int:
+    console.print("parent ${n}")
+    n * n
+
 fn main(console: Console):
-    let bias = 10
-    let values = vm.par_map([5, 3, 8, 1], fn(n: Int): n + bias)
+    let values = vm.par_map([5, 3, 8, 1], fn(n): visible_square(console, n))
     console.print("${values}")
+"#;
+
+const EXPLICIT_DIR_WORKER: &str = r#"
+import bytes
+import vm
+
+fn echo(_dir: Dir, input: Bytes) -> Bytes:
+    input
+
+fn main(dir: Dir):
+    let output = vm.with_dir(dir, echo, bytes.from_string("boundary"))
+    let _ = output
 "#;
 
 fn run_on_both_backends(source: &str) -> (Vec<String>, Vec<u8>) {
@@ -84,12 +104,36 @@ fn worker_imports(imports: &BTreeSet<String>) -> BTreeSet<String> {
         .collect()
 }
 
+fn run_grant_names(source: &str) -> BTreeSet<String> {
+    let checked = witchy::resolve_std_only_checked(source)
+        .expect("RFC-0129 row-6 capability source must check");
+    witchy::capabilities::run_grant(checked.module())
+        .keys()
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
 #[test]
 fn rfc0129_acceptance_row_6_cooperative_and_parallel_maps_use_distinct_boundaries() {
-    let expected = vec!["[25, 9, 64, 1]".to_string()];
+    let cooperative_expected = [
+        "task 5",
+        "task 3",
+        "task 8",
+        "task 1",
+        "[25, 9, 64, 1]",
+    ];
 
     let (cooperative_output, cooperative_wasm) = run_on_both_backends(COOPERATIVE_MAP);
-    assert_eq!(cooperative_output, expected, "cooperative map keeps input order");
+    assert_eq!(
+        cooperative_output,
+        cooperative_expected,
+        "cooperative tasks may use an explicitly passed Console and keep input order",
+    );
+    assert_eq!(
+        run_grant_names(COOPERATIVE_MAP),
+        BTreeSet::from(["Console".to_string()]),
+        "cooperative work receives only main's explicit Console grant",
+    );
     let cooperative_workers = worker_imports(&witchy_imports(&cooperative_wasm));
     assert!(
         cooperative_workers.is_empty(),
@@ -97,7 +141,7 @@ fn rfc0129_acceptance_row_6_cooperative_and_parallel_maps_use_distinct_boundarie
     );
 
     let (parallel_output, parallel_wasm) = run_on_both_backends(PARALLEL_WORKER_MAP);
-    assert_eq!(parallel_output, expected, "parallel worker map keeps input order");
+    assert_eq!(parallel_output, ["[25, 9, 64, 1]"], "parallel worker map keeps input order");
     let parallel_workers = worker_imports(&witchy_imports(&parallel_wasm));
     assert_eq!(
         parallel_workers,
@@ -105,14 +149,38 @@ fn rfc0129_acceptance_row_6_cooperative_and_parallel_maps_use_distinct_boundarie
             "vm_par_map_run".to_string(),
             "vm_par_map_write".to_string(),
         ]),
-        "a direct scalar vm.par_map must pay the explicit worker-VM host boundary",
+        "a direct scalar vm.par_map has a measured two-import worker-VM boundary",
     );
 
     let (fallback_output, fallback_wasm) = run_on_both_backends(SEQUENTIAL_WORKER_FALLBACK);
-    assert_eq!(fallback_output, ["[15, 13, 18, 11]"], "fallback remains ordered");
+    assert_eq!(
+        fallback_output,
+        ["parent 5", "parent 3", "parent 8", "parent 1", "[25, 9, 64, 1]"],
+        "a capability-bearing callback remains ordered in its parent VM",
+    );
+    assert_eq!(
+        run_grant_names(SEQUENTIAL_WORKER_FALLBACK),
+        BTreeSet::from(["Console".to_string()]),
+        "capturing Console does not manufacture a worker grant",
+    );
     let fallback_workers = worker_imports(&witchy_imports(&fallback_wasm));
     assert!(
         fallback_workers.is_empty(),
-        "a capturing callback cannot silently cross the worker boundary: {fallback_workers:?}",
+        "a capability-capturing callback cannot silently cross the worker boundary: {fallback_workers:?}",
+    );
+
+    let explicit_checked = witchy::resolve_std_only_checked(EXPLICIT_DIR_WORKER)
+        .expect("the explicit Dir worker source must check");
+    let explicit_wasm = codegen::compile_checked_module_binary(&explicit_checked)
+        .expect_lowered("compile the explicit Dir worker source");
+    let explicit_imports = witchy_imports(&explicit_wasm);
+    assert!(
+        explicit_imports.contains("vm_with_dir_run"),
+        "vm.with_dir must retain its explicit isolated-worker adapter: {explicit_imports:?}",
+    );
+    assert_eq!(
+        run_grant_names(EXPLICIT_DIR_WORKER),
+        BTreeSet::from(["Dir".to_string()]),
+        "the worker receives exactly the Dir named by the API",
     );
 }

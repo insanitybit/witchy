@@ -1,0 +1,16 @@
+// `chan.par_map` runs Tasks inside one VM. The callback may receive a capability
+// explicitly, and the call itself is asynchronous: it returns a Task that must
+// be awaited. No worker VM is created or crossed.
+//
+// Run: witchy examples/channels/src/cooperative_map.witchy
+
+import chan
+
+async fn square(console: Console, n: Int) -> Int:
+    console.print("task ${n}")
+    chan.yield_now().await
+    n * n
+
+async fn main(console: Console):
+    let squares = chan.par_map([2, 3, 4], fn(n): square(console, n)).await
+    console.print("cooperative ${squares}")

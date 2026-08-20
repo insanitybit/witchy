@@ -1,0 +1,14 @@
+// `vm.par_map` runs eligible pure work across isolated worker VMs on the native
+// compiled backend. Its callback is a bare top-level function over flat values;
+// the synchronous call pays worker startup and copy-in/copy-out boundary costs.
+//
+// Run: witchy examples/channels/src/worker_vm_map.witchy
+
+import vm
+
+fn square(n: Int) -> Int:
+    n * n
+
+fn main(console: Console):
+    let squares = vm.par_map([2, 3, 4], square)
+    console.print("worker-vm ${squares}")
