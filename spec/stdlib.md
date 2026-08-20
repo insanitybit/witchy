@@ -1597,7 +1597,7 @@ Strict response parsing for public client paths. In particular, malformed `Trans
 
 ## `iter`
 
-std/iter - lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. `gen fn`/`yield` lower to this representation; `from_gen` is the low-level desugaring target for compiler-generated iterators.
+std/iter - lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. `gen fn`/`yield` lower to this representation: common loops use `unfold` with an owned typed frame, while `from_gen` remains the fallback for irregular control flow.
 
 Adapters and consumers are METHODS on `Iter` (`it.map(f).take(3)`), so pipelines read left-to-right. The module level keeps only what has no receiver - the constructors (`iter.range`, `iter.from_list`, ...) - plus `iter.collect` (whose polymorphic return type dispatches on the EXPECTED type; keeping it a free function also avoids a measured mono-pass blowup) and the pull primitive `iter.next` (also a method; the free form drives the module's own generic internals).
 
@@ -1632,7 +1632,7 @@ The empty iterator.
 
 One element, then done.
 
-#### `fn unfold(seed: s, f: fn(s) -> Option((a, s))) -> Iter(a)`
+#### `fn unfold(own seed: s, f: fn(own s) -> Option((a, s))) -> Iter(a)`
 
 Build an iterator from a `seed` by repeatedly applying `f`, which returns `Some((value, next_seed))` to yield a value or `None` to stop. The general generator primitive - count/fibonacci/range are all unfolds.
 
@@ -1654,7 +1654,7 @@ A list's elements, in order.
 
 #### `fn from_gen(f: fn(Int) -> Option(a)) -> Iter(a)`
 
-Build an iterator from an index function: `f(0)`, `f(1)`, ... each `Some(x)` is the next element and the first `None` ends it. This is the de-sugaring target for the `gen`/`yield` syntax: a generator body becomes a function from "which yield" to its value, and pulling element i re-runs it to the i-th yield (so the body may use any control flow, including unbounded loops).
+Build an iterator from an index function: `f(0)`, `f(1)`, ... each `Some(x)` is the next element and the first `None` ends it. This is the compatibility target for generator control flow that cannot yet use the owned-frame path: pulling element i re-runs the body to its i-th yield.
 
 #### `fn collect(it: Iter(a)) -> c where c: FromIterator(a)`
 
