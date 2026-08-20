@@ -8,9 +8,10 @@
 //!         yield i
 //!         i = i + 1
 //! ```
-//! becomes two plain functions. A single-yield loop gets an owned tuple frame
-//! advanced once per `iter.unfold` pull. Irregular control flow retains the
-//! compatibility helper below, which re-runs the body to the requested yield:
+//! becomes two plain functions. A loop whose yields are direct body statements
+//! gets an owned tuple frame advanced once per `iter.unfold` pull. Irregular
+//! control flow retains the compatibility helper below, which re-runs the body
+//! to the requested yield:
 //! ```text
 //! fn __gen_count_up(n: Int, __target: Int) -> Option(Int):
 //!     var __i = 0
@@ -446,11 +447,11 @@ struct GeneratorFrameBinding {
 ///     <after>
 /// ```
 ///
-/// The frame is a fixed typed tuple of parameters, initialized locals, and a
-/// resume phase. One `iter.unfold` step restores those bindings, executes the
-/// statements after the previous yield only when resuming, and stops exactly at
-/// the next yield. More general CFGs retain the replay fallback until they are
-/// split into states.
+/// The frame is a fixed typed tuple of parameters, initialized locals, and an
+/// integer resume phase. One `iter.unfold` step restores those bindings,
+/// executes the statements after the previous yield only when resuming, and
+/// stops exactly at the next direct yield. More general CFGs retain the replay
+/// fallback until they are split into states.
 fn lower_owned_loop_frame(
     f: &Function,
     method: Option<&MethodCtx>,
@@ -467,14 +468,14 @@ fn lower_owned_loop_frame(
         .enumerate()
         .filter_map(|(index, statement)| matches!(statement, Stmt::Yield(_)).then_some(index))
         .collect::<Vec<_>>();
-    if yields.len() != 1
+    if yields.is_empty()
         || block_has_nested_yield(body)
         || block_has_generator_loop_control_transfer(body)
     {
         return Ok(None);
     }
-    let yield_index = yields[0];
-    let Stmt::Yield(yielded) = &body.stmts[yield_index] else { unreachable!() };
+    let first_yield_index = yields[0];
+    let Stmt::Yield(first_yielded) = &body.stmts[first_yield_index] else { unreachable!() };
 
     let mut bindings = Vec::new();
     for parameter in &f.params {
@@ -514,7 +515,7 @@ fn lower_owned_loop_frame(
         .iter()
         .map(|binding| binding.ty.clone())
         .collect::<Vec<_>>();
-    frame_fields.push(Type::Named("Bool".into(), Vec::new()));
+    frame_fields.push(Type::Named("Int".into(), Vec::new()));
     let frame_ty = Type::Tuple(frame_fields);
     let frame_name = "__generator_frame".to_string();
     let resume_name = "__generator_resume_after_yield".to_string();
@@ -534,26 +535,70 @@ fn lower_owned_loop_frame(
         .collect::<Vec<_>>();
     step_statements.push(Stmt::Let {
         name: resume_name.clone(),
-        ty: Some(Type::Named("Bool".into(), Vec::new())),
+        ty: Some(Type::Named("Int".into(), Vec::new())),
         mutable: false,
         value: Expr::Field {
             base: Box::new(Expr::Var(frame_name.clone())),
             field: bindings.len().to_string(),
         },
     });
+    for (phase, window) in yields.windows(2).enumerate() {
+        let previous_yield = window[0];
+        let next_yield = window[1];
+        let Stmt::Yield(yielded) = &body.stmts[next_yield] else { unreachable!() };
+        let mut resume = rewrite_owned_frame_returns(Block {
+            stmts: body.stmts[previous_yield + 1..next_yield].to_vec(),
+            lines: Vec::new(),
+            region: None,
+        })?
+        .stmts;
+        resume.push(Stmt::Let {
+            name: yielded_name.clone(),
+            ty: Some(elem.clone()),
+            mutable: false,
+            value: yielded.clone(),
+        });
+        let mut next_frame_fields = bindings
+            .iter()
+            .map(|binding| Expr::Var(binding.name.clone()))
+            .collect::<Vec<_>>();
+        next_frame_fields.push(Expr::Int((phase + 2) as i64));
+        resume.push(Stmt::Return(Some(Expr::Ctor {
+            name: "Some".into(),
+            args: vec![Expr::Tuple(vec![
+                Expr::Var(yielded_name.clone()),
+                Expr::Tuple(next_frame_fields),
+            ])],
+        })));
+        step_statements.push(Stmt::Expr(Expr::If {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(Expr::Var(resume_name.clone())),
+                rhs: Box::new(Expr::Int((phase + 1) as i64)),
+            }),
+            then_block: Block { stmts: resume, lines: Vec::new(), region: None },
+            else_block: None,
+        }));
+    }
+
+    let last_yield_index = *yields.last().expect("non-empty direct yield set");
     let after = rewrite_owned_frame_returns(Block {
-        stmts: body.stmts[yield_index + 1..].to_vec(),
+        stmts: body.stmts[last_yield_index + 1..].to_vec(),
         lines: Vec::new(),
         region: None,
     })?;
     step_statements.push(Stmt::Expr(Expr::If {
-        cond: Box::new(Expr::Var(resume_name)),
+        cond: Box::new(Expr::Binary {
+            op: BinOp::Eq,
+            lhs: Box::new(Expr::Var(resume_name)),
+            rhs: Box::new(Expr::Int(yields.len() as i64)),
+        }),
         then_block: after,
         else_block: None,
     }));
 
     let mut produce = rewrite_owned_frame_returns(Block {
-        stmts: body.stmts[..yield_index].to_vec(),
+        stmts: body.stmts[..first_yield_index].to_vec(),
         lines: Vec::new(),
         region: None,
     })?
@@ -562,13 +607,13 @@ fn lower_owned_loop_frame(
         name: yielded_name.clone(),
         ty: Some(elem.clone()),
         mutable: false,
-        value: yielded.clone(),
+        value: first_yielded.clone(),
     });
     let mut next_frame_fields = bindings
         .iter()
         .map(|binding| Expr::Var(binding.name.clone()))
         .collect::<Vec<_>>();
-    next_frame_fields.push(Expr::Bool(true));
+    next_frame_fields.push(Expr::Int(1));
     let next_frame = Expr::Tuple(next_frame_fields);
     produce.push(Stmt::Expr(Expr::Ctor {
         name: "Some".into(),
@@ -617,7 +662,7 @@ fn lower_owned_loop_frame(
                 bindings
                     .iter()
                     .map(|binding| Expr::Var(binding.name.clone()))
-                    .chain(std::iter::once(Expr::Bool(false)))
+                    .chain(std::iter::once(Expr::Int(0)))
                     .collect(),
             ),
             Expr::Var(helper_name.to_string()),
@@ -1059,5 +1104,19 @@ mod target_availability_tests {
         let debug = format!("{:?}", lowered);
         assert!(!debug.contains("iter.from_gen"), "early return must not select replay: {debug}");
         assert!(debug.contains("__generator_resume_after_yield"));
+    }
+
+    #[test]
+    fn direct_multi_yield_loop_uses_owned_resume_phases() {
+        let module = crate::parser::parse_module(
+            "gen fn pairs() -> Iter(Int):\n    var i = 0\n    while i < 3:\n        yield i\n        i = i + 10\n        yield i\n        i = i - 9\n",
+        )
+        .expect("parse multi-yield generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower generator").into_module();
+        let debug = format!("{:?}", lowered);
+        assert!(!debug.contains("iter.from_gen"), "direct yields must not replay: {debug}");
+        assert!(debug.contains("__generator_resume_after_yield"));
+        assert!(debug.contains("Int(2)"), "second yield needs its own resume phase: {debug}");
     }
 }

@@ -32,6 +32,29 @@ use crate::{interpreter, parser};
         );
     }
 
+    /// Direct yield sites in one loop are distinct resume states. Each segment
+    /// runs once, and the tail after the final yield runs before the next loop
+    /// iteration begins.
+    #[test]
+    fn generator_direct_multi_yield_loop_resumes_each_segment_once() {
+        let src = "import iter\n\ngen fn staged(console: Console) -> Iter(Int):\n    var i: Int = 0\n    while i < 2:\n        console.print(\"before ${i}\")\n        yield i\n        console.print(\"middle ${i}\")\n        yield i + 10\n        console.print(\"after ${i}\")\n        i = i + 1\n\nfn main(console: Console):\n    match iter.next(staged(console)):\n        Empty -> console.print(\"missing-one\")\n        Item(one, rest_one) ->\n            console.print(\"one ${one}\")\n            match iter.next(rest_one):\n                Empty -> console.print(\"missing-two\")\n                Item(two, rest_two) ->\n                    console.print(\"two ${two}\")\n                    match iter.next(rest_two):\n                        Empty -> console.print(\"missing-three\")\n                        Item(three, _rest_three) -> console.print(\"three ${three}\")\n";
+        let expected = [
+            "before 0",
+            "one 0",
+            "middle 0",
+            "two 10",
+            "after 0",
+            "before 1",
+            "three 1",
+        ];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// (BUG-007) A `gen fn` declared as a METHOD of an inherent `impl` lowers just
     /// like a top-level one: it stays a method (`value.upto()` resolves by receiver
     /// type and returns `Iter(a)`), and its hoisted helper is named per-type so two
