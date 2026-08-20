@@ -29,10 +29,7 @@ impl TestFileError {
         matches!(
             self,
             Self::Load(_)
-                | Self::Pipeline(
-                    pipeline::PipelineError::Link(_)
-                        | pipeline::PipelineError::Source(_)
-                )
+                | Self::Pipeline(pipeline::PipelineError::Link(_))
         )
     }
 }
@@ -558,7 +555,7 @@ pub(crate) fn linked_has_main(linked: &ast::Module) -> bool {
 mod tests {
     use super::{
         expand_file_source, link_file_checked_authenticated_with_deps,
-        AuthenticatedDependency,
+        AuthenticatedDependency, TestFileError,
     };
     use witchy_types::runtime_type::{
         DeclarationKind, ModuleLoadIdentity, PackageCoordinate, PackageSource,
@@ -570,6 +567,26 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("witchy_{name}_{}_{}", std::process::id(), nanos))
+    }
+
+    #[test]
+    fn source_semantic_failures_are_not_discovery_skips() {
+        let source_error = TestFileError::Pipeline(
+            witchy_interp::pipeline::PipelineError::Source(
+                witchy_syntax::source_check::SourceCheckError::new("unknown function"),
+            ),
+        );
+        assert!(!source_error.is_discovery_failure());
+
+        let link_error = TestFileError::Pipeline(
+            witchy_interp::pipeline::PipelineError::Link(
+                witchy_syntax::linker::LinkError {
+                    location: None,
+                    message: "missing imported module".into(),
+                },
+            ),
+        );
+        assert!(link_error.is_discovery_failure());
     }
 
     #[test]
