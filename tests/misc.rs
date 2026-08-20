@@ -53,6 +53,8 @@ mod rfc0089_fip_contract;
 mod rfc0094_persistent_std_cache;
 #[path = "misc/rfc0105_fixture_cli.rs"]
 mod rfc0105_fixture_cli;
+#[path = "misc/rfc0129_negative_matrix.rs"]
+mod rfc0129_negative_matrix;
 #[path = "misc/typed_errors.rs"]
 mod typed_errors;
 #[path = "misc/vm_worker_isolation.rs"]
