@@ -241,7 +241,9 @@ worktree, `target/`, master, and the merge queue as shared state:
   and ask rather than overwrite.
 - **Never** revert, delete, or reformat changes you didn't make. No
   `git checkout --`, `git reset --hard`, `git stash`, `cargo fmt`, or
-  `rm -rf target` as a cleanup shortcut. Clean up only artifacts you created.
+  `rm -rf target` as a cleanup shortcut — and that ban is not only about
+  wiping a dirty tree. It includes **do not retarget `master`.** Clean up
+  only artifacts you created.
 - Don't kill Cargo, nextest, dev-server, or browser processes you didn't start.
 - Use a per-agent target dir for long commands:
   `CARGO_TARGET_DIR=target-claude cargo nextest run --workspace`.
@@ -269,12 +271,30 @@ lands. That's fine and usually desirable — just say so in your report so the
 next agent knows a coordinator is alive rather than starting a second one.
 
 **All work happens in a worktree on a branch — never edit the main checkout
-directly**, which blocks other agents. Fresh worktrees need a seeded build
-cache: agent worktrees get it automatically via the `WorktreeCreate` hook, but
-for a manual `git worktree add` run `./scripts/worktree-warm.sh <path>` (it
-APFS-CoW-clones `target/`, so dependencies come up warm). Don't point
-`CARGO_TARGET_DIR` at a shared dir — cargo's build lock would serialize
-concurrent agents.
+directly**, which blocks other agents. The shared checkout is the directory
+whose `HEAD` is `master` (the path `git worktree list` shows first). Check
+out your branch with `git worktree add -b <branch> .claude/worktrees/<name>`
+(or `.codex/worktrees/<name>`), not by switching that directory off `master`.
+
+**`refs/heads/master` is the merge-queue landing ref. You do not move it.**
+Only the coordinator fast-forwards it. In particular:
+
+- **`origin/master` is not this repo's master.** GitHub is thousands of
+  commits behind the local `master` the queue lands on. `git fetch && git
+  reset --hard origin/master` (or any reset of `master` onto the remote) is
+  a production outage, not a sync.
+- Do not **rename**, **reset**, **checkout -B**, or **branch -M** `master`
+  to turn the shared checkout into a feature branch. That is how you get a
+  worktree: `git worktree add -b <branch> <path>`.
+- Do not check an agent branch out in the shared master directory. Two
+  checkouts of `master` are also forbidden by git; renaming `master` to
+  dodge that is the same crime.
+
+Fresh worktrees need a seeded build cache: agent worktrees get it
+automatically via the `WorktreeCreate` hook, but for a manual
+`git worktree add` run `./scripts/worktree-warm.sh <path>` (it APFS-CoW-clones
+`target/`, so dependencies come up warm). Don't point `CARGO_TARGET_DIR` at
+a shared dir — cargo's build lock would serialize concurrent agents.
 
 ## 4. Landing work: the merge queue
 
