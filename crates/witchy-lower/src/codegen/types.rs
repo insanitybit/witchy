@@ -215,17 +215,17 @@ impl Codegen<'_> {
             {
                 self.dict_value_valtype_of(&args[0]).map(valtype_kind).unwrap_or(Kind::I32)
             }
-            // (RFC-0055) `__erase`/`__unerase` are the identity on both value and
-            // kind: the message passes through unchanged, so the ctor/slot that
-            // stores it uses the ARGUMENT's real kind (a `send`'d `Int` stays i64
-            // in its 8-byte slot). The executor then reads the opaque `__Msg` field
-            // at the universal i32 width — the same truncation the former generic
-            // `m` field took, so both backends stay byte-identical.
             Expr::Call { name, args }
-                if intrinsics::is_erasure_bridge(cap_ops::surface_name(name))
-                    && args.len() == 1 =>
+                if cap_ops::surface_name(name) == intrinsics::ERASE && args.len() == 1 =>
             {
-                self.kind_of(&args[0])
+                Kind::GcRef(super::MESSAGE_WRAPPER_ID)
+            }
+            Expr::Call { name, args }
+                if cap_ops::surface_name(name) == intrinsics::UNERASE && args.len() == 1 =>
+            {
+                self.ast_type_of_expr(e)
+                    .map(|ty| self.kind_for_type(&ty))
+                    .unwrap_or_else(|| self.kind_of(&args[0]))
             }
             // RFC-0012/RFC-0005 Stage 2: Dir navigation yields an unforgeable File
             // externref, not an integer handle.

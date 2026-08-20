@@ -248,6 +248,29 @@ pub fn existential_wrapper_struct() -> WirStructDef {
     }
 }
 
+/// Erased channel-message envelope. Source endpoint types recover the exact
+/// field statically, while the scheduler carries one stable GC reference ABI
+/// across channels with different scalar, host-reference, and GC-reference
+/// message types.
+pub const MESSAGE_I32_FIELD: u32 = 0;
+pub const MESSAGE_I64_FIELD: u32 = 1;
+pub const MESSAGE_F64_FIELD: u32 = 2;
+pub const MESSAGE_EXTERNREF_FIELD: u32 = 3;
+pub const MESSAGE_STRUCTREF_FIELD: u32 = 4;
+
+pub fn message_wrapper_struct() -> WirStructDef {
+    WirStructDef {
+        fields: vec![
+            Kind::I32,
+            Kind::I64,
+            Kind::F64,
+            Kind::ExternRef,
+            Kind::StructRef,
+        ],
+        mutable: false,
+    }
+}
+
 /// The executable representation of an `&'a Int` / `&'a mut Int` in opt mode.
 /// The cell owns the current scalar payload; a reference is the typed GC handle
 /// itself, so it survives calls and `call_indirect` without relying on a

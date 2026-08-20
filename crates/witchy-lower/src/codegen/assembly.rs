@@ -1837,6 +1837,7 @@ fn register_module_items(
     cg.gc_structs.push(witchy_wir::wir::reference_i64_cell_struct());
     cg.gc_structs.push(witchy_wir::wir::place_reference_struct());
     cg.gc_structs.push(witchy_wir::wir::reference_i32_cell_struct());
+    cg.gc_structs.push(witchy_wir::wir::message_wrapper_struct());
     // Every witness for the same concrete type must name the same payload-box
     // layout. A supertrait upcast changes only the authenticated witness ID and
     // deliberately reuses the owned payload reference; allocating one nominal

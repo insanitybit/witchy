@@ -6,6 +6,67 @@
 use super::*;
 
 impl Codegen<'_> {
+    pub(crate) fn lower_message_erase(
+        &mut self,
+        value: &Expr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{Kind as WK, WirExpr as W};
+
+        let source = self.kind_of(value);
+        let value = self.lower_expr(value)?;
+        let mut fields = vec![
+            W::ConstI32(0),
+            W::ConstI64(0),
+            W::ConstF64(0.0),
+            W::RefNull(WK::ExternRef),
+            W::RefNull(WK::StructRef),
+        ];
+        match source {
+            Kind::I32 => fields[witchy_wir::wir::MESSAGE_I32_FIELD as usize] = value,
+            Kind::I64 => fields[witchy_wir::wir::MESSAGE_I64_FIELD as usize] = value,
+            Kind::F64 => fields[witchy_wir::wir::MESSAGE_F64_FIELD as usize] = value,
+            Kind::ExternRef => {
+                fields[witchy_wir::wir::MESSAGE_EXTERNREF_FIELD as usize] = value;
+            }
+            Kind::GcRef(id) => {
+                fields[witchy_wir::wir::MESSAGE_STRUCTREF_FIELD as usize] = W::Convert {
+                    from: WK::GcRef(id),
+                    to: WK::StructRef,
+                    arg: Box::new(value),
+                };
+            }
+        }
+        Some(W::StructNew { struct_id: MESSAGE_WRAPPER_ID, args: fields })
+    }
+
+    pub(crate) fn lower_message_unerase(
+        &mut self,
+        envelope: &Expr,
+        target: Kind,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
+
+        let field = match target {
+            Kind::I32 => witchy_wir::wir::MESSAGE_I32_FIELD,
+            Kind::I64 => witchy_wir::wir::MESSAGE_I64_FIELD,
+            Kind::F64 => witchy_wir::wir::MESSAGE_F64_FIELD,
+            Kind::ExternRef => witchy_wir::wir::MESSAGE_EXTERNREF_FIELD,
+            Kind::GcRef(_) => witchy_wir::wir::MESSAGE_STRUCTREF_FIELD,
+        };
+        let value = W::StructGet {
+            struct_id: MESSAGE_WRAPPER_ID,
+            field,
+            base: Box::new(self.lower_expr(envelope)?),
+        };
+        Some(match target {
+            Kind::GcRef(struct_id) => W::RefCastNullable {
+                struct_id,
+                value: Box::new(value),
+            },
+            _ => value,
+        })
+    }
+
     /// Lower the `pattern` field of a checked capability-policy expression
     /// without fabricating a cloned `Expr::Field`. Type and access facts are
     /// keyed to the checked AST, so synthesized expression nodes must not cross
@@ -1087,13 +1148,9 @@ impl Codegen<'_> {
                 self.uses_encoding = true;
                 call("bytes_to_string", vec![self.lower_expr(&args[0])?])
             }
-            // (RFC-0055) Channel message erasure. A message already rides the
-            // universal slot on the compiled backend (every buffer element, record
-            // field, and closure argument is an untyped 8-byte slot), so erasing to
-            // `__Msg` and recovering the endpoint's type are both the identity — the
-            // value passes through unchanged, exactly as the executor's former
-            // generic `m` did.
-            (intrinsics::ERASE, 1) | (intrinsics::UNERASE, 1) => self.lower_expr(&args[0])?,
+            // Whole-expression lowering handles message boxing/unboxing because
+            // `__unerase` needs the statically recovered result carrier.
+            (intrinsics::ERASE, 1) | (intrinsics::UNERASE, 1) => return None,
             (intrinsics::BYTES_LENGTH, 1) => {
                 let arg = self.lower_expr(&args[0])?;
                 Self::wir_convert(

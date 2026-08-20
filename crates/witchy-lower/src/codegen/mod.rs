@@ -400,6 +400,9 @@ const PLACE_REFERENCE_ID: u32 = 3;
 /// Root cell for a linear-memory aggregate. Its `PlaceReference` projection
 /// selects a field or element without changing the reference call ABI.
 const REFERENCE_I32_CELL_ID: u32 = 4;
+/// Stable erased channel-message envelope. The scheduler stores this one GC
+/// handle while `__erase`/`__unerase` preserve the endpoint's physical kind.
+const MESSAGE_WRAPPER_ID: u32 = 5;
 const GC_LIST_SRC_TMP: &str = "__witchy_gc_list_src";
 const GC_LIST_RIGHT_TMP: &str = "__witchy_gc_list_right";
 const GC_LIST_DST_TMP: &str = "__witchy_gc_list_dst";
@@ -1780,6 +1783,7 @@ impl<'types> Codegen<'types> {
         }
         let t = t.unqualified();
         match t {
+            Type::Named(n, _) if n == "__Msg" => Kind::GcRef(MESSAGE_WRAPPER_ID),
             Type::Dyn(_, _) => Kind::GcRef(EXISTENTIAL_WRAPPER_ID),
             Type::Fn(_, _, _) => Kind::GcRef(CLOSURE_WRAPPER_ID),
             Type::Tuple(_) => self

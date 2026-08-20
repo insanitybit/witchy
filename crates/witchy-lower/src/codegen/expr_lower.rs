@@ -2984,6 +2984,14 @@ impl<'types> Codegen<'types> {
                 if !self.collect_wir {
                     return None;
                 }
+                let surface = witchy_syntax::cap_ops::surface_name(name);
+                if surface == witchy_syntax::intrinsics::ERASE && args.len() == 1 {
+                    return self.lower_message_erase(&args[0]);
+                }
+                if surface == witchy_syntax::intrinsics::UNERASE && args.len() == 1 {
+                    let target = self.kind_of(e);
+                    return self.lower_message_unerase(&args[0], target);
+                }
                 if let Some(w) = self.lower_call(name, args) {
                     return Some(w);
                 }
