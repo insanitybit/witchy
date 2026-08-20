@@ -246,7 +246,7 @@ gate that changes the protocol therefore proves the slow path, never itself.
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
 batch diff (`base..sha`) and passes `WITCHY_GATE_FUZZ` to check.sh: `skip` when
 nothing under the parity surface changed (`crates/`, `std/`, `src/`, `examples/`,
-`projects/`, `build.rs`, `Cargo.*` — a docs/rfc/bug/config-only merge cannot
+`tests/differential_fuzz.rs`, `build.rs`, `Cargo.*` — a docs/rfc/bug/config-only merge cannot
 change backend behavior), `reduced` (10 seeds, ~12s, vs 30/~57s) when it did, and
 `full` on any doubt (git error / empty diff — fail-safe). The full 30-seed sweep
 under the checked heap still runs post-merge on CI (`ci.yml`) and in `check.sh

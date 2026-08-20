@@ -271,6 +271,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "#!/bin/sh\n\
          if [ -n \"${FAKE_CARGO_ARGS_FILE:-}\" ]; then printf '%s\\n' \"$*\" >>\"$FAKE_CARGO_ARGS_FILE\"; fi\n\
          if [ -n \"${FAKE_CARGO_ENV_FILE:-}\" ]; then printf '%s\\n' \"${CARGO_PROFILE_TEST_STRIP-unset}\" >>\"$FAKE_CARGO_ENV_FILE\"; fi\n\
+         if [ -n \"${FAKE_FUZZ_ENV_FILE:-}\" ]; then printf '%s\\n' \"${WITCHY_FUZZ_PROGRAMS-unset}\" >>\"$FAKE_FUZZ_ENV_FILE\"; fi\n\
          if [ \"$1\" = clippy ]; then\n\
            if [ -n \"${FAKE_CLIPPY_PID_FILE:-}\" ]; then printf '%s\\n' \"$$\" >\"$FAKE_CLIPPY_PID_FILE\"; sleep 30; exit 0; fi\n\
            sleep 1; exit 0\n\
@@ -497,6 +498,50 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
                 && !line.contains("--workspace")
         }),
         "types-only serialized nextest still used unfiltered --workspace: {focused_args}",
+    );
+
+    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+    let fuzz_env_file = temp.path().join("fuzz-env");
+    let differential_fuzz = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .arg("--fast")
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target-differential-fuzz"))
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("WITCHY_GATE_FUZZ", "skip")
+        .env("WITCHY_GATE_FUZZ_REDUCED", "3")
+        .env(
+            "WITCHY_GATE_NEXTEST",
+            "--test merge_queue --test differential_fuzz",
+        )
+        .env_remove("WITCHY_GATE_NEXTEST_EXPR")
+        .env_remove("WITCHY_GATE_QUEUE_INFRA")
+        .env_remove("WITCHY_GATE_TEST_JOBS")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("FAKE_FUZZ_ENV_FILE", &fuzz_env_file)
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run serialized gate for differential fuzz");
+    assert!(
+        differential_fuzz.status.success(),
+        "serialized differential fuzz gate failed: {}",
+        String::from_utf8_lossy(&differential_fuzz.stderr),
+    );
+    let differential_fuzz_args =
+        fs::read_to_string(&cargo_args_file).expect("read differential fuzz cargo arguments");
+    let differential_fuzz_run = differential_fuzz_args
+        .lines()
+        .find(|line| line.starts_with("nextest run"))
+        .expect("serialized differential fuzz gate ran nextest");
+    assert!(
+        differential_fuzz_run.contains("--test differential_fuzz")
+            && !differential_fuzz_run.contains("not binary(differential_fuzz)"),
+        "explicit differential fuzz selection was excluded by skip mode: {differential_fuzz_run}",
+    );
+    let fuzz_env = fs::read_to_string(&fuzz_env_file).expect("read differential fuzz environment");
+    assert!(
+        !fuzz_env.trim().is_empty() && fuzz_env.lines().all(|value| value == "3"),
+        "explicit differential fuzz selection did not use the reduced corpus: {fuzz_env}",
     );
 
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");

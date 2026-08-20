@@ -1939,7 +1939,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local fuzz_mode="full"
     local changed
     if changed="$(git -C "$gate_wt" diff --name-only --no-renames "$base..$sha" 2>/dev/null)" && [ -n "$changed" ]; then
-        if echo "$changed" | grep -cE '^(crates/|std/|src/|examples/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' >/dev/null; then
+        if echo "$changed" | grep -cE '^(crates/|std/|src/|examples/|tests/differential_fuzz\.rs$|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' >/dev/null; then
             fuzz_mode="reduced"
         else
             fuzz_mode="skip"

@@ -146,6 +146,18 @@ gate_fuzz="${WITCHY_GATE_FUZZ:-full}"
 # weaken --full — so force `full` here regardless of WITCHY_GATE_FUZZ. Otherwise a
 # reduced/skip mode would silently shrink or drop the very sweeps --full exists for.
 [ "$full" -eq 1 ] && gate_fuzz="full"
+# A serialized path selector is more precise than the daemon's coarse diff
+# classification. In particular, an older daemon can classify a change to the
+# differential corpus as `skip` while still selecting that test binary. Honor
+# the explicit test selector and bound its cost with the ordinary reduced mode.
+if [ "$gate_fuzz" = "skip" ] && [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
+    case " ${WITCHY_GATE_NEXTEST:-} " in
+        *" --test differential_fuzz "*)
+            gate_fuzz="reduced"
+            echo "check.sh: explicit differential_fuzz selector overrides fuzz skip (reduced corpus)"
+            ;;
+    esac
+fi
 # `reduced` runs the fuzzer under WITCHY_FUZZ_PROGRAMS=N. We set that var in this
 # shell's OWN environment (exported below only for that mode) rather than splicing
 # an `env` array into test_cmd — bash 3.2 (the macOS gate host) errors on an EMPTY

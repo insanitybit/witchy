@@ -698,6 +698,40 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
     (body, used)
 }
 
+/// (RFC-0059 DoD item 5) A small async state-machine program for the differential
+/// corpus. Every generated source is total and bounded: the producer sends at
+/// most six values into a channel of capacity one through four. The changing
+/// `i`/`next` locals cross the `await` inside `while`, and the consumer folds a
+/// `for await` stream into the outer `sum` variable.
+fn gen_async_program(seed: u64) -> String {
+    let mut r = Rng(seed);
+    let count = 1 + r.below(6);
+    let capacity = 1 + r.below(4);
+    let start = r.below(21) as i64 - 10;
+    let step = 1 + r.below(7);
+    let bias = r.below(21) as i64 - 10;
+    format!(
+        "import chan\n\
+         from chan import Sender, Receiver\n\n\
+         async fn produce(tx: Sender(Int), n: Int, start: Int, step: Int) -> Nil:\n\
+         \x20   var i = 0\n\
+         \x20   var next = start\n\
+         \x20   while i < n:\n\
+         \x20       chan.send(tx, next).await\n\
+         \x20       i = i + 1\n\
+         \x20       next = next + step\n\n\
+         async fn fold(console: Console, rx: Receiver(Int), bias: Int) -> Nil:\n\
+         \x20   var sum = bias\n\
+         \x20   for await value in rx:\n\
+         \x20       sum = sum + value\n\
+         \x20   console.print(\"${{sum}}\")\n\n\
+         async fn main(console: Console):\n\
+         \x20   let (tx, rx) = chan.channel({capacity}).await\n\
+         \x20   chan.spawn(produce(tx, {count}, ({start}), {step})).await\n\
+         \x20   fold(console, rx, ({bias})).await\n"
+    )
+}
+
 /// The cross-lever config set (RFC-0037 §2). Every program is run under each: the baseline
 /// (`none`, all opts off), the production default (``), each high-risk pass ALONE from a
 /// `none` base (`rc-floor`, `unbox`, `closure-elide` — the class that hid the UAF is exercised
@@ -713,6 +747,12 @@ const CONFIGS: &[&str] = &[
     "none,closure-elide",
     "all,-wasm-opt",
 ];
+
+/// The async arm keeps its default cost small while still checking the three
+/// meaningful compiler shapes: no optimizations, production defaults, and the
+/// complete in-process optimization set. The ordinary corpus above continues to
+/// isolate every individual lever.
+const ASYNC_CONFIGS: &[&str] = &["none", "", "all,-wasm-opt"];
 
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
@@ -945,6 +985,80 @@ struct ConfigTally {
     both_error: usize,
     skip: usize,
     compared_lines: usize,
+}
+
+#[test]
+fn differential_fuzz_async_state_machines() {
+    // Async compilation is materially heavier than a scalar statement, so keep
+    // this arm deliberately small by default. Each seed still changes the loop
+    // bound, channel capacity, carried values, and fold result; scheduled fuzz
+    // jobs can raise the count without changing reproduction by seed.
+    let programs = env_usize("WITCHY_ASYNC_FUZZ_PROGRAMS", 2);
+    assert!(programs > 0, "the async differential corpus must not be empty");
+
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..programs as u64).map(|seed| {
+            s.spawn(move || {
+                let generated_seed = seed.wrapping_mul(0xA076_1D64_78BD_642F).wrapping_add(5);
+                let src = gen_async_program(generated_seed);
+                assert!(
+                    check_accepts(&src, &format!("async_check_s{seed}")).unwrap_or_else(|out| {
+                        panic!(
+                            "witchy check CRASHED (signal) on async seed {seed}.\n--- program ---\n{src}\n--- output ---\n{out}"
+                        )
+                    }),
+                    "generated async seed {seed} did not pass `witchy check`.\n--- program ---\n{src}"
+                );
+
+                for (ci, &cfg) in ASYNC_CONFIGS.iter().enumerate() {
+                    let label = if cfg.is_empty() { "<default>" } else { cfg };
+                    match run_parity(&src, cfg, &format!("async_s{seed}c{ci}")) {
+                        ParityResult::Crash(out) => {
+                            let min = shrink(
+                                &src,
+                                |s| is_failure(&run_parity_t(s, cfg, "async_shrink", shrink_timeout())),
+                                4000,
+                            );
+                            panic!(
+                                "witchy CRASHED (signal) on async seed {seed} under WITCHY_OPT={label}.\n--- minimal repro ({} lines, from {}) ---\n{min}--- output ---\n{out}",
+                                min.lines().count(),
+                                src.lines().count()
+                            );
+                        }
+                        ParityResult::Diverge(out) => {
+                            let min = shrink(
+                                &src,
+                                |s| is_failure(&run_parity_t(s, cfg, "async_shrink", shrink_timeout())),
+                                4000,
+                            );
+                            panic!(
+                                "BACKENDS DIVERGE on async seed {seed} under WITCHY_OPT={label}.\n--- minimal repro ({} lines, from {}) ---\n{min}--- output ---\n{out}",
+                                min.lines().count(),
+                                src.lines().count()
+                            );
+                        }
+                        ParityResult::TimedOut => panic!(
+                            "witchy parity TIMED OUT on async seed {seed} under WITCHY_OPT={label} after {}s.\n--- program ---\n{src}",
+                            fuzz_timeout().as_secs()
+                        ),
+                        ParityResult::Agree(compared) => assert!(
+                            compared >= 1,
+                            "async seed {seed} produced no comparable output under WITCHY_OPT={label}.\n--- program ---\n{src}"
+                        ),
+                        ParityResult::BothErrorAgree => panic!(
+                            "generated async seed {seed} errored on both backends under WITCHY_OPT={label}.\n--- program ---\n{src}"
+                        ),
+                        ParityResult::Skip => panic!(
+                            "generated async seed {seed} passed `witchy check` but skipped a backend under WITCHY_OPT={label}.\n--- program ---\n{src}"
+                        ),
+                    }
+                }
+            })
+        }).collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
 }
 
 #[test]
