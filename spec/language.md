@@ -869,11 +869,9 @@ aliasing. Concretely:
   position. `await` is supported in loop bodies, including `while` bodies and
   `for await` folds; it remains unsupported in branch conditions, loop
   conditions, and match scrutinees.
-- A **`gen fn`** owns the locals live across `yield` in its resumable frame
-  (§11). A `var` may therefore be mutated across a supported suspension, and
-  resumption continues after the previous `yield` with each body segment
-  executed once. Generator shapes outside the owned-frame catalog remain
-  experimental and are outside this supported-preview guarantee.
+- A **`gen fn`** is the exception: a `var` *may* be freely mutated across a
+  `yield` (§11), because a generator re-runs its body to the next yield rather
+  than capturing a continuation.
 
 **Ownership/immutability qualifiers** (`frozen`, `unique`, `local unique`, and
 borrowed `View`) are
@@ -1590,13 +1588,6 @@ fn main(console: Console):
 A `gen fn` body runs imperatively but `yield`s a sequence; calling it returns a
 lazy `iter.Iter` that computes only what's demanded, so an infinite generator
 is fine when something bounds it.
-
-For a supported generator shape, locals live across `yield` are fields of an
-owned resumable frame. Pulling the next item continues after the previous
-suspension, so effects are not replayed and the frame's live storage stays
-bounded as the pull count grows. References cannot cross that suspension unless
-their owner relation is proven; the current public iterator protocol yields
-owned values rather than lending references.
 
 ```witchy
 import iter

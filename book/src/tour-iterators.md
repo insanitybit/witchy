@@ -76,15 +76,8 @@ fn main(console: Console):
 
 The `while true` loop never finishes on its own; `fibs().take(10)` stops
 pulling after ten values, so only ten Fibonacci numbers are ever computed. A
-promoted generator keeps its live locals in an owned frame and resumes after
-the last `yield`; it does not restart the body to rediscover that yield. Each
-body segment and capability effect therefore runs once, live frame storage does
-not grow with the pull count, and sequential pulls add linear generator
-overhead. The compiler rejects a reference that would outlive its owner across
-the suspension boundary.
-
-A generator can branch and loop as freely as any function. The Collatz sequence
-is finite, but its length isn't known before iteration:
+generator can branch and loop as freely as any function. The Collatz sequence is
+finite, but its length isn't known before iteration:
 
 ```witchy
 import iter
