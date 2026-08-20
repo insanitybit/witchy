@@ -445,6 +445,87 @@ struct NestedConditionalYield {
     else_block: Option<Block>,
 }
 
+struct NestedBranchYields {
+    outer_prefix: Vec<Stmt>,
+    outer_suffix: Vec<Stmt>,
+    branch_condition: Expr,
+    then_prefix: Vec<Stmt>,
+    then_suffix: Vec<Stmt>,
+    then_yielded: Expr,
+    else_prefix: Vec<Stmt>,
+    else_suffix: Vec<Stmt>,
+    else_yielded: Expr,
+}
+
+fn direct_yield_parts(block: &Block) -> Option<(Vec<Stmt>, Expr, Vec<Stmt>)> {
+    if block_has_nested_yield(block) {
+        return None;
+    }
+    let yields = block
+        .stmts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, statement)| matches!(statement, Stmt::Yield(_)).then_some(index))
+        .collect::<Vec<_>>();
+    let [yield_index] = yields.as_slice() else { return None };
+    let Stmt::Yield(yielded) = &block.stmts[*yield_index] else { unreachable!() };
+    let prefix = block.stmts[..*yield_index].to_vec();
+    let suffix = block.stmts[*yield_index + 1..].to_vec();
+    if !live_loop_local_bindings(&prefix, &suffix)?.is_empty() {
+        return None;
+    }
+    Some((prefix, yielded.clone(), suffix))
+}
+
+/// Recognize an `if` whose two branches each suspend once. The frame records
+/// which branch suspended, so resumption enters only that branch's suffix and
+/// does not repeat the condition or either prefix.
+fn nested_branch_yields(body: &Block) -> Option<NestedBranchYields> {
+    let mut found = None;
+    for (outer_index, statement) in body.stmts.iter().enumerate() {
+        let Stmt::Expr(Expr::If {
+            cond,
+            then_block,
+            else_block: Some(else_block),
+        }) = statement
+        else {
+            continue;
+        };
+        let Some((then_prefix, then_yielded, then_suffix)) = direct_yield_parts(then_block) else {
+            continue;
+        };
+        let Some((else_prefix, else_yielded, else_suffix)) = direct_yield_parts(else_block) else {
+            continue;
+        };
+        if found.is_some()
+            || block_has_any_yield(&Block {
+                stmts: body.stmts[..outer_index].to_vec(),
+                lines: Vec::new(),
+                region: None,
+            })
+            || block_has_any_yield(&Block {
+                stmts: body.stmts[outer_index + 1..].to_vec(),
+                lines: Vec::new(),
+                region: None,
+            })
+        {
+            return None;
+        }
+        found = Some(NestedBranchYields {
+            outer_prefix: body.stmts[..outer_index].to_vec(),
+            outer_suffix: body.stmts[outer_index + 1..].to_vec(),
+            branch_condition: cond.as_ref().clone(),
+            then_prefix,
+            then_suffix,
+            then_yielded,
+            else_prefix,
+            else_suffix,
+            else_yielded,
+        });
+    }
+    found
+}
+
 /// Recognize one conditional suspension point inside the generator's outer
 /// loop. This is deliberately structural: the resume helper enters the suffix
 /// of the taken branch directly, so it neither re-evaluates the condition nor
@@ -662,7 +743,12 @@ fn lower_owned_loop_frame(
     } else {
         None
     };
-    if (yields.is_empty() && nested_conditional.is_none())
+    let nested_branches = if yields.is_empty() && nested_conditional.is_none() {
+        nested_branch_yields(body)
+    } else {
+        None
+    };
+    if (yields.is_empty() && nested_conditional.is_none() && nested_branches.is_none())
         || (!yields.is_empty() && block_has_nested_yield(body))
         || block_has_generator_loop_control_transfer(body)
     {
@@ -859,6 +945,113 @@ fn lower_owned_loop_frame(
                 lines: Vec::new(),
                 region: None,
             }),
+        }));
+    } else if let Some(nested) = nested_branches {
+        let yielded_option_name = "__generator_yielded_option".to_string();
+        step_statements.push(Stmt::Let {
+            name: suspended_name.clone(),
+            ty: Some(Type::Named("Int".into(), Vec::new())),
+            mutable: true,
+            value: Expr::Int(0),
+        });
+        step_statements.push(Stmt::Let {
+            name: yielded_option_name.clone(),
+            ty: Some(Type::Named("Option".into(), vec![elem.clone()])),
+            mutable: true,
+            value: Expr::Ctor { name: "None".into(), args: Vec::new() },
+        });
+        for (phase, suffix) in [(1_i64, nested.then_suffix), (2_i64, nested.else_suffix)] {
+            let mut resume = suffix;
+            resume.extend(nested.outer_suffix.clone());
+            step_statements.push(Stmt::Expr(Expr::If {
+                cond: Box::new(Expr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(Expr::Var(resume_name.clone())),
+                    rhs: Box::new(Expr::Int(phase)),
+                }),
+                then_block: rewrite_owned_frame_returns(Block {
+                    stmts: resume,
+                    lines: Vec::new(),
+                    region: None,
+                })?,
+                else_block: None,
+            }));
+        }
+
+        let make_yielding_branch = |prefix: Vec<Stmt>, yielded: Expr, phase: i64| {
+            let mut statements = rewrite_owned_frame_returns(Block {
+                stmts: prefix,
+                lines: Vec::new(),
+                region: None,
+            })?
+            .stmts;
+            statements.push(Stmt::Assign {
+                name: yielded_option_name.clone(),
+                value: Expr::Ctor { name: "Some".into(), args: vec![yielded] },
+            });
+            statements.push(Stmt::Assign {
+                name: suspended_name.clone(),
+                value: Expr::Int(phase),
+            });
+            Ok::<Block, String>(Block { stmts: statements, lines: Vec::new(), region: None })
+        };
+        let mut loop_statements = rewrite_owned_frame_returns(Block {
+            stmts: nested.outer_prefix,
+            lines: Vec::new(),
+            region: None,
+        })?
+        .stmts;
+        loop_statements.push(Stmt::Expr(Expr::If {
+            cond: Box::new(nested.branch_condition),
+            then_block: make_yielding_branch(nested.then_prefix, nested.then_yielded, 1)?,
+            else_block: Some(make_yielding_branch(
+                nested.else_prefix,
+                nested.else_yielded,
+                2,
+            )?),
+        }));
+        step_statements.push(Stmt::Expr(Expr::While {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::And,
+                lhs: Box::new(cond.as_ref().clone()),
+                rhs: Box::new(Expr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(Expr::Var(suspended_name.clone())),
+                    rhs: Box::new(Expr::Int(0)),
+                }),
+            }),
+            body: Block { stmts: loop_statements, lines: Vec::new(), region: None },
+        }));
+        let mut next_frame_fields = bindings
+            .iter()
+            .map(|binding| Expr::Var(binding.name.clone()))
+            .collect::<Vec<_>>();
+        next_frame_fields.push(Expr::Var(suspended_name));
+        step_statements.push(Stmt::Expr(Expr::Match {
+            scrutinee: Box::new(Expr::Var(yielded_option_name)),
+            arms: vec![
+                MatchArm {
+                    line: 0,
+                    pattern: Pattern::Ctor {
+                        name: "Some".into(),
+                        args: vec![Pattern::Var(yielded_name.clone())],
+                    },
+                    guard: None,
+                    body: Expr::Ctor {
+                        name: "Some".into(),
+                        args: vec![Expr::Tuple(vec![
+                            Expr::Var(yielded_name),
+                            Expr::Tuple(next_frame_fields),
+                        ])],
+                    },
+                },
+                MatchArm {
+                    line: 0,
+                    pattern: Pattern::Ctor { name: "None".into(), args: Vec::new() },
+                    guard: None,
+                    body: Expr::Ctor { name: "None".into(), args: Vec::new() },
+                },
+            ],
         }));
     } else {
         let first_yield_index = yields[0];
@@ -1467,5 +1660,20 @@ mod target_availability_tests {
         let debug = format!("{:?}", lowered);
         assert!(!debug.contains("iter.from_gen"), "conditional yield must not replay: {debug}");
         assert!(debug.contains("__generator_resume_after_yield"));
+    }
+
+    #[test]
+    fn two_yielding_branches_record_the_resuming_branch() {
+        let module = crate::parser::parse_module(
+            "gen fn alternating() -> Iter(Int):\n    var i = 0\n    while i < 4:\n        if i % 2 == 0:\n            yield i\n            i = i + 1\n        else:\n            yield i + 10\n            i = i + 1\n",
+        )
+        .expect("parse branch-yield generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower branch-yield generator").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(!debug.contains("iter.from_gen"), "branch yields must not replay: {debug}");
+        assert!(debug.contains("__generator_resume_after_yield"));
+        assert!(debug.contains("__generator_yielded_option"));
+        assert!(debug.contains("Int(2)"), "the else branch needs a distinct resume phase: {debug}");
     }
 }
