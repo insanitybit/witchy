@@ -7,10 +7,7 @@
 
 use std::collections::HashSet;
 
-use foldhash::{HashMap, HashMapExt as _};
 use std::fmt;
-use std::hash::{Hash, Hasher};
-use std::sync::{Mutex, OnceLock};
 
 use witchy_syntax::ast::Module;
 use witchy_syntax::linker::{
@@ -274,41 +271,7 @@ fn link_checked_with(
     if let Some(module_owners) = &module_owners {
         module_owners.validate_module_names(linked.module_names.iter().cloned())?;
     }
-    check_linked_module_cached(&linked.module)?;
     Ok(CheckedModule { linked, module_owners })
-}
-
-/// Reuse successful checking for an unchanged linked unit during a development
-/// session. The linked AST is the invalidation boundary: any source, import,
-/// expansion, or generated-shape change produces a different key and runs the
-/// checker again. Failed checks are deliberately not cached so diagnostics
-/// never outlive the source that produced them.
-fn check_linked_module_cached(module: &Module) -> Result<(), TypeError> {
-    let fingerprint = format!("{module:?}");
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    fingerprint.hash(&mut hasher);
-    let key = hasher.finish();
-    let cache = linked_check_cache();
-    if cache
-        .lock()
-        .unwrap()
-        .get(&key)
-        .is_some_and(|cached| cached == &fingerprint)
-    {
-        return Ok(());
-    }
-    typeck::check(module)?;
-    let mut cache = cache.lock().unwrap();
-    if cache.len() >= 64 {
-        cache.clear();
-    }
-    cache.insert(key, fingerprint);
-    Ok(())
-}
-
-fn linked_check_cache() -> &'static Mutex<HashMap<u64, String>> {
-    static CACHE: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Link with the injected compile-time expander, then type-check the result.
@@ -415,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn checked_link_is_the_existing_link_then_check_sequence() {
+    fn checked_link_matches_the_legacy_lowered_projection() {
         let modules = vec![("main".to_string(), parse("fn main() -> Int:\n  1\n"))];
         let old = linker::link_with_mode_and_origins(
             modules.clone(),
@@ -441,6 +404,27 @@ mod tests {
         let into_linked = ["pub fn into_", "linked(self) -> LinkedModule"].concat();
         assert!(!source.contains(&into_module));
         assert!(!source.contains(&into_linked));
+    }
+
+    #[test]
+    fn checked_link_does_not_recheck_the_lowered_projection() {
+        let source = include_str!("pipeline.rs");
+        let checked_link = source
+            .split_once("fn link_checked_with(")
+            .expect("checked-link implementation exists")
+            .1
+            .split_once("/// Link with the injected compile-time expander")
+            .expect("checked-link implementation has a bounded source section")
+            .0;
+
+        assert!(
+            checked_link.contains("typeck::check_linked_source_semantics"),
+            "checked linking must retain the pre-lowering semantic proof"
+        );
+        assert!(
+            !checked_link.contains("typeck::check("),
+            "checked linking must not repeat semantic checking after destructive lowering"
+        );
     }
 
     #[test]

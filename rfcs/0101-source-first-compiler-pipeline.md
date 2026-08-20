@@ -3,7 +3,7 @@ rfc: 0101
 title: source-first compiler pipeline
 status: experimental
 created: 2026-07-20
-tracking: "active implementation: the complete expanded source graph is semantically proved before production destructive lowering, including comptime-emitted bodies; promotion still requires eliminating redundant post-lowering checking and sealing raw production Module sinks"
+tracking: "implementation complete: complete handwritten and comptime-emitted semantics are proved before destructive lowering, production execution/codegen sinks require proof, and promotion awaits the final backend and diagnostic-origin matrix"
 related:
   - "[0070](0070-0-1-blocking-set.md) (terminal 0.1 decision record and checked-module seam)"
   - "BUG-428 / BUG-429 / BUG-434 / BUG-436 (closed regression classes)"
@@ -27,9 +27,12 @@ builds the ordinary runtime projection on a clone, runs the existing type and
 trait checker, and only then permits the authoritative expanded source to enter
 generator, async, record, trait, and impl lowering. The same proof runs after
 compile-time expansion, so emitted bodies cannot join downstream of checking.
-The RFC remains experimental while production retains a redundant check of the
-lowered result and raw `Module` sinks remain available outside explicitly
-synthetic compiler paths.
+The proved runtime projection is the semantic result: production no longer
+rechecks the destructively lowered module. Interpreter construction is private,
+ordinary runtime and codegen entrypoints require `CheckedModule`, and the two
+compiler-generated Glamour executables cross their own private checked wrapper
+before backend lowering. Raw `Module` runners and lowerer entries remain
+available only behind the explicit test feature.
 
 Implemented evidence:
 
@@ -111,10 +114,17 @@ Implemented evidence:
 - The checked proof no longer implements `Clone` or exposes the redundant
   consuming `into_module`/`into_linked` accessors. Checked interpreter execution
   borrows the proof, while analysis and codegen retain a borrowed view of its
-  linked AST. This is API cleanup, not the final capability boundary: `Module`
-  remains cloneable, and raw lowerer/interpreter sinks retained for tests and
-  compiler-synthesized modules can still accept such a clone. Closing that path
-  requires relocating or sealing those sinks rather than another accessor name.
+  linked AST. The interpreter's direct constructor is compiled only for its
+  internal unit tests. Raw runner and lowerer functions are gated by
+  `raw-module-test-api`, which the production root dependency does not enable.
+- `link_checked_with` now returns the artifact established by
+  `check_linked_source_semantics` without rerunning `typeck::check` after source
+  destruction. `checked_link_does_not_recheck_the_lowered_projection` pins both
+  the pre-lowering callback and the absence of a post-lowering checker call.
+- Compiler-rewritten Glamour applications and generated adapters are combined,
+  semantically checked into a private `CheckedGeneratedModule`, and only then
+  passed to backend lowering. A focused negative test proves a type-invalid
+  generated body is rejected at that boundary rather than reaching codegen.
 
 ## Required contract
 
@@ -146,13 +156,12 @@ Implemented evidence:
 
 ## Remaining migration
 
-Complete semantics now precede production destructive lowering by checking an
-internal projection through the existing linker and checker. The production
-pipeline temporarily checks its final lowered result again; convergence should
-carry the proved projection or an equivalent semantic artifact through
-lowering so generated code is checked exactly once. Then remove or seal the
-remaining raw production `Module` entrypoints and promote the RFC only after
-backend and diagnostic-origin criteria are green.
+The implementation contract is closed. Promotion from experimental status still
+requires running the final interpreter/compiled-backend source-only regression
+matrix and the RFC-0080 diagnostic-origin matrix against one current-master
+candidate. The explicitly enabled raw test feature and compiler-internal
+synthetic-module checker are outside the production boundary and remain as test
+infrastructure.
 
 A labeled module call still requires its import to be present in parsed source;
 method labels remain rejected rather than being reinterpreted after an import

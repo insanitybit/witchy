@@ -1,5 +1,13 @@
     use super::*;
 
+    #[test]
+    fn raw_interpreter_constructor_is_test_only() {
+        let source = include_str!("interpreter.rs");
+        assert!(source.contains("#[cfg(test)]\n    fn new(module: Module)"));
+        assert!(!source.contains("pub(crate) fn new(module: Module)"));
+        assert!(!source.contains("pub fn new(module: Module)"));
+    }
+
     fn connect_loopback(addr: &str) -> std::net::TcpStream {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {

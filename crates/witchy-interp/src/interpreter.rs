@@ -801,7 +801,8 @@ impl Interpreter {
         }
     }
 
-    pub fn new(module: Module) -> Self {
+    #[cfg(test)]
+    fn new(module: Module) -> Self {
         Self::new_with_witnesses(module, WitnessPlan::default())
     }
 

@@ -2695,6 +2695,31 @@ fn assemble_optimized_wir_with_structs(
     assemble_optimized_wir_with_structs_mode(module, false, None, None, false)
 }
 
+/// A compiler-generated executable that has been checked after its final AST
+/// rewrite and before any backend pass can consume it. This stays private so a
+/// raw `Module` cannot impersonate the proof at a production codegen boundary.
+struct CheckedGeneratedModule {
+    module: Module,
+    runtime_catalog: Option<witchy_types::runtime_type::RuntimeDeclarationCatalog>,
+}
+
+impl CheckedGeneratedModule {
+    fn new(
+        authority: &witchy_types::pipeline::CheckedModule,
+        module: Module,
+    ) -> Result<Self, CodegenError> {
+        witchy_types::typeck::check(&module).map_err(|error| CodegenError {
+            message: format!(
+                "compiler-generated executable failed semantic checking before lowering: {error}"
+            ),
+        })?;
+        Ok(Self {
+            module,
+            runtime_catalog: authority.runtime_declaration_catalog().ok(),
+        })
+    }
+}
+
 fn assemble_optimized_wir_with_structs_mode(
     module: &Module,
     build_entrypoint: bool,
@@ -2778,8 +2803,16 @@ pub fn compile_checked_glamour_island_execution_binary(
     let mut module = application.clone();
     module.items.extend(generated.items.clone());
     module.item_lines.clear();
-    let runtime_catalog = checked.runtime_declaration_catalog().ok();
-    compile_module_binary_mode(&module, false, runtime_catalog.as_ref(), None)
+    let generated = match CheckedGeneratedModule::new(checked, module) {
+        Ok(generated) => generated,
+        Err(error) => return LoweringOutcome::Rejected(error),
+    };
+    compile_module_binary_mode(
+        &generated.module,
+        false,
+        generated.runtime_catalog.as_ref(),
+        None,
+    )
 }
 
 pub fn compile_checked_development_module(
@@ -2799,11 +2832,26 @@ pub fn compile_checked_development_module(
         },
         None => None,
     };
-    let runtime_catalog = checked.runtime_declaration_catalog().ok();
+    let checked_generated = match generated_module {
+        Some(module) => match CheckedGeneratedModule::new(checked, module) {
+            Ok(generated) => Some(generated),
+            Err(error) => return LoweringOutcome::Rejected(error),
+        },
+        None => None,
+    };
+    let module = checked_generated
+        .as_ref()
+        .map(|generated| &generated.module)
+        .unwrap_or_else(|| checked.module());
+    let checked_runtime_catalog = checked.runtime_declaration_catalog().ok();
+    let runtime_catalog = checked_generated
+        .as_ref()
+        .and_then(|generated| generated.runtime_catalog.as_ref())
+        .or(checked_runtime_catalog.as_ref());
     match compile_module_binary_with_source_map_mode(
-        generated_module.as_ref().unwrap_or_else(|| checked.module()),
+        module,
         false,
-        runtime_catalog.as_ref(),
+        runtime_catalog,
         metadata.as_ref(),
         true,
     ) {
@@ -6332,6 +6380,43 @@ mod checked_codegen_boundary_tests {
         .expect_err("type-invalid source must stop before checked codegen");
 
         assert!(error.to_string().contains("expected `Int`"), "{error}");
+    }
+
+    #[test]
+    fn compiler_generated_executable_is_checked_before_lowering() {
+        let checked = authenticated_checked("fn main() -> Int:\n    7\n");
+        let empty = witchy_syntax::parser::parse_module("")
+            .expect("parse empty generated executable");
+        assert!(
+            matches!(
+                compile_checked_glamour_island_execution_binary(
+                    &checked,
+                    checked.module(),
+                    &empty,
+                ),
+                LoweringOutcome::Lowered(_)
+            ),
+            "a semantically valid generated executable must cross the private proof"
+        );
+        let generated = witchy_syntax::parser::parse_module(
+            "fn generated() -> Int:\n    \"not an int\"\n",
+        )
+        .expect("parse invalid generated executable");
+
+        let error = compile_checked_glamour_island_execution_binary(
+            &checked,
+            checked.module(),
+            &generated,
+        )
+        .expect_rejected("generated type errors must stop before backend lowering");
+
+        assert!(
+            error.message.contains(
+                "compiler-generated executable failed semantic checking before lowering"
+            ),
+            "{error}"
+        );
+        assert!(error.message.contains("expected `Int`"), "{error}");
     }
 }
 
