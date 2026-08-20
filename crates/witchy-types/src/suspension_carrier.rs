@@ -305,9 +305,10 @@ mod tests {
         assert_eq!(catalog.states().iter().map(|state| state.id).collect::<Vec<_>>(), [0, 1]);
         assert!(catalog.is_wholly_flat_scalar());
         assert_eq!(catalog.max_lane_width(), 2);
-        assert_eq!(catalog.states()[0].kind, CarrierStateKind::Segment);
-        assert_eq!(catalog.states()[0].slots[0].convention, Convention::Own);
-        assert_eq!(catalog.states()[0].slots[0].lanes, Some(vec![CarrierLane::I64]));
+        assert_eq!(catalog.states()[0].kind, CarrierStateKind::Entry);
+        assert_eq!(catalog.states()[1].kind, CarrierStateKind::Segment);
+        assert_eq!(catalog.states()[1].slots[0].convention, Convention::Own);
+        assert_eq!(catalog.states()[1].slots[0].lanes, Some(vec![CarrierLane::I64]));
         assert_eq!(catalog.canonical_bytes()[0], 1);
         assert_eq!(catalog.canonical_bytes(), catalog.canonical_bytes());
     }
