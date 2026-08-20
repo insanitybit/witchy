@@ -19,8 +19,9 @@
 // on the whole program. The typed channel endpoints (`Sender(m)`/`Receiver(m)`
 // in `std/chan`) erase a message on `send` and recover it on `recv`. Compiled
 // WebAssembly carries one typed GC envelope with separate i32, i64, f64,
-// externref, and erased structref fields; the checked endpoint type selects the
-// field to recover. That keeps heterogeneous scalars and direct references in one
+// externref, and erased anyref fields; anyref carries either a GC struct or GC
+// array, and the checked endpoint type selects the field to recover. That keeps
+// heterogeneous scalars and direct references in one
 // scheduler ABI without bit-casting references through an integer slot. Erasure
 // is observationally invisible, so interleavings stay byte-identical. Spawned
 // tasks return `Nil`; a task reports a result by sending it on a channel, not by

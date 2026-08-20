@@ -50,7 +50,9 @@ join behavior rather than merely final values.
 The scheduler remains monomorphic over the opaque `__Msg`, while checked
 `Sender(T)` and `Receiver(T)` endpoints retain the message type. On compiled
 WebAssembly, `__Msg` is one GC envelope with i32, i64, f64, externref, and
-erased structref fields. `send` writes the field matching its checked `T`, and
+erased anyref fields. The anyref field carries either a GC struct or GC array,
+so reference-bearing aggregates and lists share the same scheduler ABI without
+an integer bit-cast. `send` writes the field matching its checked `T`, and
 `recv` statically selects that field and casts an erased structural reference
 back to its known GC type.
 

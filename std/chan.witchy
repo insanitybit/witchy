@@ -12,9 +12,10 @@
 // executor is ERASED: its effects and buffers carry the opaque `__Msg`; the
 // typed endpoints erase a message on `send` and recover it on `recv`. Compiled
 // WebAssembly represents `__Msg` as one typed GC envelope whose i32, i64, f64,
-// externref, and erased structref fields preserve the message's physical kind;
-// the checked endpoint type selects the field to recover. No reference is
-// bit-cast through an integer slot. Erasure remains observationally invisible,
+// externref, and erased anyref fields preserve the message's physical kind;
+// anyref carries either a GC struct or GC array, and the checked endpoint type
+// selects the field to recover. No reference is bit-cast through an integer
+// slot. Erasure remains observationally invisible,
 // so interleavings stay byte-identical. Spawned tasks return
 // `Nil`; a task reports a result by sending it on a channel, not by returning it (a
 // typed `JoinHandle(T)` would force a native runtime and break the parity
