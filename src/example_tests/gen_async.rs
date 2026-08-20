@@ -32,6 +32,79 @@ use crate::{interpreter, parser};
         );
     }
 
+    /// The flagship Collatz generator yields once before its terminal loop.
+    /// The seed expression's effect proves that later pulls resume the frame
+    /// instead of replaying that accepted prefix.
+    #[test]
+    fn generator_collatz_prefix_yield_effect_runs_exactly_once_on_both_backends() {
+        let src = r#"import iter
+
+fn observed_seed(console: Console, value: Int) -> Int:
+    console.print("seed ${value}")
+    value
+
+gen fn collatz(console: Console, start: Int) -> Iter(Int):
+    var n = start
+    yield observed_seed(console, n)
+    while n > 1:
+        if n % 2 == 0:
+            n = n / 2
+        else:
+            n = 3 * n + 1
+        yield n
+
+fn main(console: Console):
+    let values: List(Int) = iter.collect(collatz(console, 6))
+    console.print("${values}")
+"#;
+        let expected = ["seed 6", "[6, 3, 10, 5, 16, 8, 4, 2, 1]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
+    /// Finite owned frames remain lazy, carry locals introduced between yields,
+    /// infer ordinary arithmetic state, and cannot capture source identifiers
+    /// that deliberately resemble compiler-generated names.
+    #[test]
+    fn generator_finite_frame_is_lazy_hygienic_and_carries_phase_locals() {
+        let src = r#"import iter
+
+fn mark(console: Console) -> Int:
+    console.print("init")
+    1
+
+gen fn values(
+    console: Console,
+    once: Bool,
+    resume_after_yield: Int,
+    frame: Int,
+) -> Iter(Int):
+    let marked: Int = mark(console)
+    var seed = marked + resume_after_yield + frame
+    yield seed
+    let x: Int = 2
+    yield x
+    yield x + 1
+
+fn main(console: Console):
+    let unused = values(console, false, 6, 1)
+    console.print("made")
+    let result: List(Int) = iter.collect(values(console, false, 6, 1))
+    console.print("${result}")
+"#;
+        let expected = ["made", "init", "[8, 2, 3]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.
@@ -206,14 +279,49 @@ fn main(console: Console):
         );
     }
 
-    /// A `gen fn` lowers to a `__gen_*` helper (yield -> counter + early return)
-    /// plus a wrapper calling `iter.from_gen`, and `import iter` is injected.
+    /// A finite `gen fn` lowers to an owned `__gen_*` resume helper plus an
+    /// `iter.unfold` entry wrapper, and `import iter` is injected.
     #[test]
     fn gen_fn_lowers_to_helper_and_wrapper() {
         let m = parser::parse_module("gen fn nums() -> Iter(Int):\n    yield 1\n    yield 2\n")
             .expect("parse");
         let checked = witchy_syntax::source_check::check(m).expect("source check");
         let lowered = witchy_syntax::generators::lower(checked).expect("lower");
+        let lowered_debug = format!("{:?}", lowered.module());
+        let wrapper = lowered
+            .module()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::ast::Item::Function(function) if function.name == "nums" => Some(function),
+                _ => None,
+            })
+            .expect("finite generator entry wrapper");
+        let helper = lowered
+            .module()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::ast::Item::Function(function) if function.name == "__gen_nums" => {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("finite generator resume helper");
+        assert!(wrapper
+            .attributes
+            .iter()
+            .any(|attribute| attribute == witchy_syntax::suspension::FRAME_ENTRY_ATTRIBUTE));
+        assert!(helper
+            .attributes
+            .iter()
+            .any(|attribute| attribute == witchy_syntax::suspension::FRAME_FUNCTION_ATTRIBUTE));
+        assert!([wrapper, helper].iter().all(|function| !function
+            .attributes
+            .iter()
+            .any(|attribute| attribute == witchy_syntax::suspension::FRAME_BOXED_ATTRIBUTE)));
+        assert!(lowered_debug.contains("iter.unfold"), "missing owned iterator entry: {lowered_debug}");
+        assert!(!lowered_debug.contains("iter.from_gen"), "finite generator selected replay: {lowered_debug}");
         let lowered = witchy_syntax::async_lower::lower(lowered).expect("lower async");
         let lowered = witchy_syntax::records::lower_lenient(lowered)
             .expect("finish source lowering")

@@ -8,26 +8,27 @@
 //!         yield i
 //!         i = i + 1
 //! ```
-//! becomes two plain functions. A loop whose yields are direct body statements
-//! gets an owned tuple frame advanced once per `iter.unfold` pull. Irregular
-//! control flow retains the compatibility helper below, which re-runs the body
-//! to the requested yield:
+//! becomes two plain functions. Each supported generator gets an owned tuple
+//! frame advanced once per `iter.unfold` pull:
 //! ```text
-//! fn __gen_count_up(n: Int, __target: Int) -> Option(Int):
-//!     var __i = 0
-//!     var i = n
-//!     while true:
-//!         if __i == __target:
-//!             return Some(i)
-//!         __i = __i + 1
+//! fn __gen_count_up(own frame: (Int, Int, Int)) -> Option((Int, (Int, Int, Int))):
+//!     let n = frame.0
+//!     var i = frame.1
+//!     let resume_phase = frame.2
+//!     if resume_phase == 1:
 //!         i = i + 1
-//!     None
+//!     if true:
+//!         Some((i, (n, i, 1)))
+//!     else:
+//!         None
 //! fn count_up(n: Int) -> Iter(Int):
-//!     iter.from_gen(fn(__t: Int): __gen_count_up(n, __t))
+//!     var i = n
+//!     iter.unfold((n, i, 0), __gen_count_up)
 //! ```
-//! Pulling element `k` re-runs the body to the `k`-th yield, so the body may use
-//! any control flow (including unbounded loops and mutable state across yields).
-//! Generators should be capability-free, since re-running repeats side effects.
+//! Each migrated shape resumes from its recorded phase. The isolated replay
+//! compatibility path remains only for accepted CFGs whose owned transitions
+//! are still being implemented; those shapes are not part of the promoted
+//! effect or complexity contract.
 
 use crate::ast::*;
 use crate::source_check::{GeneratorsLoweredModule, SourceCheckedModule};
@@ -305,6 +306,99 @@ fn iter_elem(ret: &Option<Type>) -> Option<Type> {
     }
 }
 
+/// One collision-free namespace for compiler-owned bindings in a generator.
+///
+/// AST bindings are still string-backed, so generated names must be hygienic by
+/// construction. Pick a prefix absent from every source binding and variable
+/// reference; all names derived from it are then unreachable from source text in
+/// this function, even when the user deliberately chooses an internal-looking
+/// identifier.
+#[derive(Clone)]
+struct GeneratorNames {
+    prefix: String,
+}
+
+impl GeneratorNames {
+    fn new(function: &Function, seed: usize) -> Self {
+        let mut used = std::collections::HashSet::new();
+        used.extend(function.params.iter().map(|parameter| parameter.name.clone()));
+        collect_direct_generator_names(&function.body, &mut used);
+        let _: Result<(), ()> = crate::ast::visit::visit_block(
+            &function.body,
+            &mut |expression| {
+                match expression {
+                    Expr::Var(name) => {
+                        used.insert(name.clone());
+                    }
+                    Expr::Lambda { params, .. } => {
+                        used.extend(params.iter().map(|parameter| parameter.name.clone()));
+                    }
+                    Expr::For { var, body, .. } => {
+                        used.insert(var.clone());
+                        collect_direct_generator_names(body, &mut used);
+                    }
+                    Expr::While { body, .. }
+                    | Expr::WhileLet { body, .. }
+                    | Expr::Block(body) => collect_direct_generator_names(body, &mut used),
+                    Expr::If { then_block, else_block, .. } => {
+                        collect_direct_generator_names(then_block, &mut used);
+                        if let Some(block) = else_block {
+                            collect_direct_generator_names(block, &mut used);
+                        }
+                    }
+                    Expr::Match { arms, .. } => {
+                        for arm in arms {
+                            let mut names = Vec::new();
+                            pattern_binds(&arm.pattern, &mut names);
+                            used.extend(names);
+                            if let Expr::Block(block) = &arm.body {
+                                collect_direct_generator_names(block, &mut used);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            },
+        );
+        let mut serial = seed;
+        loop {
+            let prefix = format!("__generator_internal_{serial}_");
+            if used.iter().all(|name| !name.starts_with(&prefix)) {
+                return Self { prefix };
+            }
+            serial += 1;
+        }
+    }
+
+    fn name(&self, suffix: &str) -> String {
+        format!("{}{suffix}", self.prefix)
+    }
+}
+
+fn collect_direct_generator_names(
+    block: &Block,
+    names: &mut std::collections::HashSet<String>,
+) {
+    for statement in &block.stmts {
+        match statement {
+            Stmt::Let { name, .. } | Stmt::Assign { name, .. } => {
+                names.insert(name.clone());
+            }
+            Stmt::LetPattern { pattern, .. } => {
+                let mut bound = Vec::new();
+                pattern_binds(pattern, &mut bound);
+                names.extend(bound);
+            }
+            Stmt::Yield(_)
+            | Stmt::Return(_)
+            | Stmt::Expr(_)
+            | Stmt::Break
+            | Stmt::Continue => {}
+        }
+    }
+}
+
 /// Lower one `gen fn` into (helper, wrapper). `method` is `Some` when `f` is a
 /// method of an inherent `impl`: the helper is then named per-type (so two types'
 /// same-named generators don't collide), its `self` receiver is typed to the impl
@@ -324,17 +418,34 @@ fn lower_gen(
         Some(ctx) => format!("__gen_{}_{}", ctx.type_name, f.name),
         None => format!("__gen_{}", f.name),
     };
+    let names = GeneratorNames::new(&f, entry_state);
+    let normalized = normalize_owned_generator(&f, &names);
     if let Some(lowered) = lower_owned_loop_frame(
-        &f,
+        &normalized,
         method,
         &helper_name,
         entry_state,
         resume_state,
+        &names,
     )? {
         return Ok(lowered);
     }
 
-    // Helper params: the original params plus `__target: Int`.
+    lower_replay_fallback(f, method, helper_name, entry_state, resume_state, elem)
+}
+
+/// Preserve the historical surface while an irregular CFG is migrated to the
+/// owned-frame state machine. This compatibility path is deliberately isolated
+/// so each new owned lowering removes callers from one place, and the final
+/// no-replay slice can delete this function without changing accepted syntax.
+fn lower_replay_fallback(
+    f: Function,
+    method: Option<&MethodCtx>,
+    helper_name: String,
+    entry_state: usize,
+    resume_state: usize,
+    elem: Option<Type>,
+) -> Result<(Function, Function), String> {
     let mut helper_params = f.params.clone();
     helper_params.push(Param {
         name: TARGET.to_string(),
@@ -342,26 +453,25 @@ fn lower_gen(
         convention: Convention::Let,
         default: None,
     });
-    // For an impl method the receiver `self` is unannotated after parsing (the
-    // trait/impl pass types it later, but that pass never sees this hoisted
-    // helper). Type it here to the implementing type so the helper checks.
-    if let Some(ctx) = method {
+    if let Some(context) = method {
         if let Some(first) = helper_params.first_mut() {
             if first.ty.is_none() {
-                first.ty = Some(ctx.self_ty.clone());
+                first.ty = Some(context.self_ty.clone());
             }
         }
     }
 
-    // Helper body: `var __i = 0` + the body with yields rewritten + final `None`.
-    let mut stmts = vec![Stmt::Let {
+    let mut statements = vec![Stmt::Let {
         name: COUNTER.to_string(),
         ty: None,
         mutable: true,
         value: Expr::Int(0),
     }];
-    stmts.extend(rewrite_block(f.body.clone(), &f.name, false)?.stmts);
-    stmts.push(Stmt::Expr(Expr::Ctor { name: "None".to_string(), args: vec![] }));
+    statements.extend(rewrite_block(f.body.clone(), &f.name, false)?.stmts);
+    statements.push(Stmt::Expr(Expr::Ctor {
+        name: "None".to_string(),
+        args: vec![],
+    }));
     let mut helper_attributes = f.attributes.clone();
     helper_attributes.push(crate::suspension::FRAME_FUNCTION_ATTRIBUTE.into());
     helper_attributes.push(crate::suspension::FRAME_BOXED_ATTRIBUTE.into());
@@ -373,20 +483,23 @@ fn lower_gen(
         attributes: helper_attributes,
         name: helper_name.clone(),
         params: helper_params,
-        ret: elem.as_ref().map(|a| Type::Named("Option".to_string(), vec![a.clone()])),
-        body: Block { stmts, lines: Vec::new(), region: None },
-        // A generic impl's helper is monomorphized through its bounds, exactly
-        // like the wrapper method (`traits::method_fn` re-applies `impl.bounds`).
-        bounds: method.map_or_else(|| f.bounds.clone(), |ctx| ctx.bounds.clone()),
+        ret: elem
+            .as_ref()
+            .map(|item| Type::Named("Option".to_string(), vec![item.clone()])),
+        body: Block {
+            stmts: statements,
+            lines: Vec::new(),
+            region: None,
+        },
+        bounds: method.map_or_else(|| f.bounds.clone(), |context| context.bounds.clone()),
         is_gen: false,
         is_async: false,
     };
 
-    // Wrapper: `f(params) -> Iter(a): iter.from_gen(fn(__t: Int): __gen_f(args, __t))`.
-    let forwarded: Vec<Expr> = f
+    let forwarded = f
         .params
         .iter()
-        .map(|p| Expr::Var(p.name.clone()))
+        .map(|parameter| Expr::Var(parameter.name.clone()))
         .chain(std::iter::once(Expr::Var(TARGET.to_string())))
         .collect();
     let thunk = Expr::Lambda {
@@ -397,7 +510,10 @@ fn lower_gen(
             default: None,
         }],
         body: Block {
-            stmts: vec![Stmt::Expr(Expr::Call { name: helper_name, args: forwarded })],
+            stmts: vec![Stmt::Expr(Expr::Call {
+                name: helper_name,
+                args: forwarded,
+            })],
             lines: vec![0],
             region: None,
         },
@@ -427,8 +543,235 @@ fn lower_gen(
         is_gen: false,
         is_async: false,
     };
-
     Ok((helper, wrapper))
+}
+
+/// Normalize accepted finite forms and the flagship seed-yield loop into the
+/// terminal-loop shapes handled by the owned frame lowerer. These synthetic
+/// bindings are part of the frame, so finishing a finite body cannot restart it.
+fn normalize_owned_generator(f: &Function, names: &GeneratorNames) -> Function {
+    if let Some(normalized) = normalize_prefix_yield_loop(f, names) {
+        return normalized;
+    }
+    if matches!(f.body.stmts.last(), Some(Stmt::Expr(Expr::While { .. } | Expr::WhileLet { .. }))) {
+        return f.clone();
+    }
+    if let Some(normalized) = normalize_finite_conditional_then_direct(f, names) {
+        return normalized;
+    }
+    if finite_body_uses_supported_yields(f) {
+        return normalize_finite_one_shot(f, names);
+    }
+    f.clone()
+}
+
+fn leading_initializers(statements: &[Stmt]) -> usize {
+    statements
+        .iter()
+        .take_while(|statement| matches!(statement, Stmt::Let { .. }))
+        .count()
+}
+
+fn finite_body_uses_supported_yields(f: &Function) -> bool {
+    let prelude_len = leading_initializers(&f.body.stmts);
+    let body = Block {
+        stmts: f.body.stmts[prelude_len..].to_vec(),
+        lines: Vec::new(),
+        region: None,
+    };
+    let direct_yields = body
+        .stmts
+        .iter()
+        .any(|statement| matches!(statement, Stmt::Yield(_)));
+    (direct_yields && !block_has_nested_yield(&body))
+        || (!direct_yields
+            && (single_nested_conditional_yield(&body).is_some()
+                || nested_branch_yields(&body).is_some()
+                || nested_match_yields(&body).is_some()))
+}
+
+fn normalize_finite_one_shot(f: &Function, names: &GeneratorNames) -> Function {
+    let once = names.name("once");
+    let prelude_len = leading_initializers(&f.body.stmts);
+    let mut statements = f.body.stmts[..prelude_len].to_vec();
+    statements.push(Stmt::Let {
+        name: once.clone(),
+        ty: Some(Type::Named("Bool".into(), Vec::new())),
+        mutable: true,
+        value: Expr::Bool(true),
+    });
+    let mut body = f.body.stmts[prelude_len..].to_vec();
+    body.push(Stmt::Assign {
+        name: once.clone(),
+        value: Expr::Bool(false),
+    });
+    statements.push(Stmt::Expr(Expr::While {
+        cond: Box::new(Expr::Var(once)),
+        body: Block { stmts: body, lines: Vec::new(), region: None },
+    }));
+    let mut normalized = f.clone();
+    normalized.body = Block { stmts: statements, lines: Vec::new(), region: None };
+    normalized
+}
+
+/// Normalize `if condition: yield first; yield second` into a two-branch loop.
+/// The stage assignment occurs before suspension, so resumption neither repeats
+/// the condition nor skips the direct tail yield.
+fn normalize_finite_conditional_then_direct(
+    f: &Function,
+    names: &GeneratorNames,
+) -> Option<Function> {
+    let finite_stage = names.name("finite_stage");
+    let prelude_len = leading_initializers(&f.body.stmts);
+    let executable = &f.body.stmts[prelude_len..];
+    let if_index = executable.iter().position(|statement| {
+        matches!(statement, Stmt::Expr(Expr::If { then_block, .. }) if block_has_any_yield(then_block))
+    })?;
+    if if_index != 0 {
+        return None;
+    }
+    let Stmt::Expr(Expr::If { cond, then_block, else_block }) = &executable[if_index] else {
+        return None;
+    };
+    let (then_prefix, then_yielded, then_suffix) = direct_yield_parts(then_block)?;
+    if else_block.as_ref().is_some_and(block_has_any_yield) {
+        return None;
+    }
+    let tail = &executable[if_index + 1..];
+    let tail_yields = tail
+        .iter()
+        .enumerate()
+        .filter_map(|(index, statement)| matches!(statement, Stmt::Yield(_)).then_some(index))
+        .collect::<Vec<_>>();
+    let [tail_yield_index] = tail_yields.as_slice() else { return None };
+    let tail_block = Block { stmts: tail.to_vec(), lines: Vec::new(), region: None };
+    if block_has_nested_yield(&tail_block) {
+        return None;
+    }
+    let Stmt::Yield(tail_yielded) = &tail[*tail_yield_index] else { unreachable!() };
+
+    let mut then_statements = then_prefix;
+    then_statements.push(Stmt::Assign {
+        name: finite_stage.clone(),
+        value: Expr::Int(1),
+    });
+    then_statements.push(Stmt::Yield(then_yielded));
+    then_statements.extend(then_suffix);
+
+    let mut else_statements = Vec::new();
+    if let Some(first_else) = else_block {
+        else_statements.push(Stmt::Expr(Expr::If {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(Expr::Var(finite_stage.clone())),
+                rhs: Box::new(Expr::Int(0)),
+            }),
+            then_block: first_else.clone(),
+            else_block: None,
+        }));
+    }
+    else_statements.push(Stmt::Assign {
+        name: finite_stage.clone(),
+        value: Expr::Int(2),
+    });
+    else_statements.extend(tail[..*tail_yield_index].iter().cloned());
+    else_statements.push(Stmt::Yield(tail_yielded.clone()));
+    else_statements.extend(tail[*tail_yield_index + 1..].iter().cloned());
+
+    let mut statements = f.body.stmts[..prelude_len].to_vec();
+    statements.push(Stmt::Let {
+        name: finite_stage.clone(),
+        ty: Some(Type::Named("Int".into(), Vec::new())),
+        mutable: true,
+        value: Expr::Int(0),
+    });
+    statements.push(Stmt::Expr(Expr::While {
+        cond: Box::new(Expr::Binary {
+            op: BinOp::Lt,
+            lhs: Box::new(Expr::Var(finite_stage.clone())),
+            rhs: Box::new(Expr::Int(2)),
+        }),
+        body: Block {
+            stmts: vec![Stmt::Expr(Expr::If {
+                cond: Box::new(Expr::Binary {
+                    op: BinOp::And,
+                    lhs: Box::new(Expr::Binary {
+                        op: BinOp::Eq,
+                        lhs: Box::new(Expr::Var(finite_stage)),
+                        rhs: Box::new(Expr::Int(0)),
+                    }),
+                    rhs: cond.clone(),
+                }),
+                then_block: Block {
+                    stmts: then_statements,
+                    lines: Vec::new(),
+                    region: None,
+                },
+                else_block: Some(Block {
+                    stmts: else_statements,
+                    lines: Vec::new(),
+                    region: None,
+                }),
+            })],
+            lines: Vec::new(),
+            region: None,
+        },
+    }));
+    let mut normalized = f.clone();
+    normalized.body = Block { stmts: statements, lines: Vec::new(), region: None };
+    Some(normalized)
+}
+
+/// Normalize `yield seed; while condition: ... yield next` into a terminal loop
+/// with two directly yielding branches. This preserves Collatz's initial value
+/// while recording whether the seed branch has already run in the owned frame.
+fn normalize_prefix_yield_loop(f: &Function, names: &GeneratorNames) -> Option<Function> {
+    let once = names.name("once");
+    let (last, prefix) = f.body.stmts.split_last()?;
+    let Stmt::Expr(Expr::While { cond, body }) = last else { return None };
+    let (seed, initializers) = prefix.split_last()?;
+    let Stmt::Yield(seed) = seed else { return None };
+    if !initializers.iter().all(|statement| matches!(statement, Stmt::Let { .. }))
+        || direct_yield_parts(body).is_none()
+    {
+        return None;
+    }
+    let mut statements = initializers.to_vec();
+    statements.push(Stmt::Let {
+        name: once.clone(),
+        ty: Some(Type::Named("Bool".into(), Vec::new())),
+        mutable: true,
+        value: Expr::Bool(true),
+    });
+    statements.push(Stmt::Expr(Expr::While {
+        cond: Box::new(Expr::Binary {
+            op: BinOp::Or,
+            lhs: Box::new(Expr::Var(once.clone())),
+            rhs: cond.clone(),
+        }),
+        body: Block {
+            stmts: vec![Stmt::Expr(Expr::If {
+                cond: Box::new(Expr::Var(once.clone())),
+                then_block: Block {
+                    stmts: vec![
+                        Stmt::Assign {
+                            name: once,
+                            value: Expr::Bool(false),
+                        },
+                        Stmt::Yield(seed.clone()),
+                    ],
+                    lines: Vec::new(),
+                    region: None,
+                },
+                else_block: Some(body.clone()),
+            })],
+            lines: Vec::new(),
+            region: None,
+        },
+    }));
+    let mut normalized = f.clone();
+    normalized.body = Block { stmts: statements, lines: Vec::new(), region: None };
+    Some(normalized)
 }
 
 #[derive(Clone)]
@@ -436,6 +779,53 @@ struct GeneratorFrameBinding {
     name: String,
     ty: Type,
     mutable: bool,
+}
+
+#[derive(Clone)]
+struct DirectLoopLocal {
+    binding: GeneratorFrameBinding,
+    declaration_index: usize,
+}
+
+fn capture_frame_bindings(
+    bindings: &[GeneratorFrameBinding],
+    parameter_count: usize,
+) -> Vec<Expr> {
+    bindings
+        .iter()
+        .enumerate()
+        .map(|(index, binding)| {
+            let value = Expr::Var(binding.name.clone());
+            if index < parameter_count {
+                value
+            } else {
+                Expr::Ctor {
+                    name: "Some".into(),
+                    args: vec![value],
+                }
+            }
+        })
+        .collect()
+}
+
+fn initial_frame_bindings(
+    bindings: &[GeneratorFrameBinding],
+    parameter_count: usize,
+) -> Vec<Expr> {
+    bindings
+        .iter()
+        .enumerate()
+        .map(|(index, binding)| {
+            if index < parameter_count {
+                Expr::Var(binding.name.clone())
+            } else {
+                Expr::Ctor {
+                    name: "None".into(),
+                    args: Vec::new(),
+                }
+            }
+        })
+        .collect()
 }
 
 struct NestedConditionalYield {
@@ -599,8 +989,21 @@ fn nested_match_yields(body: &Block) -> Option<NestedMatchYields> {
                     .any(|binding| block_references_binding(&suffix_block, binding));
                 // Rebinding a selected arm can safely read a restored frame
                 // variable. An arbitrary scrutinee expression could repeat an
-                // effect, so those shapes retain the replay fallback.
+                // effect, so those shapes remain outside the supported owned
+                // frame boundary and receive a lowering diagnostic.
                 if rebind_on_resume && !matches!(scrutinee.as_ref(), Expr::Var(_)) {
+                    return None;
+                }
+                if rebind_on_resume
+                    && matches!(scrutinee.as_ref(), Expr::Var(name) if block_assigns_binding(
+                        &Block {
+                            stmts: prefix.clone(),
+                            lines: Vec::new(),
+                            region: None,
+                        },
+                        name,
+                    ))
+                {
                     return None;
                 }
                 Some(NestedMatchArmYield {
@@ -671,6 +1074,13 @@ fn single_nested_conditional_yield(body: &Block) -> Option<NestedConditionalYiel
         }
         let yield_index = direct_yields[0];
         let Stmt::Yield(yielded) = &then_block.stmts[yield_index] else { unreachable!() };
+        let then_prefix = then_block.stmts[..yield_index].to_vec();
+        let then_suffix = then_block.stmts[yield_index + 1..].to_vec();
+        if then_prefix.iter().any(|statement| matches!(statement, Stmt::LetPattern { .. }))
+            || !live_loop_local_bindings(&then_prefix, &then_suffix)?.is_empty()
+        {
+            continue;
+        }
         if found.is_some()
             || block_has_any_yield(&Block {
                 stmts: body.stmts[..outer_index].to_vec(),
@@ -689,8 +1099,8 @@ fn single_nested_conditional_yield(body: &Block) -> Option<NestedConditionalYiel
             outer_prefix: body.stmts[..outer_index].to_vec(),
             outer_suffix: body.stmts[outer_index + 1..].to_vec(),
             branch_condition: cond.as_ref().clone(),
-            then_prefix: then_block.stmts[..yield_index].to_vec(),
-            then_suffix: then_block.stmts[yield_index + 1..].to_vec(),
+            then_prefix,
+            then_suffix,
             yielded: yielded.clone(),
             else_block: else_block.clone(),
         });
@@ -724,14 +1134,57 @@ fn live_loop_local_bindings(before: &[Stmt], after: &[Stmt]) -> Option<Vec<Gener
     Some(live)
 }
 
-fn block_references_binding(block: &Block, name: &str) -> bool {
-    fn directly_assigns(block: &Block, name: &str) -> bool {
-        block.stmts.iter().any(|statement| {
-            matches!(statement, Stmt::Assign { name: assigned, .. } if assigned == name)
-        })
+/// Direct-body locals whose value crosses at least one suspension. The source
+/// position is retained so each phase restores and captures only locals that
+/// have actually been initialized at that point.
+fn direct_loop_live_locals(
+    body: &Block,
+    yields: &[usize],
+    entry_bindings: &[GeneratorFrameBinding],
+) -> Option<Vec<DirectLoopLocal>> {
+    let mut type_environment = entry_bindings.to_vec();
+    let mut live = Vec::new();
+    for (index, statement) in body.stmts.iter().enumerate() {
+        if matches!(statement, Stmt::LetPattern { .. }) {
+            return None;
+        }
+        let Stmt::Let {
+            name,
+            ty,
+            mutable,
+            value,
+        } = statement
+        else {
+            continue;
+        };
+        let inferred = ty
+            .clone()
+            .or_else(|| generator_frame_type_from_bindings(value, &type_environment))?;
+        let binding = GeneratorFrameBinding {
+            name: name.clone(),
+            ty: inferred,
+            mutable: *mutable,
+        };
+        if let Some(next_yield) = yields.iter().copied().find(|yield_index| *yield_index > index) {
+            let after = Block {
+                stmts: body.stmts[next_yield + 1..].to_vec(),
+                lines: Vec::new(),
+                region: None,
+            };
+            if block_references_binding(&after, name) {
+                live.push(DirectLoopLocal {
+                    binding: binding.clone(),
+                    declaration_index: index,
+                });
+            }
+        }
+        type_environment.push(binding);
     }
+    Some(live)
+}
 
-    if directly_assigns(block, name) {
+fn block_references_binding(block: &Block, name: &str) -> bool {
+    if block_assigns_binding(block, name) {
         return true;
     }
     let mut referenced = false;
@@ -739,6 +1192,19 @@ fn block_references_binding(block: &Block, name: &str) -> bool {
         if matches!(expression, Expr::Var(variable) if variable == name) {
             referenced = true;
         }
+        Ok(())
+    });
+    referenced
+}
+
+fn block_assigns_binding(block: &Block, name: &str) -> bool {
+    if block.stmts.iter().any(|statement| {
+        matches!(statement, Stmt::Assign { name: assigned, .. } if assigned == name)
+    }) {
+        return true;
+    }
+    let mut assigned = false;
+    let _: Result<(), ()> = crate::ast::visit::visit_block(block, &mut |expression| {
         let nested = match expression {
             Expr::If { then_block, else_block, .. } => {
                 let mut nested = vec![then_block];
@@ -759,22 +1225,28 @@ fn block_references_binding(block: &Block, name: &str) -> bool {
             | Expr::WhileLet { body: block, .. } => vec![block],
             _ => Vec::new(),
         };
-        if nested.into_iter().any(|block| directly_assigns(block, name)) {
-            referenced = true;
+        if nested.into_iter().any(|block| {
+            block.stmts.iter().any(|statement| {
+                matches!(statement, Stmt::Assign { name: nested_name, .. } if nested_name == name)
+            })
+        }) {
+            assigned = true;
         }
         Ok(())
     });
-    referenced
+    assigned
 }
 
-fn restore_live_loop_locals(
+fn restore_optional_bindings(
     frame_name: &str,
     frame_offset: usize,
-    live_locals: &[GeneratorFrameBinding],
+    bindings: &[GeneratorFrameBinding],
+    names: &GeneratorNames,
+    namespace: &str,
     mut body: Block,
 ) -> Block {
-    for (offset, binding) in live_locals.iter().enumerate().rev() {
-        let restored = format!("__generator_live_{offset}");
+    for (offset, binding) in bindings.iter().enumerate().rev() {
+        let restored = names.name(&format!("{namespace}_{offset}"));
         let mut resumed = vec![Stmt::Let {
             name: binding.name.clone(),
             ty: Some(binding.ty.clone()),
@@ -807,7 +1279,10 @@ fn restore_live_loop_locals(
                         pattern: Pattern::Ctor { name: "None".into(), args: Vec::new() },
                         guard: None,
                         body: Expr::Block(Block {
-                            stmts: Vec::new(),
+                            stmts: vec![Stmt::Return(Some(Expr::Ctor {
+                                name: "None".into(),
+                                args: Vec::new(),
+                            }))],
                             lines: Vec::new(),
                             region: None,
                         }),
@@ -819,6 +1294,97 @@ fn restore_live_loop_locals(
         };
     }
     body
+}
+
+fn restore_direct_loop_locals(
+    frame_name: &str,
+    frame_offset: usize,
+    locals: &[DirectLoopLocal],
+    initialized_before: usize,
+    names: &GeneratorNames,
+    mut body: Block,
+) -> Block {
+    for (offset, local) in locals.iter().enumerate().rev() {
+        if local.declaration_index >= initialized_before {
+            continue;
+        }
+        let binding = &local.binding;
+        let restored = names.name(&format!("direct_live_{offset}"));
+        let mut resumed = vec![Stmt::Let {
+            name: binding.name.clone(),
+            ty: Some(binding.ty.clone()),
+            mutable: binding.mutable,
+            value: Expr::Var(restored.clone()),
+        }];
+        resumed.append(&mut body.stmts);
+        body = Block {
+            stmts: vec![Stmt::Expr(Expr::Match {
+                scrutinee: Box::new(Expr::Field {
+                    base: Box::new(Expr::Var(frame_name.to_string())),
+                    field: (frame_offset + offset).to_string(),
+                }),
+                arms: vec![
+                    MatchArm {
+                        line: 0,
+                        pattern: Pattern::Ctor {
+                            name: "Some".into(),
+                            args: vec![Pattern::Var(restored)],
+                        },
+                        guard: None,
+                        body: Expr::Block(Block {
+                            stmts: resumed,
+                            lines: Vec::new(),
+                            region: None,
+                        }),
+                    },
+                    MatchArm {
+                        line: 0,
+                        pattern: Pattern::Ctor {
+                            name: "None".into(),
+                            args: Vec::new(),
+                        },
+                        guard: None,
+                        body: Expr::Block(Block {
+                            stmts: vec![Stmt::Return(Some(Expr::Ctor {
+                                name: "None".into(),
+                                args: Vec::new(),
+                            }))],
+                            lines: Vec::new(),
+                            region: None,
+                        }),
+                    },
+                ],
+            })],
+            lines: Vec::new(),
+            region: None,
+        };
+    }
+    body
+}
+
+fn capture_direct_loop_locals(
+    frame_name: &str,
+    frame_offset: usize,
+    locals: &[DirectLoopLocal],
+    initialized_before: usize,
+) -> Vec<Expr> {
+    locals
+        .iter()
+        .enumerate()
+        .map(|(offset, local)| {
+            if local.declaration_index < initialized_before {
+                Expr::Ctor {
+                    name: "Some".into(),
+                    args: vec![Expr::Var(local.binding.name.clone())],
+                }
+            } else {
+                Expr::Field {
+                    base: Box::new(Expr::Var(frame_name.to_string())),
+                    field: (frame_offset + offset).to_string(),
+                }
+            }
+        })
+        .collect()
 }
 
 /// Lower the common imperative generator shape to an actual one-pass owned
@@ -836,14 +1402,16 @@ fn restore_live_loop_locals(
 /// The frame is a fixed typed tuple of parameters, initialized locals, and an
 /// integer resume phase. One `iter.unfold` step restores those bindings,
 /// executes the statements after the previous yield only when resuming, and
-/// stops exactly at the next direct yield. More general CFGs retain the replay
-/// fallback until they are split into states.
+/// stops exactly at the next direct yield. Residual CFGs keep their existing
+/// surface through [`lower_replay_fallback`] until a later slice gives them the
+/// same owned transition contract.
 fn lower_owned_loop_frame(
     f: &Function,
     method: Option<&MethodCtx>,
     helper_name: &str,
     entry_state: usize,
     resume_state: usize,
+    names: &GeneratorNames,
 ) -> Result<Option<(Function, Function)>, String> {
     let Some(elem) = iter_elem(&f.ret) else { return Ok(None) };
     let Some((last, prelude)) = f.body.stmts.split_last() else { return Ok(None) };
@@ -942,10 +1510,14 @@ fn lower_owned_loop_frame(
             mutable: parameter.convention.binds_mutable(),
         });
     }
+    let parameter_count = bindings.len();
     let mut initializers = Vec::new();
     for statement in prelude {
         let Stmt::Let { name, ty, mutable, value } = statement else { return Ok(None) };
-        let Some(ty) = ty.clone().or_else(|| generator_frame_type(value)) else {
+        let Some(ty) = ty
+            .clone()
+            .or_else(|| generator_frame_type_from_bindings(value, &bindings))
+        else {
             return Ok(None);
         };
         bindings.push(GeneratorFrameBinding {
@@ -955,9 +1527,6 @@ fn lower_owned_loop_frame(
         });
         initializers.push(statement.clone());
     }
-    if bindings.is_empty() {
-        return Ok(None);
-    }
     if let Some(nested) = &nested_match
         && nested.arms.iter().any(|arm| arm.rebind_on_resume)
         && !matches!(&nested.scrutinee, Expr::Var(name) if bindings.iter().any(|binding| binding.name == *name))
@@ -965,21 +1534,28 @@ fn lower_owned_loop_frame(
         return Ok(None);
     }
 
-    let live_locals = if yields.len() == 1 {
-        let yield_index = yields[0];
-        let Some(live) = live_loop_local_bindings(
-            &body.stmts[..yield_index],
-            &body.stmts[yield_index + 1..],
-        ) else {
+    let direct_live_locals = if yields.is_empty() {
+        Vec::new()
+    } else {
+        let Some(live) = direct_loop_live_locals(body, &yields, &bindings) else {
             return Ok(None);
         };
         live
-    } else {
-        Vec::new()
     };
+    let live_locals = direct_live_locals
+        .iter()
+        .map(|local| local.binding.clone())
+        .collect::<Vec<_>>();
     let mut frame_fields = bindings
         .iter()
-        .map(|binding| binding.ty.clone())
+        .enumerate()
+        .map(|(index, binding)| {
+            if index < parameter_count {
+                binding.ty.clone()
+            } else {
+                Type::Named("Option".into(), vec![binding.ty.clone()])
+            }
+        })
         .collect::<Vec<_>>();
     frame_fields.extend(
         live_locals
@@ -988,11 +1564,11 @@ fn lower_owned_loop_frame(
     );
     frame_fields.push(Type::Named("Int".into(), Vec::new()));
     let frame_ty = Type::Tuple(frame_fields);
-    let frame_name = "__generator_frame".to_string();
-    let resume_name = "__generator_resume_after_yield".to_string();
-    let yielded_name = "__generator_yielded".to_string();
-    let suspended_name = "__generator_suspended".to_string();
-    let mut step_statements = bindings
+    let frame_name = names.name("frame");
+    let resume_name = names.name("resume_after_yield");
+    let yielded_name = names.name("yielded");
+    let suspended_name = names.name("suspended");
+    let mut step_statements = bindings[..parameter_count]
         .iter()
         .enumerate()
         .map(|(index, binding)| Stmt::Let {
@@ -1014,6 +1590,7 @@ fn lower_owned_loop_frame(
             field: (bindings.len() + live_locals.len()).to_string(),
         },
     });
+    let core_start = step_statements.len();
     if let Some(nested) = nested_conditional {
         step_statements.push(Stmt::Let {
             name: suspended_name.clone(),
@@ -1031,7 +1608,7 @@ fn lower_owned_loop_frame(
         step_statements.push(Stmt::Expr(Expr::If {
             cond: Box::new(Expr::Binary {
                 op: BinOp::Eq,
-                lhs: Box::new(Expr::Var(resume_name)),
+                lhs: Box::new(Expr::Var(resume_name.clone())),
                 rhs: Box::new(Expr::Int(1)),
             }),
             then_block: resume,
@@ -1095,10 +1672,7 @@ fn lower_owned_loop_frame(
                 region: None,
             },
         }));
-        let mut next_frame_fields = bindings
-            .iter()
-            .map(|binding| Expr::Var(binding.name.clone()))
-            .collect::<Vec<_>>();
+        let mut next_frame_fields = capture_frame_bindings(&bindings, parameter_count);
         next_frame_fields.push(Expr::Int(1));
         step_statements.push(Stmt::Expr(Expr::If {
             cond: Box::new(Expr::Var(suspended_name)),
@@ -1123,7 +1697,7 @@ fn lower_owned_loop_frame(
             }),
         }));
     } else if let Some(nested) = nested_branches {
-        let yielded_option_name = "__generator_yielded_option".to_string();
+        let yielded_option_name = names.name("yielded_option");
         step_statements.push(Stmt::Let {
             name: suspended_name.clone(),
             ty: Some(Type::Named("Int".into(), Vec::new())),
@@ -1198,10 +1772,7 @@ fn lower_owned_loop_frame(
             }),
             body: Block { stmts: loop_statements, lines: Vec::new(), region: None },
         }));
-        let mut next_frame_fields = bindings
-            .iter()
-            .map(|binding| Expr::Var(binding.name.clone()))
-            .collect::<Vec<_>>();
+        let mut next_frame_fields = capture_frame_bindings(&bindings, parameter_count);
         next_frame_fields.push(Expr::Var(suspended_name));
         step_statements.push(Stmt::Expr(Expr::Match {
             scrutinee: Box::new(Expr::Var(yielded_option_name)),
@@ -1230,7 +1801,7 @@ fn lower_owned_loop_frame(
             ],
         }));
     } else if let Some(nested) = nested_match {
-        let yielded_option_name = "__generator_yielded_option".to_string();
+        let yielded_option_name = names.name("yielded_option");
         step_statements.push(Stmt::Let {
             name: suspended_name.clone(),
             ty: Some(Type::Named("Int".into(), Vec::new())),
@@ -1352,10 +1923,7 @@ fn lower_owned_loop_frame(
             }),
             body: Block { stmts: loop_statements, lines: Vec::new(), region: None },
         }));
-        let mut next_frame_fields = bindings
-            .iter()
-            .map(|binding| Expr::Var(binding.name.clone()))
-            .collect::<Vec<_>>();
+        let mut next_frame_fields = capture_frame_bindings(&bindings, parameter_count);
         next_frame_fields.push(Expr::Var(suspended_name));
         step_statements.push(Stmt::Expr(Expr::Match {
             scrutinee: Box::new(Expr::Var(yielded_option_name)),
@@ -1386,26 +1954,53 @@ fn lower_owned_loop_frame(
     } else {
         let first_yield_index = yields[0];
         let Stmt::Yield(first_yielded) = &body.stmts[first_yield_index] else { unreachable!() };
+        step_statements.push(Stmt::Expr(Expr::If {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Or,
+                lhs: Box::new(Expr::Binary {
+                    op: BinOp::Lt,
+                    lhs: Box::new(Expr::Var(resume_name.clone())),
+                    rhs: Box::new(Expr::Int(0)),
+                }),
+                rhs: Box::new(Expr::Binary {
+                    op: BinOp::Gt,
+                    lhs: Box::new(Expr::Var(resume_name.clone())),
+                    rhs: Box::new(Expr::Int(yields.len() as i64)),
+                }),
+            }),
+            then_block: Block {
+                stmts: vec![Stmt::Return(Some(Expr::Ctor {
+                    name: "None".into(),
+                    args: Vec::new(),
+                }))],
+                lines: Vec::new(),
+                region: None,
+            },
+            else_block: None,
+        }));
         for (phase, window) in yields.windows(2).enumerate() {
             let previous_yield = window[0];
             let next_yield = window[1];
             let Stmt::Yield(yielded) = &body.stmts[next_yield] else { unreachable!() };
-            let mut resume = rewrite_owned_frame_returns(Block {
+            let resume = rewrite_owned_frame_returns(Block {
                 stmts: body.stmts[previous_yield + 1..next_yield].to_vec(),
                 lines: Vec::new(),
                 region: None,
-            })?
-            .stmts;
+            })?;
+            let mut resume = resume.stmts;
             resume.push(Stmt::Let {
                 name: yielded_name.clone(),
                 ty: Some(elem.clone()),
                 mutable: false,
                 value: yielded.clone(),
             });
-            let mut next_frame_fields = bindings
-                .iter()
-                .map(|binding| Expr::Var(binding.name.clone()))
-                .collect::<Vec<_>>();
+            let mut next_frame_fields = capture_frame_bindings(&bindings, parameter_count);
+            next_frame_fields.extend(capture_direct_loop_locals(
+                &frame_name,
+                bindings.len(),
+                &direct_live_locals,
+                next_yield,
+            ));
             next_frame_fields.push(Expr::Int((phase + 2) as i64));
             resume.push(Stmt::Return(Some(Expr::Ctor {
                 name: "Some".into(),
@@ -1414,13 +2009,21 @@ fn lower_owned_loop_frame(
                     Expr::Tuple(next_frame_fields),
                 ])],
             })));
+            let resume = restore_direct_loop_locals(
+                &frame_name,
+                bindings.len(),
+                &direct_live_locals,
+                previous_yield,
+                names,
+                Block { stmts: resume, lines: Vec::new(), region: None },
+            );
             step_statements.push(Stmt::Expr(Expr::If {
                 cond: Box::new(Expr::Binary {
                     op: BinOp::Eq,
                     lhs: Box::new(Expr::Var(resume_name.clone())),
                     rhs: Box::new(Expr::Int((phase + 1) as i64)),
                 }),
-                then_block: Block { stmts: resume, lines: Vec::new(), region: None },
+                then_block: resume,
                 else_block: None,
             }));
         }
@@ -1431,16 +2034,18 @@ fn lower_owned_loop_frame(
             lines: Vec::new(),
             region: None,
         })?;
-        let after = restore_live_loop_locals(
+        let after = restore_direct_loop_locals(
             &frame_name,
             bindings.len(),
-            &live_locals,
+            &direct_live_locals,
+            last_yield_index,
+            names,
             after,
         );
         step_statements.push(Stmt::Expr(Expr::If {
             cond: Box::new(Expr::Binary {
                 op: BinOp::Eq,
-                lhs: Box::new(Expr::Var(resume_name)),
+                lhs: Box::new(Expr::Var(resume_name.clone())),
                 rhs: Box::new(Expr::Int(yields.len() as i64)),
             }),
             then_block: after,
@@ -1459,14 +2064,13 @@ fn lower_owned_loop_frame(
             mutable: false,
             value: first_yielded.clone(),
         });
-        let mut next_frame_fields = bindings
-            .iter()
-            .map(|binding| Expr::Var(binding.name.clone()))
-            .collect::<Vec<_>>();
-        next_frame_fields.extend(live_locals.iter().map(|binding| Expr::Ctor {
-            name: "Some".into(),
-            args: vec![Expr::Var(binding.name.clone())],
-        }));
+        let mut next_frame_fields = capture_frame_bindings(&bindings, parameter_count);
+        next_frame_fields.extend(capture_direct_loop_locals(
+            &frame_name,
+            bindings.len(),
+            &direct_live_locals,
+            first_yield_index,
+        ));
         next_frame_fields.push(Expr::Int(1));
         let next_frame = Expr::Tuple(next_frame_fields);
         produce.push(Stmt::Expr(Expr::Ctor {
@@ -1483,6 +2087,35 @@ fn lower_owned_loop_frame(
             }),
         }));
     }
+
+    let core = Block {
+        stmts: step_statements.split_off(core_start),
+        lines: Vec::new(),
+        region: None,
+    };
+    let mut entry = initializers.clone();
+    entry.extend(core.stmts.clone());
+    let resumed = restore_optional_bindings(
+        &frame_name,
+        parameter_count,
+        &bindings[parameter_count..],
+        names,
+        "prelude",
+        core,
+    );
+    step_statements.push(Stmt::Expr(Expr::If {
+        cond: Box::new(Expr::Binary {
+            op: BinOp::Eq,
+            lhs: Box::new(Expr::Var(resume_name)),
+            rhs: Box::new(Expr::Int(0)),
+        }),
+        then_block: Block {
+            stmts: entry,
+            lines: Vec::new(),
+            region: None,
+        },
+        else_block: Some(resumed),
+    }));
 
     let mut helper_attributes = f.attributes.clone();
     helper_attributes.push(crate::suspension::FRAME_FUNCTION_ATTRIBUTE.into());
@@ -1509,14 +2142,12 @@ fn lower_owned_loop_frame(
         is_async: false,
     };
 
-    let mut wrapper_statements = initializers;
-    wrapper_statements.push(Stmt::Expr(Expr::Call {
+    let wrapper_statements = vec![Stmt::Expr(Expr::Call {
         name: "iter.unfold".into(),
         args: vec![
             Expr::Tuple(
-                bindings
-                    .iter()
-                    .map(|binding| Expr::Var(binding.name.clone()))
+                initial_frame_bindings(&bindings, parameter_count)
+                    .into_iter()
                     .chain(live_locals.iter().map(|_| Expr::Ctor {
                         name: "None".into(),
                         args: Vec::new(),
@@ -1526,7 +2157,7 @@ fn lower_owned_loop_frame(
             ),
             Expr::Var(helper_name.to_string()),
         ],
-    }));
+    })];
     let mut wrapper_attributes = f.attributes.clone();
     wrapper_attributes.push(crate::suspension::FRAME_ENTRY_ATTRIBUTE.into());
     wrapper_attributes.push(crate::suspension::frame_state_attribute(entry_state));
@@ -1568,6 +2199,70 @@ fn generator_frame_type(value: &Expr) -> Option<Type> {
                 .then(|| Type::Named("List".into(), vec![first]))
         }
         _ => None,
+    }
+}
+
+fn generator_frame_type_from_bindings(
+    value: &Expr,
+    bindings: &[GeneratorFrameBinding],
+) -> Option<Type> {
+    match value {
+        Expr::Var(name) => bindings
+            .iter()
+            .find(|binding| binding.name == *name)
+            .map(|binding| binding.ty.clone()),
+        Expr::Tuple(values) => Some(Type::Tuple(
+            values
+                .iter()
+                .map(|value| generator_frame_type_from_bindings(value, bindings))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Expr::List(values) => {
+            let first = generator_frame_type_from_bindings(values.first()?, bindings)?;
+            values
+                .iter()
+                .skip(1)
+                .all(|value| {
+                    generator_frame_type_from_bindings(value, bindings).as_ref()
+                        == Some(&first)
+                })
+                .then(|| Type::Named("List".into(), vec![first]))
+        }
+        Expr::Binary { op, lhs, rhs } => match op {
+            BinOp::Eq
+            | BinOp::NotEq
+            | BinOp::Lt
+            | BinOp::LtEq
+            | BinOp::Gt
+            | BinOp::GtEq
+            | BinOp::And
+            | BinOp::Or => Some(Type::Named("Bool".into(), Vec::new())),
+            BinOp::Coalesce => generator_frame_type_from_bindings(rhs, bindings),
+            BinOp::Add
+            | BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::Mod
+            | BinOp::Concat
+            | BinOp::BitAnd
+            | BinOp::BitOr
+            | BinOp::BitXor
+            | BinOp::Shl
+            | BinOp::Shr => {
+                let lhs = generator_frame_type_from_bindings(lhs, bindings)?;
+                let rhs = generator_frame_type_from_bindings(rhs, bindings)?;
+                (lhs == rhs).then_some(lhs)
+            }
+        },
+        Expr::Unary { op, expr } => match op {
+            UnOp::Not => Some(Type::Named("Bool".into(), Vec::new())),
+            UnOp::Neg | UnOp::BitNot | UnOp::Move => {
+                generator_frame_type_from_bindings(expr, bindings)
+            }
+            UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref | UnOp::Await => None,
+        },
+        Expr::As { ty, .. } => Some(ty.clone()),
+        _ => generator_frame_type(value),
     }
 }
 
@@ -1737,17 +2432,6 @@ fn rewrite_owned_frame_return_expr(expression: Expr) -> Result<Expr, String> {
     })
 }
 
-/// Replace each `yield e` with `if __i == __target: return Some(e)` followed by
-/// `__i = __i + 1`, recursing through the nested blocks of control-flow forms
-/// (but not into lambdas — `yield` belongs to the generator, not a closure).
-///
-/// User `return`s are re-expressed in terms of the generator's stream contract,
-/// NOT passed untranslated into the synthesized `-> Option(a)` helper:
-/// a bare `return` becomes the stream's end (`return None`), and `return <value>`
-/// is rejected against the declared `-> Iter(a)` signature (a generator produces
-/// its elements with `yield`, not by returning a scalar) — so the internal
-/// `Option(a)` protocol never leaks into a user diagnostic. `gen_name` is the
-/// generator's name, used only to phrase that rejection.
 fn rewrite_block(b: Block, gen_name: &str, in_region: bool) -> Result<Block, String> {
     let in_region = in_region || b.region.is_some();
     let mut out = Vec::with_capacity(b.stmts.len());
@@ -1786,32 +2470,24 @@ fn rewrite_block(b: Block, gen_name: &str, in_region: bool) -> Result<Block, Str
                     },
                 });
             }
-            Stmt::Let { name, ty, mutable, value } => {
-                out.push(Stmt::Let {
-                    name,
-                    ty,
-                    mutable,
-                    value: rewrite_expr(value, gen_name, in_region)?,
-                })
-            }
-            Stmt::Assign { name, value } => {
-                out.push(Stmt::Assign { name, value: rewrite_expr(value, gen_name, in_region)? })
-            }
-            Stmt::LetPattern { pattern, value } => {
-                out.push(Stmt::LetPattern {
-                    pattern,
-                    value: rewrite_expr(value, gen_name, in_region)?,
-                })
-            }
-            // A bare `return` ends the stream: it becomes the helper's `return None`.
+            Stmt::Let { name, ty, mutable, value } => out.push(Stmt::Let {
+                name,
+                ty,
+                mutable,
+                value: rewrite_expr(value, gen_name, in_region)?,
+            }),
+            Stmt::Assign { name, value } => out.push(Stmt::Assign {
+                name,
+                value: rewrite_expr(value, gen_name, in_region)?,
+            }),
+            Stmt::LetPattern { pattern, value } => out.push(Stmt::LetPattern {
+                pattern,
+                value: rewrite_expr(value, gen_name, in_region)?,
+            }),
             Stmt::Return(None) => out.push(Stmt::Return(Some(Expr::Ctor {
                 name: "None".to_string(),
                 args: vec![],
             }))),
-            // `return <value>` is not a valid generator statement: a `gen fn`
-            // declares `-> Iter(a)` and produces its elements with `yield`, so a
-            // returned scalar has nowhere to go. Reject it in the generator's own
-            // terms — never let it be typed against the synthesized `Option(a)`.
             Stmt::Return(Some(_)) => {
                 return Err(format!(
                     "`return <value>` is not allowed in generator `{gen_name}`: a `gen fn` \
@@ -1826,8 +2502,8 @@ fn rewrite_block(b: Block, gen_name: &str, in_region: bool) -> Result<Block, Str
     Ok(Block { stmts: out, lines: b.lines, region: b.region })
 }
 
-/// Rewrite the nested blocks of an expression's control-flow forms so yields
-/// inside `if`/`while`/`for`/`match`/block bodies are transformed too.
+/// Rewrite nested control-flow blocks for the compatibility fallback while
+/// their equivalent owned-frame lowering is migrated.
 fn rewrite_expr(e: Expr, gen_name: &str, in_region: bool) -> Result<Expr, String> {
     Ok(match e {
         Expr::If { cond, then_block, else_block } => Expr::If {
@@ -1844,11 +2520,7 @@ fn rewrite_expr(e: Expr, gen_name: &str, in_region: bool) -> Result<Expr, String
         Expr::For { var, iter, body } => {
             Expr::For { var, iter, body: rewrite_block(body, gen_name, in_region)? }
         }
-        Expr::WhileLet {
-            pattern,
-            scrutinee,
-            body,
-        } => Expr::WhileLet {
+        Expr::WhileLet { pattern, scrutinee, body } => Expr::WhileLet {
             pattern,
             scrutinee,
             body: rewrite_block(body, gen_name, in_region)?,
@@ -1918,10 +2590,111 @@ mod target_availability_tests {
             .any(|attribute| attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE));
         assert_eq!(crate::suspension::frame_state(wrapper), Some(0));
         assert_eq!(crate::suspension::frame_state(helper), Some(1));
-        assert!(generated.iter().all(|function| function
+        assert!(generated.iter().all(|function| !function
             .attributes
             .iter()
             .any(|attribute| attribute == crate::suspension::FRAME_BOXED_ATTRIBUTE)));
+        assert!(matches!(
+            wrapper.body.stmts.last(),
+            Some(Stmt::Expr(Expr::Call { name, .. })) if name == "iter.unfold"
+        ));
+    }
+
+    #[test]
+    fn finite_direct_yields_use_a_one_shot_owned_phase_frame() {
+        let module = crate::parser::parse_module(
+            "gen fn nums() -> Iter(Int):\n    yield 1\n    yield 2\n",
+        )
+        .expect("parse finite generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower finite generator").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(debug.contains("iter.unfold"), "finite generator needs an owned frame: {debug}");
+        assert!(!debug.contains("iter.from_gen"), "finite generator must not replay: {debug}");
+        assert!(debug.contains("once"), "finite frame must remember completion: {debug}");
+        assert!(debug.contains("Int(2)"), "second yield needs its own phase: {debug}");
+    }
+
+    #[test]
+    fn finite_conditional_then_direct_yield_uses_owned_phases() {
+        let module = crate::parser::parse_module(
+            "gen fn values() -> Iter(Int):\n    if true:\n        yield 1\n    yield 2\n",
+        )
+        .expect("parse finite conditional generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked)
+            .expect("lower finite conditional generator")
+            .into_module();
+        let debug = format!("{lowered:?}");
+        assert!(debug.contains("iter.unfold"), "conditional generator needs an owned frame: {debug}");
+        assert!(!debug.contains("iter.from_gen"), "conditional generator must not replay: {debug}");
+        assert!(debug.contains("finite_stage"), "conditional frame must record its stage: {debug}");
+    }
+
+    #[test]
+    fn prefix_yield_then_terminal_loop_uses_one_owned_frame() {
+        let module = crate::parser::parse_module(
+            "gen fn collatz(start: Int) -> Iter(Int):\n    var n = start\n    yield n\n    while n > 1:\n        if n % 2 == 0:\n            n = n / 2\n        else:\n            n = 3 * n + 1\n        yield n\n",
+        )
+        .expect("parse prefix-yield generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked)
+            .expect("lower prefix-yield generator")
+            .into_module();
+        let debug = format!("{lowered:?}");
+        assert!(debug.contains("iter.unfold"), "Collatz needs an owned frame: {debug}");
+        assert!(!debug.contains("iter.from_gen"), "Collatz must not replay its seed: {debug}");
+        assert!(debug.contains("once"), "Collatz must record whether the seed was yielded: {debug}");
+    }
+
+    #[test]
+    fn residual_generator_cfg_preserves_the_existing_surface_during_migration() {
+        let module = crate::parser::parse_module(
+            "gen fn values() -> Iter(Int):\n    for value in [1, 2]:\n        yield value\n",
+        )
+        .expect("parse for-yield generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked)
+            .expect("the owned-frame migration must not narrow accepted generator syntax")
+            .into_module();
+        let debug = format!("{lowered:?}");
+        assert!(debug.contains("iter.from_gen"), "the residual is removed only by its owned lowering: {debug}");
+    }
+
+    #[test]
+    fn pattern_local_crossing_a_yield_waits_for_pattern_frame_fields() {
+        let module = crate::parser::parse_module(
+            "gen fn values() -> Iter(Int):\n    var running = true\n    while running:\n        let (a, b) = (1, 2)\n        yield a\n        running = false\n        yield b\n",
+        )
+        .expect("parse pattern-local generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("preserve pattern-local generator").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(debug.contains("iter.from_gen"), "pattern locals need explicit frame fields: {debug}");
+    }
+
+    #[test]
+    fn conditional_local_crossing_a_yield_waits_for_branch_frame_fields() {
+        let module = crate::parser::parse_module(
+            "gen fn values() -> Iter(Int):\n    var running = true\n    while running:\n        if running:\n            let value = 7\n            yield value\n            running = false\n            let after = value\n",
+        )
+        .expect("parse branch-local generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("preserve branch-local generator").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(debug.contains("iter.from_gen"), "branch locals need explicit frame fields: {debug}");
+    }
+
+    #[test]
+    fn mutated_match_scrutinee_waits_for_pattern_binding_frame_fields() {
+        let module = crate::parser::parse_module(
+            "gen fn values() -> Iter(Int):\n    var current: Option(Int) = Some(1)\n    while true:\n        match current:\n            Some(value) ->\n                current = None\n                yield value\n                let after = value\n            None -> return\n",
+        )
+        .expect("parse mutated-match generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("preserve mutated-match generator").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(debug.contains("iter.from_gen"), "match bindings need explicit frame fields: {debug}");
     }
 
     #[test]
@@ -1971,7 +2744,7 @@ mod target_availability_tests {
         let lowered = lower(checked).expect("lower generator").into_module();
         let debug = format!("{:?}", lowered);
         assert!(!debug.contains("iter.from_gen"), "early return must not select replay: {debug}");
-        assert!(debug.contains("__generator_resume_after_yield"));
+        assert!(debug.contains("resume_after_yield"));
     }
 
     #[test]
@@ -1984,7 +2757,7 @@ mod target_availability_tests {
         let lowered = lower(checked).expect("lower generator").into_module();
         let debug = format!("{:?}", lowered);
         assert!(!debug.contains("iter.from_gen"), "direct yields must not replay: {debug}");
-        assert!(debug.contains("__generator_resume_after_yield"));
+        assert!(debug.contains("resume_after_yield"));
         assert!(debug.contains("Int(2)"), "second yield needs its own resume phase: {debug}");
     }
 
@@ -1998,7 +2771,7 @@ mod target_availability_tests {
         let lowered = lower(checked).expect("lower generator").into_module();
         let debug = format!("{:?}", lowered);
         assert!(!debug.contains("iter.from_gen"), "conditional yield must not replay: {debug}");
-        assert!(debug.contains("__generator_resume_after_yield"));
+        assert!(debug.contains("resume_after_yield"));
     }
 
     #[test]
@@ -2011,8 +2784,8 @@ mod target_availability_tests {
         let lowered = lower(checked).expect("lower branch-yield generator").into_module();
         let debug = format!("{lowered:?}");
         assert!(!debug.contains("iter.from_gen"), "branch yields must not replay: {debug}");
-        assert!(debug.contains("__generator_resume_after_yield"));
-        assert!(debug.contains("__generator_yielded_option"));
+        assert!(debug.contains("resume_after_yield"));
+        assert!(debug.contains("yielded_option"));
         assert!(debug.contains("Int(2)"), "the else branch needs a distinct resume phase: {debug}");
     }
 
@@ -2026,8 +2799,8 @@ mod target_availability_tests {
         let lowered = lower(checked).expect("lower match-yield generator").into_module();
         let debug = format!("{lowered:?}");
         assert!(!debug.contains("iter.from_gen"), "match-arm yields must not replay: {debug}");
-        assert!(debug.contains("__generator_resume_after_yield"));
-        assert!(debug.contains("__generator_yielded_option"));
+        assert!(debug.contains("resume_after_yield"));
+        assert!(debug.contains("yielded_option"));
         assert!(debug.contains("Int(2)"), "the second match arm needs its own phase: {debug}");
     }
 }
