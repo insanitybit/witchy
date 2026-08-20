@@ -371,10 +371,11 @@ fn decode_comptime_output(
         }
         match positioned.emission {
             crate::interpreter::ComptimeItemEmission::ModuleSyntax {
-                module,
+                mut module,
                 definition_line,
                 hole_ancestry,
             } => {
+                mark_typed_item_impls_compiler_generated(&mut module);
                 let mut module_origins = OriginTable::default();
                 record_emitted_items(
                     &mut module_origins,
@@ -388,10 +389,11 @@ fn decode_comptime_output(
                 append_unstamped_module(&mut emitted, &mut origins, *module, module_origins);
             }
             crate::interpreter::ComptimeItemEmission::Syntax {
-                item,
+                mut item,
                 definition_line,
                 hole_ancestry,
             } => {
+                mark_typed_item_impl_compiler_generated(item.as_mut());
                 let item_index = emitted.items.len();
                 emitted.items.push(*item);
                 emitted.item_lines.push(0);
@@ -408,6 +410,22 @@ fn decode_comptime_output(
         }
     }
     Ok((emitted, origins))
+}
+
+fn mark_typed_item_impls_compiler_generated(module: &mut Module) {
+    for item in &mut module.items {
+        mark_typed_item_impl_compiler_generated(item);
+    }
+}
+
+fn mark_typed_item_impl_compiler_generated(item: &mut Item) {
+    if let Item::Impl(implementation) = item {
+        // Both typed quotation and `meta.item(source)` arrive here only through
+        // the unspellable `emit_item` intrinsic. Preserve that compiler-owned
+        // boundary so source validation can distinguish generated private
+        // methods from user declarations.
+        implementation.origin = ImplOrigin::CompilerGenerated;
+    }
 }
 
 fn record_emitted_items(
@@ -827,7 +845,7 @@ fn strip_comptime_only_functions(name: &str, module: &mut Module, origins: &mut 
 
 #[cfg(test)]
 mod tests {
-    use witchy_syntax::ast::{Expr, Item, Stmt};
+    use witchy_syntax::ast::{Expr, ImplOrigin, Item, Stmt};
 
     #[test]
     fn derive_generated_origin_inherits_source_type_line() {
@@ -897,6 +915,67 @@ fn main(console: Console):
         ).expect("ordinary runtime link");
         assert_eq!(linked.module(), &ordinary, "origin collection must not alter backend AST");
         witchy_types::typeck::check(linked.module()).expect("typecheck unchanged runtime AST");
+    }
+
+    #[test]
+    fn typed_item_impl_retains_compiler_ownership() {
+        let src = r#"
+import meta
+
+type Point:
+    value: Int
+
+comptime fn build() -> ItemSyntax:
+    quote item:
+        impl Point:
+            fn projected(self) -> Int:
+                self.value
+
+comptime:
+    emit_item(build())
+"#;
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
+            .expect("typed impl links");
+        let implementation = linked
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Impl(implementation) => Some(implementation),
+                _ => None,
+            })
+            .expect("generated impl");
+
+        assert_eq!(implementation.origin, ImplOrigin::CompilerGenerated);
+    }
+
+    #[test]
+    fn parsed_typed_item_impl_retains_compiler_ownership() {
+        let src = r#"
+import meta
+
+type Point:
+    value: Int
+
+comptime fn build() -> ItemSyntax:
+    item("impl Point:\n    fn projected(self) -> Int:\n        self.value")
+
+comptime:
+    emit_item(build())
+"#;
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
+            .expect("parsed typed impl links");
+        let implementation = linked
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Impl(implementation) => Some(implementation),
+                _ => None,
+            })
+            .expect("generated impl");
+
+        assert_eq!(implementation.origin, ImplOrigin::CompilerGenerated);
     }
 
     #[test]

@@ -3830,8 +3830,14 @@ fn check_reserved_item(
                 return reserved_name_error(module_name, "type", &im.type_name);
             }
             for method in &im.methods {
-                let generated_method = is_synthetic_source_line(Some(method.line));
-                if is_reserved_user_identifier(&method.name) && !generated_method {
+                let generated_method = im.origin == ImplOrigin::CompilerGenerated;
+                if generated_method {
+                    // A typed `emit_item` owns the complete impl subtree. Its
+                    // private method, parameter, local, and intrinsic names are
+                    // compiler syntax rather than user-spellable declarations.
+                    continue;
+                }
+                if is_reserved_user_identifier(&method.name) {
                     return reserved_name_error(module_name, "method", &method.name);
                 }
                 check_reserved_function(module_name, method, generated_anon_types)?;
@@ -4623,7 +4629,7 @@ mod tests {
             panic!("fixture must contain an impl")
         };
         implementation.methods[0].name = "__dynamic_field".into();
-        implementation.methods[0].line = 0;
+        implementation.origin = ImplOrigin::CompilerGenerated;
 
         link(vec![("main".to_string(), module)], "main", noop_expand)
             .expect("compiler-generated private method survives source-name validation");
