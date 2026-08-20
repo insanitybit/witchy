@@ -35,6 +35,8 @@ mod url_components;
 mod async_contract;
 #[path = "misc/rfc0129_async_lowering.rs"]
 mod rfc0129_async_lowering;
+#[path = "misc/rfc0130_surface.rs"]
+mod rfc0130_surface;
 #[path = "misc/architecture.rs"]
 mod architecture;
 #[path = "misc/policy_sealing.rs"]

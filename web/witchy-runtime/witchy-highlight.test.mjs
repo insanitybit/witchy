@@ -17,6 +17,14 @@ ok(h1.includes('<span class="t-type">Console</span>'), "a Title-case name is a t
 ok(h1.includes('<span class="t-builtin">print</span>'), "`print` is a builtin");
 ok(h1.includes('<span class="t-str">'), "a string literal is coloured");
 
+// RFC-0130: generator declarations and yields are keywords, and highlighting is
+// lossless so an editor can round-trip the exact source text.
+const generator = "gen fn values() -> Iter(Int):\n    yield 1";
+const hGenerator = highlightWitchy(generator);
+ok(hGenerator.includes('<span class="t-kw">gen</span>'), "`gen` is a keyword");
+ok(hGenerator.includes('<span class="t-kw">yield</span>'), "`yield` is a keyword");
+ok(hGenerator.replace(/<[^>]+>/g, "") === escapeHtml(generator), "generator syntax reconstructs the escaped source exactly");
+
 // RFC-0122 explicit reference types keep the lifetime together and classify the
 // mutable access keyword. The highlighter must still reconstruct the source exactly.
 const reference = "fn edit(value: &'a mut String) -> &'a mut String:";

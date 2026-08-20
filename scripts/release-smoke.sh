@@ -214,11 +214,29 @@ printf '%s\n' \
     '' \
     '[dependencies]' > project/witchy.toml
 printf '%s\n' \
+    'import iter' \
+    '' \
+    'gen fn finite(limit: Int) -> Iter(Int):' \
+    '    var value = 0' \
+    '    while value < limit:' \
+    '        yield value' \
+    '        value = value + 1' \
+    '' \
+    'gen fn naturals() -> Iter(Int):' \
+    '    var value = 1' \
+    '    while true:' \
+    '        yield value' \
+    '        value = value + 1' \
+    '' \
     'pub fn answer() -> Int:' \
     '    42' \
     '' \
     'fn main(console: Console):' \
-    '    console.print("project:${answer()}")' > project/src/release_smoke.witchy
+    '    console.print("project:${answer()}")' \
+    '    let finite_values: List(Int) = iter.collect(finite(4))' \
+    '    console.print("finite:${finite_values}")' \
+    '    let bounded_infinite: List(Int) = iter.collect(naturals().take(5))' \
+    '    console.print("bounded-infinite:${bounded_infinite}")' > project/src/release_smoke.witchy
 printf '%s\n' \
     'import release_smoke' \
     'import testing' \
@@ -234,7 +252,23 @@ project_line="${project_output%%$'\n'*}"
     printf '%s\n' "$project_output" >&2
     exit 1
 }
-confinement_reports="${project_output#"$project_line"}"
+remaining="${project_output#"$project_line"}"
+remaining="${remaining#$'\n'}"
+finite_line="${remaining%%$'\n'*}"
+[ "$finite_line" = "finite:[0, 1, 2, 3]" ] || {
+    echo "release-smoke: installed finite generator produced unexpected output" >&2
+    printf '%s\n' "$project_output" >&2
+    exit 1
+}
+remaining="${remaining#"$finite_line"}"
+remaining="${remaining#$'\n'}"
+bounded_line="${remaining%%$'\n'*}"
+[ "$bounded_line" = "bounded-infinite:[1, 2, 3, 4, 5]" ] || {
+    echo "release-smoke: installed bounded-infinite generator produced unexpected output" >&2
+    printf '%s\n' "$project_output" >&2
+    exit 1
+}
+confinement_reports="${remaining#"$bounded_line"}"
 confinement_reports="${confinement_reports#$'\n'}"
 if [ -n "$confinement_reports" ]; then
     while IFS= read -r report; do

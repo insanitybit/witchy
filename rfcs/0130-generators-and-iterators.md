@@ -4,7 +4,7 @@ title: "Generators and the lazy iterator protocol"
 status: accepted
 created: 2026-08-19
 superseded-by:
-tracking: "Canonical generator RFC. Iter and gen syntax are shipped with parity, but the replay-to-kth-yield lowering is not the final core contract. Promotion requires an owned resumable frame or a statically enforced pure/replay-safe subset with an explicit complexity contract."
+tracking: "Canonical generator RFC. Acceptance rows 4, 6, and 7 are PROVEN by the source-diagnostic matrix, syntax/reflection/tooling preservation tests, and clean installed-archive generator smoke below. Rows 1-3 remain unadjudicated here: Iter and gen syntax are shipped with parity, but the replay-to-kth-yield lowering is not the final core contract. Promotion still requires an owned resumable frame or a statically enforced pure/replay-safe subset with an explicit complexity contract."
 predecessors:
   - "[0052](0052-one-pattern-grammar.md) (loop and binding patterns)"
   - "[0059](0059-state-machine-async.md) (shared resumable-state destination)"
@@ -94,3 +94,19 @@ Cancellation drops the owned frame and its captured values.
 6. Formatter, reflection, docs, and editor grammar preserve generator syntax.
 7. A clean installed example demonstrates a finite and bounded-infinite
    generator without relying on repository internals.
+
+### Acceptance evidence
+
+Rows 1-3 are intentionally not promoted by this surface slice. Their authority
+is the owned-frame implementation and complexity evidence, not the existence of
+generator syntax or examples.
+
+| row | status | executable evidence |
+| --- | --- | --- |
+| 1 mutation and control flow | UNADJUDICATED | Lowering work owns this row; the surface suite makes no completion claim. |
+| 2 one-time body segments and effects | UNADJUDICATED | Lowering/runtime work owns this row; the surface suite makes no completion claim. |
+| 3 linear pulls and bounded frame storage | UNADJUDICATED | Lowering/performance work owns this row; the surface suite makes no completion claim. |
+| 4 source diagnostics | **PROVEN** | `rfc0130_surface::rfc0130_row_4_generator_failures_name_source_syntax` covers returned values, yielded-value mismatch, borrowed frame/element types, region escape, unsupported trait syntax, and rejection of generated helper names. |
+| 5 adapters and collection parity | UNADJUDICATED | This slice does not reclassify the existing iterator parity corpus. |
+| 6 syntax preservation | **PROVEN** | `rfc0130_surface::rfc0130_row_6_formatter_reflection_docs_and_editor_surfaces_preserve_generators`, `web/witchy-runtime/witchy-highlight.test.mjs`, and the Zed extension's pinned Tree-sitter revision preserve `gen fn`/`yield` through formatting, AST and quoted-item reflection, generated docs, and editor highlighting. |
+| 7 clean installed example | **PROVEN** | `scripts/release-smoke.sh`, invoked by the release workflow on every supported native archive, creates a fresh project through the installed public CLI and executes both `finite(4)` and `naturals().take(5)` with an isolated HOME, cache, working directory, and PATH containing only the extracted toolchain. |

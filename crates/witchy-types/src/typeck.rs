@@ -3828,6 +3828,17 @@ fn starts_lowercase(segment: &str) -> bool {
 /// specializations such as `smallest__Int` are rendered as the original function.
 fn diagnostic_callable_name(name: &str) -> String {
     let name = cap_ops::surface_name(name);
+    // Generator helpers occupy the compiler-private `__gen_` namespace. The
+    // source checker has already reserved that spelling, so stripping it here
+    // cannot rename a user function. Keep type failures phrased against the
+    // `gen fn` declaration rather than exposing the replay/frame helper.
+    if let Some(source) = name
+        .rsplit('.')
+        .next()
+        .and_then(|local| local.strip_prefix("__gen_"))
+    {
+        return source.to_string();
+    }
     if !name.contains("__") {
         return name.to_string();
     }
