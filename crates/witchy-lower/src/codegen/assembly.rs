@@ -6428,6 +6428,34 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn compiled_generator_uses_the_same_typed_suspension_abi_section() {
+        let checked = authenticated_checked(
+            "import iter\n\ngen fn values(n: Int) -> Iter(Int):\n    yield n\n\nfn main() -> Int:\n    match iter.next(values(7)):\n        Item(value, _) -> value\n        Empty -> 0\n",
+        );
+        let bytes = compile_checked_module_binary(&checked)
+            .expect_lowered("compile typed generator-carrier fixture");
+        let sections = wasmparser::Parser::new(0)
+            .parse_all(&bytes)
+            .filter_map(|payload| match payload.expect("valid carrier Wasm") {
+                wasmparser::Payload::CustomSection(section)
+                    if section.name() == "witchy.suspension-carrier" =>
+                {
+                    Some(section.data().to_vec())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(sections.len(), 1, "generators use the shared carrier ABI");
+        assert_eq!(sections[0][0], 1, "carrier ABI version");
+        assert_eq!(
+            u32::from_le_bytes(sections[0][1..5].try_into().expect("state count")),
+            2,
+            "generator entry plus one resume helper",
+        );
+    }
+
+    #[test]
     fn dynamic_construction_rejects_a_transitive_capability_before_lowering() {
         let error = authenticated_checked_result(
             "import dynamic\nimport reflect\n\ntype Holder:\n    Holder(Console)\n\nimpl Reflect for Holder:\n    fn reflect(self) -> reflect.Mirror:\n        reflect.MNil\n\nfn main(console: Console) -> Int:\n    let value = dynamic.dynamic(Holder(console))\n    0\n",

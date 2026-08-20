@@ -66,12 +66,13 @@ pub fn lower(mut checked: SourceCheckedModule) -> Result<GeneratorsLoweredModule
     }
     let module = checked.module_mut();
     let mut items = Vec::with_capacity(module.items.len() + 1);
+    let mut state_counter = 0usize;
     for item in std::mem::take(&mut module.items) {
         match item {
             Item::Function(f) if f.is_gen => {
-                let (helper, wrapper) = lower_gen(f, None)?;
-                items.push(Item::Function(helper));
+                let (helper, wrapper) = lower_gen(f, None, &mut state_counter)?;
                 items.push(Item::Function(wrapper));
+                items.push(Item::Function(helper));
             }
             // A `gen fn` METHOD in an inherent `impl Type:` block lowers exactly
             // like a top-level one, but its wrapper STAYS a method (so
@@ -91,7 +92,8 @@ pub fn lower(mut checked: SourceCheckedModule) -> Result<GeneratorsLoweredModule
                 let mut methods = Vec::with_capacity(im.methods.len());
                 for method in std::mem::take(&mut im.methods) {
                     if method.is_gen {
-                        let (helper, wrapper) = lower_gen(method, Some(&ctx))?;
+                        let (helper, wrapper) =
+                            lower_gen(method, Some(&ctx), &mut state_counter)?;
                         items.push(Item::Function(helper));
                         methods.push(wrapper);
                     } else {
@@ -304,8 +306,16 @@ fn iter_elem(ret: &Option<Type>) -> Option<Type> {
 /// same-named generators don't collide), its `self` receiver is typed to the impl
 /// type, and it carries the impl's bounds — while the wrapper is returned to be
 /// re-inserted into `impl.methods`, preserving method identity.
-fn lower_gen(f: Function, method: Option<&MethodCtx>) -> Result<(Function, Function), String> {
+fn lower_gen(
+    f: Function,
+    method: Option<&MethodCtx>,
+    state_counter: &mut usize,
+) -> Result<(Function, Function), String> {
     let elem = iter_elem(&f.ret);
+    let entry_state = *state_counter;
+    *state_counter += 1;
+    let resume_state = *state_counter;
+    *state_counter += 1;
     let helper_name = match method {
         Some(ctx) => format!("__gen_{}_{}", ctx.type_name, f.name),
         None => format!("__gen_{}", f.name),
@@ -339,11 +349,14 @@ fn lower_gen(f: Function, method: Option<&MethodCtx>) -> Result<(Function, Funct
     }];
     stmts.extend(rewrite_block(f.body.clone(), &f.name, false)?.stmts);
     stmts.push(Stmt::Expr(Expr::Ctor { name: "None".to_string(), args: vec![] }));
+    let mut helper_attributes = f.attributes.clone();
+    helper_attributes.push(crate::suspension::FRAME_FUNCTION_ATTRIBUTE.into());
+    helper_attributes.push(crate::suspension::frame_state_attribute(resume_state));
     let helper = Function {
         line: f.line,
         public: false,
         comptime_only: false,
-        attributes: f.attributes.clone(),
+        attributes: helper_attributes,
         name: helper_name.clone(),
         params: helper_params,
         ret: elem.as_ref().map(|a| Type::Named("Option".to_string(), vec![a.clone()])),
@@ -376,11 +389,14 @@ fn lower_gen(f: Function, method: Option<&MethodCtx>) -> Result<(Function, Funct
         },
         ret: None,
     };
+    let mut wrapper_attributes = f.attributes;
+    wrapper_attributes.push(crate::suspension::FRAME_ENTRY_ATTRIBUTE.into());
+    wrapper_attributes.push(crate::suspension::frame_state_attribute(entry_state));
     let wrapper = Function {
         line: f.line,
         public: f.public,
         comptime_only: false,
-        attributes: f.attributes,
+        attributes: wrapper_attributes,
         name: f.name,
         params: f.params,
         ret: f.ret,
@@ -550,8 +566,27 @@ mod target_availability_tests {
             })
             .collect();
         assert_eq!(generated.len(), 2);
-        assert!(generated
+        assert!(generated.iter().all(|function| {
+            function.attributes.iter().any(|attribute| attribute == "browser")
+                && crate::suspension::frame_state(function).is_some()
+        }));
+        let wrapper = generated
             .iter()
-            .all(|function| function.attributes == ["browser"]));
+            .find(|function| function.name == "browser_values")
+            .expect("generator wrapper");
+        assert!(wrapper
+            .attributes
+            .iter()
+            .any(|attribute| attribute == crate::suspension::FRAME_ENTRY_ATTRIBUTE));
+        let helper = generated
+            .iter()
+            .find(|function| function.name == "__gen_browser_values")
+            .expect("generator resume helper");
+        assert!(helper
+            .attributes
+            .iter()
+            .any(|attribute| attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE));
+        assert_eq!(crate::suspension::frame_state(wrapper), Some(0));
+        assert_eq!(crate::suspension::frame_state(helper), Some(1));
     }
 }
