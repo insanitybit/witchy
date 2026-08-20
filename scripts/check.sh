@@ -163,7 +163,8 @@ esac
 # changed path is documentation that NO test or gate stage reads (rfcs/ minus
 # rfcs/performance-modes.md — which example_tests::
 # public_sources_do_not_call_legacy_render_intrinsic reads — wiki/, bugs/,
-# and the gitignored scratch//security-eval/):
+# docs/ (agent playbook; example_tests walks README/CONTRIBUTING/spec/book
+# only), and the gitignored scratch//security-eval/):
 # such a diff cannot change any gate stage's outcome, so the heavy stages
 # would only re-validate the already-gated master tree. The default merge-gate
 # mode skips them; post-merge CI still runs the complete suite as the

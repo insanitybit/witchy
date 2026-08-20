@@ -195,6 +195,81 @@ fn gate_nextest_lower_only_does_not_attach_wir_or_runtime() {
 }
 
 #[test]
+fn gate_nextest_crate_plus_integration_test_unions_without_workspace() {
+    let output = gate_nextest(&[
+        "crates/witchy-lower/src/codegen/builtins.rs",
+        "tests/rfc0122.rs",
+    ]);
+    assert!(
+        output.contains("-p witchy-lower"),
+        "crate+integration mapping dropped the crate: {output}",
+    );
+    assert!(
+        output.contains("binary(rfc0122)") || output.contains("--test rfc0122"),
+        "crate+integration mapping dropped the integration test: {output}",
+    );
+    assert!(
+        !output.contains("WORKSPACE") && !output.contains("--workspace"),
+        "crate+integration mapping fell back to the full workspace: {output}",
+    );
+}
+
+#[test]
+fn gate_nextest_src_commands_web_is_not_workspace() {
+    let output = gate_nextest(&["src/commands/web/tests.rs"]);
+    assert!(
+        output.contains("commands::web"),
+        "src/commands/web mapping did not select commands::web tests: {output}",
+    );
+    assert!(
+        !output.contains("WORKSPACE") && !output.contains("--workspace"),
+        "src/commands/web mapping fell back to the full workspace: {output}",
+    );
+}
+
+#[test]
+fn gate_nextest_spec_language_is_not_workspace() {
+    let output = gate_nextest(&["spec/language.md"]);
+    assert!(
+        output.contains("documentation_examples_are_valid"),
+        "spec/language.md mapping did not select the documentation sweep: {output}",
+    );
+    assert!(
+        !output.contains("WORKSPACE") && !output.contains("--workspace"),
+        "spec/language.md mapping fell back to the full workspace: {output}",
+    );
+}
+
+#[test]
+fn gate_nextest_compiler_std_web_and_rfc0122_is_not_workspace() {
+    let output = gate_nextest(&[
+        "crates/witchy-lower/src/codegen/builtins.rs",
+        "crates/witchy-types/src/typeck.rs",
+        "std/list.witchy",
+        "src/commands/web/tests.rs",
+        "tests/rfc0122.rs",
+        "web/witchy-runtime/glamour-docs-bundle.test.mjs",
+        "spec/stdlib.md",
+    ]);
+    assert!(
+        output.contains("-p witchy-lower") && output.contains("-p witchy-types"),
+        "multi-surface mapping dropped compiler crates: {output}",
+    );
+    assert!(
+        output.contains("binary(rfc0122)") || output.contains("binary(glamour)"),
+        "multi-surface mapping dropped integration tests: {output}",
+    );
+    assert!(
+        output.contains("example_tests") || output.contains("stdlib_docs_are_current"),
+        "multi-surface mapping dropped std/spec tests: {output}",
+    );
+    assert!(
+        !output.contains("WORKSPACE") && !output.contains("--workspace"),
+        "multi-surface mapping fell back to the full workspace: {output}",
+    );
+}
+
+#[test]
 fn gate_nextest_highlighter_js_is_not_workspace() {
     let output = gate_nextest(&["web/witchy-highlight.js"]);
     assert!(

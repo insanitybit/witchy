@@ -51,12 +51,21 @@ add() { local c="$1"; local x; for x in ${cmds[0]+"${cmds[@]}"}; do [ "$x" = "$c
 
 # Serialized-gate nextest selection (crate/binary only). Fail-safe to
 # WORKSPACE when the diff is broader than the mapped areas.
+#
+# Crate packages and integration-test binaries used to be mutually exclusive:
+# mixing them emitted WORKSPACE because `cargo nextest -p crate --test foo`
+# ANDs the filters and drops whichever side is not in that package. The
+# union is an inclusion expression (`package(a) or binary(b)`) plus `-p`
+# args that cover every selected package. Integration tests live in the
+# root `witchy` package, so that union adds `-p witchy` without pulling
+# the rest of the workspace.
 gate_pkgs=()
 gate_tests=()
 gate_need_examples=0
 gate_need_stdlib_docs=0
 gate_workspace=0
 gate_example_mods=()
+gate_witchy_tests=()
 add_pkg() {
     local p="$1" x
     for x in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do [ "$x" = "$p" ] && return; done
@@ -72,25 +81,30 @@ add_example_mod() {
     for x in ${gate_example_mods[0]+"${gate_example_mods[@]}"}; do [ "$x" = "$m" ] && return; done
     gate_example_mods+=("$m")
 }
+add_witchy_test() {
+    local m="$1" x
+    for x in ${gate_witchy_tests[0]+"${gate_witchy_tests[@]}"}; do [ "$x" = "$m" ] && return; done
+    gate_witchy_tests+=("$m")
+}
 emit_gate_nextest() {
-    local p t args="" expr="" m
+    local p t args="" expr="" m need_witchy=0
     if [ "$gate_workspace" -eq 1 ]; then
         printf 'WORKSPACE\n'
         return 0
     fi
     if [ "${#gate_pkgs[@]}" -eq 0 ] && [ "${#gate_tests[@]}" -eq 0 ] \
         && [ "$gate_need_examples" -eq 0 ] && [ "$gate_need_stdlib_docs" -eq 0 ] \
-        && [ "${#gate_example_mods[@]}" -eq 0 ]; then
+        && [ "${#gate_example_mods[@]}" -eq 0 ] \
+        && [ "${#gate_witchy_tests[@]}" -eq 0 ]; then
         printf 'WORKSPACE\n'
         return 0
     fi
-    # Mixing integration-test binaries with crate packages is a broader
-    # surface than one focused invocation; fail closed to the full suite.
-    if [ "${#gate_tests[@]}" -gt 0 ] && [ "${#gate_pkgs[@]}" -gt 0 ]; then
-        printf 'WORKSPACE\n'
-        return 0
-    fi
-    if [ "${#gate_tests[@]}" -gt 0 ]; then
+    # Pure integration-test selection keeps `--test` args so a JS-only
+    # glamour/browser change stays one binary, not `-p witchy`.
+    if [ "${#gate_tests[@]}" -gt 0 ] && [ "${#gate_pkgs[@]}" -eq 0 ] \
+        && [ "$gate_need_examples" -eq 0 ] && [ "$gate_need_stdlib_docs" -eq 0 ] \
+        && [ "${#gate_example_mods[@]}" -eq 0 ] \
+        && [ "${#gate_witchy_tests[@]}" -eq 0 ]; then
         for t in "${gate_tests[@]}"; do
             args="${args:+$args }--test $t"
         done
@@ -101,28 +115,42 @@ emit_gate_nextest() {
         args="${args:+$args }-p $p"
         expr="${expr:+$expr or }package($p)"
     done
+    for t in ${gate_tests[0]+"${gate_tests[@]}"}; do
+        need_witchy=1
+        expr="${expr:+$expr or }binary($t)"
+    done
     # Touched example_tests files win over the crate-wide matrix: run those
     # modules (plus mapped crate tests), not every example_tests::* case.
     # Crate-only diffs still take the full matrix via gate_need_examples.
     if [ "${#gate_example_mods[@]}" -gt 0 ]; then
-        args="${args:+$args }-p witchy"
+        need_witchy=1
         for m in "${gate_example_mods[@]}"; do
             expr="${expr:+$expr or }test(/^example_tests::${m}::/)"
         done
     elif [ "$gate_need_examples" -eq 1 ]; then
-        args="${args:+$args }-p witchy"
+        need_witchy=1
         expr="${expr:+$expr or }test(/^example_tests::/)"
     fi
     if [ "$gate_need_stdlib_docs" -eq 1 ]; then
-        args="${args:+$args }-p witchy"
+        need_witchy=1
         expr="${expr:+$expr or }test(stdlib_docs_are_current)"
+    fi
+    for m in ${gate_witchy_tests[0]+"${gate_witchy_tests[@]}"}; do
+        need_witchy=1
+        expr="${expr:+$expr or }test(/^${m}/)"
+    done
+    if [ "$need_witchy" -eq 1 ]; then
+        case " $args " in
+            *" -p witchy "*) ;;
+            *) args="${args:+$args }-p witchy" ;;
+        esac
     fi
     [ -n "$args" ] || { printf 'WORKSPACE\n'; return 0; }
     printf '%s\n' "$args"
     [ -n "$expr" ] && printf '%s\n' "$expr"
     # Third line: check/clippy package set (mapped crates only — not the
-    # extra -p witchy added so example_tests can run). Empty when there
-    # are no mapped crates.
+    # extra -p witchy added so example_tests / integration tests can run).
+    # Empty when there are no mapped crates.
     if [ "${#gate_pkgs[@]}" -gt 0 ]; then
         local cargs="" q
         for q in "${gate_pkgs[@]}"; do
@@ -189,6 +217,31 @@ for p in "${paths[@]}"; do
             _et="${p##*/}"
             add_example_mod "${_et%.rs}"
             add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+        src/commands/web.rs | src/commands/web/*)
+            any_rust=1
+            add_witchy_test 'commands::web'
+            add "cargo nextest run -E 'test(/^commands::web/)'" ;;
+        src/commands/*)
+            any_rust=1
+            add_witchy_test 'commands::'
+            add "cargo nextest run -E 'test(/^commands::/)'" ;;
+        src/lsp.rs | src/lsp_tests.rs)
+            any_rust=1
+            add_witchy_test 'lsp'
+            add "cargo nextest run -E 'test(/^lsp/)'" ;;
+        src/diagnostic_golden_tests.rs | src/snapshots/*)
+            any_rust=1
+            add_witchy_test 'diagnostic_golden_tests'
+            add "cargo nextest run -E 'test(/^diagnostic_golden_tests/)'" ;;
+        src/lib.rs | src/artifact.rs | src/stats.rs | src/idp.rs | \
+        src/trusted_exe.rs | src/capabilities_tests.rs)
+            any_rust=1
+            add_pkg witchy
+            add "cargo nextest run -p witchy --lib" ;;
+        src/bin/*)
+            any_rust=1
+            add_gate_test misc
+            add "cargo nextest run --test misc" ;;
         crates/* | src/*)
             any_rust=1
             gate_workspace=1 ;;
@@ -258,6 +311,10 @@ for p in "${paths[@]}"; do
         tests/e2e.rs)
             gate_workspace=1
             add "./scripts/check.sh --e2e" ;;
+        tests/misc.rs | tests/misc/*)
+            any_rust=1
+            add_gate_test misc
+            add "cargo nextest run --test misc" ;;
         tests/*.rs)
             any_rust=1
             test_name="${p#tests/}"
@@ -317,7 +374,14 @@ for p in "${paths[@]}"; do
             add "just --list" ;;
         spec/stdlib.md)
             echo "WARNING: spec/stdlib.md is GENERATED — edit std/*.witchy doc-comments instead" >&2
+            gate_need_stdlib_docs=1
             add "cargo nextest run -E 'test(stdlib_docs_are_current)'" ;;
+        spec/* | CONTRIBUTING.md)
+            # documentation_examples_are_valid walks README, CONTRIBUTING,
+            # spec/, and book/src. A spec-only edit cannot change crate
+            # tests; running the workspace would only re-prove master.
+            add_witchy_test 'example_tests::example_sweeps::documentation_examples_are_valid'
+            add "cargo nextest run -E 'test(documentation_examples_are_valid)'" ;;
         *.md | rfcs/* | bugs/* | wiki/*)
             : ;; # prose only — but book/README witchy blocks are covered above
     esac

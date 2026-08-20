@@ -257,7 +257,8 @@ net — only its position. Standalone `check.sh` (no env set) runs `full`.
 `WITCHY_GATE_SCOPE`: when EVERY changed path in the batch diff is documentation
 no test or gate stage reads — `rfcs/` (except `rfcs/performance-modes.md`,
 which `example_tests::public_sources_do_not_call_legacy_render_intrinsic`
-reads), `wiki/` and `bugs/` (tracked but read by nothing), and the gitignored
+reads), `wiki/`, `bugs/`, and `docs/` (tracked but read by nothing;
+example_tests walks README/CONTRIBUTING/spec/book only), and the gitignored
 `scratch/`/`security-eval/` — check.sh
 skips the heavy stages entirely (`scope=docs` in the gating note): such a diff
 cannot change any stage's outcome, so the suite would only re-validate the
@@ -268,7 +269,7 @@ diffs fail safe to `all`. Standalone `check.sh`, `--fast`, `--full`, and the
 shards ignore the scope.
 
 Docs-safe landings do **not** wait on `gate.lock`. A full product gate
-cannot change the meaning of an RFC/wiki/bugs-only candidate, so that
+cannot change the meaning of an RFC/wiki/bugs/docs-only candidate, so that
 candidate must not sit behind a 10-minute (or starved 70-minute) suite. Two
 docs landings still serialize on the atomic master update
 (`update-ref` / `merge --ff-only`).
@@ -297,10 +298,15 @@ matrix). A crate-only compiler diff runs that crate's tests, not the
 full `example_tests` matrix and not sibling compiler crates
 (`witchy-lower` does not pull `witchy-wir` / `witchy-runtime`).
 Playground / highlighter JS under `web/` selects `--test browser`, not
-the Rust workspace. `--full` / CI remain the backstop.
-Unknown, mixed, or empty mappings fail safe to
-`--workspace`. `--full`, CI, and standalone `check.sh` keep the complete
-suite.
+the Rust workspace. A crate plus an integration test (`tests/rfc0122.rs`)
+unions as `-p crate -p witchy` with
+`package(crate) or binary(rfc0122)` — mixing used to fail closed to
+`--workspace` because `-p` AND `--test` drops whichever side is not in
+that package. `src/commands/**`, `spec/*.md`, and `tests/misc/**` have
+their own mappings for the same reason: a four-line web-test snapshot
+must not re-run 2,900 tests. `--full` / CI remain the backstop.
+Unknown or empty mappings fail safe to `--workspace`. `--full`, CI, and
+standalone `check.sh` keep the complete suite.
 
 **Diff-scoped rust-class, compile legs, wasm, fmt, and snapshot regen.**
 `src/example_tests/**` is compiled by the focused nextest selection. It

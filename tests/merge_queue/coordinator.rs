@@ -211,6 +211,28 @@ fn docs_safe_landing_does_not_wait_on_the_full_gate_lock() {
 }
 
 #[test]
+fn docs_dir_landing_is_docs_safe() {
+    let fixture = QueueFixture::stack(&["docs/playbook.md"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'scope=%s\\n' \"${{WITCHY_GATE_SCOPE:-}}\" >{}",
+        env_log.display(),
+    );
+    let output = fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified gate env");
+    assert!(
+        env.contains("scope=docs"),
+        "docs/ batch was not classified WITCHY_GATE_SCOPE=docs: {env}",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("docs-safe"),
+        "docs/ landing did not skip the full-gate lock: {stderr}",
+    );
+}
+
+#[test]
 fn docs_only_master_move_does_not_regate_a_green_code_candidate() {
     let fixture = QueueFixture::stack(&["code.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");
@@ -445,6 +467,39 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
     assert!(
         !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
         "crate+example_tests launched an unfiltered --workspace nextest: {env}",
+    );
+}
+
+#[test]
+fn crate_plus_integration_test_unions_without_workspace() {
+    let fixture = QueueFixture::stack(&["crates/witchy-lower/src/lib.rs"]);
+    run_git(&fixture.root, &["switch", "a"]);
+    fs::create_dir_all(fixture.root.join("tests")).expect("create tests dir");
+    fs::write(fixture.root.join("tests/rfc0122.rs"), "telemetry\n").expect("write rfc0122 test");
+    run_git(&fixture.root, &["add", "tests/rfc0122.rs"]);
+    run_git(&fixture.root, &["commit", "-m", "add rfc0122 test"]);
+    run_git(&fixture.root, &["switch", "master"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'nextest=[%s] expr=[%s] check=[%s]\\n' \
+         \"${{WITCHY_GATE_NEXTEST:-}}\" \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" \
+         \"${{WITCHY_GATE_CHECK_PACKAGES:-}}\" >{}",
+        env_log.display(),
+    );
+    fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified gate env");
+    assert!(
+        env.contains("-p witchy-lower") && env.contains("binary(rfc0122)"),
+        "crate+integration test did not union the crate with the binary: {env}",
+    );
+    assert!(
+        env.contains("check=[-p witchy-lower") && !env.contains("check=[-p witchy]"),
+        "check/clippy packages should stay mapped crates: {env}",
+    );
+    assert!(
+        !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
+        "crate+integration test launched an unfiltered --workspace nextest: {env}",
     );
 }
 

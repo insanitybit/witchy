@@ -861,11 +861,12 @@ group_is_busy() { # group_is_busy <pgid>
 
 # Docs-safe path set, matching check.sh's WITCHY_GATE_SCOPE=docs classifier.
 # Empty input is not docs-safe (fail closed). rfcs/performance-modes.md is
-# excluded because example_tests reads it.
+# excluded because example_tests reads it. docs/ is the agent playbook —
+# example_tests walks README/CONTRIBUTING/spec/book only.
 diff_is_docs_safe() { # diff_is_docs_safe <newline-separated-paths>
     local paths="$1" unsafe
     [ -n "$paths" ] || return 1
-    unsafe="$(printf '%s\n' "$paths" | grep -vE '^(rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' || true)"
+    unsafe="$(printf '%s\n' "$paths" | grep -vE '^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/)' || true)"
     [ -z "$unsafe" ] || return 1
     if printf '%s\n' "$paths" | grep -cx 'rfcs/performance-modes\.md' >/dev/null; then
         return 1
@@ -1493,7 +1494,7 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     census_proof_ready=0
     pre_diff="$(git -C "$gate_wt" diff --name-only --no-renames "$rb_base..HEAD" 2>/dev/null || true)"
     [ -n "$pre_diff" ] || return 0
-    unsafe="$(printf '%s\n' "$pre_diff" | grep -vE '^(rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' || true)"
+    unsafe="$(printf '%s\n' "$pre_diff" | grep -vE '^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/)' || true)"
     if [ -z "$unsafe" ] \
         && ! printf '%s\n' "$pre_diff" | grep -cx 'rfcs/0087-migration-census\.tsv' >/dev/null; then
         return 0
@@ -1951,10 +1952,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # let post-merge CI's complete run be the backstop. The safe set is
     # deliberately TINY: rfcs/ (except rfcs/performance-modes.md, which
     # example_tests::public_sources_do_not_call_legacy_render_intrinsic reads —
-    # it panics if that path vanishes), wiki/ and bugs/ (tracked, but read by
-    # no test or gate stage — if a test ever starts reading them, REMOVE them
-    # from this list), external-refs/ (vendored research notes, never build
-    # inputs), and scratch//security-eval/ (gitignored). Everything
+    # it panics if that path vanishes), wiki/, bugs/, and docs/ (tracked, but
+    # read by no test or gate stage — if a test ever starts reading them,
+    # REMOVE them from this list), external-refs/ (vendored research notes,
+    # never build inputs), and scratch//security-eval/ (gitignored). Everything
     # else — book/, spec/, README.md, std/, scripts/, .claude/, .github/,
     # Cargo metadata — runs the full gate. Fail SAFE: errored/empty diff ->
     # all. The --no-renames above matters doubly here: without it a rename
@@ -1965,7 +1966,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local gate_scope="all"
     local unsafe_paths=""
     if [ -n "$changed" ]; then
-        unsafe_paths="$(echo "$changed" | grep -vE '^(rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' || true)"
+        unsafe_paths="$(echo "$changed" | grep -vE '^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/)' || true)"
     fi
 
     # Preparation already ran the exact RFC-0087 freshness proof. Reuse it
@@ -2100,7 +2101,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local non_queue_core=""
     if [ "$queue_infra" -eq 1 ] && [ -n "$changed" ]; then
         non_queue_core="$(printf '%s\n' "$changed" \
-            | grep -vE '^(scripts/(merge-queue|state-paths|check|test-for-paths|gate-report)\.sh|scripts/MERGE-QUEUE\.md|tests/merge_queue\.rs|tests/merge_queue/|tests/test_for_paths\.rs|rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' \
+            | grep -vE '^(scripts/(merge-queue|state-paths|check|test-for-paths|gate-report)\.sh|scripts/MERGE-QUEUE\.md|tests/merge_queue\.rs|tests/merge_queue/|tests/test_for_paths\.rs|rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/)' \
             || true)"
         if [ -z "$non_queue_core" ] \
             && printf '%s\n' "$changed" \
