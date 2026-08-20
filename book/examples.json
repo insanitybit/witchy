@@ -207,6 +207,16 @@
   },
   {
     "block": 6,
+    "browser_runnable": false,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 7,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -221,7 +231,7 @@
     "runnable": true
   },
   {
-    "block": 7,
+    "block": 8,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -236,7 +246,7 @@
     "runnable": true
   },
   {
-    "block": 8,
+    "block": 9,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -250,7 +260,7 @@
     "runnable": true
   },
   {
-    "block": 9,
+    "block": 10,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -269,7 +279,7 @@
     "runnable": true
   },
   {
-    "block": 10,
+    "block": 11,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -285,7 +295,7 @@
     "runnable": true
   },
   {
-    "block": 11,
+    "block": 12,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -299,7 +309,7 @@
     "runnable": true
   },
   {
-    "block": 12,
+    "block": 13,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -313,7 +323,7 @@
     "runnable": true
   },
   {
-    "block": 13,
+    "block": 14,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -333,7 +343,7 @@
     "runnable": true
   },
   {
-    "block": 14,
+    "block": 15,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -348,7 +358,7 @@
     "runnable": true
   },
   {
-    "block": 15,
+    "block": 16,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -362,7 +372,7 @@
     "runnable": true
   },
   {
-    "block": 16,
+    "block": 17,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -376,7 +386,7 @@
     "runnable": true
   },
   {
-    "block": 17,
+    "block": 18,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -391,7 +401,7 @@
     "runnable": true
   },
   {
-    "block": 18,
+    "block": 19,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -407,7 +417,7 @@
     "runnable": true
   },
   {
-    "block": 19,
+    "block": 20,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -421,16 +431,6 @@
     "runnable": true
   },
   {
-    "block": 20,
-    "browser_runnable": false,
-    "console_only": true,
-    "expect_error": false,
-    "file": "spec/language.md",
-    "footprint": [],
-    "output": [],
-    "runnable": false
-  },
-  {
     "block": 21,
     "browser_runnable": false,
     "console_only": true,
@@ -442,6 +442,16 @@
   },
   {
     "block": 22,
+    "browser_runnable": false,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 23,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -456,7 +466,7 @@
     "runnable": true
   },
   {
-    "block": 23,
+    "block": 24,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -470,7 +480,7 @@
     "runnable": true
   },
   {
-    "block": 24,
+    "block": 25,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -484,7 +494,7 @@
     "runnable": true
   },
   {
-    "block": 25,
+    "block": 26,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -499,7 +509,7 @@
     "runnable": true
   },
   {
-    "block": 26,
+    "block": 27,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -514,7 +524,7 @@
     "runnable": true
   },
   {
-    "block": 27,
+    "block": 28,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -528,7 +538,7 @@
     "runnable": true
   },
   {
-    "block": 28,
+    "block": 29,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -542,7 +552,7 @@
     "runnable": true
   },
   {
-    "block": 29,
+    "block": 30,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -556,7 +566,7 @@
     "runnable": true
   },
   {
-    "block": 30,
+    "block": 31,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -570,7 +580,7 @@
     "runnable": true
   },
   {
-    "block": 31,
+    "block": 32,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -585,7 +595,7 @@
     "runnable": true
   },
   {
-    "block": 32,
+    "block": 33,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -599,7 +609,7 @@
     "runnable": true
   },
   {
-    "block": 33,
+    "block": 34,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -614,7 +624,7 @@
     "runnable": true
   },
   {
-    "block": 34,
+    "block": 35,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -629,7 +639,7 @@
     "runnable": true
   },
   {
-    "block": 35,
+    "block": 36,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -643,7 +653,7 @@
     "runnable": true
   },
   {
-    "block": 36,
+    "block": 37,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -657,7 +667,7 @@
     "runnable": true
   },
   {
-    "block": 37,
+    "block": 38,
     "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
@@ -670,24 +680,12 @@
     "runnable": false
   },
   {
-    "block": 38,
+    "block": 39,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [],
-    "output": [],
-    "runnable": false
-  },
-  {
-    "block": 39,
-    "browser_runnable": false,
-    "console_only": false,
-    "expect_error": false,
-    "file": "spec/language.md",
-    "footprint": [
-      "Net[Connect,Tcp]"
-    ],
     "output": [],
     "runnable": false
   },
@@ -710,6 +708,18 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
+      "Net[Connect,Tcp]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 42,
+    "browser_runnable": false,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
       "Console[Read,Write]",
       "Net[Connect,Listen,Tcp,Udp,Uds]"
     ],
@@ -717,7 +727,7 @@
     "runnable": false
   },
   {
-    "block": 42,
+    "block": 43,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -733,7 +743,7 @@
     "runnable": true
   },
   {
-    "block": 43,
+    "block": 44,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
